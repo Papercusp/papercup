@@ -18,14 +18,83 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
 import {
+  computeGoalSpendRollup,
   GOAL_SPEND_LINEAGE_SCOPE,
   GOAL_SPEND_POT_SCOPE,
   GOAL_SPEND_SCOPE_RELATIONS,
   GOAL_SPEND_SESSION_SCOPE,
+  lineageSpendForGoal,
+  sessionSpendForGoal,
 } from './spend-rollup';
+import { goalSpend } from '@papercusp/db-org';
+import type { InteractiveUsageFreshness } from '../interactive-usage/freshness';
 
 const SOURCE = readFileSync(join(__dirname, 'spend-rollup.ts'), 'utf8');
+
+describe('goal spend numerator — isolated ledger arithmetic', () => {
+  const opts = {
+    workspaceId: 'numerator-unit',
+    goalId: 'numerator-goal',
+    interactiveUsageFreshness: {
+      status: 'fresh', lastIngestedAtMs: 1000, ageMs: 0, windowMs: 1000,
+      maxRecentIngestLagMs: 0, lagThresholdMs: 1000, lagWindowMs: 1000,
+      reason: 'current fixture watermark',
+    } satisfies InteractiveUsageFreshness,
+  };
+
+  const aggregate = (cost: string, samples: number) => ({
+    cost, samples: String(samples), priced_samples: String(samples),
+    unpriced_samples: '0', sessions: String(samples), inside_pot_cost: '0',
+  });
+
+  // These are query results, not a substitute SQL implementation. The real-PG
+  // companion suite verifies which samples each query selects; these cases
+  // isolate the arithmetic and authority decision with distinct populations.
+  function ledgerSql(potUsd: string | null, sessionUsd: string, lineageUsd: string, lineageSamples: number): Sql {
+    const query = async (strings: TemplateStringsArray) => {
+      const statement = strings.join('?');
+      if (statement.includes('AS inside_pot_cost')) return [aggregate(lineageUsd, lineageSamples)];
+      if (statement.includes('WITH goal_owners AS')) return [aggregate(sessionUsd, Number(sessionUsd) === 0 ? 0 : 1)];
+      if (statement.includes('GROUP BY s.harness_slug')) {
+        return potUsd === null ? [] : [{ harness_slug: 'diagnostic-pot', ...aggregate(potUsd, 1) }];
+      }
+      throw new Error('Unexpected query in numerator fixture');
+    };
+    return query as unknown as Sql;
+  }
+
+  it('attributed-authoritative: uses lineage cents instead of the larger diagnostic partition', async () => {
+    const result = await computeGoalSpendRollup(ledgerSql('1.50', '0.55', '1.05', 3), opts);
+    expect(result.spentCents).toBe(105);
+    expect(result.unmeasuredReason).toBeNull();
+    expect(result.totalCents).toBe(205);
+  });
+
+  it('diagnostic-excluded: priced diagnostics cannot turn absent attribution into measured spend', async () => {
+    const result = await computeGoalSpendRollup(ledgerSql('0.50', '0.75', '0', 0), opts);
+    expect(result.spentCents).toBeNull();
+    expect(result.unmeasuredReason).toBe('no-lineage-samples');
+    expect(result.totalCents).toBe(125);
+    expect(result.measured).toBe(true);
+  });
+
+  it('potless-attributed: priced attribution remains authoritative without any pot', async () => {
+    const result = await computeGoalSpendRollup(ledgerSql(null, '1.40', '1.40', 1), opts);
+    expect(result.spentCents).toBe(140);
+    expect(result.unmeasuredReason).toBeNull();
+    expect(result.potCents).toBe(0);
+    expect(result.pot.measured).toBe(false);
+  });
+
+  it('CALIBRATION: the fixture supplies three independently distinguishable query results', async () => {
+    const sql = ledgerSql('1.50', '0.55', '1.05', 3);
+    expect(await goalSpend(sql, opts)).toMatchObject({ costUsd: 1.5, samples: 1 });
+    expect(await sessionSpendForGoal(sql, opts)).toMatchObject({ costUsd: 0.55, samples: 1 });
+    expect(await lineageSpendForGoal(sql, opts)).toMatchObject({ costUsd: 1.05, samples: 3 });
+  });
+});
 
 describe('goal spend breakdown — scope labels are self-describing and pinned', () => {
   it('labels each leg with its population AND its authority', () => {

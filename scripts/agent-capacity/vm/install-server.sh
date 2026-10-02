@@ -19,7 +19,11 @@ for kv in "$@"; do
   [[ "$kv" =~ ^[A-Z_][A-Z0-9_]*=[^[:space:]]*$ ]] || { echo "BAD_ENV_ARG $kv (want KEY=VAL, no spaces)"; exit 2; }
   EXTRA_ENV+=("$kv")
 done
-SVC_USER=pcsrv
+# SVC_USER (env, default pcsrv) names the Linux user whose systemd --user manager runs the
+# Server. One user = one tenant: the package installs once, and each additional user started
+# with linger gets its own Server, Postgres and ports (P-011 multi-tenant density, WI-10004383).
+SVC_USER="${SVC_USER:-pcsrv}"
+[[ "$SVC_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "BAD_SVC_USER $SVC_USER (want a lowercase Linux user name)"; exit 2; }
 DEB=/var/tmp/papercusp-server.deb
 t0=$(date +%s)
 

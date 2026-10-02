@@ -141,6 +141,7 @@ import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
 } from '../workspace-host/provisioning-runner';
+import { WorkspaceHostControllerFenceError } from '../workspace-host/observability-store';
 
 const desired: WorkspaceHostDesiredSpec = {
   hostId: 'host-1',
@@ -885,6 +886,64 @@ describe('workspace-host provisioning DBOS admission', () => {
     );
     expect(connectionError).toBeInstanceOf(WorkspaceHostProvisioningConnectionError);
     expect((connectionError as WorkspaceHostProvisioningConnectionError).problems).toEqual(connectionProblems);
+  });
+
+  // WI-10005474: a request that reuses the operationId of a workflow that already ENDED in a fence
+  // refusal (WI-10005312) is the SAME DBOS workflow, so `getResult` rethrows its stored, serialized
+  // error at once, inside the admission window. Unrehydrated it is a plain Error, which every
+  // route answers as a generic 500 instead of the conflict it is.
+  it('rehydrates a serialized controller-fence refusal on every result-waiting start (WI-10005474)', async () => {
+    const serializedFence = () =>
+      Object.assign(new Error("workspace-host controller authority or host generation is stale for 'host-1'"), {
+        name: 'WorkspaceHostControllerFenceError',
+        hostId: 'host-1',
+      });
+    const starts: Array<[string, () => Promise<unknown>]> = [
+      ['provision', () => startWorkspaceHostProvisioningWorkflow(input)],
+      [
+        'destroy',
+        () =>
+          startWorkspaceHostDestroyWorkflow({
+            workspaceId: 'ws-1',
+            hostId: 'host-1',
+            connectionId: 'connection-1',
+            connection,
+            disposition: 'discard',
+            confirmation: {
+              expectedHostId: 'host-1',
+              confirmedBy: 'operator:test',
+              confirmedAt: '2026-08-25T00:00:00Z',
+            },
+            operationId: 'destroy-refused-1',
+          }),
+      ],
+      [
+        'lifecycle',
+        () =>
+          startWorkspaceHostLifecycleWorkflow({
+            workspaceId: 'ws-1',
+            hostId: 'host-1',
+            action: 'upgrade',
+            connection,
+            image: { id: 'projects/images/global/images/papercusp-v2' },
+            operationId: 'upgrade-refused-1',
+          }),
+      ],
+    ];
+    for (const [label, start] of starts) {
+      control.resultError = serializedFence();
+      const received = await start().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(received, label).toBeInstanceOf(WorkspaceHostControllerFenceError);
+      expect((received as WorkspaceHostControllerFenceError).hostId, label).toBe('host-1');
+    }
+
+    // Only the validated shape is rehydrated: a fence-named error with no host id stays as it was.
+    const malformed = Object.assign(new Error('stale'), { name: 'WorkspaceHostControllerFenceError' });
+    control.resultError = malformed;
+    await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(malformed);
   });
 
   it('does not reclassify malformed or unrelated DBOS errors', async () => {

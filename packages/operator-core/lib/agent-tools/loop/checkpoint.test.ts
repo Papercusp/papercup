@@ -1177,6 +1177,25 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       expect(b.absenceLint).toBeUndefined();
     });
 
+    it('stays quiet for a future no-pickup condition but still flags a main-clause absence', async () => {
+      const conditional = body(
+        await call({
+          left: 'If there is no new checkpoint/coord from cb96f by ~11:45Z, wake it with coord:send',
+          next: 'verify the wake path',
+        }),
+      );
+      expect(conditional.ok).toBe(true);
+      expect(conditional.absenceLint).toBeUndefined();
+
+      const mainClause = body(
+        await call({
+          left: 'If the peer misses the wake, there is no reader for the checkpoint table.',
+          next: 'verify the read path',
+        }),
+      );
+      expect(mainClause.absenceLint?.flagged).toBe(true);
+    });
+
     it('stays quiet for rhetorical `no X` prose', async () => {
       const b = body(await call({ did: 'Cheap enough that there is no excuse for relaying.', next: 'continue' }));
       expect(b.ok).toBe(true);

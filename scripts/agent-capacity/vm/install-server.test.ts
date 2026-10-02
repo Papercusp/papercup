@@ -64,7 +64,11 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
     // The first start: record whether the drop-in already existed when linger started the unit.
     stub(
       'loginctl',
-      [`[ -f "${home()}/${DROPIN}" ] && echo DROPIN_PRESENT_AT_LINGER >> "${dir}/systemctl.log"`, 'exit 0'].join('\n'),
+      [
+        `echo "loginctl $*" >> "${dir}/systemctl.log"`,
+        `[ -f "${home()}/${DROPIN}" ] && echo DROPIN_PRESENT_AT_LINGER >> "${dir}/systemctl.log"`,
+        'exit 0',
+      ].join('\n'),
     );
     stub('dpkg-query', 'exit 0');
     stub('pgrep', 'exit 1');
@@ -135,6 +139,34 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
     const r = run('lower=1');
     expect(r.status).toBe(2);
     expect(r.stdout).toContain('BAD_ENV_ARG lower=1');
+    expect(existsSync(path.join(dir, 'systemctl.log'))).toBe(false);
+  });
+
+  // P-011 multi-tenant density (WI-10004383): one Linux user per tenant Server.
+  const runAs = (user: string | undefined) =>
+    spawnSync('bash', [SCRIPT, 'gs://b/server.deb', SHA], {
+      encoding: 'utf8',
+      env: { ...env(), ...(user === undefined ? {} : { SVC_USER: user }) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+  it('runs the Server as pcsrv by default', () => {
+    const r = runAs(undefined);
+    expect(r.status).toBe(0);
+    expect(log()).toMatch(/^loginctl enable-linger pcsrv$/m);
+  });
+
+  it('runs the Server as the SVC_USER tenant when given', () => {
+    const r = runAs('pctenant3');
+    expect(r.status).toBe(0);
+    expect(log()).toMatch(/^loginctl enable-linger pctenant3$/m);
+    expect(log()).not.toMatch(/enable-linger pcsrv$/m);
+  });
+
+  it('refuses a malformed SVC_USER before touching anything', () => {
+    const r = runAs('Bad User');
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain('BAD_SVC_USER Bad User');
     expect(existsSync(path.join(dir, 'systemctl.log'))).toBe(false);
   });
 });
