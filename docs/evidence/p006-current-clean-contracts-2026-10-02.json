@@ -2804,6 +2804,108 @@
     },
     "next": "Prepare NUMERATOR@3 from exact current scenarios, source hashes and existing clean spend-rollup receipts; reuse unchanged proof when its layer/scenario/lineage fits before considering another test. Preserve15 remaining FAILs and unresolved D014 contract boundary."
   },
+  "p003WindowPreparationFire191": {
+    "recordedAt": "2026-10-02T13:44:05.942Z",
+    "specId": "WOE-P003-WINDOW",
+    "specRevision": 3,
+    "specFingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+    "requiredScenarios": ["declared-window", "display-admission-breach-parity", "lifetime-fallback", "pre-creation-excluded"],
+    "scope": "Current working-tree semantic verification; no new governing adequacy, causal-pair binding, accepted-clause census or shipment claim.",
+    "reuse": "Extended the existing scope-label unit suite's ledger fixture to observe actual numeric query parameters. Extended the maintained real-Postgres window suite to compose launch admission, snapshot and breach enforcement against the same ledger. Production source and accepted clauses remain unchanged.",
+    "unit": {
+      "testRunId": 20533495,
+      "commitSha": "3f9f41aa228b7a0e6110e3f1218a2c094381ae3e",
+      "worktreeDirty": true,
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts",
+      "result": "23 PASS, 0 skipped, exit 0; working-tree development evidence only",
+      "addedCases": ["One declared 3600-second window sends the clock-derived lower bound to all three actual SQL queries", "Omitted window sends zero to all lifetime-clamped queries", "Explicit null window sends zero to all lifetime-clamped queries"],
+      "log": "/tmp/p006-fire191-window-unit.log",
+      "logSha256": "55ed5ecf481af01f51df1b420f4c63a0016a6d9ff420d090fa263ead4dfa5592"
+    },
+    "integration": {
+      "testRunId": 20533510,
+      "commitSha": "3f9f41aa228b7a0e6110e3f1218a2c094381ae3e",
+      "worktreeDirty": true,
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goals/spend-rollup.integration.test.ts",
+      "result": "44 PASS, 0 skipped, exit 0; private native Postgres, working-tree development evidence only",
+      "addedCases": ["50 in-window cents admit before and after the 50-cent display snapshot, and remain active despite 500 older cents", "200 in-window cents refuse launch, display 200 cents, and pause with the same 3600-second denominator despite 500 older cents"],
+      "dataDir": "/tmp/papercusp-native-pg-beLOKg",
+      "port": 42143,
+      "dataDirRemoved": true,
+      "portClosed": true,
+      "log": "/tmp/p006-fire191-window-pg.log",
+      "logSha256": "f22e30881a201af171f618f89d70ebe5711cb99ec3ebba8af7b8107a197737ee",
+      "summary": "/tmp/p006-fire191-window-pg-summary.json",
+      "summarySha256": "38ae1103f31ce06e39fb3d1f565722731be50cffd0cd6e2b4c1c4b31dd04114a"
+    },
+    "fingerprints": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "e71015fe95056437d3508934b82c13c8c35276af5dc3bd21360e8b383ff526fe",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "b01dd12cb540349894c2a61b61d262b303f08faa0953c8aab8f892a5b032f8ad",
+      "packages/operator-core/lib/goal-launch-settings.ts": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "libs/papercusp/libs/db/src/goal-pots.ts": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+    },
+    "next": "Verify clean committed test provenance; prove the four one-to-one scenario pairs using maintained controls. Both test-file changes require renewal of earlier P003 test bindings before any new current governing PASS claim. Preserve old binding17381 until selected replacement PASS and exact identity read; retain historical ledgers, D003 baseline, D013 real-goal FAIL and D016 history. No unchanged source-test rerun solely to reconstruct old receipts."
+  },
+  "p003NumeratorFire188": {
+    "recordedAt": "2026-10-02T13:29:00Z",
+    "scope": "NUMERATOR@3 now governs PASS on the current staging evaluator. P006, independent rubric ratification, real-goal acceptance, closure audit and shipment remain open.",
+    "recovery": "Fresh native01a0fcb8-9328-72f3-aab7-23a0dbd1b003 had no predecessor transcript. Live Fire186 carry superseded the supplied Fire185 wake note: MEASURED-ADMISSION repair was already complete and was not repeated. All three items remain self-held; 24 work-item and12 loop checks were read and preserved.",
+    "reuse": "Extended maintained spend-rollup-scope-labels.test.ts with three isolated numerator behavior cases and an independent three-ledger calibration. Existing real-PG rollup suite remains the SQL selection oracle. No production source change or parallel test harness. Clean full42 integration run20527628 was reused after exact source/test/library hash comparison.",
+    "spec": { "id": "WOE-P003-NUMERATOR", "revision": 3, "fingerprint": "2f7cd66811ac2c062a655e8905b8a0ef15ab2b5ec89d389e45b67058f056c71d", "requiredLayers": ["unit", "integration"] },
+    "unit": {
+      "workingTreeRun": 20533311,
+      "workingTreeResult": "20PASS0skip, dirty=true; development evidence only",
+      "committedRun": 20533339,
+      "commit": "e8369026d6713540360b46ddec6642a3f2c0157a",
+      "root": "/tmp/papercusp-lint-as-committed-e8369026d6-1HUMQu",
+      "result": "20PASS0skip, exit0, worktreeDirty=false, isScratchConfig=false",
+      "log": "/tmp/p006-fire188-numerator-clean-unit.log"
+    },
+    "causalPairs": {
+      "attributed-authoritative": { "negativeRun": 20533369, "negativeBinding": 21846, "repairedRun": 20533339, "repairedBinding": 21849, "distinguishingObservation": "Switching authority to the diagnostic partition produces205 instead of105; independent ledger calibration still passes." },
+      "diagnostic-excluded": { "negativeRun": 20533370, "negativeBinding": 21847, "repairedRun": 20533339, "repairedBinding": 21850, "distinguishingObservation": "Removing the no-lineage guard produces measured0 instead ofnull while the diagnostic partition remains125; calibration still passes." },
+      "potless-attributed": { "negativeRun": 20533368, "negativeBinding": 21848, "repairedRun": 20527628, "repairedBinding": 21845, "distinguishingObservation": "Treating an empty pot as unmeasured producesnull/no-lineage-samples instead of140/null for priced attribution; the real-PG partition calibration still passes." }
+    },
+    "mutationVerification": {
+      "unitControls": "Each baseline and unmutated-copy2PASS; each mutant1intendedFAIL1calibrationPASS18filtered skips. Both maintained overlay probes report caught and source byte-identical.",
+      "integrationControl": "Baseline and unmutated-copy2PASS; mutant1intendedFAIL1calibrationPASS40filtered skips. Maintained overlay probe reports caught; privatePGaKFAUn/44557 removed and portclosed; clone source byte-identical.",
+      "invalidFirstAttempt": "The first SQL mutation refused before any test execution because an unescaped replacement dollar expression failed Perl use strict. Exit2 is not a test verdict. PrivatePGLTZv0G/40019 was removed and portclosed. Original refused log and summary remain retained.",
+      "logs": ["/tmp/p006-fire188-numerator-attributed-control.log", "/tmp/p006-fire188-numerator-diagnostic-control.log", "/tmp/p006-fire188-numerator-potless-control-r2.log", "/tmp/p006-fire188-numerator-pg-control-r2-summary.json"]
+    },
+    "pairingRepair": "First selected cohort21844-48 failed execution-integrity only: one-to-one requires exactly one causalPairId per binding, as well as exactly one negative and recurrence per scenario globally. Reused exact server-derived21844/run20533339 metadata for unique scenario-specific21849/21850; no test rerun. Failed selected receipt retained.",
+    "selected": { "bindingIds": [21849, 21850, 21845, 21846, 21847, 21848], "verdict": "PASS", "governing": false, "requiredProofFloor": "l3", "wouldBlock": [], "evaluatorBuild": { "sha": "1b7afa4b28", "version": "0.0.0" } },
+    "withdrawal": {
+      "prerequisites": "Fresh exact identities and all six CURRENT replacements were read after selectedPASS. D003 baseline, D013 completedFAIL card, D014 boundary and D016 historical18368 disposition preserved.",
+      "bindingIds": [17379, 21844],
+      "receipt": { "ok": 2, "failed": 0 },
+      "reason": "17379 is obsolete source/test-stale dirty historical proof.21844 groups two causalPairIds and is replaced by separate scenario bindings. Binding-only retraction preserves immutable runs and audit history.",
+      "postReadback": "Exactly21845-21850 active, each server-measuredCURRENT; bounded.truncatedByLimit=false.",
+      "historicalLedgerReadback": "Exact six-row testing:runs read retains20323411PASS/dirtytrue at66a6e7dd; positive20533339/20527628PASS/dirtyfalse/scratchfalse and the three calibrated mutant rowsFAIL/dirtyfalse/scratchfalse unchanged."
+    },
+    "governing": { "verdict": "PASS", "governing": true, "wouldBlock": [], "cohortFilters": "bindingIds/workItemIds/evidenceRefs omitted", "evaluatorBuild": { "sha": "1b7afa4b28", "version": "0.0.0" } },
+    "acceptedClauseCensus": {
+      "population": 28, "pass": 14, "fail": 14, "unknown": 0, "governing": true,
+      "proof": "/tmp/p006-fire188-whole-governing-decoded.json",
+      "remainingFailSpecIds": ["WOE-P003-BREACH", "WOE-P003-UNMEASURED", "WOE-P003-UNMEASURED-ADMISSION", "WOE-P003-WINDOW", "WOE-P004-CUSTODY", "WOE-P004-REAL-CALL", "WOE-P004-SCHEDULER-DIAGNOSIS", "WOE-P004-SLOW-BOOT", "WOE-P004-WAKE", "WOE-P005-HAND-DISPATCH", "WOE-P005-MATERIALIZATION", "WOE-P005-SOVEREIGNTY", "WOE-P006-REAL-CARD", "WOE-P006-SHIPMENT"],
+      "limits": "Explicit accepted28-clause census without evidence cohort filters; not successful real-goal acceptance, independent rubric ratification, final plan closure or shipment."
+    },
+    "fingerprints": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "5eb8e87ea661d6d54f62b5acb3e654c1a5e46a77e02c993390cfc449993eb0f8",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "81d50575a2b74794f1e4ed7ff9c33f548309696cf46c55728979ba040d27ab54",
+      "libs/papercusp/libs/db/src/goal-pots.ts": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+    },
+    "receipts": ["/tmp/p006-fire188-numerator-selected-r2-decoded.json", "/tmp/p006-fire188-numerator-current-replacement-decoded.json", "/tmp/p006-fire188-numerator-retire-decoded.json", "/tmp/p006-fire188-numerator-live-readback-decoded.json", "/tmp/p006-fire188-numerator-governing-decoded.json"],
+    "windowPreparation": {
+      "specRevision": 3, "fingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+      "requiredScenarios": ["declared-window", "display-admission-breach-parity", "lifetime-fallback", "pre-creation-excluded"],
+      "oldBinding": 17381,
+      "oldBindingCurrentness": "source-stale/test-stale; retained pending verified replacement",
+      "existingProof": "Maintained integration lifetime326, window369/sweep538, SURVIVES764/STILL-PAUSES776/no-window-CONTROL790 are in unchanged clean full42 run20527628. Arithmetic writer417-435 routes one sinceMs to all legs. Read exact consumer parity and existing units before any additional execution; do not infer untested scenarios."
+    },
+    "protected": "No P007/P008 source/runtime/native action, unchanged native/P002 rerun, shared restart, P2P or LIVE_GATE_OPS. Existing member route and all24WI+12loop checks preserved. D014 leader reconciliation remains pending without an owner wall."
+  },
   "p003PreparationFire183": {
     "scope": "Read-only preparation; all six accepted P003 clauses remain FAIL. No P003 evidence binding, withdrawal, test execution or source change.",
     "acceptedRevisions": "BREACH, MEASURED-ADMISSION, NUMERATOR, UNMEASURED, UNMEASURED-ADMISSION and WINDOW are revision3 with required unit+integration evidence and one-to-one causal scenarios.",
@@ -2835,5 +2937,5 @@
     },
     "recoveryReceipts": ["/tmp/p006-fire183-p003-specs-decoded.json", "/tmp/p006-fire183-p003-evidence-decoded.json", "/tmp/p006-fire183-grader-full-decoded.json", "/tmp/p006-fire183-real-goal-card.json"]
   },
-  "next": "MEASURED-ADMISSION@3 now governs PASS (Fire186); do not repeat its binding repair or17377 withdrawal. Prepare NUMERATOR@3 from exact current scenarios, writer/test hashes and existing clean rollup receipts, reusing unchanged proof where adequate. Remaining15 accepted clauses FAIL. Reconcile D014 versus UNMEASURED-ADMISSION acceptance explicitly; preserve D003 baseline, D013 completed FAIL real-goal card, D016 history and independent rubric ratification/closure audit/final shipment obligations. Preserve separate P007/P008 checks and dated historical evidence; no unchanged native/P002 rerun."
+  "next": "MEASURED-ADMISSION@3 and NUMERATOR@3 govern PASS. Do not repeat either binding repair or17377/17379 withdrawal. Continue WINDOW@3 preparation from its four exact scenarios, maintained writer/consumer tests and unchanged clean integration20527628 before adding missing behavioral unit or parity proof. Remaining14 accepted clauses FAIL. Reconcile D014 versus UNMEASURED-ADMISSION explicitly; preserve D003 baseline, D013 completed FAIL real-goal card, D016 history, independent rubric ratification, closure audit and final shipment. Preserve separate P007/P008 checks and historical evidence; no unchanged native/P002 rerun."
 }
