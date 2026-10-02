@@ -11,15 +11,14 @@
 //
 // Catalog measured: 944 tools.
 
-/** claude: 1 full + 64 compact = 99994 B of 100000 B. */
+/** claude: 2 full + 61 compact = 99928 B of 100000 B. */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99994,
+  spentBytes: 99928,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 1, compact: 64, deferred: 879 }),
+  counts: Object.freeze({ full: 2, compact: 61, deferred: 881 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
-    "activity:report": "compact",
     "build:typecheck": "compact",
     "capability:bash": "compact",
     "capability:bash_output": "compact",
@@ -30,9 +29,8 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "coord:orient": "compact",
     "coord:presence": "compact",
     "coord:send": "compact",
-    "coord:whoami": "compact",
+    "coord:whoami": "full",
     "db:migrations": "compact",
-    "dev:pg_active_queries": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
     "dev:restart": "compact",
@@ -87,7 +85,6 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   }),
   /** Advertised names, sorted — what the launcher passes as `?tools=`. */
   advertised: Object.freeze([
-    "activity:report",
     "build:typecheck",
     "capability:bash",
     "capability:bash_output",
@@ -100,7 +97,6 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "coord:send",
     "coord:whoami",
     "db:migrations",
-    "dev:pg_active_queries",
     "dev:pg_query",
     "dev:pipeline_position",
     "dev:restart",
@@ -221,15 +217,14 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 1 full + 64 compact = 99994 B of 100000 B. */
+/** codex: 2 full + 61 compact = 99928 B of 100000 B. */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99994,
+  spentBytes: 99928,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 1, compact: 64, deferred: 879 }),
+  counts: Object.freeze({ full: 2, compact: 61, deferred: 881 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
-    "activity:report": "compact",
     "build:typecheck": "compact",
     "capability:bash": "compact",
     "capability:bash_output": "compact",
@@ -240,9 +235,8 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "coord:orient": "compact",
     "coord:presence": "compact",
     "coord:send": "compact",
-    "coord:whoami": "compact",
+    "coord:whoami": "full",
     "db:migrations": "compact",
-    "dev:pg_active_queries": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
     "dev:restart": "compact",
@@ -297,7 +291,6 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   }),
   /** Advertised names, sorted — what the launcher passes as `?tools=`. */
   advertised: Object.freeze([
-    "activity:report",
     "build:typecheck",
     "capability:bash",
     "capability:bash_output",
@@ -310,7 +303,6 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "coord:send",
     "coord:whoami",
     "db:migrations",
-    "dev:pg_active_queries",
     "dev:pg_query",
     "dev:pipeline_position",
     "dev:restart",
@@ -431,15 +423,14 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 1 full + 64 compact = 99994 B of 100000 B. */
+/** omp: 2 full + 61 compact = 99928 B of 100000 B. */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99994,
+  spentBytes: 99928,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 1, compact: 64, deferred: 879 }),
+  counts: Object.freeze({ full: 2, compact: 61, deferred: 881 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
-    "activity:report": "compact",
     "build:typecheck": "compact",
     "capability:bash": "compact",
     "capability:bash_output": "compact",
@@ -450,9 +441,8 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "coord:orient": "compact",
     "coord:presence": "compact",
     "coord:send": "compact",
-    "coord:whoami": "compact",
+    "coord:whoami": "full",
     "db:migrations": "compact",
-    "dev:pg_active_queries": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
     "dev:restart": "compact",
@@ -507,7 +497,6 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
   }),
   /** Advertised names, sorted — what the launcher passes as `?tools=`. */
   advertised: Object.freeze([
-    "activity:report",
     "build:typecheck",
     "capability:bash",
     "capability:bash_output",
@@ -520,7 +509,6 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "coord:send",
     "coord:whoami",
     "db:migrations",
-    "dev:pg_active_queries",
     "dev:pg_query",
     "dev:pipeline_position",
     "dev:restart",
