@@ -6,10 +6,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createEmbedSidecarServer } from '../embed-sidecar-server';
-import { collectSidecarPerformance, summarizePerformanceReceipts, performanceSchedule, isolatedEvaluationBuilders, type PerformanceInput, type PerformanceReceipt } from './sidecar-performance';
+import { collectSidecarPerformance, summarizePerformanceReceipts, performanceSchedule, isolatedEvaluationBuilders, verifyCompletedPerformanceRun, type PerformanceInput, type PerformanceReceipt } from './sidecar-performance';
 import { sidecarEmbedBatch } from '@papercusp/memory';
 import { measurementManifestFixture } from './fixtures/measurement-manifest';
-import { failMeasurementCell, type PreparedMeasurement } from './measurement-manifest';
+import { failMeasurementCell, fingerprintFile, type PreparedMeasurement } from './measurement-manifest';
 
 const input: PerformanceInput = { formatVersion: 1, seed: 'synthetic', blocks: 5, warmSamples: 3, rounds: 2,
   batches: [1, 2], concurrency: [1, 2], cachedSamples: 2, serverConcurrency: 2,
@@ -264,6 +264,45 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
       expect(() => summarizePerformanceReceipts(manifest, 'a'.repeat(64), input, cached)).toThrow('raw samples');
       const group = structuredClone(receipts); group[0].report.groups[1].sampleIndices[0] = group[0].report.groups[0].sampleIndices[0];
       expect(() => summarizePerformanceReceipts(manifest, 'a'.repeat(64), input, group)).toThrow('group sample');
+      // Terminal shell state or a fifteen-entry summary cannot serialize model
+      // work unless its complete raw population is still present and bound.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-predecessor-'));
+      try {
+        const predecessor = measurementManifestFixture(dir); predecessor.seed = input.seed;
+        const requestFile = path.join(dir, 'requests.json'); fs.writeFileSync(requestFile, JSON.stringify(input));
+        predecessor.inputs.requests = await fingerprintFile(requestFile);
+        predecessor.cells = [...predecessor.cells.filter((cell) => cell.bar !== 'performance'),
+          performanceSchedule(input.seed, 5, predecessor.arms.map((arm) => arm.id)).map((cell) => ({
+            id: cell.cellId, bar: 'performance' as const, armId: cell.armId, inputIds: ['requests'],
+            parameters: { block: cell.block, order: cell.order, requests: 'requests' }, output: cell.cellId,
+          }))].flat();
+        const manifestFile = path.join(dir, 'manifest.json'); fs.writeFileSync(manifestFile, JSON.stringify(predecessor));
+        const sha = (await fingerprintFile(manifestFile)).sha256;
+        const root = path.join(dir, predecessor.runId); fs.mkdirSync(root);
+        const bound = receipts.map((receipt) => ({ ...receipt, ownerId: predecessor.ownerId, manifestSha256: sha }));
+        const rawArtifacts = [];
+        for (const receipt of bound) {
+          const raw = path.join(root, `${receipt.cellId}.json`); fs.writeFileSync(raw, JSON.stringify(receipt));
+          rawArtifacts.push(await fingerprintFile(raw));
+        }
+        const saved = { ownerId: predecessor.ownerId, manifestSha256: sha, rawArtifacts,
+          summary: summarizePerformanceReceipts(predecessor, sha, input, bound) };
+        const summaryFile = path.join(root, 'performance-summary.json'); fs.writeFileSync(summaryFile, JSON.stringify(saved));
+        const driverFile = path.join(root, 'driver.json');
+        const driver = { ownerId: predecessor.ownerId, manifestSha256: sha, status: 'running', current: '',
+          completed: bound.map((receipt) => receipt.cellId) };
+        fs.writeFileSync(driverFile, JSON.stringify(driver));
+        await expect(verifyCompletedPerformanceRun(manifestFile, sha)).rejects.toThrow('not complete');
+        driver.status = 'completed'; fs.writeFileSync(driverFile, JSON.stringify(driver));
+        await expect(verifyCompletedPerformanceRun(manifestFile, sha)).resolves.toMatchObject({ cells: 15, inferencePerformed: false });
+        fs.appendFileSync(rawArtifacts[0].path, ' ');
+        await expect(verifyCompletedPerformanceRun(manifestFile, sha)).rejects.toThrow('fingerprint');
+        fs.writeFileSync(rawArtifacts[0].path, JSON.stringify(bound[0]));
+        saved.summary.cells[0].warm.query.p99Ms += 1; fs.writeFileSync(summaryFile, JSON.stringify(saved));
+        await expect(verifyCompletedPerformanceRun(manifestFile, sha)).rejects.toThrow('disagrees');
+        fs.rmSync(summaryFile);
+        await expect(verifyCompletedPerformanceRun(manifestFile, sha)).rejects.toThrow('ENOENT');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     } finally { await server.close(); }
   });
   it('refuses a stale model revision before producing a performance result', async () => {
