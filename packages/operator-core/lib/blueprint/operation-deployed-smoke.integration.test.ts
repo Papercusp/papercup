@@ -58,7 +58,6 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { readSuperuserToken } from '../superuser-token';
 import {
   BLUEPRINT_OPERATION_TOOLS,
   BlueprintOperationCancelReceiptSchema,
@@ -73,7 +72,17 @@ import { P013B_OPERATION } from './operation-performance-b-driver';
 const BASE = process.env.P015_DEPLOYED_OPERATOR_URL?.replace(/\/+$/, '');
 const EXPECTED_SHA = process.env.P015_EXPECTED_SHA?.trim() || null;
 const WORKSPACE = process.env.P015_SMOKE_WORKSPACE?.trim() || 'papercusp-workspace';
-const CLIENT = process.env.P015_SMOKE_CLIENT?.trim() || process.env.PAPERCUSP_SID?.trim() || 'p015-deployed-smoke';
+interface SmokeClientEnvironment {
+  P015_SMOKE_CLIENT?: string;
+  PAPERCUSP_SID?: string;
+}
+
+/** This smoke creates a dedicated pot outside the caller's hive; never inherit a scoped agent SID. */
+function resolveSmokeClient(env: SmokeClientEnvironment): string {
+  return env.P015_SMOKE_CLIENT?.trim() || 'p015-deployed-smoke';
+}
+
+const CLIENT = resolveSmokeClient(process.env);
 // Paired with SMOKE_TEMPLATE: the harness's blueprint pins the template it was created
 // with, so a new template needs a new harness slug (the 2026-09-30 harness pins the
 // pre-D-044 template, which can never start).
@@ -184,20 +193,25 @@ function decodeMcp(raw: string, id: number): unknown {
 }
 
 /**
- * The bearer the DEPLOYED host accepts is the token in ITS home, which this
- * client cannot see. readSuperuserToken() prefers the CLIENT's
- * $PAPERCUSP_HOME/superuser-token, so a shell with a workspace-scoped
- * PAPERCUSP_HOME sends a token the host refuses (superuser_invalid_bearer).
- * P015_SMOKE_TOKEN_FILE names the file explicitly; otherwise the default
- * resolver applies and its path is reported on a refusal.
+ * The local deployed host accepts the token in the operator user's home.
+ * PAPERCUSP_HOME may point at this workspace's separate Papercusp directory,
+ * so it must not choose the default token. P015_SMOKE_TOKEN_FILE overrides the
+ * local host path for a target with a different home; refusals report the path.
  */
-const TOKEN_FILE = process.env.P015_SMOKE_TOKEN_FILE?.trim() || null;
-const TOKEN_SOURCE = TOKEN_FILE
-  ?? join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token');
+interface SmokeTokenEnvironment {
+  P015_SMOKE_TOKEN_FILE?: string;
+  PAPERCUSP_HOME?: string;
+}
+
+/** The local deployed host validates its own home token, not a workspace-scoped PAPERCUSP_HOME token. */
+function resolveSmokeTokenSource(env: SmokeTokenEnvironment, home: string): string {
+  return env.P015_SMOKE_TOKEN_FILE?.trim() || join(home, '.papercusp', 'superuser-token');
+}
+
+const TOKEN_SOURCE = resolveSmokeTokenSource(process.env, homedir());
 function smokeToken(): string | null {
-  if (!TOKEN_FILE) return readSuperuserToken();
   try {
-    const tok = readFileSync(TOKEN_FILE, 'utf8').trim();
+    const tok = readFileSync(TOKEN_SOURCE, 'utf8').trim();
     return tok.length >= 16 ? tok : null;
   } catch {
     return null;
@@ -247,6 +261,27 @@ async function refusalOf(p: Promise<unknown>): Promise<string> {
 
 const T = BLUEPRINT_OPERATION_TOOLS;
 type Handle = Record<string, unknown>;
+
+describe('deployed smoke context defaults', () => {
+  it('uses the dedicated smoke client instead of inheriting a hive-scoped agent SID', () => {
+    expect(resolveSmokeClient({ PAPERCUSP_SID: 'su-scoped-agent' })).toBe('p015-deployed-smoke');
+  });
+
+  it('honors an explicit client override', () => {
+    expect(resolveSmokeClient({ P015_SMOKE_CLIENT: '  p015-owner-client  ', PAPERCUSP_SID: 'su-scoped-agent' }))
+      .toBe('p015-owner-client');
+  });
+
+  it('uses the deployed host home token despite a workspace-scoped PAPERCUSP_HOME', () => {
+    expect(resolveSmokeTokenSource({ PAPERCUSP_HOME: '/workspace/.papercusp' }, '/home/builder'))
+      .toBe('/home/builder/.papercusp/superuser-token');
+  });
+
+  it('honors an explicit deployed token file override', () => {
+    expect(resolveSmokeTokenSource({ P015_SMOKE_TOKEN_FILE: '  /host/token  ' }, '/home/builder'))
+      .toBe('/host/token');
+  });
+});
 
 async function submit(operationId: string, requestKey: string, input: Record<string, unknown>): Promise<Handle> {
   return SubmitResultSchema.parse(await mcp(T.submit, { harness: SMOKE_HARNESS, operationId, requestKey, input })).handle as Handle;

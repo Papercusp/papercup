@@ -43,11 +43,80 @@ function processSample(pid: number) {
   };
   const executable = readlinkSync(`/proc/${pid}/exe`);
   const metadata = statSync(`/proc/${pid}/exe`);
+  const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+  const command = processCommand(argv, readlinkSync(`/proc/${pid}/cwd`), executable);
   const key = `${executable}:${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeMs}`;
   if (!executableHashes.has(key)) executableHashes.set(key, hash(readFileSync(`/proc/${pid}/exe`)));
+  const afterStat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const after = afterStat.slice(afterStat.lastIndexOf(')') + 2).split(' ');
+  const afterExe = statSync(`/proc/${pid}/exe`);
+  if (after[19] !== fields[19] || after[1] !== fields[1] ||
+      afterExe.dev !== metadata.dev || afterExe.ino !== metadata.ino) {
+    throw Error('Process changed during resource sample');
+  }
   return { pid, startTicks: fields[19], parentPid: Number(fields[1]), executable,
     executableSha256: executableHashes.get(key)!,
+    command,
     pssBytes: bytes('Pss'), rssBytes: bytes('Rss'), anonymousBytes: bytes('Anonymous') };
+}
+
+// Parse only the executable entry, not an argument which happens to name the
+// host. Unknown option forms fail closed. Never persist arbitrary argv/env.
+function nodeEntry(argv: string[], cwd: string): string | null {
+  const takesValue = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader',
+    '--conditions', '--title', '--inspect-port']);
+  const switches = /^(?:--inspect(?:-brk)?(?:=.*)?|--enable-source-maps|--no-warnings|--expose-gc|--max-old-space-size=\d+)$/;
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--') return argv[i + 1] ? resolve(cwd, argv[i + 1]) : null;
+    if (takesValue.has(arg)) { if (!argv[++i]) return null; continue; }
+    if (switches.test(arg) || /^(?:--require|--import|--loader|--conditions|--title|--inspect-port)=/.test(arg)) continue;
+    if (arg.startsWith('-')) return null;
+    return resolve(cwd, arg);
+  }
+  return null;
+}
+
+function processCommand(argv: string[], cwd: string, executable: string) {
+  return { sha256: hash(argv.join('\0')), script: nodeEntry(argv, cwd),
+    esbuildService: executable.endsWith('/esbuild') &&
+      argv.slice(1).some(arg => /^--service=\d+\.\d+\.\d+$/.test(arg)) };
+}
+
+type ResourceRow = ReturnType<typeof processSample>;
+function processInventory(main: ResourceRow, children: ResourceRow[],
+  missed: { pid: number; parentPid: number; reason: string }[], previous: ResourceRow[] = []) {
+  const rows = [main, ...children];
+  const byPid = new Map(rows.map(row => [row.pid, row]));
+  if (byPid.size !== rows.length) throw Error('Duplicate process identity in census');
+  for (const child of children) {
+    const seen = new Set([child.pid]);
+    let parent = child.parentPid;
+    while (parent !== main.pid) {
+      if (seen.has(parent) || !byPid.has(parent)) throw Error('Unverified descendant ancestry');
+      seen.add(parent); parent = byPid.get(parent)!.parentPid;
+    }
+  }
+  const identities = new Set(rows.map(row => `${row.pid}:${row.startTicks}:${row.executableSha256}`));
+  const priorIdentities = new Set(previous.map(row => `${row.pid}:${row.startTicks}:${row.executableSha256}`));
+  const classified = rows.map(row => ({ pid: row.pid, startTicks: row.startTicks,
+    executableSha256: row.executableSha256,
+    role: row.pid === main.pid ? 'named-main' : row.command.esbuildService ? 'native-esbuild-service' :
+      main.command.script?.endsWith('/hono-host.mjs') && row.command.script === main.command.script &&
+      row.executableSha256 === main.executableSha256 ? 'same-entry-operator-descendant' : 'other-descendant',
+    pssBytes: row.pssBytes }));
+  return { observed: classified, notChecked: missed,
+    censusComplete: missed.length === 0,
+    observedPssBytes: rows.reduce((sum, row) => sum + row.pssBytes, 0),
+    appeared: rows.filter(row => !priorIdentities.has(`${row.pid}:${row.startTicks}:${row.executableSha256}`))
+      .map(row => ({ pid: row.pid, startTicks: row.startTicks })),
+    notObservedSincePrevious: previous.filter(row => !identities.has(`${row.pid}:${row.startTicks}:${row.executableSha256}`))
+      .map(row => ({ pid: row.pid, startTicks: row.startTicks })),
+    definition: 'Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.',
+    allocationOwner: 'unknown',
+    compilerCaller: 'unknown',
+    workerRequestAssignment: 'unknown',
+    lifetimeDefinition: 'Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing.' };
 }
 
 function assertIdentity(before: { pid: number; startTicks: string; executableSha256: string }, after: typeof before) {
@@ -133,6 +202,69 @@ describe('actual current-build operator memory baseline', () => {
     const before = { pid: 7, startTicks: '12', executableSha256: 'a' };
     expect(() => assertIdentity(before, { ...before, startTicks: '13' })).toThrow('identity changed');
     expect(() => assertIdentity(before, { ...before, executableSha256: 'b' })).toThrow('identity changed');
+  });
+
+  it('parses the Node entry without accepting host paths hidden in options or application arguments', () => {
+    expect(nodeEntry(['/node', '--inspect=127.0.0.1:0', '--require', '/hook.mjs',
+      '--enable-source-maps', './hono-host.mjs', '--user-arg'], '/runtime')).toBe('/runtime/hono-host.mjs');
+    expect(nodeEntry(['/node', './other.mjs', '/runtime/hono-host.mjs'], '/runtime')).toBe('/runtime/other.mjs');
+    expect(nodeEntry(['/node', '--', './hono-host.mjs'], '/runtime')).toBe('/runtime/hono-host.mjs');
+    for (const argv of [['/node', '--eval', '/runtime/hono-host.mjs'], ['/node', '--require'],
+      ['/node', '--unknown-option', '/runtime/hono-host.mjs'], ['/node', '--']]) {
+      expect(nodeEntry(argv, '/runtime')).toBeNull();
+    }
+  });
+
+  it('requires both native executable identity and an exact esbuild service argument', () => {
+    expect(processCommand(['/native/esbuild', '--service=0.27.3', '--ping'], '/runtime',
+      '/native/esbuild').esbuildService).toBe(true);
+    for (const [exe, args] of [
+      ['/native/node', ['--service=0.27.3']],
+      ['/native/esbuild', ['--service=unverified']],
+      ['/native/esbuild', ['--other=--service=0.27.3']],
+      ['/native/esbuild', ['--service=0.27.3-suffix']],
+      ['/native/esbuild-helper', ['--service=0.27.3']],
+    ] as [string, string[]][]) {
+      expect(processCommand([exe, ...args], '/runtime', exe).esbuildService).toBe(false);
+    }
+  });
+
+  it('requires exact entry, executable and ancestry for a descendant role and keeps native ownership unknown', () => {
+    const main = { pid: 1, parentPid: 0, startTicks: '1', executable: '/node',
+      executableSha256: 'a', command: { script: '/runtime/hono-host.mjs', sha256: 'x', esbuildService: false },
+      pssBytes: 100, rssBytes: 200, anonymousBytes: 80 };
+    const child = { ...main, pid: 2, parentPid: 1, startTicks: '2', pssBytes: 50 };
+    const compiler = { ...child, pid: 3, parentPid: 2, executableSha256: 'b',
+      command: { ...child.command, script: null, esbuildService: true }, pssBytes: 25 };
+    const inventory = processInventory(main, [child, compiler], []);
+    expect(inventory.observed.map(row => row.role))
+      .toEqual(['named-main', 'same-entry-operator-descendant', 'native-esbuild-service']);
+    expect(inventory.observedPssBytes).toBe(175);
+    expect(inventory.allocationOwner).toBe('unknown');
+    expect(inventory.compilerCaller).toBe('unknown');
+    expect(inventory.workerRequestAssignment).toBe('unknown');
+    for (const decoy of [{ ...child, executableSha256: 'different' },
+      { ...child, command: { ...child.command, script: '/other/hono-host.mjs' } }]) {
+      expect(processInventory(main, [decoy], []).observed[1].role).toBe('other-descendant');
+    }
+    expect(() => processInventory(main, [{ ...child, parentPid: 99 }], [])).toThrow('ancestry');
+    expect(() => processInventory(main, [child, { ...compiler, parentPid: 3 }], [])).toThrow('ancestry');
+    expect(() => processInventory(main, [child, child], [])).toThrow('Duplicate');
+  });
+
+  it('preserves capped or raced census residue and distinguishes PID reuse from proven exit', () => {
+    const main = { pid: 1, parentPid: 0, startTicks: '1', executable: '/node',
+      executableSha256: 'a', command: { script: '/runtime/hono-host.mjs', sha256: 'x', esbuildService: false },
+      pssBytes: 100, rssBytes: 200, anonymousBytes: 80 };
+    const oldChild = { ...main, pid: 2, parentPid: 1, startTicks: '2' };
+    const newChild = { ...oldChild, startTicks: '3' };
+    const missed = [{ pid: 4, parentPid: 1, reason: 'cap' }, { pid: 5, parentPid: 1, reason: 'read-race-or-unavailable' }];
+    const inventory = processInventory(main, [newChild], missed, [main, oldChild]);
+    expect(inventory.censusComplete).toBe(false);
+    expect(inventory.notChecked).toEqual(missed);
+    expect(inventory.appeared).toEqual([{ pid: 2, startTicks: '3' }]);
+    expect(inventory.notObservedSincePrevious).toEqual([{ pid: 2, startTicks: '2' }]);
+    expect(inventory.lifetimeDefinition).toContain('not proof of exit');
   });
 
   it('rejects stale, incomplete and private discovery selections before claiming payload coverage', () => {
@@ -271,13 +403,30 @@ describe('actual current-build operator memory baseline', () => {
         publish();
       }
       let remainingDescendants = 64;
+      let missedDescendants: { pid: number; parentPid: number; reason: string }[] = [];
+      let previousProcesses: ResourceRow[] = [];
       const descendants = (parent: number): ReturnType<typeof processSample>[] => {
         const children = readFileSync(`/proc/${parent}/task/${parent}/children`, 'utf8').trim();
         return (children ? children.split(/\s+/).map(Number) : []).flatMap(child => {
-          if (remainingDescendants <= 0) { report.descendantCappedSamples = (report.descendantCappedSamples || 0) + 1; return []; }
+          if (remainingDescendants <= 0) {
+            report.descendantCappedSamples = (report.descendantCappedSamples || 0) + 1;
+            missedDescendants.push({ pid: child, parentPid: parent, reason: 'cap' }); return [];
+          }
           remainingDescendants--;
-          try { return [processSample(child), ...descendants(child)]; }
-          catch { report.descendantExitRaces = (report.descendantExitRaces || 0) + 1; return []; }
+          let row: ResourceRow;
+          try {
+            row = processSample(child);
+            if (row.parentPid !== parent) throw Error('Descendant parent changed');
+          } catch {
+            report.descendantExitRaces = (report.descendantExitRaces || 0) + 1;
+            missedDescendants.push({ pid: child, parentPid: parent, reason: 'read-race-or-unavailable' }); return [];
+          }
+          // Preserve a checked parent's resource row even if listing its own
+          // children races; otherwise the aggregate silently drops known PSS.
+          let nested: ResourceRow[] = [];
+          try { nested = descendants(child); }
+          catch { missedDescendants.push({ pid: child, parentPid: parent, reason: 'children-list-unavailable' }); }
+          return [row, ...nested];
         });
       };
       const sample = async (label: string) => {
@@ -291,8 +440,12 @@ describe('actual current-build operator memory baseline', () => {
           effectivePinnedLimits!.cacheKeyDigests!);
         const os = processSample(pid); assertIdentity(before, os);
         remainingDescendants = 64;
+        missedDescendants = [];
+        const childRows = descendants(pid);
+        const inventory = processInventory(os, childRows, missedDescendants, previousProcesses);
+        previousProcesses = [os, ...childRows];
         report.samples.push({ label, at: new Date().toISOString(), ...memory, os, pinnedState,
-          descendants: descendants(pid), observerMs: performance.now() - started }); publish();
+          descendants: childRows, inventory, observerMs: performance.now() - started }); publish();
       };
       const query = '/api/zero-harness/rest-query?name=workItems.byHarness&args=' +
         encodeURIComponent(JSON.stringify({ harnessSlug: 'papercusp', limit: 32 }));

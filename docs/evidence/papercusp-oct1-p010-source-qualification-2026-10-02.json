@@ -449,7 +449,7 @@
       "startedAt": "2026-10-02T02:10:28.483Z",
       "endedAt": "2026-10-02T02:10:28.655Z",
       "mode": "private-PG",
-      "host": "main-server-Precision-7865-Tower",
+      "host": "buildhost",
       "plan": "p010-benchmark",
       "identity": {
         "database": "plic_perf_f6854f648d",

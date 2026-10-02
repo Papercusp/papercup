@@ -18,7 +18,7 @@ import {
 const BG_PATH = 'packages/operator-core/lib/harness/routines/psu-pty-host-events-ingest.ts';
 
 it('routes an external acceptance runtime to the existing vintage registry, never an operator test route', async () => {
-  const runtime = 'runtime-vintage:papercusp-workspace/portal-web@marsh-office' as const;
+  const runtime = 'runtime-vintage:papercusp-workspace/portal-web@builder' as const;
   const bars = await loadHeldLiveBars('su-x', deps([{ key: 'r-1', evidencePlane: 'live', evidenceRuntime: runtime }]));
   expect(bars[0]?.resolution.runtime).toBe(runtime);
   const advisory = buildAcceptancePlaneAdvisory(bars);

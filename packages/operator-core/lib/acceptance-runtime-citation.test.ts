@@ -27,7 +27,7 @@ describe('which ratings need a runtime citation', () => {
 
 describe('validateRuntimeCitation', () => {
   it('recognizes exact registry citations without aliasing embedded built-in labels', () => {
-    const runtime = 'runtime-vintage:papercusp-workspace/bg-host@marsh-office';
+    const runtime = 'runtime-vintage:papercusp-workspace/bg-host@builder';
     expect(validateRuntimeCitation({ rating: 'unknown', evidence: runtime, evidencePlane: 'live' }))
       .toEqual({ missing: ['sha'], runtimesCited: [runtime] });
     expect(validateRuntimeCitation({ rating: 'unknown', evidence: `${runtime} build 9536482f31.`, evidencePlane: 'live' }))

@@ -31,7 +31,7 @@ vi.mock('./acceptance-bar-contract-snapshot', async (importOriginal) => ({
 
 const BG_PATH = 'packages/operator-core/lib/harness/routines/psu-pty-host-events-ingest.ts';
 const OPERATOR_PATH = 'packages/operator-core/lib/agent-tools/plans/get.ts';
-const PORTAL_RUNTIME = 'runtime-vintage:papercusp-workspace/portal-web@marsh-office' as const;
+const PORTAL_RUNTIME = 'runtime-vintage:papercusp-workspace/portal-web@builder' as const;
 
 describe('schema', () => {
   it('exports the runtime declaration as JSON Schema for the complete tool catalog', () => {
@@ -61,10 +61,10 @@ describe('schema', () => {
 
   it('refuses external names and incomplete or malformed registry identities', () => {
     for (const value of [
-      'portal', 'runtime-vintage:portal-web', 'runtime-vintage:portal-web@marsh-office',
-      'runtime-vintage:/portal-web@marsh-office', 'runtime-vintage:workspace/@marsh-office',
+      'portal', 'runtime-vintage:portal-web', 'runtime-vintage:portal-web@builder',
+      'runtime-vintage:/portal-web@builder', 'runtime-vintage:workspace/@builder',
       'runtime-vintage:workspace/portal-web@', `${PORTAL_RUNTIME}/extra`,
-      `${PORTAL_RUNTIME} trailing`, { unit: 'portal-web', host: 'marsh-office' },
+      `${PORTAL_RUNTIME} trailing`, { unit: 'portal-web', host: 'builder' },
     ]) expect(acceptanceEvidenceRuntimeSchema.safeParse(value).success).toBe(false);
   });
 });
@@ -115,8 +115,8 @@ describe('barHash', () => {
     expect(normalized.evidenceRuntime).toBe(PORTAL_RUNTIME);
     const hash = computeAcceptanceBarHash({ ...base, evidenceRuntime: PORTAL_RUNTIME });
     for (const runtime of [
-      'runtime-vintage:other-workspace/portal-web@marsh-office',
-      'runtime-vintage:papercusp-workspace/other-unit@marsh-office',
+      'runtime-vintage:other-workspace/portal-web@builder',
+      'runtime-vintage:papercusp-workspace/other-unit@builder',
       'runtime-vintage:papercusp-workspace/portal-web@other-host',
     ] as const) expect(computeAcceptanceBarHash({ ...base, evidenceRuntime: runtime })).not.toBe(hash);
   });
@@ -259,8 +259,8 @@ describe('evidence rows and the ship-door verdict', () => {
     const resolution = resolveBarEvidenceRuntime({ evidencePlane: 'live', evidenceRuntime: PORTAL_RUNTIME });
     expect(evidenceRuntimeUnmet({ resolution, evidenceRuntimes: [PORTAL_RUNTIME], runtimeAbsent: [] })).toBe(false);
     for (const runtimes of [[], ['release-operator'], ['staging-operator'],
-      ['runtime-vintage:other-workspace/portal-web@marsh-office'],
-      ['runtime-vintage:papercusp-workspace/other-unit@marsh-office'],
+      ['runtime-vintage:other-workspace/portal-web@builder'],
+      ['runtime-vintage:papercusp-workspace/other-unit@builder'],
       ['runtime-vintage:papercusp-workspace/portal-web@other-host'],
     ]) expect(evidenceRuntimeUnmet({ resolution, evidenceRuntimes: runtimes, runtimeAbsent: [] })).toBe(true);
     expect(evidenceRuntimeUnmet({ resolution, evidenceRuntimes: [PORTAL_RUNTIME], runtimeAbsent: [PORTAL_RUNTIME] })).toBe(true);
