@@ -16,6 +16,9 @@ const phases = vi.hoisted(() => ({
 }));
 vi.mock('../../verification-attempts/loop-gate', () => ({ loopLaunchRefusal: phases.gate }));
 vi.mock('./mutation-probe-fence', () => ({ mutationProbeRefusal: phases.fence }));
+// The restricted-write fence (WI-10005634) reads the fence module's closure exports, which the
+// factory above omits; it has its own suite (restricted-hold-fence.test.ts).
+vi.mock('./restricted-hold-fence', () => ({ restrictedHoldRefusal: vi.fn(async () => null) }));
 vi.mock('../capability/bash-task-provenance', async (original) => ({
   ...(await original<typeof import('../capability/bash-task-provenance')>()),
   resolveBashTaskProvenance: phases.provenance,
