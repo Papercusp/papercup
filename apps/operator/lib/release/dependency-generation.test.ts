@@ -2295,7 +2295,19 @@ exec /bin/cp "$@"
 
     // The root-offload convention: the checkout lives on another filesystem and
     // its old path, a direct sibling of the integration root, is a symlink to it.
-    const offloadParent = mkdtempSync('/dev/shm/dependency-generation-offload-');
+    // WI-10005970: choose a parent on a filesystem OTHER than the store's. A hardcoded
+    // /dev/shm failed this case's precondition whenever tmpdir-guard relocated TMPDIR (and so
+    // the integration root and its store) onto /dev/shm itself.
+    const storeDev = statSync(generationRoot).dev;
+    const offloadBase =
+      ['/dev/shm', '/var/tmp', '/tmp'].find((base) => {
+        try {
+          return statSync(base).dev !== storeDev;
+        } catch {
+          return false;
+        }
+      }) ?? '/dev/shm';
+    const offloadParent = mkdtempSync(join(offloadBase, 'dependency-generation-offload-'));
     roots.push(offloadParent);
     const offloaded = join(offloadParent, 'relcut');
     mkdirSync(join(offloaded, 'node_modules'), { recursive: true });

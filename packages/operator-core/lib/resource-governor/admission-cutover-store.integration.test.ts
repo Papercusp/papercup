@@ -139,7 +139,7 @@ describe('PgAdmissionCutoverQueueStore', () => {
       return deps;
     });
     const observer = new PgAdmissionCutoverQueueStore({ sql: db.sql, workspaceId: WORKSPACE, resolveSessionStatesFn: resolveLive });
-    const base = { workspaceId: WORKSPACE, language: 'typescript', projectRoot: '/fixture', op: 'references',
+    const base = { workspaceId: WORKSPACE, requestId: 'pg-base', language: 'typescript', projectRoot: '/fixture', op: 'references',
       query: '/fixture/source.ts', queryKey: 'fixture:source:1', deadlineAtMs: Date.now() + 30_000 };
     const answer: CodeIntelAnswer = {
       backend: 'lsp-adapter', intent: 'references', query: base.query,

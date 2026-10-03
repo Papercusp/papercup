@@ -536,6 +536,11 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
         TMPDIR: isolatedTmp,
         TMP: isolatedTmp,
         TEMP: isolatedTmp,
+        // WI-10005970: this case pins log NESTING, not the headroom policy. The child re-applies
+        // tmpdir-guard, which relocates a low-headroom TMPDIR to /dev/shm and so ignores the
+        // TMPDIR above. Pin the critical floors near zero so host disk state cannot decide it.
+        PAPERCUSP_DISK_ALARM_CRITICAL_PCT: '0.000001',
+        PAPERCUSP_DISK_ALARM_CRITICAL_GB: '0.000001',
       });
       const runLog = /Full run log: (\S+)/.exec(stdout)?.[1];
 

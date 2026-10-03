@@ -1854,7 +1854,17 @@ async function upsertGitSyncContentHumanWorkItem(
 ): Promise<void> {
   const signature = contentFixerSignature(contentErrors);
   const signatureHash = createHash('sha256').update(signature).digest('hex').slice(0, 24);
-  const files = contentErrors.map((c) => ({ scope: c.scope, file: c.file, detector: c.detectorKey, error: c.error }));
+  const files = contentErrors.map((c) => ({
+    scope: c.scope,
+    file: c.file,
+    detector: c.detectorKey,
+    error: c.error,
+    // The detector scans dirty working-tree bytes, which may differ from HEAD.
+    // Preserve the exact snapshot and verdict identity so the human escalation
+    // remains reproducible after another edit or commit changes the file.
+    ...(c.contentHash ? { contentHash: c.contentHash } : {}),
+    ...(c.detectorResultHash ? { detectorResultHash: c.detectorResultHash } : {}),
+  }));
   const fileList = files.map((f) => `${f.scope}/${f.file} [${f.detector}]: ${f.error}`).join('; ');
   const { upsertConditionWorkItem } = await import('../../coord/condition-upsert');
   await upsertConditionWorkItem(`git-sync-content:${slug}:${signatureHash}`, {
