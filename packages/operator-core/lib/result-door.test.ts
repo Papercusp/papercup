@@ -1037,6 +1037,8 @@ describe('applyResultDoor', () => {
         },
       ],
     });
+    expect(envelope.incomplete.note).toContain('framed scratch-reference container, not a raw JSON file');
+    expect(envelope.incomplete.note).toContain('`capability:read`');
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('trailing text fully over budget');
     expect(spill).toContain('"type":"image"');

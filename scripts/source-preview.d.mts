@@ -20,9 +20,9 @@ export function assertRemoteMatchesTarget(target: Target, remote: string): void;
  * @typedef {{ repo: string, defaultBranch: string, metadataSpdx: string | null, head: string | null, licenses: PublicRepositoryLicense[], errors: string[] }} PublicRepositoryLicenseRow
  */
 /**
- * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, log?: Log }} [options]
+ * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, libraryRepositories?: string[], log?: Log }} [options]
  */
-export function auditPublicRepositoryLicenses({ api, licenseHashes, log }?: {
+export function auditPublicRepositoryLicenses({ api, licenseHashes, libraryRepositories, log }?: {
     api?: (endpoint: string) => Promise<{
         headers: Record<string, string>;
         body: any;
@@ -31,6 +31,7 @@ export function auditPublicRepositoryLicenses({ api, licenseHashes, log }?: {
         body: any;
     };
     licenseHashes?: Record<string, string>;
+    libraryRepositories?: string[];
     log?: Log;
 }): Promise<{
     schemaVersion: number;
@@ -43,33 +44,23 @@ export function auditPublicRepositoryLicenses({ api, licenseHashes, log }?: {
     exitCode: number;
     evidencePlane: string;
     summary: string;
-    assertions: ({
+    assertions: {
         id: string;
         passed: boolean;
-        evidence: {
-            firstPages: {
-                endpoint: string;
-                size: number;
-                next: string | null;
-            }[];
-            lastPages: {
-                endpoint: string;
-                size: number;
-                next: string | null;
-            }[];
-            checked?: undefined;
-            failures?: undefined;
-        };
-    } | {
-        id: string;
-        passed: boolean;
-        evidence: {
-            checked: string[];
-            failures: PublicRepositoryLicenseRow[];
-            firstPages?: undefined;
-            lastPages?: undefined;
-        };
-    })[];
+        evidence: string;
+    }[];
+    pagination: {
+        first: {
+            endpoint: string;
+            size: number;
+            next: string | null;
+        }[];
+        last: {
+            endpoint: string;
+            size: number;
+            next: string | null;
+        }[];
+    };
     rows: PublicRepositoryLicenseRow[];
     licenseTexts: Record<string, string>;
 }>;

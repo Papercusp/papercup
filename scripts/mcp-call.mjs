@@ -511,9 +511,17 @@ export function buildMcpSessionQuery({ client, workspace, harness, role, origin,
   if (harness) qs.set('harness', harness);
   if (role) qs.set('role', role);
   if (origin) qs.set('origin', origin);
-  // Match the native Codex MCP transport: select this verified incarnation,
+  // Match the native MCP transport: select this verified incarnation,
   // not whichever predecessor of a retained owner was most recently rearmed.
-  const nativeSession = String(env.CODEX_SESSION_ID ?? '').trim();
+  // Read the id of the client that is actually running (PAPERCUSP_AGENT). A
+  // Claude psu session can inherit a stale CODEX_SESSION_ID from the shell that
+  // launched it; sending that one is refused as superuser_foreign_native_session
+  // (WI-10006008).
+  const nativeSession = String(
+    (String(env.PAPERCUSP_AGENT ?? '').trim() === 'claude'
+      ? env.CLAUDE_CODE_SESSION_ID
+      : env.CODEX_SESSION_ID) ?? '',
+  ).trim();
   if (nativeSession && client === String(env.PAPERCUSP_SID ?? '').trim()) {
     qs.set('native_session', nativeSession);
   }

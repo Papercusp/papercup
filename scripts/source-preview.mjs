@@ -213,9 +213,9 @@ function githubPage(endpoint) {
  * @typedef {{ repo: string, defaultBranch: string, metadataSpdx: string | null, head: string | null, licenses: PublicRepositoryLicense[], errors: string[] }} PublicRepositoryLicenseRow
  */
 /**
- * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, log?: Log }} [options]
+ * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, libraryRepositories?: string[], log?: Log }} [options]
  */
-export async function auditPublicRepositoryLicenses({ api = githubPage, licenseHashes, log = () => {} } = {}) {
+export async function auditPublicRepositoryLicenses({ api = githubPage, licenseHashes, libraryRepositories, log = () => {} } = {}) {
   const startedAt = new Date().toISOString();
   const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
   const reviewed = licenseHashes ?? {
@@ -224,6 +224,22 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
     // Existing SideStage-mobile MIT declaration, read and reviewed in the R13 census.
     '84ea0f54f720885e4e0a6d2e45baca5a7d6e30aa26db12eabbeda4b3b48c3ea7': 'MIT',
   };
+  if (!libraryRepositories) {
+    // Derive the library policy from the existing registry, never a remembered count.
+    const modules = new Map();
+    const config = run('git', ['config', '--file', join(ROOT, '.gitmodules'), '--get-regexp', '^submodule\\..*\\.(path|url)$']);
+    for (const line of config.trim().split('\n')) {
+      const space = line.indexOf(' ');
+      const key = line.slice(0, space);
+      const dot = key.lastIndexOf('.');
+      const name = key.slice(0, dot);
+      const module = modules.get(name) ?? {};
+      module[key.slice(dot + 1)] = line.slice(space + 1);
+      modules.set(name, module);
+    }
+    libraryRepositories = [...modules.values()].filter((module) => module.path?.startsWith('libs/generic/') || ['libs/agent-chat', 'libs/testing-shell', 'libs/test-config'].includes(module.path)).map((module) => module.url.replace(/^git@github\.com:/, '').replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, ''));
+  }
+  const libraries = new Set(libraryRepositories.map((repo) => repo.toLowerCase()));
   async function population() {
     const repositories = [];
     const pages = [];
@@ -284,6 +300,9 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
         licenseTexts[sha256] = bytes.toString('utf8');
         row.licenses.push({ path: file.path, gitBlob: blob, sha256, license, url: `https://github.com/${row.repo}/blob/${row.head}/${file.path}` });
         if (!license) row.errors.push(`unreviewed license text: ${file.path}`);
+        if (libraries.has(row.repo.toLowerCase()) && license !== 'Apache-2.0' && license !== 'MIT') {
+          row.errors.push(`D-003 requires a permissive library license: ${file.path}`);
+        }
         if ((row.repo.toLowerCase() === PUBLIC_REPO.toLowerCase() || ['goals', 'cupboard-actions', 'blueprints', 'sidestage', 'scout-runtime', 'recipes', 'plans', 'scout-chat', 'drawer-stack', 'cart-drawer', 'data-fetch'].includes(row.repo.split('/')[1].toLowerCase())) && license !== 'ELv2') {
           row.errors.push(`D-011/D-023 require ELv2: ${file.path}`);
         }
@@ -297,11 +316,11 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
   const identity = (repos) => repos.map((r) => `${r.full_name}:${r.default_branch}`).sort().join('\n');
   const stablePopulation = identity(first.repositories) === identity(last.repositories);
   const assertions = [
-    { id: 'complete-stable-population', passed: stablePopulation, evidence: { firstPages: first.pages, lastPages: last.pages } },
-    { id: 'actual-default-branch-license-bytes', passed: rows.every((row) => !row.errors.length), evidence: { checked: rows.map((row) => row.repo), failures: rows.filter((row) => row.errors.length) } },
+    { id: 'complete-stable-population', passed: stablePopulation, evidence: 'Both population reads followed every next-page link to a terminal page. Exact page receipts are in pagination; both repository/default-branch populations must agree.' },
+    { id: 'actual-default-branch-license-bytes', passed: rows.every((row) => !row.errors.length), evidence: 'Every repository is enumerated in rows with its measured default-branch commit, root license blob and SHA-256. Any missing/unreadable/unreviewed/mismatched license fails this assertion; full errors remain on the affected row.' },
   ];
   const exitCode = assertions.every((assertion) => assertion.passed) ? 0 : 1;
-  return { schemaVersion: 1, kind: 'operational-test-evidence', name: 'Public repository default-branch license census', framework: 'operational', command: ['node scripts/source-preview.mjs licenses'], startedAt, finishedAt: new Date().toISOString(), exitCode, evidencePlane: 'live', summary: `${rows.length} public repositories; ${rows.filter((row) => row.errors.length).length} license failures; population ${stablePopulation ? 'stable' : 'changed'}`, assertions, rows, licenseTexts };
+  return { schemaVersion: 1, kind: 'operational-test-evidence', name: 'Public repository default-branch license census', framework: 'operational', command: ['node --import tsx scripts/source-preview.mjs licenses'], startedAt, finishedAt: new Date().toISOString(), exitCode, evidencePlane: 'live', summary: `${rows.length} public repositories; ${rows.filter((row) => row.errors.length).length} license failures; population ${stablePopulation ? 'stable' : 'changed'}`, assertions, pagination: { first: first.pages, last: last.pages }, rows, licenseTexts };
 }
 
 /** Resolve a ref to a full commit SHA in `repo`. */

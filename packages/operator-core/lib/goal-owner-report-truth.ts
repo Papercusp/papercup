@@ -11,6 +11,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg, GOAL_SPEND_SNAPSHOT_SOURCE, withDbCallDeadline } from '@papercusp/db-org';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import {
   checkGoalOwnerReportTruth,
   citedRefStatesFor,
@@ -52,7 +53,7 @@ export function ownerWallActionSql(sql: Sql) {
 
 /** The predicate that makes a goal work-item an open owner wall (row aliased `wall`). */
 export function openOwnerWallPredicateSql(sql: Sql) {
-  return sql`wall.status <> ALL(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])
+  return sql`wall.status <> ALL(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])
     AND (wall.status IN ('needs-human', 'needs_human') OR wall.needs_human_review
       OR COALESCE((wall.payload->>'needsOwnerAction')::boolean, false)
       OR COALESCE((wall.payload->>'needsHuman')::boolean, false))`;

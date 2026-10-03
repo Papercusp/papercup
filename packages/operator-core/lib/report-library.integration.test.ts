@@ -27,6 +27,13 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { parseGoalOwnerReportSnapshot, serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 import { goalOwnerReportFixture } from '../test/fixtures/goal-owner-report';
+import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+import type { GoalOwnerReportRefV1 } from '@papercusp/chat-protocol';
+import type { CoordEnvelope } from '@papercusp/coordination';
+import {
+  makeGoalReportReferenceReads, persistGoalReportReference, resolveGoalReportReference,
+  deriveGoalReportNotification, goalReportDeliveryId,
+} from './goal-owner-report-reference';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   REPORT_BODY_MAX_BYTES,
@@ -70,6 +77,122 @@ describe('report_library store (real PG)', () => {
   afterAll(async () => {
     await db?.cleanup();
   });
+
+  async function deliveryFixture() {
+    const workspaceId = nextWs();
+    const goalId = `goal-${workspaceId}`;
+    const at = new Date().toISOString();
+    const due = new Date(Date.now() + 60_000).toISOString();
+    const snapshot = goalOwnerReportFixture(workspaceId);
+    snapshot.goalId = goalId;
+    await db.adminSql`INSERT INTO harness_shared.goals
+      (workspace_id, id, install_slug, title, budget_cents, budget_window_sec, metadata, updated_at)
+      VALUES (${workspaceId}, ${goalId}, 'pot-a', 'GOAL reference fixture', 1000, 3600,
+        ${JSON.stringify({ spentCents: 125.5, spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE, spentCentsAt: at,
+          spentCentsBreakdown: { measured: true, lineageScope: 'partial; legacy unpriced' } })}::text::jsonb, ${at}::timestamptz)`;
+    await db.adminSql`INSERT INTO harness_shared.agent_modes (workspace_id, owner_id, axis_key, mode, subject, set_by)
+      VALUES (${workspaceId}, 'agent-1', 'goal', 'goal', ${goalId}, 'fixture')`;
+    const [awaitRow] = await db.adminSql`INSERT INTO harness_shared.event_awaits
+      (workspace_id, subscriber_id, event_key, timeout_behavior, expires_ts)
+      VALUES (${workspaceId}, 'agent-1', 'fixture:report-progress', 'wake', ${due}::timestamptz) RETURNING id`;
+    const time = Date.parse(at);
+    for (const wall of snapshot.ownerWalls) {
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, goal_id, updated_ts, payload)
+        VALUES (${workspaceId}, 'pot-a', ${wall.itemRef}, 'task', 'Exact owner action', 'needs-human', ${goalId}, ${time},
+          ${JSON.stringify({ ownerAction: wall.exactAction, ownerDecisionRefs: wall.decisionRefs, ownerArtifactRefs: wall.artifactRefs })}::text::jsonb)`;
+    }
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, goal_id, updated_ts, authority, terminal_completion_ref)
+      VALUES (${workspaceId}, 'pot-a', 'WI-completed', 'task', 'Completed work', 'done', ${goalId}, ${time}, 'committed', 'receipt:complete-19'),
+             (${workspaceId}, 'pot-a', 'WI-observed', 'task', 'Observed work', 'wip', ${goalId}, ${time}, NULL, NULL)`;
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, goal_id, updated_ts, payload)
+      VALUES (${workspaceId}, 'pot-a', 'WI-killed', 'task', 'Historical direction', 'dropped', ${goalId}, ${time},
+        ${JSON.stringify({ disposition: 'stopped: duplicate surface', dispositionEvidenceRefs: ['decision:stop-3'] })}::text::jsonb)`;
+    const reads = makeGoalReportReferenceReads(db.adminSql, workspaceId, goalId);
+    snapshot.sources = [(await reads.source(`goal:${goalId}`))!, (await reads.source('legacy-spend'))!];
+    snapshot.cost = (await reads.cost())!;
+    snapshot.ownerWalls = (await reads.ownerWalls())!;
+    snapshot.moved = [(await reads.movement('WI-completed'))!, (await reads.movement('WI-observed'))!];
+    snapshot.killed = [{ ref: 'WI-killed', disposition: 'stopped: duplicate surface', evidenceRefs: ['decision:stop-3'], at }];
+    snapshot.nextWake = { kind: 'event', ref: 'fixture:report-progress', expectedAt: due, evidenceRef: `await:${awaitRow.id}` };
+    snapshot.observedAt = new Date().toISOString();
+    const report = await publishReport(db.adminSql, { workspaceId, title: 'Canonical GOAL', goalOwnerReport: snapshot, visibility: 'workspace' }, AGENT_1);
+    const ref: GoalOwnerReportRefV1 = { schemaVersion: 1, goalId, reportId: report.reportId, bodySha256: report.bodySha256 };
+    const context = { workspaceId, goalId, ref, viewer: { ownerId: 'agent-1' } };
+    const envelope: CoordEnvelope = { msg_id: 'caller-identity-is-ignored', from: 'agent-1', to: ['human'], kind: 'message', ts: new Date().toISOString(),
+      body: 'Caller-supplied misleading short prose', summary: 'Caller title' };
+    const persisted = () => db.adminSql`SELECT id, body, ts FROM harness_shared.coord_event_log
+      WHERE workspace_id = ${workspaceId} AND surface = 'messages' ORDER BY id`;
+    return { workspaceId, snapshot, ref, context, envelope, persisted };
+  }
+
+  it('REPORT-REFERENCE-ATOMIC-P002: publish/resolve do not stamp; delivery commits one derived notification and cadence together', async () => {
+    const f = await deliveryFixture();
+    const resolved = await resolveGoalReportReference(db.adminSql, f.workspaceId, f.snapshot.goalId, f.ref, f.context.viewer);
+    expect(resolved.bodyMd).toBe(serializeGoalOwnerReportSnapshot(f.snapshot));
+    expect(await f.persisted()).toEqual([]);
+    const delivered = await persistGoalReportReference(db.adminSql, f.envelope, f.context);
+    const rows = await f.persisted();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.body).toEqual(delivered);
+    expect(new Date(rows[0]!.ts).toISOString()).toBe(delivered.ts);
+    expect(delivered.msg_id).toBe(goalReportDeliveryId(f.workspaceId, f.ref));
+    expect(delivered.body).toBe(deriveGoalReportNotification(f.snapshot));
+    expect(String(delivered.body).length).toBeLessThanOrEqual(600);
+    expect(delivered.report).toEqual({ plans: [], goalReport: f.ref });
+    expect(delivered.goalOwnerReport).toMatchObject({ goalId: f.snapshot.goalId, schemaVersion: 'goal-owner-report-v1' });
+    expect(delivered.body).not.toContain('Caller-supplied');
+  });
+
+  it.each(['before-notification', 'before-stamp', 'before-commit'] as const)(
+    'REPORT-REFERENCE-ATOMIC-P002: %s fault rolls back notification AND stamp before repaired control', async (phase) => {
+      const f = await deliveryFixture();
+      await expect(persistGoalReportReference(db.adminSql, f.envelope, f.context, { phase: async (point) => {
+        if (point === phase) throw new Error(`injected-${phase}`);
+      } })).rejects.toThrow(`injected-${phase}`);
+      // Independently re-read committed state after the transaction has aborted.
+      expect(await f.persisted()).toEqual([]);
+      await persistGoalReportReference(db.adminSql, f.envelope, f.context);
+      const rows = await f.persisted();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.body.goalOwnerReport.goalId).toBe(f.snapshot.goalId);
+    },
+  );
+
+  it('REPORT-REFERENCE-ATOMIC-P002: concurrent and successor-sender replay returns the original identity and cadence', async () => {
+    const f = await deliveryFixture();
+    const replies = await Promise.all(Array.from({ length: 6 }, (_, i) => persistGoalReportReference(db.adminSql,
+      { ...f.envelope, from: `sender-${i}`, ts: new Date(Date.now() + i).toISOString() }, f.context)));
+    const replay = await persistGoalReportReference(db.adminSql, { ...f.envelope, from: 'successor', ts: new Date(Date.now() + 1000).toISOString() }, f.context);
+    expect(await f.persisted()).toHaveLength(1);
+    for (const reply of [...replies, replay]) expect(reply).toEqual(replies[0]);
+  });
+
+  it.each(['hash', 'wrong-goal', 'workspace', 'visibility', 'retired', 'superseded', 'stale-source', 'future', 'missing-action'])(
+    'REPORT-REFERENCE-ADMISSION-P002: %s negative persists neither notification nor cadence', async (fault) => {
+      const f = await deliveryFixture();
+      const context = structuredClone(f.context);
+      if (fault === 'hash') context.ref.bodySha256 = '0'.repeat(64);
+      if (fault === 'wrong-goal') context.ref.goalId = 'other';
+      if (fault === 'workspace') context.workspaceId = 'other';
+      if (fault === 'retired') await retireReport(db.adminSql, f.workspaceId, f.ref.reportId);
+      if (fault === 'superseded') await publishReport(db.adminSql, { workspaceId: f.workspaceId, title: 'Successor', goalOwnerReport: f.snapshot, supersedes: f.ref.reportId }, AGENT_1);
+      if (fault === 'stale-source') await db.adminSql`UPDATE harness_shared.goals SET budget_cents = 2000 WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
+      if (['future', 'missing-action', 'visibility'].includes(fault)) {
+        const snapshot = structuredClone(f.snapshot);
+        if (fault === 'future') snapshot.observedAt = new Date(Date.now() + 60_000).toISOString();
+        if (fault === 'missing-action') snapshot.ownerWalls.pop();
+        const report = await publishReport(db.adminSql, { workspaceId: f.workspaceId, title: 'Single-field negative', goalOwnerReport: snapshot,
+          visibility: fault === 'visibility' ? 'owner' : 'workspace' }, { ...AGENT_1, authorOwnerId: 'other-author' });
+        context.ref.reportId = report.reportId;
+        context.ref.bodySha256 = report.bodySha256;
+      }
+      await expect(persistGoalReportReference(db.adminSql, f.envelope, context)).rejects.toThrow(/refused by/);
+      expect(await f.persisted()).toEqual([]);
+    },
+  );
 
   it('REPORT-EXACT-IDENTITY-P001: round-trips the complete pinned GOAL fixture after a successor', async () => {
     const workspaceId = nextWs();

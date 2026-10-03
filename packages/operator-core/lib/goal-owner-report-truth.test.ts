@@ -25,6 +25,7 @@ import {
   readGoalOwnerReportTruth,
   type GoalOwnerReportTruthReads,
 } from './goal-owner-report-truth';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 type Rows = Record<string, unknown>[];
 type Route = (text: string, values: unknown[]) => Rows;
@@ -39,7 +40,7 @@ function fakeSql(route: Route) {
   const sql = (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     const head = text.trimStart();
-    if (head.startsWith('COALESCE(') || head.startsWith('wall.status')) return { fragment: text };
+    if (head.startsWith('COALESCE(') || head.startsWith('wall.status')) return { fragment: text, values };
     queries.push({ text, values });
     try {
       return Promise.resolve(route(text, values));
@@ -105,11 +106,18 @@ describe('makeGoalOwnerReportTruthReads', () => {
       { ref: 'WI-10004856', action: 'choose the hud P-003 route' },
       { ref: 'WI-10004875', action: null },
     ]);
-    const fragments = queries[0]!.values.filter((value): value is { fragment: string } => typeof value === 'object' && value !== null && 'fragment' in value);
+    const fragments = queries[0]!.values.filter((value): value is { fragment: string; values: unknown[] } => typeof value === 'object' && value !== null && 'fragment' in value);
     // The action falls back to the active human blocker set_blocker writes; before
     // P-005 only ownerAction/ownerAsk were read and no live wall carried them.
     expect(fragments.some((f) => f.fragment.includes("'externalBlockers'") && f.fragment.includes("'human'"))).toBe(true);
-    expect(fragments.some((f) => f.fragment.includes("'needs-human'"))).toBe(true);
+    const predicate = fragments.find((f) => f.fragment.startsWith('wall.status'))!;
+    // Cross-family reads must bind the canonical union so future lifecycle
+    // changes cannot leave settled rows showing up as owner walls.
+    expect(predicate.fragment).toContain('wall.status <> ALL(?::text[])');
+    expect(predicate.values).toEqual([[...ANY_FAMILY_TERMINAL_STATES]]);
+    expect(predicate.fragment).toContain("wall.status IN ('needs-human', 'needs_human') OR wall.needs_human_review");
+    expect(predicate.fragment).toContain("COALESCE((wall.payload->>'needsOwnerAction')::boolean, false)");
+    expect(predicate.fragment).toContain("COALESCE((wall.payload->>'needsHuman')::boolean, false)");
   });
 
   it("reads any holder's latest stamped report and keeps only well-formed cited refs", async () => {

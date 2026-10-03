@@ -23,7 +23,7 @@ export class GoalReportReferenceRefusal extends Error {
     super(`GOAL report reference refused by ${oracle}; no notification or cadence stamp was created.`);
   }
 }
-const refuse = (oracle: string, code?: string): never => { throw new GoalReportReferenceRefusal(oracle, code); };
+function refuse(oracle: string, code?: string): never { throw new GoalReportReferenceRefusal(oracle, code); }
 const iso = (value: Date | string | number): string => new Date(value).toISOString();
 /** Content generations include metadata: spend rollups deliberately do not bump goal.updated_at. */
 export const goalReportSourceRevision = (value: unknown): string =>

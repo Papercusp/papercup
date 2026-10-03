@@ -12,6 +12,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { goalOwnerReportFixture } from '../../../../test/fixtures/goal-owner-report';
+import {
+  deriveGoalReportNotification, validateGoalReportReferenceSnapshot,
+  type GoalReportReferenceReads,
+} from '../../../goal-owner-report-reference';
 import {
   mockImplementationTyped,
   mockResolvedOnceTyped,
@@ -2972,6 +2977,71 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
     expect(b.results[0]).toMatchObject({ ok: true });
     const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, any> };
     expect(opts.extra?.goalOwnerReport).toBeUndefined();
+  });
+});
+
+describe('REPORT-REFERENCE-ADMISSION-P002: current typed truth', () => {
+  const fixture = () => goalOwnerReportFixture('ws1');
+  const readsFor = (s: ReturnType<typeof fixture>): GoalReportReferenceReads => ({
+    source: async (ref) => s.sources.find((source) => source.ref === ref) ?? null,
+    cost: async () => s.cost,
+    ownerWalls: async () => s.ownerWalls,
+    movement: async (ref) => s.moved.find((moved) => moved.ref === ref) ?? null,
+    wake: async (wake) => JSON.stringify(wake) === JSON.stringify(s.nextWake),
+    killed: async (entry) => s.killed.some((killed) => JSON.stringify(killed) === JSON.stringify(entry)),
+  });
+  const now = Date.parse(fixture().observedAt) + 1000;
+  it('admits the valid positive control and derives exactly five <=600-character sections', async () => {
+    const s = fixture();
+    await expect(validateGoalReportReferenceSnapshot(s, readsFor(s), now)).resolves.toBeUndefined();
+    const notification = deriveGoalReportNotification(s);
+    expect(notification.length).toBeLessThanOrEqual(600);
+    expect(notification.split('\n').map((line) => line.split(':')[0])).toEqual(['MOVED', 'COST', 'OWNER-WALLED', 'KILLED', 'NEXT WAKE']);
+    expect(notification).toContain('125.5c / 1000c');
+    expect(notification).toContain('3 exact actions');
+  });
+  const negatives: Array<[string, (s: ReturnType<typeof fixture>) => void, string]> = [
+    ['future observation', (s) => { s.observedAt = '2026-10-03T10:01:00.000Z'; }, 'snapshot-age'],
+    ['older than five minutes', (s) => { s.observedAt = '2026-10-03T09:50:00.000Z'; }, 'snapshot-age'],
+    ['source generation', (s) => { s.sources[0]!.revision = 'stale'; }, 'source-generation'],
+    ['source availability', (s) => { s.sources[0]!.availability = 'unknown'; s.sources[0]!.unknownReason = 'unread'; }, 'current-goal-source'],
+    ['source measurement', (s) => { s.sources[0]!.measuredAt = '2026-10-03T09:59:00.000Z'; }, 'source-generation'],
+    ['source read from future', (s) => { s.sources[0]!.observedAt = '2026-10-03T10:01:00.000Z'; }, 'source-time'],
+    ['spend', (s) => { s.cost.spentCents = 0; }, 'current-measured-cost'],
+    ['budget', (s) => { s.cost.budgetCents = 2000; }, 'current-measured-cost'],
+    ['budget window', (s) => { s.cost.budgetWindowSec = 60; }, 'current-measured-cost'],
+    ['spend revision', (s) => { s.cost.sourceRevision = 'stale'; }, 'current-measured-cost'],
+    ['cost coverage', (s) => { s.cost.coverage = 'complete'; }, 'current-measured-cost'],
+    ['cost source', (s) => { s.cost.sourceRef = 'caller-prose'; }, 'current-measured-cost'],
+    ['cost read from future', (s) => { s.cost.readAt = '2026-10-03T10:01:00.000Z'; }, 'current-measured-cost'],
+    ['missing exact action', (s) => { s.ownerWalls.pop(); }, 'complete-exact-owner-actions'],
+    ['changed exact action', (s) => { s.ownerWalls[0]!.exactAction = 'none'; }, 'complete-exact-owner-actions'],
+    ['wall generation', (s) => { s.ownerWalls[0]!.sourceRevision = 'old'; }, 'complete-exact-owner-actions'],
+    ['movement state', (s) => { s.moved[0]!.state = 'open'; }, 'movement-receipts'],
+    ['movement observation', (s) => { s.moved[0]!.stateObservedAt = '2026-10-03T09:58:00.000Z'; }, 'movement-receipts'],
+    ['successful receipt', (s) => { s.moved[0]!.successfulMutations[0]!.receiptRef = 'invented'; }, 'movement-receipts'],
+    ['receipt operation', (s) => { s.moved[0]!.successfulMutations[0]!.operation = 'work_items:claim'; }, 'movement-receipts'],
+    ['receipt timestamp', (s) => { s.moved[0]!.successfulMutations[0]!.persistedAt = '2026-10-03T09:58:00.000Z'; }, 'movement-receipts'],
+    ['completion evidence', (s) => { s.moved[0]!.completionEvidenceRefs = ['invented']; }, 'movement-receipts'],
+    ['verification', (s) => { s.moved[1]!.verification = 'verified'; }, 'movement-receipts'],
+    ['wake type', (s) => { s.nextWake.kind = 'event'; }, 'next-wake-evidence'],
+    ['wake reference', (s) => { s.nextWake.ref = 'invented'; }, 'next-wake-evidence'],
+    ['wake receipt', (s) => { s.nextWake.evidenceRef = 'invented'; }, 'next-wake-evidence'],
+    ['wake time', (s) => { s.nextWake.expectedAt = '2026-10-03T10:02:00.000Z'; }, 'next-wake-evidence'],
+    ['historical disposition', (s) => { s.killed[0]!.disposition = 'fabricated'; }, 'historical-disposition'],
+  ];
+  it.each(negatives)('refuses the single-field %s negative against its valid control', async (_label, mutate, oracle) => {
+    const control = fixture();
+    const negative = structuredClone(control);
+    mutate(negative);
+    await expect(validateGoalReportReferenceSnapshot(negative, readsFor(control), now)).rejects.toThrow(oracle);
+    await expect(validateGoalReportReferenceSnapshot(control, readsFor(control), now)).resolves.toBeUndefined();
+  });
+  it.each(['source', 'cost', 'ownerWalls', 'movement', 'wake'] as const)('fails closed when the critical %s read throws', async (field) => {
+    const s = fixture();
+    const reads = readsFor(s);
+    reads[field] = async () => { throw new Error('current source unreadable'); };
+    await expect(validateGoalReportReferenceSnapshot(s, reads, now)).rejects.toThrow('current source unreadable');
   });
 });
 

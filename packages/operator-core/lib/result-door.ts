@@ -781,12 +781,17 @@ function spillRecoveryNote(
   reason: SpillReason,
   input: { toolName: string; upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] },
 ): string {
+  const referenceReader =
+    'The `uri` in `content` is a framed scratch-reference container, not a raw JSON file. ' +
+    'Read it with `capability:read` to validate and unwrap its manifest before parsing the payload. ';
   const recoverable =
-    'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ';
+    'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
+    referenceReader;
   const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
   if (input.upstreamProjection) {
     return (
       'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
+      referenceReader +
       'However, the tool had already applied a lossy upstream projection before this spill; omitted fields were ' +
       'never serialized and paging this reference cannot recover them. Re-call the tool with payloadTier:\'full\' ' +
       '(or narrower arguments) for the missing detail.'
@@ -795,6 +800,7 @@ function spillRecoveryNote(
   if (innerTruncationMarkers.length > 0) {
     return (
       'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
+      referenceReader +
       `However, the emitted result already carries upstream partial marker(s) (${innerTruncationMarkers.join(', ')}); ` +
       `paging this reference cannot recover the omitted fields, rows, or text. ${innerTruncationRecoveryInstruction(input.toolName, innerTruncationMarkers)}`
     );
@@ -802,6 +808,7 @@ function spillRecoveryNote(
   if (reason === 'under-budget-partial-result') {
     return (
       'The emitted result was already marked partial before it reached this result door. ' +
+      referenceReader +
       "The reference preserves what the tool emitted for inspection; re-call the tool with payloadTier:'full' " +
       '(or narrower arguments) for the missing detail.'
     );

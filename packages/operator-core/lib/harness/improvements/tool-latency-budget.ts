@@ -32,6 +32,8 @@ export interface ToolLatencyBudget {
   timeoutSec?: number | null;
   /** Only `'write'` tools are judged: a slow read has no commit-unknown failure mode. */
   effect?: string | null;
+  /** A completed idempotent mutation is returned as success past its deadline by dispatch. */
+  idempotent?: boolean;
   /**
    * The tool declares an `abortCompletionReceipt` (WI-10005670): a late return is already
    * reported as recorded, so the commit-unknown hazard this detector exists to find is closed.
@@ -63,6 +65,7 @@ export interface ProjectedToolLike {
   expose?: { mcp?: { name?: string | null } | null } | null;
   timeoutSec?: number | null;
   effect?: string | null;
+  idempotent?: boolean;
   /** A resolver function when the tool declares one (see {@link ToolLatencyBudget.hasAbortCompletionReceipt}). */
   abortCompletionReceipt?: unknown;
 }
@@ -90,18 +93,19 @@ export function toolLatencyBudgetsFromProjected(
     out.set(name, {
       timeoutSec: tool.timeoutSec ?? null,
       effect: tool.effect ?? null,
+      ...(tool.idempotent === true ? { idempotent: true } : {}),
       hasAbortCompletionReceipt: typeof tool.abortCompletionReceipt === 'function',
     });
   }
   return out;
 }
 
-/** True for a tool this detector judges: a write tool that has NOT already closed the late-return hazard. */
+/** True for a write tool whose late completion is not already safe to surface or recover. */
 function isJudged(budget: ToolLatencyBudget | undefined): budget is ToolLatencyBudget {
-  return budget?.effect === 'write' && budget.hasAbortCompletionReceipt !== true;
+  return budget?.effect === 'write' && budget.idempotent !== true && budget.hasAbortCompletionReceipt !== true;
 }
 
-/** Names of the judged tools (write, no receipt) — the only population worth aggregating in SQL. */
+/** Names of the judged tools (write, no idempotent completion or receipt) — the risky SQL population. */
 export function writeToolNames(budgets: ReadonlyMap<string, ToolLatencyBudget>): string[] {
   const names: string[] = [];
   for (const [name, budget] of budgets) if (isJudged(budget)) names.push(name);

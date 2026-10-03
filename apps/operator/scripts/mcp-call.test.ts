@@ -382,6 +382,30 @@ describe('mcp-call result-format contract', () => {
     }
   });
 
+  it('sends the Claude session id, not an inherited Codex id, from a Claude session (WI-10006008)', () => {
+    const client = 'su-claude';
+    const query = buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_AGENT: 'claude',
+        CLAUDE_CODE_SESSION_ID: 'claude-native',
+        CODEX_SESSION_ID: 'stale-codex-from-parent-shell',
+      },
+    });
+    expect(query.get('native_session')).toBe('claude-native');
+    // A Claude session with no Claude id sends none rather than the Codex one.
+    expect(buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: client, PAPERCUSP_AGENT: 'claude', CODEX_SESSION_ID: 'stale-codex' },
+    }).has('native_session')).toBe(false);
+    // Codex keeps its current behaviour.
+    expect(buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: client, PAPERCUSP_AGENT: 'codex', CODEX_SESSION_ID: 'codex-native', CLAUDE_CODE_SESSION_ID: 'claude-x' },
+    }).get('native_session')).toBe('codex-native');
+  });
+
   it('does not attach the current native session to another or legacy client', () => {
     expect(buildMcpSessionQuery({
       client: 'su-other', workspace: 'papercusp-workspace',

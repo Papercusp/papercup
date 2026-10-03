@@ -375,7 +375,7 @@ function auditRequestRetainers(r: any) {
         requireHeap(Number.isSafeInteger(object.id) && object.id > 0, 'numeric captured object ID');
         found.push(object.id);
       } else {
-        requireHeap(['collected', 'not-in-snapshot'].includes(object.status) && object.id === undefined,
+        requireHeap(['collected', 'not-in-snapshot', 'unobserved'].includes(object.status) && object.id === undefined,
           'explicit weak object gap');
         gaps.push({ tuple: tuple(row), phase: object.phase, status: object.status });
       }
@@ -519,11 +519,12 @@ describe('independent P011 baseline raw evidence', () => {
 describe('P011 independent request heap evidence', () => {
   const path = 'docs/evidence/papercusp-oct1-p011-request-retainers-r2-2026-10-03.json';
   const saved = () => JSON.parse(readFileSync(resolve(root, path)).toString());
-  it('audits the new raw weak selection and exact native graph without replaying the producer', () => {
+  it('audits preserved raw weak selection with explicit unobserved response links', () => {
     const result = auditRequestRetainers(saved());
     expect(result.requests.requestCount).toBe(24);
     expect(result.requests.queryCount).toBeGreaterThanOrEqual(24);
     expect(result.owners.owners).toHaveLength(9);
+    expect(result.weakObjectGaps.filter((x: any) => x.status === 'unobserved')).toHaveLength(32);
     const destination = process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_REPORT;
     if (destination) {
       const bytes = readFileSync(resolve(root, path));
@@ -533,7 +534,7 @@ describe('P011 independent request heap evidence', () => {
         independentOf: 'No producer/inspector import; exact raw HTTP/query/weak metadata/graph conservation.',
         limitations: ['Saved private snapshot with forced GC and synchronous write; no new runtime measurement.',
           'Collected targets remain explicit gaps; worker-clone and native physical ownership unobserved.',
-          'Producer harness tag omitted; its ledger is unscoped. This scoped audit does not repair that tag.',
+          'Producer assertion FAILED on unobserved response links; its harness tag was omitted. This scoped raw audit repairs neither.',
           'Full executed source graph, full P011 acceptance and production savings remain unmeasured.'],
       }));
     }
