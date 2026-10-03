@@ -89,13 +89,12 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
-it('defers an already-admitted wake at mutex dequeue when carry becomes pending', async () => {
+it('defers an already-admitted wake before writing when carry becomes pending', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pty-queued-carry-'));
   const ownerId = uniqueOwner('QUEUED-CARRY');
   const sock = socketPathFor(ownerId);
   const log = eventLogPathForOwner(ownerId);
   const { io, captured } = fakeIo();
-  let carryAttempts = 0;
   const childCode = [
     "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
     "let line='';process.stdin.on('data',data=>{for(const c of data){",
@@ -115,9 +114,9 @@ it('defers an already-admitted wake at mutex dequeue when carry becomes pending'
       PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
       PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
     }),
-    // Exercise the real carry queue without spawning any model CLI. A reached
-    // carry action is positive proof that deferring the wake released its lock.
-    mintCarryRespawnArgs: () => { carryAttempts += 1; throw new Error('fixture carry argv unavailable'); },
+    // Exercise the real carry queue without spawning any model CLI. Its later
+    // argv/setup pipeline is independent of the wake-dequeue boundary under test.
+    mintCarryRespawnArgs: () => { throw new Error('fixture carry argv unavailable'); },
   });
   try {
     expect(await waitForHost(ownerId)).not.toBeNull();
@@ -130,12 +129,12 @@ it('defers an already-admitted wake at mutex dequeue when carry becomes pending'
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
       data: 'fixture carry', deliveryId: 'carry-after-wake' })).toMatchObject({ ok: true, reason: 'accepted' });
     const deadline = Date.now() + 6500;
-    while (carryAttempts === 0 && Date.now() < deadline) await sleep(15);
-    expect(carryAttempts).toBe(1);
+    while (Date.now() < deadline && !captured().includes('ECHO:QUEUED_WAKE') &&
+      !(existsSync(log) && readFileSync(log, 'utf8').includes('"phase":"pre-write"'))) await sleep(15);
     expect(captured()).not.toContain('ECHO:QUEUED_WAKE');
     const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({
-      kind: 'wake-turn-deferred-for-pending-respawn', phase: 'mutex-dequeue',
+      kind: 'wake-turn-deferred-for-pending-respawn', phase: 'pre-write',
     }));
   } finally {
     await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);

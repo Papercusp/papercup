@@ -1896,6 +1896,9 @@ export function shouldRetryCarryOnFreshEpoch({
   if (reason === 'never-settled' ||
       reason === 'no-startup-ready-marker' ||
       reason === 'no-startup-ready-marker-last-resort-failed' ||
+      // A restart can outlast both bounded /mcp attempts on this child. The
+      // fresh epoch reuses the same shared verifier rather than adding a loop.
+      reason === 'carry-mcp-unavailable' ||
       // WI-10005106: a Codex child stuck at its `Starting` footer is a per-child
       // state; a fresh child usually boots in seconds.
       reason === 'codex-startup-still-starting') return true;
@@ -2171,10 +2174,10 @@ export function launchKickoffCodexStartingOptions({
     ? { codexStartingStuckMs: stuckMs }
     : { codexStartingHoldCeilingMs: holdCeilingMs };
 }
-/** Native transcript proof can lag a freshly painted TUI even after the
- *  verifier's raw-CR retry. Give the carry one fresh child epoch to retry the
- *  whole submission before recording a terminal drop. This is intentionally
- *  bounded: a persistent backend/transcript failure must remain loud. */
+/** Native transcript proof or MCP readiness can lag a freshly painted TUI.
+ * Give the carry one fresh child epoch to retry the whole submission before
+ * recording a terminal drop. Each epoch uses the existing bounded two-attempt
+ * MCP verifier; persistent failures remain loud. */
 const CARRY_PROOF_RETRY_MAX = 1;
 /** A backend readiness marker is the strongest proof that its composer exists,
  * but it is not a permanent liveness dependency. UI chrome changes across CLI
@@ -8027,6 +8030,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
  * @param {number} [o.activityPersistMs] discovery activity refresh interval
  * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
+ * @param {(...args:any[])=>any} [o.mcpReconnectMacro] injectable carry MCP reconnect macro
  */
 export function hostThroughPty(o) {
   const {
@@ -8095,6 +8099,7 @@ export function hostThroughPty(o) {
     nativePersistenceTimeoutMs = Number(
       env.PAPERCUSP_SESSION_PORT_PERSIST_TIMEOUT_MS,
     ) || 30_000,
+    mcpReconnectMacro = runMcpReconnectMacro,
     signalSource = process,
     reapScopeResidue = reapDetachedPtyScopeResidue,
   } = o;
@@ -10990,16 +10995,25 @@ export function hostThroughPty(o) {
         // new line after the envelope is written but before its CR, recreating
         // the same interleaving this composer gate prevents at the front door.
         const machineTurn = bridgeTty && (msg.mode === 'turn' || msg.mode === 'reset');
-        if (machineTurn) {
-          if (ownerComposerGate.hasPending()) {
-            // WI-38257: a staged line that has stopped tracking a person must not be
-            // able to defer wakes forever. Checked BEFORE the wait, because the wait
-            // is what burns the cap — that is where the 112s of dead agent came from.
-            if (!breakComposerWedgeIfConfirmed()) {
-              const clear = await ownerComposerGate.waitClear();
-              if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
-            }
+        if (machineTurn && ownerComposerGate.hasPending()) {
+          // WI-38257: a staged line that has stopped tracking a person must not be
+          // able to defer wakes forever. Check before spending the wait budget.
+          if (!breakComposerWedgeIfConfirmed()) {
+            const clear = await ownerComposerGate.waitClear();
+            if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
           }
+        }
+        // EI-23247679868236430: admission happened before any mutex/gate wait.
+        // A carry can become pending during those waits; recheck at the final
+        // boundary before writing bytes or latching the owner-input lease.
+        if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount())) {
+          claimCoalesced();
+          appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', {
+            reason: 'carry-respawn-pending', phase: 'pre-write',
+          });
+          return { ok: false, reason: 'deferred-carry-respawn-pending' };
+        }
+        if (machineTurn) {
           machineTurnActive = true;
           queuedOwnerInput = [];
         }
@@ -12525,7 +12539,7 @@ export function hostThroughPty(o) {
             ? async () => {
                 const tap = makeOutputTap();
                 try {
-                  const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
+                  const result = await verifyHeadlessRoleMcp(() => mcpReconnectMacro({
                     serverName: 'papercusp-su',
                     write: (bytes) => child.write(bytes),
                     readTap: tap.read,

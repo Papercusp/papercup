@@ -2530,6 +2530,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CARRY_PROOF_RETRIES: '0',
         },
         ownerId,
         io,
@@ -2580,6 +2581,122 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       expect(existsSync(meta)).toBe(false);
     },
     32_000,
+  );
+
+  it(
+    'retries a carry on one fresh child when MCP becomes ready after the first epoch',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-carry-mcp-delay-'));
+      const claudeConfig = join(root, 'claude');
+      mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
+      const ownerId = `su-recycle-claude-mcp-delay-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const nativeIds = [
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ];
+      const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+      const childCode =
+        "const fs=require('node:fs'),path=require('node:path');" +
+        "const nativeId=process.argv[process.argv.length-1],epoch=process.argv[process.argv.length-2];" +
+        "process.stdout.write('BOOT:'+epoch+'\\n❯\\n');" +
+        "process.stdin.setEncoding('utf8');let b='',recorded=false;" +
+        "process.stdin.on('data',d=>{b+=d;if(!recorded&&b.includes('⟦turn-origin:self-compaction nonce:fedcba9876543210⟧')){" +
+        "const file=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','-tmp',nativeId+'.jsonl');" +
+        "fs.mkdirSync(path.dirname(file),{recursive:true});" +
+        "fs.appendFileSync(file,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:[{type:'text',text:'⟦turn-origin:self-compaction nonce:fedcba9876543210⟧'}]}})+'\\n');" +
+        "recorded=true;process.stdout.write('CARRY_ACCEPTED\\n');}if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),30000);';
+      let epoch = 0;
+      const reconnectAttempts: Array<{ epoch: number; serverName: string }> = [];
+      const { captured, io } = fakeIo();
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'INITIAL'],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_PSU_HEADLESS: '0',
+          CLAUDE_CONFIG_DIR: claudeConfig,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '25',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        nativePersistenceTimeoutMs: 500,
+        mintCarryRespawnArgs: (args: string[]) => {
+          epoch += 1;
+          return {
+            args: args.slice(0, -1).concat(`CARRY_EPOCH_${epoch}`, nativeIds[epoch - 1]),
+            nativeId: nativeIds[epoch - 1],
+          };
+        },
+        mcpReconnectMacro: async ({ serverName }: { serverName: string }) => {
+          reconnectAttempts.push({ epoch, serverName });
+          if (epoch === 1) {
+            return { ok: false, step: 'await-connected', detail: 'MCP endpoint still unavailable' };
+          }
+          await sleep(25);
+          return { ok: true, step: 'direct-reconnected', detail: 'MCP endpoint recovered' };
+        },
+        onExit: () => {},
+      });
+
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 2_000 });
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          ownerId,
+          data: `${marker}\nContinue after MCP reconnect`,
+          systemPromptAddendum: 'delayed MCP recovery regression',
+          sessionClass: 'claude-su',
+        });
+        await vi.waitFor(() => {
+          const log = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          expect(log).toContain('"kind":"respawn-carry-delivered"');
+        }, { timeout: 8_000 });
+
+        const events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        expect(reconnectAttempts).toEqual([
+          { epoch: 1, serverName: 'papercusp-su' },
+          { epoch: 1, serverName: 'papercusp-su' },
+          { epoch: 2, serverName: 'papercusp-su' },
+        ]);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-unavailable', serverName: 'papercusp-su', attempts: 2,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-fresh-epoch-retry',
+          reason: 'carry-mcp-unavailable', attempt: 1, maxRetries: 1,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-ready', serverName: 'papercusp-su', attempts: 1,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-delivered', nativeId: nativeIds[1],
+        }));
+        expect(events.some((event) => event.kind === 'respawn-carry-dropped')).toBe(false);
+        expect(captured()).toContain('BOOT:CARRY_EPOCH_2');
+        expect(captured()).toContain('CARRY_ACCEPTED');
+        expect(JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8')).carryDropCount ?? 0).toBe(0);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
   );
 
   it(

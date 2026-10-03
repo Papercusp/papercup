@@ -291,7 +291,7 @@ export function signedBaseImage(sbom: unknown, digest: string): { reference: str
  */
 const EL_KERNEL_ARTIFACT_TYPES: ReadonlySet<string> = new Set(["rpm", "linux-kernel"]);
 
-export function isGenericElKernelCpe(match: Record<string, unknown>): boolean {
+function isGenericElKernelCpe(match: Record<string, unknown>): boolean {
   const artifact = isRecord(match.artifact) ? match.artifact : {};
   const vulnerability = isRecord(match.vulnerability) ? match.vulnerability : {};
   const lower = (value: unknown) => (typeof value === "string" ? value.toLowerCase() : "");

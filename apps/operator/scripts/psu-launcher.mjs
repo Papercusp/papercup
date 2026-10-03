@@ -141,6 +141,7 @@ import {
   resolveCodexModel,
   resolveCodexModelSelection,
   normalizeClaudeModelEffortSpec,
+  claudeInheritedEffortOverride,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 // D-002: the argv allowlist the workspace host applies to a psu it starts for a customer.
 import {
@@ -1633,12 +1634,71 @@ export function inheritFreshCodexConfiguredModel(
   return configured ? { ...args, model: configured, modelSource: "inherited" } : args;
 }
 
-export function modelArgsFor(agent, model) {
+/**
+ * The settings a claude child falls back to for its model and effort
+ * (readClaudeLaunchSettings); null when unknown.
+ * @typedef {{ model?: unknown, effortLevel?: unknown } | null} ClaudeLaunchSettings
+ */
+
+/**
+ * `--effort <level>` for a claude argv that names no effort of its own, when the
+ * settings the CLI will fall back to carry an effortLevel the model rejects
+ * (WI-10005900; see claudeInheritedEffortOverride). `[]` without settings, so
+ * every caller that passes none stays byte-identical. Pure — exported for tests.
+ * @param {string | null | undefined} model
+ * @param {ClaudeLaunchSettings | undefined} claudeSettings
+ * @returns {string[]}
+ */
+export function claudeInheritedEffortArgs(model, claudeSettings) {
+  if (!claudeSettings) return [];
+  const level = claudeInheritedEffortOverride({ model, settings: claudeSettings });
+  return level ? ["--effort", level] : [];
+}
+
+/**
+ * The `{ model, effortLevel }` a claude child falls back to when its argv names
+ * no effort: the effective settings.json (the per-session isolated
+ * CLAUDE_CONFIG_DIR when set, else ~/.claude), with `ANTHROPIC_MODEL` taking
+ * precedence over settings.model as it does in the CLI. Fail-open to null — a
+ * missing or unreadable file must never fail a launch. `readFile` for tests.
+ * @param {Record<string, string | undefined>} [env]
+ * @param {{ home?: string, readFile?: (p: string) => string }} [options]
+ * @returns {ClaudeLaunchSettings}
+ */
+export function readClaudeLaunchSettings(
+  env = process.env,
+  { home = homedir(), readFile = (p) => readFileSync(p, "utf8") } = {},
+) {
+  let cfg;
+  try {
+    cfg = JSON.parse(readFile(effectiveClaudeSettingsPath(env, home)));
+  } catch (error) {
+    // An absent/unreadable/malformed file is "no settings"; a programming error
+    // (a missing import) must not masquerade as one.
+    if (error instanceof ReferenceError) throw error;
+    return null;
+  }
+  if (!cfg || typeof cfg !== "object") return null;
+  const envModel = String(env?.ANTHROPIC_MODEL ?? "").trim();
+  return {
+    model: envModel || cfg.model,
+    effortLevel: cfg.effortLevel,
+  };
+}
+
+export function modelArgsFor(
+  agent,
+  model,
+  { claudeSettings = /** @type {ClaudeLaunchSettings} */ (null) } = {},
+) {
   // Low-level argv construction is never itself authorization to choose a
   // model. Fresh visible launchers resolve configured-default explicitly;
   // unattended resume/fleet paths must supply an explicit or inherited model.
   if (agent === "codex") model = resolveCodexModel(model);
-  if (!model) return [];
+  // A model-less claude launch still owes a clamped --effort when the settings
+  // it inherits name a level the settings model rejects (WI-10005900).
+  if (!model)
+    return agent === "claude" ? claudeInheritedEffortArgs(null, claudeSettings) : [];
   const effectiveModel =
     agent === "codex"
       ? normalizeCodexCliModel(model)
@@ -1669,6 +1729,12 @@ export function modelArgsFor(agent, model) {
     return ["-m", effectiveModel, ...windowArgs];
   }
   if (agent === "claude" && m) return ["--model", m[1], "--effort", m[2]];
+  if (agent === "claude")
+    return [
+      "--model",
+      effectiveModel,
+      ...claudeInheritedEffortArgs(effectiveModel, claudeSettings),
+    ];
   return ["--model", effectiveModel];
 }
 
@@ -1681,9 +1747,19 @@ export function modelArgsFor(agent, model) {
  * `buildEngineerOmpLaunchCommand` (P-032): omp `--model`/`-r`, claude
  * `--model`/`--resume`, codex `-m`/`resume`.
  */
-export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
+export function suWrapperExtraArgs(
+  agent,
+  {
+    model,
+    resumeSession,
+    claudeSettings = /** @type {ClaudeLaunchSettings} */ (null),
+  } = {},
+) {
   const args = [];
-  if (model) args.push(...modelArgsFor(agent, model));
+  // claude also gets here model-less: an inherited unsupported effortLevel still
+  // needs its clamped --effort (WI-10005900). `[]` when there is nothing to clamp.
+  if (model || agent === "claude")
+    args.push(...modelArgsFor(agent, model, { claudeSettings }));
   if (agent === "omp") args.push(...ompTitleMitigationArgs(model));
   if (resumeSession) {
     if (agent === "omp" || agent === "claude") args.push("-r", resumeSession);
@@ -2073,6 +2149,7 @@ export function roleLaunchArgs(
     allowSubagents,
     model,
     allowNativeLsp,
+    claudeSettings = /** @type {ClaudeLaunchSettings} */ (null),
   } = {},
 ) {
   if (backend === "claude") {
@@ -2127,7 +2204,7 @@ export function roleLaunchArgs(
         // (Opus) — the root cause behind the heavy-pane "Agent did not respond" class.
         // Same effort-splitting rules as the su flow (modelArgsFor). NOTE: the omp/codex
         // role branches below still lack model argv (claude-minimal for P-019).
-        ...modelArgsFor("claude", model),
+        ...modelArgsFor("claude", model, { claudeSettings }),
       ],
     };
   }
@@ -2599,6 +2676,9 @@ export function resumeArgsFor(
     model = null,
     personaFile = null,
     env = process.env,
+    // The inherited settings a claude resume falls back to for its effort
+    // (readClaudeLaunchSettings). Injected, not read here, so this stays pure.
+    claudeSettings = /** @type {ClaudeLaunchSettings} */ (null),
   } = {},
 ) {
   // --fork is native for claude and codex; omp has no branch-the-session flag,
@@ -2680,7 +2760,7 @@ export function resumeArgsFor(
         NO_CHROME_FLAG,
         ...forkFlag,
         ...addDirArgs("claude", addDir),
-        ...modelArgsFor("claude", model),
+        ...modelArgsFor("claude", model, { claudeSettings }),
       ],
     };
   }
@@ -13233,6 +13313,10 @@ async function launchResume(
       allowSubagents,
       model: resumeModel,
       personaFile,
+      // WI-10005900: the effort this resume would inherit from its (isolated)
+      // settings.json, so an Opus 5 `xhigh` written there is clamped to `max`.
+      claudeSettings:
+        session.agent === "claude" ? readClaudeLaunchSettings(env) : null,
     });
     if (brain && session.agent === "claude")
       args.push(NATIVE_SCHEDULER_DENY_FLAG);
@@ -13905,6 +13989,10 @@ export async function launchTrackedFork(
     allowSubagents: args.allowSubagents,
     model,
     personaFile: res.promptFile || null,
+    claudeSettings: readClaudeLaunchSettings({
+      ...process.env,
+      ...(res?.envelopeEnv ?? {}),
+    }),
   });
   if (args.passthrough?.length) forkArgs.push(...args.passthrough);
   console.error(
@@ -15558,6 +15646,11 @@ async function roleFlow(args, role, rolesMeta) {
     nativeSessionId: res.envelopeEnv?.PAPERCUSP_NATIVE_SESSION_ID || null,
     // Subagent-launch deny is DEFAULT-ON; `--allow-subagents` (or the picker) opts in.
     allowSubagents: args.allowSubagents,
+    // WI-10005900: clamp an unsupported effortLevel the role would inherit.
+    claudeSettings:
+      res.agent === "claude"
+        ? readClaudeLaunchSettings({ ...process.env, ...(res.envelopeEnv ?? {}) })
+        : null,
     // P-021/D-013: may this omp session KEEP its native `lsp` builtin? bootstrap-role
     // resolves FLAGS.OMP_NATIVE_LSP_BUILTIN *and* the local-model tier gate
     // server-side and threads the answer here. Absent ⇒ strip, byte-identical to
@@ -16500,6 +16593,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   const extra = suWrapperExtraArgs(res.agent, {
     model: launchModel,
     resumeSession: args.resumeSession,
+    claudeSettings:
+      res.agent === "claude"
+        ? readClaudeLaunchSettings({ ...process.env, ...(res.envelopeEnv ?? {}) })
+        : null,
   });
   if (args.addDir?.length && res.agent === "omp") {
     console.error(

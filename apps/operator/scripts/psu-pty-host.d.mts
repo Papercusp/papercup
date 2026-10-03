@@ -3091,6 +3091,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
  * @param {number} [o.activityPersistMs] discovery activity refresh interval
  * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
+ * @param {(...args:any[])=>any} [o.mcpReconnectMacro] injectable carry MCP reconnect macro
  */
 export function hostThroughPty(o: {
     command: string;
@@ -3133,6 +3134,7 @@ export function hostThroughPty(o: {
     parentPidFn?: (() => number) | undefined;
     activityPersistMs?: number | undefined;
     nativePersistenceTimeoutMs?: number | undefined;
+    mcpReconnectMacro?: ((...args: any[]) => any) | undefined;
 }): Promise<any>;
 /** Environment fragments injected by launchers and tests need not carry every
  * ambient key that an application framework merges into NodeJS.ProcessEnv.

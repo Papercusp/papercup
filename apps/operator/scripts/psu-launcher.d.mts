@@ -321,28 +321,36 @@ export function inheritFreshCodexConfiguredModel(agent: string, args: any, { hom
     readConfig?: (path: string, encoding: string) => string;
 }): any;
 /**
+ * The settings a claude child falls back to for its model and effort
+ * (readClaudeLaunchSettings); null when unknown.
+ * @typedef {{ model?: unknown, effortLevel?: unknown } | null} ClaudeLaunchSettings
+ */
+/**
  * `--effort <level>` for a claude argv that names no effort of its own, when the
  * settings the CLI will fall back to carry an effortLevel the model rejects
  * (WI-10005900; see claudeInheritedEffortOverride). `[]` without settings, so
  * every caller that passes none stays byte-identical. Pure — exported for tests.
+ * @param {string | null | undefined} model
+ * @param {ClaudeLaunchSettings | undefined} claudeSettings
+ * @returns {string[]}
  */
-export function claudeInheritedEffortArgs(model: any, claudeSettings: any): string[];
+export function claudeInheritedEffortArgs(model: string | null | undefined, claudeSettings: ClaudeLaunchSettings | undefined): string[];
 /**
  * The `{ model, effortLevel }` a claude child falls back to when its argv names
  * no effort: the effective settings.json (the per-session isolated
  * CLAUDE_CONFIG_DIR when set, else ~/.claude), with `ANTHROPIC_MODEL` taking
  * precedence over settings.model as it does in the CLI. Fail-open to null — a
  * missing or unreadable file must never fail a launch. `readFile` for tests.
+ * @param {Record<string, string | undefined>} [env]
+ * @param {{ home?: string, readFile?: (p: string) => string }} [options]
+ * @returns {ClaudeLaunchSettings}
  */
-export function readClaudeLaunchSettings(env?: NodeJS.ProcessEnv, { home, readFile }?: {
-    home?: string | undefined;
-    readFile?: ((p: any) => string) | undefined;
-}): {
-    model: any;
-    effortLevel: any;
-} | null;
+export function readClaudeLaunchSettings(env?: Record<string, string | undefined>, { home, readFile }?: {
+    home?: string;
+    readFile?: (p: string) => string;
+}): ClaudeLaunchSettings;
 export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {
-    claudeSettings?: null | undefined;
+    claudeSettings?: ClaudeLaunchSettings | undefined;
 }): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
@@ -353,8 +361,8 @@ export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {
  * `buildEngineerOmpLaunchCommand` (P-032): omp `--model`/`-r`, claude
  * `--model`/`--resume`, codex `-m`/`resume`.
  */
-export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings }?: {
-    claudeSettings?: null | undefined;
+export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings, }?: {
+    claudeSettings?: ClaudeLaunchSettings | undefined;
 }): any[];
 /**
  * Map psu's repeated `--add-dir <dir>` onto each backend's native flag. claude
@@ -472,7 +480,7 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  */
 export function ompLspArgs(allowNativeLsp?: boolean): string[];
 export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, }?: {
-    claudeSettings?: null | undefined;
+    claudeSettings?: ClaudeLaunchSettings | undefined;
 }): {
     bin: string;
     args: any[];
@@ -4558,6 +4566,14 @@ export namespace AGENT_LABELS {
     let codex: string;
     let omp: string;
 }
+/**
+ * The settings a claude child falls back to for its model and effort
+ * (readClaudeLaunchSettings); null when unknown.
+ */
+export type ClaudeLaunchSettings = {
+    model?: unknown;
+    effortLevel?: unknown;
+} | null;
 export type SessionEndReportOptions = {
     fetchImpl?: ((input: any, init?: any) => Promise<any>) | undefined;
     operatorUrl?: string | undefined;

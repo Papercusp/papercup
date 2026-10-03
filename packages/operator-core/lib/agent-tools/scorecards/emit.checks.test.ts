@@ -21,15 +21,6 @@ const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
 const resolvePlanHarnessSlug = vi.fn();
 
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
-  listAllProjectedTools: () => [{
-    expose: { mcp: { name: 'acceptance:read' } },
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    capabilities: [], effect: 'read',
-  }],
-}));
-
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
   return {
@@ -96,11 +87,11 @@ import scorecardEmitTool, {
   SCORECARD_TEST_CHECK_TIMEOUT_MS,
 } from './emit';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
-import { continuityProbeRevision } from '../../continuity-probes';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
 import type {
   evaluateCriterionCargoChecks,
+  evaluateCriterionProbeChecks,
   evaluateCriterionTestChecks,
   CriterionCheckRun,
 } from '../../rubrics-criterion-checks';
@@ -397,10 +388,10 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     { count: 2, failed: 0, accepted: true },
     { count: 0, failed: 0, accepted: false },
     { count: 2, failed: 1, accepted: false },
-  ])('persists and reads every ALL child only when populated proof passes: $count/$failed', async ({ count, failed, accepted }) => {
+  ])('preserves ALL evaluator receipts through emission and reading: $count/$failed', async ({ count, failed, accepted }) => {
     const probe = {
       kind: 'tool' as const, tool: 'acceptance:read', args: {},
-      schemaRevision: continuityProbeRevision('acceptance:read')!,
+      schemaRevision: 'synthetic-read-revision',
     };
     const all = [
       { ...probe, expect: { path: '$.count', op: 'eq' as const, value: 2 } },
@@ -412,15 +403,25 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
         ...CHECKED_RUBRIC.criteria[1], check: { kind: 'probe', all },
       }],
     });
-    const dispatchTool = vi.fn(async () => ({ count, failed }));
-    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { dispatchTool });
-    if (dispatchTool.mock.calls.length !== 2) {
-      throw new Error(`Real ALL probe evaluator was not reached: ${JSON.stringify(result)}`);
-    }
+    // The real evaluator's populated/empty/failing predicates are exercised in
+    // continuity-probes.test.ts. This suite owns the persistence boundary.
+    const children = all.map((child, index) => {
+      const pass = index === 0 ? count === 2 : failed === 0;
+      return { kind: 'probe' as const, probe: child, observed: index === 0 ? count : failed,
+        verdict: pass ? 'pass' as const : 'fail' as const,
+        status: pass ? 'fresh' as const : 'stale' as const,
+        executed: true, measuredAt: '2026-10-03T07:00:00Z' };
+    });
+    const run = { kind: 'probe' as const, all: children, executed: true,
+      verdict: accepted ? 'pass' as const : 'fail' as const,
+      status: accepted ? 'fresh' as const : 'stale' as const, measuredAt: children[0].measuredAt };
+    const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>().mockResolvedValue(accepted
+      ? { ok: true, checkRuns: { 'det-outcome': run } }
+      : { ok: false, error: 'probe_contradicted', criterionKey: 'det-outcome', run, detail: 'ALL child predicate failed' });
+    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateProbeChecks });
+    expect(evaluateProbeChecks).toHaveBeenCalledOnce();
+    expect(evaluateProbeChecks.mock.calls[0][0].criteria[1].check).toEqual({ kind: 'probe', all });
     expect(result.ok).toBe(accepted);
-    expect(dispatchTool.mock.calls).toEqual([
-      ['acceptance:read', {}], ['acceptance:read', {}],
-    ]);
     if (!accepted) {
       expect(captureImprovement).not.toHaveBeenCalled();
       expect(result).toMatchObject({ checkRefusal: { error: 'probe_contradicted' } });
