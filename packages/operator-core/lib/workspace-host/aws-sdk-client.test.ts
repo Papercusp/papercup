@@ -782,6 +782,8 @@ describe('seam methods send the expected SDK command and input (AUTO-BAR-R-2-P-0
     const { aws, client } = setup();
     const { instanceId } = await client.runInstances({
       ClientToken: 'tok',
+      ImageId: 'ami-0abc',
+      InstanceType: 'm7i.large',
       MinCount: 1,
       MaxCount: 1,
       LaunchTemplate: { LaunchTemplateId: 'lt-1' },
@@ -832,6 +834,8 @@ describe('seam methods send the expected SDK command and input (AUTO-BAR-R-2-P-0
     const { aws, client } = setup();
     const { instanceId } = await client.runInstances({
       ClientToken: 'spot-tok',
+      ImageId: 'ami-0abc',
+      InstanceType: 'm7i.large',
       MinCount: 1,
       MaxCount: 1,
       LaunchTemplate: { LaunchTemplateId: 'lt-1' },

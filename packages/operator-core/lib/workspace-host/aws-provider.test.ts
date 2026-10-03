@@ -27,6 +27,7 @@ import {
   type AwsProviderMutationResult,
   type AwsRunInstancesInput,
   type AwsShellCommandInput,
+  type AwsSnapshotDescription,
   type AwsSnapshotObservation,
   type AwsVolumeObservation,
   type AwsWorkspaceHostSdkClient,
@@ -261,7 +262,7 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     this.instances.set(instanceId, {
       instanceId,
       state: 'pending',
-      imageId: 'ami-ubuntu-2404',
+      imageId: input.ImageId,
       attachedVolumeIds: [],
       instanceStatus: 'initializing',
       systemStatus: 'initializing',
@@ -340,6 +341,33 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     return { requestId: `request:attach:${input.VolumeId}` };
   }
 
+  readonly detachVolumeCalls: Array<{ InstanceId: string; VolumeId: string }> = [];
+
+  async detachVolume(input: { InstanceId: string; VolumeId: string }): Promise<AwsProviderMutationResult> {
+    this.detachVolumeCalls.push(input);
+    const volume = this.volumes.get(input.VolumeId);
+    const instance = this.instances.get(input.InstanceId);
+    if (!volume || !instance) throw new Error('fake AWS detachment references an unknown resource');
+    const { attachedInstanceId: _detached, ...rest } = volume;
+    this.volumes.set(input.VolumeId, { ...rest, state: 'available' });
+    this.instances.set(input.InstanceId, {
+      ...instance,
+      attachedVolumeIds: instance.attachedVolumeIds.filter((id) => id !== input.VolumeId),
+    });
+    return { requestId: `request:detach:${input.VolumeId}` };
+  }
+
+  /** Snapshot tags as EC2 would return them (from CreateSnapshot's TagSpecifications). */
+  readonly snapshotTags = new Map<string, Record<string, string>>();
+  readonly snapshotSizes = new Map<string, number>();
+
+  async describeSnapshot(snapshotId: string): Promise<AwsSnapshotDescription | undefined> {
+    const observed = this.snapshots.get(snapshotId);
+    if (!observed) return undefined;
+    const size = this.snapshotSizes.get(snapshotId);
+    return { ...observed, tags: this.snapshotTags.get(snapshotId) ?? {}, ...(size ? { volumeSizeGiB: size } : {}) };
+  }
+
   async startInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     this.startCalls += 1;
     this.setInstanceStates(instanceIds, 'pending');
@@ -383,6 +411,10 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     const snapshotId = existing ?? `snap-${this.snapshotTokens.size + 1}`;
     this.snapshotTokens.set(input.ClientToken, snapshotId);
     this.snapshots.set(snapshotId, { snapshotId, state: 'pending', observedAt: NOW });
+    this.snapshotTags.set(
+      snapshotId,
+      Object.fromEntries(input.TagSpecifications[0].Tags.map((tag) => [tag.Key, tag.Value])),
+    );
     return { snapshotId, requestId: `request:snapshot:${snapshotId}` };
   }
 
@@ -1372,5 +1404,238 @@ describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => 
     );
     expect(result.state).toBe('applied');
     expect(client.shellCommands).toHaveLength(1);
+  });
+});
+
+/**
+ * Apply every plan step in order the way the controller does: each step sees the resources earlier
+ * steps registered, an applied resource joins, and a confirmed-absent one leaves.
+ */
+async function applyPlan(
+  provider: ReturnType<typeof createAwsWorkspaceHostProvider>,
+  plan: Awaited<ReturnType<ReturnType<typeof createAwsWorkspaceHostProvider>['plan']>>,
+  initial: readonly WorkspaceHostResourceRef[],
+  ctx: WorkspaceHostProviderContext = context(),
+): Promise<{ known: WorkspaceHostResourceRef[]; results: Map<string, WorkspaceHostApplyResult> }> {
+  const known = [...initial];
+  const results = new Map<string, WorkspaceHostApplyResult>();
+  for (const step of plan.steps) {
+    const result = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step, knownResources: [...known] },
+      ctx,
+    );
+    results.set(step.id, result);
+    if ((result.state === 'applied' || result.state === 'unchanged') && result.resource) {
+      if (!known.some((item) => item.providerId === result.resource!.providerId)) known.push(result.resource);
+    }
+    if (result.state === 'destroyed') {
+      const index = known.findIndex((item) => item.providerId === result.confirmation.providerResourceId);
+      if (index >= 0) known.splice(index, 1);
+    }
+  }
+  return { known, results };
+}
+
+async function snapshotOf(
+  provider: ReturnType<typeof createAwsWorkspaceHostProvider>,
+  host: WorkspaceHostRef,
+): Promise<string> {
+  const plan = await provider.plan(
+    { action: 'snapshot', operationId: 'snapshot-1', idempotencyKey: 'snapshot-1', host },
+    context(),
+  );
+  const result = await provider.apply(
+    { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0], knownResources: host.resources },
+    context(),
+  );
+  if (!('snapshot' in result) || !result.snapshot) throw new Error('expected a snapshot');
+  return result.snapshot.providerId;
+}
+
+describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', () => {
+  it('declares restore and upgrade, and launches the desired AMI and instance type explicitly', async () => {
+    const { client, provider } = providerAndClient();
+    expect(provider.capabilities.lifecycle.restore).toBe(true);
+    expect(provider.capabilities.lifecycle.upgrade).toBe(true);
+    await provision(client, provider);
+    // The customer launch template carries only metadata options; without these EC2 has no image.
+    expect(client.runInstancesCalls[0]).toMatchObject({ ImageId: 'ami-ubuntu-2404', InstanceType: 'm7i.large' });
+  });
+
+  it('refuses an image alias: a host boots the exact AMI its spec names', async () => {
+    const { provider } = providerAndClient();
+    const spec = { ...desired(), image: { id: 'resolve:ssm:/aws/service/ami-amazon-linux-latest' } };
+    await expect(
+      provider.plan({ action: 'provision', operationId: 'p', idempotencyKey: 'p', desired: spec }, context()),
+    ).rejects.toThrow(/must be an EC2 AMI id/);
+  });
+
+  it('restores onto a distinct host whose data volume is created from the source snapshot', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const snapshotId = await snapshotOf(provider, host);
+    const restoredSpec = { ...desired(), hostId: 'host-aws-restored' };
+    const plan = await provider.plan(
+      {
+        action: 'restore',
+        operationId: 'restore-1',
+        idempotencyKey: 'restore-1',
+        host,
+        snapshot: { target: 'aws', providerId: snapshotId, hostId: host.hostId },
+        desired: restoredSpec,
+      },
+      context(),
+    );
+    expect(plan.hostId).toBe('host-aws-restored');
+    expect(plan.steps.map((step) => step.id)).toEqual([
+      'create-data-volume',
+      'run-instance',
+      'attach-data-volume',
+      'start-host-bootstrap',
+    ]);
+    expect(plan.steps.every((step) => step.action === 'restore')).toBe(true);
+    const { known } = await applyPlan(provider, plan, []);
+    const restoredVolume = client.createVolumeCalls.at(-1)!;
+    expect(restoredVolume.SnapshotId).toBe(snapshotId);
+    expect(known.map((item) => item.kind).sort()).toEqual(['disk', 'vm']);
+    // The source host is untouched: its instance and volume are distinct from the restored ones.
+    expect(known.some((item) => host.resources.some((source) => source.providerId === item.providerId))).toBe(false);
+  });
+
+  it('refuses a restore from a snapshot that is not a completed, managed snapshot of the source host', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const snapshotId = await snapshotOf(provider, host);
+    const request = (overrides: Record<string, unknown> = {}) => ({
+      action: 'restore' as const,
+      operationId: 'restore-x',
+      idempotencyKey: 'restore-x',
+      host,
+      snapshot: { target: 'aws', providerId: snapshotId, hostId: host.hostId },
+      desired: { ...desired(), hostId: 'host-aws-restored' },
+      ...overrides,
+    });
+    await expect(provider.plan(request({ desired: desired() }), context())).rejects.toThrow(/distinct target host/);
+    await expect(
+      provider.plan(request({ snapshot: { target: 'aws', providerId: snapshotId, hostId: 'host-other' } }), context()),
+    ).rejects.toThrow(/exact source host/);
+    await expect(provider.plan(request(), { ...context(), workspaceId: 'workspace-other' })).rejects.toThrow(
+      /not a managed snapshot/,
+    );
+    client.snapshotTags.set(snapshotId, { ...client.snapshotTags.get(snapshotId), 'papercusp:host-id': 'host-other' });
+    await expect(provider.plan(request(), context())).rejects.toThrow(/not a managed snapshot/);
+    await expect(
+      provider.plan(request({ snapshot: { target: 'aws', providerId: 'snap-0ff', hostId: host.hostId } }), context()),
+    ).rejects.toThrow(/not completed \(absent\)/);
+  });
+
+  it('upgrades by replacing the instance from the target AMI, moving the data volume, and terminating the original LAST', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const original = host.resources.find((item) => item.kind === 'vm')!.providerId;
+    const volume = host.resources.find((item) => item.kind === 'disk')!.providerId;
+    const plan = await provider.plan(
+      {
+        action: 'upgrade',
+        operationId: 'upgrade-1',
+        idempotencyKey: 'upgrade-1',
+        host,
+        image: { id: 'ami-0123456789abcdef0', version: '0.0.21' },
+        rollbackImage: { id: 'ami-ubuntu-2404' },
+        desired: desired(),
+      },
+      context(),
+    );
+    expect(plan.steps.map((step) => step.id)).toEqual([
+      `quiesce-runtime-instance:${original}`,
+      `detach-data-volume:${original}`,
+      `launch-replacement-instance:${original}`,
+      `attach-replacement-volume:${original}`,
+      'start-host-bootstrap',
+      `retire-runtime-instance:${original}`,
+    ]);
+    // Detaching is what strands the original, so it is the destructive step a failed launch rolls back from.
+    expect(plan.steps.filter((step) => step.destructive).map((step) => step.id)).toEqual([
+      `detach-data-volume:${original}`,
+      `retire-runtime-instance:${original}`,
+    ]);
+    expect(plan.steps[2].rollback?.input).toMatchObject({ op: 'reinstate-instance', instanceId: original, volumeId: volume });
+
+    const { known, results } = await applyPlan(provider, plan, host.resources);
+    const replacement = known.find((item) => item.kind === 'vm')!.providerId;
+    expect(replacement).not.toBe(original);
+    expect(client.runInstancesCalls.at(-1)).toMatchObject({ ImageId: 'ami-0123456789abcdef0', InstanceType: 'm7i.large' });
+    expect(client.detachVolumeCalls).toEqual([{ InstanceId: original, VolumeId: volume }]);
+    expect(client.attachVolumeCalls.at(-1)).toMatchObject({ InstanceId: replacement, VolumeId: volume });
+    expect(client.shellCommands.at(-1)!.instanceId).toBe(replacement);
+    // The bootstrap step names the replacement, so the controller never records it against the original.
+    const bootstrap = results.get('start-host-bootstrap')!;
+    expect(bootstrap.state === 'applied' && bootstrap.resource?.providerId).toBe(replacement);
+    expect(client.destroyMutations).toEqual([`terminate:${original}`]);
+    expect(results.get(`retire-runtime-instance:${original}`)!.state).toBe('destroyed');
+    expect(known.map((item) => item.providerId).sort()).toEqual([replacement, volume].sort());
+  });
+
+  it('rolls a failed launch back by re-attaching the data volume to the original and starting it', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const original = host.resources.find((item) => item.kind === 'vm')!.providerId;
+    const volume = host.resources.find((item) => item.kind === 'disk')!.providerId;
+    const plan = await provider.plan(
+      {
+        action: 'upgrade',
+        operationId: 'upgrade-2',
+        idempotencyKey: 'upgrade-2',
+        host,
+        image: { id: 'ami-0123456789abcdef0' },
+        desired: desired(),
+      },
+      context(),
+    );
+    for (const step of plan.steps.slice(0, 2)) {
+      await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: host.resources },
+        context(),
+      );
+    }
+    expect((await client.describeVolume(volume))?.attachedInstanceId).toBeUndefined();
+    const launch = plan.steps[2];
+    const result = await provider.apply(
+      {
+        planId: plan.planId,
+        operationId: plan.operationId,
+        step: { ...launch, id: `${launch.id}:rollback`, input: launch.rollback!.input },
+        knownResources: host.resources,
+      },
+      context(),
+    );
+    expect(result.state).toBe('applied');
+    expect((await client.describeVolume(volume))?.attachedInstanceId).toBe(original);
+    expect((await client.describeInstance(original))?.state).toBe('running');
+  });
+
+  it('refuses an upgrade it cannot carry out exactly', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const upgrade = (overrides: Record<string, unknown> = {}) => ({
+      action: 'upgrade' as const,
+      operationId: 'upgrade-x',
+      idempotencyKey: 'upgrade-x',
+      host,
+      image: { id: 'ami-0123456789abcdef0' },
+      desired: desired(),
+      ...overrides,
+    });
+    await expect(provider.plan(upgrade({ desired: undefined }), context())).rejects.toThrow(/recorded desired spec/);
+    // The rollback reinstates the running instance, so it can only deliver the image that instance runs.
+    await expect(provider.plan(upgrade({ rollbackImage: { id: 'ami-0fedcba9876543210' } }), context())).rejects.toThrow(
+      /rollback image must be the recorded image/,
+    );
+    const twoInstances = {
+      ...host,
+      resources: [...host.resources, { target: 'aws', kind: 'vm', providerId: 'i-00000000000000099' }],
+    };
+    await expect(provider.plan(upgrade({ host: twoInstances }), context())).rejects.toThrow(/exactly one registered vm/);
+    await expect(provider.plan(upgrade(), context({}, null))).rejects.toThrow(/aws_workspace_host_bootstrap_missing/);
   });
 });

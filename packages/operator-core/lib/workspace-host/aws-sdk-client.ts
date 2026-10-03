@@ -1595,7 +1595,9 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       if (!snapshot || !observed) return undefined;
       return {
         ...observed,
-        tags: tagMap(snapshot.Tags),
+        tags: Object.fromEntries(
+          (snapshot.Tags ?? []).flatMap((tag) => (tag.Key ? [[tag.Key, tag.Value ?? '']] : [])),
+        ),
         ...(typeof snapshot.VolumeSize === 'number' ? { volumeSizeGiB: snapshot.VolumeSize } : {}),
       };
     } catch (error) {
