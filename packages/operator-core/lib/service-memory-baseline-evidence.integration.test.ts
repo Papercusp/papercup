@@ -129,18 +129,22 @@ function auditRequestQueries(r: any) {
   const natural = (x: unknown) => Number.isSafeInteger(x) && Number(x) >= 0;
   const queryIdentity = (q: any) => JSON.stringify([q.source?.processInstanceId,
     q.source?.buildSha, q.source?.poolInstanceId, q.connectionId, q.queryId]);
-  requireRequest(r.schemaVersion === 1 && r.mode === 'ordinary' &&
+  const snapshotMode = r.mode === 'retainers';
+  requireRequest(r.schemaVersion === 1 && (r.mode === 'ordinary' || snapshotMode) &&
     r.plane === 'isolated-current-build-operator-api' && r.incomplete === false &&
     !r.error && r.runner?.status === 0 && r.runner.signal === null, 'complete ordinary run');
   requireRequest(sha(r.bundleHash) && /^[a-f0-9]{7,40}$/.test(r.buildSha), 'artifact identity');
-  requireRequest(r.profilerOperations.length === 0 && r.retainedContainers.length === 0 &&
+  const operations = snapshotMode ? ['HeapProfiler.enable (object IDs)',
+    'v8.writeHeapSnapshot (forced GC/synchronous pause)', 'HeapProfiler.disable (object IDs)'] : [];
+  requireRequest(isDeepStrictEqual(r.profilerOperations, operations) && r.retainedContainers.length === 0 &&
     r.pauses === 0 && r.hostReaped === true, 'unprofiled cleanup');
   requireRequest(r.workload.population === 1024 && r.workload.pageLimit === 128 &&
     r.workload.windows === 3 && r.workload.requestsPerWindow === 8 &&
     r.workload.concurrency === 8 && r.windows.length === 3, 'workload bounds');
   const labels = ['query-preflight', ...Array.from({ length: 3 }, (_, w) =>
-    ['idle-' + w + '-start', 'idle-' + w + '-end', 'ordinary-' + w + '-start', 'ordinary-' + w + '-end']).flat()];
-  requireRequest(r.samples.length === 13 && isDeepStrictEqual(r.samples.map((s: any) => s.label), labels),
+    ['idle-' + w + '-start', 'idle-' + w + '-end', 'ordinary-' + w + '-start', 'ordinary-' + w + '-end']).flat(),
+    ...(snapshotMode ? ['post-snapshot'] : [])];
+  requireRequest(r.samples.length === labels.length && isDeepStrictEqual(r.samples.map((s: any) => s.label), labels),
     'raw sample population');
   const target = r.samples[0].processes[0], processIdentity = identity(target);
   requireRequest(target.pid === r.pid && r.inspector.pid === r.pid && /^\d+$/.test(target.startTicks) &&
@@ -233,7 +237,7 @@ const exactOwners = [
   '@papercusp/operator-core.midTurnMemoryAdmission',
 ];
 
-function auditExactOwners(r: any) {
+function auditExactOwners(r: any, additionalIds: number[] = []) {
   const requireOwner = (value: unknown, reason: string) => {
     if (!value) throw Error('P011 exact owner: ' + reason);
   };
@@ -275,19 +279,22 @@ function auditExactOwners(r: any) {
     exactOwners.every(owner => roots.some((x: any) => x.owner === owner)), 'exact owner population');
   requireOwner(roots.every((x: any) => x.status === 'found' && id(x.id)) &&
     new Set(roots.map((x: any) => x.id)).size === roots.length, 'unique captured owner IDs');
-  requireOwner(Array.isArray(nodes) && nodes.length === roots.length &&
-    new Set(nodes.map((x: any) => x.id)).size === roots.length &&
-    Array.isArray(limits?.objectIds) && limits.objectIds.length === roots.length &&
-    roots.every((x: any, i: number) => limits.objectIds[i] === x.id), 'requested ID population');
+  const requestedIds = [...roots.map((x: any) => x.id), ...additionalIds];
+  requireOwner(additionalIds.every(id) && new Set(requestedIds).size === requestedIds.length &&
+    Array.isArray(nodes) && nodes.length === requestedIds.length &&
+    new Set(nodes.map((x: any) => x.id)).size === requestedIds.length &&
+    Array.isArray(limits?.objectIds) && isDeepStrictEqual([...limits.objectIds].sort((a, b) => a - b),
+      [...requestedIds].sort((a, b) => a - b)) &&
+    nodes.every((x: any) => requestedIds.includes(x.id)), 'requested ID population');
   requireOwner(limits.retainerDepth === 1 && id(limits.maxRetainers) && limits.maxRetainers <= 100,
     'bounded direct parents');
   const nodeIndexes = new Set<number>();
   const validNode = (n: any) => n && id(n.id) && natural(n.index) && n.index < census.nodeCount &&
     natural(n.selfSizeBytes) && natural(n.retainedSizeBytes) &&
     n.retainedSizeBytes >= n.selfSizeBytes && n.retainedSizeBytes <= census.totalSelfSizeBytes;
-  const owners = roots.map((owner: any) => {
-    const requested = nodes.find((x: any) => x.id === owner.id), n = requested?.node;
-    requireOwner(requested?.status === 'found' && n?.id === owner.id && validNode(n) &&
+  const verifiedNodes = nodes.map((requested: any) => {
+    const n = requested.node;
+    requireOwner(requested.status === 'found' && n?.id === requested.id && validNode(n) &&
       !nodeIndexes.has(n.index), 'exact graph node join');
     nodeIndexes.add(n.index);
     requireOwner(Array.isArray(n.retainers) && natural(n.retainerCount) &&
@@ -298,19 +305,97 @@ function auditExactOwners(r: any) {
       n.retainers.every((p: any) => validNode(p) && p.index !== n.index &&
         p.index !== graph.rootIndex && p.retainsIndex === n.index &&
         ['Context', 'Property', 'Internal', 'Hidden', 'Element'].includes(p.edgeType)), 'essential incoming edges');
-    return { owner: owner.owner, id: n.id, index: n.index, selfSizeBytes: n.selfSizeBytes,
+    return { id: n.id, index: n.index, selfSizeBytes: n.selfSizeBytes,
       dominatorRetainedV8Bytes: n.retainedSizeBytes, observedDirectParentIndexes: n.retainers.map((p: any) => p.index),
       directParentsNotChecked: n.retainerCount - n.retainers.length };
   });
+  const owners = roots.map((owner: any) => ({ owner: owner.owner,
+    ...verifiedNodes.find((n: any) => n.id === owner.id) }));
   requireOwner(r.hostReaped === true && r.snapshotRemoved === true &&
     r.postSnapshotRowsPreserved === true &&
     r.profilerOperations?.includes('v8.writeHeapSnapshot (forced GC/synchronous pause)') &&
     r.profilerOperations.includes('HeapProfiler.enable (object IDs)') &&
     r.profilerOperations.includes('HeapProfiler.disable (object IDs)'), 'qualified intervention and cleanup');
-  return { processIdentity, recordedBuildSha: r.buildSha, snapshotSha256: snapshot.sha256, owners,
+  return { processIdentity, recordedBuildSha: r.buildSha, snapshotSha256: snapshot.sha256, owners, verifiedNodes,
     scope: 'Historical private snapshot; no new runtime measurement.',
     definition: 'Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.',
     nativePhysicalOwnership: 'unknown', productionSavings: 'unmeasured', loadedBuildIdentity: 'unknown' };
+}
+
+// Independent conservation of the named raw relation through weak selection,
+// the captured snapshot and the native graph. Collected objects are explicit
+// gaps, not zero-byte owners; no producer or inspector helper is imported.
+function auditRequestRetainers(r: any) {
+  const requireHeap = (value: unknown, reason: string) => {
+    if (!value) throw Error('P011 request heap: ' + reason);
+  };
+  requireHeap(r.mode === 'retainers', 'retainer mode');
+  const requests = auditRequestQueries(r);
+  const q = r.heapOwnerBinding?.queries, before = r.heapQueryRegistryBeforeSnapshot;
+  const natural = (x: unknown) => Number.isSafeInteger(x) && Number(x) >= 0;
+  const tuple = (x: any) => JSON.stringify([x.pool, x.source?.processInstanceId,
+    x.source?.buildSha, x.source?.poolInstanceId, x.connectionId, x.queryId, x.requestId]);
+  const final = r.windows[2].completedPageResults.map((x: any) => ({ pool: x.pool,
+    source: x.source, connectionId: x.connectionId, queryId: x.queryId, requestId: x.correlation.requestId }));
+  function metadata(m: any) {
+    requireHeap(m?.status === 'observed' && Array.isArray(m.records) && m.records.length <= 32 &&
+      m.matched === m.records.length && m.omitted === 0 && m.omittedPools === 0 && m.omittedRows === 0 &&
+      natural(m.inspectedPools) && m.inspectedPools > 0 && m.inspectedPools <= 64 &&
+      new Set(m.records.map(tuple)).size === m.records.length, 'bounded registry metadata');
+    requireHeap(Array.isArray(m.poolSummaries) && m.poolSummaries.length <= m.inspectedPools &&
+      new Set(m.poolSummaries.map((p: any) => p.pool)).size === m.poolSummaries.length &&
+      m.poolSummaries.every((p: any) => natural(p.retained) && p.retained <= 32 &&
+        natural(p.totalRecorded) && p.totalRecorded >= p.retained), 'raw FIFO counters');
+  }
+  metadata(before);
+  requireHeap(q?.selection === 'pre-snapshot-metadata-and-weakrefs' && q.status === 'observed' &&
+    isDeepStrictEqual(q.registryBeforeSnapshot, before) &&
+    isDeepStrictEqual(q.unobservedRequestIds, []) && q.omitted === 0 && q.omittedRows === 0 && q.omittedPools === 0 &&
+    q.matched === before.matched && q.inspectedPools === before.inspectedPools &&
+    Array.isArray(q.records) && q.records.length === final.length, 'complete selected relation');
+  const samePopulation = (a: any[], b: any[]) => a.length === b.length &&
+    new Set(a.map(tuple)).size === a.length && new Set(b.map(tuple)).size === b.length &&
+    a.every(x => b.filter(y => isDeepStrictEqual(x, y)).length === 1);
+  requireHeap(samePopulation(before.records, final), 'pre-snapshot raw relation');
+  const identities = q.records.map(({ objects, ...row }: any) => row);
+  requireHeap(samePopulation(identities, final), 'selected exact query tuples');
+  metadata(q.registryAfterSnapshot);
+  requireHeap(q.registryAfterSnapshot.records.every((x: any) => final.some((y: any) => isDeepStrictEqual(x, y))),
+    'post-snapshot named subset');
+  for (const p of before.poolSummaries) {
+    const after = q.registryAfterSnapshot.poolSummaries.find((x: any) => x.pool === p.pool);
+    requireHeap(after && after.totalRecorded >= p.totalRecorded, 'FIFO counter continuity');
+  }
+  const found: number[] = [], gaps: any[] = [];
+  for (const row of q.records) {
+    requireHeap(Array.isArray(row.objects) && isDeepStrictEqual(row.objects.map((o: any) => o.phase),
+      ['decodedResult', 'resolvedRows', 'responseValue']), 'exact object phases');
+    for (const object of row.objects) {
+      if (object.status === 'found') {
+        requireHeap(Number.isSafeInteger(object.id) && object.id > 0, 'numeric captured object ID');
+        found.push(object.id);
+      } else {
+        requireHeap(['collected', 'not-in-snapshot'].includes(object.status) && object.id === undefined,
+          'explicit weak object gap');
+        gaps.push({ tuple: tuple(row), phase: object.phase, status: object.status });
+      }
+    }
+  }
+  const rootIds = r.heapOwnerBinding.roots.map((x: any) => x.id);
+  const additional = [...new Set(found)].filter(id => !rootIds.includes(id));
+  const owners = auditExactOwners(r, additional);
+  requireHeap(sha(r.nativeDecoderPreflight?.sha256) &&
+    r.nativeDecoderPreflight.version === 'v8-heap-cli 0.1.0', 'decoder receipt');
+  requireHeap(nonnegative(r.heapSnapshot.writeMs) && nonnegative(r.heapSnapshot.summaryMs) &&
+    r.heapSnapshotWriteMs === r.heapSnapshot.writeMs &&
+    r.heapSnapshot.durationMs >= r.heapSnapshot.writeMs + r.heapSnapshot.summaryMs,
+  'separate snapshot write and summary timing');
+  return { requests, owners, foundQueryObjectIds: [...new Set(found)].sort((a, b) => a - b),
+    weakObjectGaps: gaps.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    missingLiveRegistryTuples: final.filter((x: any) => !q.registryAfterSnapshot.records.some((y: any) =>
+      isDeepStrictEqual(x, y))).map(tuple).sort(),
+    timing: { writeMs: r.heapSnapshot.writeMs, summaryMs: r.heapSnapshot.summaryMs },
+    workerCloneIdentity: 'unobserved', nativePhysicalOwnership: 'unknown', physicalSavings: 'unmeasured' };
 }
 
 function ownerFixture(): any {
@@ -428,6 +513,84 @@ describe('independent P011 baseline raw evidence', () => {
     writeFileSync(resolve(root, destination), serializeIdentitySafeJson({ schemaVersion: 'p011-baseline-independent-v1',
       proofs, independentOf: 'No emitter import or headline totals; raw OS/V8 rows, HTTP records and identity fences.',
       physicalSavings: 'unmeasured', allocationOwner: 'unknown', requestAssignment: 'unknown' }));
+  });
+});
+
+describe('P011 independent request heap evidence', () => {
+  const path = 'docs/evidence/papercusp-oct1-p011-request-retainers-r2-2026-10-03.json';
+  const saved = () => JSON.parse(readFileSync(resolve(root, path)).toString());
+  it('audits the new raw weak selection and exact native graph without replaying the producer', () => {
+    const result = auditRequestRetainers(saved());
+    expect(result.requests.requestCount).toBe(24);
+    expect(result.requests.queryCount).toBeGreaterThanOrEqual(24);
+    expect(result.owners.owners).toHaveLength(9);
+    const destination = process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_REPORT;
+    if (destination) {
+      const bytes = readFileSync(resolve(root, path));
+      writeFileSync(resolve(root, destination), serializeIdentitySafeJson({
+        schemaVersion: 'p011-request-heap-independent-v1',
+        proof: { path, sha256: digest(bytes), bytes: bytes.length, result },
+        independentOf: 'No producer/inspector import; exact raw HTTP/query/weak metadata/graph conservation.',
+        limitations: ['Saved private snapshot with forced GC and synchronous write; no new runtime measurement.',
+          'Collected targets remain explicit gaps; worker-clone and native physical ownership unobserved.',
+          'Producer harness tag omitted; its ledger is unscoped. This scoped audit does not repair that tag.',
+          'Full executed source graph, full P011 acceptance and production savings remain unmeasured.'],
+      }));
+    }
+  });
+  it('accepts reordered exact query and weak metadata relations', () => {
+    const r = saved(), a = auditRequestRetainers(r);
+    r.heapOwnerBinding.queries.records.reverse();
+    r.heapOwnerBinding.queries.registryBeforeSnapshot.records.reverse();
+    r.heapQueryRegistryBeforeSnapshot.records.reverse();
+    r.heapOwnerBinding.queries.registryAfterSnapshot.records.reverse();
+    const b = auditRequestRetainers(r);
+    expect(b.requests).toEqual(a.requests);
+    expect(b.foundQueryObjectIds).toEqual(a.foundQueryObjectIds);
+    expect(b.weakObjectGaps).toEqual(a.weakObjectGaps);
+    expect(b.missingLiveRegistryTuples).toEqual(a.missingLiveRegistryTuples);
+  });
+  const corruptions: Array<[string, (r: any) => void]> = [
+    ['wrong mode', r => { r.mode = 'ordinary'; }],
+    ['missing snapshot operation', r => { r.profilerOperations.splice(1, 1); }],
+    ['post snapshot sample missing', r => { r.samples.pop(); }],
+    ['weak selection not frozen', r => { r.heapOwnerBinding.queries.selection = 'current-registry'; }],
+    ['unobserved request', r => { r.heapOwnerBinding.queries.unobservedRequestIds.push(r.windows[2].responses[0].requestId); }],
+    ['omitted selected tuple', r => { r.heapOwnerBinding.queries.omitted = 1; }],
+    ['missing dependency tuple', r => { r.heapOwnerBinding.queries.records.pop(); }],
+    ['duplicate selected tuple', r => { r.heapOwnerBinding.queries.records[1] = r.heapOwnerBinding.queries.records[0]; }],
+    ['wrong selected process', r => { r.heapOwnerBinding.queries.records[0].source.processInstanceId = '00000000-0000-4000-8000-000000000000'; }],
+    ['wrong selected pool', r => { r.heapOwnerBinding.queries.records[0].source.poolInstanceId = '00000000-0000-4000-8000-000000000000'; }],
+    ['wrong selected connection', r => { r.heapOwnerBinding.queries.records[0].connectionId++; }],
+    ['wrong selected query', r => { r.heapOwnerBinding.queries.records[0].queryId++; }],
+    ['wrong selected request', r => { r.heapOwnerBinding.queries.records[0].requestId = r.windows[0].responses[0].requestId; }],
+    ['wrong pre capture relation', r => { r.heapQueryRegistryBeforeSnapshot.records[0].queryId++; }],
+    ['raw pre capture mismatch conserved in both copies', r => {
+      r.heapQueryRegistryBeforeSnapshot.records[0].queryId++;
+      r.heapOwnerBinding.queries.registryBeforeSnapshot.records[0].queryId++;
+    }],
+    ['incomplete post capture registry', r => { r.heapOwnerBinding.queries.registryAfterSnapshot.omittedRows = 1; }],
+    ['FIFO counter rewind', r => { r.heapOwnerBinding.queries.registryAfterSnapshot.poolSummaries[0].totalRecorded = 0; }],
+    ['wrong object phase', r => { r.heapOwnerBinding.queries.records[0].objects[0].phase = 'workerClone'; }],
+    ['ambiguous weak target', r => { r.heapOwnerBinding.queries.records[0].objects[0].status = 'ambiguous'; }],
+    ['collected object carries an ID', r => {
+      Object.assign(r.heapOwnerBinding.queries.records[0].objects[0], { status: 'collected', id: 10 });
+    }],
+    ['invalid found ID', r => {
+      Object.assign(r.heapOwnerBinding.queries.records[0].objects[0], { status: 'found', id: 0 });
+    }],
+    ['claimed found ID absent from graph', r => {
+      Object.assign(r.heapOwnerBinding.queries.records[0].objects[0], { status: 'found', id: Number.MAX_SAFE_INTEGER });
+    }],
+    ['missing native requested node', r => { r.heapRetainers.requestedNodes.pop(); }],
+    ['wrong native input', r => { r.heapRetainers.native.inputSha256 = '0'.repeat(64); }],
+    ['decoder receipt missing', r => { delete r.nativeDecoderPreflight; }],
+    ['write timing mismatch', r => { r.heapSnapshotWriteMs++; }],
+    ['summary timing missing', r => { delete r.heapSnapshot.summaryMs; }],
+    ['summary exceeds combined duration', r => { r.heapSnapshot.summaryMs = r.heapSnapshot.durationMs + 1; }],
+  ];
+  for (const [name, mutate] of corruptions) it('rejects ' + name, () => {
+    const r = saved(); mutate(r); expect(() => auditRequestRetainers(r)).toThrow(/P011 /);
   });
 });
 
