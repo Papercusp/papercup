@@ -15,7 +15,15 @@ import { join } from 'node:path';
 import { gymRunIdentity, type GymRunIdentity, type GymRunKey } from './run-identity';
 import { planVariantOverlay, type VariantOverlay } from './variant-overlay';
 import { classifyGymRun, type GymRunOutcome } from './pipeline-status';
-import { regressionsFromTests, type TestResult } from './signals';
+import { regressionsFromTests, testResultKey, type TestResult } from './signals';
+
+/** Actual assertion results plus oracle bytes measured around the test process. */
+export interface GymOracleRun {
+  results: TestResult[];
+  testPath: string;
+  pinCommit: string;
+  sourceHashes: { pinned: string | null; before: string | null; after: string | null };
+}
 
 export interface GymOracleSpec {
   /** Repo-relative path of the real test file that judges the task. */
@@ -77,7 +85,7 @@ export interface GymRunnerPorts {
     featureStatus: string | null;
   }>;
   /** Run the task's immutable oracle inside the clone and return per-test results. */
-  runOracle?(i: { clonePath: string; testPath: string }): Promise<TestResult[] | undefined>;
+  runOracle?(i: { clonePath: string; testPath: string; pinCommit?: string }): Promise<TestResult[] | GymOracleRun | undefined>;
   teardownHarness(i: { slug: string; clonePath: string; workspaceId: string }): Promise<void>;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -105,15 +113,22 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
 
   // --- setup phase: any failure → best-effort teardown of what we created, then rethrow ---
   let workflowID: string;
-  let preOracle: TestResult[] | undefined;
-  const measureOracle = async (): Promise<TestResult[] | undefined> => {
+  let preOracle: GymOracleRun | undefined;
+  const measureOracle = async (): Promise<GymOracleRun | undefined> => {
     if (!spec.task.oracle || !ports.runOracle) return undefined;
     try {
       const results = await ports.runOracle({
         clonePath,
         testPath: spec.task.oracle.testPath,
+        pinCommit: spec.task.oracle.pinCommit,
       });
-      return results && results.length > 0 ? results : undefined;
+      if (!results) return undefined;
+      // Legacy/custom array ports have no immutable-source receipt. Retain their
+      // results for diagnosis, but they cannot authorize a no-regression claim.
+      return structuredClone(Array.isArray(results) ? {
+        results, testPath: spec.task.oracle.testPath, pinCommit: spec.task.oracle.pinCommit,
+        sourceHashes: { pinned: null, before: null, after: null },
+      } : results);
     } catch {
       // Oracle collection is evidence, not a reason to hide the pipeline outcome.
       return undefined;
@@ -169,10 +184,33 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
     });
     if (cls.terminal) {
       const postOracle = await measureOracle();
-      const deterministicSignals =
-        preOracle && postOracle
-          ? { regressions: regressionsFromTests(preOracle, postOracle) }
-          : undefined;
+      let deterministicSignals: Record<string, unknown> | undefined;
+      if (spec.task.oracle) {
+        const pre = preOracle?.results ?? [];
+        const post = postOracle?.results ?? [];
+        const beforeKeys = pre.map(testResultKey);
+        const afterKeys = post.map(testResultKey);
+        const populationComplete = beforeKeys.length > 0 && beforeKeys.length === afterKeys.length &&
+          new Set(beforeKeys).size === beforeKeys.length && new Set(afterKeys).size === afterKeys.length &&
+          beforeKeys.every((key) => afterKeys.includes(key)) &&
+          [...pre, ...post].every((t) => t.name.trim().length > 0 && t.executed !== false);
+        const pinned = preOracle?.sourceHashes.pinned;
+        const sourceCurrent = typeof pinned === 'string' && /^[a-f0-9]{64}$/.test(pinned) &&
+          [preOracle, postOracle].every((receipt) => receipt &&
+            receipt.testPath === spec.task.oracle!.testPath && receipt.pinCommit === spec.task.oracle!.pinCommit &&
+            Object.values(receipt.sourceHashes).every((value) => value === pinned));
+        const regression = sourceCurrent ? regressionsFromTests(pre, post) : undefined;
+        const regressionPopulation = pre.filter((t) => t.executed !== false && t.passed).length;
+        deterministicSignals = {
+          // Collector/store preserve this receipt in the existing trace/signals.
+          oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
+            pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
+            sourceCurrent, populationComplete, regressionPopulation },
+          ...(regression === true || (regression === false && populationComplete && regressionPopulation > 0)
+            ? { regressions: regression } : {}),
+          ...(sourceCurrent && populationComplete ? { taskPassed: post.every((t) => t.passed) } : {}),
+        };
+      }
       return {
         runKey,
         identity,

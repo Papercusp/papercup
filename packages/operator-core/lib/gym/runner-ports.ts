@@ -17,13 +17,13 @@
  * → safe to splice into the DROP SCHEMA identifier.
  */
 import { execFile as execFileCb } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, rm as rmCb, unlinkSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
-import { buildSubstrateCloneCommands } from './clone';
+import { buildSubstrateCloneCommands, isPinnedCommit } from './clone';
 import type { GymRunnerPorts } from './gym-runner';
 import type { TestResult } from './signals';
 
@@ -34,19 +34,27 @@ const SAFE_SLUG = /^[a-z0-9]+$/;
 
 /** Parse one Vitest JSON report into the per-test evidence the gym signal core consumes. */
 export function parseVitestOracleResults(jsonText: string): TestResult[] {
-  let parsed: { testResults?: Array<{ assertionResults?: Array<{ status?: string; fullName?: string; title?: string }> }> };
+  let parsed: { testResults?: Array<{ name?: string; assertionResults?: Array<{ status?: string; fullName?: string; title?: string }> }> };
   try {
     parsed = JSON.parse(jsonText) as typeof parsed;
   } catch {
     return [];
   }
   const out: TestResult[] = [];
-  for (const file of Array.isArray(parsed.testResults) ? parsed.testResults : []) {
+  for (const file of Array.isArray(parsed?.testResults) ? parsed.testResults : []) {
+    if (!Array.isArray(file?.assertionResults) || file.assertionResults.length === 0) {
+      // Collection/setup errors are not an empty passing test population.
+      out.push({ name: '', passed: false, executed: false, ...(file?.name ? { file: file.name } : {}) });
+      continue;
+    }
     for (const assertion of Array.isArray(file?.assertionResults) ? file.assertionResults : []) {
       const name = (assertion.fullName ?? assertion.title ?? '').trim();
-      if (!name) continue;
-      if (assertion.status === 'passed') out.push({ name, passed: true });
-      else if (assertion.status === 'failed') out.push({ name, passed: false });
+      const fileIdentity = file.name ? { file: file.name } : {};
+      if (assertion.status === 'passed' || assertion.status === 'failed') {
+        out.push({ name, passed: assertion.status === 'passed', ...fileIdentity });
+      } else {
+        out.push({ name, passed: false, executed: false, ...fileIdentity });
+      }
     }
   }
   return out;
@@ -257,7 +265,24 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       return { workflowStatus: wf[0]?.status ?? 'PENDING', featureStatus: feat[0]?.status ?? null };
     },
 
-    async runOracle({ clonePath, testPath }) {
+    async runOracle({ clonePath, testPath, pinCommit }) {
+      // Keep the old standalone result shape when no oracle pin was requested.
+      // The runner always requests a pin and requires this actual IO receipt.
+      const ownHash = (): string | null => {
+        try { return createHash('sha256').update(readFileSync(join(clonePath, testPath))).digest('hex'); }
+        catch { return null; }
+      };
+      let pinned: string | null = null;
+      const safePath = testPath.length > 0 && !testPath.startsWith('/') &&
+        !testPath.split('/').some((part) => part === '..' || part === '.') && !testPath.includes('\\');
+      if (pinCommit && isPinnedCommit(pinCommit) && safePath) {
+        try {
+          const blob = await execCapture('git', ['show', `${pinCommit}:${testPath}`],
+            { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+          pinned = createHash('sha256').update(blob.stdout).digest('hex');
+        } catch { /* missing immutable oracle is explicitly unmeasured */ }
+      }
+      const before = safePath ? ownHash() : null;
       const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
       try {
         await execCapture(
@@ -270,7 +295,10 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         // not, the caller records deterministic evidence as not measured.
       }
       try {
-        return parseVitestOracleResults(readFileSync(reportPath, 'utf8'));
+        const results = parseVitestOracleResults(readFileSync(reportPath, 'utf8')).map((t) =>
+          t.file ? { ...t, file: (isAbsolute(t.file) ? relative(clonePath, t.file) : t.file).split('\\').join('/') } : t);
+        return pinCommit ? { results, testPath, pinCommit,
+          sourceHashes: { pinned, before, after: safePath ? ownHash() : null } } : results;
       } catch {
         return undefined;
       } finally {

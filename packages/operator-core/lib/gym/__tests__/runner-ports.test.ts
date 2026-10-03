@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGymRunnerPorts, type GymRunnerPortsConfig } from '../runner-ports';
+import { createGymRunnerPorts, parseVitestOracleResults, type GymRunnerPortsConfig } from '../runner-ports';
 import type { Sql } from 'postgres';
 
 /** A no-op tagged-template + `.unsafe()`/`.json()` sql fake (teardown + principal-seed paths). */
@@ -47,10 +48,19 @@ function cfg(over: Partial<GymRunnerPortsConfig> = {}): { config: GymRunnerPorts
 }
 
 describe('createGymRunnerPorts', () => {
+  it('retains skipped assertion identities so they cannot disappear from coverage', () => {
+    expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ assertionResults: [
+      { fullName: 'executed', status: 'passed' }, { fullName: 'skipped', status: 'pending' },
+    ] }] }))).toEqual([
+      { name: 'executed', passed: true },
+      { name: 'skipped', passed: false, executed: false },
+    ]);
+  });
+
   it('exposes the full GymRunnerPorts surface', () => {
     const p = createGymRunnerPorts(cfg().config);
-    for (const k of ['cloneSubstrate', 'registerThrowawayHarness', 'applyPromptOverride', 'fileFeature', 'startPipeline', 'pollStatus', 'runOracle', 'teardownHarness', 'now', 'sleep']) {
-      expect(typeof (p as Record<string, unknown>)[k]).toBe('function');
+    for (const k of ['cloneSubstrate', 'registerThrowawayHarness', 'applyPromptOverride', 'fileFeature', 'startPipeline', 'pollStatus', 'runOracle', 'teardownHarness', 'now', 'sleep'] as const) {
+      expect(typeof p[k]).toBe('function');
     }
   });
 
@@ -78,11 +88,65 @@ describe('createGymRunnerPorts', () => {
       expect(results).toEqual([
         { name: 'oracle > passes', passed: true },
         { name: 'oracle > fails', passed: false },
+        { name: 'oracle > skipped', passed: false, executed: false },
       ]);
       expect(execs).toEqual([]);
     } finally {
       rmSync(clonePath, { recursive: true, force: true });
     }
+  });
+
+  it.each([false, true])('captures the actual pinned oracle and bytes around execution (mutated=%s)', async (mutated) => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-pin-'));
+    const original = 'export const oracle = true;\n';
+    const changed = 'export const oracle = false;\n';
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), original);
+      const commands: string[][] = [];
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        commands.push([cmd, ...args]);
+        if (cmd === 'git') return { stdout: original, stderr: '' };
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({ testResults: [
+          { name: join(clonePath, 'oracle.test.js'), assertionResults: [{ fullName: 't', status: 'passed' }] },
+        ] }));
+        if (mutated) writeFileSync(join(clonePath, 'oracle.test.js'), changed);
+        return { stdout: '', stderr: '' };
+      } });
+      const pinCommit = 'a'.repeat(40);
+      expect(await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit })).toEqual({
+        results: [{ name: 't', file: 'oracle.test.js', passed: true }], testPath: 'oracle.test.js', pinCommit,
+        sourceHashes: { pinned: digest(original), before: digest(original), after: digest(mutated ? changed : original) },
+      });
+      expect(commands[0]).toEqual(['git', 'show', `${pinCommit}:oracle.test.js`]);
+      expect(commands[1].slice(0, 5)).toEqual(['npm', 'run', 'test:file', '--', 'oracle.test.js']);
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it('retains explicit unknown source identity when the immutable pin cannot be read', async () => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-missing-pin-'));
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        if (cmd === 'git') throw new Error('missing commit');
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({ testResults: [{
+          name: 'oracle.test.js', assertionResults: [{ fullName: 't', status: 'passed' }],
+        }] }));
+        return { stdout: '', stderr: '' };
+      } });
+      const receipt = await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit: 'a'.repeat(40) });
+      expect(receipt).toMatchObject({ results: [{ name: 't', file: 'oracle.test.js', passed: true }],
+        sourceHashes: { pinned: null } });
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it('retains file collection failures and handles malformed reports as unmeasured', () => {
+    expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ name: 'broken.test.ts', assertionResults: [] }] })))
+      .toEqual([{ name: '', file: 'broken.test.ts', passed: false, executed: false }]);
+    expect(parseVitestOracleResults('null')).toEqual([]);
+    expect(parseVitestOracleResults('not json')).toEqual([]);
   });
 
   it('cloneSubstrate runs git clone then checkout --detach at the pinned commit', async () => {
