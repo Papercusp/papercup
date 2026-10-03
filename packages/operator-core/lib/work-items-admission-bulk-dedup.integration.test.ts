@@ -289,6 +289,9 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
          admitted_at, admitted_by)
       VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'Separate second pair', 'open', NULL, '{}'::jsonb,
               'change', 'watch:other', 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    // An unkeyed pair is outside the machine cohort; threshold=0 then selects
+    // full-corpus. Two keyed pairs alone correctly remain targeted.
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id IN ('c', 'd')`;
     const judgedPairs: string[] = [];
     const result = await runBulk({
       workspaceId: WS,

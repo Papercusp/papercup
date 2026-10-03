@@ -92,6 +92,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     goalPlanning: vi.fn(async () => ({ review: {
       schemaVersion: 1 as const, goalId: 'goal-1', disposition: 'existing-plans-sufficient' as const,
       rationale: 'No uncovered outcome in this generic reader fixture.', evidenceRefs: ['goal:goal-1'], planRefs: [],
+      coverage: [],
       portfolioFingerprint: goalPlanningPortfolioFingerprint(portfolio()), reviewedAt: NOW.toISOString(),
     }, authorities: {} })),
     goalLaunch: vi.fn(async () => launch()),
