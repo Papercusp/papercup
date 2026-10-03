@@ -98,8 +98,8 @@ describe('daemon admission integration', () => {
     expect(observed.oldestWaitMs).toBeGreaterThanOrEqual(0);
     expect(observed.oldestWaitMs).toBeLessThanOrEqual(current.oldestWaitMs);
     registerCell(LSP_ADMISSION_CELL);
-    const cell = await readCell('lsp.admission', { ownerId: 'test-lsp-cell-reader', roles: ['su'] },
-      { workspaceId, harnessSlug: 'papercusp', role: 'su' });
+    const cell = await readCell('lsp.admission', { ownerId: 'test-lsp-cell-reader', roles: ['operator'] },
+      { workspaceId, harnessSlug: 'papercusp', role: 'operator' });
     expect(cell, JSON.stringify(cell)).toMatchObject({ status: 'value', value: { queued: 1, inFlight: 1 },
       assessment: { status: 'resolved', code: 'pressure' } });
     const definition = await callLspDaemonRpc(socketPath, { workspaceId, op: 'symbol', args, actorId: 'agent-c' }, 10_000);
