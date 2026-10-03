@@ -26,6 +26,7 @@ const readAgentConfig = vi.fn();
 const getFleet = vi.fn();
 const setFleetLaunchTransaction = vi.fn();
 const findLiveHost = vi.fn();
+const resolveGoalLaunch = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -78,6 +79,11 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => {
 });
 vi.mock('../../events/await/psu-pty-discovery', () => ({
   findLiveHost: (...a: unknown[]) => findLiveHost(...a),
+}));
+// EI-24909345582884838: the goal-ceiling preflight that now runs BEFORE the destructive drain.
+// Mocked so the test controls the verdict and ASSERTS the call (the real resolver reads the DB).
+vi.mock('../../goal-launch-settings', () => ({
+  resolveGoalLaunch: (...a: unknown[]) => resolveGoalLaunch(...a),
 }));
 // P-009: the recovery IO the two REFUSAL paths now perform. These are mocked so the call site
 // can be ASSERTED rather than merely not-throwing: without them the real store/control modules
@@ -209,6 +215,9 @@ beforeEach(() => {
   // WI-2141730: no colliding live host by default — the ordinary respawn path never sees this
   // guard fire. Individual tests override this to exercise the refusal.
   findLiveHost.mockReturnValue(null);
+  // EI-24909345582884838: no goal ceiling binds by default (an agent outside any goal / under its
+  // ceilings resolves with no refusal). Individual tests override this to exercise the refusal.
+  resolveGoalLaunch.mockReset().mockResolvedValue({ refusal: null });
   // P-009: an EMPTY enrolled-task list is the honest default for a member with no tracked
   // processes. The containment tests below override it with real rows.
   listTasks.mockResolvedValue([]);

@@ -35,7 +35,6 @@ import { json, ROUTING_LADDER } from './_shared';
 import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 import { readAgentConfig } from '../../agent-config';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
-import { resolveAgentIdentity } from '../coordination/identity';
 import {
   backendForModelSpec,
   CLOUD_MODEL_MENU,
@@ -1222,12 +1221,9 @@ export default defineTool({
     // (`__respawnReplacesOwnerId`), so the two cannot disagree. An unresolved goal context or an
     // unreadable count fails OPEN here exactly as it does in the launcher; only a REAL refusal (or
     // a fatal goal-holder verdict the launcher would also throw on) stops the drain.
-    let respawnCallerOwnerId: string | null = null;
-    try {
-      respawnCallerOwnerId = resolveAgentIdentity(ctx).ownerId;
-    } catch {
-      respawnCallerOwnerId = null;
-    }
+    // The caller is the one resolveFleetMemberTarget already authenticated (it is what the launcher
+    // resolves from the same ctx), so reuse it rather than re-deriving identity here.
+    const respawnCallerOwnerId = target.callerId;
     if (respawnCallerOwnerId) {
       let ceilingPreflight: Awaited<ReturnType<typeof resolveGoalLaunch>> | null = null;
       let ceilingPreflightError: string | null = null;

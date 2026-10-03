@@ -103,9 +103,125 @@ import {
   rmSync,
   symlinkSync,
   mkdirSync,
+  readlinkSync,
+  statSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+
+/* ─────────────────────── extracted-tree lifecycle (WI-10005705) ─────────────────────── */
+
+/**
+ * Every run extracts a ~1.4 GB tree under tmpdir. Measured 2026-10-03: 26 of them sat in
+ * /tmp (~36 GB), 24 with no live process inside, and they refilled the root disk at
+ * 2-5 per hour. Three ways a tree outlives its run: `--keep` (the testing:evidence
+ * re-prove recipe asks for it, then nobody deletes it), a `process.exit` inside the try
+ * (exit skips `finally`), and a signal kill. The first two are handled in `main`; the
+ * sweep below is what catches the rest, including SIGKILL, on the NEXT run.
+ *
+ * Each tree records its owner in `<tree>/.git/lint-as-committed-owner.json` (inside .git
+ * so the extracted repo's `git status` stays clean for the lints that read it).
+ */
+export const WORK_ROOT_PREFIX = 'papercusp-lint-as-committed-';
+export const OWNER_MARKER = join('.git', 'lint-as-committed-owner.json');
+/** A `--keep` tree is for poking at, then re-proving from: six hours is generous. */
+export const KEEP_TTL_MS = 6 * 3600_000;
+/** Absolute ceiling for any tree no live process is inside (covers pid reuse). */
+export const MAX_AGE_MS = 24 * 3600_000;
+
+/**
+ * Decide one tree's fate. Pure: the caller supplies liveness facts.
+ * - `inUse`: some live process has its cwd inside the tree (e.g. a testing:run on the
+ *   clone's test path). Never removed, whatever its age.
+ * - `marker`: parsed owner marker, or null (pre-marker tree, or a run still cloning).
+ * - `ownerAlive`: whether `marker.pid` is a live process (ignored without a marker).
+ * - `ageMs`: from `marker.createdAtMs`, else from the directory mtime.
+ */
+export function classifyWorkRoot({ inUse, marker, ownerAlive, ageMs, keepTtlMs = KEEP_TTL_MS, maxAgeMs = MAX_AGE_MS }) {
+  if (inUse) return { remove: false, reason: 'in-use' };
+  if (!(ageMs >= 0)) return { remove: false, reason: 'age-unknown' };
+  if (ageMs > maxAgeMs) return { remove: true, reason: 'max-age' };
+  if (!marker) return ageMs > keepTtlMs ? { remove: true, reason: 'unmarked-expired' } : { remove: false, reason: 'unmarked-young' };
+  if (marker.keep) return ageMs > keepTtlMs ? { remove: true, reason: 'keep-expired' } : { remove: false, reason: 'keep-young' };
+  return ownerAlive ? { remove: false, reason: 'owner-alive' } : { remove: true, reason: 'owner-dead' };
+}
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === 'EPERM';
+  }
+}
+
+/** Absolute cwds of every visible process, or null where /proc is unavailable. */
+function liveProcessCwds() {
+  let pids;
+  try {
+    pids = readdirSync('/proc').filter((n) => /^\d+$/.test(n));
+  } catch {
+    return null;
+  }
+  const cwds = [];
+  for (const pid of pids) {
+    try {
+      cwds.push(readlinkSync(`/proc/${pid}/cwd`));
+    } catch {
+      /* exited, or not ours to read */
+    }
+  }
+  return cwds;
+}
+
+/**
+ * Remove stale extracted trees under `root`. Returns what it did, for the caller to print.
+ * Without /proc it cannot prove a tree is idle, so it only removes trees whose marker
+ * names a dead non-keep owner — the one verdict that needs no cwd scan.
+ */
+export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }) } = {}) {
+  const removed = [];
+  const kept = [];
+  let names;
+  try {
+    names = readdirSync(root).filter((n) => n.startsWith(WORK_ROOT_PREFIX));
+  } catch {
+    return { removed, kept };
+  }
+  for (const name of names) {
+    const path = join(root, name);
+    let st;
+    try {
+      st = lstatSync(path);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    let marker = null;
+    try {
+      marker = JSON.parse(readFileSync(join(path, OWNER_MARKER), 'utf8'));
+    } catch {
+      marker = null;
+    }
+    const inUse = cwds === null ? null : cwds.some((c) => c === path || c.startsWith(path + sep));
+    const createdAtMs = Number.isFinite(marker?.createdAtMs) ? marker.createdAtMs : st.mtimeMs;
+    const verdict = classifyWorkRoot({ inUse: inUse === true, marker, ownerAlive: marker ? isAlive(marker.pid) : false, ageMs: nowMs - createdAtMs });
+    const provable = inUse !== null || verdict.reason === 'owner-dead';
+    if (verdict.remove && provable) {
+      try {
+        remove(path);
+        removed.push({ name, reason: verdict.reason });
+      } catch {
+        kept.push({ name, reason: 'remove-failed' });
+      }
+    } else {
+      kept.push({ name, reason: verdict.remove ? 'unprovable-without-proc' : verdict.reason });
+    }
+  }
+  return { removed, kept };
+}
 
 /* ─────────────────────────── pure helpers (unit-tested) ─────────────────────────── */
 
@@ -551,8 +667,25 @@ function main() {
     console.log(`  note: your working tree differs from this ref in ${dirtyTracked} tracked file(s) — those edits are NOT under test here.`);
   }
 
-  const workRoot = mkdtempSync(join(tmpdir(), `papercusp-lint-as-committed-${short}-`));
+  const swept = sweepStaleWorkRoots();
+  if (swept.removed.length > 0) {
+    console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
+  }
+
+  const workRoot = mkdtempSync(join(tmpdir(), `${WORK_ROOT_PREFIX}${short}-`));
   let results = [];
+  // Every exit path must remove a non-keep tree: `process.exit` skips `finally`, and a
+  // signal never reaches it. SIGKILL is left to the next run's sweep.
+  const cleanupWorkRoot = () => {
+    if (!args.keep) rmSync(workRoot, { recursive: true, force: true });
+  };
+  const bail = (code) => {
+    cleanupWorkRoot();
+    process.exit(code);
+  };
+  for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
+    process.once(signal, () => bail(128 + number));
+  }
 
   try {
     // ── materialise the committed content as a REAL git repo ──
@@ -565,7 +698,7 @@ function main() {
     });
     if (clone.status !== 0) {
       console.error(`lint-as-committed: failed to clone ${repoRoot}:\n${clone.stderr || clone.stdout}`);
-      process.exit(2);
+      bail(2);
     }
     const checkout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', sha], {
       cwd: workRoot,
@@ -573,7 +706,12 @@ function main() {
     });
     if (checkout.status !== 0) {
       console.error(`lint-as-committed: failed to check out ${short}:\n${checkout.stderr || checkout.stdout}`);
-      process.exit(2);
+      bail(2);
+    }
+    try {
+      writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha }));
+    } catch {
+      /* best-effort: an unmarked tree still ages out by mtime */
     }
     if (mainSnapshot) {
       git(['update-ref', 'refs/heads/main', mainSnapshot], workRoot);
@@ -619,7 +757,7 @@ function main() {
             `\n  (This tool never fetches submodules over the network — that would either fail with no\n` +
             `   credentials or hang. Check out the submodule(s) locally first.)`,
         );
-        process.exit(2);
+        bail(2);
       }
 
       for (const sub of submodules) {
@@ -634,7 +772,7 @@ function main() {
           pin = git(['rev-parse', `${sha}:${sub.path}`], repoRoot);
         } catch (err) {
           console.error(`lint-as-committed: cannot resolve the pinned commit for submodule ${sub.path} at ${short}: ${err.message}`);
-          process.exit(2);
+          bail(2);
         }
 
         const subLocal = join(repoRoot, sub.path);
@@ -644,7 +782,7 @@ function main() {
         });
         if (subClone.status !== 0) {
           console.error(`lint-as-committed: failed to clone submodule ${sub.path} from its local checkout:\n${subClone.stderr || subClone.stdout}`);
-          process.exit(2);
+          bail(2);
         }
         const subCheckout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', pin], {
           cwd: subWork,
@@ -654,7 +792,7 @@ function main() {
           console.error(
             `lint-as-committed: failed to check out submodule ${sub.path} at its pinned commit ${pin.slice(0, 10)}:\n${subCheckout.stderr || subCheckout.stdout}`,
           );
-          process.exit(2);
+          bail(2);
         }
         // A standalone clone has the bytes but does not enroll the submodule in its
         // parent's recursive Git enumeration. Whole-tree guards would silently omit
@@ -738,7 +876,7 @@ function main() {
       refScripts = JSON.parse(readFileSync(join(workRoot, 'package.json'), 'utf8')).scripts ?? {};
     } catch (err) {
       console.error(`lint-as-committed: cannot read package.json at ${short}: ${err.message}`);
-      process.exit(2);
+      bail(2);
     }
 
     for (const script of args.scripts) {
@@ -795,8 +933,8 @@ function main() {
       }
     }
   } finally {
-    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot}`);
-    else rmSync(workRoot, { recursive: true, force: true });
+    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept by a later run after ${KEEP_TTL_MS / 3600_000}h unless a process is inside it)`);
+    else cleanupWorkRoot();
   }
 
   const { exitCode, failedCount, lines } = summarize(results);

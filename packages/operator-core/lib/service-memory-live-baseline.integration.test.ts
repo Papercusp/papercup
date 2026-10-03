@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, validatePinnedStateOptions } from '../../../scripts/cdp-inspector.mjs';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import { requestOnlyHost } from './background-workers';
+import { SpawnerIpcClient } from './fleet/spawner-ipc-client';
 
 const root = resolve(__dirname, '../../..');
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
@@ -150,6 +151,24 @@ function assertCounterRole(main: ResourceRow, target: ResourceRow, facts: any) {
   return role;
 }
 
+function spawnerLoadedIdentity(pid: number, capability: any) {
+  const identity = capability?.processExecIdentity;
+  if (identity == null) return { status: 'unknown', reason: 'Loaded server does not advertise build identity' };
+  if (identity.pid !== pid) throw Error('Spawner build identity PID mismatch');
+  const build = identity.buildInfo;
+  const fence = capability.processExecFence;
+  if (!build || !(build.sha === null || (typeof build.sha === 'string' && build.sha.trim())) ||
+      typeof build.version !== 'string' || !build.version.trim() ||
+      typeof fence?.serverGeneration !== 'string' || !fence.serverGeneration ||
+      typeof fence.connectionId !== 'string' || !fence.connectionId) {
+    throw Error('Malformed advertised spawner build identity');
+  }
+  return { status: build.sha === null ? 'unknown' : 'known',
+    reason: build.sha === null ? 'Loaded bundle has no source identity' : null,
+    source: 'Loaded server cancellation capability', pid, buildInfo: build,
+    serverGeneration: fence.serverGeneration, connectionId: fence.connectionId };
+}
+
 function configuredHostRole(facts: any) {
   if (!facts || typeof facts.cluster?.isPrimary !== 'boolean' ||
       typeof facts.cluster?.isWorker !== 'boolean' || facts.cluster.isPrimary === facts.cluster.isWorker ||
@@ -220,6 +239,19 @@ function listenerPorts(pid: number) {
 }
 
 describe('actual current-build operator memory baseline', () => {
+  it('binds advertised spawner build to its PID and connection without borrowing disk or main identity', () => {
+    const capability = { processExecIdentity: { pid: 7, buildInfo: { sha: 'loaded-source', version: '1.0.0' } },
+      processExecFence: { serverGeneration: 'server', connectionId: 'connection' } };
+    expect(spawnerLoadedIdentity(7, capability)).toMatchObject({ status: 'known', pid: 7,
+      buildInfo: { sha: 'loaded-source' }, serverGeneration: 'server', connectionId: 'connection' });
+    expect(spawnerLoadedIdentity(7, {})).toMatchObject({ status: 'unknown' });
+    expect(spawnerLoadedIdentity(7, { ...capability,
+      processExecIdentity: { pid: 7, buildInfo: { sha: null, version: '1.0.0' } } })).toMatchObject({ status: 'unknown' });
+    expect(() => spawnerLoadedIdentity(8, capability)).toThrow('PID mismatch');
+    expect(() => spawnerLoadedIdentity(7, { ...capability, processExecFence: {} })).toThrow('Malformed');
+    expect(() => spawnerLoadedIdentity(7, { ...capability,
+      processExecIdentity: { pid: 7, buildInfo: { sha: ' ', version: '1.0.0' } } })).toThrow('Malformed');
+  });
   it('keeps PID and exact owner selection outside configurable traversal limits', () => {
     expect(parsePinnedLimits('{"maxDepth":8,"maxEntries":32768,"budgetMs":200}'))
       .toEqual({ maxDepth: 8, maxEntries: 32768, budgetMs: 200 });
@@ -449,7 +481,7 @@ describe('actual current-build operator memory baseline', () => {
       limitations: ['Counters cover one explicitly selected main/descendant PID; HTTP request assignment remains unknown.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
-        'A maintained sibling entry is bound to the main build only by its observed path/executable/ancestry; its loaded build is not advertised separately.',
+        'Sibling build identity is read from its PID-bound server capability when available; missing advertisements stay unknown.',
         'Current disk bundle hash is recorded separately from the health-reported loaded build.'] };
     const publish = () => writeFileSync(path, serializeIdentitySafeJson(report));
     let client: ReturnType<typeof createCdpClient> | undefined;
@@ -501,6 +533,24 @@ describe('actual current-build operator memory baseline', () => {
       }
       if (!client || !port) throw Error('PID-bound inspector unavailable');
       report.inspector = { pid: counterPid, port, openedByProbe: opened };
+      if (descendantEntryRole(before, counterBefore) === 'maintained-spawner-descendant') {
+        // Read only the loaded process's configured socket. Import the IPC
+        // client into this observer, never build-info into the inspected target.
+        const configured = await client.evaluate('process.env.PAPERCUSP_SPAWNER_IPC_SOCKET ?? null', { returnByValue: true });
+        const socketPath = configured?.result?.value;
+        if (typeof socketPath !== 'string' || !socketPath.startsWith('/')) throw Error('Loaded spawner socket unavailable');
+        const ipc = new SpawnerIpcClient(socketPath);
+        try {
+          const capability = await ipc.call('spawn:cancel', {}, { timeoutMs: 5000 });
+          report.counterBundle.loadedBuild = spawnerLoadedIdentity(counterPid, capability);
+        } finally { ipc.close(); }
+        assertIdentity(counterBefore, processSample(counterPid));
+        if (process.env.PAPERCUSP_P011_SPAWNER_BUILD) {
+          expect(report.counterBundle.loadedBuild.status).toBe('known');
+          expect(report.counterBundle.loadedBuild.buildInfo.sha).toBe(process.env.PAPERCUSP_P011_SPAWNER_BUILD);
+        }
+        publish();
+      }
       let effectivePinnedLimits = pinnedLimits;
       if (discoveryNamespace) {
         const pages: any[] = [];
