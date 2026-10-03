@@ -1165,6 +1165,17 @@ describe('handler — graceful degrade + result shape', () => {
     expect(checkpoint?.argSchema).not.toContain('expectedHash');
   });
 
+  it('surfaces the checkpoint retireIds rowsMode constraint in compact discovery', async () => {
+    expect(workItemsCheckpoint.name).toBe('work_items:checkpoint');
+    const out = await callHandler({ query: 'work_items:checkpoint', limit: 1 });
+    const checkpoint = out.hits.find((hit) => hit.tool === 'work_items:checkpoint');
+
+    expect(checkpoint?.argSchema).toContain('constraint:items[].retireIds');
+    expect(checkpoint?.argSchema).toContain("effective `rowsMode:'replace'`");
+    expect(checkpoint?.argSchema).toContain("defaults to `'merge'`");
+    expect(checkpoint?.argSchema).toContain('constraint:retireIds');
+  });
+
   it('shows the facts body storage cap in compact discovery', async () => {
     expect(factsAssert.name).toBe('facts:assert');
     const out = await callHandler({ query: 'facts:assert', limit: 1 });
