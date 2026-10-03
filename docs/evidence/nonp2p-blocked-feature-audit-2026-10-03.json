@@ -1,0 +1,5834 @@
+{
+ "schemaVersion": "blocked-feature-audit-evidence-v1",
+ "status": "in-progress",
+ "workItem": "WI-10005820",
+ "parentWorkItem": "WI-10005203",
+ "population": {
+  "capturedAt": "2026-10-03T07:58:24.879Z",
+  "specRevision": 6,
+  "count": 172,
+  "scope": "Frozen non-P2P selector cohort; not the whole live backlog or original200 cohort"
+ },
+ "evidenceTimes": {
+  "sourceSnapshot": "2026-10-03T08:39:58.564327+00:00",
+  "canonicalDependencies": "2026-10-03T08:46:22.401400+00:00",
+  "dispositionReadback": "2026-10-03T08:43:07.339265Z"
+ },
+ "verifiedDispositionCounts": {
+  "reopened": 8,
+  "obsoleteMirrorsDropped": 2,
+  "stillBlocked": 162
+ },
+ "limitations": [
+  "Unresolved canonical dependencies are current evidence; an external blocker excerpt may still be stale.",
+  "Retained-for-qualification is not a verified justified block.",
+  "Rows do not claim implementation completion, acceptance waiver or shipment.",
+  "Every remaining root prerequisite and hold still needs evidenced final disposition."
+ ],
+ "rows": [
+  {
+   "id": "WI-10000250",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "desktop-release-shared-project-history-2026-09-06",
+    "item": "P-003",
+    "version": 38,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10000249",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:desktop-release-shared-project-history-2026-09-06#P-003",
+     "summary": "plan lane desktop-release-shared-project-history-2026-09-06#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10000407",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "byoc-delivery-acceleration-2026-09-06",
+    "item": "P-009",
+    "version": 44,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004",
+     "P-005",
+     "P-006",
+     "P-007",
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan:byoc-cloud-workspaces-gcp-aws-azure-2026-08-22#P-018,P-024,P-025",
+     "summary": "P-009's final bar R-006 is UNSATISFIABLE: its sole sanctioned producer chain is dropped. R-006 needs deployed receipts incl. a literal 24-hour soak and customer acceptance; the committed matrix names producer plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 seq P-305/P-018/P-317/P-024/P-025 and forbids any parallel or synthetic receipt chain. Measured 2026-09-24: P-018 DROPPED (real GCP canary), P-024 DROPPED (chaos drills), P-025 DROPPED (private-beta gate carrying the 24h soak). NEEDED: revive those producers, re-scope R-006, or accept P-009 through R-005 with R-006 explicitly deferred."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10000699",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "plan-popup-full-window-control-2026-09-08",
+    "item": "P-003",
+    "version": 17,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "test:affected:terminal-passed:plan-popup-full-window-control-2026-09-08:P-003",
+     "summary": "Fresh terminal passing affected-test run required; 2026-09-26 run ended without result and recorded eight failing tasks."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10001169",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
+    "item": "P-009",
+    "version": 53,
+    "planState": "shipped",
+    "itemState": "done",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "gate.greenCheckpoint.candidate=6234b578884e8003af401f8e49bd6006ac275fc7 nextCandidate=20613e82dbf4ed5a491c864dfd22d15ab2a1f45e",
+     "summary": "Narrow deployed-only property: R-8's deployed-control verification and actual shipment. Every other outcome (R-1..R-7) stays on staging/current-build and is NOT blocked by this."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10002037",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "dry-run-for-claims-preview-a-predicate-partition-null-traps-2026-09-20",
+    "item": "P-005",
+    "version": 20,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "dry-run-for-claims-preview-a-predicate-partition-null-traps-2026-09-20#D-002",
+     "summary": "P-005's gate (P-003's instrumentation signal) is a deployed-only property: the advisory FIRE RATE over the fleet's real query traffic plus the population-claim RETRACTION RATE in coord traffic, across a before/after window. Staging and current-build cannot exercise it because the measured subject is what the live agent population does in front of the deployed advisory, and a staging operator carries no such population to observe. This is not a wait on deployment for implementation or ordinary verification: P-005's own precondition IS a behavioural measurement over live traffic, and the item fo"
+    }
+   ],
+   "claimHold": true,
+   "holdReason": "P-005 is gated on a deployed-only instrumentation signal that is currently UNREADABLE rather than unfavourable (D-002). Do not self-select: the zero a drainer will measure (pg_query_advisory_fires count(*)=0) reports the writer's absence, not the trigger's breadth, and invites both wrong moves — building anyway on the owner's *4 grade of the sibling idea, or dropping the plan as falsified."
+  },
+  {
+   "id": "WI-10002216",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "turn-start-memory-two-class-2026-09-21",
+    "item": "P-006",
+    "version": 249,
+    "planState": "shipped",
+    "itemState": "done",
+    "directDependencies": [
+     "P-002",
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "AUTO-BAR-R-2-P-006@3",
+     "summary": "spec-test-adequacy gate refuses the terminal close; implementation and verification are complete"
+    }
+   ],
+   "claimHold": true,
+   "holdReason": "terminal completion refused by the linked plan-item gate"
+  },
+  {
+   "id": "WI-10002828",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-log-performance-remediation-2026-09-23",
+    "item": "P-006",
+    "version": 101,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "WI-10004474",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [],
+   "claimHold": true,
+   "holdReason": "Leader directs parking blocked P006 while current strict passing proof is preserved, then scheduler pull of another ready non-P2P feature; author preflight still refuses missing METHOD/check and vetting."
+  },
+  {
+   "id": "WI-10002830",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "papercusp-log-performance-remediation-2026-09-23",
+    "item": "P-008",
+    "version": 101,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "papercusp-log-performance-remediation-2026-09-23#R-8",
+     "summary": "R-8 live operational evidence is absent: the loaded owner-map repair is verified, but neither the October 1 long UPDATE's full wait mechanism nor its user-facing impact is recoverable from retained per-call logs; Portal watchdog driver remains outside this worker's owned route."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10002831",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-log-performance-remediation-2026-09-23",
+    "item": "P-009",
+    "version": 101,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002",
+     "P-003",
+     "P-004",
+     "P-005",
+     "P-006",
+     "P-007",
+     "P-008",
+     "P-010",
+     "P-011",
+     "P-012",
+     "P-013",
+     "P-014",
+     "P-015",
+     "P-016",
+     "P-017",
+     "P-018"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10002828",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10002830",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-log-performance-remediation-2026-09-23#P-009",
+     "summary": "plan lane papercusp-log-performance-remediation-2026-09-23#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10003179",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "cache-efficiency-and-accounting-2026-09-23",
+    "item": "P-010",
+    "version": 143,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-009"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "WI-10002864",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:cache-efficiency-and-accounting-2026-09-23#P-010",
+     "summary": "plan lane cache-efficiency-and-accounting-2026-09-23#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10003332",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "finish-session-2893b033-residue-2026-09-26",
+    "item": "P-001",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "goal:carry-plan-finish-session-2893b033-residue-2026--e78df0",
+     "summary": "Attached goal remains killed; source continuation contract explicitly needs replacement goal/budget. Leader routing needed before reviving acceptance-only residue."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10003333",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "finish-session-2893b033-residue-2026-09-26",
+    "item": "P-002",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10003335",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "finish-session-2893b033-residue-2026-09-26",
+    "item": "P-004",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002",
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10003332",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10003333",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:finish-session-2893b033-residue-2026-09-26#P-004",
+     "summary": "plan lane finish-session-2893b033-residue-2026-09-26#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10003659",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "dhh-source-preview-2026-09-28",
+    "item": "P-005",
+    "version": 39,
+    "planState": "ready",
+    "itemState": "needs-human",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:dhh-source-preview-2026-09-28#P-005",
+     "summary": "plan lane dhh-source-preview-2026-09-28#P-005 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10003660",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "dhh-source-preview-2026-09-28",
+    "item": "P-006",
+    "version": 39,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10003659",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:dhh-source-preview-2026-09-28#P-006",
+     "summary": "plan lane dhh-source-preview-2026-09-28#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10003945",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "generic-rag-chunking-2026-09-29",
+    "item": "P-016",
+    "version": 131,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-014",
+     "P-015"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004280",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-016",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-015"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-item:done:su-mode-contract-identity-unification-2026-09-24:P-008",
+     "summary": "Last P-016 door (SU persona refresh) edits su-persona-render.ts + bootstrap-su-persona-refresh.ts, which su-b0451bbf's P-008 evidence fingerprints. They stay untouched until P-008 ships and su-b0451bbf releases them. Launch/switch/rebind/codex-repair doors are done and green (uncommitted only because git-sync is disk-held, WI-10004397)."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004282",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-018",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-017"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004281",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-018",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-018 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004284",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-020",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-017",
+     "P-018",
+     "P-019"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004281",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004282",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004283",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-020",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-020 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004285",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-039",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-020",
+     "P-044",
+     "P-045"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004284",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-039",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-039 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004288",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-004",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "needs-human",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "agent-economy-flywheel-2026-08-30#P-004-external-paid-pilot",
+     "summary": "Requires genuine external paid-pilot participation and public execution/listing setup; none of the candidates has a pilot endpoint/protocol/seller offer yet."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004290",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-006",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004288",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-006",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004292",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-008",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004288",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-008",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004293",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-009",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-006"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004290",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-009",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004294",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-010",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-007"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004291",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-010",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004295",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-011",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-010"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004294",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-011",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004296",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-012",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004286",
+     "contract": "settled",
+     "state": "needs-human",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-012",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004298",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-economy-flywheel-2026-08-30",
+    "item": "P-014",
+    "version": 100,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004289",
+     "contract": "settled",
+     "state": "needs-human",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-economy-flywheel-2026-08-30#P-014",
+     "summary": "plan lane agent-economy-flywheel-2026-08-30#P-014 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004389",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+    "item": "P-013",
+    "version": 143,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004388",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-capacity-and-cost-gcp-2026-09-30#P-013",
+     "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004390",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+    "item": "P-523",
+    "version": 143,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-522"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004374",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-capacity-and-cost-gcp-2026-09-30#P-523",
+     "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-523 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004391",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+    "item": "P-524",
+    "version": 143,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-522"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004374",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-capacity-and-cost-gcp-2026-09-30#P-524",
+     "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-524 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004393",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+    "item": "P-526",
+    "version": 143,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-522"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004374",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-capacity-and-cost-gcp-2026-09-30#P-526",
+     "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-526 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004538",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "mdenseon-adoption-measurements-2026-10-01",
+    "item": "P-004",
+    "version": 10,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004536",
+     "contract": "settled",
+     "state": "done",
+     "authority": "proposed",
+     "reason": [
+      "authority"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004537",
+     "contract": "settled",
+     "state": "wip",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:mdenseon-adoption-measurements-2026-10-01#P-004",
+     "summary": "plan lane mdenseon-adoption-measurements-2026-10-01#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004541",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "mdenseon-adoption-measurements-2026-10-01",
+    "item": "P-007",
+    "version": 10,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005",
+     "P-006"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004539",
+     "contract": "settled",
+     "state": "wip",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004540",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:mdenseon-adoption-measurements-2026-10-01#P-007",
+     "summary": "plan lane mdenseon-adoption-measurements-2026-10-01#P-007 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004542",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "mdenseon-adoption-measurements-2026-10-01",
+    "item": "P-008",
+    "version": 10,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-003",
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004537",
+     "contract": "settled",
+     "state": "wip",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004538",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:mdenseon-adoption-measurements-2026-10-01#P-008",
+     "summary": "plan lane mdenseon-adoption-measurements-2026-10-01#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004543",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "mdenseon-adoption-measurements-2026-10-01",
+    "item": "P-009",
+    "version": 10,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004",
+     "P-005",
+     "P-006",
+     "P-007",
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004538",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004539",
+     "contract": "settled",
+     "state": "wip",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004540",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004541",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004542",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:mdenseon-adoption-measurements-2026-10-01#P-009",
+     "summary": "plan lane mdenseon-adoption-measurements-2026-10-01#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004575",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "observation-candidate-acceptance-promotion-2026-09-30",
+    "item": "P-012",
+    "version": 60,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-003",
+     "P-006",
+     "P-007",
+     "P-008",
+     "P-009",
+     "P-010",
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "frozen-repair-queue:papercusp d4946901998c / WI-10004340",
+     "summary": "P-012 bars R-12/R-38/R-39/R-40 need deployed-plane evidence. The release-operator (:3070) still serves f52b2457ba, which lacks the plan-1 code. main is held by the frozen repair queue (candidate d4946901998c, repairHead c0c038ca); its gate run is in flight."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004736",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "iphone-public-release-2026-08-11",
+    "item": "P-009",
+    "version": 52,
+    "planState": "active",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-007",
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004734",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004735",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:iphone-public-release-2026-08-11#P-009",
+     "summary": "plan lane iphone-public-release-2026-08-11#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004737",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "iphone-public-release-2026-08-11",
+    "item": "P-010",
+    "version": 52,
+    "planState": "active",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-009"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004736",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:iphone-public-release-2026-08-11#P-010",
+     "summary": "plan lane iphone-public-release-2026-08-11#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004738",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "iphone-public-release-2026-08-11",
+    "item": "P-011",
+    "version": 52,
+    "planState": "active",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004735",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:iphone-public-release-2026-08-11#P-011",
+     "summary": "plan lane iphone-public-release-2026-08-11#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004739",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "iphone-public-release-2026-08-11",
+    "item": "P-012",
+    "version": 52,
+    "planState": "active",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-009",
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004736",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004738",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:iphone-public-release-2026-08-11#P-012",
+     "summary": "plan lane iphone-public-release-2026-08-11#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004740",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "iphone-public-release-2026-08-11",
+    "item": "P-013",
+    "version": 52,
+    "planState": "active",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-010",
+     "P-011",
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004737",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004738",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004739",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:iphone-public-release-2026-08-11#P-013",
+     "summary": "plan lane iphone-public-release-2026-08-11#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004757",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "voice-final-public-release-2026-10-01",
+    "item": "P-001",
+    "version": 23,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:voice-final-public-release-2026-10-01#P-001",
+     "summary": "plan lane voice-final-public-release-2026-10-01#P-001 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004758",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "voice-final-public-release-2026-10-01",
+    "item": "P-002",
+    "version": 23,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004757",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:voice-final-public-release-2026-10-01#P-002",
+     "summary": "plan lane voice-final-public-release-2026-10-01#P-002 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004759",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "voice-final-public-release-2026-10-01",
+    "item": "P-003",
+    "version": 23,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004757",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:voice-final-public-release-2026-10-01#P-003",
+     "summary": "plan lane voice-final-public-release-2026-10-01#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004760",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "voice-final-public-release-2026-10-01",
+    "item": "P-004",
+    "version": 23,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004757",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:voice-final-public-release-2026-10-01#P-004",
+     "summary": "plan lane voice-final-public-release-2026-10-01#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004761",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "voice-final-public-release-2026-10-01",
+    "item": "P-005",
+    "version": 23,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004758",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004759",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004760",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:voice-final-public-release-2026-10-01#P-005",
+     "summary": "plan lane voice-final-public-release-2026-10-01#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004762",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "voice-final-public-release-2026-10-01",
+    "item": "P-006",
+    "version": 23,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004761",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:voice-final-public-release-2026-10-01#P-006",
+     "summary": "plan lane voice-final-public-release-2026-10-01#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004770",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-003",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004768",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-003",
+     "summary": "plan lane android-public-release-2026-10-01#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004771",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-004",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004768",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-004",
+     "summary": "plan lane android-public-release-2026-10-01#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004772",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-005",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004768",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-005",
+     "summary": "plan lane android-public-release-2026-10-01#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004775",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-008",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004",
+     "P-005",
+     "P-006",
+     "P-007"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004768",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004770",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004771",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004772",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004773",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004774",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-008",
+     "summary": "plan lane android-public-release-2026-10-01#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004776",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-009",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004775",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-009",
+     "summary": "plan lane android-public-release-2026-10-01#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004777",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-010",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "needs-human",
+    "directDependencies": [
+     "P-009"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004776",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-010",
+     "summary": "plan lane android-public-release-2026-10-01#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004778",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-011",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-010"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004777",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-011",
+     "summary": "plan lane android-public-release-2026-10-01#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004779",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-012",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "needs-human",
+    "directDependencies": [
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004778",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-012",
+     "summary": "plan lane android-public-release-2026-10-01#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004780",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-013",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004779",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-013",
+     "summary": "plan lane android-public-release-2026-10-01#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004781",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "android-public-release-2026-10-01",
+    "item": "P-014",
+    "version": 21,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-013"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004780",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:android-public-release-2026-10-01#P-014",
+     "summary": "plan lane android-public-release-2026-10-01#P-014 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004839",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "cloud-app-live-tutorial-2026-10-01",
+    "item": "P-012",
+    "version": 78,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-010",
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004837",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:cloud-app-live-tutorial-2026-10-01#P-012",
+     "summary": "plan lane cloud-app-live-tutorial-2026-10-01#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004885",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "ship-precomputed-doc-vectors-2026-10-01",
+    "item": "P-003",
+    "version": 17,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "server-deb-cut-with-doc-vector-seed / EI-24772280438994236",
+     "summary": "Needs a Server .deb cut from a source carrying the doc-vector seed (superproject >=49f6d06dcf, desktop >=5e54b97d); 0.0.26 and the 0.0.27 tag 163b61ef84 lack it."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004984",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-002",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "needs-human",
+    "directDependencies": [
+     "P-001"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan:phone-public-telephone-service-2026-10-01#P-002-public-media",
+     "summary": "Supply approved public WSS and TURN hostnames, TCP/443 frontend and certificate renewal route, ICE/RTP network route, and two remote client paths for authenticated bidirectional audio."
+    },
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-002",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-002 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004986",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-004",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "needs-human",
+    "directDependencies": [
+     "P-001",
+     "P-002",
+     "P-003",
+     "P-010",
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004984",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004988",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004989",
+     "contract": "settled",
+     "state": "needs-human",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-004",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    },
+    {
+     "ref": "TELNYX_API_KEY",
+     "summary": "Carrier account/secure credential reference, provider/KYC/number authority and hard pilot/monthly spend limits are pending Avi inputs."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004988",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-010",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "phone-public-telephone-service-2026-10-01#P-004",
+     "summary": "Final P-010 carrier-specific signed callback/replay, PSTN routing, toll-fraud and emergency acceptance require an approved provider/account and its actual contract/API specs; qualified legal/security signoff remains."
+    },
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-010",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-010 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004990",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-005",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004986",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-005",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004991",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-006",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004",
+     "P-010",
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004986",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004988",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004989",
+     "contract": "settled",
+     "state": "needs-human",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-006",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004992",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-007",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005",
+     "P-006"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004990",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004991",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-007",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-007 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004995",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-013",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004",
+     "P-005",
+     "P-006",
+     "P-007",
+     "P-008",
+     "P-009",
+     "P-010",
+     "P-011",
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004987",
+     "contract": "settled",
+     "state": "needs-human",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004988",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004989",
+     "contract": "settled",
+     "state": "needs-human",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004990",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004991",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004992",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10004993",
+     "contract": "settled",
+     "state": "done",
+     "authority": "proposed",
+     "reason": [
+      "authority"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-013",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004996",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-014",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-013"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004995",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-014",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-014 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004997",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-015",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-014"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004996",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-015",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-015 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10004998",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "phone-public-telephone-service-2026-10-01",
+    "item": "P-016",
+    "version": 51,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-015"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10004997",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:phone-public-telephone-service-2026-10-01#P-016",
+     "summary": "plan lane phone-public-telephone-service-2026-10-01#P-016 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005024",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01",
+    "item": "P-006",
+    "version": 34,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002",
+     "P-004",
+     "P-007"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01#P-006",
+     "summary": "plan lane feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    },
+    {
+     "ref": "green-checkpoint:papercusp",
+     "summary": "Deployed-only property: a multi-hour run of 5 long-lived fleet member sessions on plan-2 code. Staging/current-build cannot host it because fleet:launch-on-plan has no operator selector (all member MCP goes :9071 -> :3070) and :3170 restarts many times a day, which the project rule forbids for long-lived MCP sessions. :3070 serves main f52b2457ba, without P-001/P-002/P-004/P-007. The gate (held by su-3ee17ad9) is converging frozen candidate d4946901; plan-2 paths are only in the next candidate e6584ff8. P-002 (WI-10005020) must also finish."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005851",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "cloud-portal-novice-independence-2026-10-03",
+    "item": "P-002",
+    "version": 11,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005850",
+     "contract": "settled",
+     "state": "wip",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:cloud-portal-novice-independence-2026-10-03#P-002",
+     "summary": "plan lane cloud-portal-novice-independence-2026-10-03#P-002 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005852",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "cloud-portal-novice-independence-2026-10-03",
+    "item": "P-003",
+    "version": 11,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005851",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:cloud-portal-novice-independence-2026-10-03#P-003",
+     "summary": "plan lane cloud-portal-novice-independence-2026-10-03#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005853",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "cloud-portal-novice-independence-2026-10-03",
+    "item": "P-004",
+    "version": 11,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005852",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "WI-10005908",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:cloud-portal-novice-independence-2026-10-03#P-004",
+     "summary": "plan lane cloud-portal-novice-independence-2026-10-03#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005854",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "cloud-portal-novice-independence-2026-10-03",
+    "item": "P-005",
+    "version": 11,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005853",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:cloud-portal-novice-independence-2026-10-03#P-005",
+     "summary": "plan lane cloud-portal-novice-independence-2026-10-03#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005859",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-002",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005858",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-002",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-002 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005860",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-003",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005858",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005859",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-003",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005861",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-004",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005860",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-004",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005862",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-005",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005861",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-005",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005863",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-006",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005859",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005862",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-006",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005865",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-008",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-003",
+     "P-004",
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005860",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005861",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005862",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-008",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005866",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-009",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-006",
+     "P-007",
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005863",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005864",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005865",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-009",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005867",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-010",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-003",
+     "P-009"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005858",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005860",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005866",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-010",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005868",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-011",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-010"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005867",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-011",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005869",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-012",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005868",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-012",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005870",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-013",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005858",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005859",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-013",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005871",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-014",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-013"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005870",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-014",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-014 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005872",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-015",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005859",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005860",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-015",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-015 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005873",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-016",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-009",
+     "P-011",
+     "P-015"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005866",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005868",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005872",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-016",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-016 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005874",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-017",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005868",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-017",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-017 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005875",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "papercusp-monetization-2026-09-04",
+    "item": "P-018",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-012",
+     "P-014",
+     "P-016",
+     "P-017"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005869",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005871",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005873",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005874",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:papercusp-monetization-2026-09-04#P-018",
+     "summary": "plan lane papercusp-monetization-2026-09-04#P-018 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005890",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "item": "P-005",
+    "version": 12,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "WI-10005848",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:get-feedback-reliability-usefulness-adoption-2026-10-03#P-005",
+     "summary": "plan lane get-feedback-reliability-usefulness-adoption-2026-10-03#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005891",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "item": "P-006",
+    "version": 12,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-001",
+     "P-002",
+     "P-003",
+     "P-004",
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005889",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-10005890",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "WI-10005836",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "WI-10005848",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "WI-10005886",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:get-feedback-reliability-usefulness-adoption-2026-10-03#P-006",
+     "summary": "plan lane get-feedback-reliability-usefulness-adoption-2026-10-03#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-10005892",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "item": "P-007",
+    "version": 12,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-006"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-10005891",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:get-feedback-reliability-usefulness-adoption-2026-10-03#P-007",
+     "summary": "plan lane get-feedback-reliability-usefulness-adoption-2026-10-03#P-007 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-1030250",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "incremental-test-proof-reuse-2026-08-30",
+    "item": "P-006",
+    "version": 27,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-1030248",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:incremental-test-proof-reuse-2026-08-30#P-006",
+     "summary": "plan lane incremental-test-proof-reuse-2026-08-30#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-1044557",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "unified-web-portal-2026-08-29",
+    "item": "P-015",
+    "version": 266,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-014",
+     "P-031",
+     "P-107",
+     "P-108"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:unified-web-portal-2026-08-29#P-015",
+     "summary": "plan lane unified-web-portal-2026-08-29#P-015 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-1074216",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+    "item": "P-006",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004",
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "p006-r5-independent-vetting-and-r6-release-receipt",
+     "summary": "P-006 completion requires unrelated rev7 rubric/grading-integrity review with L3 census and exact shipped artifact/runtime/P001-P005 path blobs from sole live gate owner."
+    }
+   ],
+   "claimHold": true,
+   "holdReason": "P-006 checkpoint preserves verified staging evidence and unresolved release proof. Release my only concurrent claim slot while the exact deployed-only event await #222906 remains armed; re-claim P-006 on shipment receipt."
+  },
+  {
+   "id": "WI-1439",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "voice-unified-sentinel-pipeline-2026-07-01",
+    "item": "P-016",
+    "version": 79,
+    "planState": "ready",
+    "itemState": "needs-human",
+    "directDependencies": [
+     "P-012",
+     "P-013"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "elevenlabs-conv:convai_write",
+     "summary": "Live EL acceptance cannot mint a session because the configured API key lacks convai_write."
+    }
+   ],
+   "claimHold": true,
+   "holdReason": "Cannot be executed by an agent: this item's acceptance criterion IS the owner human speaking at a microphone (desktop voice round-trip + TUI `v` PTT / `V` session). No agent can substitute for owner human acceptance, so claiming it can only ever waste a cycle. AUTO mode lifts permission gates, not physical capability.\n\nclaimHold:true (not a plain release) is deliberate: this is at least the THIRD agent claim in ~6h. Two codex sessions (5h and 6h ago) each recorded the identical outcome — claimed"
+  },
+  {
+   "id": "WI-149547",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "meeting-prep-brief-2026-08-22@run-390401638231068526",
+    "item": "P-002",
+    "version": null,
+    "planState": null,
+    "itemState": null,
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:meeting-prep-brief-2026-08-22@run-390401638231068526#P-002",
+     "summary": "plan lane meeting-prep-brief-2026-08-22@run-390401638231068526#P-002 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    },
+    {
+     "ref": "plan-lane:meeting-prep-brief-2026-08-22#P-002",
+     "summary": "plan lane meeting-prep-brief-2026-08-22#P-002 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-149550",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "meeting-prep-brief-2026-08-22@run-390401638231068526",
+    "item": "P-003",
+    "version": null,
+    "planState": null,
+    "itemState": null,
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-149547",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:meeting-prep-brief-2026-08-22@run-390401638231068526#P-003",
+     "summary": "plan lane meeting-prep-brief-2026-08-22@run-390401638231068526#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    },
+    {
+     "ref": "plan-lane:meeting-prep-brief-2026-08-22#P-003",
+     "summary": "plan lane meeting-prep-brief-2026-08-22#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-149552",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "meeting-prep-brief-2026-08-22@run-390401638231068526",
+    "item": "P-004",
+    "version": null,
+    "planState": null,
+    "itemState": null,
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-149550",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:meeting-prep-brief-2026-08-22@run-390401638231068526#P-004",
+     "summary": "plan lane meeting-prep-brief-2026-08-22@run-390401638231068526#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    },
+    {
+     "ref": "plan-lane:meeting-prep-brief-2026-08-22#P-004",
+     "summary": "plan lane meeting-prep-brief-2026-08-22#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-1591",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "local-concurrent-inference-2026-07-02",
+    "item": "P-002",
+    "version": 87,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-1597",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "local-concurrent-inference-2026-07-02",
+    "item": "P-008",
+    "version": 87,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:local-concurrent-inference-2026-07-02#P-008",
+     "summary": "plan lane local-concurrent-inference-2026-07-02#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-1775",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "backend-reliability-100pct-2026-07-03",
+    "item": "P-004",
+    "version": 60,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2092046",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "resource-governor-admission-ledger-2026-09-01",
+    "item": "P-005",
+    "version": 47,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2092048",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "resource-governor-admission-ledger-2026-09-01",
+    "item": "P-007",
+    "version": 47,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-006"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "resource-governor cutover seal: every independently deployed writer must be ledger-only (plan decision D-012)",
+     "summary": "Narrow deployed-only property, not a general wait-for-green-main. The cutover seal in admission-cutover-store.ts asserts 'Every independently deployed resource-governor writer is ledger-only' — a claim quantified over DEPLOYED writers, which staging cannot establish because it cannot speak for what :3070 is executing. Until the seal fires, the dual-write path keeps emitting legacy work_items rows by design, so P-005's cleanup cannot converge. All deploy-INDEPENDENT acceptance is already complete and recorded on staging — do not re-run it."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139953",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-004",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-003"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139952",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-004",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139954",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-005",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139951",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139952",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139953",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-005",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139955",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-006",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139951",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139952",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139953",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-006",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139956",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-007",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139951",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139952",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139953",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-007",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-007 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139957",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-008",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005",
+     "P-006",
+     "P-007"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139954",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139955",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139956",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-008",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139958",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-009",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139957",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-009",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139959",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-010",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139957",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-010",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139960",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-011",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139957",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-011",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139961",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-012",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-009",
+     "P-010",
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139958",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139959",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139960",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-012",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139962",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-013",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139961",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-013",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139963",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-014",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139961",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-014",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-014 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139964",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-015",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139961",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-015",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-015 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139965",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-016",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-013",
+     "P-014",
+     "P-015"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139962",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139963",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    },
+    {
+     "ref": "papercusp#WI-2139964",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-016",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-016 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139966",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-017",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-016"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139965",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-017",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-017 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139967",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-018",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-017"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139966",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-018",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-018 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139968",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-019",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-018"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139967",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-019",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-019 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2139969",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "scriptc-incremental-parity-migration-2026-08-20",
+    "item": "P-020",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-019"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2139968",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:scriptc-incremental-parity-migration-2026-08-20#P-020",
+     "summary": "plan lane scriptc-incremental-parity-migration-2026-08-20#P-020 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2140920",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "portal-work-two-pane-2026-09-01",
+    "item": "P-005",
+    "version": 13,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-003",
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "gate-red-streak:papercusp",
+     "summary": "Narrow deployed-only property: the two-pane Plans/Inbox layout as composed INSIDE the portal frame at :3081, whose bundle hardcodes the 127.0.0.1:3070 origin (the release checkout tracking main). No staging/current-build surface serves that origin, so only this composed view waits on the deploy."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2140921",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "portal-work-two-pane-2026-09-01",
+    "item": "P-006",
+    "version": 13,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2140920",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:portal-work-two-pane-2026-09-01#P-006",
+     "summary": "plan lane portal-work-two-pane-2026-09-01#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2141381",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "memory-vector-entity-index-split-2026-09-02",
+    "item": "P-006",
+    "version": 29,
+    "planState": "draft",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "pg_stat_statements aggregate over real fleet recall traffic on the serving operator",
+     "summary": "Deployed-only property: P-006 measures the FLEET-WIDE aggregate in pg_stat_statements (buffers/call, rows/call over all agents' real memory:search calls). That statistic is produced by the process actually serving the fleet; staging/current-build has no fleet recall traffic to aggregate, so it cannot exercise this property at any build."
+    },
+    {
+     "ref": "plan-lane:memory-vector-entity-index-split-2026-09-02#P-006",
+     "summary": "plan lane memory-vector-entity-index-split-2026-09-02#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2144607",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "blender-evidence-driven-learning-redesign-2026-09-04",
+    "item": "P-012",
+    "version": 37,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:blender-evidence-driven-learning-redesign-2026-09-04#P-012",
+     "summary": "plan lane blender-evidence-driven-learning-redesign-2026-09-04#P-012 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2144784",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "fleet-friction-remediation-2026-08-21",
+    "item": "P-012",
+    "version": 60,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-002",
+     "P-003",
+     "P-004",
+     "P-005",
+     "P-006",
+     "P-007",
+     "P-008",
+     "P-009",
+     "P-010",
+     "P-011"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:fleet-friction-remediation-2026-08-21#P-012",
+     "summary": "plan lane fleet-friction-remediation-2026-08-21#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2144785",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "fleet-friction-remediation-2026-08-21",
+    "item": "P-013",
+    "version": 60,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-012"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2144784",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:fleet-friction-remediation-2026-08-21#P-013",
+     "summary": "plan lane fleet-friction-remediation-2026-08-21#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2146349",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
+    "item": "P-005",
+    "version": 48,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "gate.greenCheckpoint.ownership",
+     "summary": "P-005 deployed-only acceptance depends on the live gate holder promoting the staging candidate."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2146515",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "pui-tui-next-wave-2026-09-05",
+    "item": "P-001",
+    "version": 44,
+    "planState": "shipped",
+    "itemState": "needs-human",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:pui-tui-next-wave-2026-09-05#P-001",
+     "summary": "plan lane pui-tui-next-wave-2026-09-05#P-001 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    },
+    {
+     "ref": "elevenlabs-conv:convai_write",
+     "summary": "P-001 voice-plan closeout is blocked on the configured ElevenLabs key lacking convai_write."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-2146529",
+   "state": "dropped",
+   "disposition": "verified-obsolete-mirror-dropped",
+   "reason": "Source P015 done; canonical WI10000278 done/committed; duplicate mirror dropped (post1157071), P001 human residue preserved.",
+   "source": {
+    "plan": "pui-tui-next-wave-2026-09-05",
+    "item": "P-015",
+    "version": 44,
+    "planState": "shipped",
+    "itemState": "done",
+    "directDependencies": [
+     "P-001",
+     "P-002",
+     "P-003",
+     "P-006",
+     "P-007",
+     "P-008",
+     "P-009",
+     "P-010",
+     "P-011",
+     "P-012",
+     "P-013",
+     "P-014"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2146515",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-3133",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": null,
+    "item": null,
+    "version": null,
+    "planState": null,
+    "itemState": null,
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-2039873",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "coord-send-a30339b13894c2c2ce5f4f508a23cb5c955353b90881f56519dd0cd45e5055ee",
+     "summary": "Mac VM rig custody held by su-0300ecfc (WI-2039873) until their P-203 build #8 proof (~13:00-14:00Z) — all VM sidecar restarts and teardown-capable scripts on hold, which blocks E2E dimensions 3-5."
+    }
+   ],
+   "claimHold": true,
+   "holdReason": "Blocked on peer su-0300ecfc's physical Mac VM rig custody (WI-2039873) with no ETA; blocker + next-verb now recorded durably on the item. Releasing the claim slot to work the live queue rather than idle. claimHold:true so nothing self-selects this and blunders into the rig hold — I re-claim by id when custody frees. Item stays deliberately non-terminal: only 2 of 5 E2E dimensions are covered."
+  },
+  {
+   "id": "WI-341",
+   "state": "dropped",
+   "disposition": "verified-obsolete-mirror-dropped",
+   "reason": "Source P142 dropped in superseded plan.",
+   "source": {
+    "plan": "deterministic-blueprints-migration-2026-06-13",
+    "item": "P-142",
+    "version": 7,
+    "planState": "superseded",
+    "itemState": "dropped",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-3475",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "desktop-auto-update-operational-2026-07-09",
+    "item": "P-007",
+    "version": 60,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:desktop-auto-update-operational-2026-07-09#P-007",
+     "summary": "plan lane desktop-auto-update-operational-2026-07-09#P-007 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-356",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "papercup-physical-rename-phase5-2026-06-20",
+    "item": "P-006",
+    "version": 54,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-008",
+     "P-009"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "protected-acceptance:papercup-physical-rename-phase5-2026-06-20#P-006",
+     "summary": "D-007 local source repairs are verified. Final acceptance lacks an exact current-source full-suite green receipt and remains in the protected plan route for tunnel/federation/remote/window-dependent acceptance; fleet leader owns that route."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-360",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "papercup-to-papercusp-migration-2026-06-20",
+    "item": "P-006",
+    "version": 36,
+    "planState": "active",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-371",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "worker-chunk-loop-operator-hosted-2026-06-14",
+    "item": "P-021",
+    "version": 4,
+    "planState": "draft",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-372",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "worker-chunk-loop-operator-hosted-2026-06-14",
+    "item": "P-030",
+    "version": 4,
+    "planState": "draft",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-371",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-38602",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "release-build-vm-dev-parity-audit-2026-08-13",
+    "item": "P-006",
+    "version": 90,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:release-build-vm-dev-parity-audit-2026-08-13#P-006",
+     "summary": "plan lane release-build-vm-dev-parity-audit-2026-08-13#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": true,
+   "holdReason": "UNPARK CONDITION: both :3270 AND :3274 return zero listeners (dev:listening_ports), or Avi authorizes a route. Blocked on D-008, which forbids the only three agent-available escapes — port substitution, operator reuse, and stopping Avi's live desktop — while PID 2067090 (the operator backing that desktop) holds both ports. Re-verified 04:0xZ. This item churned through 6+ agents in sequence, each re-deriving the same block and releasing it back into the pool; the plan-item `blocked` flip alone do"
+  },
+  {
+   "id": "WI-38604",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "release-build-vm-dev-parity-audit-2026-08-13",
+    "item": "P-008",
+    "version": 90,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-003",
+     "P-004",
+     "P-005",
+     "P-006",
+     "P-007"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-38602",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:release-build-vm-dev-parity-audit-2026-08-13#P-008",
+     "summary": "plan lane release-build-vm-dev-parity-audit-2026-08-13#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-38605",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "release-build-vm-dev-parity-audit-2026-08-13",
+    "item": "P-009",
+    "version": 90,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-38604",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:release-build-vm-dev-parity-audit-2026-08-13#P-009",
+     "summary": "plan lane release-build-vm-dev-parity-audit-2026-08-13#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-38606",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "release-build-vm-dev-parity-audit-2026-08-13",
+    "item": "P-010",
+    "version": 90,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-009"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-38605",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:release-build-vm-dev-parity-audit-2026-08-13#P-010",
+     "summary": "plan lane release-build-vm-dev-parity-audit-2026-08-13#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-38607",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "release-build-vm-dev-parity-audit-2026-08-13",
+    "item": "P-011",
+    "version": 90,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-010"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-38606",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:release-build-vm-dev-parity-audit-2026-08-13#P-011",
+     "summary": "plan lane release-build-vm-dev-parity-audit-2026-08-13#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-40563",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "serialize-and-slow-kopia-backups-2026-08-20",
+    "item": "P-007",
+    "version": 30,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005",
+     "P-006"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "release:a29ccc214-containing-green-deploy",
+     "summary": "Deployed a2d69 completion gate lacks the landed plan_slug identity predicate and falsely imports foreign P-007 VALs; target a29ccc214 contains fix c87a294a9922."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-40668",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "learning-loop-identity-and-consumption-2026-08-08",
+    "item": "P-016",
+    "version": 95,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:learning-loop-identity-and-consumption-2026-08-08#P-016",
+     "summary": "plan lane learning-loop-identity-and-consumption-2026-08-08#P-016 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    },
+    {
+     "ref": "p016-window-ready:2026-08-29T23:03:09-04:00",
+     "summary": "Await seven full days of live post-P-013 filing data; earliest valid measurement is 2026-08-29T23:03:09-04:00."
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41086",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-003",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41087",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-004",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41088",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-005",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41089",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-006",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41091",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-008",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41092",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-009",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41093",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-010",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:lsp-fleet-scale-all-languages-2026-08-21#P-010",
+     "summary": "plan lane lsp-fleet-scale-all-languages-2026-08-21#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": true,
+   "holdReason": "verify"
+  },
+  {
+   "id": "WI-41094",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-011",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41095",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-012",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-41096",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "lsp-fleet-scale-all-languages-2026-08-21",
+    "item": "P-014",
+    "version": 59,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-41088",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:lsp-fleet-scale-all-languages-2026-08-21#P-014",
+     "summary": "plan lane lsp-fleet-scale-all-languages-2026-08-21#P-014 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-42424",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "directed-pair-work-items-2026-08-25",
+    "item": "P-008",
+    "version": 125,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-007"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:directed-pair-work-items-2026-08-25#P-008",
+     "summary": "plan lane directed-pair-work-items-2026-08-25#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-42425",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "directed-pair-work-items-2026-08-25",
+    "item": "P-009",
+    "version": 125,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-42424",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:directed-pair-work-items-2026-08-25#P-009",
+     "summary": "plan lane directed-pair-work-items-2026-08-25#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-4480",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": null,
+    "item": null,
+    "version": null,
+    "planState": null,
+    "itemState": null,
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-4630",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "autonomous-loop-prod-audit-2026-07-02",
+    "item": "P-010",
+    "version": 82,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:autonomous-loop-prod-audit-2026-07-02#P-010",
+     "summary": "plan lane autonomous-loop-prod-audit-2026-07-02#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-5088",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "desktop-build-speed-2026-07-16",
+    "item": "P-009",
+    "version": 43,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:desktop-build-speed-2026-07-16#P-009",
+     "summary": "plan lane desktop-build-speed-2026-07-16#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-5311",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "deterministic-status-cards-2026-07-17",
+    "item": "P-003",
+    "version": 19,
+    "planState": "shipped",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-5312",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "deterministic-status-cards-2026-07-17",
+    "item": "P-004",
+    "version": 19,
+    "planState": "shipped",
+    "itemState": "todo",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  },
+  {
+   "id": "WI-6289",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "gym-real-fitness-signal-2026-07-27",
+    "item": "P-004",
+    "version": 49,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:gym-real-fitness-signal-2026-07-27#P-004",
+     "summary": "plan lane gym-real-fitness-signal-2026-07-27#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-6290",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "gym-real-fitness-signal-2026-07-27",
+    "item": "P-005",
+    "version": 49,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-004"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-6289",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:gym-real-fitness-signal-2026-07-27#P-005",
+     "summary": "plan lane gym-real-fitness-signal-2026-07-27#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-6293",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "gym-real-fitness-signal-2026-07-27",
+    "item": "P-008",
+    "version": 49,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-007"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-6292",
+     "contract": "settled",
+     "state": "open",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:gym-real-fitness-signal-2026-07-27#P-008",
+     "summary": "plan lane gym-real-fitness-signal-2026-07-27#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-6294",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "gym-real-fitness-signal-2026-07-27",
+    "item": "P-009",
+    "version": 49,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:gym-real-fitness-signal-2026-07-27#P-009",
+     "summary": "plan lane gym-real-fitness-signal-2026-07-27#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-6295",
+   "state": "blocked",
+   "disposition": "retained-current-dependency",
+   "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
+   "source": {
+    "plan": "gym-real-fitness-signal-2026-07-27",
+    "item": "P-010",
+    "version": 49,
+    "planState": "ready",
+    "itemState": "todo",
+    "directDependencies": [
+     "P-008"
+    ]
+   },
+   "canonicalUnresolved": [
+    {
+     "ref": "papercusp#WI-6293",
+     "contract": "settled",
+     "state": "blocked",
+     "authority": null,
+     "reason": [
+      "nonterminal"
+     ]
+    }
+   ],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:gym-real-fitness-signal-2026-07-27#P-010",
+     "summary": "plan lane gym-real-fitness-signal-2026-07-27#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-6629",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "no-http-anywhere-2026-07-28",
+    "item": "P-020",
+    "version": 214,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:no-http-anywhere-2026-07-28#P-020",
+     "summary": "plan lane no-http-anywhere-2026-07-28#P-020 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-6711",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "fleet-leadership-continuity-and-actuation-2026-08-01",
+    "item": "P-011",
+    "version": 42,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-010"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": true,
+   "holdReason": "UNPARK WHEN: WI-2145698 (wake-delivery pump attempts-tier starvation) is fixed and deployed. Then re-measure leg (B) reaction latency ONLY — leg (A), the ~4x wake-count win, is already measured and settled (see WI-6711 checkpoint + plan decision D-012). Parked so no peer burns a claim on an item that cannot progress until that fix lands."
+  },
+  {
+   "id": "WI-6884",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "agent-context-firewall-and-output-spill-2026-08-02",
+    "item": "P-006",
+    "version": 61,
+    "planState": "shipped",
+    "itemState": "blocked",
+    "directDependencies": [
+     "P-005"
+    ]
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [
+    {
+     "ref": "plan-lane:agent-context-firewall-and-output-spill-2026-08-02#P-006",
+     "summary": "plan lane agent-context-firewall-and-output-spill-2026-08-02#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
+    }
+   ],
+   "claimHold": false
+  },
+  {
+   "id": "WI-8488",
+   "state": "blocked",
+   "disposition": "requires-further-qualification",
+   "reason": "Stored block needs current history and prerequisite qualification.",
+   "source": {
+    "plan": "memory-corpus-hygiene-and-release-distribution-2026-08-03",
+    "item": "P-014",
+    "version": 90,
+    "planState": "ready",
+    "itemState": "blocked",
+    "directDependencies": []
+   },
+   "canonicalUnresolved": [],
+   "externalConditions": [],
+   "claimHold": false
+  }
+ ]
+}
