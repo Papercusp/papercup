@@ -6,6 +6,15 @@ import { servePublicDocs } from '@papercusp/operator-core/lib/public-docs';
 const root = resolve(import.meta.dirname, '../../papercusp-docs/dist');
 
 describe('built public manual contract', () => {
+  it.each(['quickstart', 'plans-and-work', 'agent-modes-and-fleets', 'accounts-and-billing', 'voice'])(
+    'serves a new guide as indexed article content: %s', async (slug) => {
+      const response = await servePublicDocs(new Request(`https://app.papercusp.com/docs/${slug}`), root);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain('data-pagefind-body');
+      expect(html).toContain(`https://app.papercusp.com/docs/${slug}`);
+    },
+  );
   it('serves every built search resource, including binary formats fetched by JavaScript', async () => {
     const files = readdirSync(resolve(root, 'pagefind'), { recursive: true })
       .filter((name): name is string => typeof name === 'string' && statSync(resolve(root, 'pagefind', name)).isFile());

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { frontmatterDocuments, parseDocumentsField } from '@papercusp/operator-core/lib/harness/docs/subject-ref';
 
 const root = resolve(import.meta.dirname, '../../papercusp-docs');
 const content = resolve(root, 'src/content/docs');
 const pages = ['index', 'using-the-app', 'workspaces-and-agents', 'harness-templates',
-  'harness-snapshots', 'plugins', 'remote-access', 'troubleshooting'];
+  'harness-snapshots', 'plugins', 'remote-access', 'troubleshooting', 'cloud-workspaces',
+  'quickstart', 'plans-and-work', 'agent-modes-and-fleets', 'accounts-and-billing', 'voice'];
 
 describe('public user manual source readiness', () => {
   it.each(pages)('publishes a substantive maintained guide: %s', (slug) => {
@@ -33,5 +35,29 @@ describe('public user manual source readiness', () => {
         expect(existsSync(resolve(content, `${slug}.mdx`)), `${file}: ${match[0]}`).toBe(true);
       }
     }
+  });
+  it.each(pages)('declares real code anchors for drift review: %s', (slug) => {
+    const text = readFileSync(resolve(content, `${slug}.mdx`), 'utf8');
+    const refs = parseDocumentsField(frontmatterDocuments(text));
+    expect(refs.length, `${slug} has no source anchor`).toBeGreaterThan(0);
+    for (const ref of refs) {
+      expect(ref.kind).toBe('path');
+      if (ref.kind !== 'path') continue;
+      for (const path of ref.globs) {
+        expect(path).not.toMatch(/(^\/|(^|\/)\.\.(\/|$))/);
+        expect(existsSync(resolve(root, '../..', path)), `${slug}: dead anchor ${path}`).toBe(true);
+      }
+    }
+  });
+  it('makes new workflow coverage reachable and distinct from project docs', () => {
+    const config = readFileSync(resolve(root, 'astro.config.mjs'), 'utf8');
+    const home = readFileSync(resolve(content, 'index.mdx'), 'utf8');
+    for (const slug of ['quickstart', 'plans-and-work', 'agent-modes-and-fleets', 'accounts-and-billing', 'voice']) {
+      expect(config, `missing sidebar entry ${slug}`).toContain(`'${slug}'`);
+      expect(home).toContain(`/docs/${slug}`);
+    }
+    const declaration = JSON.parse(readFileSync(resolve(root, '../../.papercusp/docs.json'), 'utf8'));
+    expect(declaration.root).toBe('apps/operator-docs/src/content/docs');
+    expect(declaration.sources['public-manual']).toBe('apps/papercusp-docs/src/content/docs');
   });
 });
