@@ -93,6 +93,41 @@ describe('goalHeadcount — liveness comes from the shared oracle, not a heartbe
     expect(oracle.seen).toEqual([]); // the oracle is not even paid for
   });
 
+  // EI-24909345582884838 — a respawn is net-zero on headcount, so the member being replaced must
+  // not occupy a seat while its replacement is admitted. The exclusion lives in the SQL (the
+  // session row never reaches the oracle), so these capture the tagged template and pin that the
+  // set is bound as a deduped `text[]` against `b.owner_id <> ALL(...)`.
+  const capturingSql = () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([{ total: 2, fleet: 1 }]);
+    };
+    return { sql: fn as unknown as Sql, calls };
+  };
+
+  it('binds excludeOwnerIds (deduped, empty ids dropped) as a text[] exclusion in the headcount SQL', async () => {
+    const { sql, calls } = capturingSql();
+    const r = await goalHeadcount({
+      workspaceId: WS,
+      goalId: GOAL,
+      fleetSlug: FLEET,
+      excludeOwnerIds: ['o-old', '', 'o-old', 'o-other'],
+      sql,
+    });
+    expect(r).toEqual({ headcount: { total: 2, fleet: 1 }, error: null });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].text).toMatch(/b\.owner_id <> ALL\(\?::text\[\]\)/);
+    expect(calls[0].values).toContainEqual(['o-old', 'o-other']);
+  });
+
+  it('binds an EMPTY exclusion when none is given — `<> ALL` over the empty set admits every row', async () => {
+    const { sql, calls } = capturingSql();
+    await goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, sql });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].values).toContainEqual([]);
+  });
+
   it('RECURRENCE GUARD: removes exactly the sessions the oracle calls `ended` — for EVERY SessionState', async () => {
     const states: Array<SessionState | null> = ['live', 'parked', 'draining', 'suspect', 'ended', 'recorded', null];
     for (const state of states) {
