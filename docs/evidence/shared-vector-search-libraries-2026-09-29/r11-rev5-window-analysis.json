@@ -52,16 +52,26 @@
     "eligibleSweeps": 266,
     "errorLikeLines": 74,
     "errorLinesPerEligibleSweep": 0.2781954887218045,
-    "errorClasses": {"budgetExpired": 53, "latchSkip": 9, "periodicSkip": 9, "batchFailed": 1, "other": 2},
-    "drainDurationSeconds": {"sampleCount": 256, "median": 74.5, "p90": 211}
+    "errorClasses": {
+      "budgetExpired": 53,
+      "latchSkip": 9,
+      "periodicSkip": 9,
+      "batchFailed": 1,
+      "other": 2
+    },
+    "drainDurationSeconds": {
+      "sampleCount": 256,
+      "median": 74.5,
+      "p90": 211
+    }
   },
   "observedCurrent": {
     "firstEmbedBackfillLine": "2026-10-02T04:42:00.456149Z",
     "lastEmbedBackfillLine": "2026-10-03T00:51:58.524808Z",
     "sourceBgHost": "r11-rev5-observed-bg-host-journal.txt",
-    "sourceBgHostSha256": "766586e5a32708e34e62817442e713570e7e5a4b8041c559edfdabb543b105c9",
+    "sourceBgHostSha256": "1d760ca82ad0639c1be9f51c7672e1f48ddadc3ba9c4b25efd6a62ff73a0e698",
     "sourceSidecar": "r11-rev5-observed-sidecar-events.txt",
-    "sourceSidecarSha256": "13e7b845309ef93147123e34942ab1710870e24c7ad97847047daf7474ec0cb9",
+    "sourceSidecarSha256": "464bc93bc84c027ae814ddcb51583641abbcdbb1616bf40dabb18272d43285f6",
     "embedBackfillLines": 1266,
     "sidecarJournalLines": 417,
     "sidecarStopStartLines": 13,
@@ -71,8 +81,16 @@
     "eligibleSweeps": 205,
     "errorLikeLines": 112,
     "errorLinesPerEligibleSweep": 0.5463414634146342,
-    "errorClasses": {"budgetExpired": 66, "latchSkip": 23, "periodicSkip": 23},
-    "drainDurationSeconds": {"sampleCount": 187, "median": 119, "p90": 219},
+    "errorClasses": {
+      "budgetExpired": 66,
+      "latchSkip": 23,
+      "periodicSkip": 23
+    },
+    "drainDurationSeconds": {
+      "sampleCount": 187,
+      "median": 119,
+      "p90": 219
+    },
     "embeddedPerTarget": {
       "harness_escalations": 6,
       "operator_turns": 421,
@@ -85,7 +103,19 @@
       "code_recipes": 1,
       "consult_state": 11
     },
-    "zeroScannedTargets": ["harness_brainstorm", "harness_decisions", "datatype_registry", "interest_watches"]
+    "zeroScannedTargets": [
+      "harness_brainstorm",
+      "harness_decisions",
+      "datatype_registry",
+      "interest_watches"
+    ],
+    "sourceBgHostRawSha256": "766586e5a32708e34e62817442e713570e7e5a4b8041c559edfdabb543b105c9",
+    "sourceSidecarRawSha256": "13e7b845309ef93147123e34942ab1710870e24c7ad97847047daf7474ec0cb9",
+    "identityRedaction": {
+      "method": "scripts/lib/identity-leak-patterns.mjs redactIdentityLeaks; journal hostname field becomes buildhost",
+      "rawPreserved": "private evidence archive plus historical git object",
+      "journalMessagesAndTimestampsPreserved": true
+    }
   },
   "missingIntervalAttemptAccounting": {
     "intervalStart": "2026-10-02T00:53:29Z",
@@ -103,16 +133,38 @@
     "limitations": "The missing journal prevents counting actual attempts, exclusions, and error lines. The DBOS rows establish workflow presence only; recovery credits make their final counters unsuitable as an attempt census."
   },
   "formatStringCheck": {
-    "distinctObservedTemplates": ["budget expired with work remaining", "a sweep has held the latch", "periodic sweep skipped", "batch embed FAILED", "sweep embedded NOTHING"],
+    "distinctObservedTemplates": [
+      "budget expired with work remaining",
+      "a sweep has held the latch",
+      "periodic sweep skipped",
+      "batch embed FAILED",
+      "sweep embedded NOTHING"
+    ],
     "preExtractionCommit": "9a9473af95",
     "source": "git grep -n -F at 9a9473af95 in packages/operator-core/lib/search/embed-backfill.ts",
     "result": "all five templates occur in pre-extraction source; only the first three remain in eligible sweeps after rev5 exclusions"
   },
   "assertions": [
-    {"id": "full-window-coverage", "passed": false, "evidence": "The first 13,700 seconds of the required window have no retained journal records."},
-    {"id": "per-target-progress", "passed": false, "evidence": "Ten targets embedded rows in the observed portion, but there is no start-of-window missing-row snapshot, so the required proof is incomplete."},
-    {"id": "pre-extraction-format-strings", "passed": true, "evidence": "Every observed error-like template was found at 9a9473af95."},
-    {"id": "full-window-error-rate", "passed": false, "evidence": "Observed segment 112/205 exceeds baseline 74/266, but missing-interval eligible sweep and error counts are unknown. DBOS recovery credit invalidates a 92-attempt cap, so the full-window falsifier cannot be decided."}
+    {
+      "id": "full-window-coverage",
+      "passed": false,
+      "evidence": "The first 13,700 seconds of the required window have no retained journal records."
+    },
+    {
+      "id": "per-target-progress",
+      "passed": false,
+      "evidence": "Ten targets embedded rows in the observed portion, but there is no start-of-window missing-row snapshot, so the required proof is incomplete."
+    },
+    {
+      "id": "pre-extraction-format-strings",
+      "passed": true,
+      "evidence": "Every observed error-like template was found at 9a9473af95."
+    },
+    {
+      "id": "full-window-error-rate",
+      "passed": false,
+      "evidence": "Observed segment 112/205 exceeds baseline 74/266, but missing-interval eligible sweep and error counts are unknown. DBOS recovery credit invalidates a 92-attempt cap, so the full-window falsifier cannot be decided."
+    }
   ],
   "assertionsPassed": 1,
   "assertionsTotal": 4,
