@@ -670,6 +670,89 @@ if [ -n "$RELEASE_VERSION" ] && [ "$IMAGE_RELEASE" != "$RELEASE_VERSION" ]; then
 fi
 echo "BAKE_IMAGE_RELEASE=${IMAGE_RELEASE:-none}"
 
+# ── 3d. Load every native addon the release ships, in the image's own runtime (WI-10005910) ───
+# The release is built on a newer userland than an older bootc base can supply. On
+# centos-bootc:stream9 (libstdc++ 11.5, glibc 2.34) rocksdb-native needs GLIBCXX_3.4.30, so the
+# image built, signed, rendered, published and booted, and the workspace service then died on the
+# host roughly an hour later (P-012 clean room A, chain3). Nothing earlier in the bake runs the
+# release, so this is the first point the mismatch can be seen: dlopen each addon with the
+# release's own node, inside the pinned image, with no network. A foreign-platform prebuild
+# (darwin-*, win32-*, *-musl, ...) is reported and skipped; anything else that fails to load fails
+# the bake. A probe that loaded nothing measured nothing, so zero loaded addons also fails.
+ADDON_PROBE_JS=""
+IFS= read -r -d '' ADDON_PROBE_JS <<'JS'
+// PAPERCUSP_ADDON_PROBE (WI-10005910): argv[1] is the release root.
+const fs = require("fs"), path = require("path");
+const root = process.argv[1];
+const here = process.platform + "-" + process.arch;
+const PLATFORMS = /^(aix|android|darwin|freebsd|linux|openbsd|sunos|win32)$/;
+const ARCHES = /^(arm|arm64|ia32|loong64|mips|mipsel|ppc|ppc64|riscv64|s390|s390x|x64)$/;
+function foreign(rel) {
+  const seg = rel.toLowerCase().split(path.sep);
+  for (let i = 0; i < seg.length; i++) {
+    if (/(^|[-_.])musl([-_.]|$)/.test(seg[i])) return true;
+    const m = /^([a-z0-9]+)-([a-z0-9]+)(-|$)/.exec(seg[i]);
+    if (m && PLATFORMS.test(m[1]) && ARCHES.test(m[2]) && m[1] + "-" + m[2] !== here) return true;
+    if (PLATFORMS.test(seg[i]) && i + 1 < seg.length && ARCHES.test(seg[i + 1])
+      && seg[i] + "-" + seg[i + 1] !== here) return true;
+  }
+  return false;
+}
+let ok = 0, fail = 0, skipped = 0;
+function walk(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (e) { fail++; console.log("PAPERCUSP_ADDON_FAIL " + dir + " :: unreadable: " + e.message); return; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) { walk(p); continue; }
+    if (!e.isFile() || !e.name.endsWith(".node")) continue;
+    const rel = path.relative(root, p);
+    if (foreign(rel)) { skipped++; console.log("PAPERCUSP_ADDON_SKIP " + rel); continue; }
+    try { process.dlopen({ exports: {} }, p); ok++; }
+    catch (x) { fail++; console.log("PAPERCUSP_ADDON_FAIL " + rel + " :: " + String(x && x.message).split("\n")[0]); }
+  }
+}
+walk(root);
+console.log("PAPERCUSP_ADDON_PROBE ok=" + ok + " fail=" + fail + " skipped=" + skipped);
+JS
+if [ -n "$IMAGE_RELEASE" ] && [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY_RUN: would load every native addon under /opt/papercusp/releases/$IMAGE_RELEASE in $PINNED"
+elif [ -n "$IMAGE_RELEASE" ]; then
+  echo "### 3d/4 load every native addon the release ships, in the image's own runtime"
+  release_dir="/opt/papercusp/releases/$IMAGE_RELEASE"
+  addon_probe_out="$("${PODMAN[@]}" run --rm --pull=never --network=none \
+    --entrypoint "$release_dir/bin/node" "$PINNED" -e "$ADDON_PROBE_JS" "$release_dir" 2>&1)"
+  addon_probe_rc=$?
+  addon_ok=""; addon_fail=""; addon_skipped=""
+  for kv in $(printf '%s\n' "$addon_probe_out" | sed -n 's/^PAPERCUSP_ADDON_PROBE //p' | tail -n 1); do
+    case "$kv" in
+      ok=*) addon_ok="${kv#ok=}";;
+      fail=*) addon_fail="${kv#fail=}";;
+      skipped=*) addon_skipped="${kv#skipped=}";;
+    esac
+  done
+  printf '%s\n' "$addon_probe_out" | grep -E '^PAPERCUSP_ADDON_(FAIL|SKIP) ' | sed 's/^/  /'
+  if [ "$addon_probe_rc" -ne 0 ]; then
+    echo "BAKE_RESULT=FAILED the native-addon probe could not run in $PINNED (podman exit $addon_probe_rc): $(printf '%s\n' "$addon_probe_out" | tail -n 3)"
+    exit 1
+  fi
+  case "$addon_ok:$addon_fail:$addon_skipped" in
+    *[!0-9:]*|:*|*::*|*:)
+      echo "BAKE_RESULT=FAILED the native-addon probe on $PINNED gave no verdict: ${addon_probe_out:-<empty>}"
+      exit 1;;
+  esac
+  if [ "$addon_fail" -gt 0 ]; then
+    echo "BAKE_RESULT=FAILED $addon_fail native addon(s) in release $IMAGE_RELEASE do not load on this image's runtime (see PAPERCUSP_ADDON_FAIL above)"
+    exit 1
+  fi
+  if [ "$addon_ok" -eq 0 ]; then
+    echo "BAKE_RESULT=FAILED the native-addon probe loaded no addon under $release_dir; it measured nothing"
+    exit 1
+  fi
+  echo "BAKE_NATIVE_ADDONS=ok:$addon_ok skipped:$addon_skipped"
+fi
+
 # ── 4. Render each cloud from the SAME pinned digest ──────────────────────────────────────────
 bake_one() { # $1 cloud  $2 pinned ref
   local cloud="$1" ref="$2" type="${CLOUD_TYPE[$1]}" dest="$OUT/$1"
