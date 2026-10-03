@@ -51,8 +51,8 @@
  * THE BUDGET IS A THIRD CEILING (goal-mode-design-intent-hardening-2026-08-16
  * P-006, flag GOAL_BUDGET_LAUNCH_GATE). `goals.budget_cents` binds against
  * goal-attributed priced usage in its declared window (D-011). A fresh
- * platform snapshot may supply that figure; absent or stale snapshots trigger
- * a live rollup. An unmeasured rollup refuses launch and per-turn inference,
+ * platform snapshot may supply that figure; absent, stale, or untrusted
+ * snapshots trigger a live rollup. An unmeasured rollup refuses launch and per-turn inference,
  * with a per-goal-deduped owner escalation for launch refusal. It lives in
  * this resolver because every launch door already honors `refusal`.
  */
@@ -3747,8 +3747,8 @@ export async function resolveGoalLaunchForGoal(args: {
   // launch regardless of agent headroom, and a formed refusal skips the
   // headcount read entirely. The snapshot is authoritative only when its
   // provenance marker identifies one of the platform writers; a legacy or
-  // otherwise unmarked value is reported degraded and fails OPEN rather than
-  // refusing launches on a population the gate cannot verify. Measured budget
+  // otherwise unmarked value triggers a live rollup rather than deciding from
+  // an unknown population. Measured budget
   // spend and unmeasured live rollups are binding; the fail-open rule for agent
   // headcount does not apply to an unmeasured budget. `>=` and not `>`: a goal
   // that has REACHED it is out of budget — an off-by-one here admits one launch
@@ -3786,11 +3786,15 @@ export async function resolveGoalLaunchForGoal(args: {
           launcherOwnerId: args.launcherOwnerId,
           refusal,
         });
-      } else if (budget.spentCents == null || !snapshotIsFresh) {
+      } else if (
+        budget.spentCents == null || !snapshotIsFresh ||
+        budgetSpendScope(budget.spentCentsSource) !== REFUSAL_SCOPES.BUDGET_LINEAGE
+      ) {
         // The other null: no snapshot at all (the rollup has not ticked for this
         // goal yet), a window whose write-time-attributed stream is empty, or a
-        // snapshot whose interactive-usage watermark is no longer fresh. None
-        // can safely enforce from cached cents, so re-measure with the rollup's
+        // snapshot whose interactive-usage watermark is no longer fresh, or a
+        // cached figure without authoritative provenance. None can safely
+        // enforce from cached cents, so re-measure with the rollup's
         // own function before deciding.
         const live = await measureGoalSpendAtLaunch({
           workspaceId: args.workspaceId,
@@ -3860,12 +3864,6 @@ export async function resolveGoalLaunchForGoal(args: {
             refusal,
           });
         }
-      } else if (budgetSpendScope(budget.spentCentsSource) !== REFUSAL_SCOPES.BUDGET_LINEAGE) {
-        degradedReasons.push(
-          `budget ceiling not enforced — goal ${goalId} has spentCents=${budget.spentCents} but no recognized ` +
-            `platform spend provenance marker (metadata.spentCentsSource must be '${GOAL_SPEND_SNAPSHOT_SOURCE}'; ` +
-            `D-003 forbids treating an unmarked or retired-marker value as authoritative)`,
-        );
       } else if (budget.spentCents >= budget.budgetCents) {
         refusal = budgetExceededRefusal({
           goalId,

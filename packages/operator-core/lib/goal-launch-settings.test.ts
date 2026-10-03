@@ -2753,14 +2753,19 @@ describe('P-006: the budget launch gate', () => {
   });
 
   it('the retired goal-spend-tick marker no longer carries authority (D-011)', async () => {
-    // Its writer was deleted, so a figure stamped with it can only be stale.
+    // Its writer was deleted. The cached figure cannot decide admission, and
+    // the empty live rollup cannot establish budget headroom either.
     const r = await launchWithBudget({
       budget_cents: '7000',
       spent_cents: 7000,
       spent_cents_source: 'goal-spend-tick',
     });
-    expect(r.refusal).toBeNull();
-    expect(r.degradedReasons.some((s) => s.includes('no recognized platform spend provenance marker'))).toBe(true);
+    expect(liveSpend.calls).toBe(1);
+    expect(r.refusal).toMatchObject({
+      reason: 'goal_budget_unmeasurable',
+      current: null,
+      currentScope: REFUSAL_SCOPES.BUDGET_NO_SAMPLES,
+    });
   });
 
   // ── WI-10002052 / D-011 clause 3: an unmeasurable ceiling must not fail OPEN ──
@@ -2906,7 +2911,7 @@ describe('P-006: the budget launch gate', () => {
         currentScope: REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
       });
       expect(r.refusal?.message).toContain(`interactive usage stream is ${status}`);
-      expect(r.degradedReasons).not.toContain('admitted as headroom');
+      expect(r.degradedReasons.some((reason) => reason.includes('admitted as headroom'))).toBe(false);
       await vi.waitFor(() => expect(escalated.calls.length).toBe(1));
       expect(String(escalated.calls[0]?.summary)).toContain('UNMEASURABLE');
     },
@@ -2951,21 +2956,45 @@ describe('P-006: the budget launch gate', () => {
     expect(r.refusal?.current).toBeNull();
   });
 
-  it('fails OPEN when spentCents has no recognized provenance — legacy values cannot enforce the ceiling', async () => {
+  it('re-measures untrusted cached cents and admits only measured live headroom', async () => {
     for (const spent_cents_source of [null, 'legacy-import']) {
+      liveSpend.legs = { spentCents: 100, lineage: 2, lineageUnpriced: 0, pot: 0, session: 2 };
       const seen: string[] = [];
       const r = await launchWithBudget(
         { budget_cents: 5000, spent_cents: 6000, spent_cents_source },
         seen,
       );
       expect(r.refusal).toBeNull();
-      expect(r.degraded).toBe(true);
-      expect(r.degradedReasons.some((s) => s.includes('no recognized platform spend provenance marker'))).toBe(true);
+      expect(r.degraded).toBe(false);
       expect(r.budget?.spentCents).toBe(6000);
       expect(r.budget?.spentCentsSource).toBe(spent_cents_source);
-      // Without a trustworthy refusal, the normal agent-ceiling read still runs.
+      // The cached 6000 cannot refuse against this 5000 cap; live 100 can admit.
       expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
     }
+    expect(liveSpend.calls).toBe(2);
+  });
+
+  it.each([null, 'legacy-import'])(
+    'refuses an unmeasured live rollup behind untrusted cached provenance %s', async (spent_cents_source) => {
+      const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 100, spent_cents_source });
+      expect(liveSpend.calls).toBe(1);
+      expect(r.refusal).toMatchObject({
+        reason: 'goal_budget_unmeasurable',
+        current: null,
+        currentScope: REFUSAL_SCOPES.BUDGET_NO_SAMPLES,
+      });
+    },
+  );
+
+  it('refuses a measured live breach behind an untrusted under-budget cache', async () => {
+    liveSpend.legs = { spentCents: 5000, lineage: 2, lineageUnpriced: 0, pot: 0, session: 2 };
+    const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 100, spent_cents_source: 'legacy-import' });
+    expect(liveSpend.calls).toBe(1);
+    expect(r.refusal).toMatchObject({
+      reason: 'goal_budget_exceeded',
+      current: 5000,
+      currentScope: REFUSAL_SCOPES.BUDGET_LINEAGE,
+    });
   });
 
   it('garbage spentCents stays UNKNOWN and cannot admit a launch on an empty live measurement', async () => {
