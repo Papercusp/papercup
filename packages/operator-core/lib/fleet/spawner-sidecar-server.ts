@@ -63,6 +63,7 @@ import { execProcess, type ExecParams, type ExecResult } from './sidecar-exec-pr
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
 import { armSpawnerSidecarOrphanWatchdog } from './spawner-sidecar-orphan-watchdog';
+import { getBuildInfo } from '../build-info';
 
 // JSON-RPC 2.0 response builders
 function rpcResult(result: unknown, id: number | string): object {
@@ -118,6 +119,9 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
   void ensureFlagChangeListener();
   const socketPath = resolveSpawnerSocketPath();
   const socketDir = path.dirname(socketPath);
+  // Resolve inside this loaded server, once at boot. A diagnostic reader must
+  // never import the checkout's current build-info to label an older process.
+  const processExecIdentity = { pid: process.pid, buildInfo: getBuildInfo() };
 
   if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, { recursive: true });
   // No unconditional unlink of our own path here: `listenUnixSocketExclusive` below
@@ -343,6 +347,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         if (id !== null) write(rpcResult({
           cancelled: !!controller, processExecCancellation: true,
           processExecFence: { serverGeneration, connectionId },
+          processExecIdentity,
           processExecContainment: captureSidecarContainment(process.env[SPAWNER_SCOPE_ENV]),
         }, id));
         return;
@@ -390,6 +395,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
       });
       console.log(`[spawner-sidecar] listening on ${socketPath}`);
       console.log(`PAPERCUSP_SPAWNER_READY socket=${socketPath}`);
+      console.log(`PAPERCUSP_SPAWNER_IDENTITY ${JSON.stringify({ ...processExecIdentity, serverGeneration })}`);
     },
     (err: Error) => {
       console.error('[spawner-server-error]', err.message);
