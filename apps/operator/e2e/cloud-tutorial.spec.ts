@@ -452,6 +452,7 @@ test('reload resumes saved pause, AI outage leaves controls operable, and Help r
   await expect(guide.getByRole('heading', { name: 'Connect Google Cloud' })).toBeVisible();
   await guide.getByRole('button', { name: 'Close guide' }).click();
   await expect(guide).toHaveCount(0); await expect(page.locator('.react-joyride__overlay')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Help', exact: true })).toBeFocused();
   expect(fixture.writes).toEqual([]);
   expect(fixture.assistance.filter(row => row.path.endsWith('tutorial-help'))).toHaveLength(1);
 });
@@ -509,6 +510,7 @@ test('guide speaks current instructions and scoped help with real browser audio 
   expect(help?.body).toEqual({ expectedScope: scope, context: { step: 'connection', status: 'ready' }, question: 'Why do I need Google Cloud project permissions?' });
   await guide.getByRole('button', { name: 'Close guide' }).click();
   await expect(page.getByRole('region', { name: 'Lesson help and speech' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Help', exact: true })).toBeFocused();
   await test.info().attach('guide-audio-playback-events', { body: JSON.stringify(await page.evaluate(() => (window as unknown as { __tutorialAudioEvents: string[] }).__tutorialAudioEvents)), contentType: 'application/json' });
 });
 
