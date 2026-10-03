@@ -42,6 +42,7 @@ import {
   unresolvedPathsInCompletion,
   workspaceQualifiedCompletionPathHint,
 } from './complete';
+import { coerceCompletionShape } from './completion-coerce';
 import {
   CompletionVerificationEvidenceSchema,
   type CompletionVerificationEvidence,
@@ -137,6 +138,29 @@ describe('unresolvedPathsInCompletion — FIRES on a fabricated path', () => {
     // The ORIGINAL declared path is reported, not the stripped candidate — a successor
     // re-reading the completion must see exactly what the closer wrote.
     expect(got?.missing[0]?.path).toBe('repo/totally/made/up/nowhere.ts');
+  });
+});
+
+// WI-10005684 (EI-23774140426573307) recurrence guard: a truthful "no files changed" SENTENCE used to be
+// comma-split into fabricated "paths", so this very check accused an honest close of fabricating evidence.
+// Run the REAL coercion, then the REAL path check, so neither half can regress alone.
+describe('unresolvedPathsInCompletion — a path-free negation sentence is the empty set, not fabricated paths (WI-10005684)', () => {
+  const NEGATION = 'None. This is a not-a-defect close, no source, test, or config file was modified.';
+  const filesChangedOf = (raw: string): string[] => {
+    const coerced = coerceCompletionShape({ summary: 's', filesChanged: raw }) as { filesChanged: string[] };
+    return coerced.filesChanged;
+  };
+
+  it('the negation sentence coerces to [] and the unresolved-path check stays silent', () => {
+    const filesChanged = filesChangedOf(NEGATION);
+    expect(filesChanged).toEqual([]);
+    expect(unresolvedPathsInCompletion(ev(filesChanged), probe)).toBeUndefined();
+  });
+
+  it('CONTROL: the same lead naming a missing path still coerces to that path and the check still fires', () => {
+    const filesChanged = filesChangedOf('None, but I did edit packages/operator-core/lib/agent-tools/issues-engineer.ts');
+    expect(filesChanged).toContain('but I did edit packages/operator-core/lib/agent-tools/issues-engineer.ts');
+    expect(unresolvedPathsInCompletion(ev(filesChanged), probe)?.missing.length).toBeGreaterThan(0);
   });
 });
 
