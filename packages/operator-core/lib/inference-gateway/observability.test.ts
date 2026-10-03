@@ -23,6 +23,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   concurrencyCap: 24,
   aimd: { effective: 24, cap: 24, floor: 4, pressure: 0, cleanStreak: 0, decreases: 0, increases: 0, hardFailures: 0 },
   opusToSonnetDowngrades: 0,
+  effortClamps: { retries: 0, rewrites: 0, learned: [] },
   proactiveEgressProbe: { enabled: false, intervalMs: 0, lastTickAt: 0, circuitOpens: 0, failStreakByAccount: {} },
   failovers: 0,
   upstreamErrors: 0,

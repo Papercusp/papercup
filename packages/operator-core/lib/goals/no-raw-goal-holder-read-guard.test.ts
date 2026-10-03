@@ -18,11 +18,12 @@
  * test cannot observe a call site that never calls the module under test; that
  * is the gap this guard closes and this test verifies.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only. Kept on ONE line: @ts-ignore suppresses the NEXT LINE only, and tsc reports TS7016 on the `from` clause, so a wrapped import silently escapes the suppression.
 // prettier-ignore
-import { readsRawGoalHolder, ALLOWLIST, BASELINE, isExcluded } from '../../../../scripts/check-no-raw-goal-holder-read.mjs';
+import { readsRawGoalHolder, readsGoalStarterAsHolder, ALLOWLIST, STARTER_READ_ALLOWLIST, BASELINE, isExcluded } from '../../../../scripts/check-no-raw-goal-holder-read.mjs';
 
 describe('no-raw-goal-holder-read guard predicate (P-001 / D-003)', () => {
   describe('FLAGS a bypassing read — the direction the guard exists for', () => {
