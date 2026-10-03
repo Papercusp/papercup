@@ -473,9 +473,23 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
 }
 
 /** Exported for the watchdogKey-stability unit test (EI-3909). */
-export const _testing = { fileFindings, formatCoverage };
+export const _testing = { fileFindings, formatCoverage, runTier, releasePerfLock };
 
-async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeoutMs: number): Promise<void> {
+type RunTierDependencies = {
+  runRunner?: typeof runRunner;
+  removeSummary?: typeof rmSync;
+  releasePerfLock?: typeof releasePerfLock;
+};
+
+async function runTier(
+  ctx: SystemActionCtx,
+  tier: '--tier1' | '--tier2',
+  timeoutMs: number,
+  dependencies: RunTierDependencies = {},
+): Promise<void> {
+  const run = dependencies.runRunner ?? runRunner;
+  const removeSummary = dependencies.removeSummary ?? rmSync;
+  const releaseLock = dependencies.releasePerfLock ?? releasePerfLock;
   const root = integrationRoot();
   const label = tier === '--tier1' ? 'nightly Tier-1' : 'weekly Tier-2';
 
@@ -495,7 +509,7 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
   let summaryPath: string | null = null;
   try {
     summaryPath = path.join(os.tmpdir(), `p2p-perf-${tier.slice(2)}-${Date.now()}.json`);
-    const r = await runRunner(root, [tier, '--profile', 'ci', '--summary-json', summaryPath], timeoutMs);
+    const r = await run(root, [tier, '--profile', 'ci', '--summary-json', summaryPath], timeoutMs);
 
     let summary: RunSummary | null = null;
     try {
@@ -571,14 +585,14 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
   } finally {
     if (summaryPath) {
       try {
-        rmSync(summaryPath, { force: true });
+        removeSummary(summaryPath, { force: true });
       } catch (error) {
         console.warn(
           `[p2p-perf] ${label}: failed to remove run summary ${summaryPath}: ${(error as Error)?.message ?? String(error)}`,
         );
       }
     }
-    releasePerfLock(tier);
+    releaseLock(tier);
   }
 }
 
