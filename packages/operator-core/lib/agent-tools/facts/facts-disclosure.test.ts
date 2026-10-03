@@ -55,7 +55,7 @@ beforeAll(() => {
   });
 });
 
-const assertSchemaField = (name: string): AssertSchemaField => {
+const assertSchemaField = (name: string, schema: unknown = assertTool.args): AssertSchemaField => {
   // EI-22064465906366039: the root union is retired, so `.options` (its branch
   // list) is gone. Unlike the other schema-reading tests, THIS file needs the
   // REAL zod field rather than the published JSON Schema, because it calls
@@ -64,13 +64,16 @@ const assertSchemaField = (name: string): AssertSchemaField => {
   // guards read them straight off z.toJSONSchema — so it is safeParse alone
   // that makes this file the exception.) Unwrap the refinement chain to the
   // object shape.
-  let node = assertTool.args as unknown as {
+  let node = schema as {
     shape?: Record<string, unknown>;
-    def?: { schema?: unknown; innerType?: unknown };
-    _def?: { schema?: unknown; innerType?: unknown };
+    def?: { schema?: unknown; innerType?: unknown; out?: unknown };
+    _def?: { schema?: unknown; innerType?: unknown; out?: unknown };
   };
   for (let hop = 0; hop < 8 && !node.shape; hop += 1) {
-    const inner = node.def?.schema ?? node.def?.innerType ?? node._def?.schema ?? node._def?.innerType;
+    // Zod 4 preprocess is a pipe: `in` is the transform and `out` holds
+    // the validating object. Follow the object side without parsing fake input.
+    const inner = node.def?.schema ?? node.def?.innerType ?? node.def?.out
+      ?? node._def?.schema ?? node._def?.innerType ?? node._def?.out;
     if (!inner) break;
     node = inner as typeof node;
   }
@@ -78,6 +81,24 @@ const assertSchemaField = (name: string): AssertSchemaField => {
   if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
   return field as AssertSchemaField;
 };
+
+describe('facts:assert real field schema inspection', () => {
+  it('retains the real field validator through nested preprocess wrappers', () => {
+    const body = z.string().max(3).describe('bounded body');
+    const schema = z.preprocess((value) => value,
+      z.preprocess((value) => value, z.object({ body }))).optional();
+    const field = assertSchemaField('body', schema);
+    expect(field).toBe(body);
+    expect(field.description).toBe('bounded body');
+    expect(field.safeParse('four').success).toBe(false);
+    expect(field.safeParse('ok').success).toBe(true);
+  });
+
+  it('refuses an absent field instead of substituting a permissive schema', () => {
+    const schema = z.preprocess((value) => value, z.object({ other: z.string() }));
+    expect(() => assertSchemaField('body', schema)).toThrow('schema field missing: body');
+  });
+});
 
 const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   scope: 'harness',
