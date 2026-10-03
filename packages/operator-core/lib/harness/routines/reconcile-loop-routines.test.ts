@@ -1305,6 +1305,14 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
     expect(verdict?.rearmDelayMs).toBeGreaterThan(60_000); // strictly more than the bare interval
   });
 
+  it('does NOT treat a quoted weekly usage-limit reset sentence as a dead wake', () => {
+    const providerText = "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)";
+    expect(classifyLoopLifecycleTurn(providerText, 60_000, NOW)?.reason).toBe('usage_limit');
+
+    const discussion = `Reviewed the healthy-loop report, which quoted “${providerText}”; no provider limit stopped this turn.`;
+    expect(classifyLoopLifecycleTurn(discussion, 60_000, NOW)).toBeNull();
+  });
+
   // WI-6852: the cap was 1h, which BOUND on every real wall instead of acting as a sanity rail
   // (measured: 13 of 15 lifecycle-death re-arms landed on exactly 60m, i.e. every one was clipped
   // and under-waited, then re-fired into the still-active wall). Relative-duration text is used

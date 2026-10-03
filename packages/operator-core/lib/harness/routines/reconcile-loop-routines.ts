@@ -187,7 +187,12 @@ import {
   SESSION_END_MARKER,
   SESSION_START_MARKER,
 } from '../../agent-tools/activity/lifecycle-markers';
-import { classifySessionEnd, isMachineModelErrorText, type SessionEndReason } from '../../search/session-end-reason';
+import {
+  classifySessionEnd,
+  isMachineModelErrorText,
+  isMachineUsageLimitText,
+  type SessionEndReason,
+} from '../../search/session-end-reason';
 import {
   parseUsageReset,
   clampUsageRearmDelayMs,
@@ -419,6 +424,10 @@ export function classifyLoopLifecycleTurn(
   // re-open the bug this leg exists for, so require only the MACHINE-emitted half: a real
   // `API Error: Request rejected (429) …` death still matches it.
   if (cls.reason === 'model_error' && !isMachineModelErrorText(text)) return null;
+  // Usage-limit's shared classifier also accepts `limit … resets`, which can match
+  // a quoted weekly-cap message anywhere in ordinary assistant prose. This caller
+  // scans blindly, so require the provider-shaped signature at the text opening.
+  if (cls.reason === 'usage_limit' && !isMachineUsageLimitText(text)) return null;
   let rearmDelayMs = intervalMs;
   if (cls.reason === 'usage_limit') {
     const reset = parseUsageReset(text, nowMs);
