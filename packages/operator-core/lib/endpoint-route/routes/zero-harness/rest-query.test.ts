@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPgDiagnosticHooks, pgResultDiagnosticSnapshot, resetAcquireRegistryForTest,
+  resetPgDiagnosticContextResolver } from '@papercusp/db-org/acquire-registry';
+import { installDbDiagnosticCorrelationWiring } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 
 const resolveNamedQueryMock = vi.fn();
 const observeResolveMock = vi.fn();
@@ -6,6 +9,7 @@ const serializeJsonResponseMock = vi.fn(async (value: unknown, _itemCount?: numb
 
 vi.mock('../../../sync-resolver', () => ({
   resolveNamedQueryV2: (...args: unknown[]) => resolveNamedQueryMock(...args),
+  isRegisteredV2: (name: string) => ['workItems.byHarness', 'plans.list', 'workItems.stats'].includes(name),
   NAME_NOT_FOUND: Symbol('NAME_NOT_FOUND'),
 }));
 vi.mock('../../../sync-resolver/resolve-observability', () => ({
@@ -34,6 +38,51 @@ async function route(): Promise<RestRoute> {
 beforeEach(() => {
   vi.clearAllMocks();
   serializeJsonResponseMock.mockImplementation(async (value: unknown, _itemCount?: number) => JSON.stringify(value));
+  resetAcquireRegistryForTest();
+  installDbDiagnosticCorrelationWiring();
+});
+
+afterEach(() => { resetPgDiagnosticContextResolver(); resetAcquireRegistryForTest(); });
+
+describe('P011 named HTTP request exact object guards', () => {
+  it('links raw Pg, mapped rows and the HTTP envelope without adding diagnostics to the response', async () => {
+    const raw = [{ id: 1 }];
+    const rows = [{ id: 1 }];
+    const hooks = createPgDiagnosticHooks('org-app');
+    resolveNamedQueryMock.mockImplementationOnce(async () => {
+      hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null, query: 'select 1',
+        rowCount: 1, wireBytes: 1, status: 'ok', result: raw, context: hooks.onquerycontext() });
+      return rows;
+    });
+    const response = await (await route()).handler(new Request(
+      'http://localhost:3170/api/zero-harness/rest-query?name=workItems.byHarness&args=%7B%22secret%22%3A%22never-retain-args%22%7D',
+    ));
+    const [diagnostic] = pgResultDiagnosticSnapshot('org-app', 1, { includeObjectRefs: true }).results;
+    expect(diagnostic.correlation).toMatchObject({ operation: 'workItems.byHarness', requestId: expect.any(String) });
+    expect(diagnostic.objectRefs?.decodedResult?.deref()).toBe(raw);
+    expect(diagnostic.objectRefs?.resolvedRows?.deref()).toBe(rows);
+    expect(diagnostic.objectRefs?.responseValue?.deref()).toBe(serializeJsonResponseMock.mock.calls[0][0]);
+    expect(diagnostic.objectRefs).not.toHaveProperty('workerClone');
+    const body = await response.text();
+    expect(JSON.parse(body).rows).toEqual(rows);
+    expect(body).not.toContain(diagnostic.correlation!.requestId!);
+    expect(JSON.stringify(pgResultDiagnosticSnapshot('org-app'))).not.toContain('never-retain-args');
+    expect(hooks.onquerycontext()).toEqual({ state: 'unobserved' });
+  });
+
+  it('does not record an unregistered caller-provided operation name', async () => {
+    const hooks = createPgDiagnosticHooks('org-app');
+    resolveNamedQueryMock.mockImplementationOnce(async () => {
+      hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null, query: 'select 1',
+        rowCount: 1, wireBytes: 1, status: 'ok', context: hooks.onquerycontext() });
+      return [];
+    });
+    await (await route()).handler(new Request('http://localhost:3170/api/zero-harness/rest-query?name=secretToken'));
+    const snapshot = pgResultDiagnosticSnapshot('org-app');
+    expect(snapshot.results[0].correlation).toHaveProperty('requestId');
+    expect(snapshot.results[0].correlation).not.toHaveProperty('operation');
+    expect(JSON.stringify(snapshot)).not.toContain('secretToken');
+  });
 });
 
 describe('GET /zero-harness/rest-query stale-process diagnosis', () => {

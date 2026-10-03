@@ -2023,12 +2023,13 @@ describe('hostThroughPty real round-trip', () => {
     15_000,
   );
 
-  it(
-    'publishes managed session-port parent proof before HTTP ack and preserves success across child exit',
-    async () => {
+  it.each(['claude', 'codex', 'omp'] as const)(
+    'publishes managed %s session-port parent proof before HTTP ack and preserves success across child exit',
+    async (agent) => {
       const root = mkdtempSync(join(tmpdir(), 'psu-port-host-'));
-      const agentDir = join(root, 'omp-agent');
-      const sessionsDir = join(agentDir, 'sessions', 'project');
+      const agentDir = join(root, 'target-native-home');
+      const sessionsDir = agent === 'claude'
+        ? join(agentDir, 'projects', '-tmp') : join(agentDir, 'sessions', 'project');
       mkdirSync(sessionsDir, { recursive: true });
       const nativeFile = join(sessionsDir, 'thread.jsonl');
       const hash = 'c'.repeat(64);
@@ -2053,10 +2054,11 @@ describe('hostThroughPty real round-trip', () => {
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-        "let ready=false,b='',wrote=false;process.stdout.write('\\x1b[6n');setTimeout(()=>{ready=true;process.stdout.write('omp v16.3.3\\nREADY\\n');},400);",
+        "let ready=false,b='',wrote=false;setTimeout(()=>{ready=true;process.stdout.write(process.env.PORT_READY_OUTPUT);},400);",
         // The real native transcript persists the whole user turn, including
         // both its origin marker (submit verification) and port checksum.
-        "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',content:b,timestamp:new Date().toISOString()})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>{process.stdout.write('EXITING\\n');process.exit(0);},1200);}});",
+        // Echo the composer before CR so Codex's separate submit gate is exercised.
+        "process.stdin.on('data',d=>{b+=d;process.stdout.write(d);if(!wrote&&b.includes(process.env.PORT_MARKER)&&b.includes('\\r')){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;const content=b.slice(b.indexOf('⟦turn-origin:session-port'),b.indexOf(process.env.PORT_MARKER)+process.env.PORT_MARKER.length);const timestamp=new Date().toISOString();const row=process.env.PAPERCUSP_AGENT==='codex'?{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:content}]}}:process.env.PAPERCUSP_AGENT==='claude'?{type:'user',timestamp,message:{role:'user',content}}:{type:'message',role:'user',content,timestamp};fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify(row)+'\\n');process.stdout.write('ANSWER_OWNER:'+process.env.PAPERCUSP_SID+'\\nWORKING\\n');setTimeout(()=>{process.stdout.write('EXITING\\n');process.exit(0);},1200);}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
       try {
@@ -2067,7 +2069,7 @@ describe('hostThroughPty real round-trip', () => {
           env: {
             ...process.env,
             PAPERCUSP_SID: ownerId,
-            PAPERCUSP_AGENT: 'omp',
+            PAPERCUSP_AGENT: agent,
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
             PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
             PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -2075,6 +2077,9 @@ describe('hostThroughPty real round-trip', () => {
             PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
             PAPERCUSP_TURN_PROVENANCE_DIR: join(root, 'provenance'),
             PI_CODING_AGENT_DIR: agentDir,
+            CODEX_HOME: agentDir,
+            CLAUDE_CONFIG_DIR: agentDir,
+            PORT_READY_OUTPUT: agent === 'claude' ? '❯\n' : agent === 'codex' ? '62% context left\n' : 'omp v16.3.3\nREADY\n',
             PORT_MARKER: marker,
             PORT_NATIVE_FILE: nativeFile,
             [KICKOFF_PROOF_PATH_ENV]: proofPath,
@@ -2100,6 +2105,7 @@ describe('hostThroughPty real round-trip', () => {
           nativeRef: nativeFile,
         });
         expect(readFileSync(nativeFile, 'utf8')).toContain('⟦turn-origin:session-port nonce:');
+        expect(captured()).toContain(`ANSWER_OWNER:${ownerId}`);
         while (!captured().includes('EXITING') && Date.now() < deadline) await sleep(25);
         expect(captured()).toContain('EXITING');
         expect(await Promise.race([done.then(() => true), sleep(50).then(() => false)])).toBe(false);
