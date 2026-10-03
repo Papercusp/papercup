@@ -30,6 +30,8 @@ import { Hono } from 'hono';
 import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
+import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
+import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
 import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
 import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
@@ -170,6 +172,9 @@ export interface HostedBillingRuntimeDependencies {
   readonly entitlementProvider?: HostedSubscriptionEntitlementProvider;
   /** Overrides the configured receipts source (tests, or a composition with its own ledger access). */
   readonly receipts?: HostedBillingReceiptSource;
+  /** Trusted server source overrides and collectors; no request can install a collector. */
+  readonly usage?: HostedBillingUsageSource;
+  readonly usageCollectors?: readonly HostedUsageCollector[];
   /** Workspace-scoped transaction runner for the default receipts source. */
   readonly runWorkspace?: HostedBillingWorkspaceRunner;
   readonly clock?: () => Date;
@@ -256,6 +261,11 @@ export async function createHostedBillingRuntime(
       ?? (configuration.receiptsWorkspaceId
         ? workspaceReceiptSource(configuration.receiptsWorkspaceId, dependencies.runWorkspace)
         : undefined),
+    usage: dependencies.usage ?? createHostedUsageSource({
+      store: new PostgresHostedUsageStore(dependencies.runService ?? withHostedServiceContext),
+      collectors: dependencies.usageCollectors,
+      maximumAgeMs: 5 * 60_000,
+    }),
     clock: dependencies.clock,
   });
   const mounted = routes.map((route) => `${route.method} ${route.path}`);
