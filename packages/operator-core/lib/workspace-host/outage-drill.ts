@@ -31,6 +31,7 @@
  * tested and the live run differs only in its deps.
  */
 import { createHash } from 'node:crypto';
+import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from '@papercusp/deployment-driver';
 
 /** One established TCP connection the host holds, as `ss -Htn state established` reports it. */
 export interface HostConnection {
@@ -301,6 +302,8 @@ export interface OutageDrillConfig {
   readonly serviceUnit: string;
   /** Absolute agent CLI path on the host. */
   readonly agentCommand: string;
+  /** Which CLI `agentCommand` is; selects its argv. Default 'claude'. */
+  readonly agentKind?: GatedAgentKind;
   /** Workspace directory on the host the agent writes into. */
   readonly workspaceDir: string;
   /** Unique per run; names the drill's files on the host. */
@@ -393,6 +396,112 @@ export function evaluateOutageDrill(evidence: OutageDrillEvidence): OutageDrillV
   return { passed: failures.length === 0, failures };
 }
 
+/**
+ * One gated agent task on a workspace host, with no outage: the drill's agent half on its own
+ * (aws-byoc-gcp-parity-2026-10-01 R-13 as rescoped by D-031). The agent learns its secret only by
+ * reading the gate pipe, so a matching digest proves it ran its tools on the host and finished.
+ * The host is reached over SSH by the caller, so this is controller-pushed, not product-path dispatch.
+ */
+export interface GatedAgentTaskConfig {
+  readonly agentKind: GatedAgentKind;
+  readonly agentCommand: string;
+  readonly workspaceDir: string;
+  readonly nonce: string;
+  readonly secret: string;
+  readonly agentTimeoutMs?: number;
+  readonly gateTimeoutSeconds?: number;
+  readonly pollMs?: number;
+}
+
+export type GatedAgentTaskDeps = Pick<OutageDrillDeps, 'hostExec' | 'sleep' | 'now' | 'log'>;
+
+export interface GatedAgentTaskEvidence {
+  readonly agentKind: GatedAgentKind;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly outputPath: string;
+  /** The exact command the host ran, prompt included. Recorded so a grader can see the secret is not in it. */
+  readonly invocation: string;
+  /** True when the secret occurs in the invocation; a task that saw its secret in the prompt proves nothing. */
+  readonly secretInInvocation: boolean;
+  readonly agent: OutageDrillEvidence['agent'];
+  readonly errors: string[];
+}
+
+/** Run one gated agent task. Never throws: failures land in `evidence.errors` for the verdict. */
+export async function runGatedAgentTask(config: GatedAgentTaskConfig, deps: GatedAgentTaskDeps): Promise<GatedAgentTaskEvidence> {
+  const log = deps.log ?? (() => {});
+  const iso = () => deps.now().toISOString();
+  const pollMs = config.pollMs ?? 5_000;
+  const outputPath = `${config.workspaceDir}/agent-task-${config.nonce}.txt`;
+  const exitFile = FLAG_FILE(config.workspaceDir, config.nonce, 'exit');
+  const gatePath = FLAG_FILE(config.workspaceDir, config.nonce, 'gate');
+  const invocation = agentTaskInvocation(config.agentKind, config.agentCommand, agentTaskPrompt(gatePath, outputPath));
+  const errors: string[] = [];
+  const evidence = {
+    agentKind: config.agentKind,
+    startedAt: iso(),
+    finishedAt: '',
+    outputPath,
+    invocation,
+    secretInInvocation: invocation.includes(config.secret),
+    agent: {
+      exitCode: null as number | null,
+      output: null as string | null,
+      expected: sha256Hex(config.secret),
+      gateReleasedAt: null as string | null,
+      completedAt: null as string | null,
+    },
+    errors,
+  };
+  try {
+    const started = await deps.hostExec(
+      gatedAgentLaunchCommand({
+        workspaceDir: config.workspaceDir,
+        gatePath,
+        exitFile,
+        logFile: FLAG_FILE(config.workspaceDir, config.nonce, 'log'),
+        invocation,
+      }),
+    );
+    if (started.code !== 0) throw new Error(`agent launch failed (exit ${started.code}): ${started.stderr.trim()}`);
+    log(`${config.agentKind} task started`);
+    await releaseGate(deps.hostExec, gatePath, config.secret, config.gateTimeoutSeconds ?? 60);
+    evidence.agent.gateReleasedAt = iso();
+    log(`gate released at ${evidence.agent.gateReleasedAt}`);
+    const result = await awaitAgentResult(deps, {
+      exitFile,
+      outputPath,
+      timeoutMs: config.agentTimeoutMs ?? 15 * 60_000,
+      pollMs,
+    });
+    if (result === null) errors.push('the agent task did not finish before its deadline');
+    else {
+      evidence.agent.exitCode = result.exitCode;
+      evidence.agent.completedAt = iso();
+      evidence.agent.output = result.output;
+    }
+  } catch (error) {
+    errors.push(String(error instanceof Error ? error.message : error));
+  } finally {
+    await deps.hostExec(`rm -f ${shellQuote(gatePath)}`).catch(() => undefined);
+  }
+  evidence.finishedAt = iso();
+  return evidence;
+}
+
+export function evaluateGatedAgentTask(evidence: GatedAgentTaskEvidence): OutageDrillVerdict {
+  const failures: string[] = [...evidence.errors.map((error) => `task error: ${error}`)];
+  const require = (ok: boolean, message: string) => {
+    if (!ok) failures.push(message);
+  };
+  require(!evidence.secretInInvocation, 'the secret appears in the agent invocation, so the output proves nothing');
+  require(evidence.agent.gateReleasedAt !== null, 'the agent never read its secret from the gate pipe');
+  require(evidence.agent.exitCode === 0, `the agent task exited ${evidence.agent.exitCode ?? 'never'}`);
+  require(evidence.agent.output === evidence.agent.expected, 'the agent output is missing or not the expected digest');
+  return { passed: failures.length === 0, failures };
+}
+
 function hostnameOf(origin: string): string {
   return new URL(origin).hostname;
 }
@@ -449,6 +558,83 @@ export function gateReleaseCommand(gatePath: string, secret: string): string {
 }
 
 const FLAG_FILE = (dir: string, nonce: string, suffix: string) => `${dir}/.j5-drill-${nonce}.${suffix}`;
+
+/** The agent CLI a gated task runs. Each kind has its own non-interactive argv. */
+export type GatedAgentKind = 'claude' | 'omp';
+
+/**
+ * The shell command that runs ONE gated agent task non-interactively with shell and file-write tools.
+ *
+ * Claude Code: `-p <prompt> --allowedTools Bash,Write`. OMP on a customer-cloud host is credential-free
+ * and runs on the host's own local inference (D-230), so it is pinned to the model the host's readiness
+ * probe uses (workspace-host-agent-authentication.ts) and its tools are auto-approved: `--print` has no
+ * one to approve them.
+ */
+export function agentTaskInvocation(kind: GatedAgentKind, agentCommand: string, prompt: string): string {
+  if (kind === 'claude') return `${shellQuote(agentCommand)} -p ${shellQuote(prompt)} --allowedTools Bash,Write`;
+  return [
+    shellQuote(agentCommand),
+    '--model', shellQuote(`ollama/${WORKSPACE_HOST_OMP_LOCAL_MODEL}`),
+    '--print', '--tools', 'bash,write', '--approval-mode', 'yolo',
+    '--no-session', '--no-extensions', '--no-skills', '--no-rules', '--mode', 'text',
+    shellQuote(prompt),
+  ].join(' ');
+}
+
+/**
+ * Start the agent detached, blocked on its gate pipe. Its exit code lands in a file so a dropped SSH
+ * session cannot lose it.
+ *
+ * The `&` MUST be scoped to the agent alone. A bare trailing `&` backgrounds the WHOLE `&&` list as a
+ * subshell that keeps the SSH channel's stdout/stderr and waits for the agent, so the launch call returns
+ * only when the agent exits (measured 2026-10-02: run #1 returned at the agent's exit, run #2 hit the SSH
+ * timeout and the block never ran).
+ */
+export function gatedAgentLaunchCommand(input: {
+  readonly workspaceDir: string;
+  readonly gatePath: string;
+  readonly exitFile: string;
+  readonly logFile: string;
+  readonly invocation: string;
+}): string {
+  return (
+    `cd ${shellQuote(input.workspaceDir)} && rm -f ${shellQuote(input.exitFile)} ${shellQuote(input.gatePath)} && ` +
+    `mkfifo -m 600 ${shellQuote(input.gatePath)} && ` +
+    `{ nohup sh -c ${shellQuote(
+      `${input.invocation} > ${shellQuote(input.logFile)} 2>&1; echo $? > ${shellQuote(input.exitFile)}`,
+    )} < /dev/null > /dev/null 2>&1 & }`
+  );
+}
+
+/** Hand the agent its secret. Throws when the agent never opened its gate pipe within the timeout. */
+async function releaseGate(
+  hostExec: OutageDrillDeps['hostExec'],
+  gatePath: string,
+  secret: string,
+  gateSeconds: number,
+): Promise<void> {
+  const released = await hostExec(`timeout ${gateSeconds} sh -c ${shellQuote(gateReleaseCommand(gatePath, secret))}`);
+  if (!released.stdout.includes(GATE_RELEASED_MARKER)) {
+    throw new Error(`the agent never read its gate pipe within ${gateSeconds}s (exit ${released.code})`);
+  }
+}
+
+/** Wait for the agent's exit file, then read its output. `null` when the deadline passed first. */
+async function awaitAgentResult(
+  deps: Pick<OutageDrillDeps, 'hostExec' | 'sleep' | 'now'>,
+  input: { readonly exitFile: string; readonly outputPath: string; readonly timeoutMs: number; readonly pollMs: number },
+): Promise<{ exitCode: number; output: string | null } | null> {
+  const deadline = deps.now().getTime() + input.timeoutMs;
+  while (deps.now().getTime() < deadline) {
+    const exitText = (await deps.hostExec(`cat ${shellQuote(input.exitFile)} 2>/dev/null`)).stdout.trim();
+    if (exitText !== '') {
+      const output = await deps.hostExec(`cat ${shellQuote(input.outputPath)} 2>/dev/null`);
+      return { exitCode: Number(exitText), output: output.code === 0 ? output.stdout.trim() : null };
+    }
+    await deps.sleep(input.pollMs);
+  }
+  return null;
+}
 
 /** Run the drill end to end. Never throws: failures land in `evidence.errors` for the verdict. */
 export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDrillDeps): Promise<OutageDrillEvidence> {
@@ -518,20 +704,15 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
     evidence.before.connectorLastSeenAt = (await deps.readConnectorLastSeenAt())?.toISOString() ?? null;
     log(`before: ${evidence.before.connections.filter((c) => c.class === 'papercusp').length} Papercusp connection(s)`);
 
-    // Start the agent detached; its exit code lands in a file so a dropped SSH session cannot lose it.
-    // It blocks on its gate pipe until the drill hands it the secret during the outage.
-    const prompt = agentTaskPrompt(gatePath, outputPath);
-    const launch =
-      `cd ${shellQuote(config.workspaceDir)} && rm -f ${shellQuote(exitFile)} ${shellQuote(gatePath)} && ` +
-      `mkfifo -m 600 ${shellQuote(gatePath)} && ` +
-      `{ nohup sh -c ${shellQuote(
-        `${shellQuote(config.agentCommand)} -p ${shellQuote(prompt)} --allowedTools Bash,Write ` +
-          `> ${shellQuote(FLAG_FILE(config.workspaceDir, config.nonce, 'log'))} 2>&1; echo $? > ${shellQuote(exitFile)}`,
-      )} < /dev/null > /dev/null 2>&1 & }`;
-    // The `&` MUST be scoped to the agent alone. A bare trailing `&` backgrounds the WHOLE `&&` list as a
-    // subshell that keeps the SSH channel's stdout/stderr and waits for the agent, so this call returns only
-    // when the agent exits (measured 2026-10-02: run #1 returned at the agent's exit, run #2 hit the SSH
-    // timeout and the block never ran).
+    // Start the agent detached. It blocks on its gate pipe until the drill hands it the secret during the
+    // outage.
+    const launch = gatedAgentLaunchCommand({
+      workspaceDir: config.workspaceDir,
+      gatePath,
+      exitFile,
+      logFile: FLAG_FILE(config.workspaceDir, config.nonce, 'log'),
+      invocation: agentTaskInvocation(config.agentKind ?? 'claude', config.agentCommand, agentTaskPrompt(gatePath, outputPath)),
+    });
     const started = await deps.hostExec(launch);
     if (started.code !== 0) throw new Error(`agent launch failed (exit ${started.code}): ${started.stderr.trim()}`);
     log('agent task started');
@@ -560,30 +741,22 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
     // Hand the agent its secret only now, with the outage confirmed. The write blocks until the agent's
     // `cat` opens the pipe, so a timeout means the agent never got as far as reading it.
     if (evidence.during.agentRunningWhenBlocked && !papercuspReachable) {
-      const gateSeconds = config.gateTimeoutSeconds ?? 60;
-      const write = gateReleaseCommand(gatePath, config.secret);
-      const released = await deps.hostExec(`timeout ${gateSeconds} sh -c ${shellQuote(write)}`);
-      if (!released.stdout.includes(GATE_RELEASED_MARKER)) {
-        throw new Error(`the agent never read its gate pipe within ${gateSeconds}s (exit ${released.code})`);
-      }
+      await releaseGate(deps.hostExec, gatePath, config.secret, config.gateTimeoutSeconds ?? 60);
       evidence.agent.gateReleasedAt = iso();
       log(`gate released to the agent at ${evidence.agent.gateReleasedAt}`);
     }
 
-    const agentDeadline = deps.now().getTime() + (config.agentTimeoutMs ?? 15 * 60_000);
-    let exitText = '';
-    while (deps.now().getTime() < agentDeadline) {
-      const read = await deps.hostExec(`cat ${shellQuote(exitFile)} 2>/dev/null`);
-      exitText = read.stdout.trim();
-      if (exitText !== '') break;
-      await deps.sleep(pollMs);
-    }
-    if (exitText === '') errors.push('the agent task did not finish before its deadline');
+    const result = await awaitAgentResult(deps, {
+      exitFile,
+      outputPath,
+      timeoutMs: config.agentTimeoutMs ?? 15 * 60_000,
+      pollMs,
+    });
+    if (result === null) errors.push('the agent task did not finish before its deadline');
     else {
-      evidence.agent.exitCode = Number(exitText);
+      evidence.agent.exitCode = result.exitCode;
       evidence.agent.completedAt = iso();
-      const output = await deps.hostExec(`cat ${shellQuote(outputPath)} 2>/dev/null`);
-      evidence.agent.output = output.code === 0 ? output.stdout.trim() : null;
+      evidence.agent.output = result.output;
     }
     await deps.hostExec(`rm -f ${shellQuote(gatePath)}`);
     // Sampled at the END of the outage, so a connector that kept a socket alive is visible.

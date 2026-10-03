@@ -36,15 +36,41 @@ import { awsSsmHostKeyAlias, gcpIapHostKeyAlias } from './gcp-iap-initialization
 import { buildAwsSsmProxyCommand } from './local-connection-manager';
 import {
   awsSubnetNetworkAcl,
+  evaluateGatedAgentTask,
   evaluateOutageDrill,
+  runGatedAgentTask,
   runOutageDrill,
   type AwsEgressBlockTarget,
+  type GatedAgentKind,
+  type GatedAgentTaskConfig,
   type HostCommandResult,
   type OutageDrillConfig,
 } from './outage-drill';
 
 const WORKSPACE_ACCOUNT = 'papercusp-workspace';
-const DEFAULT_AGENT = '/usr/local/lib/papercusp-agent-toolchain/bin/claude';
+const DEFAULT_AGENTS: Record<GatedAgentKind, string> = {
+  claude: '/usr/local/lib/papercusp-agent-toolchain/bin/claude',
+  omp: '/usr/local/bin/omp',
+};
+
+interface SshTarget {
+  readonly alias: string;
+  readonly destination: string;
+  readonly proxyCommand: string;
+}
+
+/** Run a command on the host as the workspace account, over the controller's SSH (IAP or SSM proxy). */
+function sshHostExec(ssh: SshTarget): (command: string) => Promise<HostCommandResult> {
+  const controller = join(homedir(), '.local/state/papercusp/controller');
+  return (command) =>
+    run('ssh', [
+      '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+      '-o', `UserKnownHostsFile=${join(controller, 'known_hosts')}`, '-o', `HostKeyAlias=${ssh.alias}`,
+      '-o', 'IdentitiesOnly=yes', '-i', join(controller, 'id_ed25519'), '-o', 'ConnectTimeout=30',
+      '-o', `ProxyCommand=${ssh.proxyCommand}`,
+      `${WORKSPACE_ACCOUNT}@${ssh.destination}`, command,
+    ], 90_000);
+}
 
 function run(file: string, args: readonly string[], timeoutMs: number): Promise<HostCommandResult> {
   return new Promise((resolvePromise) => {
@@ -91,8 +117,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     if (!value) throw new Error(`--${key} is required`);
     return value;
   };
-  let config: OutageDrillConfig;
-  let ssh: { alias: string; destination: string; proxyCommand: string };
+  let config: OutageDrillConfig | null = null;
+  let task: GatedAgentTaskConfig | null = null;
+  let ssh: SshTarget;
   let cloudCli: 'gcloud' | 'aws';
   let cloudArgsSuffix: string[] = [];
   let hostId: string;
@@ -100,7 +127,15 @@ export async function main(argv: readonly string[]): Promise<number> {
     const cloud = args.get('cloud') ?? 'gcp';
     hostId = need('host-id');
     const nonce = args.get('nonce') ?? `j5${randomBytes(6).toString('hex')}`;
-    let target: OutageDrillConfig['target'];
+    // --mode task runs only the gated agent task: no egress block, so no block target and no database.
+    const mode = args.get('mode') ?? 'drill';
+    if (mode !== 'drill' && mode !== 'task') throw new Error(`--mode must be drill or task, got ${mode}`);
+    const agentKind = args.get('agent-kind') ?? 'claude';
+    if (agentKind !== 'claude' && agentKind !== 'omp') throw new Error(`--agent-kind must be claude or omp, got ${agentKind}`);
+    const agentCommand = args.get('agent') ?? DEFAULT_AGENTS[agentKind];
+    const workspaceDir = need('workspace-dir');
+    const secret = randomBytes(16).toString('hex');
+    let target: OutageDrillConfig['target'] | null = null;
     if (cloud === 'gcp') {
       const project = need('project');
       const zone = need('zone');
