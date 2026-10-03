@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -927,14 +928,13 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
   it('resolves the launcher against the env the child actually gets', () => {
     const base = { command: 'npx', args: ['vitest', 'run', 'a.test.ts'] };
-    // systemd-run --user needs a user bus: XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS.
+    // An explicit user bus address works independently of the runtime directory.
     expect(userBusReachable({ PATH: '/usr/bin' })).toBe(false);
-    expect(userBusReachable({ XDG_RUNTIME_DIR: '/run/user/1000' })).toBe(true);
     expect(userBusReachable({ DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' })).toBe(true);
     expect(
       resolveTestChildLauncher({
         ...base,
-        env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+        env: { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' },
         systemdRunPath: '/usr/bin/systemd-run',
         setsidPath: '/usr/bin/setsid',
         scopeUnit: 'papercusp-test-1-a-1.scope',
@@ -956,7 +956,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     // once the router died). Omitting both still yields a named, bounded scope.
     const defaulted = resolveTestChildLauncher({
       ...base,
-      env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+      env: { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' },
       systemdRunPath: '/usr/bin/systemd-run',
       setsidPath: '/usr/bin/setsid',
     });
@@ -1015,12 +1015,41 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(
         resolveTestChildLauncher({
           ...base,
-          env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000', ...managedMarker },
+          env: { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus', ...managedMarker },
           systemdRunPath: '/usr/bin/systemd-run',
           setsidPath: '/usr/bin/setsid',
         }),
       ).toMatchObject({ launcher: 'systemd-run' });
     }
+  });
+
+  it.skipIf(process.platform === 'win32')('uses setsid for a private XDG directory until it contains a real bus socket', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'router-bus-'));
+    const bus = join(dir, 'bus');
+    const server = createServer();
+    const options = {
+      command: 'npx', args: ['vitest', 'run', 'a.test.ts'], env: { XDG_RUNTIME_DIR: dir },
+      systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+    };
+    try {
+      expect(userBusReachable(options.env)).toBe(false);
+      expect(resolveTestChildLauncher(options)).toMatchObject({ launcher: 'setsid', ownsProcessGroup: true });
+      // An ordinary file named bus is not an IPC endpoint either.
+      writeFileSync(bus, 'not a bus socket');
+      expect(userBusReachable(options.env)).toBe(false);
+      expect(resolveTestChildLauncher(options)).toMatchObject({ launcher: 'setsid' });
+      rmSync(bus);
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(bus, resolve);
+      });
+      expect(userBusReachable(options.env)).toBe(true);
+      expect(resolveTestChildLauncher(options)).toMatchObject({ launcher: 'systemd-run', ownsProcessGroup: true });
+    } finally {
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(userBusReachable(options.env)).toBe(false);
   });
 
   it('falls back to setsid --wait when the child env cannot reach a user bus', async () => {
