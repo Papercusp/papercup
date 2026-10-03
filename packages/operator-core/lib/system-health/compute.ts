@@ -2395,7 +2395,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('pg conns', pg ? `${pg.active}/${pg.total}` : '?', pg === null ? 'unknown' : undefined),
         m('pg pool', pool ? (pool.band === 'ok' ? `${pool.probeMs}ms` : `${pool.band} (${pool.probeMs}ms)`) : 'n/a', pool?.band === 'critical' ? 'warn' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
-        m('mcp-proxy', mcpProxy ? (mcpQueueCrit ? `${mcpQueueStalls} critical continuation wait(s) ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m (max ${Math.round(mcpProxy.criticalContinuationQueueMaxWaitMs / 1000)}s)` : mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit || mcpQueueCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
+        m('mcp-proxy', mcpProxy ? (mcpQueueCrit ? `${mcpQueueStalls} critical continuation wait(s) ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m observed in the last hour (max ${Math.round(mcpProxy.criticalContinuationQueueMaxWaitMs / 1000)}s)` : mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit || mcpQueueCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
         m('host pressure', hostPressure?.status ?? 'n/a', hostPressureTone),
