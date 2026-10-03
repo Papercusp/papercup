@@ -137,6 +137,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
+    "@octokit/rest": "^22.0.0",
     "@papercusp/activity-bridge": "*",
     "@papercusp/agent-mcp": "*",
     "@papercusp/artifact-registry": "*",
