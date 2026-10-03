@@ -3,6 +3,7 @@ import {
   buildAcceptanceBarSeed,
   parseBarMappings,
   acceptanceBarProjectedBehavior,
+  acceptanceBarBehaviorClass,
   parseRequirementBars,
 } from './acceptance-bar-seed';
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
@@ -507,9 +508,18 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
     expect(manual.ok).toBe(true);
     if (!manual.ok) throw new Error(manual.message);
     expect(manual.projections).toHaveLength(1);
-    expect(manual.projections[0]).toMatchObject({ behaviorClass: 'non-automated', mutationRequired: undefined });
+    expect(manual.projections[0]?.behaviorClass).toBe('non-automated');
+    expect(manual.projections[0]?.mutationRequired ?? false).toBe(false);
     expect(manual.projections[0]?.requiredTestLayers ?? []).toEqual([]);
     expect(manual.criteria[0]?.method).toContain('actual demonstration receipt');
+  });
+
+  it('retains automated classes for tree work without explicit manual intent or with declared layers', () => {
+    expect(acceptanceBarBehaviorClass('tree')).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('tree', [], { kind: 'requirements' })).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('tree', ['unit'], { kind: 'instrument', instrumentKey: 'none' })).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('live', ['integration'], { kind: 'instrument', instrumentKey: 'none' })).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('tree', [], { kind: 'instrument', instrumentKey: 'none' })).toBe('non-automated');
   });
 
   it('judges only fresh post-epoch BARs: opt-out, legacy backfill and unchanged priors are untouched', () => {
