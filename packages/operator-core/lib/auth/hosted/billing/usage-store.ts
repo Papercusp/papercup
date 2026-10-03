@@ -1,0 +1,133 @@
+/**
+ * Monetization P-004: durable provider receipts, alongside hosted billing.
+ * Cash movements stay in money-journal; identity markup stays in shadow metering.
+ * Only an authenticated server collector may append. A receipt is evidence of
+ * one observation, never evidence that the collector population is complete.
+ */
+import { withHostedServiceContext } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
+import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import {
+  buildHostedUsageStatement,
+  validateHostedUsageRecord,
+  type HostedUsageRecord,
+  type HostedUsageScope,
+} from './usage-statement';
+
+type ReceiptRow = {
+  control_workspace_id: string; organization_id: string; customer_workspace_id: string;
+  provider: string; record_id: string; usage_id: string; revision: string | number;
+  category: HostedUsageRecord['category']; payer: HostedUsageRecord['payer'];
+  occurred_at_ms: string | number; observed_at_ms: string | number;
+  quantity: string | number; unit: string; cost_source: HostedUsageRecord['costSource'];
+  cost_micros: string | number | null; source_ref: string;
+};
+
+function receipt(row: ReceiptRow): HostedUsageRecord {
+  const record: HostedUsageRecord = {
+    controlWorkspaceId: row.control_workspace_id, organizationId: row.organization_id,
+    customerWorkspaceId: row.customer_workspace_id, provider: row.provider,
+    recordId: row.record_id, usageId: row.usage_id, revision: Number(row.revision),
+    category: row.category, payer: row.payer, occurredAtMs: Number(row.occurred_at_ms),
+    observedAtMs: Number(row.observed_at_ms), quantity: Number(row.quantity), unit: row.unit,
+    costSource: row.cost_source, costMicros: row.cost_micros === null ? null : Number(row.cost_micros),
+    sourceRef: row.source_ref,
+  };
+  validateHostedUsageRecord(record);
+  return record;
+}
+
+const keys = [
+  'controlWorkspaceId', 'organizationId', 'customerWorkspaceId', 'provider', 'recordId',
+  'usageId', 'revision', 'category', 'payer', 'occurredAtMs', 'observedAtMs', 'quantity',
+  'unit', 'costSource', 'costMicros', 'sourceRef',
+] as const;
+const canonical = (record: HostedUsageRecord) => JSON.stringify(keys.map(key => record[key]));
+
+export type HostedUsageAppendResult = 'recorded' | 'duplicate' | 'replay-mismatch' | 'revision-conflict';
+
+export class PostgresHostedUsageStore {
+  constructor(private readonly run: HostedServiceContextRunner = withHostedServiceContext) {}
+
+  async append(record: HostedUsageRecord): Promise<HostedUsageAppendResult> {
+    validateHostedUsageRecord(record);
+    return this.run(async sql => {
+      // Serialize the whole stream, not just the receipt id: concurrent cost
+      // revisions must validate against the same committed history. Hash
+      // collisions only serialize unrelated streams; they cannot mix their rows.
+      const stream = JSON.stringify([
+        record.controlWorkspaceId, record.organizationId, record.customerWorkspaceId,
+        record.provider, record.usageId,
+      ]);
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended(${stream}, 0))`;
+      const existing = await readStream(sql, record);
+      const prior = existing.find(r => r.recordId === record.recordId);
+      if (prior) return canonical(prior) === canonical(record) ? 'duplicate' : 'replay-mismatch';
+      if (existing.some(r => r.revision === record.revision)) return 'revision-conflict';
+      const records = [...existing, record];
+      const observedAtMs = records.reduce((latest, r) => Math.max(latest, r.observedAtMs), 0);
+      // Reuse the statement's revision validation, including out-of-order
+      // delivery, category/payer identity and estimated/reported/billed rank.
+      buildHostedUsageStatement({
+        scope: record, month: '1970-01', asOfMs: observedAtMs,
+        source: { complete: false, observedAtMs, maximumAgeMs: 0, evidenceRef: record.sourceRef },
+        records,
+      });
+      const inserted = await sql`
+        INSERT INTO papercusp_auth.hosted_usage_receipts
+          (control_workspace_id, organization_id, customer_workspace_id, provider,
+           record_id, usage_id, revision, category, payer, occurred_at_ms,
+           observed_at_ms, quantity, unit, cost_source, cost_micros, source_ref)
+        VALUES (${record.controlWorkspaceId}, ${record.organizationId}, ${record.customerWorkspaceId},
+                ${record.provider}, ${record.recordId}, ${record.usageId}, ${record.revision},
+                ${record.category}, ${record.payer}, ${record.occurredAtMs}, ${record.observedAtMs},
+                ${record.quantity}, ${record.unit}, ${record.costSource}, ${record.costMicros}, ${record.sourceRef})
+        ON CONFLICT DO NOTHING RETURNING record_id`;
+      if (inserted.length) return 'recorded';
+      // One receipt id can race under two DIFFERENT usage ids. The table's
+      // uniqueness, followed by this exact scoped read, catches that collision.
+      const repeated = await sql<ReceiptRow[]>`
+        SELECT * FROM papercusp_auth.hosted_usage_receipts
+         WHERE control_workspace_id = ${record.controlWorkspaceId}
+           AND organization_id = ${record.organizationId}
+           AND customer_workspace_id = ${record.customerWorkspaceId}
+           AND provider = ${record.provider} AND record_id = ${record.recordId}`;
+      return repeated[0] && canonical(receipt(repeated[0])) === canonical(record) ? 'duplicate' : 'replay-mismatch';
+    });
+  }
+
+  /** Full revision history as known at the requested time, in an exact tenant scope. */
+  async readRecords(input: { scope: HostedUsageScope; month: string; asOfMs: number }): Promise<HostedUsageRecord[]> {
+    // Reuse the shared boundary validation, including an explicit unknown
+    // completeness receipt. An empty result cannot silently mean a zero bill.
+    buildHostedUsageStatement({
+      ...input, records: [],
+      source: { complete: false, observedAtMs: input.asOfMs, maximumAgeMs: 0, evidenceRef: 'usage-store:read' },
+    });
+    const { startMs, endMs } = shadowMonthBounds(input.month);
+    const { scope } = input;
+    return this.run(async sql => {
+      const rows = await sql<ReceiptRow[]>`
+        SELECT * FROM papercusp_auth.hosted_usage_receipts
+         WHERE control_workspace_id = ${scope.controlWorkspaceId}
+           AND organization_id = ${scope.organizationId}
+           AND (${scope.customerWorkspaceId}::text IS NULL OR customer_workspace_id = ${scope.customerWorkspaceId})
+           AND occurred_at_ms >= ${startMs} AND occurred_at_ms < ${endMs}
+           AND occurred_at_ms <= ${input.asOfMs} AND observed_at_ms <= ${input.asOfMs}
+         ORDER BY customer_workspace_id COLLATE "C", provider COLLATE "C", usage_id COLLATE "C", revision`;
+      return rows.map(receipt);
+    });
+  }
+}
+
+async function readStream(sql: Sql, record: HostedUsageRecord): Promise<HostedUsageRecord[]> {
+  const rows = await sql<ReceiptRow[]>`
+    SELECT * FROM papercusp_auth.hosted_usage_receipts
+     WHERE control_workspace_id = ${record.controlWorkspaceId}
+       AND organization_id = ${record.organizationId}
+       AND customer_workspace_id = ${record.customerWorkspaceId}
+       AND provider = ${record.provider} AND usage_id = ${record.usageId}
+     ORDER BY revision`;
+  return rows.map(receipt);
+}

@@ -91,7 +91,7 @@ function sum(a: number, b: number): number {
   if (result > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('usage statement exceeds safe integer range');
   return Number(result);
 }
-function validateRecord(record: HostedUsageRecord): void {
+export function validateHostedUsageRecord(record: HostedUsageRecord): void {
   if (!record || typeof record !== 'object' || Array.isArray(record) ||
       Object.keys(record).some((key) => !(RECORD_KEYS as readonly string[]).includes(key))) {
     throw new Error('usage record contains unsupported fields');
@@ -139,7 +139,7 @@ export function buildHostedUsageStatement(input: {
     // Filter the exact composite scope before retaining evidence or identifiers.
     if (record?.controlWorkspaceId !== scope.controlWorkspaceId || record?.organizationId !== scope.organizationId ||
         (scope.customerWorkspaceId !== null && record?.customerWorkspaceId !== scope.customerWorkspaceId)) continue;
-    validateRecord(record);
+    validateHostedUsageRecord(record);
     if (record.observedAtMs > asOfMs) continue;
     if (record.observedAtMs > source.observedAtMs) gaps.add('receipt-newer-than-census');
     const receiptKey = JSON.stringify([record.customerWorkspaceId, record.provider, record.recordId]);
