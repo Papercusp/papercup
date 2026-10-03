@@ -17,6 +17,7 @@ import {
   escapeJsonStringControls,
   formatJsonInputError,
   importSdkModuleWithInstallAwareness,
+  preparePtoolConnectionModules,
   parseArgs,
   parseJsonInput,
   ptoolConnectionRetryOptions,
@@ -2144,6 +2145,51 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     }
   });
 
+  it('starts the local network deadline after delayed SDK bootstrap and still times a stalled handshake', async () => {
+    vi.useFakeTimers();
+    const bootstrap = Promise.withResolvers<unknown>();
+    const network = Promise.withResolvers<unknown>();
+    const prepared = {
+      mode: 'http',
+      Client: 'client-module',
+      StreamableHTTPClientTransport: 'transport-module',
+    };
+    const connectOnce = vi.fn(
+      (_url: string, _scope: object, _options: { timeoutMs?: number }, _context: unknown) => network.promise,
+    );
+    const pending = connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3170'],
+      {},
+      {
+        prepareConnection: () => bootstrap.promise,
+        maxAttempts: 1,
+        attemptTimeoutMs: 15,
+        totalTimeoutMs: 0,
+        sleep: async () => {},
+      },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(25);
+      expect(connectOnce).not.toHaveBeenCalled();
+
+      bootstrap.resolve(prepared);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connectOnce).toHaveBeenCalledTimes(1);
+      expect(connectOnce.mock.calls[0]?.[3]).toBe(prepared);
+
+      const networkTimeoutAssertion = expect(pending).rejects.toThrow(
+        /local operator connection attempt timed out after 15ms \[1 connect attempt\(s\).*attempt-timeout\]/,
+      );
+      await vi.advanceTimersByTimeAsync(15);
+      await networkTimeoutAssertion;
+    } finally {
+      network.resolve({});
+      vi.useRealTimers();
+    }
+  });
+
   it('recovers a direct local pin by retrying the same named-call candidate', async () => {
     const pinned = 'http://127.0.0.1:3170';
     const env = { PAPERCUSP_OPERATOR_URL: pinned };
@@ -2329,6 +2375,24 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
       else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
     }
   }
+
+  it('labels an install:safe reader-lease timeout as SDK bootstrap before network connection', async () => {
+    const installWaitTimeout = new Error(
+      'Timed out after 600000ms waiting for fs-mutex writer ("npm-install-abc123"); holder: install:safe',
+    );
+    const importSdkModule = vi.fn().mockRejectedValue(installWaitTimeout);
+
+    await expect(preparePtoolConnectionModules(
+      { transport: 'http' },
+      { importSdkModule },
+    )).rejects.toMatchObject({
+      message: expect.stringContaining(
+        'ptool: SDK bootstrap timed out waiting for install:safe before operator connection',
+      ),
+      cause: installWaitTimeout,
+    });
+    expect(importSdkModule).toHaveBeenCalledTimes(2);
+  });
 
   it('imports SDK modules under the repo install reader lease', async () => {
     const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
