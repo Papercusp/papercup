@@ -9,29 +9,30 @@ const suppliedRoot = process.env.PAPERCUSP_PUBLIC_DOCS_ROOT
   ? resolve(process.env.PAPERCUSP_PUBLIC_DOCS_ROOT)
   : undefined;
 let root = suppliedRoot ?? '';
+let buildDirectory: string | undefined;
 const origin = process.env.PORTAL_DOCS_BASE_URL?.replace(/\/$/, '');
 
 beforeAll(() => {
   if (suppliedRoot) return;
   // A fresh test invocation must exercise this source's actual Astro output.
   // Build in isolation instead of inheriting an older shared dist directory.
-  // Prerendered ESM resolves external dependencies through parent node_modules.
-  // Keep the unique build under the repository's ignored scratch directory.
-  const scratch = resolve(import.meta.dirname, '../../../.papercusp/scratch');
+  const manualApp = resolve(import.meta.dirname, '../../papercusp-docs');
+  // Keep output under the app's cwd: Astro stages external output elsewhere,
+  // while the maintained content loader resolves its source from that cwd.
+  const scratch = resolve(manualApp, '.astro');
   mkdirSync(scratch, { recursive: true });
-  root = mkdtempSync(resolve(scratch, 'public-manual-reader-'));
-  // Astro stages external output under cwd and moves assets with rename().
-  // Run inside the output root so staging shares its filesystem and isolation.
+  buildDirectory = mkdtempSync(resolve(scratch, 'public-manual-reader-'));
+  root = resolve(buildDirectory, 'dist');
   execFileSync(process.execPath, [
     '--input-type=module', '-e',
     "import { pathToFileURL } from 'node:url'; const { build } = await import(pathToFileURL(process.argv[4]).href); await build({ root: process.argv[1], outDir: process.argv[2], cacheDir: process.argv[3] });",
-    resolve(import.meta.dirname, '../../papercusp-docs'), root, resolve(root, '.astro'),
+    manualApp, root, resolve(buildDirectory, 'cache'),
     createRequire(import.meta.url).resolve('astro'),
-  ], { cwd: root, timeout: 60_000 });
+  ], { cwd: manualApp, timeout: 60_000 });
 }, 65_000);
 
 afterAll(() => {
-  if (!suppliedRoot && root) rmSync(root, { recursive: true, force: true });
+  if (buildDirectory) rmSync(buildDirectory, { recursive: true, force: true });
 });
 
 async function readPublic(path: string, method = 'GET'): Promise<Response> {
