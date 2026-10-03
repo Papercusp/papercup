@@ -11,8 +11,11 @@
  * This is the cheap, synchronous DOOR check that names that sibling before publish. For every
  * admitted TS/JS blob at the proved admission commit, each RELATIVE import specifier
  * (`./x`, `../y`) is resolved the way TypeScript's bundler / node16 resolution would —
- * extension probe, `.js` → `.ts` rewrite, `/index.*` — against the commit's tree, in ONE
- * `git cat-file --batch-check` call. Anything unresolved comes back with the path to admit.
+ * extension probe, `.js` → `.ts` rewrite, `/index.*` — against the commit's tree. When the
+ * admitted source set contains `readFileSync(new URL(...))`, local `.json`, `.jsonl` and `.md`
+ * filename literals in that set are checked as runtime data dependencies too. All candidate
+ * paths share ONE `git cat-file --batch-check` call. Anything unresolved comes back with the
+ * path to admit.
  *
  * It is deliberately NOT a typechecker. Bare specifiers (packages, `@/` aliases), type errors,
  * a file at repairHead that imports something this admission DELETES, and everything else
@@ -52,6 +55,7 @@ const JS_TO_TS: Readonly<Record<string, readonly string[]>> = {
 const EXPLICIT_EXTENSIONS: ReadonlySet<string> = new Set([
   ...SCANNED_EXTENSIONS,
   '.json',
+  '.jsonl',
   '.css',
   '.scss',
   '.sass',
@@ -181,6 +185,74 @@ export function extractRelativeImportSpecifiers(source: string): string[] {
   return out;
 }
 
+interface RuntimeDataFileScan {
+  specifiers: string[];
+  hasUrlRead: boolean;
+}
+
+/**
+ * Read local data-file names from source literals. A whole-blob admission can include a module
+ * that names data files while an admitted test or runner reads them through a dynamic expression
+ * such as `readFileSync(new URL('./study/' + block.file, import.meta.url))`. The reader and the
+ * literal names need not be in the same file, so the caller combines these results across the
+ * admitted source set.
+ */
+function scanRuntimeDataFiles(source: string): RuntimeDataFileScan {
+  const specifiers: string[] = [];
+  const seen = new Set<string>();
+  let code = '';
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    const next = source[i + 1];
+    if (ch === '/' && next === '/') {
+      const end = source.indexOf('\n', i);
+      i = end === -1 ? source.length : end;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = source.indexOf('*/', i + 2);
+      i = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    if (ch === '`') {
+      i = skipTemplate(source, i);
+      code += ' `` ';
+      if (code.length > 256) code = code.slice(-96);
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      const end = scanQuoted(source, i, ch);
+      const closed = source[end - 1] === ch && end - 1 > i;
+      const value = closed ? source.slice(i + 1, end - 1) : '';
+      const localPath =
+        closed &&
+        /\.(?:json|jsonl|md)$/i.test(value) &&
+        !value.startsWith('/') &&
+        !value.includes('\\') &&
+        !value.includes(':') &&
+        !value.includes('?') &&
+        !value.includes('#') &&
+        !/\s/.test(value);
+      if (localPath && !seen.has(value)) {
+        seen.add(value);
+        specifiers.push(value);
+      }
+      code += ' "" ';
+      if (code.length > 256) code = code.slice(-96);
+      i = end;
+      continue;
+    }
+    code += ch;
+    if (code.length > 256) code = code.slice(-96);
+    i++;
+  }
+  return {
+    specifiers,
+    hasUrlRead: /\b(?:readFile|readFileSync)\s*\(\s*new\s+URL\s*\(/.test(code),
+  };
+}
+
 /**
  * The repo-relative paths a relative specifier from `fromPath` may name, in probe order, or
  * null when it escapes the repository root (nothing in the tree can satisfy it; the gate's
@@ -231,18 +303,19 @@ export interface ImportCompletenessInput {
 export interface ImportCompletenessSkip {
   path: string;
   reason: 'not-scanned-extension' | 'not-a-blob' | 'escapes-repo' | 'inside-submodule' | 'generated-by-tracked-builder';
-  /** Import-specific skips: the specifier this refers to. */
+  /** The import specifier or runtime data filename this refers to. */
   specifier?: string;
 }
 
 export type ImportCompletenessOutcome =
-  | { ok: true; checked: string[]; imports: number; skipped: ImportCompletenessSkip[] }
+  | { ok: true; checked: string[]; imports: number; runtimeData: number; skipped: ImportCompletenessSkip[] }
   | {
       ok: false;
       code: 'admission-incomplete';
       missing: AdmissionMissingImport[];
       checked: string[];
       imports: number;
+      runtimeData: number;
       skipped: ImportCompletenessSkip[];
     }
   | { ok: false; code: 'git-failed'; step: string; detail: string };
@@ -360,8 +433,9 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
   const git = input.git ?? realAdmissionGit;
   const skipped: ImportCompletenessSkip[] = [];
   const checked: string[] = [];
-  type Ask = { from: string; specifier: string; candidates: string[] };
+  type Ask = { from: string; specifier: string; candidates: string[]; relation?: 'runtime-data' };
   const asks: Ask[] = [];
+  const sources: Array<{ path: string; imports: string[]; runtimeData: RuntimeDataFileScan }> = [];
 
   for (const path of input.paths) {
     const ext = posix.extname(path);
@@ -376,7 +450,10 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
       continue;
     }
     checked.push(path);
-    for (const specifier of extractRelativeImportSpecifiers(blob.stdout)) {
+    const imports = extractRelativeImportSpecifiers(blob.stdout);
+    const runtimeData = scanRuntimeDataFiles(blob.stdout);
+    sources.push({ path, imports, runtimeData });
+    for (const specifier of imports) {
       const candidates = resolveImportCandidates(path, specifier);
       if (!candidates) {
         skipped.push({ path, reason: 'escapes-repo', specifier });
@@ -385,6 +462,24 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
       asks.push({ from: path, specifier, candidates });
     }
   }
+
+  const importCount = asks.length;
+  if (sources.some((source) => source.runtimeData.hasUrlRead)) {
+    for (const source of sources) {
+      const imports = new Set(source.imports);
+      for (const specifier of source.runtimeData.specifiers) {
+        // The normal import scan already checks statically imported data files.
+        if (imports.has(specifier)) continue;
+        const candidates = resolveImportCandidates(source.path, specifier);
+        if (!candidates) {
+          skipped.push({ path: source.path, reason: 'escapes-repo', specifier });
+          continue;
+        }
+        asks.push({ from: source.path, specifier, candidates, relation: 'runtime-data' });
+      }
+    }
+  }
+  const runtimeDataCount = asks.length - importCount;
 
   const at = (rev: string, p: string) => `${rev}:${p}`;
   const first = batchKinds(
@@ -399,7 +494,9 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
     const hit = ask.candidates.some((c) => first.kinds.get(at(input.commit, c)) === 'blob');
     if (!hit) unresolved.push(ask);
   }
-  if (unresolved.length === 0) return { ok: true, checked, imports: asks.length, skipped };
+  if (unresolved.length === 0) {
+    return { ok: true, checked, imports: importCount, runtimeData: runtimeDataCount, skipped };
+  }
 
   // A path under a SUBMODULE cannot be read through the superproject's tree: the candidate
   // pins a gitlink there. That is not a missing sibling, so it is skipped, not refused.
@@ -423,7 +520,9 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
       skipped.push({ path: ask.from, reason: 'generated-by-tracked-builder', specifier: ask.specifier });
     } else reallyMissing.push(ask);
   }
-  if (reallyMissing.length === 0) return { ok: true, checked, imports: asks.length, skipped };
+  if (reallyMissing.length === 0) {
+    return { ok: true, checked, imports: importCount, runtimeData: runtimeDataCount, skipped };
+  }
 
   let probe: Map<string, ObjectKind> | null = null;
   if (input.probeRef) {
@@ -442,9 +541,18 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
       wanted: present ?? ask.candidates[0]!,
       tried: ask.candidates,
       atProbeRef: probe ? (present ? 'present' : 'absent') : 'unknown',
+      ...(ask.relation ? { relation: ask.relation } : {}),
     };
   });
-  return { ok: false, code: 'admission-incomplete', missing, checked, imports: asks.length, skipped };
+  return {
+    ok: false,
+    code: 'admission-incomplete',
+    missing,
+    checked,
+    imports: importCount,
+    runtimeData: runtimeDataCount,
+    skipped,
+  };
 }
 
 /**
@@ -564,7 +672,10 @@ export function renderMissingImports(missing: readonly AdmissionMissingImport[])
           : m.atProbeRef === 'absent'
             ? 'does not exist on the shared tip either — write it, let git-sync commit it, then admit it'
             : 'admit it too';
-      return `${m.from} imports ${JSON.stringify(m.specifier)} → ${m.wanted} (${where})`;
+      const reference = m.relation === 'runtime-data'
+        ? `references runtime data ${JSON.stringify(m.specifier)}`
+        : `imports ${JSON.stringify(m.specifier)}`;
+      return `${m.from} ${reference} → ${m.wanted} (${where})`;
     })
     .join('; ');
 }
@@ -596,7 +707,7 @@ export function importCompletenessPreflight(opts: {
         code: 'admission-incomplete',
         missing: r.missing,
         detail:
-          `REFUSED: admission ${built.commit.slice(0, 12)} is incomplete — ${r.missing.length} import(s) resolve to nothing at ` +
+          `REFUSED: admission ${built.commit.slice(0, 12)} is incomplete — ${r.missing.length} dependency reference(s) resolve to nothing at ` +
           `the proved commit (${renderMissingImports(r.missing)}). It was NOT published and repairHead did not move; ` +
           'the tip is never widened for you — admit the named path(s) alongside yours.',
       };

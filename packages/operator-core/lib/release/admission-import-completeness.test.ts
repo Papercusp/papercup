@@ -326,6 +326,42 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(refAt(root, frozenLineageRef(candidate))).toBe(ok.commit);
   });
 
+  it('refuses a runtime data file read through new URL when its literal filename is in an admitted sibling module', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/dream/study/accounting.mts':
+        "export const STUDY_BLOCKS = { haiku: { file: 'protocol.json' }, luna: { file: 'protocol-luna.json' } };\n",
+      'lib/dream/dream-study-accounting.test.ts':
+        "import { readFileSync } from 'node:fs';\n" +
+        "import { STUDY_BLOCKS } from './study/accounting.mts';\n" +
+        "const blocks = Object.values(STUDY_BLOCKS).map(block => JSON.parse(readFileSync(new URL('./study/' + block.file, import.meta.url), 'utf8')));\n",
+      'lib/dream/study/protocol.json': '{"name":"haiku"}\n',
+      'lib/dream/study/protocol-luna.json': '{"name":"luna"}\n',
+    }, 'runtime data read');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+
+    const incomplete = admit(root, candidate, [
+      'lib/dream/study/accounting.mts',
+      'lib/dream/dream-study-accounting.test.ts',
+    ], { preflight });
+    expect(incomplete).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [
+        expect.objectContaining({ from: 'lib/dream/study/accounting.mts', wanted: 'lib/dream/study/protocol.json', atProbeRef: 'present', relation: 'runtime-data' }),
+        expect.objectContaining({ from: 'lib/dream/study/accounting.mts', wanted: 'lib/dream/study/protocol-luna.json', atProbeRef: 'present', relation: 'runtime-data' }),
+      ],
+    });
+
+    const complete = admit(root, candidate, [
+      'lib/dream/study/accounting.mts',
+      'lib/dream/dream-study-accounting.test.ts',
+      'lib/dream/study/protocol.json',
+      'lib/dream/study/protocol-luna.json',
+    ], { preflight });
+    expect(complete.ok).toBe(true);
+  });
+
   it('refuses a whole-blob admission until differing reverse-importing tests and their imported modules share its pinned source', () => {
     const { root, candidate } = repo();
     const sourceCommit = sweep(root, {

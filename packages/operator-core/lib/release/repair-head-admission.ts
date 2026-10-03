@@ -104,14 +104,15 @@ export type AdmissionRefusalCode =
   | 'git-failed';
 
 /**
- * P-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): one import an admitted
- * file makes that resolves to NOTHING at the proved admission commit. The fix for the caller is
- * always the same — admit `wanted` too — and never "widen to the tip".
+ * P-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): one dependency an admitted
+ * file makes that resolves to NOTHING at the proved admission commit. This includes imports and
+ * detected runtime data reads. The fix for the caller is always the same — admit `wanted` too —
+ * and never "widen to the tip".
  */
 export interface AdmissionMissingImport {
-  /** The admitted file whose import cannot be resolved at the admission commit. */
+  /** The admitted file whose dependency cannot be resolved at the admission commit. */
   from: string;
-  /** The specifier exactly as written in `from`. */
+  /** The specifier or data filename exactly as written in `from`. */
   specifier: string;
   /** The repo-relative path the caller should admit — the candidate that exists on `probeRef` when one does, else the first candidate tried. */
   wanted: string;
@@ -119,8 +120,8 @@ export interface AdmissionMissingImport {
   tried: string[];
   /** Whether `wanted` exists on the probe ref (the shared staging tip): `present` means admitting it closes the gap. */
   atProbeRef: 'present' | 'absent' | 'unknown';
-  /** A same-source cohort member required by a whole-blob admission. Omitted for forward missing imports. */
-  relation?: 'reverse-importer' | 'imported-module';
+  /** A same-source cohort member or runtime data dependency required by a whole-blob admission. */
+  relation?: 'reverse-importer' | 'imported-module' | 'runtime-data';
 }
 
 /**
