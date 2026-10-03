@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { parseGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 import { goalOwnerReportFixture } from '../../../../test/fixtures/goal-owner-report';
 import {
   deriveGoalReportNotification, validateGoalReportReferenceSnapshot,
@@ -2999,6 +3000,16 @@ describe('REPORT-REFERENCE-ADMISSION-P002: current typed truth', () => {
     expect(notification.split('\n').map((line) => line.split(':')[0])).toEqual(['MOVED', 'COST', 'OWNER-WALLED', 'KILLED', 'NEXT WAKE']);
     expect(notification).toContain('125.5c / 1000c');
     expect(notification).toContain('3 exact actions');
+  });
+  it('accepts equivalent JSONB field ordering without relaxing exact values', async () => {
+    const control = fixture();
+    const reordered = parseGoalOwnerReportSnapshot({ ...control,
+      cost: Object.fromEntries(Object.entries(control.cost).reverse()),
+      ownerWalls: control.ownerWalls.map((wall) => Object.fromEntries(Object.entries(wall).reverse())),
+      moved: control.moved.map((moved) => Object.fromEntries(Object.entries(moved).reverse())),
+    });
+    expect(reordered).not.toBeNull();
+    await expect(validateGoalReportReferenceSnapshot(reordered!, readsFor(control), now)).resolves.toBeUndefined();
   });
   const negatives: Array<[string, (s: ReturnType<typeof fixture>) => void, string]> = [
     ['future observation', (s) => { s.observedAt = '2026-10-03T10:01:00.000Z'; }, 'snapshot-age'],
