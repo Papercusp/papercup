@@ -158,7 +158,10 @@ export function learningStudentRunner(opts: TransferLearningLlmOptions = {}): Re
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
       replayed: true,
-      execution: { model, codeHash: TRANSFER_LIVE_SOURCE_HASH },
+      execution: { model: response.execution?.model ?? model, codeHash: null,
+        loadedCode: { ...response.execution?.loadedCode, student: TRANSFER_LIVE_SOURCE_HASH },
+        unresolved: response.execution?.unresolved?.length ? response.execution.unresolved :
+          ['student-transport-completeness'] },
     };
   };
 }
