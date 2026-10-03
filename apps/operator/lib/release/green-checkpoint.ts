@@ -167,6 +167,7 @@ import {
   parseFrozenRepairSelectiveCoverage,
   recordFrozenRepairSupersededRed,
   recordFrozenRepairLegMeasurement,
+  type RepairLegMeasurement,
   selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
   buildFrozenRepairStatusIdentity,
@@ -15166,12 +15167,62 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
           : `FAILING ${measured.failingSignatures.join(", ")}`) +
         ` (awaiting-fixer hold stays measured)`,
     );
-    return { ...result, repairTickLegs: measured };
+    const repairQueue = await foldRepairTickLegsIntoQueue(queue, measured, deps);
+    return { ...result, repairTickLegs: measured, repairQueue };
   } catch (e) {
     deps.log(
       `warn: P-009 repair-tick leg measurement failed: ${e instanceof Error ? e.message : e}`,
     );
     return result;
+  }
+}
+
+/**
+ * WI-10005728: fold one hold tick's leg measurement into the queue's per-leg lifecycle
+ * (`queue.legs`) and persist it, so a leg measured red is admitted as `failing` and a later
+ * pass at a newer head marks it `fixed`. Before this, `recordFrozenRepairLegMeasurement` had
+ * no production caller: the tick's measurement reached `gate_health.repairTickLegs` only, and
+ * every leg read `never-admitted` (24 of 24 on queue 6ca43115, 11 of them measured failing).
+ *
+ * Lost-update safe: the fold is applied to the FRESH row through
+ * `commitFrozenRepairQueueTransition`, and is skipped when that row is a different frozen
+ * candidate (the queue was retired and re-opened while the legs ran). `updatedAtMs` never moves
+ * backwards past the fresh row's. Fail-safe like the measurement itself: a failed write is
+ * logged and the hold result keeps the queue it already had.
+ */
+async function foldRepairTickLegsIntoQueue(
+  queue: FrozenCandidateRepairQueue,
+  measured: RepairTickLegs,
+  deps: Pick<CheckpointDeps, "log" | "transitionFrozenRepairQueue" | "writeFrozenRepairQueue">,
+): Promise<FrozenCandidateRepairQueue> {
+  // A `skipped` / `not-checked` leg was not measured: the lifecycle never infers a pass (or a
+  // fail) from silence, so only legs with a real result are folded.
+  const measurements: RepairLegMeasurement[] = [];
+  for (const leg of measured.legs) {
+    if (leg.status === "pass" || leg.status === "fail" || leg.status === "errored") {
+      measurements.push({ id: leg.id, status: leg.status });
+    }
+  }
+  if (measurements.length === 0) return queue;
+  try {
+    return await commitFrozenRepairQueueTransition(
+      deps,
+      queue,
+      (fresh) =>
+        fresh.candidate !== queue.candidate
+          ? fresh
+          : recordFrozenRepairLegMeasurement(fresh, {
+              measurements,
+              head: measured.head,
+              nowMs: Math.max(measured.atMs, fresh.updatedAtMs + 1),
+            }),
+      "repair-tick leg lifecycle",
+    );
+  } catch (e) {
+    deps.log(
+      `warn: WI-10005728 repair-tick leg lifecycle write failed: ${e instanceof Error ? e.message : e}`,
+    );
+    return queue;
   }
 }
 
