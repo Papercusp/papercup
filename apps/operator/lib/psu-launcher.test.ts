@@ -5494,6 +5494,45 @@ describe("psu-launcher arg parsing", () => {
     }
   });
 
+  it("drops NATIVE deferred tool references from a resumed transcript but never from a fork's source (EI-24890753013901545)", () => {
+    const root = mkdtempSync(join(tmpdir(), "psu-resume-native-reference-"));
+    try {
+      const configDir = join(root, "claude");
+      const projectDir = join(configDir, "projects", "-repo");
+      mkdirSync(projectDir, { recursive: true });
+      const line = (name: string) =>
+        JSON.stringify({ type: "user", message: { content: [{ type: "tool_reference", tool_name: name }] } });
+      const transcript = [line("ExitPlanMode"), line("mcp__papercusp-su__plans_audit")].join("\n");
+      const file = join(projectDir, "native-2.jsonl");
+      const session = { agent: "claude", sessionId: "native-2", configDir };
+
+      // FORK: its transcriptPath is the SOURCE session's — it must stay byte-identical.
+      const forkEnv = { PAPERCUSP_TOOLS: "tools:find" };
+      writeFileSync(file, transcript);
+      const forked = addClaudeResumeToolReferencesToEnv(session, forkEnv, { home: root });
+      expect(readFileSync(file, "utf8")).toBe(transcript);
+      expect(forked.nativeNeutralized ?? { rewritten: 0 }).toMatchObject({ rewritten: 0 });
+
+      // RESUME: native reference dropped, Papercusp one kept and still re-seeded.
+      const env = { PAPERCUSP_TOOLS: "tools:find" };
+      const resumed = addClaudeResumeToolReferencesToEnv(session, env, { home: root, neutralizeNative: true });
+      expect(resumed.nativeNeutralized).toMatchObject({ rewritten: 1, toolNames: ["ExitPlanMode"] });
+      const after = readFileSync(file, "utf8");
+      // The reference BLOCK is gone (it becomes a text marker that still names the tool).
+      expect(after).not.toContain('"tool_name":"ExitPlanMode"');
+      expect(after).toContain('"tool_name":"mcp__papercusp-su__plans_audit"');
+      expect(env.PAPERCUSP_TOOLS).toBe("tools:find,mcp__papercusp-su__plans_audit");
+
+      // No PAPERCUSP_TOOLS seed at all: the native drop must still happen on a resume.
+      writeFileSync(file, transcript);
+      const noSeed = addClaudeResumeToolReferencesToEnv(session, {}, { home: root, neutralizeNative: true });
+      expect(noSeed.nativeNeutralized).toMatchObject({ rewritten: 1 });
+      expect(readFileSync(file, "utf8")).not.toContain('"tool_name":"ExitPlanMode"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("every CLI-spawn env builder stamps the context-trimming trio (WI-2140943 lane 2)", () => {
     // roleFlow was the last uncovered spawn path: it stamped nativeCompactionEnv but NOT
     // contextTrimmingEnv, and runWrapper's healContextTrimmingEnv only fires on the

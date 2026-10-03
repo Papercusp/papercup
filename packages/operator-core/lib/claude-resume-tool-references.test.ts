@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,6 +10,8 @@ import {
   CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
   neutralizeClaudeToolReferences,
   neutralizeForkSeedToolReferences,
+  neutralizeResumeNativeToolReferences,
+  neutralizeResumeNativeToolReferencesInFile,
   __resetClaudeResumeTranscriptCacheForTests,
 } from './claude-resume-tool-references.mjs';
 
@@ -314,5 +316,90 @@ describe('neutralizeForkSeedToolReferences', () => {
   it('is a no-op for a missing dir or id', () => {
     expect(neutralizeForkSeedToolReferences(join(tmpdir(), 'no-such-fork-seed-dir'), 'x')).toEqual({ files: 0, rewritten: 0, toolNames: [] });
     expect(neutralizeForkSeedToolReferences(null, 'x')).toEqual({ files: 0, rewritten: 0, toolNames: [] });
+  });
+});
+
+/**
+ * EI-24890753013901545: a same-session RESUME (not a fork) hit the provider's
+ * "Tool reference 'ExitPlanMode' not found in available tools" 400 because the
+ * resumed process lacks a NATIVE deferred tool the earlier process loaded, and
+ * the resume seed can only restore Papercusp MCP names. Native references are
+ * dropped from the resumed session's own transcript; Papercusp ones stay.
+ */
+describe('native-only neutralization for a same-session resume (EI-24890753013901545)', () => {
+  const PAPERCUSP = 'mcp__papercusp-su__plans_audit';
+
+  it('drops native references and keeps Papercusp MCP references in a server search result', () => {
+    const out = neutralizeClaudeToolReferences(
+      serverToolSearch('ExitPlanMode', PAPERCUSP, 'WaitForMcpServers'),
+      { nativeOnly: true },
+    );
+    expect(out.rewritten).toBe(2);
+    expect(out.toolNames).toEqual(['ExitPlanMode', 'WaitForMcpServers']);
+    expect(JSON.parse(out.text).message.content[0].content.tool_references).toEqual([
+      { type: 'tool_reference', tool_name: PAPERCUSP },
+    ]);
+  });
+
+  it('rewrites a native reference inside tool_result content and leaves a Papercusp one byte-identical', () => {
+    const native = neutralizeClaudeToolReferences(clientToolSearch('ExitPlanMode'), { nativeOnly: true });
+    expect(native.rewritten).toBe(1);
+    // The marker must describe a RESUME, not a fork (the agent reads this text).
+    expect(JSON.parse(native.text).message.content[0].content).toEqual([
+      { type: 'text', text: '[tool reference ExitPlanMode was loaded here before this session was resumed]' },
+    ]);
+    expect(native.text).not.toContain('"tool_reference"');
+
+    const mcpOnly = clientToolSearch(PAPERCUSP);
+    const kept = neutralizeClaudeToolReferences(mcpOnly, { nativeOnly: true });
+    expect(kept).toMatchObject({ rewritten: 0, toolNames: [] });
+    expect(kept.text).toBe(mcpOnly);
+  });
+
+  it('keeps the FORK default unchanged: without nativeOnly every reference is neutralized', () => {
+    const out = neutralizeClaudeToolReferences(serverToolSearch('ExitPlanMode', PAPERCUSP));
+    expect(out.rewritten).toBe(2);
+    expect(out.text).not.toContain('"tool_reference"');
+  });
+
+  it("rewrites only the resumed session's own transcript, atomically, idempotently, leaving no temp file", () => {
+    const projects = mkdtempSync(join(tmpdir(), 'resume-native-'));
+    try {
+      const dir = join(projects, '-home-a');
+      mkdirSync(dir);
+      const source = `${assistant('hello')}\n${serverToolSearch('ExitPlanMode', PAPERCUSP)}\n`;
+      writeFileSync(join(dir, 'sess.jsonl'), source);
+      writeFileSync(join(dir, 'other.jsonl'), source);
+
+      const first = neutralizeResumeNativeToolReferences(projects, 'sess');
+      expect(first).toMatchObject({ files: 1, rewritten: 1, toolNames: ['ExitPlanMode'] });
+      const after = readFileSync(join(dir, 'sess.jsonl'), 'utf8');
+      expect(after).not.toContain('ExitPlanMode');
+      // The seed restores Papercusp references, so the analysis must still see it.
+      expect(analyzeClaudeResumeTranscriptFile(join(dir, 'sess.jsonl'))?.toolReferences).toEqual([PAPERCUSP]);
+      // A different session in the same dir is not the resumed one.
+      expect(readFileSync(join(dir, 'other.jsonl'), 'utf8')).toBe(source);
+      // temp + rename must not strand a partial file next to the transcript.
+      expect(readdirSync(dir).sort()).toEqual(['other.jsonl', 'sess.jsonl']);
+
+      expect(neutralizeResumeNativeToolReferences(projects, 'sess')).toMatchObject({ files: 0, rewritten: 0 });
+      expect(readFileSync(join(dir, 'sess.jsonl'), 'utf8')).toBe(after);
+    } finally {
+      rmSync(projects, { recursive: true, force: true });
+    }
+  });
+
+  it('file form: rewrites native references, and is a no-op for a missing or empty path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'resume-native-file-'));
+    try {
+      const file = join(dir, 'sess.jsonl');
+      writeFileSync(file, serverToolSearch('WaitForMcpServers'));
+      expect(neutralizeResumeNativeToolReferencesInFile(file)).toMatchObject({ rewritten: 1, toolNames: ['WaitForMcpServers'] });
+      expect(readFileSync(file, 'utf8')).not.toContain('WaitForMcpServers');
+      expect(neutralizeResumeNativeToolReferencesInFile(join(dir, 'missing.jsonl'))).toEqual({ rewritten: 0, toolNames: [] });
+      expect(neutralizeResumeNativeToolReferencesInFile(null)).toEqual({ rewritten: 0, toolNames: [] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
