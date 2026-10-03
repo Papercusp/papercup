@@ -21,9 +21,67 @@
     }
   },
   "recordedAt": "2026-10-02T08:27:23Z",
-  "qualificationUpdatedAt": "2026-10-02T21:46:05Z",
+  "qualificationUpdatedAt": "2026-10-03T00:05:32Z",
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
+  "spawnerEntryComparison": {
+    "measurementWorkItem": "WI-10005706",
+    "completion": "Saved actual close applied done with committed authority; this census does not repeat completion or tests.",
+    "originalQualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-boot-pair-r2-qualification-2026-10-02.json",
+      "bytes": 7244,
+      "sha256": "19235b3dadc726e320ec73cc2a542a7bf09e7cc9954be652cc502ba21504f28d",
+      "testRun": 20576077
+    },
+    "finalSafeQualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-current-standalone-memory-qualification-r1-2026-10-02.json",
+      "bytes": 8208,
+      "sha256": "63c05df2c76310a76efd93eb124081d10bb091fb35edbb99c92feec98b009011",
+      "testRun": 20584302
+    },
+    "finalSafeRaw": {
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-safe-boot-pair-r3-2026-10-02.json",
+      "bytes": 277233,
+      "sha256": "a4650f459bd06d407650144d52d3716dce98e31a35cae7c5e7eb042b3a5981e9"
+    },
+    "coverage": "Each saved comparison has four full/standalone/standalone/full private arms, 48 PID/start-bound samples, 12 windows and 52 harmless owned commands. The maintained server and IPC workload are shared; concurrency and graceful cleanup passed with no forced cleanup or unreaped descendants.",
+    "finalSafePairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "finalPssReductionBytes": 419844096,
+        "finalCumulativeV8AllocationReductionBytes": 1031421856
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "finalPssReductionBytes": 433133568,
+        "finalCumulativeV8AllocationReductionBytes": 1061171864
+      }
+    ],
+    "definitions": "PSS is kernel smaps_rollup Pss kB multiplied by 1024 for one identified PID; allocation is cumulative V8 total_allocated_bytes, not retained or native allocation. GC events were not recorded.",
+    "provenance": "Ten named sources were stable before/after each run. The original ledger local-dirty and unknown full source/router graph qualifications remain intact even after commit settlement.",
+    "actualStandaloneBaseline": {
+      "path": "docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json",
+      "bytes": 90360,
+      "sha256": "6d6acbec35a4d1851809dc64de151025d8d0540acfc88b4b83736f7f1853a90e",
+      "testRun": 20584857,
+      "specBinding": 22985,
+      "evidencePlane": "live",
+      "scope": "Nine counter samples and 24 read-only HTTP requests across three actual staging windows. Node digest, exact maintained sibling path, ancestry, PID/start identity and configured spawner role are bound. Inspector closed and both process identities were preserved.",
+      "identityLimits": "Main health identifies build 80fbc954da; sibling disk digest is 91d3eef33cdbbc8110c597bc287b4f1ff7937b6da93115e550f655058a5b6b4d. Independently advertised loaded sibling build remains unknown. Ambient HTTP assignment to the sidecar is unknown.",
+      "bindingLimits": "Operational binding at PERF-OCT1-P011-MEMORY revision 2 supports the bounded live baseline only. Exact spec and ledger run are current; source/test currentness remains unknown without explicit comparisons. No matched live counterfactual, production recovery or clause fulfillment is claimed."
+    },
+    "acceptance": "Final-safe private resource reduction and separately bounded actual standalone observation are verified within their recorded scopes. Parent memory acceptance, historical attribution, R-8/R-9 and shipment remain open. Original R2 and older cohorts were not replayed."
+  },
+  "remainingAcceptanceContract": {
+    "rubric": "acceptance-papercusp-log-performance-remediation-2026-09-23",
+    "revision": 4,
+    "barSetHash": "5904970706dc80a764b9bdf41d5a62ed92ee16b6fe3a113a49ec0a845401b9e5",
+    "r8": "Live-plane disposition for each gateway/proxy, portal-watchdog, repeated-background-work, migration-rendezvous, historical-polling and diagnostic-scan lead; distinguishing evidence and regression guards or evidenced non-defect dispositions. Preserve backup, auth and correctness invariants.",
+    "r9": "Deployed-plane final comparison for all nine requirements; same corpus/cache/concurrency/transport, errors and missing metrics retained, 30-minute normal workload plus isolated burst, native acceptance and known limitations. Obtain independent acceptance under the current contract and verify final green deployed build/behavior through the existing gate owner. Any unverified required outcome remains unmet.",
+    "status": "Open. The current plan acceptance evaluator returned satisfied false with acceptance_bar_contract_not_ready; this read is not a live release-gate operation."
+  },
   "inboxPhysicalComparison": {
     "measurementWorkItem": "WI-10005482",
     "testRunId": 20542013,
@@ -145,6 +203,18 @@
   },
   "sourceDispositions": [
     {
+      "source": "Spawner full-host boot import and initialization graph",
+      "owner": "WI-10004890",
+      "measurementOwner": "WI-10005706",
+      "state": "verified-private-entry-reduction-with-bounded-live-baseline",
+      "evidence": "spawnerEntryComparison exact original and final-safe qualifications; saved test runs 20576077, 20584302 and 20584857; operational live binding 22985 at spec revision 2.",
+      "mechanism": "The full-host entry initializes its broader HTTP/host import graph before entering the same maintained spawner server. The existing standalone entry preserves the final boot-safety contract while excluding that graph.",
+      "matchedResult": "Both order-reversed final-safe private pairs show lower PSS and cumulative V8 allocation with identical harmless IPC workload and passing concurrency/cleanup checks; exact differences are recorded above.",
+      "guard": "Maintained service-memory-attribution integration comparison plus the saved standalone boot/build/lifecycle/RPC adoption guards and exact sibling/configured-role live baseline guards.",
+      "falsifier": "Equivalent final-safe entry comparison loses readiness, workload outcomes, concurrency or cleanup; either pair lacks the claimed PSS/allocation reduction; or a live/production savings claim lacks a matched live counterfactual and loaded-build attribution.",
+      "limits": "Private entry effect is not unique retained/native ownership, historical recovery or production savings. Loaded sibling build, full executed source graph, ambient HTTP assignment, independent acceptance and shipment remain unknown or open."
+    },
+    {
       "source": "Full inbox cache keys duplicate identical raw input across display variants",
       "owner": "WI-10004890",
       "state": "verified-scoped-sharing-and-resource-observation",
@@ -226,7 +296,7 @@
     }
   ],
   "acceptanceGaps": [
-    "Actual current-build main-process baseline and the historical private inbox paired intervention are recorded; broader live retained-owner/native/descendant acceptance remains open. Integration is the executable layer.",
+    "Actual current-build main-process and maintained standalone baselines, historical private inbox comparison and final-safe private spawner comparison are recorded separately; broader live retained-owner/native/descendant acceptance remains open. Integration is the executable layer.",
     "Historical compiler caller and remaining parser/native retained ownership remain unresolved.",
     "Complete executed-source currentness is unknown; each saved cohort has its own named-source bounds and drift qualification.",
     "R8/R9 final comparison, independent acceptance and verified shipment remain open."
