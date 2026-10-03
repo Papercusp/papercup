@@ -71,7 +71,7 @@ import { summarizeStreakCause, type StreakCauseDigest, type StreakTick } from '.
 // this module never got that treatment because the tag was believed to live in apps/operator. It
 // does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
-import { GREEN_CHECKPOINT_RESULT_MARKER, orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
+import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine, orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { classifyGateAbort, isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
@@ -152,6 +152,35 @@ function parseMarkerLine(stdout: string, marker: string): Record<string, unknown
   } catch {
     return null;
   }
+}
+
+/**
+ * WI-10005994: classify the green-checkpoint result marker in a merged run log.
+ *
+ * `parsed` — some line carries the marker token followed by an object that parses.
+ * `torn`   — the token is present but no carrying line parses: the CLI REACHED its terminal
+ *            seam and the line was damaged in transit (stdout/stderr chunk interleave in the
+ *            shared `2>&1` pipe). That is never a tooling crash, so callers must not alarm one.
+ * `absent` — no production marker line at all.
+ *
+ * The token is matched ANYWHERE in a line, not only at its start: a torn marker begins mid-line
+ * (measured: column 53 in run 014f2801). Captured suite fixtures are skipped by their stdout tag,
+ * and captured output has the token defanged, so a fixture can never pose as a verdict.
+ */
+export function checkpointResultMarkerState(log: string): 'absent' | 'parsed' | 'torn' {
+  let torn = false;
+  for (const line of log.split(/\r?\n/)) {
+    const at = line.indexOf(GREEN_CHECKPOINT_RESULT_MARKER);
+    if (at < 0 || isFixtureLogLine(line)) continue;
+    try {
+      const parsed: unknown = JSON.parse(line.slice(at + GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return 'parsed';
+    } catch {
+      // fall through: a token without a parseable object is a torn marker
+    }
+    torn = true;
+  }
+  return torn ? 'torn' : 'absent';
 }
 
 /** Paths for the external evidence owned by a scheduled green-checkpoint wrapper. */
@@ -455,8 +484,11 @@ async function reconcileLoadedScheduledCheckpointTerminal(
   }
   // WI-10004928 part 1: no result marker + an unexplained non-zero exit = the gate's own tooling
   // crashed (e.g. a module-load failure). First exact-attempt transition only, like the red wake.
+  // WI-10005994: a PRESENT-but-torn marker means the run rendered a verdict that was damaged in
+  // transit; waking awaiters with "tooling crashed, no suite ran" sent its owner the wrong way.
   if (settlement.status === 'updated' && terminal.integrationRoot && !emittedReason && reason === 'error') {
     await emitGateToolingCrashEvent(terminal.integrationRoot, {
+      cause: checkpointResultMarkerState(logText) === 'torn' ? 'result-marker-torn' : 'tooling-crash',
       exitCode: terminal.exitCode,
       runId: terminal.runId,
       logPath: terminal.logPath,
@@ -791,7 +823,7 @@ export interface ManualCheckpointCrashSweepDeps {
 }
 
 export type ManualCheckpointCrashSweepResult =
-  | { status: 'no-log' | 'no-terminal-evidence' | 'not-a-tooling-crash' | 'already-alarmed'; logPath: string | null }
+  | { status: 'no-log' | 'no-terminal-evidence' | 'not-a-tooling-crash' | 'result-marker-torn' | 'already-alarmed'; logPath: string | null }
   | { status: 'alarmed'; logPath: string };
 
 /**
@@ -825,12 +857,13 @@ export async function sweepManualCheckpointToolingCrash(
   if (log == null) return { status: 'no-log', logPath };
   const evidence = launch.parseCheckpointSystemdTerminalEvidence(log);
   if (!evidence) return { status: 'no-terminal-evidence', logPath };
-  const hasResult = log
-    .split(/\r?\n/)
-    .some((line) => line.trim().startsWith(`${GREEN_CHECKPOINT_RESULT_MARKER} `));
-  if (!evidence.abnormal || hasResult || evidence.candidate !== null) {
+  // WI-10005994: a marker anywhere in a line (a torn marker starts mid-line) means the CLI reached
+  // its terminal seam; a torn one is reported as such and never alarmed as a crash.
+  const markerState = checkpointResultMarkerState(log);
+  if (!evidence.abnormal || markerState === 'parsed' || evidence.candidate !== null) {
     return { status: 'not-a-tooling-crash', logPath };
   }
+  if (markerState === 'torn') return { status: 'result-marker-torn', logPath };
   if (!(await claimSentinel(`${logPath}.tooling-crash-alarmed`))) return { status: 'already-alarmed', logPath };
   const exitCode = /^\d+$/.test(evidence.exit_status) ? Number(evidence.exit_status) : null;
   await emitGateToolingCrashEvent(
@@ -843,18 +876,28 @@ export async function sweepManualCheckpointToolingCrash(
 
 export async function emitGateToolingCrashEvent(
   root: string,
-  info: { exitCode: number | null; runId: string | null; logPath: string | null; tail: string | null },
+  info: {
+    exitCode: number | null;
+    runId: string | null;
+    logPath: string | null;
+    tail: string | null;
+    /** WI-10005994: `result-marker-torn` = the run reached a verdict whose marker was damaged. */
+    cause?: 'tooling-crash' | 'result-marker-torn';
+  },
   emit: typeof emitAwaitedEvent = emitAwaitedEvent,
 ): Promise<void> {
   const pipeline = pipelineName(root);
   const exit = info.exitCode === null ? 'unknown exit' : `exit ${info.exitCode}`;
-  const summary =
-    `${pipelineTag(pipeline)} green-checkpoint: GATE TOOLING CRASHED (${exit}) before any verdict — ` +
-    `no suite ran; the gate is not judging anything until this is fixed`;
+  const torn = info.cause === 'result-marker-torn';
+  const summary = torn
+    ? `${pipelineTag(pipeline)} green-checkpoint: RESULT MARKER TORN (${exit}) — the run reached a verdict but ` +
+      `its result line was damaged in transit, so it was not read; read the run log ${info.logPath ?? '(path unknown)'}`
+    : `${pipelineTag(pipeline)} green-checkpoint: GATE TOOLING CRASHED (${exit}) before any verdict — ` +
+      `no suite ran; the gate is not judging anything until this is fixed`;
   const payload = {
     sha: null,
     pipeline,
-    reason: 'gate-tooling-crash',
+    reason: torn ? 'result-marker-torn' : 'gate-tooling-crash',
     exitCode: info.exitCode,
     runId: info.runId,
     logPath: info.logPath,
