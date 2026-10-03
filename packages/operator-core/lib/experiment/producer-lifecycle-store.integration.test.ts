@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { readProducerObservations } from './producer-lifecycle-store';
@@ -29,6 +30,23 @@ beforeAll(async () => {
   h.sql = db.adminSql;
   // Exercise the reserved draft before it is armed; after arming this is idempotent.
   await db.adminSql.unsafe(readFileSync(existsSync(migrationPath) ? migrationPath : `${migrationPath}.DRAFT`, 'utf8'));
+  // Preflight native identity/receipt types before any producer battery runs.
+  // String-shaped application IDs do not establish whether PG wants uuid/bigint/text.
+  const columns = await db.adminSql`
+    SELECT table_name, column_name, data_type FROM information_schema.columns
+     WHERE table_schema = 'harness_shared'
+       AND table_name IN ('scout_routed_ideas','gym_proposals','calibration_predictions','transfer_lessons','regret_findings','red_queen_drills')
+       AND column_name IN ('id','idea_id','run_id','memory_id','pack_candidate_id','learning_lifecycle')`;
+  const types = new Map(columns.map((row) => [`${row.table_name}.${row.column_name}`, row.data_type]));
+  for (const [column, expected] of Object.entries({
+    'scout_routed_ideas.idea_id': 'text', 'gym_proposals.id': 'text',
+    'calibration_predictions.id': 'bigint', 'transfer_lessons.id': 'uuid',
+    'regret_findings.run_id': 'text', 'red_queen_drills.id': 'uuid',
+    'transfer_lessons.memory_id': 'uuid', 'transfer_lessons.pack_candidate_id': 'uuid',
+  })) expect(types.get(column), column).toBe(expected);
+  for (const table of ['scout_routed_ideas','gym_proposals','calibration_predictions','transfer_lessons','regret_findings','red_queen_drills']) {
+    expect(types.get(`${table}.learning_lifecycle`), table).toBe('jsonb');
+  }
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
@@ -126,12 +144,14 @@ describe('transaction and freshness guards', () => {
     const result = await admitTransferLesson(db.adminSql, { workspaceId, signature: 'state-transfer', lessonText: 'state', potSlug: 'papercusp' });
     if (!result.admitted) throw new Error('fixture admission failed');
     const id = result.lesson.id;
+    const memoryId = randomUUID();
+    const candidateId = randomUUID();
     await markTransferError(db.adminSql, { workspaceId, id });
-    await setLessonMemoryId(db.adminSql, { workspaceId, id, memoryId: 'actual-memory-ref' });
-    await setLessonPackCandidate(db.adminSql, { workspaceId, id, packCandidateId: 'actual-pack-ref' });
+    await setLessonMemoryId(db.adminSql, { workspaceId, id, memoryId });
+    await setLessonPackCandidate(db.adminSql, { workspaceId, id, packCandidateId: candidateId });
     const rows = await readProducerObservations(db.adminSql, { producer: 'transfer', workspaceId });
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ sourceCurrent: true, contract: null, source: { status: 'error', memory_id: 'actual-memory-ref', pack_candidate_id: 'actual-pack-ref', last_battery_id: null } });
+    expect(rows[0]).toMatchObject({ sourceCurrent: true, contract: null, source: { status: 'error', memory_id: memoryId, pack_candidate_id: candidateId, last_battery_id: null } });
     await expect(markTransferError(db.adminSql, { workspaceId, id: '00000000-0000-0000-0000-000000000000' })).resolves.toBeUndefined();
   });
 
