@@ -15,7 +15,8 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
     import { createHash } from 'node:crypto';
     import { getOrgPg } from '@papercusp/db-org';
     import { activeWorkspaceId } from './packages/operator-core/lib/workspace-registry.ts';
-    import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine, backfillTurnProvenanceOnce } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { MACHINE_SURFACE_CATALOGUE_VERSION } from './packages/operator-core/lib/turn-provenance/machine-surface-catalogue.ts';
     const workspace = activeWorkspaceId();
     assert.ok(workspace.startsWith('test-runtime-'));
     assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
@@ -62,6 +63,9 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       await stamp(candidate('outside-window'), { submitted_at: new Date(now.getTime() - 120001) });
       await stamp(candidate('expired'), { expires_at: new Date(now.getTime() - 1) });
       await stamp(candidate('injected', 'codex', { text: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\nkeep going' }));
+      candidate('legacy-residual');
+      candidate('new-machine-rule', 'codex', { text: '## Orientation\nMachine-authored status' });
+      candidate('assistant');
       await insertTurns(sql, cases.map(c => c.row));
       const rows = await sql\`SELECT source_kind, session_id, turn_origin_verdict
         FROM harness_shared.session_turns WHERE workspace_id = \${workspace} ORDER BY session_id\`;
@@ -73,6 +77,38 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
           : c.label === 'injected' ? 'agent-injected' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
       }
+      // A classifier upgrade outlives the ephemeral receipt. Re-derive the
+      // actual stored rows after removing it, rather than trusting a mock.
+      await sql\`DELETE FROM harness_shared.session_prompt_origin_stamps WHERE workspace_id = \${workspace}\`;
+      await sql\`UPDATE harness_shared.session_turns
+        SET turn_origin_classifier_version = \${MACHINE_SURFACE_CATALOGUE_VERSION - 1}
+        WHERE workspace_id = \${workspace}\`;
+      // Old text-only owner residuals have no authenticated tag. A formerly
+      // positive tag must also lose to a current machine/speaker veto.
+      await sql\`UPDATE harness_shared.session_turns SET turn_origin_verdict = 'owner-typed'
+        WHERE workspace_id = \${workspace} AND session_id = 'origin-legacy-residual'\`;
+      await sql\`UPDATE harness_shared.session_turns
+        SET turn_origin = 'hook-authenticated-prompt', turn_origin_verdict = 'owner-typed'
+        WHERE workspace_id = \${workspace} AND session_id IN ('origin-new-machine-rule', 'origin-assistant')\`;
+      await sql\`UPDATE harness_shared.session_turns SET speaker = 'assistant'
+        WHERE workspace_id = \${workspace} AND session_id = 'origin-assistant'\`;
+      const repaired = await backfillTurnProvenanceOnce(sql, 100);
+      assert.equal(repaired.scanned, cases.length);
+      assert.equal(repaired.updated, cases.length);
+      const after = await sql\`SELECT session_id, turn_origin, turn_origin_verdict, turn_origin_classifier_version
+        FROM harness_shared.session_turns WHERE workspace_id = \${workspace} ORDER BY session_id\`;
+      console.log('PROMPT_ORIGIN_BACKFILL_RESULT ' + JSON.stringify(after));
+      for (const c of cases) {
+        const stored = after.find(row => row.session_id === c.row.session_id);
+        const positive = ['claude', 'codex', 'omp', 'codex-history'].includes(c.label);
+        const expected = positive ? 'owner-typed' : c.label === 'injected' ? 'agent-injected'
+          : c.label === 'new-machine-rule' ? 'machine-surface'
+          : c.label === 'assistant' ? 'not-user-turn' : 'unenrolled-origin';
+        assert.equal(stored.turn_origin_verdict, expected, c.label);
+        assert.equal(stored.turn_origin_classifier_version, MACHINE_SURFACE_CATALOGUE_VERSION);
+        if (positive) assert.equal(stored.turn_origin, 'hook-authenticated-prompt', c.label);
+      }
+      assert.equal((await backfillTurnProvenanceOnce(sql, 100)).scanned, 0);
       assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
     } finally { await sql.end(); }
   `.replaceAll('\\`', '`').replaceAll('\\${', '${');
