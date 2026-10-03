@@ -950,3 +950,64 @@ describe('injected-member trigger: a new call to an optional Deps member strands
     180_000,
   );
 });
+
+/**
+ * WI-10005809. A seam argument that is a const identifier is resolved through its binding
+ * (visibleConstBinding -> lexicalDistance). lexicalDistance read its loop-scoped `let` cursor after
+ * the loop, so every diff reaching that path threw `ReferenceError: current is not defined`, and the
+ * uncaught throw exited 1, the code that means "strands named".
+ */
+describe('const-bound seam arguments (WI-10005809)', () => {
+  const CONST_ARG_BEFORE = `
+    export async function run(input, probe: Probe) {
+      const runner = input.runner;
+      for (const spec of input.specs) {
+        const request = { runner, spec };
+        const evidence = await probe(request);
+        if (evidence.ready) break;
+      }
+    }
+  `;
+  const CONST_ARG_AFTER = `
+    export async function run(input, probe: Probe) {
+      const runner = input.runner;
+      for (const spec of input.specs) {
+        const request = { runner, spec };
+        const evidence = await probe(request);
+        if (!spec.satisfiesReadiness) continue;
+        if (evidence.ready) break;
+      }
+    }
+  `;
+
+  it('resolves a const-bound argument without throwing and still reports the control-flow change', () => {
+    const rows = changedSeamControlFlow(CONST_ARG_BEFORE, CONST_ARG_AFTER, 'const-arg.ts');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ function: 'run', seam: 'probe()', reason: 'control-flow-changed' });
+  });
+
+  it('records the seam call for a const-bound argument whose binding sits in an outer block', () => {
+    expect(() => seamControlFlowRecords(CONST_ARG_AFTER, 'const-arg.ts')).not.toThrow();
+  });
+});
+
+describe('runCli: an internal error is NOT CHECKED, never "strands named" (WI-10005809)', () => {
+  it('maps a thrown error to EXIT_NOT_CHECKED and reports it on stderr', () => {
+    const lines: string[] = [];
+    const exit = runCli(
+      () => {
+        throw new ReferenceError('current is not defined');
+      },
+      { writeError: (line: string) => lines.push(line) },
+    );
+    expect(exit).toBe(EXIT_NOT_CHECKED);
+    expect(exit).not.toBe(1);
+    expect(lines.join('\n')).toContain('current is not defined');
+    expect(lines.join('\n')).toContain('NOT CHECKED');
+  });
+
+  it('passes a normal exit code through unchanged', () => {
+    expect(runCli(() => 0)).toBe(0);
+    expect(runCli(() => 1)).toBe(1);
+  });
+});
