@@ -84,7 +84,22 @@ const h = vi.hoisted(() => ({
    * so exactly one of them deterministically loses the migration-741 claim race.
    */
   mintBarrier: null as null | { arrivals: number; release: Promise<void>; open: () => void },
+  /**
+   * WI-10005696: the goal `resolveGoalContext` reports for a promoter ownerId (the session-context
+   * leg of `resolvePlanPromotionGoal`). The real resolver reads the goal/spawn-lineage tables this
+   * legacy fixture deliberately omits, so the seam is mocked; an unmapped owner resolves to null —
+   * the common, correct "not goal work" outcome.
+   */
+  goalByOwner: new Map<string, string>(),
 }));
+
+vi.mock('./modes/goal-context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./modes/goal-context')>();
+  return {
+    ...actual,
+    resolveGoalContext: async (_workspaceId: string, ownerId: string) => h.goalByOwner.get(ownerId) ?? null,
+  };
+});
 
 vi.mock('./work-items', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./work-items')>();
@@ -334,6 +349,11 @@ beforeAll(async () => {
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (
       workspace_id text NOT NULL, harness_slug text NOT NULL,
       github_user_id bigint NOT NULL, github_username text NOT NULL DEFAULT '');
+    -- WI-10005696 / migration 791: the plan's own goal attribution. The shared fixture
+    -- (_work-items-schema.ts) already creates harness_plans WITHOUT this column, so a
+    -- CREATE TABLE IF NOT EXISTS would silently no-op — ALTER it in. Promotion reads exactly
+    -- this one column (resolvePlanPromotionGoal).
+    ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS goal_id text;
   `).simple();
 }, 90_000);
 
@@ -344,7 +364,9 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.harness_design_artifacts, harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps, harness_shared.agent_fleets RESTART IDENTITY`;
   await db.sql`TRUNCATE harness_shared.plan_items`;
+  await db.sql`TRUNCATE harness_shared.harness_plans`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
+  h.goalByOwner.clear();
   h.flagOn = true;
   h.specQuality = {
     satisfied: true,
@@ -1409,6 +1431,108 @@ created: 2026-08-21
   it('an unknown plan promotes nothing (no throw)', async () => {
     const res = await run.promotePlanItems({ ...base, planSlug: 'no-such-plan' });
     expect(res.promoted).toBe(0);
+  });
+});
+
+/**
+ * WI-10005696 — the plan-promotion rail (`promotePlanItems` → `upsertConditionWorkItem`) never
+ * stamped `work_items.goal_id`: only `work_items:create`, `improvements:capture` and the
+ * convert-at-pickup path did. A goal-fenced drain claim spec matches `goal` POSITIVELY (a NULL
+ * row is excluded, never wildcarded), so every lane `plans:start` minted for a goal's own plan
+ * fell OUT of that goal's own lane. These cases drive the REAL mint + the REAL
+ * `UPDATE … AND goal_id IS NULL` over Postgres; only the session-context resolver seam is mocked.
+ */
+describe('WI-10005696: promotion stamps goal provenance on every lane it mints', () => {
+  const goalOf = async () => {
+    const rows = await db.sql<{ feature_id: string; goal_id: string | null }[]>`
+      SELECT feature_id, goal_id
+        FROM harness_shared.work_items
+       WHERE source_plan_slug = ${PLAN}
+       ORDER BY feature_id`;
+    return rows;
+  };
+  const setPlanGoal = (goalId: string | null) =>
+    db.sql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, goal_id)
+      VALUES (${WS}, ${HARNESS}, ${PLAN}, ${goalId})
+      ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET goal_id = EXCLUDED.goal_id`;
+
+  it("stamps the PLAN's goal on every minted lane — and prefers it over the promoter's session goal", async () => {
+    await setPlanGoal('goal-plan');
+    h.goalByOwner.set('su-test', 'goal-session'); // the weaker leg must lose
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Lane one' },
+        { id: 'P-002', status: 'todo', text: 'Lane two' },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res.promoted).toBe(2);
+    expect(res.goalStamp).toEqual({ goalId: 'goal-plan', stamped: 2, errors: [] });
+    expect((await goalOf()).map((r) => r.goal_id)).toEqual(['goal-plan', 'goal-plan']);
+  });
+
+  it("falls back to the PROMOTER's resolved session goal when the plan carries none", async () => {
+    await setPlanGoal(null);
+    h.goalByOwner.set('su-test', 'goal-session');
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Lane one' }] });
+    const res = await run.promotePlanItems(base);
+    expect(res.promoted).toBe(1);
+    expect(res.goalStamp).toEqual({ goalId: 'goal-session', stamped: 1, errors: [] });
+    expect((await goalOf()).map((r) => r.goal_id)).toEqual(['goal-session']);
+  });
+
+  it('stamps NOTHING for non-goal work: goal_id stays NULL and the result carries no goalStamp', async () => {
+    // No harness_plans row at all, and the promoter is attached to no goal — the common case.
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Ordinary lane' }] });
+    const res = await run.promotePlanItems(base);
+    expect(res.promoted).toBe(1);
+    expect(res.goalStamp).toBeUndefined();
+    expect((await goalOf()).map((r) => r.goal_id)).toEqual([null]);
+  });
+
+  it('NEVER CLOBBERS: an already-attributed row keeps its goal, and a later promotion only stamps its own new lane', async () => {
+    await setPlanGoal('goal-first');
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Lane one' }] });
+    await run.promotePlanItems(base);
+
+    // An explicit attribution elsewhere (`work_items:update { goal }`) outranks any later ambient stamp.
+    const [first] = await goalOf();
+    await db.sql`UPDATE harness_shared.work_items SET goal_id = 'goal-explicit' WHERE feature_id = ${first!.feature_id}`;
+    const stamp = await import('./goals/provenance-stamp');
+    expect(await stamp.stampPromotedGoal({ id: first!.feature_id, harness: HARNESS }, WS, 'goal-other')).toBe(false);
+
+    // The plan is re-pointed at a new goal, then grows a lane: only the NEW lane takes it.
+    await setPlanGoal('goal-second');
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Lane one' },
+        { id: 'P-002', status: 'todo', text: 'Lane two' },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res.promoted).toBe(1);
+    expect(res.goalStamp).toEqual({ goalId: 'goal-second', stamped: 1, errors: [] });
+    expect((await goalOf()).map((r) => r.goal_id)).toEqual(['goal-explicit', 'goal-second']);
+  });
+
+  it('is FAIL-SOFT and LOUD: a resolver that throws neither fails the promotion nor hides itself', async () => {
+    await setPlanGoal(null);
+    h.goalByOwner.set('su-test', 'goal-session');
+    // Drop the table the plan-goal leg reads so the resolve throws — a stamp that THREW must be
+    // distinguishable from one that DECLINED (EI-20075667133396690).
+    await db.sql`ALTER TABLE harness_shared.harness_plans RENAME TO harness_plans_gone`;
+    try {
+      h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Lane one' }] });
+      const res = await run.promotePlanItems(base);
+      expect(res.promoted).toBe(1); // the promotion itself still succeeded
+      expect(res.goalStamp?.stamped).toBe(0);
+      expect(res.goalStamp?.errors).toHaveLength(1);
+      expect(res.goalStamp?.errors[0]).toMatch(/harness_plans/);
+      expect((await goalOf()).map((r) => r.goal_id)).toEqual([null]);
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.harness_plans_gone RENAME TO harness_plans`;
+    }
   });
 });
 
