@@ -124,7 +124,7 @@ describe('blind label collection through the injected stateless transport', () =
   }
   function smallerMemorySnapshot(f: ReturnType<typeof fixture>, perPartition: number, name: string) {
     const snapshot = JSON.parse(fs.readFileSync(f.snapshot, 'utf8'));
-    snapshot.suites.memory.entries = snapshot.suites.memory.entries.filter((e: CorpusEntry, index: number) =>
+    snapshot.suites.memory.entries = snapshot.suites.memory.entries.filter((_: CorpusEntry, index: number) =>
       index % (snapshot.suites.prose.entries.length / 2) < perPartition);
     const file = path.join(f.root, `${name}.json`);
     fs.writeFileSync(file, JSON.stringify(snapshot));
@@ -214,6 +214,37 @@ describe('blind label collection through the injected stateless transport', () =
         reuseSnapshotExpansion: true })).rejects.toThrow('expansion requires exact-call recovery');
       expect(f.calls).toBe(0); expect(fs.existsSync(out)).toBe(false);
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('binds expansion to the original owner, complete contract and accepted reference ancestry', async () => {
+    for (const failure of ['owner', 'judge', 'author', 'reference']) {
+      const f = fixture(2);
+      try {
+        const small = smallerMemorySnapshot(f, 1, 'small'), original = path.join(f.root, 'original');
+        await collectIndependentCohort({ snapshot: small, out: original, llm: f.llm, targetsPerPartition: 'all' });
+        const middle = path.join(f.root, 'middle');
+        await collectIndependentCohort({ snapshot: small, out: middle, llm: f.llm,
+          targetsPerPartition: 'all', reuseCallsFrom: original });
+        const identityFile = path.join(middle, 'identity.json'), identity = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
+        if (failure === 'owner') identity.identity.ownerId = 'foreign-owner';
+        if (failure === 'judge') identity.identity.contract.judge += ' changed';
+        if (failure === 'author') identity.identity.contract.author += ' changed';
+        if (failure !== 'reference') {
+          identity.identityHash = hashJson(identity.identity);
+          fs.writeFileSync(identityFile, JSON.stringify(identity));
+        } else {
+          const name = fs.readdirSync(middle).find((name) => /^memory-author-[a-f0-9]+\.json$/.test(name))!;
+          const file = path.join(middle, name), ref = JSON.parse(fs.readFileSync(file, 'utf8'));
+          ref.invocationId = 'foreign-invocation'; fs.writeFileSync(file, JSON.stringify(ref));
+        }
+        const noCalls: LlmCallFn = vi.fn(f.llm);
+        await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'refused'), llm: noCalls,
+          targetsPerPartition: 'all', reuseCallsFrom: middle, reuseSnapshotExpansion: true })).rejects.toThrow(/recovery|reference/);
+        // A foreign call may be discovered lazily; its rejection must never
+        // supply synthetic labels or pay to replace that valid reference.
+        if (failure !== 'reference') expect(noCalls).not.toHaveBeenCalled();
+        expect(fs.existsSync(path.join(f.root, 'refused', 'judgments.json'))).toBe(false);
+      } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+    }
   });
   it('handles fenced blind replies after prose with earlier JSON-like braces without rewriting raw receipts', async () => {
     const f = fixture();
