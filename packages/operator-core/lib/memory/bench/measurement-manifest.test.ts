@@ -420,6 +420,63 @@ function retainedPreparedFixture() {
 }
 
 describe('incremental relevance vector reuse', () => {
+  function expandSnapshot(f: ReturnType<typeof retainedPreparedFixture>) {
+    const original = JSON.parse(fs.readFileSync(f.donor.inputs.snapshot.path, 'utf8'));
+    const identity = { formatVersion: 1, seed: f.p.manifest.seed, snapshotAt: '2026-01-01T00:00:00.000Z' };
+    // Fixture donor snapshot must carry an actual frozen population identity.
+    const prior = { ...original, ...identity };
+    f.donor.inputs.snapshot = f.pin('identified-donor-snapshot', prior);
+    const proof = JSON.parse(fs.readFileSync(f.donor.inputs.judgments.path, 'utf8'));
+    proof.memory.snapshotSha256 = f.donor.inputs.snapshot.sha256;
+    f.donor.inputs.judgments = f.pin('identified-donor-judgments', proof);
+    f.p.manifest.inputs.reuseManifest = f.pin('identified-donor-manifest', f.donor);
+    const oldInputs = loadIndependentMeasurementInputs({ ...f.p, manifest: f.donor }, 'memory');
+    f.raw.manifestSha256 = f.p.manifest.inputs.reuseManifest.sha256;
+    f.raw.report.corpusVersion = oldInputs.corpusVersion;
+    f.vectors.corpusVersion = oldInputs.corpusVersion;
+    const vectorRef = f.pin('identified-donor-vectors', f.vectors);
+    f.p.manifest.inputs.reuseVectors = vectorRef;
+    f.completion.completed[0].vectors = vectorRef;
+    f.completion.completed[0].raw = f.pin('identified-donor-raw', f.raw);
+    f.completion.manifestSha256 = f.p.manifest.inputs.reuseManifest.sha256;
+    f.p.manifest.inputs.reuseCompletion = f.pin('identified-donor-completion', f.completion);
+    const expanded = structuredClone(prior);
+    expanded.suites.memory.entries.splice(1, 0, { key: 'added', text: 'new document text', kind: 'fact',
+      metadata: { cluster: 'source-a' } });
+    const setSnapshot = () => {
+      f.p.manifest.inputs.snapshot = f.pin('expanded-snapshot', expanded);
+      f.p.manifest.datasets[0].keys = expanded.suites.memory.entries.map((e: { key: string }) => e.key);
+      f.setCurrentQueries();
+    };
+    setSnapshot();
+    f.p.cell.parameters.reuseSnapshotExpansion = true;
+    return { expanded, setSnapshot };
+  }
+  it('maps exact old documents around additive snapshot entries while retaining query identity', async () => {
+    const f = retainedPreparedFixture(); expandSnapshot(f);
+    const retained = (await loadRetainedRelevanceVectors(f.p, 'memory'))!;
+    expect(retained.missingDocumentIndexes).toEqual([1]);
+    expect(retained.documentVectors).toEqual([f.unit(0), undefined, f.unit(1), f.unit(2)]);
+    expect(retained.docVectors).toEqual(f.vectors.vectors.mdenseon.docVectors);
+    expect(retained.missingIndexes).toEqual([4, 5, 6, 7]);
+    expect(retained.evidence).toMatchObject({ documentsReused: 3, newDocumentKeys: ['added'],
+      snapshotExpansion: true, timingComparableToFullInference: false });
+  });
+  it.each(['opt-in', 'text', 'metadata', 'removed', 'order', 'seed', 'date', 'format', 'invalid-option'])
+    ('refuses expanded snapshot %s before vector embedding', async (failure) => {
+      const f = retainedPreparedFixture(), { expanded, setSnapshot } = expandSnapshot(f);
+      if (failure === 'opt-in') delete f.p.cell.parameters.reuseSnapshotExpansion;
+      if (failure === 'invalid-option') f.p.cell.parameters.reuseSnapshotExpansion = 'true';
+      if (failure === 'text') expanded.suites.memory.entries[0].text += ' changed';
+      if (failure === 'metadata') expanded.suites.memory.entries[0].metadata.extra = 'changed';
+      if (failure === 'removed') expanded.suites.memory.entries.pop();
+      if (failure === 'order') expanded.suites.memory.entries.reverse();
+      if (failure === 'seed') expanded.seed += ' changed';
+      if (failure === 'date') expanded.snapshotAt = '2026-01-02T00:00:00.000Z';
+      if (failure === 'format') expanded.formatVersion = 2;
+      setSnapshot();
+      await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow(/snapshot|expansion/);
+    });
   it('binds distinct declared vector inputs for two cells of one shared manifest', async () => {
     const f = retainedPreparedFixture(), firstDonor = f.donor.cells.find((c) => c.bar === 'relevance')!;
     const secondDonor = { ...structuredClone(firstDonor), id: 'relevance-second', output: 'relevance-second' };
