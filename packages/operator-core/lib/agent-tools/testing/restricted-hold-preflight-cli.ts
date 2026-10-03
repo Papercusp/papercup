@@ -49,9 +49,11 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 /**
- * TEST-ONLY census seam for the bundle mode (EI-24917607035361603): unit tests drive
+ * TEST-ONLY census seam for every mode (EI-24917607035361603): unit tests drive
  * bundle-host.sh end to end, and its gate would otherwise open the real org-admin Postgres,
- * which the unit guard refuses, so every bundler test failed closed. Honored only when BOTH
+ * which the unit guard refuses, so every bundler test failed closed. The tree-door tests use it,
+ * and the committed-source loader tests use it in router mode to force the closure worker fork
+ * (WI-10005764). Honored only when BOTH
  * VITEST (set by vitest and inherited by everything a test spawns) and this variable are set;
  * a systemd/CLI bundle never has VITEST, so the live gate always reads the real census.
  * A file that is not a JSON array refuses (fail-closed), never admits.
@@ -115,7 +117,12 @@ async function main(): Promise<void> {
       misuse('restricted-hold preflight was started without a checkout root');
       return;
     }
-    refusal = await restrictedHoldRefusal(root, files);
+    const injected = await injectedTestCensus();
+    if (injected === 'invalid') {
+      misuse(`${TEST_CENSUS_ENV} must name a JSON array of restricted holdings ([] = nothing held)`);
+      return;
+    }
+    refusal = await restrictedHoldRefusal(root, files, injected ? { holdings: async () => injected } : {});
   }
   if (refusal) emit({ verdict: 'refuse', ...refusal }, RESTRICTED_HOLD_PREFLIGHT_EXIT.refuse);
   else emit({ verdict: 'admit' }, RESTRICTED_HOLD_PREFLIGHT_EXIT.admit);

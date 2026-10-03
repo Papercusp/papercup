@@ -44,6 +44,12 @@ import {
   type WallEntry,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
+import {
+  readGoalHolderRows,
+  resolveGoalHoldersBatch,
+  type GoalHolderRow,
+  type GoalHolders,
+} from '../../goals/holder';
 import { assessGoalStaleness, extractGoalWorkItemIds } from './loop-goal-staleness';
 import { assessGoalFactDivergence, type CorrectedFact } from './loop-goal-fact-divergence';
 import {
@@ -401,25 +407,49 @@ export async function defaultCountActionableHeldItems(input: {
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
 }
 
-/** WI-10005778 default resolver: does the owner hold an ACTIVE goal's lease? The lease is the
- *  owner's `goal` mode row in agent_modes (subject = goal id, goal_lease_epoch). NOT
- *  goals.metadata.agentOwnerId: measured 2026-10-03, that field still named a predecessor
- *  6h after epoch 18 elected su-9e72a11f. Not scoped by workspace: owner ids are globally
- *  unique, and a goal may live in a different workspace from the holder's loop routine. */
-export async function defaultOwnerStewardsActiveGoal(input: { ownerId: string; sql?: Sql }): Promise<boolean | null> {
+/** Seams for {@link defaultOwnerStewardsActiveGoal}; defaults read Postgres. */
+export interface OwnerStewardshipDeps {
+  readRows: (sql: Sql) => Promise<GoalHolderRow[]>;
+  readActiveGoals: (sql: Sql, goalIds: readonly string[]) => Promise<{ goalId: string; workspaceId: string }[]>;
+  resolveBatch: (
+    sql: Sql,
+    goals: readonly { goalId: string; workspaceId: string }[],
+    opts: { rows: readonly GoalHolderRow[] },
+  ) => Promise<Map<string, Pick<GoalHolders, 'elected'>>>;
+}
+
+const defaultOwnerStewardshipDeps: OwnerStewardshipDeps = {
+  readRows: (sql) => readGoalHolderRows(sql),
+  readActiveGoals: async (sql, goalIds) => {
+    const rows = await sql<{ id: string; workspace_id: string }[]>`
+      SELECT id, workspace_id FROM harness_shared.goals
+       WHERE id = ANY(${goalIds as string[]}::text[]) AND status = 'active'`;
+    return rows.map((r) => ({ goalId: r.id, workspaceId: r.workspace_id }));
+  },
+  resolveBatch: (sql, goals, opts) => resolveGoalHoldersBatch(sql, goals, opts),
+};
+
+/** WI-10005778 default resolver: is the owner the ELECTED lease holder of an ACTIVE goal?
+ *  The lease is the owner's `goal` mode row (subject = goal id, goal_lease_epoch), resolved
+ *  through lib/goals/holder.ts, so a predecessor whose row outlived its session, or that lost
+ *  the election, is not exempted (lint:no-raw-goal-holder-read). NOT goals.metadata.agentOwnerId:
+ *  measured 2026-10-03, that field still named a predecessor 6h after epoch 18 elected
+ *  su-9e72a11f. Not scoped by workspace: owner ids are globally unique, and a goal may live in a
+ *  different workspace from the holder's loop routine. Liveness is not required: this owner's
+ *  loop is firing, and the question is whether it holds the lease, not whether it is reachable. */
+export async function defaultOwnerStewardsActiveGoal(
+  input: { ownerId: string; sql?: Sql },
+  deps: OwnerStewardshipDeps = defaultOwnerStewardshipDeps,
+): Promise<boolean | null> {
   const db = input.sql ?? getOrgPg().sql;
-  const rows = await db<{ held: boolean }[]>`
-    SELECT EXISTS (
-      SELECT 1
-        FROM harness_shared.agent_modes am
-        JOIN harness_shared.goals g ON g.id = am.subject
-       WHERE am.owner_id = ${input.ownerId}
-         AND am.mode = 'goal'
-         AND g.status = 'active'
-    ) AS held
-  `;
-  const held = rows[0]?.held;
-  return typeof held === 'boolean' ? held : null;
+  const rows = await deps.readRows(db);
+  const subjects = [...new Set(rows.filter((r) => r.ownerId === input.ownerId).map((r) => r.goalId))];
+  if (subjects.length === 0) return false;
+  const active = await deps.readActiveGoals(db, subjects);
+  if (active.length === 0) return false;
+  const holders = await deps.resolveBatch(db, active, { rows });
+  for (const h of holders.values()) if (h.elected?.ownerId === input.ownerId) return true;
+  return false;
 }
 
 /**

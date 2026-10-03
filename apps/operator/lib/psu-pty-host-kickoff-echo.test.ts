@@ -7,7 +7,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { composerEchoMarkerHeadLoss, waitForPtyTextEcho } from '../scripts/psu-pty-host.mjs';
+import {
+  composerEchoMarkerHeadLoss,
+  composerEchoMarkerWhitespaceLoss,
+  waitForPtyTextEcho,
+} from '../scripts/psu-pty-host.mjs';
 
 const MARKER = '⟦turn-origin:launch-kickoff nonce:87d062bd294b2da8⟧';
 const CHROME = '› ';
@@ -39,11 +43,62 @@ describe('composerEchoMarkerHeadLoss', () => {
   });
 });
 
+// Measured 2026-10-02 15:11:07Z on a host already running the head-loss fix: the
+// composer wrapped at the marker's only space, the visible tail lacked it, and the
+// kickoff was dropped after ~586s.
+const FLEET_MARKER = '⟦turn-origin:fleet-kickoff nonce:b413517be82f7380⟧';
+const FLEET_VISIBLE_TAIL = '⟦turn-origin:fleet-kickoffnonce:b413517be82f7380⟧';
+
+describe('composerEchoMarkerWhitespaceLoss', () => {
+  it('accepts the measured wrap-at-space echo and counts the one lost space', () => {
+    expect(FLEET_MARKER.length).toBe(50);
+    expect(FLEET_VISIBLE_TAIL.length).toBe(49);
+    expect(composerEchoMarkerWhitespaceLoss(FLEET_MARKER, `${CHROME}${FLEET_VISIBLE_TAIL}`)).toBe(1);
+  });
+
+  it('counts 0 lost when the wrap padded the break with extra spaces', () => {
+    const padded = FLEET_MARKER.replace(' ', '      ');
+    expect(composerEchoMarkerWhitespaceLoss(FLEET_MARKER, `${CHROME}${padded}`)).toBe(0);
+  });
+
+  it('returns null for the exact marker (the exact proof owns it)', () => {
+    expect(composerEchoMarkerWhitespaceLoss(FLEET_MARKER, `${CHROME}${FLEET_MARKER}`)).toBeNull();
+  });
+
+  it('rejects any non-whitespace loss: a dropped head or middle byte does not match', () => {
+    expect(composerEchoMarkerWhitespaceLoss(MARKER, `${CHROME}${MARKER.slice(1)}`)).toBeNull();
+    const middleLost = MARKER.slice(0, 10) + MARKER.slice(11);
+    expect(composerEchoMarkerWhitespaceLoss(MARKER, `${CHROME}${middleLost}`)).toBeNull();
+    const nonceByteLost = FLEET_VISIBLE_TAIL.slice(0, -3) + FLEET_VISIBLE_TAIL.slice(-2);
+    expect(composerEchoMarkerWhitespaceLoss(FLEET_MARKER, `${CHROME}${nonceByteLost}`)).toBeNull();
+  });
+
+  it('rejects another nonce and a non-marker expectation', () => {
+    const otherNonce = '⟦turn-origin:fleet-kickoffnonce:c413517be82f7380⟧';
+    expect(composerEchoMarkerWhitespaceLoss(FLEET_MARKER, `${CHROME}${otherNonce}`)).toBeNull();
+    expect(composerEchoMarkerWhitespaceLoss('plain kickoff text', 'plainkickoff text')).toBeNull();
+  });
+});
+
 describe('waitForPtyTextEcho (WI-10005331)', () => {
+  it('confirms the measured wrap-at-space echo at once instead of waiting out the budget', async () => {
+    const started = Date.now();
+    const proof = await waitForPtyTextEcho({
+      read: () => `${CHROME}${FLEET_VISIBLE_TAIL}`,
+      text: FLEET_MARKER,
+      timeoutMs: 10_000,
+      pollMs: 5,
+    });
+    expect(proof).toMatchObject({ echoed: true, markerWhitespaceLost: 1, markerTailSeen: true });
+    expect(proof.markerHeadLost).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
   it('confirms an exact echo without a head-loss count', async () => {
     const proof = await waitForPtyTextEcho({ read: () => `${CHROME}${MARKER}`, text: MARKER, timeoutMs: 500, pollMs: 5 });
     expect(proof.echoed).toBe(true);
     expect(proof.markerHeadLost).toBeUndefined();
+    expect(proof.markerWhitespaceLost).toBeUndefined();
   });
 
   it('confirms a head-lost echo after the grace window instead of waiting out the budget', async () => {
