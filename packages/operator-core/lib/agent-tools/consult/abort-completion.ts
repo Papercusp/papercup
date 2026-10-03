@@ -7,7 +7,7 @@
 import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
-function consultPostPayload(result: ToolResult): Record<string, unknown> | null {
+function consultResultPayload(result: ToolResult): Record<string, unknown> | null {
   return completedResultPayload(result);
 }
 
@@ -23,7 +23,7 @@ export function consultPostAbortCompletionReceipt(
   result: ToolResult,
   verb: ConsultPostingVerb,
 ): AbortCompletionReceipt {
-  const payload = consultPostPayload(result);
+  const payload = consultResultPayload(result);
   const postId = payload?.post_id;
   const conversationId = asRecord(args)?.conversation_id;
   if (payload?.ok === true && typeof postId === 'number' && Number.isSafeInteger(postId) && postId > 0) {
@@ -43,5 +43,31 @@ export function consultPostAbortCompletionReceipt(
     status: 'recovery-incomplete',
     reason: `${verb} result did not confirm a persisted post id after abort`,
     failures: ['missing-post-id'],
+  };
+}
+
+/**
+ * `consult:get_feedback` opens a new conversation before its potentially slow
+ * routing and answering-session dispatch. If that completed handler returns
+ * after its deadline, the conversation id identifies the consult that landed
+ * and prevents an unsafe duplicate retry.
+ */
+export function consultFeedbackAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+): AbortCompletionReceipt {
+  const payload = consultResultPayload(result);
+  const conversationId = payload?.conversation_id;
+  if (
+    payload?.ok === true &&
+    typeof conversationId === 'string' &&
+    conversationId.trim().length > 0
+  ) {
+    return { status: 'recorded', effectRef: `consult-get-feedback:${conversationId}` };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'consult:get_feedback result did not confirm a persisted conversation id after abort',
+    failures: ['missing-conversation-id'],
   };
 }
