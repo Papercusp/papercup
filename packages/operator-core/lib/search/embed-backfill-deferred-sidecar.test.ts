@@ -1,5 +1,5 @@
 /**
- * D-049 (P-532c): the 5-min embed backfill sweep must not bring the embed sidecar
+ * D-050 (P-532c): the 5-min embed backfill sweep must not bring the embed sidecar
  * up just to discover it has nothing to embed.
  *
  * Measured on cap-p532c (3 tenants, 2 h): once the backfill drained, each tenant's
@@ -37,7 +37,7 @@ beforeEach(() => {
   wiring.buildDeferredSidecarAwareEmbedder.mockReset().mockImplementation(() => async () => [0.1, 0.2]);
 });
 
-describe('embed backfill sweep resolution never ensures the embed sidecar (D-049)', () => {
+describe('embed backfill sweep resolution never ensures the embed sidecar (D-050)', () => {
   it('resolves its embedder through the DEFERRED builder and never resolves the sidecar URL', async () => {
     const cfg = proseBackfillSweeperConfig(__sweepStateForTest());
     const resolved = await cfg.resolveEmbedder();

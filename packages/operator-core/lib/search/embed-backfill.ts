@@ -201,7 +201,7 @@ async function resolveBatchEmbed(mode: ResolvedMode): Promise<EmbedManyFn | null
   // batched call would take ONE slot for N texts, silently defeating the cost
   // governor the cost-audit added.
   if (mode !== 'gemma' && mode !== 'local' && mode !== 'harrier') return null;
-  // D-049: decide batch capability WITHOUT ensuring the sidecar. This runs on every
+  // D-050: decide batch capability WITHOUT ensuring the sidecar. This runs on every
   // 5-min sweep, including the drained ones that embed nothing, and resolving the
   // URL here ENSURED the sidecar (spawned it when down), so its idle exit never
   // held (P-532c). The URL is now resolved per batch, i.e. only once there are rows
@@ -296,7 +296,7 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
     // Sidecar-first local legs (P-004): shared warm model when the host runs
     // the embed sidecar, bit-identical in-process fallback otherwise.
-    // D-049: DEFERRED builders. This resolver runs on every 5-min sweep, and an
+    // D-050: DEFERRED builders. This resolver runs on every 5-min sweep, and an
     // eager build ensures (spawns) the sidecar even when there is nothing to embed.
     buildLocal: async () => buildDeferredSidecarAwareEmbedder('local', 'document'),
     // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.

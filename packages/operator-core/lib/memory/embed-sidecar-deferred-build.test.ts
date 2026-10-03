@@ -1,5 +1,5 @@
 /**
- * D-049 (P-532c): a deferred sidecar-aware embedder must not ensure (spawn) the
+ * D-050 (P-532c): a deferred sidecar-aware embedder must not ensure (spawn) the
  * embed sidecar when it is BUILT, only when it EMBEDS.
  *
  * Measured on cap-p532c (3 tenants, 2 h): after the backfill drained, each tenant's
@@ -39,7 +39,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe('buildDeferredSidecarAwareEmbedder (D-049)', () => {
+describe('buildDeferredSidecarAwareEmbedder (D-050)', () => {
   it('does not ensure the sidecar when built; the first embed does', async () => {
     const stub = await startStub();
     try {
@@ -98,7 +98,7 @@ describe('buildDeferredSidecarAwareEmbedder (D-049)', () => {
   });
 });
 
-describe('processSidecarConfigured (D-049)', () => {
+describe('processSidecarConfigured (D-050)', () => {
   it('is true for an explicit sidecar URL', () => {
     vi.stubEnv('PAPERCUSP_EMBED_SIDECAR', '0');
     expect(processSidecarConfigured({ resolveUrl: () => 'http://127.0.0.1:9' })).toBe(true);

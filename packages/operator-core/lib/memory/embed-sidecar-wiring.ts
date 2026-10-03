@@ -335,7 +335,7 @@ export async function buildSidecarAwareReranker(
  * Whether THIS process has an embed-sidecar story at all (an explicit URL, or the
  * spawn-locally opt-in), decided WITHOUT ensuring it. `resolveProcessSidecarUrl`
  * answers by ENSURING the sidecar, which spawns the child when it is down. A
- * background caller must not do that just to learn it has nothing to embed (D-049).
+ * background caller must not do that just to learn it has nothing to embed (D-050).
  */
 export function processSidecarConfigured(deps: Pick<SidecarWiringDeps, 'resolveUrl'> = defaultDeps): boolean {
   return Boolean(deps.resolveUrl()) || embedSidecarEnabled();
@@ -343,7 +343,7 @@ export function processSidecarConfigured(deps: Pick<SidecarWiringDeps, 'resolveU
 
 /**
  * `buildSidecarAwareEmbedder`, with the sidecar resolution (and so any spawn)
- * deferred to the first real embed call (D-049, P-532c).
+ * deferred to the first real embed call (D-050, P-532c).
  *
  * This is for BACKGROUND callers that rebuild on a cadence. The 5-min embed
  * backfill sweep re-resolves its embedder every tick. Built eagerly, each
