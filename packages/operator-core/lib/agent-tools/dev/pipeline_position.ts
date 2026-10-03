@@ -479,6 +479,7 @@ function minimalPipelineResult(
     'targetShortSha',
     'dirtyUncommitted',
     'positions',
+    'positionsMarker',
     'assessments',
     'deployedSha',
     'verdictUnknown',

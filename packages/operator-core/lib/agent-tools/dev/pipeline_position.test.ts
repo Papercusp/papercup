@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS } from './pipeline_position';
+import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS, shapePipelinePosition } from './pipeline_position';
 import { gitPipelinePosition, type PipelinePosition, type RuntimeOwnership } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
 /**
@@ -241,6 +241,46 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     });
     expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
   };
+
+  it('retains positionsMarker in the final minimal fallback', () => {
+    const verboseDetail = Object.fromEntries(
+      Array.from({ length: 24 }, (_, index) => [`detail${index}`, 'x'.repeat(360)]),
+    );
+    const positionsMarker = {
+      marker,
+      onStaging: {
+        marker,
+        sha: 'sha0000002',
+        present: true,
+        count: 1,
+        pathPresent: true,
+        unknownReason: null,
+      },
+      inMain: null,
+      deployed: null,
+    };
+    const out = shapePipelinePosition(
+      {
+        input: { path: PATH, sha: null },
+        targetSha: 'sha0000001',
+        targetShortSha: 'sha000000',
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        positionsMarker,
+        submodule: verboseDetail,
+        submodulePin: verboseDetail,
+      } as unknown as PipelinePosition,
+      {},
+      { path: PATH, marker },
+    ) as Record<string, unknown>;
+    const projection = out.projection as Record<string, unknown>;
+
+    expect(projection).toMatchObject({ kind: 'bounded', truncated: true });
+    expect(projection.returnedChars).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
+    expect(projection.fullRead).toEqual({ tool: 'dev:pipeline_position', args: { path: PATH, marker } });
+    expect(out).not.toHaveProperty('submodule');
+    expect(out).not.toHaveProperty('submodulePin');
+    expect(out.positionsMarker).toEqual(positionsMarker);
+  });
 
   it('bounds the multi-consumer exit without dropping activations', async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue({

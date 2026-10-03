@@ -118,6 +118,8 @@ export interface FleetMemberObservation {
   contextPressure: string | null;
   /** Whether a coordinator can currently deliver a wake to this member. */
   wakeable?: boolean | null;
+  /** A measured healthy engine loop; absent/null means no healthy loop was seen. */
+  loopMonitorState?: 'monitoring' | 'waiting' | 'parked-awaiting-capability' | null;
   /** Total active claims, including plan-item and work-item claims. */
   claimCount?: number;
   /** Stable identities of those claims, independent of assignment row ordering. */
@@ -377,9 +379,15 @@ export function detectFleetTransitions(
     }
 
     const hasUnwakeableClaims =
-      o.sessionState === 'recorded' && o.wakeable === false && (o.claimCount ?? 0) > 0;
+      o.sessionState === 'recorded' &&
+      o.wakeable === false &&
+      (o.claimCount ?? 0) > 0 &&
+      o.loopMonitorState == null;
     const hadUnwakeableClaims =
-      before.sessionState === 'recorded' && before.wakeable === false && (before.claimCount ?? 0) > 0;
+      before.sessionState === 'recorded' &&
+      before.wakeable === false &&
+      (before.claimCount ?? 0) > 0 &&
+      before.loopMonitorState == null;
     const claimsChanged = memberClaimSignature(o) !== memberClaimSignature(before);
     if (hasUnwakeableClaims && (!hadUnwakeableClaims || claimsChanged) && !deadLatch?.has(key) && !leftLatch?.has(key)) {
       edges.push({
@@ -565,7 +573,13 @@ export interface FleetTransitionEventsDeps {
   ) => Promise<
     Pick<
       FleetMemberObservation,
-      'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim' | 'stalled'
+      | 'sessionState'
+      | 'wakeable'
+      | 'claimCount'
+      | 'isRegisteredLeader'
+      | 'hasProgressingClaim'
+      | 'stalled'
+      | 'loopMonitorState'
     > | null
   >;
   /** Resolve an agent's current fleet. Default = the canonical append-only
@@ -718,7 +732,8 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
           currentMember !== undefined &&
           (currentMember.sessionState !== 'recorded' ||
             currentMember.wakeable !== false ||
-            (currentMember.claimCount ?? 0) === 0)
+            (currentMember.claimCount ?? 0) === 0 ||
+            currentMember.loopMonitorState != null)
         ) {
           return;
         }

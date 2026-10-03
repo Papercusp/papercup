@@ -1,6 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import { isAbsolute, relative, sep } from 'node:path';
+import { isAbsolute, relative, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertPublicManualSource } from './scripts/source-contract.mjs';
 
@@ -11,15 +11,24 @@ function normalizeExternalAstroModuleIds() {
     name: 'papercusp-clone-astro-id-normalizer',
     enforce: 'pre',
     resolveId(id) {
-      if (id.startsWith('/@fs/')) return null;
       const queryIndex = id.indexOf('?');
-      const filename = queryIndex === -1 ? id : id.slice(0, queryIndex);
-      if (!filename.endsWith('.astro') || !isAbsolute(filename)) return null;
+      const pathEnd = queryIndex === -1 ? undefined : queryIndex;
+      const query = queryIndex === -1 ? '' : id.slice(queryIndex);
+      const hasFilesystemPrefix = id.startsWith('/@fs/');
+      const filename = hasFilesystemPrefix
+        ? id.slice('/@fs'.length, pathEnd)
+        : id.slice(0, pathEnd);
+      if (!filename.endsWith('.astro')) return null;
+      const absoluteFilename = hasFilesystemPrefix ? resolvePath(filename) : filename;
+      if (!isAbsolute(absoluteFilename)) return null;
 
-      const relativePath = relative(projectRoot, filename);
+      const relativePath = relative(projectRoot, absoluteFilename);
       const outsideProjectRoot =
         relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
       if (!outsideProjectRoot) return null;
+      if (hasFilesystemPrefix) {
+        return absoluteFilename === filename ? null : `/@fs${absoluteFilename}${query}`;
+      }
       return `/@fs${id}`;
     },
   };

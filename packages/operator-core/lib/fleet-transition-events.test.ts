@@ -119,6 +119,35 @@ describe('detectFleetTransitions', () => {
     ]);
   });
 
+  it('does not report member-left while a healthy engine loop will wake the member', () => {
+    const prev = indexObservations([member({ sessionState: 'live', wakeable: true, claimCount: 2 })]);
+    expect(
+      detectFleetTransitions(prev, [
+        member({ sessionState: 'recorded', wakeable: false, claimCount: 2, loopMonitorState: 'waiting' }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('reports member-left if the healthy engine loop disappears while recorded claims remain', () => {
+    const prev = indexObservations([
+      member({ sessionState: 'recorded', wakeable: false, claimCount: 2, loopMonitorState: 'waiting' }),
+    ]);
+    expect(
+      detectFleetTransitions(prev, [
+        member({ sessionState: 'recorded', wakeable: false, claimCount: 2, loopMonitorState: null }),
+      ]),
+    ).toEqual([
+      {
+        kind: 'member-left',
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        to: 'recorded',
+        from: 'recorded',
+        claimCount: 2,
+      },
+    ]);
+  });
+
   it('does not fire member-left for claimless or wakeable recorded members', () => {
     const prev = indexObservations([member({ sessionState: 'live', wakeable: true, claimCount: 2 })]);
     expect(
@@ -361,6 +390,30 @@ describe('emitFleetTransitionEdge', () => {
         claimCount: 2,
       },
     });
+  });
+
+  it('suppresses a member-left wake when a healthy engine loop exists before delivery', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentMemberObservation = vi.fn(async () => ({
+      sessionState: 'recorded' as const,
+      wakeable: false,
+      claimCount: 2,
+      loopMonitorState: 'waiting' as const,
+    }));
+    emitFleetTransitionEdge(
+      {
+        kind: 'member-left',
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        from: 'live',
+        to: 'recorded',
+        claimCount: 2,
+      },
+      { emit, currentMemberObservation },
+    );
+    await settle();
+    expect(currentMemberObservation).toHaveBeenCalledWith('push-not-poll', 'su-a');
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('suppresses member-left if claims are gone before delivery', async () => {
