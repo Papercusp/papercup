@@ -21,6 +21,11 @@ import {
 const REPO = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..'));
 /** A real repo test file the raw-router falsifier marks as a restricted write. */
 const HELD_REPO_TEST = 'packages/operator-core/lib/__tests__/restricted-hold-preflight.test.ts';
+/** A real test in a standalone package that cannot import @papercusp/test-config (WI-10005765). */
+const STANDALONE_PKG = 'libs/generic/git-graph';
+const HELD_STANDALONE_TEST = `${STANDALONE_PKG}/src/cache.test.ts`;
+/** A real node:test suite (papercusp-desktop's shell tests, WI-10005765). */
+const HELD_NODE_TEST = 'papercusp-desktop/test/cargo-target-root.test.js';
 
 const holder = vi.hoisted(() => ({ sql: null as postgres.Sql | null }));
 
@@ -111,10 +116,12 @@ beforeAll(async () => {
   put('tests/uses-unattributed.test.ts', "import { planted } from '../src/unattributed';\nexport const value = planted;\n");
   await ledger(UNRESTRICTED, 'tests/uses-unattributed.test.ts');
 
-  // 3. A REAL repo test file, ledgered to the restricted session, for the raw-router falsifier.
-  await sql`
-    INSERT INTO harness_shared.edit_attribution_ledger (repo_root, file, agent_id, work_item_id, ts)
-    VALUES (${REPO}, ${HELD_REPO_TEST}, ${RESTRICTED}, ${null}, now())`;
+  // 3. REAL repo test files, ledgered to the restricted session, for the process-level falsifiers.
+  for (const file of [HELD_REPO_TEST, HELD_STANDALONE_TEST, HELD_NODE_TEST]) {
+    await sql`
+      INSERT INTO harness_shared.edit_attribution_ledger (repo_root, file, agent_id, work_item_id, ts)
+      VALUES (${REPO}, ${file}, ${RESTRICTED}, ${null}, now())`;
+  }
 }, 120_000);
 
 afterAll(async () => {
@@ -184,6 +191,25 @@ describe('restricted-write fence on the production census (real Postgres + git)'
     expect(result.host).toBe('last-known-good host');
   }, 120_000);
 
+  // WI-10005765 falsifiers: two runner shapes that pass none of the three doors above. A standalone
+  // package's own vitest config (it cannot import @papercusp/test-config) and a `node --test` suite
+  // each reach the census through a walk-up to a monorepo convention module.
+  it('direct vitest in a standalone exempt package refuses a held restricted write before any test executes', () => {
+    const output = joined(standaloneVitest());
+    expect(output).toContain('VITEST_RESTRICTED_HOLD_REFUSED error=restricted_write_held measured=none');
+    expect(output).toContain(`${HELD_STANDALONE_TEST} is itself a held restricted write`);
+    expect(output).not.toMatch(/Tests\s+\d+ passed/);
+  }, 120_000);
+
+  it('a node:test suite refuses a held restricted write in its runner before any test file starts', () => {
+    const result = desktopNodeTest();
+    const output = joined(result);
+    expect(output).toContain('NODE_TEST_RESTRICTED_HOLD_REFUSED error=restricted_write_held measured=none');
+    expect(output).toContain(`${HELD_NODE_TEST} is itself a held restricted write`);
+    expect(result.status).not.toBe(0);
+    expect(output).not.toMatch(/^ℹ pass [1-9]/m);
+  }, 120_000);
+
   it('admits both once the disclosure is released', async () => {
     await sql`
       UPDATE harness_shared.personal_disclosures
@@ -206,6 +232,20 @@ describe('restricted-write fence on the production census (real Postgres + git)'
   it('direct vitest runs the same file once the disclosure is released', () => {
     const result = directVitest();
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/Tests\s+\d+ passed/);
+    expect(result.status).toBe(0);
+  }, 120_000);
+
+  // Calibrations for the WI-10005765 falsifiers: the same commands run their tests once released.
+  it('direct vitest in the standalone package runs the same file once the disclosure is released', () => {
+    const result = standaloneVitest();
+    expect(joined(result)).toMatch(/Tests\s+\d+ passed/);
+    expect(result.status).toBe(0);
+  }, 120_000);
+
+  it('the node:test suite runs the same file once the disclosure is released', () => {
+    const result = desktopNodeTest();
+    expect(joined(result)).toMatch(/^ℹ pass [1-9]/m);
+    expect(joined(result)).toMatch(/^ℹ fail 0$/m);
     expect(result.status).toBe(0);
   }, 120_000);
 
@@ -249,6 +289,31 @@ function bundleGate(inputs: string[]): { status: number | null; output: string; 
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+function joined(result: { stdout: string; stderr: string }): string {
+  return `${result.stdout}\n${result.stderr}`;
+}
+
+/** `vitest run <held test>` from the standalone package, through its own (non-test-config) config. */
+function standaloneVitest() {
+  return spawnSync(process.execPath, [join(REPO, 'node_modules/vitest/vitest.mjs'), 'run', HELD_STANDALONE_TEST.slice(STANDALONE_PKG.length + 1)], {
+    cwd: join(REPO, STANDALONE_PKG),
+    env: { ...routerEnv(), NO_COLOR: '1', FORCE_COLOR: '0' },
+    encoding: 'utf8',
+    timeout: 110_000,
+  });
+}
+
+/** papercusp-desktop's node:test invocation (its package.json shape) on the held suite. */
+function desktopNodeTest() {
+  const env = { ...routerEnv(), NO_COLOR: '1', FORCE_COLOR: '0' };
+  delete env.NODE_TEST_CONTEXT;
+  return spawnSync(
+    process.execPath,
+    ['--test', '--test-global-setup=test/monorepo-host-preflight.mjs', HELD_NODE_TEST.slice('papercusp-desktop/'.length)],
+    { cwd: join(REPO, 'papercusp-desktop'), env, encoding: 'utf8', timeout: 110_000 },
+  );
 }
 
 /** `vitest run <held test>` from its own workspace, as an unrestricted top-level caller. */
