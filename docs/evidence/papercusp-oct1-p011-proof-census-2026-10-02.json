@@ -24,6 +24,57 @@
   "qualificationUpdatedAt": "2026-10-03T02:02:19.196Z",
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
+  "selectedSourceOracleAcceptance": {
+    "workItem": "WI-10005793",
+    "path": "docs/evidence/papercusp-oct1-p011-selected-resource-oracles-r2-2026-10-03.json",
+    "bytes": 8788,
+    "sha256": "833ba76bb8170ffc9a8c8411083495d7855183a383661ba7de1de975afa1d61b",
+    "testRun": 20616349,
+    "binding": 23101,
+    "bindingKind": "test",
+    "oraclePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "oracleSha256": "50e8b9d619999e5f0f09bdb8f832f53924a27814a0d89c6707f70d69df145375",
+    "outcome": "52 focused assertions passed, 36 unrelated assertions filtered. Three saved raw receipts accepted, 46 targeted data corruptions rejected (inbox18/expiry12/compiler16), and three fabricated-headline controls ignored. Focused typecheck had zero errors.",
+    "method": "Independent raw counter arithmetic, regenerated inbox input and expected outcomes, expiry reachability and useful-entry counts, compiler caller/executable ancestry and cleanup. No cohort emitter or reduction headline determines acceptance.",
+    "bindingQualification": "Ordinary passing assertion evidence derived from harness-scoped local-dirty ledger20616349. Not a failed mutation-probe run. Independent readback returned spec/source/test/testRun current under server-measured repo-files scope; L3/L4 remain false and disclosed gaps remain explicit.",
+    "historicalBindings": {
+      "23100": "Preserved unretracted; source/spec/testRun current, test stale after this maintained oracle extension.",
+      "23099": "Preserved unretracted; source/spec/test/testRun current on readback. Its separate emitter is unchanged.",
+      "scope": "Freshness describes saved receipts and named test bytes, not current loaded runtime or complete executed graph. No older binding was superseded or retracted."
+    },
+    "inbox": {
+      "pssGrowthDifferenceBytes": 210301952,
+      "cumulativeV8AllocationGrowthDifferenceBytes": 288349304,
+      "rawCopies": [8, 1],
+      "preservedBodyCodeUnits": 8388608,
+      "responsesPerHost": 24,
+      "limits": "Historical private comparison only. Actual per-request overlap timestamps and production savings are unmeasured; original GC-events and source-drift qualifications remain intact."
+    },
+    "expiry": {
+      "expiredReachable": [438, 0],
+      "usefulEntries": 604,
+      "heapUsedDifferenceBytes": 163653752,
+      "pssDifferenceBytes": -17983488,
+      "physicalPssReductionObserved": false,
+      "limits": "Heap/root reclamation only. Cumulative V8 allocation, process startTicks, useful body parity and production savings are unmeasured."
+    },
+    "compiler": {
+      "tracedForks": [0, 3],
+      "nativeDescendants": 3,
+      "nativeExecutableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+      "nativeSampleCounts": [3, 4, 4],
+      "limits": "Historical private preflight invocation and final cleanup only. These arms do not compare an optimization or establish original 4.2GiB recovery, current named-source identity or production savings."
+    },
+    "failedAttempt": {
+      "path": "docs/evidence/papercusp-oct1-p011-selected-resource-oracles-r1-2026-10-03.json",
+      "bytes": 6618,
+      "sha256": "7a54ef2db6e019ad602f3324e6fa73cc4fb2053065a7652acf4a31cd3a34dd20",
+      "testRun": 20616343,
+      "status": "fail",
+      "reason": "New caller oracle initially treated the saved source map as an array. Object.keys and map-shaped corruption fixed the validator; original failure retained. EI-24926545500039739."
+    },
+    "scope": "Saved historical private receipt acceptance only. All eight source dispositions and earlier spawner fields are preserved verbatim. Matched live/native/retained-owner acceptance, independent plan grading and shipment remain open."
+  },
   "spawnerEntryComparison": {
     "harnessScopedLoadedBuildBaseline": {
       "workItem": "WI-10005776",
