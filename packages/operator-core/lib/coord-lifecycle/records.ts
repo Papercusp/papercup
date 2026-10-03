@@ -295,7 +295,7 @@ export const COMPLETION_TREE_STAMP_CONTRACT =
 
 /** Caller-facing contract for the server-generated settlement receipt. */
 export const COMPLETION_SETTLEMENT_MANIFEST_CONTRACT =
-  'Server-stamped settlement metadata: `work_items:complete` derives `settlementManifest` from the observed checkout; callers must omit `settlementManifest` (including `completion.verification.settlementManifest`). When present in persisted evidence, it contains version=1, a positive generation, a 64-hex evidenceHash, repositoryRoot, a full 40- or 64-character headSha, normalizedPaths, and contentIdentity[]. Do not send intuitive artifact fields such as schemaVersion, artifactPath, artifactSha256, head, or boolean contentIdentity.';
+  'Server-stamped settlement metadata: `work_items:complete` derives `settlementManifest` from the observed checkouts; callers must omit `settlementManifest` (including `completion.verification.settlementManifest`). When present in persisted evidence, it contains version=1, a positive generation, a 64-hex evidenceHash, repositoryRoot, a full 40- or 64-character headSha, normalizedPaths, and contentIdentity[]. Per-entry repositoryRoot/headSha identify sibling checkouts; normalizedPaths can repeat a relative path when distinct checkouts own it. Missing per-entry checkout fields fall back to the top-level root/head for legacy receipts. Do not send intuitive artifact fields such as schemaVersion, artifactPath, artifactSha256, head, or boolean contentIdentity.';
 
 /** Server-observed Git blob identities for each declared changed path. */
 export type CompletionGitIgnoreStatus = 'ignored' | 'not-ignored' | 'unknown';
@@ -455,11 +455,15 @@ export const CompletionSettlementManifestSchema = z.object({
   evidenceHash: z.string().regex(/^[0-9a-f]{64}$/),
   repositoryRoot: z.string().min(1),
   headSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/),
+  /** Repeated relative paths are meaningful when different checkouts own them. */
   normalizedPaths: z.array(z.string().min(1)).min(1).max(60),
   contentIdentity: z.array(z.object({
     path: z.string().min(1),
     workingTreeBlobSha: completionBlobShaSlot,
     headBlobSha: completionBlobShaSlot,
+    /** Per-path owning checkout and close-time HEAD; absent on legacy single-checkout receipts. */
+    repositoryRoot: z.string().min(1).optional(),
+    headSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).optional(),
     /** WI-10004491: close-time Git ignore status for a present path absent from HEAD. */
     gitIgnoreStatus: z.enum(['ignored', 'not-ignored', 'unknown']).optional(),
     /** EI-22344624691081449: caller-declared intentional deletion. */
@@ -467,6 +471,9 @@ export const CompletionSettlementManifestSchema = z.object({
   })).min(1).max(60),
   residualPaths: z.array(z.object({
     path: z.string().min(1),
+    /** Root/head scope keeps identical relative paths in sibling checkouts independent. */
+    repositoryRoot: z.string().min(1).optional(),
+    headSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).optional(),
     /**
      * WI-10004711: `superseded-before-commit` = the close-time blob is in neither the
      * emitted tree nor any commit since the close, AND the working tree has moved off
@@ -478,6 +485,8 @@ export const CompletionSettlementManifestSchema = z.object({
       'missing-from-commit',
       'content-mismatch',
       'superseded-before-commit',
+      /** This sibling checkout has not yet had its own emitted-tree pass. */
+      'checkout-not-processed',
       /** WI-10005343: absolute / `..`-escaping / pathspec-magic path; no commit can hold it. */
       'not-a-repository-path',
     ]),
