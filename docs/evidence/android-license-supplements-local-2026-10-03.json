@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
+  "name": "Android offline license supplements and isolated notice producer",
+  "framework": "operational",
   "command": [
     "make",
     "test-android-library-notices"
