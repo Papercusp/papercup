@@ -138,6 +138,7 @@ export interface SeedUuidIdempotencyDropPlan {
 export async function exportSeedUuidIdempotencySource(inp: {
   sourceStore: Corestore; sourceKeyHex: string; sourceLength: number;
   outputDir: string; segment: string;
+  redactValues?: readonly string[];
 }): Promise<{
   sourceKeyHex: string; sourceLength: number; rowCount: number; rowsPath: string; rowsSha256: string;
   sourceBlocksRead: number; sourceBlocksJsonSha256: string;
@@ -156,22 +157,34 @@ export async function exportSeedUuidIdempotencySource(inp: {
   if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
   const blocks = createHash('sha256');
   const folder = new SnapshotRowFolder({ excludeTables: SEED_EXCLUDED_TABLES });
+  // Reuse the producer's normal privacy fold. This private expectation is distinct
+  // from D166 drops; the independent validator must still authenticate originals
+  // and refuse any output change beyond this exact, source-bound projection.
+  const privacy = seedSnapshotValueTransform(inp.redactValues);
+  const projectedFolder = new SnapshotRowFolder({ excludeTables: SEED_EXCLUDED_TABLES,
+    transformValue: privacy.transform });
   for (let index = 0; index < inp.sourceLength; index++) {
     const op = await core.get(index, { wait: false }) as PeerLogOp | null;
     if (!op) throw new Error('[seed:corestore] UUID source export requires every block locally');
     blocks.update(JSON.stringify([index, op]) + '\n');
     folder.add(op, op.value, index);
+    projectedFolder.add(op, op.value, index);
   }
   if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
   const rows = folder.finish();
+  const projectedRows = new Map(projectedFolder.finish().map(row => [JSON.stringify([row.table, row.hbKey]), row]));
   const path = join(inp.outputDir, inp.segment);
   const file = await open(path, 'wx', 0o600);
   const digest = createHash('sha256');
   try {
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index]!;
+      const projected = projectedRows.get(JSON.stringify([row.table, row.hbKey]));
+      const privacyProjection = !projected ? { disposition: 'drop' } :
+        JSON.stringify(projected.value) === JSON.stringify(row.value) ? { disposition: 'carry' } :
+          { disposition: 'redact', value: projected.value };
       const text = JSON.stringify({ ...row, segment: inp.segment, line: index + 1,
-        storedValueJson: JSON.stringify(row.value) }) + '\n';
+        storedValueJson: JSON.stringify(row.value), privacyProjection }) + '\n';
       digest.update(text);
       await file.writeFile(text);
     }

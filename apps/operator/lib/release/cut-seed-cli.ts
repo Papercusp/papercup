@@ -359,6 +359,7 @@ export async function readSeedUuidIdempotencyDropPlans(
 export async function exportSeedUuidIdempotencyCensus(input: {
   storeDir: string; manifestPath: string; manifestSha256: string;
   epochKeysPath: string; epochKeysSha256: string; outputDir: string;
+  redactValues?: readonly string[];
 }): Promise<string> {
   if (!(await lstat(input.storeDir)).isDirectory()) throw new Error('UUID frozen source store missing');
   const manifestBytes = await readFile(input.manifestPath);
@@ -383,7 +384,8 @@ export async function exportSeedUuidIdempotencyCensus(input: {
     for (const [index, key] of (meta.coreKeys as string[]).entries()) {
       sources.push(await exportSeedUuidIdempotencySource({ sourceStore: store,
         sourceKeyHex: key, sourceLength: meta.coreLengths[key] as number,
-        outputDir: input.outputDir, segment: `segment-${String(index + 1).padStart(6, '0')}.blob` }));
+        outputDir: input.outputDir, segment: `segment-${String(index + 1).padStart(6, '0')}.blob`,
+        redactValues: input.redactValues }));
     }
     const configPath = join(input.outputDir, 'uuid-census.private.json');
     await writeFile(configPath, JSON.stringify({ reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
@@ -1523,7 +1525,8 @@ async function main(): Promise<void> {
     const config = await exportSeedUuidIdempotencyCensus({ storeDir: str(args, 'store-dir')!,
       manifestPath: str(args, 'uuid-source-manifest')!, manifestSha256: str(args, 'uuid-source-manifest-sha256')!,
       epochKeysPath: str(args, 'uuid-epoch-keys')!, epochKeysSha256: str(args, 'uuid-epoch-keys-sha256')!,
-      outputDir: str(args, 'export-uuid-idempotency-census')! });
+      outputDir: str(args, 'export-uuid-idempotency-census')!,
+      redactValues: releaseSeedRedactionValues(resolve(str(args, 'root') ?? process.cwd())) });
     console.log(JSON.stringify({ schema: 'papercusp-uuid-idempotency-source-export-v1', configPath: config }));
     return;
   }
