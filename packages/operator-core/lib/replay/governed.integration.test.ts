@@ -142,6 +142,45 @@ describe('governed replay durable spend boundary', () => {
     expect((await getLearningLoop(db.adminSql, { workspaceId, loopId: REPLAY_LOOP_ID }))?.spentUsd).toBeCloseTo(0.12);
   });
 
+  it('settles known judge charges after every invalid-output repair is exhausted', async () => {
+    const workspaceId = `ws-replay-${randomUUID()}`;
+    const batteryId = `failed-judge-${randomUUID()}`;
+    await registerReplayLoop(db.adminSql, { workspaceId, budgetUsd: 1 });
+    const receipts: number[] = [];
+    const out = await runGovernedReplay({ workspaceId, config: config(batteryId) }, {
+      runner: run,
+      llmCall: async () => {
+        receipts.push(0.01);
+        return { text: 'unscoreable fixture reply', costUsd: 0.01, inputTokens: 2, outputTokens: 3 };
+      },
+      now: () => Date.now(),
+    }, glue());
+    expect(receipts).toHaveLength(2);
+    expect(out.result?.outcomes[0]).toMatchObject({ status: 'errored' });
+    const events = await listLearningSpendEvents(db.adminSql, { workspaceId });
+    expect(events).toHaveLength(1);
+    const providerUsd = 0.05 + receipts.reduce((sum, cost) => sum + cost, 0);
+    expect({
+      providerUsd, batteryUsd: out.result?.totalCostUsd,
+      reservationUsd: out.reservation?.usedUsd, eventUsd: events[0].costUsd,
+    }).toEqual({ providerUsd: 0.07, batteryUsd: 0.07, reservationUsd: 0.07, eventUsd: 0.07 });
+    expect((await getLearningLoop(db.adminSql, { workspaceId, loopId: REPLAY_LOOP_ID }))?.spentUsd).toBeCloseTo(providerUsd);
+    expect(await db.adminSql`SELECT status FROM harness_shared.replay_runs WHERE workspace_id = ${workspaceId}`)
+      .toEqual([{ status: 'errored' }]);
+  });
+
+  it('keeps unknown judge charges reserved without emitting a falsely complete charge event', async () => {
+    const workspaceId = `ws-replay-${randomUUID()}`;
+    await registerReplayLoop(db.adminSql, { workspaceId, budgetUsd: 1 });
+    const out = await runGovernedReplay({ workspaceId, config: config('unknown-charge') }, {
+      runner: run, llmCall: async () => { throw new Error('unmeasured provider failure'); }, now: () => Date.now(),
+    }, glue());
+    expect(out.result).toMatchObject({ totalCostUsd: 0.05, costMeasured: false });
+    expect(out.reservation).toMatchObject({ status: 'open', usedUsd: 0 });
+    expect(await listLearningSpendEvents(db.adminSql, { workspaceId })).toHaveLength(0);
+    expect(await listLearningSpendReservations(db.adminSql, { workspaceId, status: 'open' })).toHaveLength(1);
+  });
+
   it('a genuinely free battery still leaves a settled evaluation reservation and no charge event', async () => {
     const workspaceId = `ws-replay-${randomUUID()}`;
     await registerReplayLoop(db.adminSql, { workspaceId, budgetUsd: 1 });
