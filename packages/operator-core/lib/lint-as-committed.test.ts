@@ -144,6 +144,9 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
       const sharedCommon = realpathSync(resolve(dirname(sharedRoute), '../common.astro'));
       expect(normalizer?.resolveId?.('../common.astro', `${sharedRoute}?astro&type=page`)).toBe(sharedCommon);
+      const relativeSharedRoute = relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute);
+      expect(relativeSharedRoute).toContain('../');
+      expect(normalizer?.resolveId?.('../common.astro', `${relativeSharedRoute}?astro&type=page`)).toBe(sharedCommon);
       const cloneAppRoot = resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs');
       const virtualRouteQuery = '?astro&type=page';
       const noncanonicalFilesystemRoute = `/@fs/${relative(cloneAppRoot, sharedRoute)}${virtualRouteQuery}`;
