@@ -11,7 +11,7 @@
  * pre-fix control keeps the behavioral assertion falsifiable without mutating the
  * shared checkout.
  */
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -1042,6 +1042,55 @@ describe('bake-cloud-images.sh build-context snapshot (WI-10005766)', () => {
     expect(manifest.buildContext?.commit).toBe(result.contextCommit);
     expect(manifest.buildContext?.pinned).toBe(false);
     expect(existsSync(join(result.out, 'build-context', 'papercusp-uncommitted.conf'))).toBe(true);
+  });
+});
+
+const AUDITOR_HANDOFF_MARKER = "# The secret scan's release auditor lives OUTSIDE the build context";
+
+/** The pre-WI-10005946 shape: the snapshot is taken but nobody tells the scan where the auditor is. */
+function withoutAuditorHandoff(): string {
+  const start = SOURCE.indexOf(AUDITOR_HANDOFF_MARKER);
+  const endMarker = 'export PAPERCUSP_RELEASE_AUDITOR\n';
+  const end = SOURCE.indexOf(endMarker, start);
+  expect(start, 'auditor hand-off marker must be present in the shipped script').toBeGreaterThan(-1);
+  expect(end, 'auditor hand-off block must end by exporting PAPERCUSP_RELEASE_AUDITOR').toBeGreaterThan(start);
+  return SOURCE.slice(0, start) + SOURCE.slice(end + endMarker.length);
+}
+
+describe('bake-cloud-images.sh hands the secret scan its release auditor (WI-10005946)', () => {
+  it('resolves the auditor from the source tree, not the snapshot, and the supply chain finds it', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { git: 'clean', auditor: 'source-tree' });
+    expect(result.status, result.output).toBe(0);
+    const expected = realpathSync(join(result.context, '..', '..', '..', 'papercusp-desktop', 'bin', 'audit-release-bundle.py'));
+    expect(result.output).toContain(`BAKE_RELEASE_AUDITOR=${expected}`);
+    expect(result.supplyChainAuditor).toBe(`found ${expected}`);
+  });
+
+  it('falsifiability control: without the hand-off the scan looks under the snapshot and misses', () => {
+    // Measured 2026-10-03 09:58Z, chain4 try 2 bake A: the build finished, then the supply chain
+    // refused with "release auditor not found: <out>/build-context/../../../papercusp-desktop/...".
+    const result = runFixture(withoutAuditorHandoff(), 'raw', undefined, undefined, false, 'pass', {
+      git: 'clean',
+      auditor: 'source-tree',
+    });
+    expect(result.supplyChainAuditor).toMatch(
+      /^missing .*\/build-context\/\.\.\/\.\.\/\.\.\/papercusp-desktop\/bin\/audit-release-bundle\.py$/,
+    );
+  });
+
+  it('refuses before building when no auditor can be found', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { git: 'clean', auditor: 'missing' });
+    expect(result.status).toBe(2);
+    expect(result.output).toContain('release auditor not found');
+    expect(result.builtContainerfile).toBeNull();
+    expect(result.podmanCalls.some((call) => call.startsWith('build '))).toBe(false);
+    expect(result.supplyChainAuditor).toBeNull();
+  });
+
+  it('honours an explicit PAPERCUSP_RELEASE_AUDITOR', () => {
+    const result = runFixture(SOURCE);
+    expect(result.status, result.output).toBe(0);
+    expect(result.supplyChainAuditor).toMatch(/^found .*\/fixture-audit-release-bundle\.py$/);
   });
 });
 
