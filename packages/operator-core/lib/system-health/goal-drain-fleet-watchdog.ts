@@ -939,9 +939,9 @@ export interface GoalDrainFleetSweepDeps {
   /** After the dead-fleet grace, promote the oldest positively-live member if the registered leader is explicitly ended. */
   promoteDrainLeader: (alert: GoalDrainAlert, goal: GoalDrainRowLike) => Promise<boolean>;
   /** Current active goal-drain fleets with live members but no successful get_next in the stall window. */
-  readPullStallAlerts: (goals: readonly GoalDrainRowLike[], nowMs: number) => Promise<GoalDrainPullStallAlert[]>;
+  readPullStallAlerts: (goals: readonly GoalDrainRowLike[], nowMs: number) => Promise<GoalDrainFleetPullStallAlert[]>;
   /** Deduped watchdog alarm for a stalled drain-fleet pull lane. */
-  escalatePullStall: (alert: GoalDrainPullStallAlert) => Promise<void>;
+  escalatePullStall: (alert: GoalDrainFleetPullStallAlert) => Promise<void>;
 
   // ── goal-plan-fleet-obligation-detector P-002: the plan-fleet leg ──
   /** The canonical, fail-closed plan-fleet cohort read ({@link readGoalPlanFleetCohort}). */
