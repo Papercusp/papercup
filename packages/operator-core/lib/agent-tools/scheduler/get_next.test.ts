@@ -618,7 +618,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     expect(getNextM).toHaveBeenCalledOnce();
   });
 
-  it('reuses the reconciliation roster snapshot for leader-liveness preflight', async () => {
+  it('allows the scoped pull through after succession reconciles a live leader', async () => {
     scopeState.scope = {
       ownerId: 'su-member',
       fleetSlug: 'snapshot-fleet',
@@ -627,15 +627,26 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     };
     scopeState.fleetAssignmentRows = [{ agentId: 'su-leader' }];
     reconcileFleetScopeLeaderSuccessionM.mockResolvedValueOnce('live');
-    getNextM.mockResolvedValue(null);
+    getNextM.mockResolvedValue({
+      workItem: { id: 'WI-after-succession', title: 'Successor leader resumed the fleet pull' },
+      claimedUnder: { specId: 'lane-rev4', revision: 4 },
+    });
 
-    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as {
+      data?: unknown;
+      content?: Array<{ text?: string }>;
+    };
 
     expect(reconcileFleetScopeLeaderSuccessionM).toHaveBeenCalledWith({
       scope: scopeState.scope,
       identity: expect.objectContaining({ ownerId: 'su-member' }),
     });
     expect(getNextM).toHaveBeenCalledOnce();
+    expect(handlerPayload(out)).toMatchObject({
+      ok: true,
+      workItem: { id: 'WI-after-succession' },
+      claimedUnder: { specId: 'lane-rev4', revision: 4 },
+    });
   });
 
   it('winds down a terminal plan before routing a dead leader into a takeover', async () => {

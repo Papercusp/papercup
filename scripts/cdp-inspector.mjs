@@ -117,11 +117,19 @@ export async function readProcessMemory(client, { expectedPid, hostFacts = false
  * Remote handles are released before returning and never enter the report.
  * Missing, unsafe and uncaptured roots stay explicit; no getter or proxy runs.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
- * @param {{expectedPid: number, owners: string[]}} options
+ * Optional pgRequestIds bind the existing diagnostic WeakRefs to the SAME
+ * preceding snapshot. The reader does not force GC or take a snapshot. A
+ * dereference and remote handle temporarily keep a target alive; all handles
+ * are released before return. Collected/evicted/unobserved objects stay gaps.
+ * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[]}} options
  */
-export async function readPinnedHeapObjectIds(client, { expectedPid, owners }) {
+export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgRequestIds }) {
   validatePinnedStateOptions({ expectedPid, owners });
   if (!owners) throw new TypeError('Exact heap owners required');
+  if (pgRequestIds !== undefined && (!Array.isArray(pgRequestIds) || pgRequestIds.length < 1 ||
+      pgRequestIds.length > 32 || new Set(pgRequestIds).size !== pgRequestIds.length ||
+      pgRequestIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id))))
+    throw new TypeError('Exact bounded PG request UUIDs required');
   const objectGroup = 'p011-heap-roots-' + randomUUID();
   /** @type {{owner: string, status: string, id?: number}[]} */
   const roots = [];
@@ -154,9 +162,90 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners }) {
         throw new TypeError('Invalid heap object ID');
       roots.push({ owner, status: 'found', id });
     }
-    return { pid: expectedPid, roots,
+    const queries = pgRequestIds ? await readPgHeapObjectIds(client, { expectedPid, pgRequestIds, objectGroup }) : undefined;
+    return { pid: expectedPid, roots, ...(queries ? { queries } : {}),
       definition: 'Numeric IDs bind existing singleton values to preceding snapshot nodes; no physical memory estimate.' };
   } finally { await client.send('Runtime.releaseObjectGroup', { objectGroup }); }
+}
+
+/** Extend the existing singleton reader, using only its bounded weak registry. */
+async function readPgHeapObjectIds(client, { expectedPid, pgRequestIds, objectGroup }) {
+  // One data-property-only reader supplies both metadata and exact targets.
+  // Prototype operations below are builtins, never application accessors/iterators.
+  const reader = function (expectedPid, requestIds, key, phase) {
+    if (process.pid !== expectedPid) throw new Error('Inspector PID mismatch');
+    const types = process.getBuiltinModule('util').types;
+    const data = (value, name) => {
+      if (!value || (typeof value !== 'object' && typeof value !== 'function') || types.isProxy(value)) return undefined;
+      return Object.getOwnPropertyDescriptor(value, name)?.value;
+    };
+    const slots = data(globalThis, Symbol.for('@papercusp/module-singleton.slots'));
+    if (!slots || types.isProxy(slots) || !types.isMap(slots)) return key ? 'registry-unavailable' : { status: 'registry-unavailable', records: [] };
+    const state = data(Map.prototype.get.call(slots, '@papercusp/db-org.acquire-registry'), 'value');
+    const pools = data(state, 'pools');
+    if (!pools || types.isProxy(pools) || !types.isMap(pools)) return key ? 'registry-unavailable' : { status: 'registry-unavailable', records: [] };
+    const records = [], matches = [];
+    const poolCount = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call(pools);
+    let matched = 0, inspectedPools = 0, omittedRows = 0;
+    const entries = key ? [[key.pool, Map.prototype.get.call(pools, key.pool)]] : Map.prototype.entries.call(pools);
+    for (const [pool, value] of entries) {
+      if (inspectedPools === 64) break;
+      inspectedPools++;
+      const rows = data(value, 'pgResults');
+      if (!rows || types.isProxy(rows) || !Array.isArray(rows)) continue;
+      const length = data(rows, 'length');
+      omittedRows += Math.max(0, length - 32);
+      for (let i = 0; i < Math.min(32, length); i++) {
+        const row = data(rows, String(i)), correlation = data(row, 'correlation');
+        const requestId = data(correlation, 'requestId');
+        if (!requestIds.includes(requestId)) continue;
+        const source = data(row, 'source');
+        const identity = { pool, source: { processInstanceId: data(source, 'processInstanceId'),
+          buildSha: data(source, 'buildSha'), poolInstanceId: data(source, 'poolInstanceId') },
+          connectionId: data(row, 'connectionId'), queryId: data(row, 'queryId'), requestId };
+        if (key) {
+          if (identity.source.processInstanceId === key.source.processInstanceId && identity.source.buildSha === key.source.buildSha &&
+              identity.source.poolInstanceId === key.source.poolInstanceId && identity.connectionId === key.connectionId &&
+              identity.queryId === key.queryId && requestId === key.requestId) matches.push(row);
+        } else {
+          matched++;
+          if (records.length < 32) records.push(identity);
+        }
+      }
+    }
+    if (!key) return { status: 'observed', matched, omitted: matched - records.length,
+      inspectedPools, omittedPools: Math.max(0, poolCount - inspectedPools), omittedRows, records };
+    if (matches.length !== 1) return matches.length === 0 ? 'evicted' : 'ambiguous';
+    const ref = data(data(matches[0], 'objectRefs'), phase);
+    if (!ref) return 'unobserved';
+    try { return WeakRef.prototype.deref.call(ref) ?? 'collected'; } catch { return 'unsafe'; }
+  };
+  const expression = (identity, phase) => '(' + reader.toString() + ')(' +
+    [expectedPid, pgRequestIds, identity, phase].map(value => JSON.stringify(value)).join(',') + ')';
+  const metadata = (await client.evaluate(expression(null, null), { returnByValue: true })).result.value;
+  if (!metadata || !Array.isArray(metadata.records)) throw new Error('Invalid PG diagnostic metadata');
+  const records = [];
+  for (const identity of metadata.records) {
+    const objects = [];
+    for (const phase of ['decodedResult', 'resolvedRows', 'responseValue']) {
+      const remote = (await client.evaluate(expression(identity, phase), { objectGroup })).result;
+      if (!remote.objectId) {
+        objects.push({ phase, status: ['registry-unavailable', 'evicted', 'ambiguous', 'unobserved', 'collected', 'unsafe'].includes(remote.value)
+          ? remote.value : 'unavailable' });
+        continue;
+      }
+      const { heapSnapshotObjectId } = await client.send('HeapProfiler.getHeapObjectId', { objectId: remote.objectId });
+      if (heapSnapshotObjectId === '0') { objects.push({ phase, status: 'not-in-snapshot' }); continue; }
+      const id = Number(heapSnapshotObjectId);
+      if (!/^[1-9]\d*$/.test(heapSnapshotObjectId) || !Number.isSafeInteger(id)) throw new TypeError('Invalid heap object ID');
+      objects.push({ phase, status: 'found', id });
+    }
+    records.push({ ...identity, objects });
+  }
+  return { status: metadata.status, matched: metadata.matched ?? null, omitted: metadata.omitted ?? null,
+    inspectedPools: metadata.inspectedPools ?? null, omittedPools: metadata.omittedPools ?? null, omittedRows: metadata.omittedRows ?? null,
+    unobservedRequestIds: pgRequestIds.filter(id => !metadata.records.some(row => row.requestId === id)), records,
+    definition: 'Exact observed request/process/build/pool/connection/query tuple and dereferenced object; no worker clone, allocating owner or physical savings inferred.' };
 }
 
 /**

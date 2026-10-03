@@ -80,13 +80,36 @@
       "caughtBy": ["export/LICENSE matches ELv2 text", "remote main:LICENSE exists"],
       "positiveCoverage": ["source-available README wording", "no OSI/open-source claim"],
       "bindingId": 23651
+    },
+    {
+      "bar": "R10",
+      "specId": "AUTO-BAR-R-10-P-005",
+      "specRevision": 5,
+      "source": "papercusp-desktop/bin/lib/source-tree-selection.sh",
+      "mutation": "s{--exclude='\\./libs/papercusp/plugins/gitnexus-bridge'}{--exclude='./libs/papercusp/plugins/gitnexus-bridge-disabled'}",
+      "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE=papercusp-workspace npm run test:file -- packages/operator-core/lib/source-preview-export.test.ts",
+      "controls": {"originalPassed": 15, "relocatedPassed": 15, "skipped": 0, "testRunIds": [20685762, 20685771]},
+      "mutant": {"passed": 13, "failed": 2, "skipped": 0, "testRunId": 20685782},
+      "caughtBy": ["DROPPED independently excludes libs/papercusp/plugins/gitnexus-bridge/index.ts", "installer selection independently excludes the same noncommercial plugin"],
+      "positiveCoverage": ["eligible internal documentation bytes survive", "sibling markdown-preview plugin survives"],
+      "bindingId": 23680,
+      "verifiedCurrentOn": "staging operator 22b7fb6afd",
+      "remainingBlocker": "disclosed-gap: finished-installer inspection remains owed under bindings 23586/23587",
+      "logPath": "/tmp/osr-r10-scoped-exclusion-Gp0XM5/probe.log",
+      "priorAttempts": [
+        {"logPath": "/tmp/osr-current-clean-r10-gjqe2qs9/probe.log", "verdict": "survived", "note": "Removing the upstream materializeCommit allow filter did not defeat downstream selection. Its module-load control failure is not a caught semantic mutant."},
+        {"logPath": "/tmp/osr-r10-declared-exclusion-91qWGk/probe.log", "verdict": "caught", "note": "Harness scope was omitted; this genuine but unscoped outcome was retained and was not bound as release proof."}
+      ]
     }
   ],
   "sourceSha256": {
     "scripts/source-preview.mjs": "a47ec2572dfe1eb697d57f9871cec377652156d3c2c2ab6fd0c65a61c69059da",
     "scripts/check-licenses.mjs": "65aa2a49b65f82a35458c48f7d869d6c5bad0c16340023d17fc677130640c739",
     "packages/operator-core/lib/source-preview-public.test.ts": "3821aff36178f7bc42922367e050b2470ca4f47e3a0f5c187d1ea0a9afa7b6a4",
-    "packages/operator-core/lib/license-gate.test.ts": "8db059df1b58254bbe05bddcf288b075748c489355696152cc075da8b910441e"
+    "packages/operator-core/lib/license-gate.test.ts": "8db059df1b58254bbe05bddcf288b075748c489355696152cc075da8b910441e",
+    "papercusp-desktop/bin/lib/source-tree-selection.sh": "0a22758e33c9cd019f5632da41cee8c885950187441ba2b7a3105c34247b3c95",
+    "packages/operator-core/lib/source-preview-export.test.ts": "7e0a721c416c0ef00a7b2a8097505d8bb962366558724c06f7b65b28592363d0",
+    "packages/operator-core/lib/source-preview.fixture.ts": "8387d4a75d12c308d9d6cfea1cd4aa3d572793af46ece2aa68e31c76d60ec73c"
   },
   "limitations": ["These are current source/unit counterexamples. They do not discharge live serving, hosted credential delivery, published installer, or final shipment obligations."]
 }

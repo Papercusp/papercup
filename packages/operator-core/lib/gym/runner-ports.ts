@@ -34,7 +34,7 @@ const SAFE_SLUG = /^[a-z0-9]+$/;
 
 /** Parse one Vitest JSON report into the per-test evidence the gym signal core consumes. */
 export function parseVitestOracleResults(jsonText: string): TestResult[] {
-  let parsed: { testResults?: Array<{ name?: string; assertionResults?: Array<{ status?: string; fullName?: string; title?: string }> }> };
+  let parsed: { testResults?: Array<{ name?: string; status?: string; assertionResults?: Array<{ status?: string; fullName?: string; title?: string }> }> };
   try {
     parsed = JSON.parse(jsonText) as typeof parsed;
   } catch {
@@ -55,6 +55,11 @@ export function parseVitestOracleResults(jsonText: string): TestResult[] {
       } else {
         out.push({ name, passed: false, executed: false, ...fileIdentity });
       }
+    }
+    // Vitest's file status includes hook/setup errors that need not correspond
+    // to a failed assertion. Keep that gap even when the assertions passed.
+    if (file.status === 'failed' && !file.assertionResults.some((t) => t.status === 'failed')) {
+      out.push({ name: '', passed: false, executed: false, ...(file.name ? { file: file.name } : {}) });
     }
   }
   return out;

@@ -2058,7 +2058,7 @@ describe('hostThroughPty real round-trip', () => {
         // The real native transcript persists the whole user turn, including
         // both its origin marker (submit verification) and port checksum.
         // Echo the composer before CR so Codex's separate submit gate is exercised.
-        "process.stdin.on('data',d=>{b+=d;process.stdout.write(d);if(!wrote&&b.includes(process.env.PORT_MARKER)&&b.includes('\\r')){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;const content=b.slice(b.indexOf('⟦turn-origin:session-port'),b.indexOf(process.env.PORT_MARKER)+process.env.PORT_MARKER.length);const timestamp=new Date().toISOString();const row=process.env.PAPERCUSP_AGENT==='codex'?{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:content}]}}:process.env.PAPERCUSP_AGENT==='claude'?{type:'user',timestamp,message:{role:'user',content}}:{type:'message',role:'user',content,timestamp};fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify(row)+'\\n');process.stdout.write('ANSWER_OWNER:'+process.env.PAPERCUSP_SID+'\\nWORKING\\n');setTimeout(()=>{process.stdout.write('EXITING\\n');process.exit(0);},1200);}});",
+        "process.stdin.on('data',d=>{b+=d;process.stdout.write(d);if(wrote&&b.includes('EXIT_AFTER_RECEIPT')){process.stdout.write('EXITING\\n');process.exit(0);return;}if(!wrote&&b.includes(process.env.PORT_MARKER)&&b.includes('\\r')){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;const content=b.slice(b.indexOf('⟦turn-origin:session-port'),b.indexOf(process.env.PORT_MARKER)+process.env.PORT_MARKER.length);const timestamp=new Date().toISOString();const row=process.env.PAPERCUSP_AGENT==='codex'?{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:content}]}}:process.env.PAPERCUSP_AGENT==='claude'?{type:'user',timestamp,message:{role:'user',content}}:{type:'message',role:'user',content,timestamp};fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify(row)+'\\n');process.stdout.write('ANSWER_OWNER:'+process.env.PAPERCUSP_SID+'\\nWORKING\\n');}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
       try {
@@ -2106,6 +2106,9 @@ describe('hostThroughPty real round-trip', () => {
         });
         expect(readFileSync(nativeFile, 'utf8')).toContain('⟦turn-origin:session-port nonce:');
         expect(captured()).toContain(`ANSWER_OWNER:${ownerId}`);
+        // Drive the child exit after the parent proof, while the HTTP ack is
+        // still held, rather than racing transcript scanning with a timer.
+        await rawInject(socketPathFor(ownerId), 'EXIT_AFTER_RECEIPT\n');
         while (!captured().includes('EXITING') && Date.now() < deadline) await sleep(25);
         expect(captured()).toContain('EXITING');
         expect(await Promise.race([done.then(() => true), sleep(50).then(() => false)])).toBe(false);

@@ -24,19 +24,35 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * Remote handles are released before returning and never enter the report.
  * Missing, unsafe and uncaptured roots stay explicit; no getter or proxy runs.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
- * @param {{expectedPid: number, owners: string[]}} options
+ * Optional pgRequestIds bind the existing diagnostic WeakRefs to the SAME
+ * preceding snapshot. The reader does not force GC or take a snapshot. A
+ * dereference and remote handle temporarily keep a target alive; all handles
+ * are released before return. Collected/evicted/unobserved objects stay gaps.
+ * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[]}} options
  */
-export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners }: {
+export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners, pgRequestIds }: {
     expectedPid: number;
     owners: string[];
+    pgRequestIds?: string[];
 }): Promise<{
+    definition: string;
+    queries?: {
+        status: any;
+        matched: any;
+        omitted: any;
+        inspectedPools: any;
+        omittedPools: any;
+        omittedRows: any;
+        unobservedRequestIds: any;
+        records: any[];
+        definition: string;
+    } | undefined;
     pid: number;
     roots: {
         owner: string;
         status: string;
         id?: number;
     }[];
-    definition: string;
 }>;
 /**
  * Inspect logical payloads reachable from existing module-singleton roots.

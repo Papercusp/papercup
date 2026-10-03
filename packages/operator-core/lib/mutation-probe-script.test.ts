@@ -44,24 +44,31 @@ const ORIGINAL = 'alpha\nbeta\ngamma\n';
 
 let dir: string;
 let subject: string;
+let admissionBase: string;
+let previousAdmissionBase: string | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'mutation-probe-test-'));
   subject = join(dir, 'subject.txt');
   writeFileSync(subject, ORIGINAL);
+  previousAdmissionBase = process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  admissionBase = mkdtempSync(join(tmpdir(), 'mutation-probe-admission-test-'));
+  process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = admissionBase;
 });
 
 afterEach(() => {
-  // In-tree refusal cases intentionally leave their admission manifest in
-  // place. Each fixture has a unique temporary checkout root, so remove only
-  // that fixture's external admission directory after the child has exited.
-  if (dir && existsSync(dir)) {
-    const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
-    rmSync(admissionDir, { recursive: true, force: true });
-  }
+  // In-tree refusal cases intentionally leave their manifest in place. Each test
+  // has an isolated external admission base, removed after the child has exited.
+  if (admissionBase) rmSync(admissionBase, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
+  if (previousAdmissionBase === undefined) delete process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  else process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = previousAdmissionBase;
 });
+
+function admissionDirFor(root: string): string {
+  const key = createHash('sha256').update(root).digest('hex');
+  return join(admissionBase, 'papercusp-mutation-probe-' + process.getuid!() + '-' + key);
+}
 
 /** Run the probe to completion and return its exit code. */
 function runProbe(args: string[]): number {
@@ -1485,7 +1492,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
    */
   function restoredRecord(): string[] | null {
     const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const admissionDir = admissionDirFor(root);
     const record = join(admissionDir, 'restored', createHash('sha256').update(join(root, 'subject.txt')).digest('hex'));
     return existsSync(record) ? readFileSync(record, 'utf8').split('\0') : null;
   }
@@ -1494,7 +1501,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
 
   it('pins admitted original bytes if the snapshot pathname is unlinked before bwrap mounts it', () => {
     const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const admissionDir = admissionDirFor(root);
     const scratch = mkdtempSync(join(tmpdir(), 'mutation-probe.'));
     const snapshot = join(scratch, 'subject.txt.orig');
     const bin = join(dir, 'bin');
@@ -1552,7 +1559,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   }, 20_000);
   it('holds producer cleanup until an admitted child finishes its snapshot handoff', async () => {
     const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const admissionDir = admissionDirFor(root);
     const manifest = join(admissionDir, 'original.manifest');
     const mutantReady = join(dir, 'mutant-ready');
     const finishProducer = join(dir, 'finish-producer');
@@ -1656,7 +1663,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
 
   it('clears its admission snapshot when an in-tree no-op is refused before baseline', () => {
     const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const admissionDir = admissionDirFor(root);
     const manifest = join(admissionDir, 'original.manifest');
     const baselineStarted = join(dir, 'baseline-started');
     const { code, out } = runProbeIO(['--in-tree', ACCEPT_SWEEP, '--file', subject,
@@ -1724,8 +1731,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       try { process.kill(guardPid, 'SIGKILL'); } catch { /* the probe may have reaped it first */ }
 
       const root = realpathSync(dir);
-      const key = createHash('sha256').update(root).digest('hex');
-      const admissionDir = join('/tmp', 'papercusp-mutation-probe-' + process.getuid!() + '-' + key);
+      const admissionDir = admissionDirFor(root);
       const manifest = join(admissionDir, 'original.manifest');
       expect(existsSync(manifest)).toBe(true);
       const fields = readFileSync(manifest, 'utf8').split('\0');

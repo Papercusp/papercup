@@ -147,6 +147,12 @@ describe('createGymRunnerPorts', () => {
       .toEqual([{ name: '', file: 'broken.test.ts', passed: false, executed: false }]);
     expect(parseVitestOracleResults('null')).toEqual([]);
     expect(parseVitestOracleResults('not json')).toEqual([]);
+    expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ name: 'hook.test.ts', status: 'failed',
+      assertionResults: [{ fullName: 'passed before hook error', status: 'passed' }],
+    }] }))).toEqual([
+      { name: 'passed before hook error', file: 'hook.test.ts', passed: true },
+      { name: '', file: 'hook.test.ts', passed: false, executed: false },
+    ]);
   });
 
   it('cloneSubstrate runs git clone then checkout --detach at the pinned commit', async () => {

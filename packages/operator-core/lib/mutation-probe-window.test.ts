@@ -38,6 +38,26 @@ describe('mutation-probe window marker (EI-18750303030034478)', () => {
   afterEach(() => rmSync(scratch, { recursive: true, force: true }));
 
   const opts = () => ({ uid: 4242, tmpDir: scratch });
+
+  it('uses the shared admission-root override when resolving a marker', () => {
+    const previousAdmissionRoot = process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+    process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = join(scratch, 'admission-base');
+    try {
+      const admissionDir = mutationProbeAdmissionDir(checkout, { uid: 4242 });
+      mkdirSync(admissionDir, { recursive: true });
+      const manifestPath = join(admissionDir, 'original.manifest');
+      writeFileSync(
+        manifestPath,
+        ['checkout', 'subject', 'snapshot', String(process.pid)].map((field) => field + '\0').join(''),
+        'latin1',
+      );
+
+      expect(readMutationProbeWindow(checkout, { uid: 4242 })?.manifestPath).toBe(manifestPath);
+    } finally {
+      if (previousAdmissionRoot === undefined) delete process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+      else process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = previousAdmissionRoot;
+    }
+  });
   const publish = (fields: string[]) => {
     const dir = mutationProbeAdmissionDir(checkout, opts());
     mkdirSync(dir, { recursive: true });
@@ -283,7 +303,8 @@ describe('the marker contract is pinned to scripts/mutation-probe.sh (EI-1875030
 
   it('mirrors the admission-directory literal the script hard-codes', () => {
     expect(script).toContain('ADMISSION_KEY="$(printf \'%s\' "$ADMISSION_ROOT" | sha256sum | cut -d\' \' -f1)"');
-    expect(script).toContain('ADMISSION_DIR="/tmp/papercusp-mutation-probe-$(id -u)-$ADMISSION_KEY"');
+    expect(script).toContain('ADMISSION_BASE="${PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT:-/tmp}"');
+    expect(script).toContain('ADMISSION_DIR="$ADMISSION_BASE/papercusp-mutation-probe-$(id -u)-$ADMISSION_KEY"');
     expect(script).toContain('PROBE_MANIFEST="$ADMISSION_DIR/original.manifest"');
   });
 

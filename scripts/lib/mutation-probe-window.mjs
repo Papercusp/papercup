@@ -26,10 +26,13 @@ import { join, relative } from 'node:path';
  * The admission directory `mutation-probe.sh` uses for one physical checkout.
  *
  * @param {string} checkoutRoot git toplevel of the checkout (symlinks are resolved, as the script does)
- * @param {{ uid?: number, tmpDir?: string }} [options] `tmpDir` is `/tmp` because the script hard-codes it
+ * @param {{ uid?: number, tmpDir?: string }} [options] tmpDir defaults to PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT or /tmp, matching the shell writer
  * @returns {string}
  */
-export function mutationProbeAdmissionDir(checkoutRoot, { uid, tmpDir = '/tmp' } = {}) {
+export function mutationProbeAdmissionDir(checkoutRoot, {
+  uid,
+  tmpDir = process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT || '/tmp',
+} = {}) {
   const resolvedUid = uid ?? (typeof process.getuid === 'function' ? process.getuid() : 0);
   const key = createHash('sha256').update(realpathSync(checkoutRoot)).digest('hex');
   return join(tmpDir, `papercusp-mutation-probe-${resolvedUid}-${key}`);

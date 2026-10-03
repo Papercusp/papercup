@@ -207,7 +207,8 @@ describe('runGymPipeline', () => {
         pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
     expect(result.deterministicSignals).toMatchObject({ regressions: false, taskPassed: true,
       oracle: { sourceCurrent: true, populationComplete: true, sourceRef: 'WI-ORACLE',
-        pre: { results: [{ name: 'task', passed: false }] }, post: { results: [{ name: 'task', passed: true }] } } });
+        pre: { results: [{ name: 'task', passed: false }, { name: 'preserved', passed: true }] },
+        post: { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }] } } });
     expect(result.deterministicSignals).not.toHaveProperty('planted_bug_caught');
     expect(result.deterministicSignals).not.toHaveProperty('rollback');
   });
