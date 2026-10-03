@@ -133,4 +133,24 @@ describe("Persistent nonmodal Cloud Guide", () => {
     await act(async () => view.unmount()); trigger.remove();
     expect(document.querySelector(".react-joyride__overlay")).toBeNull();
   });
+  it.each(["automatic", "removed", "disabled", "nonfocusable"])("closes to Help when the %s entry cannot receive focus", async entry => {
+    const trigger = entry === "nonfocusable" ? document.createElement("div") : document.createElement("button");
+    if (entry !== "automatic") {
+      if (entry === "nonfocusable") trigger.tabIndex = 0;
+      document.body.append(trigger); trigger.focus();
+    }
+    const view = render(<Fixture />);
+    if (entry === "removed") trigger.remove();
+    if (entry === "disabled") (trigger as HTMLButtonElement).disabled = true;
+    if (entry === "nonfocusable") trigger.removeAttribute("tabindex");
+    const close = screen.getByRole("button", { name: "Close guide" }); close.focus(); fireEvent.click(close);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Help" })));
+    expect(screen.queryByRole("region", { name: "First agent guide" })).toBeNull();
+    expect(document.querySelector(".react-joyride__overlay")).toBeNull();
+    // The restored control is usable: keyboard activation reopens the lesson.
+    fireEvent.click(document.activeElement!);
+    fireEvent.click(screen.getByRole("button", { name: "Get your first agent running" }));
+    expect(screen.getByRole("region", { name: "First agent guide" })).toBeTruthy();
+    view.unmount(); trigger.remove();
+  });
 });
