@@ -408,7 +408,19 @@ type AwsStepInput =
   // Upgrade (WI-10005971): move the data volume off the stopped original instance.
   | { op: 'detach-data-volume'; volumeId: string; instanceId: string; hostId: string }
   // Upgrade rollback: put the data volume back on the original instance and start it.
-  | { op: 'reinstate-instance'; instanceId: string; volumeId: string; device: string; hostId: string }
+  | {
+      op: 'reinstate-instance';
+      instanceId: string;
+      volumeId: string;
+      device: string;
+      hostId: string;
+      /**
+       * WI-10005978: set on the rollback of an upgrade step that runs AFTER the replacement
+       * launched. The known replacement is terminated first (which releases the data volume),
+       * then the volume goes back onto the original and the original is started.
+       */
+      retireReplacement?: true;
+    }
   | {
       op: 'start-instance' | 'stop-instance' | 'reboot-instance' | 'repair-instance';
       instanceId: string;
@@ -654,6 +666,33 @@ function requireStepInstance(
     );
   }
   return distinct[0];
+}
+
+/**
+ * The registered replacement of an upgrade's original instance, or undefined when none was
+ * registered (the launch never recorded one). Two candidates are ambiguous, and a rollback that
+ * guessed could terminate the wrong instance, so that refuses.
+ */
+function findReplacementInstance(
+  resources: readonly WorkspaceHostResourceRef[],
+  originalInstanceId: string,
+): string | undefined {
+  const ids = [
+    ...new Set(
+      resources
+        .filter(
+          (candidate) =>
+            candidate.target === AWS_WORKSPACE_HOST_TARGET &&
+            candidate.kind === AWS_INSTANCE_RESOURCE_KIND &&
+            candidate.providerId !== originalInstanceId,
+        )
+        .map((candidate) => candidate.providerId),
+    ),
+  ];
+  if (ids.length > 1) {
+    throw new Error(`aws_workspace_host_reinstate_ambiguous_replacement: ${ids.join(', ')}`);
+  }
+  return ids[0];
 }
 
 /** Exactly one registered resource of a kind; an upgrade refuses an ambiguous host rather than guess. */
@@ -1089,6 +1128,22 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       attach: `attach-replacement-volume:${original}`,
       retire: `retire-runtime-instance:${original}`,
     };
+    // WI-10005978: a failure AFTER the replacement launched (attach or bootstrap) must not leave the
+    // original stopped with its data volume detached. Each post-launch step carries the same
+    // rollback as a failed launch, plus retiring the replacement first so the volume is free.
+    // lifecycle-runner strandedByFailure() only rolls back a step that depends on an applied
+    // destructive step, so the bootstrap step names the destructive detach among its dependencies.
+    const reinstateAfterLaunch = (stage: 'attach' | 'bootstrap') => ({
+      idempotencyKey: `${key}:reinstate-after-${stage}`,
+      input: {
+        op: 'reinstate-instance',
+        instanceId: original,
+        volumeId: volume.providerId,
+        device: settings.dataDeviceName,
+        hostId,
+        retireReplacement: true,
+      } satisfies AwsStepInput,
+    });
     return [
       {
         id: ids.quiesce,
@@ -1145,8 +1200,12 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           hostId,
           replacesInstanceId: original,
         } satisfies AwsStepInput,
+        rollback: reinstateAfterLaunch('attach'),
       },
-      hostBootstrapStep(ctx, 'upgrade', hostId, `${key}:host-bootstrap`, [ids.attach], original),
+      {
+        ...hostBootstrapStep(ctx, 'upgrade', hostId, `${key}:host-bootstrap`, [ids.detach, ids.attach], original),
+        rollback: reinstateAfterLaunch('bootstrap'),
+      },
       {
         id: ids.retire,
         action: 'upgrade',
@@ -1410,11 +1469,33 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         return this.applied(request, undefined, result.requestId);
       }
       case 'reinstate-instance': {
-        // Upgrade rollback: the replacement never launched, so the data volume goes back onto the
-        // original instance and the original is started again, booting the image it always ran.
-        const volume = await this.client.describeVolume(input.volumeId);
+        // Upgrade rollback: the data volume goes back onto the original instance and the original is
+        // started again, booting the image it always ran. After a launch (WI-10005978) the known
+        // replacement is terminated first; terminating it releases the volume, which is never set to
+        // delete on termination because it was attached after launch.
+        const replacement = input.retireReplacement
+          ? findReplacementInstance(request.knownResources, input.instanceId)
+          : undefined;
+        if (replacement !== undefined) {
+          const observed = await this.client.describeInstance(replacement);
+          if (!isInstanceAbsent(observed)) {
+            await this.cancelOpenSpotRequest(replacement);
+            await this.client.terminateInstances([replacement]);
+            await this.client.waitForInstanceState(replacement, 'terminated', ctx.signal);
+            if (!isInstanceAbsent(await this.client.describeInstance(replacement))) return this.inProgress(request);
+          }
+        }
+        let volume = await this.client.describeVolume(input.volumeId);
         if (!volume || isVolumeAbsent(volume)) {
           throw new Error(`aws_workspace_host_reinstate_data_volume_absent: ${input.volumeId}`);
+        }
+        if (replacement !== undefined && volume.attachedInstanceId === replacement) {
+          await this.client.waitForVolumeState(input.volumeId, 'available', ctx.signal);
+          volume = await this.client.describeVolume(input.volumeId);
+          if (!volume || isVolumeAbsent(volume)) {
+            throw new Error(`aws_workspace_host_reinstate_data_volume_absent: ${input.volumeId}`);
+          }
+          if (volume.attachedInstanceId === replacement) return this.inProgress(request);
         }
         if (volume.attachedInstanceId !== input.instanceId) {
           if (volume.attachedInstanceId) {

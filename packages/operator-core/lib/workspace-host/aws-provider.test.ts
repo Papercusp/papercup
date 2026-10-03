@@ -242,7 +242,8 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
       return deleted;
     }
     if (!current) return undefined;
-    const observed = { ...current, state };
+    // EC2: an 'available' volume has no attachment (terminating its instance releases it).
+    const observed = state === 'available' ? { ...current, state, attachedInstanceId: undefined } : { ...current, state };
     this.volumes.set(volumeId, observed);
     return observed;
   }
