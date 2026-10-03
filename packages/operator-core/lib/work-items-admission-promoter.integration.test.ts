@@ -14,6 +14,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+// Exercise the actual routine action against this file's disposable PG; registering it
+// must not start the host's routine engine or announce fixtures to live agents.
+vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
+vi.mock('./work-items-events', () => ({ emitWorkItemClaimableEvent: vi.fn() }));
 vi.mock('./work-scope-policy', async (orig) => {
   const actual = await orig<typeof import('./work-scope-policy')>();
   return {
@@ -2951,6 +2955,57 @@ describe('review-debt policy (P-007): moot terminal reviews and the no-model pas
          SET detail = jsonb_set(detail, '{mode}', '"promoter"')
        WHERE id = 'promoter-no-model-liveness'`;
     expect(await readPromoterLiveness(db.sql, WS, HARNESS, nowMs, 90)).toMatchObject({ stale: false });
+  });
+
+  it('production fail-open wiring promotes without model spend while the model routine is paused', async () => {
+    const { makeWorkItemAdmissionFailOpenAction } =
+      await import('./harness/routines/work-item-admission-promoter-action');
+    const nowMs = Date.now();
+    await db.sql`
+      INSERT INTO harness_shared.routines (id, install_slug, workspace_id, name, active, created_at)
+      VALUES ('rt-spend-paused', ${HARNESS}, ${WS}, ${WORK_ITEM_ADMISSION_PROMOTER}, true,
+              to_timestamp(${nowMs - 4 * 60 * 60_000} / 1000.0))`;
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, finished_at, detail)
+      VALUES ('recent-model-success', ${WS}, ${HARNESS}, 'promoter-tick', clock_timestamp(),
+              '{"mode":"promoter","status":"complete"}'::jsonb)`;
+    await seedItem({ id: 'WI-pause-solo', title: 'a uniquely worded standalone finding', vector: null, createdAtMs: nowMs - 10_000 });
+    await seedItem({ id: 'WI-pause-twin-pending', createdAtMs: nowMs - 20_000 });
+    await seedItem({ id: 'WI-pause-twin-unreviewed', admission: 'unreviewed', payload: PENDING_REVIEW, createdAtMs: nowMs - 19_000 });
+    const log = vi.fn();
+    const action = makeWorkItemAdmissionFailOpenAction({
+      // Only outward notifications are replaced: liveness, both admission paths,
+      // the no-model callback's throw-on-model guard, and reaping remain production code.
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    });
+    const ctx = { installSlug: HARNESS, workspaceId: WS, triggerConfig: {}, payloadTemplate: null };
+
+    await action(ctx);
+    expect(log.mock.calls.at(-1)![0]).toContain('no-model=skipped(promoter live)');
+    expect((await reviewRow('WI-pause-solo')).admission).toBe('pending');
+    expect(await db.sql`SELECT id FROM harness_shared.admission_runs WHERE detail->>'mode' = 'promoter-no-model'`).toHaveLength(0);
+
+    // The private routine's spend pause is the only changed input. No fleet policy,
+    // shared routine, live ledger, credentials or model transport is touched.
+    await db.sql`UPDATE harness_shared.routines SET active = false WHERE id = 'rt-spend-paused'`;
+    await action(ctx);
+    expect(log.mock.calls.at(-1)![0]).toMatch(/no-model run=.* promoted=1 merged=0 deferred-to-model=2/);
+    expect(log.mock.calls.at(-1)![0]).toContain('reaped-stranded=0');
+    expect((await reviewRow('WI-pause-solo')).admission).toBe('admitted');
+    expect(await reviewRow('WI-pause-twin-pending')).toMatchObject({ admission: 'pending', payload: {} });
+    expect((await reviewRow('WI-pause-twin-unreviewed')).payload.admissionReview).toEqual(PENDING_REVIEW.admissionReview);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    const [ledger] = await db.sql`
+      SELECT run_kind, model_id, tokens_in::text, tokens_out::text, detail
+        FROM harness_shared.admission_runs WHERE detail->>'mode' = 'promoter-no-model'`;
+    expect(ledger).toMatchObject({
+      run_kind: 'promoter-tick', model_id: null, tokens_in: '0', tokens_out: '0',
+      detail: { status: 'complete', mode: 'promoter-no-model', deferredToModel: 2, modelCostUsd: 0 },
+    });
+    expect(await readPromoterLiveness(db.sql, WS, HARNESS, Date.now(), 90)).toMatchObject({ stale: true, active: false });
   });
 
   it('orders the no-model window: candidate-free pending rows first, unreviewed rows last', async () => {
