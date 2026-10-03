@@ -345,6 +345,44 @@ export function buildIdentityMismatch(
   return existing.version !== mine.version;
 }
 
+/** The version a non-release build (dev tree, rig compose) reports: build-info's
+ *  fallback when no PAPERCUSP_BUILD_VERSION / baked version is present. */
+const DEV_BUILD_VERSION = "0.0.0";
+
+function releaseTriple(v: string): [number, number, number] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/**
+ * (WI-10005958) True when the build-mismatched operator already running is
+ * NEWER than the one launching, so replacing it would be a DOWNGRADE over data
+ * a newer build may already have migrated. EI-9002's guard used to treat every
+ * mismatch as "stale": an installed 0.0.26 app on the Mac test VM killed a rig
+ * sidecar composed from current staging, and the old build's sweeps then
+ * rewrote federated rows the newer build had fixed.
+ *
+ * - A dev launcher (0.0.0) may always replace — dev builds carry no order.
+ * - A release launcher never replaces a running dev/rig compose.
+ * - Release vs release: newer only when the running major.minor.patch is
+ *   strictly greater (a pre-release suffix is ignored, so equal triples keep
+ *   the EI-9002 replace behaviour).
+ */
+export function runningOperatorIsNewer(
+  existing: Pick<OperatorDiscovery, "version">,
+  mine: { version: string },
+): boolean {
+  if (mine.version === DEV_BUILD_VERSION) return false;
+  if (existing.version === DEV_BUILD_VERSION) return true;
+  const running = releaseTriple(existing.version);
+  const launching = releaseTriple(mine.version);
+  if (!running || !launching) return false;
+  for (let i = 0; i < 3; i++) {
+    if (running[i] !== launching[i]) return running[i] > launching[i];
+  }
+  return false;
+}
+
 /** Poll until `pid` is gone, or `ms` elapses. True when it exited. */
 async function waitForExit(pid: number, ms: number): Promise<boolean> {
   const deadline = Date.now() + ms;
@@ -401,6 +439,7 @@ export async function reconcileEnsure(
     sha: BUILD_SHA,
     version: VERSION,
   },
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<OperatorDiscovery | null> {
   const existing = readOperatorDiscovery();
   if (
@@ -414,6 +453,21 @@ export async function reconcileEnsure(
       `already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`,
     );
     return existing;
+  }
+  // WI-10005958: a mismatch is only "stale" when the running build is not
+  // newer. Refusing loudly (main exits 1) beats a silent downgrade; neither
+  // adopting it nor cold-starting beside it is safe.
+  if (
+    runningOperatorIsNewer(existing, mine) &&
+    env.PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE !== "1"
+  ) {
+    throw new Error(
+      `refusing to replace pid ${existing.pid} at ${existing.httpUrl}: it runs a NEWER build ` +
+        `(running sha=${existing.sha ?? "unknown"} version=${existing.version}, ` +
+        `mine sha=${mine.sha ?? "unknown"} version=${mine.version}). Replacing it would ` +
+        `downgrade the operator over data a newer build may have migrated (WI-10005958). ` +
+        `Stop that operator deliberately, or set PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE=1.`,
+    );
   }
   log(
     `refusing to adopt pid ${existing.pid} at ${existing.httpUrl}: build mismatch ` +

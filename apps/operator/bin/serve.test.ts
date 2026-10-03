@@ -641,6 +641,35 @@ describe("buildIdentityMismatch (EI-9002)", () => {
   });
 });
 
+describe("runningOperatorIsNewer (WI-10005958)", () => {
+  const newer = (running: string, mine: string) =>
+    serve.runningOperatorIsNewer({ version: running }, { version: mine });
+
+  it("a release launcher never replaces a running dev/rig compose", () => {
+    // The measured case: installed 0.0.26 vs a rig sidecar reporting 0.0.0.
+    expect(newer("0.0.0", "0.0.26")).toBe(true);
+  });
+
+  it("a dev launcher may always replace, whatever is running", () => {
+    expect(newer("0.0.26", "0.0.0")).toBe(false);
+    expect(newer("0.0.0", "0.0.0")).toBe(false);
+  });
+
+  it("release vs release: only a strictly greater running version is newer", () => {
+    expect(newer("0.0.27", "0.0.26")).toBe(true);
+    expect(newer("0.1.0", "0.0.99")).toBe(true);
+    expect(newer("0.0.25", "0.0.26")).toBe(false);
+    // Equal triples (a sha-only mismatch, or a pre-release suffix) keep the
+    // EI-9002 replace behaviour.
+    expect(newer("0.0.26", "0.0.26")).toBe(false);
+    expect(newer("0.0.24-alpha", "0.0.24")).toBe(false);
+  });
+
+  it("an unparseable version is never treated as newer", () => {
+    expect(newer("unknown", "0.0.26")).toBe(false);
+  });
+});
+
 describe("terminateForeignOperator (EI-9002)", () => {
   it("is a no-op (never throws) for an already-dead pid", async () => {
     await expect(
@@ -1384,6 +1413,35 @@ describe("--ensure reconciliation frees the sticky port before it is resolved (E
           PAPERCUSP_DESKTOP: "1",
         }),
       ).toBe(op.port);
+    } finally {
+      op.kill();
+    }
+  });
+
+  it("refuses to replace a NEWER running operator and leaves it alive (WI-10005958)", async () => {
+    const op = await spawnFakeOperator();
+    try {
+      writeDiscovery(op.pid, op.port, { version: "0.0.0", sha: "rig-sha" });
+      await expect(
+        serve.reconcileEnsure({ sha: "installed-sha", version: "0.0.26" }, {}),
+      ).rejects.toThrow(/NEWER build[\s\S]*PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE/);
+      expect(serve.pidAlive(op.pid)).toBe(true);
+    } finally {
+      op.kill();
+    }
+  });
+
+  it("PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE=1 restores the EI-9002 replace for a newer operator", async () => {
+    const op = await spawnFakeOperator();
+    try {
+      writeDiscovery(op.pid, op.port, { version: "0.0.0", sha: "rig-sha" });
+      expect(
+        await serve.reconcileEnsure(
+          { sha: "installed-sha", version: "0.0.26" },
+          { PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE: "1" },
+        ),
+      ).toBeNull();
+      expect(serve.pidAlive(op.pid)).toBe(false);
     } finally {
       op.kill();
     }
