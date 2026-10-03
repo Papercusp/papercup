@@ -27,7 +27,7 @@ function fixture(options: { secondPage?: boolean; missing?: string; body?: strin
     if (endpoint.includes('/contents?')) return { headers: {}, body: options.missing && endpoint.includes(`/${options.missing}/`) ? [] : [{ name: 'LICENSE', path: 'LICENSE', type: 'file', sha: actualBlob }] };
     return { headers: {}, body: { encoding: 'base64', content: Buffer.from(actualText).toString('base64'), sha: options.blobMismatch ? 'b'.repeat(40) : actualBlob } };
   };
-  return { api, calls, licenseHashes: { [sha256]: 'Apache-2.0' } };
+  return { api, calls, licenseHashes: { [sha256]: 'Apache-2.0' }, libraryRepositories: ['Papercusp/one', 'Papercusp/two'] };
 }
 
 describe('public repository licensing census', () => {
@@ -76,6 +76,14 @@ describe('public repository licensing census', () => {
     const result = await auditPublicRepositoryLicenses(fixture({ name: 'goals' }));
     expect(result.exitCode).toBe(1);
     expect(result.rows[0].errors).toEqual(['D-011/D-023 require ELv2: LICENSE']);
+  });
+
+  it('preserves the declared permissive library policy even when the new text is a recognized product license', async () => {
+    const fx = fixture();
+    fx.licenseHashes[sha256] = 'ELv2';
+    const result = await auditPublicRepositoryLicenses(fx);
+    expect(result.exitCode).toBe(1);
+    expect(result.rows[0].errors).toEqual(['D-003 requires a permissive library license: LICENSE']);
   });
 
   it('refuses a population/default-branch change during the observation', async () => {
