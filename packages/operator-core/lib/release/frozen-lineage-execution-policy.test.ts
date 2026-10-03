@@ -606,6 +606,7 @@ describe('frozen lineage carry policy', () => {
     'Blob compare b72f26b6 vs staging: test file DIFF only for apps/operator-vite/dist-atomic-writes.test.ts.',
     'Test-file blobs at repairHead b72f26b6 differ from the working tree only for apps/operator-vite/dist-atomic-writes.test.ts.',
     'On the judged lineage, only these red test files have since been edited: apps/operator-vite/dist-atomic-writes.test.ts.',
+    'Worktree remains on staging while the unrelated local check is investigated.',
   ])('allows descriptive checkpoint forensics without selecting a moving candidate: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
@@ -615,6 +616,10 @@ describe('frozen lineage carry policy', () => {
       'READING: the green pin lacks my fix ONLY because it IS the frozen lineage, 88 commits behind staging';
 
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
+  });
+
+  it('allows a plain worktree branch-status note without selecting that branch as the judged candidate', () => {
+    expect(detectUnsafeFrozenCarryInstruction('Worktree remains on staging.')).toBeNull();
   });
 
   it('allows verified descriptive prose that says the fixes are on staging', () => {
