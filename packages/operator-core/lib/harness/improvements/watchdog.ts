@@ -337,9 +337,11 @@ export interface WatchdogSignal {
      * (WI-10929) Did ONE sha both pass and fail in the window? If so the commit
      * does not determine this test's verdict, so the redness is not attributable
      * to code and bisecting it is wasted work. Computed by
-     * `hasSameShaVerdictFlip` — see it for why this is kept rather than dropped.
+     * `findSameShaVerdictFlipSha` — see it for why this is kept rather than dropped.
      */
     sameShaFlip?: boolean;
+    /** A SHA present in both the pass and fail sets, when `sameShaFlip` is true. */
+    sameShaFlipSha?: string;
   };
   /**
    * Resolution cooldown (ms). When set, a signal whose key matches only RESOLVED
@@ -1042,7 +1044,8 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
     const passShas = countFailShas([...(r.pass_shas ?? []), r.last_pass_sha ?? null]).map(
       ([sha]) => sha,
     );
-    const sameShaFlip = hasSameShaVerdictFlip(failShas, passShas);
+    const sameShaFlipSha = findSameShaVerdictFlipSha(failShas, passShas);
+    const sameShaFlip = sameShaFlipSha !== undefined;
     const latestFailAt = toIsoOrUndefined(r.latest_fail_at);
     return {
       source: 'red-test' as const,
@@ -1051,7 +1054,7 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       body:
         `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
         `${windowHours}h and its latest run is still red.\n` +
-        renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt, sameShaFlip) +
+        renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt, sameShaFlipSha) +
         `\nFailure tail AS OF ${latestFailAt ?? 'the latest recorded failing run'} — the specific failing assertion may have changed; re-run this file before acting on the assertion below.\n` +
         `${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
       severity: 'major' as const,
@@ -1064,6 +1067,7 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
         ...(lastPassSha ? { lastPassSha } : {}),
         ...(lastPassAt ? { lastPassAt } : {}),
         ...(sameShaFlip ? { sameShaFlip } : {}),
+        ...(sameShaFlipSha ? { sameShaFlipSha } : {}),
       },
     };
   });
@@ -1113,9 +1117,18 @@ export function hasSameShaVerdictFlip(
   failShas: readonly string[],
   passShas: readonly string[] | string | undefined,
 ): boolean {
-  if (!passShas) return false;
+  return findSameShaVerdictFlipSha(failShas, passShas) !== undefined;
+}
+
+/** Return the first failing SHA also present in the pass set, if any. */
+export function findSameShaVerdictFlipSha(
+  failShas: readonly string[],
+  passShas: readonly string[] | string | undefined,
+): string | undefined {
+  if (!passShas) return undefined;
   const passes = typeof passShas === 'string' ? [passShas] : passShas;
-  return failShas.some((sha) => passes.includes(sha));
+  const passSet = new Set(passes);
+  return failShas.find((sha) => passSet.has(sha));
 }
 
 /**
@@ -1138,7 +1151,7 @@ function renderRedTestCommitContext(
   failShaCounts: Array<[string, number]>,
   lastPassSha: string | undefined,
   lastPassAt: string | undefined,
-  sameShaFlip: boolean,
+  sameShaFlipSha: string | undefined,
 ): string {
   const lines: string[] = [];
   if (failShaCounts.length > 0) {
@@ -1150,11 +1163,16 @@ function renderRedTestCommitContext(
           ` — these may be DIFFERENT causes, or runs against an already-superseded tree.`,
     );
   }
-  if (sameShaFlip && lastPassSha) {
+  if (sameShaFlipSha) {
+    if (lastPassSha || lastPassAt) {
+      lines.push(
+        `Last PASS in window: ${lastPassAt ?? 'unknown time'}` +
+          `${lastPassSha ? ` (${lastPassSha.slice(0, 10)})` : ''}` +
+          `${lastPassSha === sameShaFlipSha ? ' — SAME SHA as a failing run.' : ''}`,
+      );
+    }
     lines.push(
-      `Last PASS in window: ${lastPassAt ?? 'unknown time'} (${lastPassSha.slice(0, 10)})` +
-        ` — SAME SHA as a failing run.`,
-      `⚠ SAME-SHA VERDICT FLIP: ${lastPassSha.slice(0, 10)} both PASSED and FAILED here, so this commit` +
+      `⚠ SAME-SHA VERDICT FLIP: ${sameShaFlipSha.slice(0, 10)} both PASSED and FAILED here, so this commit` +
         ` does NOT determine the verdict and the redness is not attributable to code at that sha.` +
         ` DO NOT BISECT. Triage the two causes that survive: (1) the test reads state outside the` +
         ` commit — most often the WORKING TREE (a readdir/glob/file-scan census), which flips on a` +
