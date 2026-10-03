@@ -2566,7 +2566,7 @@ describe('runGoalHolderRespawnOnce — boot deaths on the account route never sp
         pacing: 0,
         unknown: 0,
         atCapacity: false,
-        binding: null,
+        binding: 'none',
         reason: '2 of 2 can serve',
       },
     };
