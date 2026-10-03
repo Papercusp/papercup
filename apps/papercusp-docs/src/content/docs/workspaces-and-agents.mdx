@@ -1,6 +1,9 @@
 ---
 title: Workspaces and agents
 description: Know where your work runs and how to direct, follow and verify an agent session.
+documents:
+  - packages/operator-core/lib/agent-tools/plans/start.ts
+  - packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts
 ---
 
 ## Workspace, project, session
@@ -29,6 +32,11 @@ Give an agent a goal and acceptance conditions, for example:
 Ask for the plan to record dependencies, decisions and verification. A
 conversation is useful context; a maintained plan and work-item ledger are
 the durable record of a multi-step task.
+
+Use [Plans and work](/docs/plans-and-work) to follow dependencies and formal
+acceptance. For coordinated workers, use
+[Agent modes and fleets](/docs/agent-modes-and-fleets) rather than launching
+unrelated sessions on the same files.
 
 ## Approval, AUTO and stopping
 

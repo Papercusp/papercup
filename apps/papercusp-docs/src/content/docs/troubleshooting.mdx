@@ -1,6 +1,10 @@
 ---
 title: Troubleshooting
 description: Resolve portal sign-in, workspace, agent-session and documentation problems safely.
+documents:
+  - packages/operator-core/lib/auth/hosted/self-signup.ts
+  - packages/operator-core/lib/agent-tools/mode/get.ts
+  - packages/operator-core/lib/public-docs.ts
 ---
 
 ## Sign-in returns to the welcome screen
@@ -20,9 +24,14 @@ Confirm you selected the right workspace. For a local computer, check that it
 is awake, Papercusp is running and the connection setup is complete. For a
 cloud machine, inspect provisioning/connection status and any provider error.
 
-The browser cannot repair a machine simply by switching tabs. A unavailable
+The browser cannot repair a machine simply by switching tabs. An unavailable
 workspace is not an empty project, so do not recreate or delete the project to
 make an error disappear.
+
+For provider-specific setup and stack completion, use
+[Cloud workspaces](/docs/cloud-workspaces). For a pending subscription or
+account/organization mismatch, use
+[Accounts and billing](/docs/accounts-and-billing).
 
 ## An agent seems stopped
 
@@ -33,6 +42,9 @@ Ask it to state the next concrete action and what is blocking it.
 If you authorized ongoing work, ask whether its continuation mechanism is
 registered and reachable. Do not assume AUTO alone schedules new turns.
 Avoid launching competing sessions on the same task.
+
+Check the registered mode, execution route and named stop condition using
+[Agent modes and fleets](/docs/agent-modes-and-fleets).
 
 ## “Done” does not match what you see
 
@@ -52,6 +64,11 @@ fails, try a concrete topic such as “workspace” or “snapshot” and record
 whether the search dialog opens, results appear, and a result opens correctly.
 Report broken links/assets rather than treating a generic portal page as
 successful documentation.
+
+If instructions look outdated, include the article path, the step that no
+longer matches, and the actual UI label or behavior you observed. Distinguish
+an old served page from a wrong instruction in the maintained source. Do not
+include private project docs in a public report.
 
 ## Before restoring or deleting
 

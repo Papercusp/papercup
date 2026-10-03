@@ -1,13 +1,23 @@
 ---
 title: Using the app
 description: Sign in, choose a workspace, give an agent a first task and review its result.
+documents:
+  - packages/operator-core/lib/auth/hosted/self-signup.ts
+  - packages/operator-core/lib/agent-tools/mode/set.ts
 ---
 
 ## 1. Open Papercusp
 
+For a single end-to-end checklist, start with
+[Your first successful task](/docs/quickstart).
+
 Open the [Papercusp portal](https://app.papercusp.com/). Choose **Create account**
 if you are new, or **Sign in** if you already have an account. Complete the
 sign-in flow and return to the portal.
+
+For a new account, review the terms and privacy notice. Use the same identity
+when signing in again. Account access, integration connections and billing
+are separate; see [Accounts and billing](/docs/accounts-and-billing).
 
 Connecting Gmail or Calendar is optional app setup, not a substitute for your
 Papercusp sign-in. You do not need a Google connection to read this manual.
@@ -59,6 +69,10 @@ Approve only the intended scope. If you explicitly enable **AUTO**, the agent
 may proceed within that scope without asking at each step. AUTO is not a
 promise that every tool is available, and it does not remove permissions,
 security boundaries or verification requirements.
+
+Read [Plans and work](/docs/plans-and-work) for plan lifecycle and acceptance,
+and [Agent modes and fleets](/docs/agent-modes-and-fleets) before choosing
+parallel workers or unattended continuation.
 
 Ask for a pause or stop when you need to reconsider. Do not assume closing a
 browser tab cancels an agent running on another machine.

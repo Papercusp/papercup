@@ -1,6 +1,10 @@
 ---
 title: Snapshots and backups
 description: Understand workspace backups, project snapshots and safe recovery before changing data.
+documents:
+  - packages/operator-core/lib/agent-tools/backup/snapshot_create.ts
+  - packages/operator-core/lib/agent-tools/backup/restore.ts
+  - packages/operator-core/lib/agent-tools/backup/restore-clone.ts
 ---
 
 A snapshot records state at a point in time. Before relying on one, establish
@@ -49,6 +53,18 @@ use it to test recovery first.
 After restoring, inspect the project's actual state and run its normal
 verification. Do not assume a successful restore receipt means the app's
 behavior is correct.
+
+## Practice recovery before an emergency
+
+Ask which paths and databases are included, which are excluded, and where the
+backup is stored. Compare its completion time with the latest work that must
+be protected. An old successful backup is not proof that today's changes are
+safe.
+
+Where a clone restore is supported, restore into the separate destination,
+inspect representative files and records, and run the project's normal
+checks. Record that observed recovery result before replacing the live
+workspace. Do not test a restore by overwriting production without approval.
 
 ## Sharing is a separate decision
 

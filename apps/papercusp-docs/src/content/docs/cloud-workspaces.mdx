@@ -1,6 +1,10 @@
 ---
 title: Cloud workspaces
 description: Run workspace hosts on Papercusp Cloud or in your own Google Cloud project or AWS account, with only the access they need.
+documents:
+  - packages/operator-core/lib/workspace-host/hosted-provider-delegation.ts
+  - packages/operator-core/lib/workspace-host/aws-customer-setup-template.ts
+  - packages/operator-core/lib/workspace-host/aws-connection.ts
 ---
 
 A cloud workspace runs your agents on a workspace host: a virtual machine that
@@ -15,6 +19,19 @@ keeps working while your computer is off. You choose where that machine runs.
 You can connect your own cloud from [app.papercusp.com](https://app.papercusp.com)
 or from the desktop app. Both use the same least-privilege permission set; they
 differ in who holds the credentials.
+
+## Before creating a host
+
+Sign in to the intended account and organization. Check the available hosting
+choices, region, configuration and any limits shown by the portal.
+For your own cloud, confirm that you can create the required provider identity
+and resources. Do not paste cloud credentials into an agent conversation.
+
+Creating a workspace is not the same as connecting to a ready host.
+Wait for provisioning and connection to complete before starting a task.
+Keep a failed host's status and provider error for diagnosis instead of
+creating duplicates. Billing and access are separate from provisioning:
+see [Accounts and billing](/docs/accounts-and-billing).
 
 ## Connect your own Google Cloud project
 
@@ -113,3 +130,21 @@ The exact action list is in the template; review it before you create the stack.
   binding and the custom role.
 
 Once access is removed, Papercusp can no longer reach that account or project.
+
+## Stop, delete and recover deliberately
+
+Read the lifecycle action offered for the selected host before confirming it.
+Stopping, restarting and deleting are different operations. Stopping a host
+does not necessarily remove disks, snapshots, networking or provider charges.
+This guide does not promise that stopped resources are free.
+
+Before deleting a host, preserve the source and data you need and identify a
+completed backup and restore route. Provider permissions or a cloud snapshot
+alone do not prove that the workspace database can be recovered.
+See [Snapshots and backups](/docs/harness-snapshots).
+
+If setup fails, record the provider, region, stage and exact non-secret error.
+For AWS, check the stack's events and completion state before trying the
+workspace creation again. For Google Cloud, check that the intended project
+and service-account binding match the displayed setup. Do not broaden
+permissions to administrator simply to suppress an error.
