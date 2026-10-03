@@ -79,6 +79,8 @@ export interface RunBatteryConfig<TCell> {
   rubric: BatteryRubric;
   /** Distilled-trace cap handed to the subject's `collectAndDistill`. */
   maxDistillChars: number;
+  /** Governed callers stop new judge attempts/cells if a charge cannot be measured. */
+  stopOnUnmeasuredJudgeCost?: boolean;
 }
 
 export interface RunBatteryDeps<TCell, THandle, TSignals, TMetrics> {
@@ -113,6 +115,9 @@ export async function runBattery<TCell, THandle, TSignals = unknown, TMetrics = 
       else judgeCostMeasured = false;
     };
     const measuredJudge: JudgeLlmCall = async (opts) => {
+      if (config.stopOnUnmeasuredJudgeCost && !judgeCostMeasured) {
+        throw new Error('judge spend is unmeasured — further judge attempts refused');
+      }
       let reply;
       try {
         reply = await deps.llmCall(opts);
@@ -147,6 +152,9 @@ export async function runBattery<TCell, THandle, TSignals = unknown, TMetrics = 
       // A rate-pause can restart judgement after an earlier paid reply. Its
       // successful score alone accounts only for the final judgement attempt.
       score.costUsd = judgeCostUsd;
+      if (config.stopOnUnmeasuredJudgeCost && !judgeCostMeasured) {
+        throw new Error('judge spend is unmeasured — scoring and further cells refused');
+      }
       await deps.hooks?.onScore?.({ runId, cell, score, metrics });
 
       results.push({ runId, cell, handle, score, metrics, status: 'scored', elapsedMs, judgeCostUsd, judgeCostMeasured });
@@ -157,6 +165,7 @@ export async function runBattery<TCell, THandle, TSignals = unknown, TMetrics = 
       const message = err instanceof Error ? err.message : String(err);
       results.push({ runId, cell, handle, status, error: message, elapsedMs: Math.max(0, deps.now() - started), judgeCostUsd, judgeCostMeasured });
     }
+    if (config.stopOnUnmeasuredJudgeCost && !judgeCostMeasured) break;
   }
   return results;
 }

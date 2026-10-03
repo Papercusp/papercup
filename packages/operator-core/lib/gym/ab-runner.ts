@@ -140,6 +140,8 @@ export interface AbRunOutcome {
   composite: number;
   pipelineUsd: number;
   judgeUsd: number;
+  /** False means judgeUsd is only the known lower bound. */
+  judgeCostMeasured?: boolean;
   /**
    * RB-006: disposition of this run's EVALUATION. `'scored'` (default/absent) = judged
    * normally; `'rate_limited'` = the judge turn stayed rate-limited past our bounded pause, so
@@ -163,7 +165,7 @@ export interface AbResult {
   outcomes: AbRunOutcome[];
   /** Per-(variant,task) judge-composite variance + the derived ε/δ/min-repeats (D-013). */
   perTaskVariance: PerTaskVariance[];
-  cost: { totalUsd: number; meanRunUsd: number; perVariant: Record<string, number> };
+  cost: { totalUsd: number; meanRunUsd: number; perVariant: Record<string, number>; costMeasured?: boolean };
   /** A-vs-B per-task composite + signed delta (variant[0] = A/baseline, variant[1] = B). */
   comparison: VariantComparisonRow[];
   rubricHash: string;
@@ -208,7 +210,7 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
   }
 
   const results = await runBattery<AbRunInput, AbRunHandle>(
-    { cells, rubric: config.rubric, maxDistillChars: config.maxDistillChars },
+    { cells, rubric: config.rubric, maxDistillChars: config.maxDistillChars, stopOnUnmeasuredJudgeCost: true },
     {
       subject,
       llmCall: deps.llmCall,
@@ -240,7 +242,7 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
   // Map the engine's per-cell results → the gym's AbRunOutcome shape. A non-'scored'
   // cell (rate_limited / errored) carries no real composite (zeros) + its error.
   const outcomes: AbRunOutcome[] = results.map((r) => {
-    const base = { variantId: r.cell.variant.variantId, taskId: r.cell.task.taskId, repeat: r.cell.repeat, runId: r.runId };
+    const base = { variantId: r.cell.variant.variantId, taskId: r.cell.task.taskId, repeat: r.cell.repeat, runId: r.runId, judgeCostMeasured: r.judgeCostMeasured };
     if (r.status === 'scored' && r.score) {
       return {
         ...base,
@@ -251,7 +253,7 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
         d3: r.score.d3,
         composite: r.score.composite,
         pipelineUsd: r.handle!.pipelineUsd,
-        judgeUsd: r.score.costUsd,
+        judgeUsd: r.judgeCostUsd,
         status: 'scored' as const,
       };
     }
@@ -264,7 +266,7 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
       d3: 0,
       composite: 0,
       pipelineUsd: r.handle?.pipelineUsd ?? 0,
-      judgeUsd: 0,
+      judgeUsd: r.judgeCostUsd,
       status: r.status,
       error: r.error,
     };
@@ -294,12 +296,13 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
   // 3. A-vs-B comparison (variant[0] = A/baseline, variant[1] = B/candidate when present).
   const a = config.variants[0]?.variantId;
   const b = config.variants[1]?.variantId ?? a;
-  const comparison = a ? await deps.store.comparison(a, b, rh) : [];
+  const costMeasured = results.every((r) => r.judgeCostMeasured);
+  const comparison = a && costMeasured ? await deps.store.comparison(a, b, rh) : [];
 
   return {
     outcomes,
     perTaskVariance,
-    cost: { totalUsd, meanRunUsd: meanRunCostUsd(runCosts), perVariant },
+    cost: { totalUsd, meanRunUsd: meanRunCostUsd(runCosts), perVariant, costMeasured },
     comparison,
     rubricHash: rh,
   };

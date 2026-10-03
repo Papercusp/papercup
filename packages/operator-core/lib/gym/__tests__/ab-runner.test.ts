@@ -97,6 +97,40 @@ function makeDeps(opts: { store: AbStore; composites: number[]; pipelineUsd?: nu
 }
 
 describe('runAbEvaluation', () => {
+  it('stops the next paid run and withholds comparison when a repair charge is unknown', async () => {
+    const { store, scores } = makeStore();
+    const { deps, calls } = makeDeps({ store, composites: [8], pipelineUsd: 0.4 });
+    let judgeCalls = 0;
+    deps.llmCall = async () => {
+      if (++judgeCalls === 2) throw new Error('charge unavailable');
+      return { text: 'invalid judge output', costUsd: 0.02, inputTokens: 10, outputTokens: 5 };
+    };
+    const result = await runAbEvaluation(oneVariant({ repeats: 2 }), deps);
+    expect(result.outcomes).toHaveLength(1);
+    expect(result.outcomes[0]).toMatchObject({ judgeUsd: 0.02, judgeCostMeasured: false, status: 'errored' });
+    expect(result.cost.costMeasured).toBe(false);
+    expect(result.cost.totalUsd).toBeCloseTo(0.42);
+    expect(result.comparison).toEqual([]);
+    expect(calls.pipeline).toBe(1);
+    expect(scores.size).toBe(0);
+  });
+
+  it('includes paid failed-judge repairs in the run, variant and total cost', async () => {
+    const { store, scores } = makeStore();
+    const { deps } = makeDeps({ store, composites: [8], pipelineUsd: 0.4 });
+    let calls = 0;
+    deps.llmCall = async () => ({
+      text: ++calls <= 2 ? 'invalid judge output' : JSON.stringify({ d1: 8, d2: 8, d3: 8, rationale: 'ok' }),
+      costUsd: calls <= 2 ? 0.02 : 0.03, inputTokens: 10, outputTokens: 5,
+    });
+    const result = await runAbEvaluation(oneVariant({ repeats: 2 }), deps);
+    expect(result.outcomes.map((o) => o.status)).toEqual(['errored', 'scored']);
+    expect(result.outcomes[0].judgeUsd).toBeCloseTo(0.04);
+    expect(result.cost.totalUsd).toBeCloseTo(0.87);
+    expect(result.cost.perVariant.baseline).toBeCloseTo(0.87);
+    expect(scores.size).toBe(1);
+  });
+
   it('runs pipeline+judge once per (variant × task × repeat) and stores each', async () => {
     const { store, runs, finished, scores, variants, tasks } = makeStore();
     const { deps, calls } = makeDeps({ store, composites: [6, 7, 8, 9] }); // baseline:6,7  cand-1:8,9
@@ -178,7 +212,7 @@ function makeFailingDeps(opts: {
     llmCall: async () => {
       calls.judge++;
       const err = opts.throwOnCall?.(calls.judge);
-      if (err) throw err;
+      if (err) throw Object.assign(err, { costUsd: 0 }); // this fixture models a known, uncharged failure
       return { text: JSON.stringify({ d1: composite, d2: composite, d3: composite, rationale: 'ok' }), costUsd: 2.5, inputTokens: 100, outputTokens: 200 };
     },
     newRunId: (v, t, r) => `${v}:${t}:r${r}`,

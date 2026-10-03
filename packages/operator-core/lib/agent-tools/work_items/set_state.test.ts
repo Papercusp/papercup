@@ -428,12 +428,17 @@ describe('terminal writes structurally require completion evidence (P-005)', () 
   const withAssumptions = (args: unknown): unknown => {
     if (typeof args !== 'object' || args === null) return args;
     const o = { ...(args as Record<string, unknown>) };
+    const terminalStates = new Set(['done', 'dropped', 'passed', 'deprecated', 'resolved', 'closed']);
+    const isTerminal = (state: unknown) =>
+      typeof state === 'string' && terminalStates.has(state.trim().toLowerCase());
     if (Array.isArray(o.items)) {
       o.items = o.items.map((it) =>
-        typeof it === 'object' && it !== null ? { assumptions: 'none', ...(it as Record<string, unknown>) } : it,
+        typeof it === 'object' && it !== null && isTerminal((it as Record<string, unknown>).state)
+          ? { assumptions: 'none', ...(it as Record<string, unknown>) }
+          : it,
       );
     }
-    if (o.assumptions === undefined) o.assumptions = 'none';
+    if (!Array.isArray(o.items) && o.assumptions === undefined && isTerminal(o.state)) o.assumptions = 'none';
     return o;
   };
 
@@ -626,6 +631,50 @@ describe('work_items:set_state — reason/note alias for completionRef (EI-19961
   const messages = (args: unknown): string =>
     (parse(args).error?.issues ?? []).map((i) => i.message).join(' | ');
   const EVIDENCE = 'superseded by WI-2 — shipped in abc123';
+
+  it('publishes terminal aliases only on terminal state variants', () => {
+    type SchemaNode = Record<string, unknown>;
+    const schema = tool.args.toJSONSchema() as SchemaNode;
+    const nodes: SchemaNode[] = [];
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (typeof value !== 'object' || value === null) return;
+      const node = value as SchemaNode;
+      nodes.push(node);
+      Object.values(node).forEach(visit);
+    };
+    const includesEnumValue = (value: unknown, wanted: string): boolean => {
+      if (Array.isArray(value)) return value.includes(wanted) || value.some((entry) => includesEnumValue(entry, wanted));
+      if (typeof value !== 'object' || value === null) return false;
+      const node = value as SchemaNode;
+      return (
+        (Array.isArray(node.enum) && node.enum.includes(wanted)) ||
+        Object.values(node).some((entry) => includesEnumValue(entry, wanted))
+      );
+    };
+    visit(schema);
+
+    const blockedVariants = nodes.filter((node) => {
+      const properties = node.properties as Record<string, unknown> | undefined;
+      return properties?.state !== undefined && includesEnumValue(properties.state, 'blocked');
+    });
+    expect(blockedVariants.length).toBeGreaterThan(0);
+    for (const node of blockedVariants) {
+      const properties = node.properties as Record<string, unknown>;
+      expect(properties).not.toHaveProperty('reason');
+      expect(properties).not.toHaveProperty('note');
+      expect(properties).not.toHaveProperty('completionRef');
+    }
+
+    const terminalAliasVariant = nodes.some((node) => {
+      const properties = node.properties as Record<string, unknown> | undefined;
+      return Boolean(properties?.reason && properties.state && !includesEnumValue(properties.state, 'blocked'));
+    });
+    expect(terminalAliasVariant).toBe(true);
+  });
 
   // ── the fix: the spelling the rest of the family taught now works ──────────────
   it('ACCEPTS `reason` in place of completionRef on a terminal write', () => {

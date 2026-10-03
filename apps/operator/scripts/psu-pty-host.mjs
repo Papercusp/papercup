@@ -1003,6 +1003,7 @@ function scanNativeTranscriptMarker({
         const st = statSync(path);
         if (st.size < (markerBytes?.length ?? 1) || st.size > 64 * 1024 * 1024) continue;
         const body = readFileSync(path, 'utf8');
+        let firstFreshTruncatedProof = null;
         for (const line of body.split(/\r?\n/)) {
           let row;
           try { row = JSON.parse(line); }
@@ -1043,9 +1044,11 @@ function scanNativeTranscriptMarker({
           if (!rowIsFresh) continue;
           if (expectedPrompt) return { nativeRef: path, lostChars: 0 };
 
-          // Only the first fresh task prompt can prove this injection. Looking
-          // for the marker anywhere in the transcript let a later user turn or
-          // assistant echo certify a successor whose first prompt was different.
+          // The first fresh task prompt is the primary proof. If its marker lost
+          // its head but kept this injection's nonce, only the immediately
+          // following fresh user prompt may upgrade that degraded proof with
+          // the exact marker. Any other prompt closes that upgrade window, so a
+          // later unrelated user turn cannot certify this injection.
           const promptMarker = leadingTurnOriginMarker(userPromptText);
           // Managed session ports prove a checksum line in the submitted seed,
           // distinct from its leading turn-origin marker. Keep this within the
@@ -1056,13 +1059,17 @@ function scanNativeTranscriptMarker({
                 .split('\n').some((line) => line.trim() === marker)) {
             return { nativeRef: path, lostChars: 0 };
           }
-          const lostChars = allowTruncated
-            ? truncatedTurnOriginMarkerLoss(marker, unwrapWholePaste(userPromptText))
-            : null;
           if (promptMarker === marker) return { nativeRef: path, lostChars: 0 };
-          if (lostChars != null) return { nativeRef: path, lostChars };
+          const lostChars = truncatedTurnOriginMarkerLoss(marker, unwrapWholePaste(userPromptText));
+          if (lostChars != null) {
+            if (firstFreshTruncatedProof) return allowTruncated ? firstFreshTruncatedProof : null;
+            firstFreshTruncatedProof = { nativeRef: path, lostChars };
+            continue;
+          }
+          if (firstFreshTruncatedProof) return allowTruncated ? firstFreshTruncatedProof : null;
           break;
         }
+        if (allowTruncated && firstFreshTruncatedProof) return firstFreshTruncatedProof;
       } catch {
         /* a concurrently-rotated transcript is simply not proof yet */
       }

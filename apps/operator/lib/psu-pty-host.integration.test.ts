@@ -1768,10 +1768,25 @@ describe('session-port managed seed + native persistence helpers', () => {
       writeFileSync(rollout, `${userRow('bd294b2da8⟧\nYou are the auditor', sinceMs + 1)}\n`, { flag: 'a' });
       const proof = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
       expect(proof).toEqual({ persisted: true, nativeRef: rollout, markerTruncated: { lostChars: 39 } });
-      // The exact marker still wins, with no degraded flag.
+      // The immediately following fresh row can upgrade this same-injection
+      // truncated proof to exact, with no degraded flag.
       writeFileSync(rollout, `${userRow(`${marker}\nexact`, sinceMs + 2)}\n`, { flag: 'a' });
       const exact = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
       expect(exact).toEqual({ persisted: true, nativeRef: rollout });
+
+      // An intervening user prompt closes the upgrade window, so an exact
+      // marker on a later turn cannot retroactively certify this kickoff.
+      writeFileSync(rollout, [
+        userRow('bd294b2da8⟧\nYou are the auditor', sinceMs + 3),
+        userRow('an unrelated later task', sinceMs + 4),
+        userRow(`${marker}\nexact`, sinceMs + 5),
+      ].join('\n') + '\n');
+      const laterExact = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
+      expect(laterExact).toEqual({
+        persisted: true,
+        nativeRef: rollout,
+        markerTruncated: { lostChars: 39 },
+      });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

@@ -1,6 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import { isAbsolute, relative, resolve as resolvePath, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertPublicManualSource } from './scripts/source-contract.mjs';
 
@@ -10,7 +10,7 @@ function normalizeExternalAstroModuleIds() {
   return {
     name: 'papercusp-clone-astro-id-normalizer',
     enforce: 'pre',
-    resolveId(id) {
+    resolveId(id, importer) {
       const queryIndex = id.indexOf('?');
       const pathEnd = queryIndex === -1 ? undefined : queryIndex;
       const query = queryIndex === -1 ? '' : id.slice(queryIndex);
@@ -19,9 +19,21 @@ function normalizeExternalAstroModuleIds() {
         ? id.slice('/@fs'.length, pathEnd)
         : id.slice(0, pathEnd);
       if (!filename.endsWith('.astro')) return null;
+      const importerQueryIndex = importer?.indexOf('?') ?? -1;
+      const importerId = importer === undefined
+        ? null
+        : importerQueryIndex === -1
+          ? importer
+          : importer.slice(0, importerQueryIndex);
+      const importerFilename = importerId?.startsWith('/@fs/')
+        ? importerId.slice('/@fs'.length)
+        : importerId;
+      const resolutionBase = !isAbsolute(filename) && importerFilename && isAbsolute(importerFilename)
+        ? dirname(importerFilename)
+        : projectRoot;
       const absoluteFilename = isAbsolute(filename)
         ? resolvePath(filename)
-        : resolvePath(projectRoot, filename);
+        : resolvePath(resolutionBase, filename);
 
       const relativePath = relative(projectRoot, absoluteFilename);
       const outsideProjectRoot =
@@ -46,8 +58,8 @@ export default defineConfig({
   site: 'https://app.papercusp.com',
   base: '/docs',
   // lint:as-committed links dependencies to the shared install. Normalize external Astro IDs to
-  // physical absolute paths: Vite passes resolveId results directly to load, where /@fs would be
-  // treated as a literal filesystem path rather than stripped like a dev-server URL prefix.
+  // physical absolute paths: relative IDs resolve from their importer, and Vite passes resolveId
+  // results directly to load, where /@fs would be treated as a literal path.
   ...(isLintAsCommittedClone
     ? {
         vite: {

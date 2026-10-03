@@ -100,6 +100,35 @@ describe('runBattery — happy path', () => {
 });
 
 describe('runBattery — never abort', () => {
+  it.each(['throw', 'reply'] as const)('governed callers stop attempts, scores and cells on an unmeasured %s', async (mode) => {
+    let runs = 0;
+    let calls = 0;
+    let scores = 0;
+    const results = await runBattery(
+      { cells: cells(['a', 'c1'], ['a', 'c2']), rubric: RUBRIC, maxDistillChars: 100, stopOnUnmeasuredJudgeCost: true },
+      { subject: fakeSubject({ run: async () => ({ label: String(++runs) }) }), ...clock(),
+        llmCall: async (opts) => { calls++; if (mode === 'throw') throw new Error('unknown charge'); return { ...await okJudge(opts), costUsd: NaN }; },
+        hooks: { onScore: () => { scores++; } },
+      },
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ status: 'errored', judgeCostMeasured: false, judgeCostUsd: 0 });
+    expect({ runs, calls, scores }).toEqual({ runs: 1, calls: 1, scores: 0 });
+  });
+
+  it('continues governed cells after a measured failure and retains its charge', async () => {
+    let calls = 0;
+    const results = await runBattery(
+      { cells: cells(['a', 'c1'], ['a', 'c2']), rubric: RUBRIC, maxDistillChars: 100, stopOnUnmeasuredJudgeCost: true },
+      { subject: fakeSubject(), ...clock(), llmCall: async (opts) => {
+        if (++calls === 1) throw Object.assign(new Error('charged failure'), { costUsd: 0.03 });
+        return okJudge(opts);
+      } },
+    );
+    expect(results.map((r) => r.status)).toEqual(['errored', 'scored']);
+    expect(results.map((r) => r.judgeCostUsd)).toEqual([0.03, 0.1]);
+  });
+
   it('preserves measured charges when judge repair replies never satisfy the output contract', async () => {
     const results = await runBattery(
       { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },

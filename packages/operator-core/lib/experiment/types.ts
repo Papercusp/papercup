@@ -37,6 +37,8 @@ export interface ExperimentArmResult {
   cells: number;
   scored: number;
   costUsd: number;
+  /** False means costUsd is a known lower bound, not settled spend. */
+  costMeasured?: boolean;
 }
 
 export type ExperimentScorecardScores = Record<string, number | null>;
@@ -54,6 +56,8 @@ export interface ExperimentRunResult {
   /** The selected winning arm id (only on a strict improvement ≥ minDelta), else null. */
   winner: string | null;
   totalCostUsd: number;
+  /** False withholds a winner and scorecard until spend is reconciled. */
+  costMeasured?: boolean;
   budgetExhausted: boolean;
   /**
    * Optional per-rubric-criterion scores preserved from the subject's native judge
