@@ -1029,12 +1029,20 @@ describe('getFeedbackCore — routed', () => {
     await sql`UPDATE harness_shared.consult_post_meta SET created_at = clock_timestamp() WHERE workspace_id = ${WS} AND post_id = 910002`;
     const { rows, truncated } = await read();
     const metadata = await sql`
-      SELECT author_id, kind, created_at, clock_timestamp() AS database_now
-        FROM harness_shared.consult_post_meta
-       WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id}
+      SELECT cs.requester_id, pm.author_id, pm.kind, pm.created_at,
+             clock_timestamp() AS database_now,
+             pm.workspace_id = cs.workspace_id AS workspace_matches,
+             pm.conversation_id = cs.conversation_id AS conversation_matches,
+             pm.author_id <> cs.requester_id AS responder_authored,
+             pm.kind IN ('answer', 'new_fact') AS substantive_kind,
+             pm.created_at <= clock_timestamp() AS before_snapshot
+        FROM harness_shared.consult_state cs
+        JOIN harness_shared.consult_post_meta pm
+          ON pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id
+       WHERE cs.workspace_id = ${WS} AND cs.conversation_id = ${result.conversation_id}
     `;
     expect(rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback,
-      JSON.stringify({ metadata, requester: baseReq.requesterId, applicationNow: new Date().toISOString() }),
+      JSON.stringify({ metadata, selectedRow: rows.find((row) => row.conversation_id === result.conversation_id), requester: baseReq.requesterId, applicationNow: new Date().toISOString() }),
     ).toBe(true);
     const health = routingHealthFromRows(rows, { sinceMs, untilMs: Date.now() + 10_000, nowMs: Date.now(), truncatedByLimit: truncated });
     expect(health.requestCohort.totals.outcomes.received).toBe(1);
