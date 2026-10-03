@@ -18,13 +18,13 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync, rm as rmCb, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, rm as rmCb, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { buildSubstrateCloneCommands, isPinnedCommit } from './clone';
-import type { GymRunnerPorts } from './gym-runner';
+import type { GymOracleRun, GymRunnerPorts } from './gym-runner';
 import type { TestResult } from './signals';
 
 const execFileP = promisify(execFileCb);
@@ -160,7 +160,7 @@ export interface GymRunnerPortsConfig {
   execCapture?: (
     cmd: string,
     args: string[],
-    options: { cwd: string; timeout: number; maxBuffer: number },
+    options: { cwd: string; timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv },
   ) => Promise<{ stdout: string; stderr: string }>;
   rm?: (path: string) => Promise<void>;
 }
@@ -170,7 +170,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
   const exec = cfg.exec ?? (async (cmd: string, args: string[]) => { await execFileP(cmd, args); });
   const execCapture =
     cfg.execCapture ??
-    (async (cmd: string, args: string[], options: { cwd: string; timeout: number; maxBuffer: number }) =>
+    (async (cmd: string, args: string[], options: { cwd: string; timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv }) =>
       (await execFileP(cmd, args, options)) as { stdout: string; stderr: string });
   const rm = cfg.rm ?? (async (p: string) => { await rmP(p, { recursive: true, force: true }); });
   const sql = cfg.gymSql;
@@ -292,13 +292,21 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       const before = fileHash(testPath);
       const implementationBefore = implPath ? fileHash(implPath) : null;
       const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
+      const sourceReportPath = `${reportPath}.sources.json`;
+      const sourceReporter = join(clonePath, 'libs/test-config/src/executed-source-map-reporter.ts');
+      const hasSourceReporter = existsSync(sourceReporter);
       const command = ['npm', 'run', 'test:file', '--', testPath, '--', '--reporter=json', `--outputFile=${reportPath}`];
+      // Reuse framework collection-time fingerprints. A source map is diagnostic
+      // even for a failing or dirty oracle; it must never create reusable passes.
+      if (hasSourceReporter) command.push(`--reporter=${sourceReporter}`);
       let exitCode: number | null = null;
       let signal: string | null = null;
       try {
         await execCapture(
           command[0], command.slice(1),
-          { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
+          { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+            env: { ...process.env, PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle',
+              PC_EXECUTED_SOURCE_MAP_OUT: sourceReportPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' } },
         );
         exitCode = 0;
       } catch (error) {
@@ -314,16 +322,28 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         const report = readFileSync(reportPath, 'utf8');
         const results = parseVitestOracleResults(report).map((t) =>
           t.file ? { ...t, file: (isAbsolute(t.file) ? relative(clonePath, t.file) : t.file).split('\\').join('/') } : t);
+        let sourceReport: string | null = null;
+        let modules: NonNullable<NonNullable<GymOracleRun['execution']>['workerSources']>['modules'] = [];
+        // Keep the raw report even if it is malformed; do not rebuild original
+        // module hashes from a later checkout when the reporter is unavailable.
+        try { sourceReport = readFileSync(sourceReportPath, 'utf8'); } catch { /* unknown */ }
+        try {
+          const parsed = sourceReport && JSON.parse(sourceReport);
+          if (Array.isArray(parsed?.diagnostics)) modules = parsed.diagnostics;
+        } catch { /* retain malformed raw source report */ }
         return pinCommit ? { results, testPath, pinCommit,
           sourceHashes: { pinned, before, after: fileHash(testPath) },
           implementation: implPath ? { path: implPath, before: implementationBefore, after: fileHash(implPath) } : null,
           execution: { command, cwd: clonePath, report, exitCode, signal,
-            unresolved: ['oracle-imported-dependencies', 'test-command-runtime', 'pipeline-runtime'] },
+            workerSources: { report: sourceReport, modules },
+            unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+              ...(!sourceReport || modules.length === 0 ? ['oracle-worker-source-evidence-unavailable'] : [])] },
         } : results;
       } catch {
         return undefined;
       } finally {
         try { unlinkSync(reportPath); } catch { /* best effort */ }
+        try { unlinkSync(sourceReportPath); } catch { /* best effort */ }
       }
     },
 

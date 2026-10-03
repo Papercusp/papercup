@@ -28,7 +28,13 @@ export interface GymOracleRun {
    * does not identify imported code, the runner, or the remote pipeline. */
   implementation?: { path: string; before: string | null; after: string | null } | null;
   execution?: { command: string[]; cwd: string; report: string; unresolved: string[];
-    exitCode: number | null; signal: string | null };
+    exitCode: number | null; signal: string | null;
+    /** Original worker sources from the existing framework OUT channel. This
+     * scope excludes runner/config/native code and the remote pipeline. */
+    workerSources?: { report: string | null; modules: Array<{ testFile: string; state: string;
+      sourceEvidence: { schemaVersion: string; scope: string; status: string;
+        sources: Array<{ path: string; sha256: string; currentSha256: string | null }>; reasons: string[] } }> };
+  };
 }
 
 export interface GymOracleSpec {
