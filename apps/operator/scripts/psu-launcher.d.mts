@@ -349,9 +349,7 @@ export function readClaudeLaunchSettings(env?: Record<string, string | undefined
     home?: string;
     readFile?: (p: string) => string;
 }): ClaudeLaunchSettings;
-export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {
-    claudeSettings?: ClaudeLaunchSettings | undefined;
-}): any[];
+export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {}): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
  * wrappers all end with `"$@"`). Maps a model fuzzy-match + a resume-by-id

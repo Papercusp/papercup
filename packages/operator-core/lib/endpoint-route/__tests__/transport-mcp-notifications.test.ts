@@ -18,11 +18,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   __buildMcpToolContext_forTests,
+  __withMcpSessionSurfaceRecheckForTests,
   type BuiltSpawnContext,
 } from '../routes/transport/_mcp-host';
 import { MCP_SERVER_CAPABILITIES } from '../routes/transport/mcp-contract';
 import {
   getSessionSurface,
+  rememberSessionToolRegistryRevision,
   __resetSessionSurfaces,
 } from '../routes/transport/tool-allowlist';
 
@@ -222,5 +224,31 @@ describe('MCP emit → notifications', () => {
       event: 'progress',
       data: { progress: 75, total: 100, message: 'three-quarters' },
     });
+  });
+});
+
+describe('MCP session tool-contract revision notifications', () => {
+  it('notifies a connected session once when the same-process registry revision changes', async () => {
+    __resetSessionSurfaces();
+    const sessionId = 'mcp-contract-revision-session';
+    rememberSessionToolRegistryRevision(sessionId, 'registry-revision-1');
+
+    const { sent, sendNotification } = recordingSendNotification();
+    let revision = 'registry-revision-1';
+    const call = __withMcpSessionSurfaceRecheckForTests(
+      async () => ({ isError: false }),
+      () => revision,
+    );
+    const extra = { sessionId, sendNotification };
+
+    await call({}, extra);
+    expect(sent).toEqual([]);
+
+    revision = 'registry-revision-2';
+    await call({}, extra);
+    expect(sent).toEqual([{ method: 'notifications/tools/list_changed', params: {} }]);
+
+    await call({}, extra);
+    expect(sent).toHaveLength(1);
   });
 });

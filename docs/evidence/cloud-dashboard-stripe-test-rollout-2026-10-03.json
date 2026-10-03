@@ -4,12 +4,12 @@
   "name": "Both deployed Papercusp LLC Stripe TEST cloud subscription lifecycles",
   "framework": "playwright",
   "command": [
-    "PORTAL_BILLING_LIVE_E2E=1 PLAYWRIGHT_JSON_OUTPUT_FILE=/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-final-20261003-0706-report.json PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:browser -- e2e/portal-billing-live.spec.ts --reporter=list,json --output=test-results/billing-live-final-20261003-0706"
+    "PORTAL_BILLING_LIVE_E2E=1 PLAYWRIGHT_JSON_OUTPUT_FILE=/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:browser -- e2e/portal-billing-live.spec.ts --reporter=list,json --output=test-results/billing-live-pinned-20261003-0745"
   ],
   "cwd": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
   "exitCode": 0,
-  "startedAt": "2026-10-03T07:06:02.641Z",
-  "finishedAt": "2026-10-03T07:06:59.867Z",
+  "startedAt": "2026-10-03T07:45:06.415Z",
+  "finishedAt": "2026-10-03T07:45:58.261Z",
   "summary": "Both actual HTTPS billing journeys passed with genuine WorkOS TEST authentication, real TEST Checkout, signed webhook activation, customer-portal cancellation and deployed ended status. TEST customers/sessions cleaned up. This does not certify upstream AuthKit signup UI or commercial metering/provisioning.",
   "assertions": [
     {
@@ -41,6 +41,11 @@
       "id": "byoc-cloud-portal-webhook-cancellation",
       "passed": true,
       "evidence": "Actual cancellation confirmation, direct Stripe canceled status, deployed subscription API canceled state and ended dashboard UI."
+    },
+    {
+      "id": "in-journey-immutable-serving-identity",
+      "passed": true,
+      "evidence": "Both registered tests captured and validated servedArtifact.buildId during their authenticated billing page response, resolving unique immutable release metadata before payment."
     }
   ],
   "receipts": [
@@ -48,12 +53,20 @@
       "accountId": "acct_1UChLcF3Zj0ZNLH5",
       "mode": "test",
       "planKey": "papercusp-cloud",
-      "organizationId": "ff08eb22-c7b0-4bd0-a0be-5eb0bf159725",
+      "organizationId": "b085068a-c174-446c-b016-ffa176eadf58",
       "authFixture": "genuine WorkOS TEST authentication + server-side tenant admission; upstream AuthKit UI not exercised",
+      "servedArtifact": {
+        "schemaVersion": 2,
+        "buildId": "oiltmrEZ_nKIlt6H_E7ch",
+        "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
+        "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+        "publishedAt": "2026-10-03T07:20:23.676Z",
+        "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
+      },
       "sessionPreflight": {
         "status": 200,
         "ok": true,
-        "organizationId": "ff08eb22-c7b0-4bd0-a0be-5eb0bf159725"
+        "organizationId": "b085068a-c174-446c-b016-ffa176eadf58"
       },
       "cookieScope": [
         {
@@ -66,11 +79,11 @@
       "localCookieValid": true,
       "cookieSent": true,
       "checkoutResponseStatus": 200,
-      "customerId": "cus_VN7FMDN7pOqhGf",
+      "customerId": "cus_VN7srFsBJHGiDd",
       "checkoutOpened": true,
       "checkoutReturned": "success",
       "webhookActive": true,
-      "subscriptionId": "sub_1UMN1VF3Zj0ZNLH5lOJul13V",
+      "subscriptionId": "sub_1UMNdHF3Zj0ZNLH5utQI9GWV",
       "customerPortalOpened": true,
       "webhookCanceled": true
     },
@@ -78,12 +91,20 @@
       "accountId": "acct_1UChLcF3Zj0ZNLH5",
       "mode": "test",
       "planKey": "byoc-cloud",
-      "organizationId": "355355a6-60bd-4889-b5a7-607bfda9d54b",
+      "organizationId": "c68a730a-3e6f-498c-ab12-47fdbdd008bd",
       "authFixture": "genuine WorkOS TEST authentication + server-side tenant admission; upstream AuthKit UI not exercised",
+      "servedArtifact": {
+        "schemaVersion": 2,
+        "buildId": "oiltmrEZ_nKIlt6H_E7ch",
+        "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
+        "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+        "publishedAt": "2026-10-03T07:20:23.676Z",
+        "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
+      },
       "sessionPreflight": {
         "status": 200,
         "ok": true,
-        "organizationId": "355355a6-60bd-4889-b5a7-607bfda9d54b"
+        "organizationId": "c68a730a-3e6f-498c-ab12-47fdbdd008bd"
       },
       "cookieScope": [
         {
@@ -96,33 +117,19 @@
       "localCookieValid": true,
       "cookieSent": true,
       "checkoutResponseStatus": 200,
-      "customerId": "cus_VN7GYiSpQOJ79N",
+      "customerId": "cus_VN7tGPq60jlXau",
       "checkoutOpened": true,
       "checkoutReturned": "success",
       "webhookActive": true,
-      "subscriptionId": "sub_1UMN1tF3Zj0ZNLH5eFTV1Idj",
+      "subscriptionId": "sub_1UMNdcF3Zj0ZNLH5sQuTIHsG",
       "customerPortalOpened": true,
       "webhookCanceled": true
     }
   ],
   "publicOrigin": "https://app.papercusp.com",
-  "deployedArtifact": {
-    "schemaVersion": 2,
-    "buildId": "Ef2IdRnEHq2KjHDE1fsNA",
-    "release": "Ef2IdRnEHq2KjHDE1fsNA-20261003072929681-1539187-1fbf9999",
-    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
-    "publishedAt": "2026-10-03T07:29:29.681Z",
-    "sourceRootDigest": "d70af07a1dbd6f730ea09c90be1d275b9f063eec14ef2ffb16b7548e4e486aec"
-  },
-  "deploymentVerification": {
-    "command": "bash apps/operator/scripts/systemd/deploy-cloud-portal.sh --handoff",
-    "exitCode": 0,
-    "sourceDigestVerified": true,
-    "managedUnitAlreadyServingCurrentArtifact": true
-  },
   "rawReport": {
-    "sourcePath": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-final-20261003-0706-report.json",
-    "sha256": "1ab5d6a0f0a17d98d72388d09492bc10ef6748da0c47d854966d7df89b2f7ee2"
+    "sourcePath": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json",
+    "sha256": "2bbb66d1131785415e26afcee8de06699c2417078adf5aafa5781326cbad029b"
   },
   "measuredBlobs": [
     {
@@ -163,7 +170,7 @@
     {
       "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "path": "e2e/portal-billing-live.spec.ts",
-      "sha256": "adb23f5cac86f4170af6b8cb67a2c0fe8e15f53f7d94fdcf819f601d41e88209"
+      "sha256": "ec865b362bf2f78af8729d29bf93d2236939aa6cfb1dbc11deef4d6ccdf4166b"
     },
     {
       "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
@@ -182,7 +189,7 @@
   "screenshots": [
     {
       "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-checkout.png",
-      "sha256": "ab447c0954fdc9151b7d607616b88727c11fe25089da1ee7e0e0a93ab01dc8c6"
+      "sha256": "f5b548e32f2cb4c9162b3be243d58fd6ee325705314e26ff460f606495ec412b"
     },
     {
       "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-active.png",
@@ -198,7 +205,7 @@
     },
     {
       "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-checkout.png",
-      "sha256": "5df38faad30a0ce809264d0f1baa17ee38340815ed253c4515ac9438baf0721f"
+      "sha256": "1d56db05c1d15ff0d433c3e402f9f2d9595a12f3f8a19816f82d38d363e67ecc"
     },
     {
       "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-active.png",
@@ -209,5 +216,20 @@
       "sha256": "20be01e4db546c430be8c44a615d2f21eab40b247e6023d1823c41b96365afb8"
     }
   ],
-  "sourceCommit": "035b7869624dc1a978ba7b4ab9011b08c403b7b7"
+  "sourceCommit": "035b7869624dc1a978ba7b4ab9011b08c403b7b7",
+  "deployedArtifacts": [
+    {
+      "schemaVersion": 2,
+      "buildId": "oiltmrEZ_nKIlt6H_E7ch",
+      "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
+      "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-10-03T07:20:23.676Z",
+      "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
+    }
+  ],
+  "servingIdentityVerification": {
+    "method": "Each authenticated initial billing HTML response identifies its served Next build; the test resolves that build to one immutable release metadata file before Checkout.",
+    "lateCurrentPointerUsed": false
+  },
+  "correction": "Supersedes the late-current-pointer artifact binding in initial evidence SHA e7b2fafd95779cccbbae839c960ec04b37515bb1073d728d78d75143e5813b7d; prior two-offer journey passes remain real, but this artifact uses direct in-journey identity capture."
 }
