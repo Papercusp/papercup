@@ -109,7 +109,7 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
     expect(parent).toEqual({ NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' });
   });
 
-  it('normalizes clone Starlight virtual IDs to the shared realpath', async () => {
+  it('uses Vite filesystem IDs for clone Starlight virtual modules', async () => {
     const envKey = 'PAPERCUSP_LINT_AS_COMMITTED_CLONE';
     const before = process.env[envKey];
     const configPath = resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs');
@@ -125,8 +125,8 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       process.env[envKey] = '1';
       const cloneVite = (await readConfig('clone')).vite?.resolve;
       expect(cloneVite?.preserveSymlinks).toBe(true);
-      expect(cloneVite?.alias?.map(({ find, replacement }) => ({ find: resolve(find), replacement: resolve(replacement) })))
-        .toEqual([{ find: logicalRoot, replacement: realRoot }]);
+      expect(cloneVite?.alias?.map(({ find, replacement }) => ({ find: resolve(find), replacement })))
+        .toEqual([{ find: realRoot, replacement: `/@fs${realRoot}` }]);
     } finally {
       if (before === undefined) delete process.env[envKey];
       else process.env[envKey] = before;
