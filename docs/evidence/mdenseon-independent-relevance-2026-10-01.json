@@ -3296,6 +3296,117 @@
     "fullAccessibleCensusExhausted": false,
     "p003Complete": false
   },
+  "retainedSourceOverlayV2": {
+    "workItem": "WI-10004537",
+    "status": "shared-frozen-runtime-and-actual-cli-admission-qualified-no-inference",
+    "supersedes": "cellBoundVectorInputExtension.runtimeOverlayV2Qualified: the new immutable overlay is now qualified. V1 receipts remain historical and unchanged.",
+    "completion": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/qualification-completion.json",
+      "sha256": "4ad0bbc4a923914c4c9de21a8f79f16cba0c76feb3ebdef9cca030a4f7dfc790",
+      "bytes": 10034
+    },
+    "sourceReceipt": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/source-overlay-receipt.json",
+      "sha256": "a2344f04beae74481c7cbbef577f811e7863a29a54484026f0aac3dd5d8763a0",
+      "bytes": 1486380
+    },
+    "moduleQualification": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/runtime-module-qualification.json",
+      "sha256": "501071a25f8c8b02cfed06fde7ced40ab4e50ec18a2c4440e12ac410f21ced97",
+      "bytes": 39808
+    },
+    "sharedAdmissionManifest": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/shared-admission-manifest.json",
+      "sha256": "daf12cd18de817a5b6e731b4e07901e6bcc9dc271b83a161e8b63a99a26bdff8",
+      "bytes": 122081
+    },
+    "derivation": {
+      "regularSourceFilesWritten": 2,
+      "sourceLinksVerified": 3136,
+      "wholeRuntimeCopied": false,
+      "originalTreeWritten": false,
+      "evaluatorSha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+      "loaderSha256": "7718fe68578ff1bef4043afb0bfbf0d598c40e9444d036c9e5a7632b6985c3c4",
+      "maintainedReuseBlockSha256": "4578a08764a5dc7219b5f01195c0b15e14f11a1235a763c78956c04444d93d32",
+      "maintainedReuseBlockBytes": 8422,
+      "evaluatorWithoutIncrementalDeltaEqualsDonor": true,
+      "loaderWithoutReuseBlockEqualsDonor": true,
+      "actualWorkerSha256": "754f42bb37e7bc41ff4692b3239d5a454f6fc0b324afc050d1ac5a79b86bd95b",
+      "unchangedMeasuredArms": 3,
+      "unrelatedNativeInstrumentationTransplanted": false
+    },
+    "observedAdmission": {
+      "manifestIdentities": 1,
+      "distinctDeclaredVectorInputs": 6,
+      "retainedCellsChecked": 6,
+      "exactDocumentVectors": 3081,
+      "exactQueryVectors": 324,
+      "wrongCellVectorBindingRefused": true,
+      "globalVectorFallbackPresent": false,
+      "measuredFrozenNodeUsed": true,
+      "retainedDependencyAliasesUsed": true,
+      "requestedDevice": "cpu",
+      "intraOpThreads": 4,
+      "interOpThreads": 1,
+      "workerStarted": false,
+      "modelCalls": 0
+    },
+    "actualCLIAdmission": {
+      "taskId": "0murncv5chmazhs1key",
+      "actualExit": 1,
+      "expectedRefusal": "retained relevance has no new queries; use offline scoring rather than starting a worker",
+      "observedAt": "2026-10-03T00:21:45.493Z",
+      "rawResultPresent": false,
+      "runningClaimPresent": false,
+      "embeddingBranchEntered": false,
+      "scope": "One all-reused mDenseOn/memory cell. Module qualification, separately, covers six exact retained cell bindings under one manifest.",
+      "preservedEarlierAttempts": [
+        {
+          "taskId": "0murn5z2oyckl4p16wy",
+          "actualExit": 1,
+          "refusal": "manifest evaluator requires one matching arm and complete declared inputs",
+          "cause": "Caller supplied ignored --model instead of the maintained --legs selector."
+        },
+        {
+          "taskId": "0murn8rcz8mw6gwvfnc",
+          "actualExit": 1,
+          "refusal": "runner output differs from declared cell",
+          "cause": "Caller omitted --out, selecting the default path rather than the frozen raw output."
+        }
+      ],
+      "recurrencePreflights": [
+        "Absolute filesystem dynamic imports are converted to explicit file URLs before evaluating the pinned generated qualifier.",
+        "Actual requested device and thread options must match unchanged donor arms before qualification or output writes.",
+        "Full CLI argv is derived from the selected frozen cell and includes one matching --legs and exact --out; partial, timing and sidecar flags are refused.",
+        "Executable, loader, evaluator, manifest, module qualification and source receipt fingerprints are checked before launch."
+      ],
+      "otherPreparationFailures": "Before the successful module admission, data-URL import resolution and an omitted CPU launch pin failed with zero model calls. The context-only distinguishing probe measured default CUDA versus donor CPU, with threads matching 4/1. Both classes were audited and guarded before retry; no donor metadata or original runtime was changed."
+    },
+    "conventionalTests": {
+      "workItem": "WI-10005735",
+      "testRunId": 20584097,
+      "passed": 137,
+      "failed": 0,
+      "skipped": 0,
+      "interpretation": "Previously verified canonical selector suite; not rerun solely to reconstruct history."
+    },
+    "reproduction": {
+      "sourceDeriver": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/prepare-retained-source-overlay-v2.mjs",
+      "moduleQualifier": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/qualify-retained-source-overlay-v2.mjs",
+      "CLIAdmissionGenerator": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/prepare-retained-overlay-v2-cli-preflight.mjs",
+      "assessmentReader": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/assess-retained-source-overlay-v2.mjs",
+      "policy": "Source and output artifacts are immutable. Read and verify saved pins; do not rerun writers in existing roots. This qualifies source admission, not a new independent cohort, a new-query embedding matrix, or reusable full-inference timing."
+    },
+    "acceptance": {
+      "runtimeOverlayV2Qualified": true,
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "fullAccessibleCensusExhausted": false,
+      "p003Complete": false,
+      "p004Complete": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
