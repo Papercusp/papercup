@@ -15,6 +15,7 @@ const { recordRoutedIdea } = await import('../scout/routed-ledger');
 const { recordProposal, decideProposal } = await import('../gym/control-plane');
 const { insertPrediction, resolvePrediction, voidPrediction } = await import('../calibration/store');
 const { admitTransferLesson, recordTransferOutcome } = await import('../transfer/store');
+const { applyTransferVerdict } = await import('../transfer/gate');
 const { upsertFinding, recordReplayScores, markReportFiled } = await import('../replay/regret/store');
 const { insertDrillRow, updateDrillResolved } = await import('../red-queen/store');
 const { passingCandidateVerdict } = await import('../gym/__tests__/_candidate-verdict');
@@ -71,7 +72,7 @@ describe('six actual producer boundaries', () => {
     const other = await insertPrediction(db.adminSql, { ...input, subjectId: 'EI-void' });
     expect(await voidPrediction(db.adminSql, { id: other.id!, note: 'undetermined', nowIso: '2026-10-03T01:00:00Z' })).toBe(true);
     const rows = await readProducerObservations(db.adminSql, { producer: 'calibration', workspaceId: WS });
-    expect(rows.find((r) => r.source.id === other.id)?.source).toMatchObject({ outcome: null, resolution_note: 'undetermined' });
+    expect(rows.find((r) => r.sourceRef === `calibration:${other.id}`)?.source).toMatchObject({ outcome: null, resolution_note: 'undetermined' });
   });
 
   it('captures transfer admission and scored gate transitions with genuine battery identity', async () => {
@@ -80,7 +81,7 @@ describe('six actual producer boundaries', () => {
     if (!result.admitted) throw new Error('fixture admission failed');
     const id = result.lesson.id;
     expect((await observation('transfer')).source).toMatchObject({ tier: 'probationary', source_ref: 'transcript:original' });
-    await recordTransferOutcome(db.adminSql, { workspaceId: WS, id, batteryId: 'actual-test-battery', delta: 0.1, transition: { tier: 'validated', status: 'passed', passCount: 1, failCount: 0 } });
+    await recordTransferOutcome(db.adminSql, { workspaceId: WS, id, batteryId: 'actual-test-battery', delta: 0.1, transition: applyTransferVerdict(result.lesson, 'passed') });
     expect((await observation('transfer')).source).toMatchObject({ tier: 'validated', last_battery_id: 'actual-test-battery', test_count: 1 });
   });
 

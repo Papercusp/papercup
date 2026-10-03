@@ -208,14 +208,14 @@ export async function recordReplayScores(
   scores: CandidateReplayScore[],
 ): Promise<void> {
   await withProducerLifecycleWrite(sql, async (sql) => {
-  await sql`
+  const rows = await sql`
     UPDATE harness_shared.regret_findings
        SET replay_scores = ${JSON.stringify(scores)}::text::jsonb,
            replay_status = 'replayed',
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
      RETURNING run_id`;
-  await recordProducerObservation(sql, { producer: 'regret', workspaceId, sourceId: runId });
+  if (rows.length) await recordProducerObservation(sql, { producer: 'regret', workspaceId, sourceId: runId });
   });
 }
 
@@ -233,11 +233,11 @@ export async function readUnfiledReplayed(sql: Sql, workspaceId: string, limit: 
 /** Stamp the filed report's improvement id onto its finding row. */
 export async function markReportFiled(sql: Sql, workspaceId: string, runId: string, improvementId: string): Promise<void> {
   await withProducerLifecycleWrite(sql, async (sql) => {
-  await sql`
+  const rows = await sql`
     UPDATE harness_shared.regret_findings
        SET report_improvement_id = ${improvementId}, updated_at = now()
-     WHERE workspace_id = ${workspaceId} AND run_id = ${runId}`;
-  await recordProducerObservation(sql, { producer: 'regret', workspaceId, sourceId: runId });
+     WHERE workspace_id = ${workspaceId} AND run_id = ${runId} RETURNING run_id`;
+  if (rows.length) await recordProducerObservation(sql, { producer: 'regret', workspaceId, sourceId: runId });
   });
 }
 

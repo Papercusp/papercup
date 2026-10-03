@@ -15,7 +15,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
     import { createHash } from 'node:crypto';
     import { getOrgPg } from '@papercusp/db-org';
     import { activeWorkspaceId } from './packages/operator-core/lib/workspace-registry.ts';
-    import { insertTurns, promptOriginHash } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine } from './packages/operator-core/lib/search/session-ingest.ts';
     const workspace = activeWorkspaceId();
     assert.ok(workspace.startsWith('test-runtime-'));
     assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
@@ -26,15 +26,26 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
     const sql = getOrgPg().sql;
     const now = new Date(), cases = [];
     function candidate(label, sourceKind = 'codex', overrides = {}) {
-      const text = overrides.text ?? 'measure the unchanged frozen cohort';
+      const text = overrides.text ?? 'measure the unchanged frozen cohort\r\n' + 'original prompt bytes '.repeat(500);
+      const line = overrides.history
+        ? { session_id: 'origin-' + label, ts: now.getTime() / 1000, text }
+        : sourceKind === 'codex'
+          ? { timestamp: now.toISOString(), type: 'response_item', payload: {
+              type: 'message', role: 'user', content: [{ type: 'input_text', text }] } }
+          : { timestamp: now.toISOString(), type: sourceKind === 'omp' ? 'message' : 'user',
+              message: { role: 'user', content: [{ type: 'text', text }] } };
+      const parser = sourceKind === 'claude' ? parseClaudeLine : sourceKind === 'omp' ? parseOmpLine : parseCodexLine;
+      const parsed = parser(JSON.stringify(line));
+      assert.ok(parsed);
       const row = { workspace_id: workspace, source_kind: sourceKind, session_id: 'origin-' + label,
-        turn_idx: 0, ts: now.toISOString(), owner: 'synthetic-owner', harness_slug: 'synthetic', cwd: null,
-        speaker: 'user', text, prompt_hash: promptOriginHash(text) };
-      cases.push({ label, row });
+        turn_idx: 0, ts: parsed.ts.toISOString(), owner: 'synthetic-owner', harness_slug: 'synthetic', cwd: null,
+        speaker: parsed.speaker, text: parsed.text, prompt_hash: parsed.promptHash ?? null };
+      cases.push({ label, row, rawPromptHash: promptOriginHash(text) });
       return row;
     }
     async function stamp(row, overrides = {}) {
-      const s = { source_kind: row.source_kind, session_id: row.session_id, prompt_hash: row.prompt_hash,
+      const s = { source_kind: row.source_kind, session_id: row.session_id,
+        prompt_hash: cases.find(c => c.row === row).rawPromptHash,
         submitted_at: now, expires_at: new Date(now.getTime() + 600000), ...overrides };
       await sql\`INSERT INTO harness_shared.session_prompt_origin_stamps
         (workspace_id, source_kind, session_id, prompt_hash, submitted_at, expires_at)
@@ -44,6 +55,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       // Fixture rows stand in for already authenticated hook receipts; the
       // model-facing hook writer is never called or impersonated by this test.
       for (const kind of ['claude', 'codex', 'omp']) await stamp(candidate(kind, kind));
+      await stamp(candidate('codex-history', 'codex', { history: true }));
       await stamp(candidate('wrong-source'), { source_kind: 'claude' });
       await stamp(candidate('wrong-session'), { session_id: 'other-session' });
       await stamp(candidate('wrong-hash'), { prompt_hash: promptOriginHash('different directive') });
@@ -57,7 +69,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       assert.equal(rows.length, cases.length);
       for (const c of cases) {
         const stored = rows.find(row => row.session_id === c.row.session_id);
-        const expected = ['claude', 'codex', 'omp'].includes(c.label) ? 'owner-typed'
+        const expected = ['claude', 'codex', 'omp', 'codex-history'].includes(c.label) ? 'owner-typed'
           : c.label === 'injected' ? 'agent-injected' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
       }

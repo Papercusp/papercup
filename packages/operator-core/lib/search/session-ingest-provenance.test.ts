@@ -17,6 +17,9 @@ import {
   correlatePromptOriginStamps,
   promptOriginHash,
   PROMPT_ORIGIN_MATCH_WINDOW_MS,
+  parseClaudeLine,
+  parseCodexLine,
+  parseOmpLine,
 } from './session-ingest';
 import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
 import { classifyRecordedTurn, OWNER_CANDIDATE_TURN_VERDICTS } from '../turn-provenance/turn-ref';
@@ -250,6 +253,45 @@ describe('stampTurnProvenance', () => {
 });
 
 describe('hook-authenticated prompt-origin correlation', () => {
+  it.each(['claude', 'codex', 'codex-history', 'omp'])(
+    'carries the original %s user prompt hash through parser truncation into correlation', (kind) => {
+      const submittedAt = '2026-09-01T10:00:00.000Z';
+      const text = '  approve this exact bounded repair\r\n' + 'original prompt bytes '.repeat(500);
+      const parse = kind === 'claude' ? parseClaudeLine : kind === 'omp' ? parseOmpLine : parseCodexLine;
+      const line = kind === 'codex-history'
+        ? { session_id: 's-1', ts: Date.parse(submittedAt) / 1000, text }
+        : kind === 'codex'
+          ? { timestamp: submittedAt, type: 'response_item', payload: {
+              type: 'message', role: 'user', content: [{ type: 'input_text', text }],
+            } }
+          : { timestamp: submittedAt, type: kind === 'omp' ? 'message' : 'user',
+              message: { role: 'user', content: [{ type: 'text', text }] } };
+      const parsed = parse(JSON.stringify(line))!;
+      expect(parsed.text.length).toBeLessThan(text.trim().length);
+      expect(parsed.promptHash).toBe(promptOriginHash(text));
+      expect(parsed.promptHash).not.toBe(promptOriginHash(parsed.text));
+      const source_kind = kind === 'codex-history' ? 'codex' : kind;
+      const candidate = row({ source_kind, ts: parsed.ts!.toISOString(),
+        text: parsed.text, prompt_hash: parsed.promptHash });
+      stampTurnProvenance(candidate);
+      expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+      expect(correlatePromptOriginStamps([candidate], [{ source_kind, session_id: 's-1',
+        prompt_hash: promptOriginHash(text), submitted_at: submittedAt }])).toBe(1);
+      expect(candidate.turn_origin_verdict).toBe('owner-typed');
+    },
+  );
+
+  it.each(['claude', 'codex', 'omp'])('does not give an assistant %s response a prompt hash', (kind) => {
+    const text = 'The measured result is ready.';
+    const line = kind === 'codex'
+      ? { type: 'response_item', payload: { type: 'message', role: 'assistant',
+          content: [{ type: 'output_text', text }] } }
+      : { type: kind === 'omp' ? 'message' : 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text }] } };
+    const parse = kind === 'claude' ? parseClaudeLine : kind === 'omp' ? parseOmpLine : parseCodexLine;
+    expect(parse(JSON.stringify(line))?.promptHash ?? null).toBeNull();
+  });
+
   it('keeps the hook and ingest hash normalization in lockstep', () => {
     expect(promptOriginHash('  line one\r\nline two\r\n ')).toBe(
       promptOriginHash('line one\nline two'),

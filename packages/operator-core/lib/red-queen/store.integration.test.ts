@@ -66,7 +66,7 @@ beforeAll(async () => {
       resolved_with_evidence boolean NOT NULL DEFAULT false, issue_id text,
       mttsh_detect_ms bigint, mttsh_triage_ms bigint, mttsh_fix_ms bigint, mttsh_total_ms bigint,
       leak_check_passed boolean, leak_check jsonb,
-      planted_artifacts jsonb, payload jsonb, error text,
+      planted_artifacts jsonb, payload jsonb, error text, learning_lifecycle jsonb,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
       CONSTRAINT red_queen_drills_status_check CHECK (status IN ('planted','detected','triaged','resolved','failed','expired')),
       CONSTRAINT red_queen_drills_expected_kind_check CHECK (expected_kind IN ('bug','change'))

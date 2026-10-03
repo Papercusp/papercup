@@ -1557,6 +1557,14 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     pendingCount(): number;
     /** Whether a message is still owned by the detached re-arm loop. */
     isPendingMessage(msg: any): boolean;
+    /**
+     * Refresh an already-queued retry only when the same delivery is still the
+     * current payload. A later distinct delivery may have superseded it, so a
+     * delayed duplicate of the older id must never roll the re-arm backwards.
+     * Keep the original receipt time: retrying the delivery updates its snapshot,
+     * not its age or ordering against a newer host generation.
+     */
+    refreshPendingMessage(msg: any): boolean;
     /** EI-18681914950138372: call the MOMENT a carry-respawn control message is
      *  accepted by the host, before it enters its own busy-gate wait — marks it
      *  in-flight so a wake arriving during that wait is correctly deferred. */
