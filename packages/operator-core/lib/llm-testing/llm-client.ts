@@ -36,6 +36,9 @@ import {
 import { readCredentials } from '../credentials';
 import { loopbackFetch } from '../loopback-fetch';
 import { CODEX_LLM_DEFAULT_MODEL, codexWireModel, isCodexModel } from './codex-model-pricing';
+import { computeOwnSourceHash } from '../scout/src-hash';
+
+const LLM_CLIENT_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
 
 /** Provider label for classifying a backend's error message (labeling only — rate detection is
     status/regex-based, so this never changes the class). */
@@ -248,6 +251,9 @@ async function llmCallViaCodexGateway(
     outputTokens,
     costUsd,
     raw,
+    execution: { model: pricedModel, codeHash: null,
+      loadedCode: { llmClient: LLM_CLIENT_SOURCE_HASH },
+      unresolved: ['gateway-runtime', 'http-client', 'model-routing', 'usage-pricing', 'response-parser'] },
     ...(servedAccount ? { servedAccount } : {}),
   };
 }
@@ -413,6 +419,9 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     costUsd,
     stopReason,
     raw: transportDiagnostics.length ? { transportDiagnostics, promptSha256 } : null,
+    execution: { model: model ?? opts.model, codeHash: null,
+      loadedCode: { llmClient: LLM_CLIENT_SOURCE_HASH },
+      unresolved: ['agent-chat-runtime', 'transport-runtime', 'usage-pricing', 'response-parser'] },
     ...(servedAccount ? { servedAccount } : {}),
   };
 }

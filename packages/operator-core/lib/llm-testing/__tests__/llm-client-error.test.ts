@@ -177,6 +177,9 @@ describe('llmCall backend selection', () => {
         responseFormat: 'json',
       });
       expect(result.json).toEqual({ ok: true });
+      expect(result.execution).toMatchObject({ model, codeHash: null,
+        loadedCode: { llmClient: expect.stringMatching(/^[a-f0-9]{16}$/) },
+        unresolved: expect.arrayContaining(['gateway-runtime']) });
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally {
       vi.unstubAllGlobals();
@@ -306,6 +309,9 @@ describe('llmCall transport evidence (WI-10005738)', () => {
       const result = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged prompt' }] });
       expect(result.raw).toMatchObject({ transportDiagnostics: diagnostics, promptSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
       expect(result.text).toBe('ok');
+      expect(result.execution).toMatchObject({ model: 'claude-sonnet-4-6', codeHash: null,
+        loadedCode: { llmClient: expect.stringMatching(/^[a-f0-9]{16}$/) },
+        unresolved: expect.arrayContaining(['agent-chat-runtime', 'transport-runtime']) });
     } finally { diagnostics.length = 0; events.length = 0; }
   });
 });
