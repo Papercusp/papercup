@@ -31,12 +31,11 @@ const ANSWER = 'Available tools: read files and search code.';
 
 async function setupJourney(page: Page, existing: boolean, speech = false) {
   let rows: unknown[] = existing ? [connection, workspace] : [];
-  let revision = 0;
-  let disposition = 'active';
-  let inspectedResult: unknown;
+  const progressByVersion = new Map<number, { revision: number; disposition: string; inspectedResult?: unknown; inspectedRevision?: unknown; inspectedPractice?: unknown }>();
   let progressStatus = 200;
   let helpStatus = 200;
   let sentPrompt = '';
+  const submittedPrompts: string[] = [];
   const writes: Array<{ path: string; body: Record<string, any> }> = [];
   const socketMessages: Record<string, unknown>[] = [];
   const apiHits: string[] = [];
@@ -83,13 +82,19 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
     }
     if (path.endsWith('/onboarding/tutorial-progress')) {
       if (progressStatus !== 200) return json({ error: 'tutorial_scope_denied' }, progressStatus);
+      const version = request.method() === 'POST' ? request.postDataJSON().version ?? CLOUD_TUTORIAL_VERSION : new URL(request.url()).searchParams.get('version') === '2' ? 2 : CLOUD_TUTORIAL_VERSION;
+      const progress = progressByVersion.get(version) ?? { revision: 0, disposition: 'active' };
       if (request.method() === 'POST') {
         const patch = request.postDataJSON();
         expect(patch.expectedScope).toEqual(scope);
-        expect(patch.expectedRevision).toBe(revision);
-        revision++; disposition = patch.disposition; inspectedResult = patch.inspectedResult;
+        expect(patch.expectedRevision).toBe(progress.revision);
+        progress.revision++; progress.disposition = patch.disposition; progress.inspectedResult = patch.inspectedResult;
+        progress.inspectedRevision = patch.inspectedRevision; progress.inspectedPractice = patch.inspectedPractice;
       }
-      return json({ record: { revision, progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version: CLOUD_TUTORIAL_VERSION, disposition, ...(inspectedResult ? { inspectedResult } : {}) } } });
+      progressByVersion.set(version, progress);
+      return json({ record: { revision: progress.revision, progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version, disposition: progress.disposition,
+        ...(progress.inspectedResult ? { inspectedResult: progress.inspectedResult } : {}),
+        ...(progress.inspectedRevision ? { inspectedRevision: progress.inspectedRevision } : {}), ...(progress.inspectedPractice ? { inspectedPractice: progress.inspectedPractice } : {}) } } });
     }
     if (path.endsWith('/workspace-hosts/connection')) {
       writes.push({ path, body: request.postDataJSON() }); rows = [connection];
@@ -117,16 +122,18 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
       return json({ sessions: [{ source_kind: 'codex', session_id: 'tutorial-native', active: true, last_ts: null }] });
     }
     if (path.endsWith('/coord/send')) {
-      const body = request.postDataJSON(); writes.push({ path, body }); sentPrompt = body.body;
+      const body = request.postDataJSON(); writes.push({ path, body }); sentPrompt = body.body; submittedPrompts.push(sentPrompt);
       expect(body.to).toEqual(['su-tutorial-first']);
       return json({ results: [{ wake: { queued: 1 } }] });
     }
     if (path === '/api/adv/session/thinking') {
-      const timeline = sentPrompt ? [
-        { kind: 'prompt', text: sentPrompt, ts: '2026-10-01T12:00:00Z' },
-        { kind: 'text', text: ANSWER, ts: '2026-10-01T12:00:01Z' },
-        { kind: 'result', outcome: 'succeeded', text: '', ts: '2026-10-01T12:00:02Z' },
-      ] : [];
+      const timeline = submittedPrompts.flatMap((prompt, index) => [
+        { kind: 'prompt', text: prompt, ts: `2026-10-01T12:00:${String(index * 3).padStart(2, '0')}Z` },
+        { kind: 'text', text: prompt.includes('community book swap') ? 'Mira will ask the library about a room by Friday. Leon will collect book ideas. Date and budget are unknown.'
+          : prompt.includes('Revise your action plan') ? 'Open decisions: date and budget. Confirmed: Mira asks about a room by Friday; Leon collects book ideas.'
+          : prompt.includes('Answer this different task') ? 'Pack lunch, water, a notebook, a pen and workshop materials. Ask which materials are needed.' : ANSWER, ts: `2026-10-01T12:00:${String(index * 3 + 1).padStart(2, '0')}Z` },
+        { kind: 'result', outcome: 'succeeded', text: '', ts: `2026-10-01T12:00:${String(index * 3 + 2).padStart(2, '0')}Z` },
+      ]);
       return route.fulfill({ status: 200, contentType: 'text/event-stream', body: `retry: 100\nevent: backfill\ndata: ${JSON.stringify(timeline)}\n\n` });
     }
     if (path.endsWith('/sse')) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': fixture\n\n' });
@@ -178,6 +185,48 @@ test('beginner entry explains no prepared workspace and navigates to advanced BY
   await expect(page.getByRole('textbox', { name: 'Connection label' })).toBeVisible();
   expect(fixture.writes).toEqual([]);
   expect(fixture.browserErrors).toEqual([]);
+});
+
+test('beginner reviews a useful plan, explicit revision and different self-written task after safety instruction', async ({ page }) => {
+  const fixture = await setupJourney(page, true);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  await page.getByRole('button', { name: 'Use prepared workspace My workspace' }).click();
+  await page.getByRole('button', { name: "I've reviewed the configuration and cost" }).click();
+  await page.getByRole('region', { name: 'Browser workspace session for My workspace' }).getByRole('button', { name: 'Connect', exact: true }).click();
+  const guide = page.getByRole('region', { name: 'First agent guide' });
+  await expect(guide.getByRole('heading', { name: 'Launch your first agent' })).toBeVisible();
+  await page.getByRole('button', { name: '+ New session' }).click();
+  const first = page.locator('[data-tutorial-target="cloud-task"]');
+  await expect(first).toContainText('a suggested action is not your approval');
+  await expect(first).toContainText('Pausing or closing this guide only pauses its instructions');
+  await expect(first).toContainText('retained disks can still cost money');
+  expect(fixture.writes.filter(write => write.path.endsWith('/coord/send'))).toHaveLength(0);
+  await expect(page.getByRole('textbox', { name: 'Your different task' })).toHaveCount(0);
+  const launch = fixture.writes.find(write => write.path.endsWith('/launch-su'))!;
+  expect(launch.body.mode).toBeNull();
+  await page.getByRole('button', { name: 'Send action-plan task', exact: true }).click();
+  await expect(page.locator('[data-tutorial-target="cloud-result"]')).toContainText('Date and budget are unknown');
+  await page.getByRole('button', { name: "I've reviewed the action plan" }).click();
+  await expect(guide.getByRole('heading', { name: 'Ask for a correction and review it' })).toBeVisible();
+  await page.getByRole('button', { name: 'Send revision request' }).click();
+  await expect(page.locator('[data-tutorial-target="cloud-revision"]')).toContainText('Open decisions: date and budget');
+  await page.getByRole('button', { name: "I've reviewed the revision" }).click();
+  const draft = page.getByRole('textbox', { name: 'Your different task' });
+  const own = page.getByRole('button', { name: 'Send my own task' });
+  await expect(draft).toHaveValue(''); await expect(own).toBeDisabled();
+  const ownTask = 'Goal: draft a packing checklist. Context: a two-day library workshop, indoors, bring our own lunch. Output: five bullets and open questions.';
+  await draft.fill(ownTask); await own.focus(); await page.keyboard.press('Enter');
+  await expect(page.locator('[data-tutorial-target="cloud-practice"]')).toContainText('Ask which materials are needed');
+  await page.getByRole('button', { name: "I've reviewed my own task's answer" }).click();
+  await expect(guide).toContainText('7 of 7 steps confirmed');
+  const sends = fixture.writes.filter(write => write.path.endsWith('/coord/send'));
+  expect(sends).toHaveLength(3); expect(sends[2].body.body).toContain(ownTask);
+  expect(fixture.writes.filter(write => write.path.includes('/workspace-hosts/'))).toEqual([]);
+  const accessibility = await new AxeBuilder({ page }).include('[data-cloud-tutorial-guide]').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+  await test.info().attach('beginner-guide-axe', { body: JSON.stringify(accessibility), contentType: 'application/json' });
+  expect(accessibility.violations).toEqual([]); expect(fixture.browserErrors).toEqual([]);
 });
 
 test('lesson help chat text passes axe when its empty state is in the viewport', async ({ page }) => {
