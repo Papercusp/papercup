@@ -93,6 +93,7 @@ function scanResult(processes: ScannedProcess[], over: Partial<ScanResult> = {})
     userManagerRoot: '/user.slice/user@1000.service',
     ownedTruncated: false,
     foreignTruncated: false,
+    unlistedIdentityByPid: new Map(),
     ...over,
   };
 }
@@ -152,6 +153,40 @@ describe('reconcileTick — happy path', () => {
     });
     expect(out.strandedCount).toBe(1);
     expect(store.stranded[0]!.taskId).toBe('bbb222');
+  });
+
+  // WI-10005782: the scan's foreign display filter drops a wake executor's
+  // unconfined `claude -p --resume` turn (repo-less argv, operator's own service
+  // cgroup). The tick must hand the scan's unlisted identities to reconcile, or the
+  // live turn strands one grace period after spawn.
+  it('does NOT strand an unconfined row whose pid+identity the scan read but did not list', async () => {
+    const headless = row({
+      taskId: 'hdl001',
+      class: 'agent-session',
+      confined: false,
+      scopeUnit: null,
+      pid: 5151,
+      processIdentity: 'linux:b:5151',
+    });
+    const out = await reconcileTick({
+      listLive: async () => [headless],
+      scan: () => scanResult([], { unlistedIdentityByPid: new Map([[5151, 'linux:b:5151']]) }),
+      fs: memFs({}),
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(out.strandedCount).toBe(0);
+    expect(store.stranded).toHaveLength(0);
+
+    // Control: the same row with an empty map strands, so the assertion above is
+    // carried by the wiring and not by some other leniency.
+    const control = await reconcileTick({
+      listLive: async () => [headless],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(control.strandedCount).toBe(1);
+    expect(store.stranded.map((s) => s.taskId)).toEqual(['hdl001']);
   });
 
   it('persists an unaccounted group but reports it only after two scans confirm it', async () => {

@@ -164,7 +164,12 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
           .map(([unit]) => unit),
       );
 
-  const result = reconcile(live, scan.processes, { now: now(), graceMs: deps.graceMs, releasedScopes });
+  const result = reconcile(live, scan.processes, {
+    now: now(),
+    graceMs: deps.graceMs,
+    releasedScopes,
+    unlistedIdentityByPid: scan.unlistedIdentityByPid,
+  });
   const summary = summarizeReconcile(result);
 
   // ── is this scan trustworthy enough to CLOSE rows? ───────────────────────

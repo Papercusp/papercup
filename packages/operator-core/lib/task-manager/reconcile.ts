@@ -337,6 +337,19 @@ export function reconcile(
         pushOverdue(row, now, overdue);
         continue;
       }
+      // Present in the kernel but unlisted by the scan's display filter: still
+      // alive. Same pid AND same start time, so this cannot be a recycled pid.
+      if (row.pid != null && opts.unlistedIdentityByPid?.get(row.pid) === row.processIdentity) {
+        alive.push({
+          taskId: row.taskId,
+          pid: row.pid,
+          processIdentity: row.processIdentity,
+          pidsSeen: 1,
+          matchedBy: 'identity',
+        });
+        pushOverdue(row, now, overdue);
+        continue;
+      }
       // The row HAS an identity and the kernel does not have it. A pid match now
       // would be a recycled pid belonging to something else — refuse it outright
       // rather than "helpfully" keeping the row alive against a stranger.

@@ -167,6 +167,62 @@ describe('reconcile — PID recycling safety', () => {
   });
 });
 
+// WI-10005782: a wake executor's unconfined `claude -p --resume <id>` turn runs in
+// the operator's service cgroup and its argv names no repo path, so the scan's
+// foreign display filter never lists it. Before the fix every such row stranded
+// one grace period after spawn while the process kept running.
+describe('reconcile — unconfined task the scan read but did not list (WI-10005782)', () => {
+  const headless = () =>
+    row({
+      taskId: 'eee555',
+      class: 'agent-session',
+      confined: false,
+      scopeUnit: null,
+      pid: 5151,
+      processIdentity: 'linux:boot:7777',
+    });
+
+  it('keeps the row alive when the scan saw its pid with the SAME identity', () => {
+    const r = reconcile([headless()], [], {
+      now: NOW,
+      unlistedIdentityByPid: new Map([[5151, 'linux:boot:7777']]),
+    });
+    expect(r.stranded).toHaveLength(0);
+    expect(r.alive).toHaveLength(1);
+    expect(r.alive[0]).toMatchObject({
+      taskId: 'eee555',
+      pid: 5151,
+      processIdentity: 'linux:boot:7777',
+      matchedBy: 'identity',
+    });
+  });
+
+  it('strands the row when nothing carries the identity (the pre-fix reading, still correct for a dead turn)', () => {
+    const r = reconcile([headless()], [], { now: NOW });
+    expect(r.alive).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+    expect(r.stranded[0]!.reason).toMatch(/identity linux:boot:7777 is gone/);
+  });
+
+  it('REFUSES a recycled pid: same pid, different start time', () => {
+    const r = reconcile([headless()], [], {
+      now: NOW,
+      unlistedIdentityByPid: new Map([[5151, 'linux:boot:8888']]),
+    });
+    expect(r.alive).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+  });
+
+  it('REFUSES the identity under a different pid: a match needs pid AND start time', () => {
+    const r = reconcile([headless()], [], {
+      now: NOW,
+      unlistedIdentityByPid: new Map([[6262, 'linux:boot:7777']]),
+    });
+    expect(r.alive).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+  });
+});
+
 describe('reconcile — stranding', () => {
   it('strands a row whose scope holds no processes', () => {
     const r = reconcile([row({ taskId: 'eee555', scopeUnit: 'pc-eee555.scope' })], [], { now: NOW });
