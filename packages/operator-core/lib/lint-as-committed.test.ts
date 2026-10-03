@@ -126,7 +126,7 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       const cloneVite = (await readConfig('clone')).vite?.resolve;
       expect(cloneVite?.preserveSymlinks).toBe(true);
       expect(cloneVite?.alias?.map(({ find, replacement }) => ({ find: resolve(find), replacement })))
-        .toEqual([{ find: realRoot, replacement: `/@fs${realRoot}` }]);
+        .toEqual([{ find: logicalRoot, replacement: `/@fs${realRoot}` }]);
     } finally {
       if (before === undefined) delete process.env[envKey];
       else process.env[envKey] = before;
