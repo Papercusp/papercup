@@ -224,6 +224,7 @@ import {
   COMPLETION_FIELDS,
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
+  describeUnparseableCompletionJsonString,
   gatherFlatCompletion,
   hoistMisplacedCompletionFields,
 } from './completion-coerce';
@@ -346,7 +347,13 @@ const completionSpec = z
       // string, so reject it with the exact object-form repair example before Zod's
       // generic "expected object, received string" message can obscure the fix.
       if (typeof raw === 'string' && typeof coerced === 'string') {
-        ctx.addIssue({ code: 'custom', message: COMPLETION_STRING_REJECTION });
+        // WI-10005684: a brace-delimited string that failed JSON parsing/repair gets the
+        // parser's reason PREPENDED — the generic text alone read as "you sent prose".
+        const jsonReason = describeUnparseableCompletionJsonString(raw);
+        ctx.addIssue({
+          code: 'custom',
+          message: jsonReason ? `${jsonReason} ${COMPLETION_STRING_REJECTION}` : COMPLETION_STRING_REJECTION,
+        });
       }
       return coerced;
     },
@@ -701,7 +708,11 @@ function firstCompletionStringRejection(value: unknown): string | undefined {
     return undefined;
   }
   const record = value as { message?: unknown; errors?: unknown };
-  if (record.message === COMPLETION_STRING_REJECTION) return COMPLETION_STRING_REJECTION;
+  // WI-10005684: the issue may carry a JSON-parse reason PREFIX before the shared repair
+  // text, so match the shared text as a suffix and return the full (prefixed) message.
+  if (typeof record.message === 'string' && record.message.endsWith(COMPLETION_STRING_REJECTION)) {
+    return record.message;
+  }
   if (!Array.isArray(record.errors)) return undefined;
   for (const nested of record.errors) {
     const message = firstCompletionStringRejection(nested);

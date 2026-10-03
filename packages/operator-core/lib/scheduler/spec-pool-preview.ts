@@ -289,6 +289,64 @@ export function hasGuaranteedPositiveGoalFence(filter: FilterNode | undefined): 
 }
 
 /**
+ * The rows a single leaf admits when it is a BOUNDED id selector, else `null`.
+ *
+ * An id leaf admits at most the rows it names, so it cannot widen a lane into another
+ * goal's CLASS of work — the one harm {@link evaluateGoalFenceGuard} exists to prevent.
+ * `op:'='` names one row; `op:'in'` names a finite enumerated set, the shape `claim-spec`
+ * itself documents for an OR lane. An empty value names nothing and is a vacuous
+ * selector rather than an escape, so it does not qualify.
+ */
+function boundedIdLeafIds(node: FilterNode): string[] | null {
+  if (!('field' in node) || node.field !== 'id') return null;
+  if (node.op === '=') {
+    const value = String(node.value).trim();
+    return value.length > 0 ? [value] : null;
+  }
+  if (node.op === 'in') {
+    if (!Array.isArray(node.value)) return null;
+    const ids = node.value.map((value) => String(value).trim()).filter((value) => value.length > 0);
+    return ids.length > 0 ? ids : null;
+  }
+  return null;
+}
+
+/**
+ * The ids a candidate admits ALONGSIDE a retained positive goal fence, or `null` when the
+ * candidate is not that shape.
+ *
+ * This shape is the platform's OWN sanctioned repair: `fleet-scope-admission`'s
+ * `fencePreservingWidenFilter` emits `{ any: [ <current fence>, { field:'id', … } ] }`, and
+ * the `fleet_scope_violation` notice tells a leader to send exactly that through
+ * `scheduler:set_claim_spec`. Judged by {@link hasGuaranteedPositiveGoalFence} alone it is
+ * refused — every `any` arm must be fenced and an id leaf never is — so the platform
+ * recommended a repair its own write door rejected (WI-10005683; independently observed as
+ * EI-24769116390470623, where the strict every-arm rule "misreads sanctioned fleets").
+ *
+ * The carve-out is deliberately narrow, and both halves are load-bearing: at least one arm
+ * must still GUARANTEE the goal fence, and every other arm must name bounded rows. So
+ * `{ any: [ <fence>, {kind in …} ] }` stays refused, because a kind arm admits another
+ * active goal's whole backlog, which is exactly the drop-all-goal-scope edit this guard
+ * was built for.
+ */
+export function boundedRowEscapeIds(filter: FilterNode | undefined): string[] | null {
+  if (!filter || !('any' in filter) || filter.any.length === 0) return null;
+  let fencedArms = 0;
+  const admitted: string[] = [];
+  for (const arm of filter.any) {
+    if (hasGuaranteedPositiveGoalFence(arm)) {
+      fencedArms += 1;
+      continue;
+    }
+    const ids = boundedIdLeafIds(arm);
+    if (!ids) return null;
+    admitted.push(...ids);
+  }
+  if (fencedArms === 0 || admitted.length === 0) return null;
+  return admitted;
+}
+
+/**
  * Pure decision for the positive-goal-fence replacement guard.
  *
  * The guard is deliberately independent of pool counts: a widening replacement
@@ -302,6 +360,29 @@ export function evaluateGoalFenceGuard(input: GoalFenceGuardInput): CollapseGuar
     input.previousSource === 'authored' && hasGuaranteedPositiveGoalFence(input.previousFilter);
   if (!previousHasFence || hasGuaranteedPositiveGoalFence(input.candidateFilter)) {
     return { refuse: false, errors: [] };
+  }
+
+  // The fence-preserving row escape is ALLOWED but still DISCLOSED: the incumbent goal
+  // fence survives and the extra arms name bounded rows, so refusing it would reject the
+  // platform's own `fencePreservingWidenFilter` recommendation (WI-10005683). It is not
+  // routed through confirmGoalFenceDrop on purpose — that flag asserts the fence was
+  // DROPPED, which is false here, and habituating leaders to pass it on a routine
+  // platform-recommended admission would hollow out the acknowledgement where it matters.
+  const escapedIds = boundedRowEscapeIds(input.candidateFilter);
+  if (escapedIds) {
+    const shown = escapedIds.slice(0, 5).join(', ');
+    const more = escapedIds.length > 5 ? `, +${escapedIds.length - 5} more` : '';
+    return {
+      refuse: false,
+      errors: [],
+      warning:
+        'the proposed claim-spec revision RETAINS the incumbent positive goal fence and admits ' +
+        `${escapedIds.length} explicitly named row(s) alongside it (${shown}${more}). This is the ` +
+        'fence-preserving shape fleet-scope admission recommends for a verified cross-scope ' +
+        'dependency, so it is allowed without confirmGoalFenceDrop:true. The admitted rows are ' +
+        'bounded by enumeration and cannot pull in another active goal\'s class of work; verify ' +
+        'each named row is one this lane genuinely needs.',
+    };
   }
 
   const message =
