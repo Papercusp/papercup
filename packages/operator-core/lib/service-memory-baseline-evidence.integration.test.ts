@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 
@@ -115,6 +116,109 @@ function auditBaseline(r: any) {
       ordinaryAllocatedBytes: data[w * 3 + 2].allocatedBytes - data[w * 3 + 1].allocatedBytes })),
     allocationOwner: 'unknown', requestAssignment: 'unknown', physicalSavings: 'unmeasured',
     definition: 'Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled.' };
+}
+
+// Check the persisted request relation against the raw terminal pool samples.
+// The emitter's projected counts, SQL family labels and timing are not identity.
+function auditRequestQueries(r: any) {
+  const requireRequest = (value: unknown, reason: string) => {
+    if (!value) throw Error('P011 request query: ' + reason);
+  };
+  const uuid = (x: unknown) => typeof x === 'string' &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(x);
+  const natural = (x: unknown) => Number.isSafeInteger(x) && Number(x) >= 0;
+  const queryIdentity = (q: any) => JSON.stringify([q.source?.processInstanceId,
+    q.source?.buildSha, q.source?.poolInstanceId, q.connectionId, q.queryId]);
+  requireRequest(r.schemaVersion === 1 && r.mode === 'ordinary' &&
+    r.plane === 'isolated-current-build-operator-api' && r.incomplete === false &&
+    !r.error && r.runner?.status === 0 && r.runner.signal === null, 'complete ordinary run');
+  requireRequest(sha(r.bundleHash) && /^[a-f0-9]{7,40}$/.test(r.buildSha), 'artifact identity');
+  requireRequest(r.profilerOperations.length === 0 && r.retainedContainers.length === 0 &&
+    r.pauses === 0 && r.hostReaped === true, 'unprofiled cleanup');
+  requireRequest(r.workload.population === 1024 && r.workload.pageLimit === 128 &&
+    r.workload.windows === 3 && r.workload.requestsPerWindow === 8 &&
+    r.workload.concurrency === 8 && r.windows.length === 3, 'workload bounds');
+  const labels = ['query-preflight', ...Array.from({ length: 3 }, (_, w) =>
+    ['idle-' + w + '-start', 'idle-' + w + '-end', 'ordinary-' + w + '-start', 'ordinary-' + w + '-end']).flat()];
+  requireRequest(r.samples.length === 13 && isDeepStrictEqual(r.samples.map((s: any) => s.label), labels),
+    'raw sample population');
+  const target = r.samples[0].processes[0], processIdentity = identity(target);
+  requireRequest(target.pid === r.pid && r.inspector.pid === r.pid && /^\d+$/.test(target.startTicks) &&
+    sha(target.executableSha256), 'process identity');
+  let priorAt = time(r.startedAt), priorAllocated = 0;
+  for (const s of r.samples) {
+    requireRequest(s.pid === r.pid && time(s.at) > priorAt &&
+      s.processes.filter((p: any) => p.pid === r.pid).length === 1 &&
+      identity(s.processes.find((p: any) => p.pid === r.pid)) === processIdentity, 'stable raw process');
+    requireRequest(s.processes.every((p: any) => positive(p.pssBytes) && positive(p.rssBytes) &&
+      p.pssBytes <= p.rssBytes && nonnegative(p.anonymousBytes)) &&
+      positive(s.memory.heapUsed) && s.memory.heapUsed <= s.memory.heapTotal &&
+      nonnegative(s.memory.external) && nonnegative(s.memory.arrayBuffers) &&
+      s.memory.arrayBuffers <= s.memory.external && positive(s.heap.total_allocated_bytes) &&
+      s.heap.total_allocated_bytes >= priorAllocated, 'raw OS and V8 resources');
+    priorAt = time(s.at); priorAllocated = s.heap.total_allocated_bytes;
+  }
+  requireRequest(time(r.finishedAt) >= priorAt, 'terminal time fence');
+  const processInstances = new Set<string>(), poolInstances = new Map<string, string>();
+  const seenRequests = new Set<string>(), seenQueries = new Set<string>();
+  function joinRequests(requestIds: string[], projected: any[], sample: any, start: number) {
+    requireRequest(requestIds.every(uuid) && new Set(requestIds).size === requestIds.length &&
+      requestIds.every(id => !seenRequests.has(id)), 'unique HTTP request IDs');
+    requestIds.forEach(id => seenRequests.add(id));
+    const ids = new Set(requestIds);
+    const raw = sample.pools.flatMap((p: any) => p.results
+      .filter((q: any) => ids.has(q.correlation?.requestId)).map((q: any) => ({ ...q, pool: p.pool })));
+    requireRequest(raw.length > 0 && raw.length === projected.length &&
+      projected.every(q => raw.filter((x: any) => isDeepStrictEqual(q, x)).length === 1) &&
+      raw.every((q: any) => projected.filter(x => isDeepStrictEqual(q, x)).length === 1),
+      'projection equals raw terminal relation');
+    const counts = new Map(requestIds.map(id => [id, 0]));
+    for (const q of raw) {
+      const c = q.correlation, source = q.source, key = queryIdentity(q);
+      requireRequest(q.correlationState === 'linked' && c.operation === 'workItems.byHarness' &&
+        c.attemptId === c.requestId && uuid(source.processInstanceId) && uuid(source.poolInstanceId) &&
+        c.processInstanceId === source.processInstanceId, 'request and process correlation');
+      requireRequest(typeof c.buildSha === 'string' && /^[a-f0-9]{7,40}$/.test(c.buildSha) &&
+        r.buildSha.startsWith(c.buildSha) && (source.buildSha === null || source.buildSha === c.buildSha),
+        'query build correspondence');
+      requireRequest(typeof q.pool === 'string' && q.pool.length > 0 &&
+        natural(q.connectionId) && natural(q.queryId) && positive(q.backendPid) &&
+        q.status === 'ok' && q.errorCode === null && q.command === 'select' &&
+        natural(q.rowCount) && natural(q.wireBytes) && nonnegative(q.elapsedMs) &&
+        q.recordedAt >= start && q.recordedAt <= time(sample.at), 'completed query bounds');
+      requireRequest(!seenQueries.has(key), 'unique exact query tuple');
+      seenQueries.add(key); processInstances.add(source.processInstanceId);
+      requireRequest(!poolInstances.has(q.pool) || poolInstances.get(q.pool) === source.poolInstanceId,
+        'stable pool instance');
+      poolInstances.set(q.pool, source.poolInstanceId);
+      counts.set(c.requestId, counts.get(c.requestId)! + 1);
+    }
+    requireRequest(processInstances.size === 1 && requestIds.every(id => counts.get(id)! > 0),
+      'one-to-many request coverage');
+    return [...requestIds].sort().map(requestId => ({ requestId, queries: raw.filter((q: any) =>
+      q.correlation.requestId === requestId).map((q: any) => queryIdentity(q)).sort() }));
+  }
+  requireRequest(r.namedQuery.httpRows === 128 && r.namedQuery.expectedDbRows === 129,
+    'warm route functionality');
+  const warm = joinRequests([r.namedQuery.requestId], r.namedQuery.results, r.samples[0], r.namedQuery.startedAt);
+  const windows = r.windows.map((w: any, index: number) => {
+    const [idleStart, idleEnd, start, end] = r.samples.slice(1 + index * 4, 5 + index * 4);
+    requireRequest(w.window === index && w.idleMs === 2000 &&
+      time(idleEnd.at) - time(idleStart.at) >= 2000 && w.startAt === start.at && w.endAt === end.at &&
+      w.idleAllocation === null && w.ordinaryAllocation === null, 'matched unforced window');
+    requireRequest(w.responses.length === 8 && sha(r.rowFingerprint) &&
+      w.responses.every((h: any) => h.rows === 128 && positive(h.bytes) && h.rowFingerprint === r.rowFingerprint),
+      'unchanged useful HTTP rows');
+    return { window: index, requests: joinRequests(w.responses.map((h: any) => h.requestId),
+      w.completedPageResults, end, time(start.at)),
+    idlePssDeltaBytes: idleEnd.processes[0].pssBytes - idleStart.processes[0].pssBytes,
+    ordinaryPssDeltaBytes: end.processes[0].pssBytes - start.processes[0].pssBytes,
+    ordinaryAllocatedBytes: end.heap.total_allocated_bytes - start.heap.total_allocated_bytes };
+  });
+  return { processIdentity, warm, windows, requestCount: seenRequests.size - 1,
+    queryCount: windows.reduce((n: number, w: any) => n + w.requests.reduce((m: number, h: any) => m + h.queries.length, 0), 0),
+    retainedOwner: 'unobserved', workerCloneIdentity: 'unobserved', nativePhysicalOwnership: 'unknown',
+    fullExecutedSourceGraph: 'unknown', physicalSavings: 'unmeasured' };
 }
 
 // Join the CDP singleton IDs to the native graph from the SAME captured input.
@@ -324,6 +428,77 @@ describe('independent P011 baseline raw evidence', () => {
     writeFileSync(resolve(root, destination), serializeIdentitySafeJson({ schemaVersion: 'p011-baseline-independent-v1',
       proofs, independentOf: 'No emitter import or headline totals; raw OS/V8 rows, HTTP records and identity fences.',
       physicalSavings: 'unmeasured', allocationOwner: 'unknown', requestAssignment: 'unknown' }));
+  });
+});
+
+describe('P011 independent named HTTP query evidence', () => {
+  const path = 'docs/evidence/papercusp-oct1-p011-request-ordinary-r4-2026-10-03.json';
+  function savedRequestRun() {
+    const bytes = readFileSync(resolve(root, path));
+    expect(digest(bytes)).toBe('75d53593c9533426a1c2dbfb4c0f30cc90318a7402b00d0f22d80bf691ebb830');
+    return JSON.parse(bytes.toString());
+  }
+  function changeBoth(r: any, change: (q: any) => void) {
+    const projected = r.windows[0].completedPageResults[0];
+    const pool = r.samples[4].pools.find((p: any) => p.pool === projected.pool);
+    const raw = pool.results.find((q: any) => q.connectionId === projected.connectionId && q.queryId === projected.queryId);
+    change(raw); change(projected);
+  }
+  it('audits saved ordinary request relations without replaying the producer', () => {
+    const result = auditRequestQueries(savedRequestRun());
+    expect(result.requestCount).toBe(24); expect(result.queryCount).toBe(48);
+    expect(result.windows.every((w: any) => w.requests.every((h: any) => h.queries.length === 2))).toBe(true);
+    const destination = process.env.PAPERCUSP_P011_REQUEST_ORACLE_REPORT;
+    if (destination) {
+      const bytes = readFileSync(resolve(root, path));
+      writeFileSync(resolve(root, destination), serializeIdentitySafeJson({
+        schemaVersion: 'p011-request-query-independent-v1', proof: { path, sha256: digest(bytes), bytes: bytes.length, result },
+        independentOf: 'No emitter/helper import; exact UUID and query tuples conserved against terminal raw pool rows.',
+        limitations: ['Saved private ordinary process only; no new runtime or snapshot.',
+          'No raw snapshot, decoded-object heap IDs, worker-clone identity or retained-owner acceptance.',
+          'Build-recorded artifact; full executed source graph and production savings remain unmeasured.'],
+      }));
+    }
+  });
+  it('preserves one-to-many joins when request and query completion order is reversed', () => {
+    const r = savedRequestRun(), before = auditRequestQueries(r);
+    r.namedQuery.results.reverse();
+    for (const w of r.windows) { w.responses.reverse(); w.completedPageResults.reverse(); }
+    for (const s of r.samples) { s.pools.reverse(); for (const p of s.pools) p.results.reverse(); }
+    expect(auditRequestQueries(r)).toEqual(before);
+  });
+  const corruptions: Array<[string, (r: any) => void]> = [
+    ['incomplete run', r => { r.incomplete = true; }],
+    ['wrong evidence plane', r => { r.plane = 'live-current-build-operator-api'; }],
+    ['runner failure', r => { r.runner.status = 1; }],
+    ['profiler operation', r => { r.profilerOperations.push({ method: 'HeapProfiler.collectGarbage' }); }],
+    ['unreaped host', r => { r.hostReaped = false; }],
+    ['sample missing', r => { r.samples.pop(); }],
+    ['process reuse', r => { r.samples[4].processes[0].startTicks += '1'; }],
+    ['duplicate sampled PID', r => { r.samples[4].processes.push(r.samples[4].processes[0]); }],
+    ['RSS-only resources', r => { delete r.samples[4].processes[0].pssBytes; }],
+    ['negative allocation delta', r => { r.samples[4].heap.total_allocated_bytes = 0; }],
+    ['window time substitution', r => { r.windows[0].endAt = r.windows[1].endAt; }],
+    ['useful row drift', r => { r.windows[0].responses[0].rowFingerprint = 'e'.repeat(64); }],
+    ['missing HTTP UUID', r => { delete r.windows[0].responses[0].requestId; }],
+    ['duplicated HTTP UUID', r => { r.windows[0].responses[1].requestId = r.windows[0].responses[0].requestId; }],
+    ['cross-window UUID reuse', r => { r.windows[1].responses[0].requestId = r.windows[0].responses[0].requestId; }],
+    ['dropped secondary query', r => { r.windows[0].completedPageResults.pop(); }],
+    ['duplicated projected query', r => { r.windows[0].completedPageResults[1] = r.windows[0].completedPageResults[0]; }],
+    ['count/time-only join', r => { r.windows[0].completedPageResults[0].correlation.requestId = r.windows[0].responses[0].requestId; }],
+    ['wrong operation on both sides', r => { changeBoth(r, q => { q.correlation.operation = 'other.byHarness'; }); }],
+    ['foreign process on both sides', r => { changeBoth(r, q => { q.correlation.processInstanceId = 'foreign'; }); }],
+    ['foreign build on both sides', r => { changeBoth(r, q => { q.correlation.buildSha = 'e'.repeat(10); }); }],
+    ['inconsistent source build', r => { changeBoth(r, q => { q.source.buildSha = 'e'.repeat(10); }); }],
+    ['pool instance drift', r => { changeBoth(r, q => { q.source.poolInstanceId = '00000000-0000-0000-0000-000000000001'; }); }],
+    ['unobserved request on both sides', r => { changeBoth(r, q => { q.correlationState = 'unobserved'; }); }],
+    ['failed query on both sides', r => { changeBoth(r, q => { q.status = 'error'; }); }],
+    ['query outside window', r => { changeBoth(r, q => { q.recordedAt = Date.parse(r.startedAt); }); }],
+    ['query numeric identifier absent', r => { changeBoth(r, q => { delete q.queryId; }); }],
+  ];
+  it.each(corruptions)('rejects %s', (_name, corrupt) => {
+    const r = savedRequestRun(); corrupt(r);
+    expect(() => auditRequestQueries(r)).toThrow('P011 request query:');
   });
 });
 
