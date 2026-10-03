@@ -26,6 +26,7 @@ import {
   parseCliArgs,
   repoLockName,
   runCommandUnderInstallMutex,
+  USAGE,
   verifyDepsExtracted,
   withPackageCacheReadLease,
   verificationScopeForNpmArgs,
@@ -770,9 +771,11 @@ test("test:file runs Vitest under the repo install reader mutex", () => {
   const packageJson = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8"),
   );
+  // WI-10005802: both hops start under the committed-source loader, so the mutex wrapper and the
+  // router run their committed (HEAD) bytes.
   assert.match(
     packageJson.scripts["test:file"],
-    /bash scripts\/pc-heavy\.sh node scripts\/npm-install-safe\.mjs --exec-under-lock -- node scripts\/test-files\.mjs$/,
+    /bash scripts\/pc-heavy\.sh node --import \.\/scripts\/lib\/committed-source-loader\.mjs scripts\/npm-install-safe\.mjs --exec-under-lock -- node --import \.\/scripts\/lib\/committed-source-loader\.mjs scripts\/test-files\.mjs$/,
   );
 });
 
@@ -814,4 +817,29 @@ test("symlinked npm-install-safe CLI executes reader commands", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// EI-24937341882865098: `--help` used to be rewritten to `npm install --help`, which first waited
+// on the repo-keyed install mutex — a silent multi-minute hang that read like a real install.
+test("parseCliArgs treats a leading --help / -h as a wrapper help request", () => {
+  assert.deepEqual(parseCliArgs(["--help"]), { help: true });
+  assert.deepEqual(parseCliArgs(["-h"]), { help: true });
+  // Only the FIRST argument is the wrapper's: an explicit npm subcommand keeps npm's own help.
+  assert.deepEqual(parseCliArgs(["install", "--help"]).npmArgs, ["install", "--help"]);
+  // Calibration: an ordinary leading flag still gets the implicit install.
+  assert.deepEqual(parseCliArgs(["--legacy-peer-deps"]).npmArgs, ["install", "--legacy-peer-deps"]);
+});
+
+test("the CLI prints usage for --help and exits 0 without spawning npm or taking the mutex", () => {
+  const cli = fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url));
+  // A PATH with no npm on it: if --help ever reached npm again the child would fail, not hang.
+  const result = spawnSync(process.execPath, [cli, "--help"], {
+    encoding: "utf8",
+    timeout: 20_000,
+    env: { ...process.env, PATH: "/nonexistent-npm-install-safe-help" },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, USAGE);
+  assert.match(USAGE, /^Usage: npm run install:safe/);
 });
