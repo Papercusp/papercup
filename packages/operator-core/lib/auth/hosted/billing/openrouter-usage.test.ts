@@ -26,6 +26,20 @@ function setup(change: Record<string, unknown> = {}) {
     collector: new OpenRouterHostedUsageCollector({ readBinding, readCredential, fetch, append, ...change }) };
 }
 describe('OpenRouter hosted usage collector', () => {
+  it('preserves the original JSON decimal token before Number parsing loses low digits', async () => {
+    const s = setup({ fetch: async () => new Response('{"data":{"id":"gen-server-recorded","is_byok":false,"total_cost":0.001234560000000000000001}}') });
+    const result = await s.collector.collect({ scope, generationId: binding.generationId });
+    expect(result).toMatchObject({ outcome: 'recorded', record: { costMicros: 1234, costMicrosExact: '1234.560000000000000001' } });
+    expect(s.append.mock.calls[0]?.[0].costMicrosExact).toBe('1234.560000000000000001');
+  });
+  it('preserves a numeric exponent token and refuses unsupported excessive precision without rounding', async () => {
+    for (const [token, exact] of [['1.234567890123456789E-7', '0.1234567890123456789'], ['1e-9999', null]] as const) {
+      const s = setup({ fetch: async () => new Response('{"data":{"id":"gen-server-recorded","is_byok":false,"total_cost":' + token + '}}') });
+      const result = await s.collector.collect({ scope, generationId: binding.generationId });
+      expect(result).toMatchObject({ outcome: 'recorded', record: exact === null
+        ? { costSource: 'unpriced', costMicros: null } : { costSource: 'provider-reported', costMicros: 0, costMicrosExact: exact } });
+    }
+  });
   it('reads only the bound generation metadata using the bound account and persists a whitelist', async () => {
     const s = setup(); const result = await s.collector.collect({ scope, generationId: binding.generationId });
     expect(result.outcome).toBe('recorded'); expect(s.readBinding).toHaveBeenCalledWith(scope, binding.generationId);

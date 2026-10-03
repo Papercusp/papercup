@@ -47,6 +47,9 @@ function snapshotScope(value: Scope): Scope {
 }
 const sameScope = (a: Scope, b: Scope) => a.controlWorkspaceId === b.controlWorkspaceId
   && a.organizationId === b.organizationId && a.customerWorkspaceId === b.customerWorkspaceId;
+// Constructed only by the native JSON parser's numeric-token reviver. Arbitrary
+// provider strings/objects must never masquerade as a numeric account charge.
+class ProviderDecimal { constructor(readonly source: string) {} }
 
 /** Convert the provider's decimal USD representation without float multiplication.
  * Preserve submicro charges as canonical decimals on the same receipt rail;
@@ -54,12 +57,15 @@ const sameScope = (a: Scope, b: Scope) => a.controlWorkspaceId === b.controlWork
  * The shadow display's usdToMicros intentionally rounds and maps missing to
  * zero, so it cannot supply this commercial receipt's exact/unknown contract. */
 function exactMicros(value: unknown): { micros: number; exact: string } | null {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
-  const parts = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/.exec(String(value));
+  const token = value instanceof ProviderDecimal ? value.source
+    : typeof value === 'number' && Number.isFinite(value) && value >= 0 ? String(value) : '';
+  if (token.length > 350) return null;
+  const parts = /^(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token);
   if (!parts) return null;
   const fraction = parts[2] ?? '';
   const coefficient = BigInt(parts[1]! + fraction);
   const power = 6 + Number(parts[3] ?? 0) - fraction.length;
+  if (!Number.isSafeInteger(power) || Math.abs(power) > 324) return null;
   try {
     return splitMicrosDecimal(formatMicrosDecimal(power < 0 ? coefficient : coefficient * 10n ** BigInt(power), Math.max(0, -power)));
   } catch { return null; }
@@ -124,7 +130,13 @@ export class OpenRouterHostedUsageCollector {
     }
     if (!response.ok) return { outcome: 'unavailable' as const, reason: 'provider-http-error' as const, status: response.status };
     let normalized: HostedUsageRecord;
-    try { normalized = openRouterUsageRecord(binding, await response.json()); }
+    try {
+      const payload: unknown = JSON.parse(await response.text(), (key, value: unknown, context?: { source?: string }) =>
+        key === 'total_cost' && typeof value === 'number'
+          // A runtime without source-token support stays explicitly unpriced.
+          ? new ProviderDecimal(context?.source ?? '') : value);
+      normalized = openRouterUsageRecord(binding, payload);
+    }
     catch { return { outcome: 'unavailable' as const, reason: 'invalid-provider-report' as const }; }
     const append = this.options.append ?? (r => new PostgresHostedUsageStore().append(r));
     const outcome = await append(normalized);
