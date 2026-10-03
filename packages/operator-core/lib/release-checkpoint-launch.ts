@@ -32,6 +32,7 @@ import { readFile as readFileAsync, readdir as readdirAsync } from 'node:fs/prom
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
+import { restrictedTreeHoldRefusal, type RestrictedHoldRefusal } from './agent-tools/testing/restricted-hold-fence';
 import { CHECKPOINT_RUN_LOCK_STALE_MS } from './release-checkpoint-lock';
 import { greenCheckpointDbPoolSetenvArgs } from './release/checkpoint-db-pool';
 import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './release/checkpoint-log-tags';
@@ -224,6 +225,10 @@ export interface LaunchCheckpointResult {
    *  run is holding the budget, retry later" is a different instruction to the caller than a
    *  spawn failure, and the numbers behind the verdict are what make it checkable. */
   memoryAdmission?: CheckpointMemoryAdmission;
+  /** Present when the launch was refused because a restricted session's writes are held in the
+   *  tree this launch executes from (WI-10005763, D-012); `reason` is its `error`. Nothing was
+   *  started or stopped. The census and the reason text are the routine dispatchers' own. */
+  restrictedHold?: RestrictedHoldRefusal;
   /** EI-9672: set when `replaceStale:true` found the active run CONFIRMED stale and stopped
    *  it before this launch — the detail of what was stopped, for the caller's audit trail. */
   replacedStale?: ActiveCheckpointCheck;
@@ -2735,6 +2740,19 @@ export async function launchDetachedCheckpoint(
       logPath: runLogPath,
       reason: 'invalid_candidate',
     });
+  }
+
+  // WI-10005763 (D-012): the launched unit runs the green-checkpoint orchestrator FROM `root`, the
+  // live shared tree, with network. Code a restricted session left there must not execute, so this
+  // refuses before everything else — `force` included, and BEFORE the replaceStale branch below, so
+  // a refusal can never stop a live run. Fencing the launcher (not only the release:checkpoint-run
+  // door) covers its other callers too: repair auto-verify, the fire drill, the stall watchdog and
+  // the eligibility workflow. Same census + reason text as the routine dispatchers
+  // (restricted-tree-skip.ts). A synchronous injected fence keeps the same-tick spawn contract.
+  const fenceRead: ProbeAwaitable<RestrictedHoldRefusal | null> = restrictedTreeHoldRefusal([root, subjectRoot]);
+  const restrictedHold = isPromiseLike(fenceRead) ? await fenceRead : fenceRead;
+  if (restrictedHold) {
+    return { launched: false, unit, argv: [], logPath, reason: restrictedHold.error, restrictedHold };
   }
 
   if (!opts.force) {
