@@ -492,6 +492,32 @@ RUN chmod 0755 /usr/libexec/papercusp/host-prepare.sh \
 RUN install -d -o root -g "$PAPERCUSP_RUNTIME_READ_GROUP" -m 0750 \
       /opt/papercusp /opt/papercusp/releases
 
+# ── Layer 8: /usr/local is machine-local (WI-10005830) ────────────────────────
+#
+# On this base `/usr/local` is a real directory inside `/usr` (MEASURED
+# 2026-10-03: `ls -ld /usr/local` in quay.io/centos-bootc/centos-bootc:stream9 is
+# a directory, not a link), so it is read-only on a booted host. The workspace-host
+# bootstrap installs into it at runtime — the privileged SSH conduits, native OMP,
+# the ollama runtime and the customer agent toolchain — and the first AWS clean
+# room to get past install-runtime died there:
+#   install: cannot create regular file '/usr/local/bin/papercusp-workspace-host-initialize': Read-only file system
+# Linking it to machine-local `/var/usrlocal` is the traditional OSTree layout; the
+# base's own `rpm-ostree-0-integration-opt-usrlocal.conf` already creates
+# `/var/usrlocal` for it, and papercusp-usrlocal.conf creates the subdirectories.
+# The bootstrap's validate-host phase asserts this link before its first write
+# (WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET).
+#
+# The base's `/usr/local` holds only empty directories from the `filesystem` RPM.
+# Refuse to build if anything earlier in this file put a FILE there: removing it
+# would silently drop that content from the image.
+COPY papercusp-usrlocal.tmpfiles.conf /usr/lib/tmpfiles.d/papercusp-usrlocal.conf
+RUN set -eu; \
+    leftover="$(find /usr/local -mindepth 1 -not -type d -print -quit)"; \
+    if [ -n "$leftover" ]; then echo "refusing to replace /usr/local: it carries image content ($leftover)" >&2; exit 1; fi; \
+    rm -rf /usr/local; \
+    ln -s ../var/usrlocal /usr/local; \
+    [ "$(readlink /usr/local)" = ../var/usrlocal ]
+
 # ── Lint ──────────────────────────────────────────────────────────────────────
 # `bootc container lint` validates that this image can actually be deployed as a
 # host (kernel + bootloader shape, ostree-incompatible layout). It catches the

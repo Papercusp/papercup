@@ -147,6 +147,28 @@ export const WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS = `${WORKSPACE_HOST_STATE_ROO
  */
 export const WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH =
   '/usr/lib/papercusp/release-registry-namespace';
+/**
+ * WI-10005830: where `/usr/local` must resolve on a bootc host.
+ *
+ * On the bootc base `/usr/local` is a real directory inside the read-only `/usr`, so every runtime
+ * install the bootstrap makes there (the privileged conduits below, native OMP, the ollama
+ * runtime, the customer agent toolchain) died with EROFS — the first AWS bootc clean room that got
+ * past install-runtime died on the initializer conduit. The image links `/usr/local` to this
+ * machine-local root (`infra/images/bootc/workspace-host.Containerfile`), the layout the base's
+ * own `rpm-ostree-0-integration-opt-usrlocal.conf` dropin already creates `/var/usrlocal` for,
+ * and `validate-host` asserts the link before anything writes through it. The bundle model keeps
+ * an ordinary writable `/usr/local` and never consults this.
+ */
+export const WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET = '/var/usrlocal';
+/**
+ * The `ollama` service account's home, which is also where it stores pulled models. The bundle
+ * model keeps the upstream installer's `/usr/share/ollama` (live GCP hosts already carry it); a
+ * bootc host cannot create a home under the read-only `/usr`, so it uses machine-local `/var/lib`.
+ */
+export const WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL = {
+  'ubuntu-release-bundle': '/usr/share/ollama',
+  'bootc-image': '/var/lib/ollama',
+} as const satisfies Record<WorkspaceHostModel, string>;
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT =
   "/usr/local/bin/papercusp-workspace-host-initialize";
 export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT =
@@ -2023,6 +2045,7 @@ function customerAgentToolchainInstallLines(
  */
 function localInferenceRuntimeInstallLines(
   installs: readonly WorkspaceHostAgentRuntimeInstall[],
+  hostModel: WorkspaceHostModel,
 ): string[] {
   if (!installs.some((install) => install.agent === 'omp')) return [];
   const version = WORKSPACE_HOST_OLLAMA_VERSION;
@@ -2105,7 +2128,7 @@ function localInferenceRuntimeInstallLines(
     '  die "local-inference runner (llama-server) missing after install"',
     'fi',
     'getent group ollama >/dev/null || groupadd --system ollama || die "could not create the ollama group"',
-    'getent passwd ollama >/dev/null || useradd --system --gid ollama --home-dir /usr/share/ollama --create-home --shell /usr/sbin/nologin ollama || die "could not create the ollama account"',
+    `getent passwd ollama >/dev/null || useradd --system --gid ollama --home-dir ${WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL[hostModel]} --create-home --shell /usr/sbin/nologin ollama || die "could not create the ollama account"`,
     'cat > /etc/systemd/system/ollama.service <<PAPERCUSP_OLLAMA',
     '[Unit]',
     'Description=Papercusp local-inference runtime',
@@ -2189,6 +2212,15 @@ function hostModelValidateLines(v: ValidatedBootstrapInput): string[] {
     'BOOTED_BASE_IMAGE="$(cat /usr/lib/papercusp/base-image 2>/dev/null || true)"',
     '[[ -n "$BOOTED_BASE_IMAGE" ]] || die "booted image does not record its base at /usr/lib/papercusp/base-image"',
     'if [[ "$BOOTC_BASE_IMAGE" != "$BOOTED_BASE_IMAGE" ]]; then die "booted image was built from $BOOTED_BASE_IMAGE, not the expected $BOOTC_BASE_IMAGE"; fi',
+    // WI-10005830: every later phase installs under /usr/local (conduits, OMP, the ollama runtime,
+    // the customer toolchain). On this model that is only writable because the image links it to
+    // machine-local storage, so assert the link HERE, before the first write, and name the cause —
+    // otherwise the host dies phases later on a bare EROFS from whichever install comes first.
+    `[[ -L /usr/local && "$(readlink -f /usr/local)" == ${shellQuote(WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET)} ]] || die "/usr/local does not link to ${WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET} on the booted image, so every runtime install under it would hit the read-only /usr (WI-10005830)"`,
+    // The image's tmpfiles dropin creates these at boot; creating them here too keeps the install
+    // phases independent of whether systemd-tmpfiles has run yet. Explicit mode, because this
+    // script runs under umask 027 and secure_path directories must be traversable.
+    'install -d -o root -g root -m 0755 /usr/local/bin /usr/local/sbin /usr/local/lib /usr/local/libexec',
   ];
 }
 
@@ -2933,7 +2965,7 @@ export function buildWorkspaceHostBootstrap(
     'NODE_MAJOR="${NODE_MAJOR%%.*}"',
     '[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge "$MINIMUM_NODE_MAJOR" ]] || die "bundled Node runtime is below the required floor"',
     ...agentRuntimeInstallLines(agentRuntimeInstalls),
-    ...localInferenceRuntimeInstallLines(agentRuntimeInstalls),
+    ...localInferenceRuntimeInstallLines(agentRuntimeInstalls, hostModel),
     ...workspaceOmpRuntimeInstallLines(agentRuntimeInstalls),
     ...customerAgentToolchainInstallLines(agentRuntimeInstalls),
     "",
