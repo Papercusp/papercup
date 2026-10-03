@@ -26,6 +26,7 @@
  * dispatch stack — runs for real.
  */
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, createConnection } from 'node:net';
@@ -4779,13 +4780,58 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     const res = await callTool(
       'gatingtest:scoped',
       {},
-      superuserExtra('&client=su-parent-sid', {
+      superuserExtra('&workspace=ws-test&client=su-parent-sid', {
         'x-papercusp-native-session': 'native-child-session',
       }),
     );
     expect(res.isError).toBe(true);
     expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-parent-sid', sessionId: 'native-child-session' }]);
     expect(seen).toHaveLength(0);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]).toMatchObject({
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_foreign_native_session',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_foreign_native_session',
+          contextVerified: false,
+          nativeSession: {
+            carrier: 'header:x-papercusp-native-session',
+            valueFingerprint: createHash('sha256').update('native-child-session', 'utf8').digest('hex'),
+            candidateAdvSessionId: 1,
+          },
+        },
+      },
+    });
+    expect(h.invocations[0]?.args).toBeUndefined();
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('native-child-session');
+  });
+
+  it('records the native-session URL carrier without persisting its value', async () => {
+    h.nativeSessionBinding = 'foreign';
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&workspace=ws-test&client=su-parent-sid&native_session=native-child-session'),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('request_rejected: superuser_foreign_native_session');
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-parent-sid', sessionId: 'native-child-session' }]);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]?.metadataJson).toMatchObject({
+      mcpAuthFailure: {
+        reason: 'superuser_foreign_native_session',
+        contextVerified: false,
+        nativeSession: {
+          carrier: 'query:native_session',
+          valueFingerprint: createHash('sha256').update('native-child-session', 'utf8').digest('hex'),
+          candidateAdvSessionId: 1,
+        },
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('native-child-session');
   });
 
   it('allows the owner incarnation when Claude supplies its native session in the URL', async () => {

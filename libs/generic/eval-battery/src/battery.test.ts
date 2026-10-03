@@ -100,6 +100,25 @@ describe('runBattery — happy path', () => {
 });
 
 describe('runBattery — never abort', () => {
+  it('preserves measured charges when judge repair replies never satisfy the output contract', async () => {
+    const results = await runBattery(
+      { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },
+      { subject: fakeSubject(), ...clock(), llmCall: async () => ({
+        text: 'invalid fixture reply', costUsd: 0.02, inputTokens: 1, outputTokens: 1,
+      }) },
+    );
+    expect(results[0]).toMatchObject({ status: 'errored', judgeCostUsd: 0.04, judgeCostMeasured: true });
+  });
+
+  it.each([undefined, 0.03])('preserves the distinction between unknown and measured thrown charges (%s)', async (costUsd) => {
+    const error = Object.assign(new Error('judge transport failed'), costUsd === undefined ? {} : { costUsd });
+    const results = await runBattery(
+      { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },
+      { subject: fakeSubject(), ...clock(), llmCall: async () => { throw error; } },
+    );
+    expect(results[0]).toMatchObject({ status: 'errored', judgeCostUsd: costUsd ?? 0, judgeCostMeasured: costUsd !== undefined });
+  });
+
   it('records a run error as `errored` and continues to the next cell', async () => {
     const subject = fakeSubject({
       run: async (cell) => {
