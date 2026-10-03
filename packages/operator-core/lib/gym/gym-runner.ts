@@ -24,6 +24,10 @@ export interface GymOracleRun {
   testPath: string;
   pinCommit: string;
   sourceHashes: { pinned: string | null; before: string | null; after: string | null };
+  /** Principal implementation bytes measured around this test process. This
+   * does not identify imported code, the runner, or the remote pipeline. */
+  implementation?: { path: string; before: string | null; after: string | null } | null;
+  execution?: { command: string[]; cwd: string; report: string; unresolved: string[] };
 }
 
 export interface GymOracleSpec {
@@ -86,7 +90,7 @@ export interface GymRunnerPorts {
     featureStatus: string | null;
   }>;
   /** Run the task's immutable oracle inside the clone and return per-test results. */
-  runOracle?(i: { clonePath: string; testPath: string; pinCommit?: string }): Promise<TestResult[] | GymOracleRun | undefined>;
+  runOracle?(i: { clonePath: string; testPath: string; pinCommit?: string; implPath?: string }): Promise<TestResult[] | GymOracleRun | undefined>;
   teardownHarness(i: { slug: string; clonePath: string; workspaceId: string }): Promise<void>;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -133,6 +137,7 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
         clonePath,
         testPath: spec.task.oracle.testPath,
         pinCommit: spec.task.oracle.pinCommit,
+        implPath: spec.task.oracle.implPath,
       });
       if (!results) return undefined;
       // Legacy/custom array ports have no immutable-source receipt. Retain their
@@ -211,17 +216,24 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           [preOracle, postOracle].every((receipt) => receipt &&
             receipt.testPath === spec.task.oracle!.testPath && receipt.pinCommit === spec.task.oracle!.pinCommit &&
             Object.values(receipt.sourceHashes).every((value) => value === pinned));
-        const regression = sourceCurrent ? regressionsFromTests(pre, post) : undefined;
+        // The task may legitimately change the implementation between runs.
+        // Each individual oracle must evaluate one stable principal artifact.
+        const implementationCurrent = [preOracle, postOracle].every((receipt) => {
+          const impl = receipt?.implementation;
+          return impl?.path === spec.task.oracle!.implPath && typeof impl.before === 'string' &&
+            /^[a-f0-9]{64}$/.test(impl.before) && impl.before === impl.after;
+        });
+        const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
         const regressionPopulation = pre.filter((t) => t.executed !== false && t.passed).length;
         deterministicSignals = {
           executionInput,
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
-            sourceCurrent, populationComplete, regressionPopulation },
+            sourceCurrent, implementationCurrent, populationComplete, regressionPopulation },
           ...(regression === true || (regression === false && populationComplete && regressionPopulation > 0)
             ? { regressions: regression } : {}),
-          ...(sourceCurrent && populationComplete ? { taskPassed: post.every((t) => t.passed) } : {}),
+          ...(sourceCurrent && implementationCurrent && populationComplete ? { taskPassed: post.every((t) => t.passed) } : {}),
         };
       }
       return {

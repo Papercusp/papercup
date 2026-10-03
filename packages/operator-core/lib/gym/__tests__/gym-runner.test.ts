@@ -92,12 +92,14 @@ describe('runGymPipeline', () => {
       oracles.push(input);
       return { results: [{ name: 'original assertion', passed: true }],
         testPath: input.testPath, pinCommit: input.pinCommit!,
-        sourceHashes: { pinned: 'd'.repeat(64), before: 'd'.repeat(64), after: 'd'.repeat(64) } };
+        sourceHashes: { pinned: 'd'.repeat(64), before: 'd'.repeat(64), after: 'd'.repeat(64) },
+        implementation: { path: input.implPath!, before: 'e'.repeat(64), after: 'e'.repeat(64) } };
     };
     const result = await runGymPipeline(spec, ports);
     expect(filed).toEqual([expect.objectContaining({ spec: original.task.spec, intent: original.task.intent })]);
     expect(oracles).toHaveLength(2);
-    expect(oracles.every((v) => v.testPath === original.task.oracle!.testPath && v.pinCommit === original.task.oracle!.pinCommit)).toBe(true);
+    expect(oracles.every((v) => v.testPath === original.task.oracle!.testPath && v.pinCommit === original.task.oracle!.pinCommit &&
+      v.implPath === original.task.oracle!.implPath)).toBe(true);
     expect(result.runKey).toMatchObject({ taskId: original.task.id, variantId: original.variant.id });
     expect(result.deterministicSignals?.executionInput).toEqual({
       task: original.task, variant: original.variant, harnessCommit: original.harnessCommit,
@@ -167,11 +169,12 @@ describe('runGymPipeline', () => {
   it('measures the immutable oracle before and after the pipeline and emits regressions only when both are measured', async () => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
     let oracleRun = 0;
-    ports.runOracle = async ({ testPath, pinCommit }) => {
+    ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
       oracleRun += 1;
       return { results: [{ name: 'oracle > preserves behaviour', passed: oracleRun === 1 }],
         testPath, pinCommit: pinCommit!,
-        sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) } };
+        sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
+        implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) } };
     };
 
     const result = await runGymPipeline(
@@ -219,10 +222,11 @@ describe('runGymPipeline', () => {
   it.each(['before', 'after', 'pinned'] as const)('withholds objective/regression authority when oracle %s bytes changed', async (field) => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
     let run = 0;
-    ports.runOracle = async ({ testPath, pinCommit }) => ({
+    ports.runOracle = async ({ testPath, pinCommit, implPath }) => ({
       results: [{ name: 'oracle', passed: true }], testPath, pinCommit: pinCommit!,
       sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64),
         ...( ++run === 2 ? { [field]: 'b'.repeat(64) } : {} ) },
+      implementation: { path: implPath!, before: 'c'.repeat(64), after: 'c'.repeat(64) },
     });
     const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
       oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
@@ -235,14 +239,15 @@ describe('runGymPipeline', () => {
   it.each(['missing', 'skipped', 'duplicate', 'added'] as const)('withholds a pass when oracle coverage is %s', async (mode) => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
     let run = 0;
-    ports.runOracle = async ({ testPath, pinCommit }) => {
+    ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
       const results = ++run === 1 ? [{ name: 't1', passed: true }, { name: 't2', passed: true }] :
         mode === 'missing' ? [{ name: 't1', passed: true }] :
         mode === 'skipped' ? [{ name: 't1', passed: true }, { name: 't2', passed: false, executed: false }] :
         mode === 'added' ? [{ name: 't1', passed: true }, { name: 't2', passed: true }, { name: 't3', passed: true }] :
         [{ name: 't1', passed: true }, { name: 't1', passed: true }];
       return { results, testPath, pinCommit: pinCommit!,
-        sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) } };
+        sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
+        implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) } };
     };
     const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
       oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
@@ -255,15 +260,17 @@ describe('runGymPipeline', () => {
   it('records complete executed task recovery without inventing probe or rollback evidence', async () => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
     let run = 0;
-    ports.runOracle = async ({ testPath, pinCommit }) => ({
+    ports.runOracle = async ({ testPath, pinCommit, implPath }) => ({
       results: [{ name: 'task', passed: ++run > 1 }, { name: 'preserved', passed: true }], testPath, pinCommit: pinCommit!,
       sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
+      implementation: { path: implPath!, before: run === 1 ? 'b'.repeat(64) : 'c'.repeat(64),
+        after: run === 1 ? 'b'.repeat(64) : 'c'.repeat(64) },
     });
     const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
       oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
         pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
     expect(result.deterministicSignals).toMatchObject({ regressions: false, taskPassed: true,
-      oracle: { sourceCurrent: true, populationComplete: true, sourceRef: 'WI-ORACLE',
+      oracle: { sourceCurrent: true, implementationCurrent: true, populationComplete: true, sourceRef: 'WI-ORACLE',
         pre: { results: [{ name: 'task', passed: false }, { name: 'preserved', passed: true }] },
         post: { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }] } } });
     expect(result.deterministicSignals).not.toHaveProperty('planted_bug_caught');
@@ -273,9 +280,10 @@ describe('runGymPipeline', () => {
   it('does not confuse task recovery with measured regression coverage when no prior tests were green', async () => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
     let run = 0;
-    ports.runOracle = async ({ testPath, pinCommit }) => ({
+    ports.runOracle = async ({ testPath, pinCommit, implPath }) => ({
       results: [{ name: 'task', passed: ++run > 1 }], testPath, pinCommit: pinCommit!,
       sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
+      implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) },
     });
     const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
       oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
@@ -294,5 +302,23 @@ describe('runGymPipeline', () => {
     expect(result.deterministicSignals?.regressions).toBeUndefined();
     expect(result.deterministicSignals?.taskPassed).toBeUndefined();
     expect(result.deterministicSignals?.oracle).toMatchObject({ sourceCurrent: false, populationComplete: true });
+  });
+
+  it.each(['changed', 'missing', 'wrong-path'] as const)('withholds task and regression claims when the evaluated implementation is %s', async (mode) => {
+    const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+    let run = 0;
+    ports.runOracle = async ({ testPath, pinCommit }) => ({
+      results: [{ name: 'task', passed: true }], testPath, pinCommit: pinCommit!,
+      sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
+      implementation: ++run === 1 ? { path: 'impl.js', before: 'b'.repeat(64), after: 'b'.repeat(64) } :
+        mode === 'missing' ? null : { path: mode === 'wrong-path' ? 'other.js' : 'impl.js',
+          before: 'c'.repeat(64), after: mode === 'changed' ? 'd'.repeat(64) : 'c'.repeat(64) },
+    });
+    const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+      oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+        pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+    expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+    expect(result.deterministicSignals?.regressions).toBeUndefined();
+    expect(result.deterministicSignals?.oracle).toMatchObject({ implementationCurrent: false });
   });
 });
