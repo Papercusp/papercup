@@ -26,9 +26,10 @@ vi.mock('../resource-governor/execution', async importOriginal => {
 });
 
 import { runLspDaemonServer } from './lsp-daemon-server';
-import { callLspDaemonRpc } from './lsp-daemon-client';
+import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { lspAdmissionController } from './lsp-admission';
+import { buildLspAdmissionStatePayload } from '../agent-tools/state/lsp-admission';
 
 let server: Server | undefined;
 let socketRoot: string | undefined;
@@ -78,6 +79,15 @@ describe('daemon admission integration', () => {
     });
     const admitted = vi.spyOn(seam.deps!.governor, 'admit');
     expect(controller.snapshot().classes[0]).toMatchObject({ queued: 1, inFlight: 1 });
+    const state = await buildLspAdmissionStatePayload(workspaceId);
+    expect(state).toMatchObject({ measurement: 'measured', assessment: 'pressure', unknown: [],
+      admission: { queued: 1, inFlight: 1, measured: true } });
+    const observed = state.admission!.classes[0];
+    const current = controller.snapshot().classes[0];
+    expect(observed).toMatchObject({ classKey: current.classKey, desiredWindow: current.desiredWindow,
+      effectiveWindow: current.effectiveWindow, queued: 1, inFlight: 1, pendingPersistence: 0 });
+    expect(observed.oldestWaitMs).toBeGreaterThanOrEqual(0);
+    expect(observed.oldestWaitMs).toBeLessThanOrEqual(current.oldestWaitMs);
     const definition = await callLspDaemonRpc(socketPath, { workspaceId, op: 'symbol', args, actorId: 'agent-c' }, 10_000);
     expect(definition.sites).toHaveLength(1);
     expect(calls).toEqual(['references', 'symbol']);
@@ -86,6 +96,7 @@ describe('daemon admission integration', () => {
     expect((await queued).sites).toHaveLength(1);
     expect(calls).toEqual(['references', 'symbol', 'references']);
     await vi.waitFor(() => expect(controller.snapshot()).toMatchObject({ assessment: 'idle', queued: 0, inFlight: 0, settlementFailures: [] }));
+    expect(await readLspDaemonAdmission(workspaceId)).toMatchObject({ assessment: 'idle', queued: 0, inFlight: 0 });
     expect(seam.store).toBeDefined();
     // The real driver persisted one waiting request and released its lease.
     const request = admitted.mock.calls[0][0];
