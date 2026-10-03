@@ -46,7 +46,10 @@ class OwnershipReturn(gdb.FinishBreakpoint):
 
 class OwnershipEntry(gdb.Breakpoint):
     def __init__(self, operation, symbol):
-        super().__init__(symbol, internal=True)
+        # A named destructor breakpoint can resolve both D0 and D2 variants.
+        # Resolve the exact symbol after the DSO loads, then break by address.
+        address = int(gdb.parse_and_eval('(void*)' + symbol))
+        super().__init__('*' + hex(address), internal=True)
         self.operation = operation
         self.symbol = symbol
     def stop(self):
@@ -56,6 +59,16 @@ class OwnershipEntry(gdb.Breakpoint):
             path = gdb.solib_name(pc)
             if not path:
                 raise RuntimeError('ownership symbol has no native library')
+            relative_address = None
+            with open('/proc/' + str(gdb.selected_inferior().pid) + '/maps') as mappings:
+                for line in mappings:
+                    columns = line.split(maxsplit=5)
+                    if len(columns) == 6 and columns[5].strip() == path:
+                        lower, upper = [int(value, 16) for value in columns[0].split('-')]
+                        if lower <= pc < upper:
+                            relative_address = pc - lower + int(columns[2], 16)
+            if relative_address is None:
+                raise RuntimeError('ownership entry has no file-backed executable mapping')
             if path not in ownership_pins:
                 with open(path, 'rb') as source:
                     data = source.read()
@@ -63,7 +76,8 @@ class OwnershipEntry(gdb.Breakpoint):
             ownership_call += 1
             row = {'callId': ownership_call, 'processId': gdb.selected_inferior().pid,
                    'nativeThreadId': gdb.selected_thread().ptid[1], 'operation': self.operation,
-                   'symbol': self.symbol, 'programCounter': hex(pc), 'binding': ownership_pins[path]}
+                   'symbol': self.symbol, 'programCounter': hex(pc), 'relativeAddress': relative_address,
+                   'binding': ownership_pins[path]}
             ownership_record(dict(row, event='enter'))
             OwnershipReturn(row)
         except Exception as error:
@@ -71,9 +85,14 @@ class OwnershipEntry(gdb.Breakpoint):
         return False
 
 if gdb.convenience_variable('pc_native_ownership') is not None:
-    gdb.execute('set breakpoint pending on')
-    for operation, symbol in ownership_symbols.items():
-        OwnershipEntry(operation, symbol)
+    def install_ownership(event):
+        if event.new_objfile.filename.endswith('/onnxruntime_binding.node'):
+            try:
+                for operation, symbol in ownership_symbols.items():
+                    OwnershipEntry(operation, symbol)
+            except Exception as error:
+                ownership_record({'event': 'error', 'message': str(error)})
+    gdb.events.new_objfile.connect(install_ownership)
 
 def native_record(row):
     print('PC_NATIVE_DEBUGGER\t' + json.dumps(row), flush=True)
