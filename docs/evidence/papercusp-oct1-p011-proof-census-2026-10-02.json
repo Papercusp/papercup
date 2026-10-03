@@ -1,4 +1,13 @@
 {
+  "forwardBaseline": {
+    "workItem": "WI-10005816",
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-baseline-qualification-r1-2026-10-03.json",
+      "sha256": "43c6d01d721890e54830969361a2a1ca0dce61ee37d745e1c42c91d8c956244f",
+      "bytes": 11316
+    },
+    "scope": "New bounded main and maintained-spawner current-build baseline; physical savings, allocation owner and request assignment remain unmeasured. Prior dispositions and bindings preserved."
+  },
   "schemaVersion": 1,
   "workItem": "WI-10004890",
   "plan": "papercusp-log-performance-remediation-2026-09-23",
