@@ -25,6 +25,17 @@
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
   "spawnerEntryComparison": {
+    "loadedBuildIdentityGuards": {
+      "workItem": "WI-10005751",
+      "status": "source-unit-verified-live-acceptance-open",
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-identity-guards-r1-2026-10-03.json",
+      "bytes": 11191,
+      "sha256": "fb64bc1f8b3560a72ede8583efb7b1e0f82df9ff4ab76d2649e47fafa344a687",
+      "testRunIds": [20595153, 20595154, 20595155, 20595156],
+      "scope": "Maintained packaged build and PID/connection reader guards; 59 executed tests pass, one actual-live test disabled. Both packaged controls clean up gracefully. Router HEAD moved and full transitive source provenance remains UNKNOWN.",
+      "qualification": "Cached BuildInfo is now advertised by the loaded server through its existing cancellation capability and readiness generation. The baked-SHA control ignores mismatched runtime SHA; unstamped control advertises null. Existing saved standalone live baseline remains unchanged with loaded build UNKNOWN; no present-live or savings claim.",
+      "next": "After a containing staging build is loaded, obtain only necessary fresh PID-bound actual standalone identity evidence through this maintained reader; retain original live timestamp, bindings22985/23004 and every old source disposition."
+    },
     "measurementWorkItem": "WI-10005706",
     "completion": "Saved actual close applied done with committed authority; this census does not repeat completion or tests.",
     "originalQualification": {
