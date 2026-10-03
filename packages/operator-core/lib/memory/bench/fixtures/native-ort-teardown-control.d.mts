@@ -29,9 +29,9 @@ export function inspectAllocatorDetectorCapture(stdout: string, stderr: string, 
 type NativePin = { path: string; bytes: number; sha256: string };
 export function inspectNativeOwnershipCapture(stdout: string, debuggerTerminal: {
   eof: boolean; exitCode: number | null; signal: string | null;
-}, expected: { binding: NativePin; symbols: Record<string, string> }): {
+}, expected: { binding: NativePin; symbols: Record<string, string>; relativeAddresses: Record<string, number> }): {
   processId: number; source: 'native-ownership-calls'; exitCode: number | null; signal: string | null;
-  calls: Array<{ operation: string; nativeThreadId: number; symbol: string; programCounter: string;
+  calls: Array<{ operation: string; nativeThreadId: number; symbol: string; programCounter: string; relativeAddress: number;
     enteredAt: number; returnedAt: number | null; unwoundAt: number | null }>;
   missingOperations: string[]; completeOwnershipBoundariesObserved: boolean;
   initializerNativeThreadId: number; heapCorruptionRootCauseConfirmed: false; scope: string;

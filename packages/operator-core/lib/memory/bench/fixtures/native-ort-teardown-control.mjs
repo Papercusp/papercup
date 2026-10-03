@@ -348,7 +348,8 @@ export function inspectNativeOwnershipCapture(stdout, debuggerTerminal, expected
   const operations = ['initializer', 'singleton-create', 'singleton-destroy',
     'session-dispose', 'session-finalize', 'instance-finalize'];
   const calls = new Map();
-  if (records.length === 0 || records.length > 256 || operations.some(key => !expected.symbols[key])) {
+  if (records.length === 0 || records.length > 256 || operations.some(key => !expected.symbols[key]
+    || !Number.isSafeInteger(expected.relativeAddresses?.[key]) || expected.relativeAddresses[key] < 0)) {
     throw new Error('missing native ownership observation');
   }
   for (const [index, row] of records.entries()) {
@@ -356,6 +357,7 @@ export function inspectNativeOwnershipCapture(stdout, debuggerTerminal, expected
       || !Number.isSafeInteger(row.nativeThreadId) || row.nativeThreadId <= 0
       || !Number.isSafeInteger(row.callId) || row.callId <= 0
       || !operations.includes(row.operation) || row.symbol !== expected.symbols[row.operation]
+      || row.relativeAddress !== expected.relativeAddresses[row.operation]
       || row.binding?.path !== expected.binding.path || row.binding?.bytes !== expected.binding.bytes
       || row.binding?.sha256 !== expected.binding.sha256 || !/^0x[0-9a-f]+$/.test(row.programCounter)
       || !['enter', 'return', 'unwound'].includes(row.event)) {
@@ -364,12 +366,13 @@ export function inspectNativeOwnershipCapture(stdout, debuggerTerminal, expected
     if (row.event === 'enter') {
       if (row.callId !== calls.size + 1) throw new Error('duplicate native ownership call');
       calls.set(row.callId, { operation: row.operation, nativeThreadId: row.nativeThreadId,
-        symbol: row.symbol, programCounter: row.programCounter, enteredAt: row.sequence,
+        symbol: row.symbol, programCounter: row.programCounter, relativeAddress: row.relativeAddress, enteredAt: row.sequence,
         returnedAt: null, unwoundAt: null });
     } else {
       const call = calls.get(row.callId);
       if (!call || call.operation !== row.operation || call.nativeThreadId !== row.nativeThreadId
         || call.symbol !== row.symbol || call.programCounter !== row.programCounter
+        || call.relativeAddress !== row.relativeAddress
         || call.returnedAt !== null || call.unwoundAt !== null) {
         throw new Error('unpaired native ownership return');
       }
