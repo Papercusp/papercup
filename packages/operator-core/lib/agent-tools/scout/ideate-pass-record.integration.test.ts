@@ -125,7 +125,7 @@ describe('goal-day ideation yield on real PG (P-004 / D-001)', () => {
     INSERT INTO harness_shared.tool_invocations
       (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status, goal_id, args_json, invoked_at)
     VALUES (${WS}, 'papercusp', 'p004-test', ${tool}, 'su', ${SPAWN}, 'p004', ${o.status ?? 'ok'}, ${o.goalId ?? null},
-            ${o.args === undefined ? null : JSON.stringify(o.args)}::jsonb,
+            ${o.args === undefined ? null : fx.admin.json(o.args as Parameters<typeof fx.admin.json>[0])},
             now() - make_interval(mins => ${o.minutesAgo ?? 10}))`;
 
   afterEach(async () => {

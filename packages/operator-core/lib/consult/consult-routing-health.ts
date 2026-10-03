@@ -489,17 +489,19 @@ export async function readRoutingHealthRows(
   limit = ROUTING_HEALTH_CONSULT_LIMIT,
   asOfIso = new Date().toISOString(),
 ): Promise<{ rows: RoutingHealthConsultRow[]; truncated: boolean }> {
+  // Keep precise snapshot strings as text on the wire: an inferred timestamp
+  // parameter is serialized through JS Date by postgres.js and loses micros.
   const rows = await sql<RoutingHealthConsultRow[]>`
     SELECT cs.conversation_id, cs.requester_id, cs.created_at, cs.expires_at, cs.outcome, cs.routing, cs.state,
            cs.latency_contract, cs.closed_at, cs.cascade_digest, cs.dispatch_attempts,
            EXISTS (SELECT 1 FROM harness_shared.consult_post_meta pm
                     WHERE pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id
                       AND pm.author_id <> cs.requester_id AND pm.kind IN ('answer', 'new_fact')
-                      AND pm.created_at <= ${asOfIso}::timestamptz) AS has_feedback,
+                      AND pm.created_at <= ${asOfIso}::text::timestamptz) AS has_feedback,
            EXISTS (SELECT 1 FROM harness_shared.consult_post_meta pm
                     WHERE pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id
                       AND pm.author_id <> cs.requester_id AND pm.kind = 'decline'
-                      AND pm.created_at <= ${asOfIso}::timestamptz) AS has_decline
+                      AND pm.created_at <= ${asOfIso}::text::timestamptz) AS has_decline
       FROM harness_shared.consult_state cs
      WHERE cs.workspace_id = ${workspaceId}
        AND cs.created_at < ${untilIso}::timestamptz
