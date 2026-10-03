@@ -41,6 +41,19 @@ vi.mock('./release/checkpoint-memory-admission', async (orig) => ({
     detail: `checkpoint-memory: TEST STUB — admitting ${opts.requestG} GiB (host scope census is not a unit-test input)`,
   }),
 }));
+// WI-10005763: launchDetachedCheckpoint asks the D-012 restricted-hold fence before anything else.
+// The real census reads git metadata and the org database for the roots it is given (several tests
+// here pass real mkdtemp checkouts), which is host state, not a unit-test input. Default: nothing
+// held, returned SYNCHRONOUSLY so the same-tick spawn contract these tests drive (child.emit right
+// after the call) still holds. The WI-10005763 tests below swap in a refusal.
+const restrictedFence = vi.hoisted(() => ({
+  refusal: vi.fn((_roots: readonly string[]): RestrictedHoldRefusal | null => null),
+}));
+vi.mock('./agent-tools/testing/restricted-hold-fence', async (orig) => ({
+  ...(await orig<typeof import('./agent-tools/testing/restricted-hold-fence')>()),
+  restrictedTreeHoldRefusal: restrictedFence.refusal,
+}));
+import type { RestrictedHoldRefusal } from './agent-tools/testing/restricted-hold-fence';
 import { cancelSupersededCandidateAwaits } from './events/await/engine';
 import {
   buildCheckpointSystemdArgv,
@@ -2507,6 +2520,63 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(cancelStaleAwaits).toHaveBeenCalledWith('/tree', '11111111');
     expect(r.launched).toBe(true);
     expect(recordDisplacement).toHaveBeenCalledTimes(1);
+  });
+
+  describe('WI-10005763: restricted-hold fence (D-012)', () => {
+    const held: RestrictedHoldRefusal = {
+      error: 'restricted_write_held',
+      hint: '1 held restricted write(s) in /tree (secret.ts). This action executes code from that tree with network access (D-012)',
+    };
+
+    it('refuses before any probe or spawn — force included — and asks about both trees the launch executes from', async () => {
+      for (const refusal of [held, { error: 'restricted_hold_state_unknown' as const, hint: 'census failed' }]) {
+        restrictedFence.refusal.mockImplementationOnce(() => refusal);
+        const spawnFn = vi.fn();
+        const execFn = vi.fn();
+        const r = await launchDetachedCheckpoint(
+          { root: '/tooling', integrationRoot: '/subject', force: true },
+          spawnFn as never,
+          execFn as never,
+        );
+        expect(restrictedFence.refusal).toHaveBeenLastCalledWith(['/tooling', '/subject']);
+        expect(spawnFn).not.toHaveBeenCalled();
+        expect(execFn).not.toHaveBeenCalled();
+        expect(r).toMatchObject({ launched: false, argv: [], reason: refusal.error, restrictedHold: refusal });
+      }
+    });
+
+    it('never stops a live stale run under replaceStale; the same fixture DOES stop it when nothing is held', async () => {
+      const run = async (refusal: RestrictedHoldRefusal | null) => {
+        restrictedFence.refusal.mockImplementationOnce(() => refusal);
+        const child = fakeChild();
+        const spawnFn = vi.fn(() => child);
+        const execFn = staleActiveExecFn(0, WEDGED_AGE_MIN);
+        const recordDisplacement = vi.fn();
+        const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
+        const p = launchDetachedCheckpoint(
+          { root: '/tree', replaceStale: true },
+          spawnFn as never,
+          execFn,
+          vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n'),
+          cancelStaleAwaits,
+          recordDisplacement,
+        );
+        child.emit('close', 0);
+        const r = await p;
+        const killed = execFn.mock.calls.some(([cmd, args]) => cmd === 'systemctl' && args[1] === 'kill');
+        return { r, killed, spawned: spawnFn.mock.calls.length, displaced: recordDisplacement.mock.calls.length };
+      };
+
+      const refused = await run(held);
+      expect(refused).toMatchObject({ killed: false, spawned: 0, displaced: 0 });
+      expect(refused.r).toMatchObject({ launched: false, reason: 'restricted_write_held', restrictedHold: held });
+
+      // Control: without a hold this exact fixture reaches the stop, so the refusal above is what
+      // prevented it — not a fixture that never gets that far.
+      const control = await run(null);
+      expect(control).toMatchObject({ killed: true, spawned: 1, displaced: 1 });
+      expect(control.r.launched).toBe(true);
+    });
   });
 
   it('WI-4957: a FAILED stop never calls cancelStaleAwaits (the run is not proven dead — nothing to retire)', async () => {

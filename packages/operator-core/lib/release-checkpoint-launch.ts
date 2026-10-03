@@ -1244,7 +1244,9 @@ export const CHECKPOINT_PROCESS_AUTHORITY_SCAN_CONCURRENCY = 384;
 type ProbeAwaitable<T> = T | PromiseLike<T>;
 
 function isPromiseLike<T>(value: ProbeAwaitable<T>): value is PromiseLike<T> {
-  return typeof (value as PromiseLike<T>).then === 'function';
+  // Null-safe: a synchronous seam may legitimately answer `null` (the restricted-hold fence's
+  // "nothing held", WI-10005763), and reading `.then` off it would throw.
+  return value != null && typeof (value as PromiseLike<T>).then === 'function';
 }
 
 export interface CheckpointProcessAuthorityProbeDeps {
