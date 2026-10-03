@@ -1451,7 +1451,7 @@ describe('await-event store (PG)', () => {
     const ownerId = 'sub-obligation-roundtrip';
     const now = new Date();
     const deadlineAt = new Date(now.getTime() + 60_000).toISOString();
-    const obligation = defineAgentObligation({
+    const obligationInput: Parameters<typeof defineAgentObligation>[0] = {
       ruleId: 'plan-independent-verification',
       ruleRevision: 'v1',
       family: 'independent-verification',
@@ -1479,7 +1479,8 @@ describe('await-event store (PG)', () => {
         nextDeadlineAt: deadlineAt,
         cancellationRef: 'plan:plan-a',
       },
-    });
+    };
+    const obligation = defineAgentObligation(obligationInput);
     const deps = {
       captureHandle: vi.fn(async () => ({ handle: null, note: 'integration probe' })),
       listHistory: listLifecycleBoundAwaits,
@@ -1506,12 +1507,29 @@ describe('await-event store (PG)', () => {
     );
     expect(warm).toMatchObject({ desired: 1, registered: 0, retained: 1, cancelled: 0 });
 
-    const cleared = await reconcileAgentObligationReminders(
+    // P-010: an obligation this turn did not evaluate is unknown, not resolved,
+    // so an empty agenda keeps its pending reminder (retention horizon).
+    const unevaluated = await reconcileAgentObligationReminders(
       { ownerId, agenda: evaluateAgentObligations([], now.toISOString()), now },
       deps,
     );
+    expect(unevaluated).toMatchObject({ desired: 0, registered: 0, cancelled: 0, retainedUnevaluated: 1 });
+    expect((await listLifecycleBoundAwaits(ownerId, 'agent-obligation'))[0]?.cancelledAt).toBeNull();
+
+    // Leaving scope is a MEASURED discharge: the same obligation (same id, the
+    // id ignores status) evaluated not-applicable, with no change signal left to
+    // watch, cancels the row, and the real ledger keeps the reason the delivery
+    // metric reads (WI-10005938).
+    const discharged = defineAgentObligation({ ...obligationInput, status: 'not-applicable', changeSignal: undefined });
+    expect(discharged.id).toBe(obligation.id);
+    const cleared = await reconcileAgentObligationReminders(
+      { ownerId, agenda: evaluateAgentObligations([discharged], now.toISOString()), now },
+      deps,
+    );
     expect(cleared).toMatchObject({ desired: 0, registered: 0, retained: 0, cancelled: 1 });
-    expect((await listLifecycleBoundAwaits(ownerId, 'agent-obligation'))[0]?.cancelledAt).not.toBeNull();
+    const [settled] = await listLifecycleBoundAwaits(ownerId, 'agent-obligation');
+    expect(settled?.cancelledAt).not.toBeNull();
+    expect(settled?.cancelReason).toBe('obligation-discharged');
   });
 
   it('events:await supersession retires only one-shot rows and preserves the standing inbox wake', async () => {
