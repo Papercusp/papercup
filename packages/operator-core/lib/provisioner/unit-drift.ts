@@ -151,6 +151,88 @@ export async function checkUnitExecStartBinary(
   }
 }
 
+/** The model file referenced by llama-server's -m / --model argument. */
+export function parseUnitExecStartModelPath(unitText: string): string | null {
+  const tokens = execStartTokens(unitText);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === '-m' || token === '--model') {
+      const value = tokens[i + 1];
+      return value === undefined || value.startsWith('-') ? null : value;
+    }
+    if (token.startsWith('--model=')) {
+      const value = token.slice('--model='.length);
+      return value.length > 0 ? value : null;
+    }
+    if (token.startsWith('-m=')) {
+      const value = token.slice('-m='.length);
+      return value.length > 0 ? value : null;
+    }
+  }
+  return null;
+}
+
+export interface UnitModelFileCheck {
+  modelPath: string | null;
+  ok: boolean;
+  /** ok · no-model-path · unresolved (relative/specifier-expanded) · missing · not-readable. */
+  reason: 'ok' | 'no-model-path' | 'unresolved' | 'missing' | 'not-readable';
+  detail: string;
+}
+
+/**
+ * Check the deployed model file independently from catalog drift.
+ *
+ * The path is per-box, so it must not be compared with a catalog constant. Its presence and
+ * readability are machine-independent prerequisites: a unit with a valid engine and flags still
+ * cannot start if the configured GGUF blob was removed. Callers that cannot resolve a path
+ * reference (relative paths, systemd specifiers, or environment expansion) receive an explicit
+ * unresolved result instead of a false green.
+ */
+export async function checkUnitExecStartModelFile(
+  unitText: string,
+  access: (path: string, mode: number) => Promise<void> = (path, mode) => fsAccess(path, mode),
+): Promise<UnitModelFileCheck> {
+  const modelPath = parseUnitExecStartModelPath(unitText);
+  if (modelPath === null) {
+    return {
+      modelPath: null,
+      ok: false,
+      reason: 'no-model-path',
+      detail: 'unit declares no -m/--model file path, so the deployed model cannot be checked',
+    };
+  }
+  if (!modelPath.startsWith('/') || modelPath.includes('$') || modelPath.includes('%')) {
+    return {
+      modelPath,
+      ok: false,
+      reason: 'unresolved',
+      detail: 'cannot resolve model path ' + modelPath + ' from the deployed ExecStart',
+    };
+  }
+  try {
+    await access(modelPath, fsConstants.R_OK);
+    return { modelPath, ok: true, reason: 'ok', detail: modelPath + ' exists and is readable' };
+  } catch {
+    try {
+      await access(modelPath, fsConstants.F_OK);
+      return {
+        modelPath,
+        ok: false,
+        reason: 'not-readable',
+        detail: modelPath + ' exists but is not readable by the audit process',
+      };
+    } catch {
+      return {
+        modelPath,
+        ok: false,
+        reason: 'missing',
+        detail: modelPath + ' does NOT exist; the unit cannot load its configured model',
+      };
+    }
+  }
+}
+
 export function parseLlamaServerUnit(unitText: string): LlamaServerUnitParams {
   const lines = unitText.split('\n');
   const start = lines.findIndex((l) => l.trimStart().startsWith('ExecStart='));
@@ -414,6 +496,7 @@ export interface DeployedUnitAudit {
   drift: UnitDrift[];
   envIssues: UnitEnvIssue[];
   binary: UnitBinaryCheck | null;
+  model: UnitModelFileCheck | null;
   summary: string;
 }
 
@@ -438,18 +521,21 @@ export async function auditDeployedUnit(
   const drift = diffCatalogAgainstDeployedUnit(entry, deployedUnitText);
   const envIssues = checkRequiredEnvironment(entry, deployedUnitText);
   const binary = await checkUnitExecStartBinary(deployedUnitText, opts.access);
-  const degraded = drift.length > 0 || envIssues.length > 0 || !binary.ok;
+  const model = await checkUnitExecStartModelFile(deployedUnitText, opts.access);
+  const degraded = drift.length > 0 || envIssues.length > 0 || !binary.ok || !model.ok;
   const parts = [
     drift.length > 0 ? `drift[${describeUnitDrift(drift)}]` : null,
     envIssues.length > 0 ? `env[${describeEnvIssues(envIssues)}]` : null,
     binary.ok ? null : `binary[${binary.reason}: ${binary.detail}]`,
   ].filter((p): p is string => p !== null);
+  if (!model.ok) parts.push('model[' + model.reason + ': ' + model.detail + ']');
   return {
     verdict: degraded ? 'degraded' : 'ok',
     catalogEntryId: entry.id,
     drift,
     envIssues,
     binary,
+    model,
     summary: degraded
       ? `unit does not match catalog '${entry.id}' — ${parts.join(' · ')}`
       : `unit matches catalog '${entry.id}' (params, required env, engine binary)`,
@@ -473,6 +559,7 @@ export async function auditDeployedUnitForBackend(
       drift: [],
       envIssues: [],
       binary: null,
+      model: null,
       summary: `cannot audit deployed unit: ${resolution.detail}`,
     };
   }

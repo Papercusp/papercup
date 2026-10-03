@@ -10,6 +10,8 @@ import {
   describeUnitDrift,
   parseUnitExecStartBinary,
   checkUnitExecStartBinary,
+  parseUnitExecStartModelPath,
+  checkUnitExecStartModelFile,
   parseUnitEnvironment,
   checkRequiredEnvironment,
   describeEnvIssues,
@@ -98,6 +100,9 @@ const accessDenied = async () => {
 const accessPresentNotExecutable = async (_path: string, mode: number) => {
   if (mode === fsConstants.X_OK) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
 };
+const accessPresentNotReadable = async (_path: string, mode: number) => {
+  if (mode === fsConstants.R_OK) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+};
 
 describe('checkUnitExecStartBinary (EI-20721621940954812)', () => {
   it('CONTROL: the parameter guard returns an IDENTICAL verdict for a startable and an unstartable unit', async () => {
@@ -147,6 +152,44 @@ describe('checkUnitExecStartBinary (EI-20721621940954812)', () => {
     expect(check.ok).toBe(false);
     expect(check.reason).toBe('no-execstart');
     expect(check.binaryPath).toBeNull();
+  });
+});
+
+describe('checkUnitExecStartModelFile', () => {
+  it('parses the model file across systemd line continuations', () => {
+    expect(parseUnitExecStartModelPath(CURRENT_UNIT)).toBe(
+      '/usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298',
+    );
+  });
+
+  it('supports --model and inline model forms', () => {
+    expect(parseUnitExecStartModelPath('ExecStart=/usr/bin/llama-server --model /models/a.gguf')).toBe('/models/a.gguf');
+    expect(parseUnitExecStartModelPath('ExecStart=/usr/bin/llama-server --model=/models/b.gguf')).toBe('/models/b.gguf');
+    expect(parseUnitExecStartModelPath('ExecStart=/usr/bin/llama-server -m=/models/c.gguf')).toBe('/models/c.gguf');
+  });
+
+  it('distinguishes missing, unreadable, unresolved, and absent model paths', async () => {
+    expect(await checkUnitExecStartModelFile(CURRENT_UNIT, accessOk)).toMatchObject({
+      ok: true,
+      reason: 'ok',
+      modelPath: '/usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298',
+    });
+    expect(await checkUnitExecStartModelFile(CURRENT_UNIT, accessDenied)).toMatchObject({
+      ok: false,
+      reason: 'missing',
+    });
+    expect(await checkUnitExecStartModelFile(CURRENT_UNIT, accessPresentNotReadable)).toMatchObject({
+      ok: false,
+      reason: 'not-readable',
+    });
+    expect(await checkUnitExecStartModelFile('ExecStart=/usr/bin/llama-server -m $MODEL_PATH', accessOk)).toMatchObject({
+      ok: false,
+      reason: 'unresolved',
+    });
+    expect(await checkUnitExecStartModelFile('ExecStart=/usr/bin/llama-server --host 127.0.0.1', accessOk)).toMatchObject({
+      ok: false,
+      reason: 'no-model-path',
+    });
   });
 });
 
@@ -447,12 +490,13 @@ describe('resolveCatalogEntryForBackend (WI-39735 wiring / D-016)', () => {
 });
 
 describe('auditDeployedUnit (WI-39735 wiring / D-016)', () => {
-  it('passes the current unit on all three checks at once', async () => {
+  it('passes the current unit on all four checks at once', async () => {
     const audit = await auditDeployedUnit(ORNITH, CURRENT_UNIT, { access: accessOk });
     expect(audit.verdict).toBe('ok');
     expect(audit.drift).toEqual([]);
     expect(audit.envIssues).toEqual([]);
     expect(audit.binary?.ok).toBe(true);
+    expect(audit.model?.ok).toBe(true);
     expect(audit.catalogEntryId).toBe('ornith-35b-iq3m-llama-server');
   });
 
@@ -480,6 +524,24 @@ describe('auditDeployedUnit (WI-39735 wiring / D-016)', () => {
     const audit = await auditDeployedUnit(ORNITH, CURRENT_UNIT, { access: accessDenied });
     expect(audit.verdict).toBe('degraded');
     expect(audit.binary?.reason).toBe('missing');
+  });
+
+  it('catches a MISSING DEPLOYED MODEL FILE while every compared param still matches', async () => {
+    const missingModelPath = '/missing/ornith.gguf';
+    const unit = CURRENT_UNIT.replace(
+      '/usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298',
+      missingModelPath,
+    );
+    expect(diffCatalogAgainstDeployedUnit(ORNITH, unit)).toEqual(diffCatalogAgainstDeployedUnit(ORNITH, CURRENT_UNIT));
+
+    const access = async (path: string) => {
+      if (path === missingModelPath) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    const audit = await auditDeployedUnit(ORNITH, unit, { access });
+    expect(audit.verdict).toBe('degraded');
+    expect(audit.binary?.ok).toBe(true);
+    expect(audit.model).toMatchObject({ ok: false, reason: 'missing', modelPath: missingModelPath });
+    expect(audit.summary).toContain('model[missing:');
   });
 
   it('reports a present-but-not-executable binary as degraded too', async () => {
