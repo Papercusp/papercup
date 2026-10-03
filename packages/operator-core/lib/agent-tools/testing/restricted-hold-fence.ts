@@ -180,3 +180,53 @@ export async function restrictedHoldRefusal(
   }
   return null;
 }
+
+/**
+ * What a host bundle consumed (WI-10005745): every input file esbuild recorded in a metafile, and
+ * every file or directory the bundler copied verbatim. Absolute paths.
+ */
+export interface BundleInputs {
+  files: readonly string[];
+  dirs: readonly string[];
+}
+
+/**
+ * The bundle door (WI-10005745). bg-host's ExecStartPre esbuild-bundles the LIVE shared tree and
+ * every in-process routine then runs that bundle with the network, so a held restricted write in
+ * the bundle's inputs would execute exactly as D-012 forbids. Unlike a test run there is no
+ * closure to approximate: esbuild's metafile is the exact input set, so this is a plain
+ * intersection of held paths with what was actually bundled or copied. Fail-closed like
+ * `restrictedHoldRefusal`: a census that cannot be read refuses.
+ */
+export async function restrictedHoldBundleRefusal(
+  root: string,
+  inputs: BundleInputs,
+  deps: Pick<RestrictedHoldFenceDeps, 'holdings'> = {},
+): Promise<RestrictedHoldRefusal | null> {
+  if (!existsSync(root)) return null;
+  let realRoot: string;
+  let held: string[];
+  try {
+    realRoot = await realpath(root);
+    held = await heldPathsUnder(realRoot, await (deps.holdings ?? restrictedHoldingsFor)(realRoot));
+  } catch (error) {
+    return {
+      error: 'restricted_hold_state_unknown',
+      hint: `could not verify whether a restricted session's writes are held in this checkout; the host bundle was not published (${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+  if (held.length === 0) return null;
+  const real = async (abs: string): Promise<string> => realpath(abs).catch(() => resolve(abs));
+  const files = new Set(await Promise.all(inputs.files.map(real)));
+  const dirs = await Promise.all(inputs.dirs.map(real));
+  const hit = held.find((abs) => files.has(abs) || dirs.some((dir) => abs === dir || abs.startsWith(dir + sep)));
+  if (!hit) return null;
+  const shown = hit.startsWith(realRoot + sep) ? hit.slice(realRoot.length + 1) : hit;
+  return {
+    error: 'restricted_write_held',
+    hint:
+      `the host bundle was not published: ${shown} is a bundle input and a held restricted write. A session holding an ` +
+      `active personal disclosure wrote it, and the host would execute it with network access (D-012). The last-known-good ` +
+      `bundle stays in place; restart the host after the disclosure is released`,
+  };
+}

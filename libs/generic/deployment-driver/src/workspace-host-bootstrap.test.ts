@@ -2281,6 +2281,48 @@ describe('workspace-host bootstrap attestation', () => {
       expect(script).not.toContain('$RUNTIME_ROOT/current.next');
     });
 
+    // WI-10005754: /opt is immutable image content on this model, and D-314 bakes the runtime
+    // root's access as group ownership that papercusp-host-prepare.service only VERIFIES. Any
+    // write under it dies with EROFS on a booted host (the first AWS bootc clean room died here,
+    // in harden-os), and a named-user ACL would also trip host-prepare's refusal.
+    const runtimeRootWrites = (script: string): string[] => {
+      const writer =
+        /(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+|\belse\s+)'?(?:install|setfacl|chown|chmod|chgrp|mkdir|ln|rm|mv|cp|tar|touch|tee)\s/;
+      return script
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('#'))
+        .filter((line) => writer.test(line))
+        .filter(
+          (line) =>
+            line.includes('$RUNTIME_ROOT') ||
+            line.includes('${RUNTIME_ROOT') ||
+            line.includes('/opt/papercusp'),
+        )
+        .map((line) => line.trim());
+    };
+
+    it('never writes the image-provided runtime root (WI-10005754)', () => {
+      const script = buildWorkspaceHostBootstrap(bootcInput());
+      expect(runtimeRootWrites(script)).toEqual([]);
+      expect(script).toContain(
+        'install -d -o root -g "$SERVICE_GROUP" -m 0750 /etc/papercusp',
+      );
+      expect(script).toContain('[[ -d "$RUNTIME_ROOT/releases" ]] || die');
+    });
+
+    // Calibration for the guard above: the bundle model still owns a writable runtime root, so
+    // the SAME detector must flag exactly the two lines the bootc render used to carry. If this
+    // ever comes back empty the detector is blind, and the bootc assertion passes vacuously.
+    it('keeps the runtime-root creation and agent ACL on the bundle model, and the detector sees them (WI-10005754)', () => {
+      const writes = runtimeRootWrites(buildWorkspaceHostBootstrap(input()));
+      expect(writes).toContain(
+        'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+      );
+      expect(writes).toContain(
+        'setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
+      );
+    });
+
     it('preserves an explicit registry port and checks the baked namespace policy pin', () => {
       const image = '127.0.0.1:5096/papercusp/workspace-host:2026.9.4-1';
       const script = buildWorkspaceHostBootstrap(

@@ -439,6 +439,7 @@ import workspaceHostAction from './workspace-hosts/action';
 import workspaceHostAgentCredentials from './workspace-hosts/agent-credentials';
 import workspaceHostCanary from './workspace-hosts/canary';
 import workspaceHostConnection from './workspace-hosts/connection';
+import workspaceHostByocClientKey from './workspace-hosts/byoc-client-key';
 import workspaceHostCredentialLifecycle from './workspace-hosts/credential-lifecycle';
 import workspaceHostInitialize from './workspace-hosts/initialize';
 import workspaceHostDesktopPack from './workspace-hosts/desktop-pack';
@@ -946,6 +947,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(workspaceHostAgentCredentials as AnyRoute),
   ...flatten(workspaceHostCanary as AnyRoute),
   ...flatten(workspaceHostConnection as AnyRoute),
+  ...flatten(workspaceHostByocClientKey as AnyRoute[]),
   ...flatten(workspaceHostCredentialLifecycle as AnyRoute),
   ...flatten(workspaceHostInitialize as AnyRoute),
   ...flatten(workspaceHostDesktopPack as AnyRoute),

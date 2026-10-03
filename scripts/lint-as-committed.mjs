@@ -207,8 +207,12 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     }
     const inUse = cwds === null ? null : cwds.some((c) => c === path || c.startsWith(path + sep));
     const createdAtMs = Number.isFinite(marker?.createdAtMs) ? marker.createdAtMs : st.mtimeMs;
-    const verdict = classifyWorkRoot({ inUse: inUse === true, marker, ownerAlive: marker ? isAlive(marker.pid) : false, ageMs: nowMs - createdAtMs });
-    const provable = inUse !== null || verdict.reason === 'owner-dead';
+    const ownerAlive = marker ? isAlive(marker.pid) : false;
+    const verdict = classifyWorkRoot({ inUse: inUse === true, marker, ownerAlive, ageMs: nowMs - createdAtMs });
+    // A dead non-keep owner is proof the tree is abandoned whatever its age; anything else
+    // needs the cwd scan to rule out a process still working inside it.
+    const ownerDead = marker !== null && !marker.keep && !ownerAlive;
+    const provable = inUse !== null || ownerDead;
     if (verdict.remove && provable) {
       try {
         remove(path);

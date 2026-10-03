@@ -8,14 +8,20 @@
  * router never re-implements the census or the reach walk, so "refused by testing:run" and
  * "refused by the raw router" cannot drift apart.
  *
+ * The host bundler (apps/operator/bin/bundle-restricted-hold-gate.mjs, WI-10005745) uses the
+ * same entry in its bundle mode: an exact intersection of held paths with the bundle's inputs.
+ *
  * Usage:  node --import tsx restricted-hold-preflight-cli.ts <checkout-root> [test-file ...]
+ *         node --import tsx restricted-hold-preflight-cli.ts --bundle-inputs <inputs.json> <checkout-root>
+ *         (inputs.json = `{ "files": [abs...], "dirs": [abs...] }`)
  * Output: exactly one stdout line `RESTRICTED_HOLD_PREFLIGHT <json>` where json is
  *         `{ "verdict": "admit" }` or `{ "verdict": "refuse", "error": ..., "hint": ... }`.
  * Exit:   0 admit · 3 refuse · 2 misuse. The router fails CLOSED on anything else (no line, bad
  *         JSON, a crash, a timeout), so a broken preflight can never read as an admit.
  */
+import { readFile } from 'node:fs/promises';
 import { RESTRICTED_HOLD_PREFLIGHT_EXIT, RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
-import { restrictedHoldRefusal } from './restricted-hold-fence';
+import { restrictedHoldBundleRefusal, restrictedHoldRefusal, type BundleInputs, type RestrictedHoldRefusal } from './restricted-hold-fence';
 
 function emit(payload: Record<string, unknown>, exitCode: number): void {
   // The census opens a Postgres pool that would keep the event loop alive; exit explicitly, but
@@ -23,16 +29,45 @@ function emit(payload: Record<string, unknown>, exitCode: number): void {
   process.stdout.write(`${RESTRICTED_HOLD_PREFLIGHT_MARKER} ${JSON.stringify(payload)}\n`, () => process.exit(exitCode));
 }
 
+function misuse(hint: string): void {
+  emit({ verdict: 'refuse', error: 'restricted_hold_state_unknown', hint }, RESTRICTED_HOLD_PREFLIGHT_EXIT.misuse);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+async function readBundleInputs(path: string): Promise<BundleInputs | null> {
+  const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+  if (!parsed || typeof parsed !== 'object') return null;
+  const { files, dirs } = parsed as { files?: unknown; dirs?: unknown };
+  if (!isStringArray(files) || !isStringArray(dirs)) return null;
+  return { files, dirs };
+}
+
 async function main(): Promise<void> {
-  const [root, ...files] = process.argv.slice(2);
-  if (!root) {
-    emit(
-      { verdict: 'refuse', error: 'restricted_hold_state_unknown', hint: 'restricted-hold preflight was started without a checkout root' },
-      RESTRICTED_HOLD_PREFLIGHT_EXIT.misuse,
-    );
-    return;
+  const args = process.argv.slice(2);
+  let refusal: RestrictedHoldRefusal | null;
+  if (args[0] === '--bundle-inputs') {
+    const [, inputsPath, root] = args;
+    if (!inputsPath || !root) {
+      misuse('restricted-hold bundle preflight needs --bundle-inputs <inputs.json> <checkout-root>');
+      return;
+    }
+    const inputs = await readBundleInputs(inputsPath);
+    if (!inputs) {
+      misuse(`restricted-hold bundle preflight could not read ${inputsPath} as { files: string[], dirs: string[] }`);
+      return;
+    }
+    refusal = await restrictedHoldBundleRefusal(root, inputs);
+  } else {
+    const [root, ...files] = args;
+    if (!root) {
+      misuse('restricted-hold preflight was started without a checkout root');
+      return;
+    }
+    refusal = await restrictedHoldRefusal(root, files);
   }
-  const refusal = await restrictedHoldRefusal(root, files);
   if (refusal) emit({ verdict: 'refuse', ...refusal }, RESTRICTED_HOLD_PREFLIGHT_EXIT.refuse);
   else emit({ verdict: 'admit' }, RESTRICTED_HOLD_PREFLIGHT_EXIT.admit);
 }
@@ -42,7 +77,7 @@ main().catch((error: unknown) => {
     {
       verdict: 'refuse',
       error: 'restricted_hold_state_unknown',
-      hint: `restricted-hold preflight crashed; no test process was started (${error instanceof Error ? error.message : String(error)})`,
+      hint: `restricted-hold preflight crashed; nothing was started or published (${error instanceof Error ? error.message : String(error)})`,
     },
     RESTRICTED_HOLD_PREFLIGHT_EXIT.refuse,
   );
