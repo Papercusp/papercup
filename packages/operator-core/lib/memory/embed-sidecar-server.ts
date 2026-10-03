@@ -11,7 +11,7 @@
  *              →  { vectors: number[][], dims, runtime, modelRev }
  *   POST /rerank  { model?, query: string, texts: string[] }
  *              →  { scores: number[], runtime, modelRev }
- *   GET  /healthz →  { ok, pid, uptimeMs, capabilities: string[],
+ *   GET  /healthz →  { ok, pid, uptimeMs, sha, bundleStale?, capabilities: string[],
  *                      models: { '<model>:<kind>': state },
  *                      rerankExecution: { device, dtype, why },
  *                      embedExecution: { device, dtype, verified, why },
@@ -101,6 +101,8 @@ import {
 } from '../resource-governor/execution';
 import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import { activeWorkspaceId } from '../workspace-registry';
+import { getBuildInfo } from '../build-info';
+import { getBundleStaleness, type BundleStaleness } from '../bundle-staleness';
 import { loadEmbedDeviceSetting, type EmbedDeviceSettingLoad } from './embed-device-setting';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
@@ -517,8 +519,25 @@ const defaultRerankBuilders: RerankerBuilders = {
   'rerank-fast': buildSidecarReranker(FAST_RERANKER_MODEL),
 };
 
+/**
+ * WI-10005944: which code this process booted, in its own words. `sha` is the source
+ * sha bundle-host.sh baked into the bundle (null when unbundled and git is unreadable);
+ * `bundleStale` is non-null ONLY when ExecStartPre's rebuild failed and the unit booted
+ * the last-known-good bundle, the one case where start time says nothing about the code.
+ */
+export interface EmbedSidecarBuildIdentity {
+  sha: string | null;
+  bundleStale: BundleStaleness | null;
+}
+
+export function defaultBuildIdentity(): EmbedSidecarBuildIdentity {
+  return { sha: getBuildInfo().sha, bundleStale: getBundleStaleness() };
+}
+
 export interface EmbedSidecarOptions {
   port?: number;
+  /** Build identity for /healthz; resolved once at server creation. Tests inject one. */
+  buildIdentity?: () => EmbedSidecarBuildIdentity;
   builders?: EmbedderBuilders;
   /** Explicit identities for additional injected builders (isolated candidate
    * evaluation). A builder without a revision is refused before listening. */
@@ -755,6 +774,8 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   const workerStates = opts.workerStates ?? defaultWorkerStates;
   const port = opts.port ?? Number(process.env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
   const startedAt = Date.now();
+  // Resolved once: /healthz must stay a synchronous, dependency-free read.
+  const buildIdentity = (opts.buildIdentity ?? defaultBuildIdentity)();
 
   // Resolve which ONNX execution providers this build actually bundles, once,
   // in the background. /healthz reads the cached answer synchronously and
@@ -1324,6 +1345,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         pid: process.pid,
         uptimeMs: Date.now() - startedAt,
         runtime: EMBED_SIDECAR_RUNTIME,
+        // WI-10005944: the bundle this process booted (dev:pipeline_position reads it
+        // instead of inferring from start time; see serving-runtimes.ts).
+        sha: buildIdentity.sha,
+        ...(buildIdentity.bundleStale ? { bundleStale: buildIdentity.bundleStale } : {}),
         // Everything this build can serve. A client compares its REQUIRED
         // capabilities against this before adopting the process.
         capabilities,

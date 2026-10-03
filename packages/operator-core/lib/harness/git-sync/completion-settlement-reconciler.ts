@@ -248,6 +248,26 @@ function identityIsExactInStamp(
   });
 }
 
+function identityIsOutOfRepoArtifactInStamp(
+  identity: SettlementIdentity,
+  group: CheckoutIdentityGroup,
+  treeStampValue: unknown,
+): boolean {
+  if (!treeStampValue || typeof treeStampValue !== 'object' || Array.isArray(treeStampValue)) return false;
+  const stamp = treeStampValue as Record<string, unknown>;
+  if (!Array.isArray(stamp.contentIdentity)) return false;
+  return stamp.contentIdentity.some((rawEntry) => {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) return false;
+    const entry = rawEntry as Record<string, unknown>;
+    const repositoryRoot = typeof entry.repositoryRoot === 'string' ? entry.repositoryRoot : stamp.repositoryRoot;
+    const headSha = typeof entry.headSha === 'string' ? entry.headSha : stamp.headSha;
+    return entry.outOfRepoArtifact === true &&
+      repositoryRoot === group.repositoryRoot &&
+      headSha === group.headSha &&
+      entry.path === identity.path;
+  });
+}
+
 function identityNeedsCheckoutSettlement(
   identity: SettlementIdentity,
   group: CheckoutIdentityGroup,
@@ -1058,6 +1078,10 @@ async function reconcileProposedCompletionsCore(
         const closeHistoryMatches = historyMatchesByCheckout.get(checkoutIdentityKey(group.repositoryRoot, group.headSha));
         const paths = new Map<string, string>();
         for (const identity of group.contentIdentity) {
+          // The authority floor excludes explicit artifacts that belong to no checkout.
+          // Legacy manifests can still carry those paths as ordinary identities, so honor
+          // the checkout-scoped server stamp before attaching repository history proof.
+          if (identityIsOutOfRepoArtifactInStamp(identity, group, evidence.treeStamp)) continue;
           if (identity.deletion === true || typeof identity.workingTreeBlobSha !== 'string') continue;
           if (identity.headBlobSha === identity.workingTreeBlobSha) continue;
           const actual = emittedTree.get(identity.path);
