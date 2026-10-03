@@ -841,14 +841,16 @@ const DRILL_VS_PRODUCTION =
  * `submodule-origin-push` leg) calls `runGitSync` against a DISPOSABLE super/sub repo pair it clones
  * under its own temp root, to prove exactly one thing: the `beforePush` owner-challenge fence
  * (`requireHiveEffectAuthority`) gates a submodule-origin push. Production (`git-sync-action.ts`)
- * also wires `loadRoster` (commit attribution from fleet presence) and `refreshLiveLockHoldings`
+ * also wires `loadRoster` (commit attribution from fleet presence), `loadMigrationFenceRoster`
+ * (attribution for paths fenced after a managed child repo's migration refusal), and `refreshLiveLockHoldings`
  * (re-read peers' live file locks before staging). Neither concern exists in the fixture: no peer
- * holds a lock on a temp clone and no fleet roster attributes its commits, so wiring the real
+ * holds a lock on a temp clone, no fleet roster attributes its commits, and no managed migration
+ * reservation owns its disposable child repositories, so wiring the real
  * readers would query the operator DB for state that cannot apply. Omitting them is correct.
  */
 const PHASE_I_FENCE_FIXTURE =
   'adjudicated 2026-09-30: phase-I drill runs git-sync on a disposable temp clone to prove the beforePush ' +
-  'owner-challenge fence; fleet roster attribution and peer live-lock refresh cannot apply there';
+  'owner-challenge fence; fleet roster attribution, managed migration-fence attribution and peer live-lock refresh cannot apply there';
 
 const PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK =
   'inTransaction runs INSIDE the plan write transaction and exists for applyPlanDrainTransition ' +
@@ -967,6 +969,7 @@ const FAIL_BASELINE = new Map([
   ['BuildScoutCycleDepsOptions|packages/operator-core/lib/scout/register-scout-action.ts|noveltyCorpus', OVERRIDE_WITH_REAL_DEFAULT],
   ['BuildScoutCycleDepsOptions|packages/operator-core/lib/scout/rubric-live-drill.ts|onScoutDraftCreated', DRILL_VS_PRODUCTION],
   ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|loadRoster', PHASE_I_FENCE_FIXTURE],
+  ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|loadMigrationFenceRoster', PHASE_I_FENCE_FIXTURE],
   ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|refreshLiveLockHoldings', PHASE_I_FENCE_FIXTURE],
   ['DesktopAuditDeps|packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts|now', OVERRIDE_WITH_REAL_DEFAULT],
   // 2026-09-30 — WI-10004167 added the control-plane relay copy (hosted-handler.ts), which

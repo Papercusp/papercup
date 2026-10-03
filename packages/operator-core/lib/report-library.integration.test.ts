@@ -99,16 +99,16 @@ describe('report_library store (real PG)', () => {
     for (const wall of snapshot.ownerWalls) {
       await db.adminSql`INSERT INTO harness_shared.work_items
         (workspace_id, harness_slug, feature_id, item_kind, title, status, goal_id, updated_ts, payload)
-        VALUES (${workspaceId}, 'pot-a', ${wall.itemRef}, 'task', 'Exact owner action', 'needs-human', ${goalId}, ${time},
+        VALUES (${workspaceId}, ${workspaceId}, ${wall.itemRef}, 'task', 'Exact owner action', 'needs-human', ${goalId}, ${time},
           ${JSON.stringify({ ownerAction: wall.exactAction, ownerDecisionRefs: wall.decisionRefs, ownerArtifactRefs: wall.artifactRefs })}::text::jsonb)`;
     }
     await db.adminSql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, status, goal_id, updated_ts, authority, terminal_completion_ref)
-      VALUES (${workspaceId}, 'pot-a', 'WI-completed', 'task', 'Completed work', 'done', ${goalId}, ${time}, 'committed', 'receipt:complete-19'),
-             (${workspaceId}, 'pot-a', 'WI-observed', 'task', 'Observed work', 'wip', ${goalId}, ${time}, NULL, NULL)`;
+      VALUES (${workspaceId}, ${workspaceId}, 'WI-completed', 'task', 'Completed work', 'done', ${goalId}, ${time}, 'committed', 'receipt:complete-19'),
+             (${workspaceId}, ${workspaceId}, 'WI-observed', 'task', 'Observed work', 'wip', ${goalId}, ${time}, NULL, NULL)`;
     await db.adminSql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, status, goal_id, updated_ts, payload)
-      VALUES (${workspaceId}, 'pot-a', 'WI-killed', 'task', 'Historical direction', 'dropped', ${goalId}, ${time},
+      VALUES (${workspaceId}, ${workspaceId}, 'WI-killed', 'task', 'Historical direction', 'dropped', ${goalId}, ${time},
         ${JSON.stringify({ disposition: 'stopped: duplicate surface', dispositionEvidenceRefs: ['decision:stop-3'] })}::text::jsonb)`;
     const reads = makeGoalReportReferenceReads(db.adminSql, workspaceId, goalId);
     snapshot.sources = [(await reads.source(`goal:${goalId}`))!, (await reads.source('legacy-spend'))!];

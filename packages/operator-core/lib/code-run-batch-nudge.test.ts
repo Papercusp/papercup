@@ -231,6 +231,23 @@ describe('clusterTurns — the turn-clustering primitive', () => {
     expect(clusterTurns(events)).toEqual([1, 0]);
   });
 
+  it('groups calls with the same explicit request turn ID even when the timing gap is large', () => {
+    const events = [
+      { at: 0, durationMs: 500, turnId: 'functions-exec-1' },
+      { at: 2_547, durationMs: 500, turnId: 'functions-exec-1' },
+      { at: 5_094, durationMs: 500, turnId: 'functions-exec-1' },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 0, 0]);
+  });
+
+  it('keeps distinct explicit request turn IDs separate even when timestamps are close', () => {
+    const events = [
+      { at: 0, turnId: 'owner-turn-1' },
+      { at: 10, turnId: 'owner-turn-2' },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 1]);
+  });
+
   // ── EI-23762928303536326: the IN-FLIGHT guard ────────────────────────────────────────────────
   // A call dispatched while an earlier call in the cluster is STILL RUNNING cannot open a new
   // inference turn — the model had not yet received that result to reason about. `at` is dispatch
@@ -357,6 +374,39 @@ describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
     expect(hit?.text).toContain('2 separate round-trips');
   });
 
+  it('does NOT count sequential calls in one explicit functions.exec request group as separate turns', () => {
+    const fires: ReturnType<typeof maybeBatchNudge>[] = [];
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+      const r = maybeBatchNudge({
+        ...cap,
+        sessionKey: 'same-explicit-request-group',
+        turnId: 'functions-exec-group-1',
+        now: i * 2_547,
+        durationMs: 500,
+      });
+      if (r) fires.push(r);
+    }
+    expect(fires).toEqual([]);
+  });
+
+  it('still counts distinct explicit request groups as separate turns inside the timing gap', () => {
+    const first = maybeBatchNudge({
+      ...cap,
+      sessionKey: 'distinct-explicit-request-groups',
+      turnId: 'owner-turn-1',
+      now: 0,
+    });
+    expect(first).toBeNull();
+    const second = maybeBatchNudge({
+      ...cap,
+      sessionKey: 'distinct-explicit-request-groups',
+      turnId: 'owner-turn-2',
+      now: 10,
+    });
+    expect(second?.kind).toBe('same-tool');
+    expect(second?.text).toContain('2 separate round-trips');
+  });
+
   // EI-23762928303536326 — the reported symptom, end to end. A single parallel block whose
   // dispatches the SERVER observed 647ms apart (queueing spread under fleet load) while the first
   // call was still running: one round-trip, nothing to fold, so the nudge must stay silent. Before
@@ -434,6 +484,9 @@ describe('maybeBatchNudge — turn-aware fan-out trigger (P-012)', () => {
       'utf8',
     );
     expect(source).toMatch(/maybeBatchNudge\(\{[\s\S]*?now:\s*callStartedAt,[\s\S]*?durationMs:/);
+    expect(source).toMatch(
+      /maybeBatchNudge\(\{[\s\S]*?turnId:\s*req\.params\._meta\?\.outputGroupId\s*\?\?\s*req\.params\._meta\?\.turnId/,
+    );
   });
 
   it('DOES fire when the same distinct-tool spread lands across ≥ FANOUT_DISTINCT_THRESHOLD SEPARATE turns', () => {

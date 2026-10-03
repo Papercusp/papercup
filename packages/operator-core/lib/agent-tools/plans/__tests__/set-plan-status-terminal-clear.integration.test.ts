@@ -24,15 +24,27 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import setPlanStatusTool from '../set-plan-status';
+import setStatusTool from '../set-status';
+import { getPlanItemStatuses } from '../../../plan-audits';
 import { getRubric, proposeRubric } from '../../../rubrics';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { runWithWorkspace } from '../../../workspace-als';
 import { setupPlanPgFixture, cleanupPlans, seedPlan, type PlanPgFixture } from './_pg-tool-fixture';
 
-const mocks = vi.hoisted(() => ({ evaluatePlanAcceptanceGate: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  evaluatePlanAcceptanceGate: vi.fn(),
+  evaluateSupersedeItemGate: vi.fn(),
+}));
 vi.mock('../../../plan-acceptance-gate', () => ({
   evaluatePlanAcceptanceGate: mocks.evaluatePlanAcceptanceGate,
 }));
+vi.mock('../supersede-item-gate', async (orig) => ({
+  ...(await orig<typeof import('../supersede-item-gate')>()),
+  evaluateSupersedeItemGate: mocks.evaluateSupersedeItemGate,
+}));
+const realSupersedeItemGate = await vi.importActual<typeof import('../supersede-item-gate')>(
+  '../supersede-item-gate',
+);
 
 const HARNESS = `zzz-sps-term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SLUG = 'zzz-sps-term-plan-2026-06-16';
@@ -158,6 +170,8 @@ beforeEach(async () => {
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
   mocks.evaluatePlanAcceptanceGate.mockReset();
   mocks.evaluatePlanAcceptanceGate.mockResolvedValue({ satisfied: true });
+  mocks.evaluateSupersedeItemGate.mockReset();
+  mocks.evaluateSupersedeItemGate.mockImplementation(realSupersedeItemGate.evaluateSupersedeItemGate);
 });
 
 describe('plans:set-plan-status — terminal set clears the started op-row', () => {
@@ -178,6 +192,52 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
 
     expect(await opStatus()).toBe('done');
     expect(await acceptanceRubricStatus()).toBe('retired');
+  });
+
+  it('can supersede after a child reopens between the preflight gate and the locked parent write', async () => {
+    const withDoneChild = planBody('draft').replace(
+      '## Background',
+      '- **P-001** `done` child work reopened during terminal transition.\n\n## Background',
+    );
+    await seedPlan(admin, WS, HARNESS, SLUG, withDoneChild);
+    expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
+      .toMatchObject([{ itemId: 'P-001', status: 'done' }]);
+
+    let reachGate!: (result: { satisfied: boolean }) => void;
+    const gateRead = new Promise<{ satisfied: boolean }>((resolve) => {
+      reachGate = resolve;
+    });
+    let resumeGate!: () => void;
+    const gateResume = new Promise<void>((resolve) => {
+      resumeGate = resolve;
+    });
+    mocks.evaluateSupersedeItemGate.mockImplementation(async (slug, opts) => {
+      const result = await realSupersedeItemGate.evaluateSupersedeItemGate(slug, opts);
+      reachGate(result);
+      await gateResume;
+      return result;
+    });
+
+    const terminalWrite = runSetPlanStatus('superseded');
+    await expect(gateRead).resolves.toMatchObject({ satisfied: true });
+
+    const childWrite = (await runWithWorkspace(WS, () => setStatusTool.handler(
+      { harness: HARNESS, slug: SLUG, item: 'P-001', status: 'todo' } as never,
+      makeCtx(),
+    ))) as { data: { results: Array<{ ok: boolean }> } };
+    expect(childWrite.data.results[0]?.ok).toBe(true);
+
+    resumeGate();
+    const { data, isError } = await terminalWrite;
+    expect(isError, JSON.stringify(data)).toBe(false);
+    expect(data).toMatchObject({ ok: true, changed: true, newStatus: 'superseded' });
+
+    const rows = await admin<{ content: string }[]>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    expect(rows[0]?.content).toContain('status: superseded');
+    expect(rows[0]?.content).toContain('- **P-001** `todo`');
   });
 
   // ── P1-2: the terminal-NOOP path ────────────────────────────────────────

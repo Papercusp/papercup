@@ -103,6 +103,22 @@ describe('diagnoseFleetScopeLeaderLiveness — complete roster evidence', () => 
     await expect(diagnoseFleetScopeLeaderLiveness({ scope: scope as never })).resolves.toBe(true);
   });
 
+  // EI-24962274233684871: a leader parked between wakes (or draining) is the
+  // oracle's wakeable verdict, not absence — it must never read as vacant.
+  it.each(['parked', 'draining'])('treats a %s registered leader as present', async (state) => {
+    listFleetRosterM.mockResolvedValueOnce(roster({
+      leaderLiveness: { ...absentLeader(), presenceRow: true, sessionState: state },
+    }));
+    await expect(diagnoseFleetScopeLeaderLiveness({ scope: scope as never })).resolves.toBe(true);
+  });
+
+  it('still treats an explicitly ended registered leader as absent', async () => {
+    listFleetRosterM.mockResolvedValueOnce(roster({
+      leaderLiveness: { ...absentLeader(), presenceRow: true, sessionState: 'ended' },
+    }));
+    await expect(diagnoseFleetScopeLeaderLiveness({ scope: scope as never })).resolves.toBe(false);
+  });
+
   it('returns false only when complete roster evidence proves the registered leader absent', async () => {
     listFleetRosterM.mockResolvedValueOnce(roster({ leaderLiveness: absentLeader() }));
     await expect(diagnoseFleetScopeLeaderLiveness({ scope: scope as never })).resolves.toBe(false);
@@ -138,6 +154,18 @@ describe('reconcileFleetScopeLeaderSuccession', () => {
       expectedUpdatedAtMs: 100,
       observedAtMs: nowMs,
     });
+    expect(markMissingM).not.toHaveBeenCalled();
+    expect(takeFleetLeadershipM).not.toHaveBeenCalled();
+  });
+
+  it('never starts the absence clock or promotes a member while the leader is parked', async () => {
+    getFleetM.mockResolvedValueOnce(fleet({ leaderMissingSinceMs: 50 }));
+    listFleetRosterM.mockResolvedValueOnce(roster({
+      leaderLiveness: { ...absentLeader(), presenceRow: true, sessionState: 'parked' },
+    }));
+    await expect(
+      reconcileFleetScopeLeaderSuccession({ scope: scope as never, identity, nowMs: 50 + FLEET_LEADER_MISSING_GRACE_MS * 10 }),
+    ).resolves.toBe('live');
     expect(markMissingM).not.toHaveBeenCalled();
     expect(takeFleetLeadershipM).not.toHaveBeenCalled();
   });

@@ -104,11 +104,12 @@ export const FANOUT_DISTINCT_THRESHOLD = 3;
  * fired 3 parallel reads got told "that's 3 round-trips, fold them into one code:run" — false:
  * they had ALREADY collapsed it to one, and were nudged AWAY from best practice.
  *
- * There is no client-supplied turn id on this path (the MCP transport sees each tool call as its
- * own request), so turns are inferred from timing: two calls recorded this close together (or
- * closer) are treated as dispatched from the SAME turn. The gap needed to separate two GENUINE
- * turns is a live LLM inference round-trip (network + generation) — at minimum several hundred ms,
- * typically 1-3s+ for the models this fleet runs.
+ * Turn-aware clients can supply the request's `outputGroupId`/`turnId`; matching IDs are the same
+ * inference turn and distinct IDs are separate turns, regardless of dispatch timing. Older clients
+ * do not supply one, so those calls still use the timing fallback: two calls recorded this close
+ * together (or closer) are treated as dispatched from the SAME turn. The gap needed to separate two
+ * GENUINE turns is a live LLM inference round-trip (network + generation) — at minimum several
+ * hundred ms, typically 1-3s+ for the models this fleet runs.
  *
  * ⚠ This constant is NOT sufficient on its own, and the reason is measured, not assumed. An earlier
  * revision of this comment claimed parallel dispatch "lands within tens of ms of each other
@@ -147,24 +148,53 @@ export const TURN_GAP_MS = 400;
  * `durationMs` is optional and absent timing degrades EXACTLY to the pre-existing gap rule (with no
  * durations, every end collapses to its own `at`, so the in-flight test can never fire).
  */
-export function clusterTurns(events: readonly { at: number; durationMs?: number }[]): number[] {
+export function clusterTurns(
+  events: readonly { at: number; durationMs?: number; turnId?: string | number }[],
+): number[] {
   const order = events.map((_, i) => i).sort((a, b) => events[a].at - events[b].at);
   const turnOf = new Array<number>(events.length);
-  let turn = -1;
+  let nextTurn = 0;
+  let activeTurn: number | undefined;
   let prevAt: number | undefined;
   /** Latest known END of any call in the CURRENT cluster — the in-flight horizon. */
   let clusterEnd: number | undefined;
+  /** Explicit request groups are authoritative even when their calls are far apart in time. */
+  const explicitTurns = new Map<string, number>();
   for (const i of order) {
     const at = events[i].at;
     const d = events[i].durationMs;
     const end = typeof d === 'number' && Number.isFinite(d) && d >= 0 ? at + d : at;
+    const suppliedTurnId = events[i].turnId;
+    const explicitTurnKey =
+      typeof suppliedTurnId === 'string' && suppliedTurnId.trim().length > 0
+        ? `string:${suppliedTurnId.trim()}`
+        : typeof suppliedTurnId === 'number' && Number.isFinite(suppliedTurnId)
+          ? `number:${suppliedTurnId}`
+          : undefined;
+    if (explicitTurnKey !== undefined) {
+      let explicitTurn = explicitTurns.get(explicitTurnKey);
+      if (explicitTurn === undefined) {
+        explicitTurn = nextTurn++;
+        explicitTurns.set(explicitTurnKey, explicitTurn);
+      }
+      turnOf[i] = explicitTurn;
+      activeTurn = explicitTurn;
+      // Timing remains available for any adjacent legacy event without an explicit group ID.
+      clusterEnd = end;
+      prevAt = at;
+      continue;
+    }
     // Still in flight ⇒ the model had not received the earlier result yet ⇒ same turn, regardless
     // of how far apart the two dispatches were observed.
     const stillInFlight = clusterEnd !== undefined && at < clusterEnd;
     const startsNewTurn = prevAt === undefined || (!stillInFlight && at - prevAt > TURN_GAP_MS);
-    if (startsNewTurn) turn++;
-    turnOf[i] = turn;
-    clusterEnd = startsNewTurn || clusterEnd === undefined ? end : Math.max(clusterEnd, end);
+    if (startsNewTurn || activeTurn === undefined) {
+      activeTurn = nextTurn++;
+      clusterEnd = end;
+    } else {
+      clusterEnd = clusterEnd === undefined ? end : Math.max(clusterEnd, end);
+    }
+    turnOf[i] = activeTurn;
     prevAt = at;
   }
   return turnOf;
@@ -368,6 +398,8 @@ const SESSION_LIFECYCLE_NORMALIZED: ReadonlySet<string> = new Set<string>([
 interface RecentCall {
   tool: string;
   at: number;
+  /** Explicit request group from turn-aware clients; identical IDs are one inference turn. */
+  turnId?: string | number;
   /** Bounded, template-literal-safe literal of the call's args (P-003) — pasted into skeletons. */
   argsRender?: string;
   /** Distinctive scalar arg values (ids/slugs) — the chained-burst signal (P-002). */
@@ -788,6 +820,8 @@ export interface BatchNudgeInput {
   sessionKey: string;
   /** The tool just called (MCP or verb form). */
   toolName: string;
+  /** Request group from turn-aware clients (`outputGroupId`/`turnId`); absent on older clients. */
+  turnId?: string | number;
   /** The call's raw arguments object — unwraps tools:invoke (P-001) and prefills skeletons (P-003). */
   args?: unknown;
   /** Whether the caller can actually run code:run (canRoleActOnCodeRun(role) OR superuser). */
@@ -877,6 +911,7 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   st.recent.push({
     tool: toolName,
     at: now,
+    ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
     argsRender: renderArgs(args),
     argValues: argValues.length > 0 ? argValues : undefined,
     durationMs,

@@ -4,6 +4,7 @@
  * retain their separate, existing fail-open truth evaluator.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { Sql, TransactionSql } from 'postgres';
 import { PgCoordLog } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination';
@@ -28,7 +29,7 @@ const iso = (value: Date | string | number): string => new Date(value).toISOStri
 /** Content generations include metadata: spend rollups deliberately do not bump goal.updated_at. */
 export const goalReportSourceRevision = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = isDeepStrictEqual;
 
 export interface GoalReportReferenceReads {
   source(ref: string): Promise<Snapshot['sources'][number] | null>;
