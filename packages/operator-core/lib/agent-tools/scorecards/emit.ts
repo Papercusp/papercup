@@ -65,6 +65,11 @@ import {
 import { realGitProbe } from '../../release/judged-sha-containment';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
 import {
+  CLIPPED_SCORECARD_TEXT_CODE,
+  clippedScorecardTextMessage,
+  findClippedScorecardText,
+} from './emit-clipped-text';
+import {
   adequacyCardRevisionDisposition,
   PLAN_CLASS_RUBRIC_REFS,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
@@ -1429,6 +1434,20 @@ export async function emitScorecard(
     generationAncestry?: GenerationAncestryProbe;
   } = {},
 ) {
+  // WI-10005715: a field that ENDS in the MCP result door's clip marker is a clipped
+  // tool response re-typed as evidence. Refuse before ANY store read, so a clipped
+  // draft costs nothing and persists nothing. Covers every route into the write
+  // facade (scorecards:emit and plans:certify-spec-clauses share this function).
+  const clippedPath = findClippedScorecardText(args);
+  if (clippedPath) {
+    // An inline literal on purpose: see clippedScorecardTextMessage for why a helper-built
+    // object here strands readers of the result's optional fields.
+    return {
+      ok: false as const,
+      code: CLIPPED_SCORECARD_TEXT_CODE,
+      error: clippedScorecardTextMessage(clippedPath),
+    };
+  }
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   // P-004: the meta-rubric is an attestation surface, not a free-standing
