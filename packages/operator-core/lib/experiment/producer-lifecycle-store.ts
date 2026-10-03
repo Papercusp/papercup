@@ -6,19 +6,21 @@ import {
 } from './lifecycle-adapter';
 
 const stores = {
-  scout: { table: 'scout_routed_ideas', key: 'idea_id', adapt: adaptScoutOutput },
-  gym: { table: 'gym_proposals', key: 'id', adapt: adaptGymOutput },
-  calibration: { table: 'calibration_predictions', key: 'id', adapt: adaptCalibrationOutput },
-  transfer: { table: 'transfer_lessons', key: 'id', adapt: adaptTransferOutput },
-  regret: { table: 'regret_findings', key: 'run_id', adapt: adaptRegretOutput },
-  'red-queen': { table: 'red_queen_drills', key: 'id', adapt: adaptRedQueenOutput },
+  scout: { table: 'scout_routed_ideas', key: 'idea_id', keyType: 'text', adapt: adaptScoutOutput },
+  gym: { table: 'gym_proposals', key: 'id', keyType: 'text', adapt: adaptGymOutput },
+  calibration: { table: 'calibration_predictions', key: 'id', keyType: 'bigint', adapt: adaptCalibrationOutput },
+  transfer: { table: 'transfer_lessons', key: 'id', keyType: 'uuid', adapt: adaptTransferOutput },
+  regret: { table: 'regret_findings', key: 'run_id', keyType: 'text', adapt: adaptRegretOutput },
+  'red-queen': { table: 'red_queen_drills', key: 'id', keyType: 'uuid', adapt: adaptRedQueenOutput },
 } as const;
 
 export interface ProducerWriteScope {
   producer: LearningProducer;
   workspaceId: string;
   /** Null when an insert no-ops and returned no id. */
-  sourceId: string | null;
+  sourceId?: string | null;
+  /** Reconciliation/expiry stays batched instead of adding serial per-row queries. */
+  sourceIds?: readonly string[];
 }
 
 /**
@@ -27,22 +29,28 @@ export interface ProducerWriteScope {
  * Domain acceptance remains in source; it is never relabelled contract acceptance.
  */
 export async function recordProducerObservation(sql: Sql, scope: ProducerWriteScope): Promise<void> {
-  if (scope.sourceId === null) return;
+  const ids = [...new Set(scope.sourceIds ?? (scope.sourceId == null ? [] : [scope.sourceId]))];
+  if (!ids.length) return;
   const store = stores[scope.producer];
   const rows = await sql.unsafe(
-    `SELECT * FROM harness_shared.${store.table} WHERE workspace_id = $1 AND ${store.key} = $2 FOR UPDATE`,
-    [scope.workspaceId, scope.sourceId],
+    `SELECT * FROM harness_shared.${store.table}
+      WHERE workspace_id = $1 AND ${store.key} = ANY($2::${store.keyType}[]) ORDER BY ${store.key} FOR UPDATE`,
+    [scope.workspaceId, ids],
   );
-  if (!rows.length) throw new Error(`producer lifecycle source missing: ${scope.producer}:${scope.sourceId}`);
+  if (rows.length !== ids.length) throw new Error(`producer lifecycle source missing: ${scope.producer}`);
   // Agent-review enrollment and REM/SU routes share Scout's store, but are not Scout output.
-  if (scope.producer === 'scout' && rows[0].origin !== 'scout') return;
-  const receipt = store.adapt({
+  const sources = rows.filter((row) => scope.producer !== 'scout' || row.origin === 'scout');
+  if (!sources.length) return;
+  const recordedAt = new Date().toISOString();
+  const receipts = sources.map((source) => store.adapt({
     stage: 'observation', workspaceId: scope.workspaceId,
-    sourceRef: `${scope.producer}:${scope.sourceId}`, source: rows[0], recordedAt: new Date().toISOString(),
-  });
+    sourceRef: `${scope.producer}:${String(source[store.key])}`, source, recordedAt,
+  }));
   await sql.unsafe(
-    `UPDATE harness_shared.${store.table} SET learning_lifecycle = $3::text::jsonb WHERE workspace_id = $1 AND ${store.key} = $2`,
-    [scope.workspaceId, scope.sourceId, JSON.stringify(receipt)],
+    `UPDATE harness_shared.${store.table} AS source SET learning_lifecycle = receipt.payload::jsonb
+      FROM unnest($2::${store.keyType}[], $3::text[]) AS receipt(id, payload)
+      WHERE source.workspace_id = $1 AND source.${store.key} = receipt.id`,
+    [scope.workspaceId, sources.map((source) => String(source[store.key])), receipts.map((receipt) => JSON.stringify(receipt))],
   );
 }
 

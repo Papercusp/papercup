@@ -19,7 +19,7 @@ import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import { useSyncMutate, useSyncQuery } from "@papercusp/sync";
 import { readHostedBrowserApiMarker } from "@/lib/hosted-browser-api";
-import { CloudTutorialCompanion } from "@/lib/onboarding/cloud-tutorial-companion";
+import { CloudTutorialCompanion, CloudTutorialPreparedEntry } from "@/lib/onboarding/cloud-tutorial-companion";
 import { Button } from "@/app/harness/Button";
 import { Modal } from "@/app/harness/Modal";
 import { RadioGroup } from "@/app/harness/RadioGroup";
@@ -102,6 +102,7 @@ export default function CloudWorkspacesPage() {
     parseAsStringEnum<StepId>(["connect", "configure", "operate"]),
   );
   const [hostParam, setHostParam] = useQueryState("host", parseAsString);
+  const [tutorialPath, setTutorialPath] = useQueryState("tutorial", parseAsStringEnum(["beginner", "advanced"]).withDefault("beginner"));
   const [tabParam, setTabParam] = useQueryState(
     "tab",
     parseAsStringEnum<HostTab>([...HOST_TABS]).withDefault("overview"),
@@ -627,6 +628,15 @@ export default function CloudWorkspacesPage() {
         </section>
       ) : null}
 
+      {hostedTutorial && tutorialPath === "beginner" && <CloudTutorialPreparedEntry workspaces={workspaces}
+        loading={control.loading} error={control.error}
+        onSelect={id => {
+          const row = workspaces.find(value => value.id === id);
+          if (control.loading || control.error || row?.desiredState !== "running" || row.observedState !== "running" || row.health?.status !== "healthy") return;
+          void setHostParam(id); void setStepParam("operate"); void setTabParam("cost");
+        }}
+        onAdvanced={() => { void setTutorialPath("advanced"); void setStepParam("connect"); void setConnectTarget("gcp"); }} />}
+      {hostedTutorial && tutorialPath === "advanced" && <Button variant="ghost" onClick={() => void setTutorialPath("beginner")}>Use a prepared workspace instead</Button>}
       <div className={hostedTutorial ? styles.withGuide : undefined}>
       <div className={styles.shell}>
         <WorkspaceRail

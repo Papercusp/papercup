@@ -11,13 +11,13 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../change-ledger/change-ledger', () => ({ recordBehaviorChange: vi.fn(async () => {}) }));
 
-const { recordRoutedIdea } = await import('../scout/routed-ledger');
+const { recordRoutedIdea, gradeRoutedIdea, propagateWorkItemOutcome, propagatePlanOutcome, refreshScoutOutcomes } = await import('../scout/routed-ledger');
 const { recordProposal, decideProposal } = await import('../gym/control-plane');
 const { insertPrediction, resolvePrediction, voidPrediction } = await import('../calibration/store');
-const { admitTransferLesson, recordTransferOutcome } = await import('../transfer/store');
+const { admitTransferLesson, recordTransferOutcome, markTransferError, setLessonMemoryId, setLessonPackCandidate } = await import('../transfer/store');
 const { applyTransferVerdict } = await import('../transfer/gate');
 const { upsertFinding, recordReplayScores, markReportFiled } = await import('../replay/regret/store');
-const { insertDrillRow, updateDrillResolved } = await import('../red-queen/store');
+const { insertDrillRow, updateDrillDetected, updateDrillTriaged, updateDrillResolved, markDrillFailed, expireStaleDrills } = await import('../red-queen/store');
 const { passingCandidateVerdict } = await import('../gym/__tests__/_candidate-verdict');
 
 let db: OrgTestDb;
@@ -103,6 +103,57 @@ describe('six actual producer boundaries', () => {
 });
 
 describe('transaction and freshness guards', () => {
+  it('keeps Scout grades, terminal routes and batched reconciliation in the common receipt', async () => {
+    const workspaceId = 'ws-scout-state';
+    await recordRoutedIdea({ workspaceId, ideaId: 'state-wi', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-state' });
+    await recordRoutedIdea({ workspaceId, ideaId: 'state-plan', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'analogical', rail: 'plan', routedRef: 'plan:state-plan' });
+    expect(await gradeRoutedIdea({ ideaId: 'state-wi', grade: 4, gradedBy: 'owner', feedback: 'useful' })).toMatchObject({ applied: true });
+    expect(await gradeRoutedIdea({ ideaId: 'state-wi', grade: 1, gradedBy: 'auto-grader' })).toMatchObject({ applied: false, reason: 'owner-grade-sovereign' });
+    expect(await propagateWorkItemOutcome({ workspaceId, workItemId: 'EI-state', state: 'done' })).toBe(1);
+    expect(await propagatePlanOutcome({ workspaceId, planSlug: 'state-plan', status: 'shipped' })).toBe(1);
+    const before = await readProducerObservations(db.adminSql, { producer: 'scout', workspaceId });
+    expect(before).toHaveLength(2);
+    expect(before.every((row) => row.sourceCurrent)).toBe(true);
+    expect(before.find((row) => row.sourceRef === 'scout:state-wi')?.source).toMatchObject({ human_grade: 4, graded_by: 'owner', outcome: 'won' });
+    await refreshScoutOutcomes({ workspaceId, harnessSlug: 'papercusp', potSlug: 'papercusp', ideaIds: ['state-wi', 'state-plan'] });
+    const after = await readProducerObservations(db.adminSql, { producer: 'scout', workspaceId });
+    expect(after).toHaveLength(2);
+    expect(after.every((row) => row.sourceCurrent && !row.promotionAllowed)).toBe(true);
+  });
+
+  it('keeps transfer error and memory/pack links current without inventing evaluation pins', async () => {
+    const workspaceId = 'ws-transfer-state';
+    const result = await admitTransferLesson(db.adminSql, { workspaceId, signature: 'state-transfer', lessonText: 'state', potSlug: 'papercusp' });
+    if (!result.admitted) throw new Error('fixture admission failed');
+    const id = result.lesson.id;
+    await markTransferError(db.adminSql, { workspaceId, id });
+    await setLessonMemoryId(db.adminSql, { workspaceId, id, memoryId: 'actual-memory-ref' });
+    await setLessonPackCandidate(db.adminSql, { workspaceId, id, packCandidateId: 'actual-pack-ref' });
+    const rows = await readProducerObservations(db.adminSql, { producer: 'transfer', workspaceId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ sourceCurrent: true, contract: null, source: { status: 'error', memory_id: 'actual-memory-ref', pack_candidate_id: 'actual-pack-ref', last_battery_id: null } });
+    await expect(markTransferError(db.adminSql, { workspaceId, id: '00000000-0000-0000-0000-000000000000' })).resolves.toBeUndefined();
+  });
+
+  it('keeps Red Queen intermediate, failure and batched expiry output current and isolated', async () => {
+    const workspaceId = 'ws-redqueen-state';
+    const plant = (drillClass: string) => insertDrillRow(db.adminSql, { workspaceId, drillClass, collectorFamily: 'test', expectedWatchdogKey: 'test:state', expectedKind: 'bug', expectedSeverity: 'major', artifacts: {} });
+    const first = await plant('state-first');
+    await updateDrillDetected(db.adminSql, first.drillId, { detectedAt: '2026-10-03T00:00:00Z', detectedWatchdogKey: 'test:state', issueId: 'EI-drill' });
+    await updateDrillTriaged(db.adminSql, first.drillId, { triagedAt: '2026-10-03T01:00:00Z', triagedDecision: 'implement' });
+    expect((await readProducerObservations(db.adminSql, { producer: 'red-queen', workspaceId }))[0]).toMatchObject({ sourceCurrent: true, source: { status: 'triaged', issue_id: 'EI-drill', triaged_decision: 'implement' } });
+    await markDrillFailed(db.adminSql, first.drillId, 'test failure');
+    expect((await readProducerObservations(db.adminSql, { producer: 'red-queen', workspaceId }))[0]).toMatchObject({ sourceCurrent: true, source: { status: 'failed', error: 'test failure' } });
+    const second = await plant('state-second');
+    const third = await plant('state-third');
+    await db.adminSql`UPDATE harness_shared.red_queen_drills SET planted_at = '2026-01-01' WHERE id IN (${second.drillId}, ${third.drillId})`;
+    expect(await expireStaleDrills(db.adminSql, workspaceId, 24)).toBe(2);
+    const rows = await readProducerObservations(db.adminSql, { producer: 'red-queen', workspaceId });
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.sourceCurrent && !row.promotionAllowed)).toBe(true);
+    expect(rows.filter((row) => row.source.status === 'expired')).toHaveLength(2);
+  });
+
   it('rolls back the source write if the common receipt cannot persist', async () => {
     await db.adminSql.unsafe(`ALTER TABLE harness_shared.calibration_predictions ADD CONSTRAINT receipt_failure_test CHECK (learning_lifecycle IS NULL) NOT VALID`);
     try {

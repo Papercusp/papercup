@@ -183,10 +183,13 @@ export async function markTransferError(
   sql: Sql,
   q: { workspaceId: string; id: string },
 ): Promise<void> {
-  await sql`
+  await withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await sql`
     UPDATE harness_shared.transfer_lessons
        SET status = 'error', test_count = test_count + 1, last_tested_at = now(), updated_at = now()
-     WHERE workspace_id = ${q.workspaceId} AND id = ${q.id}`;
+     WHERE workspace_id = ${q.workspaceId} AND id = ${q.id} RETURNING id`;
+  if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id });
+  });
 }
 
 /** Link the memory_canonical row a lesson was admitted into (null clears). */
@@ -194,10 +197,13 @@ export async function setLessonMemoryId(
   sql: Sql,
   q: { workspaceId: string; id: string; memoryId: string | null },
 ): Promise<void> {
-  await sql`
+  await withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await sql`
     UPDATE harness_shared.transfer_lessons
        SET memory_id = ${q.memoryId}, updated_at = now()
-     WHERE workspace_id = ${q.workspaceId} AND id = ${q.id}`;
+     WHERE workspace_id = ${q.workspaceId} AND id = ${q.id} RETURNING id`;
+  if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id });
+  });
 }
 
 /** Link a knowledge_pack_candidates row (the inherit-the-bar edge). */
@@ -205,8 +211,11 @@ export async function setLessonPackCandidate(
   sql: Sql,
   q: { workspaceId: string; id: string; packCandidateId: string },
 ): Promise<void> {
-  await sql`
+  await withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await sql`
     UPDATE harness_shared.transfer_lessons
        SET pack_candidate_id = ${q.packCandidateId}, updated_at = now()
-     WHERE workspace_id = ${q.workspaceId} AND id = ${q.id}`;
+     WHERE workspace_id = ${q.workspaceId} AND id = ${q.id} RETURNING id`;
+  if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id });
+  });
 }

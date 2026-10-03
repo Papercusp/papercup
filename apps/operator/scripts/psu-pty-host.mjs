@@ -1047,6 +1047,15 @@ function scanNativeTranscriptMarker({
           // for the marker anywhere in the transcript let a later user turn or
           // assistant echo certify a successor whose first prompt was different.
           const promptMarker = leadingTurnOriginMarker(userPromptText);
+          // Managed session ports prove a checksum line in the submitted seed,
+          // distinct from its leading turn-origin marker. Keep this within the
+          // same first fresh user prompt and native-id fence; arbitrary text,
+          // inline quotations and later user/assistant echoes are not proof.
+          if (/^\[PAPERCUSP SESSION PORT CHECKSUM [a-f0-9]{64}\]$/.test(marker) &&
+              unwrapWholePaste(userPromptText).replace(/\r\n?/g, '\n')
+                .split('\n').some((line) => line.trim() === marker)) {
+            return { nativeRef: path, lostChars: 0 };
+          }
           const lostChars = allowTruncated
             ? truncatedTurnOriginMarkerLoss(marker, unwrapWholePaste(userPromptText))
             : null;

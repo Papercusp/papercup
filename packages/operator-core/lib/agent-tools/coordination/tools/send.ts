@@ -140,11 +140,14 @@ import {
   GOAL_OWNER_REPORT_FIELDS,
   GOAL_OWNER_REPORT_HEADING_LIST,
   GOAL_OWNER_REPORT_HEADINGS,
+  describeGoalOwnerReportTruthViolations,
   parseGoalOwnerReport,
   stampGoalOwnerReport,
   type GoalOwnerReportField,
+  type GoalOwnerReportParseResult,
   type GoalOwnerReportStamp,
 } from '../../../goal-owner-report';
+import type { GoalOwnerReportTruthVerdict } from '../../../goal-owner-report-truth';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -990,7 +993,41 @@ export async function evaluateGoalOwnerReport(
       },
     };
   }
-  return { kind: 'stamped', stamp: stampGoalOwnerReport(goalId, parsed) };
+  // P-005 (goal-holder-plans-ideation-truthful-reports-2026-10-03): a complete
+  // report is judged against MEASURED goal state before it reaches the owner.
+  // An unreadable measurement skips its check; only a readable contradiction refuses.
+  const truth = await readGoalOwnerReportTruth(identity.workspaceId, goalId, parsed.fields);
+  if (truth && truth.violations.length) {
+    return {
+      kind: 'refused',
+      result: {
+        ok: false,
+        to: msg.to,
+        error: 'goal-owner-report-untruthful',
+        goalId,
+        violations: truth.violations,
+        message: describeGoalOwnerReportTruthViolations(goalId, truth.violations),
+      },
+    };
+  }
+  return {
+    kind: 'stamped',
+    stamp: stampGoalOwnerReport(goalId, parsed, truth ? { citedRefStates: truth.citedRefStates, summary: truth.summary } : undefined),
+  };
+}
+
+/** Lazy so the truth module's DB reads stay off the cheap path of ordinary sends. */
+async function readGoalOwnerReportTruth(
+  workspaceId: string,
+  goalId: string,
+  fields: GoalOwnerReportParseResult['fields'],
+): Promise<GoalOwnerReportTruthVerdict | null> {
+  try {
+    const { readGoalOwnerReportTruth: read } = await import('../../../goal-owner-report-truth');
+    return await read(workspaceId, goalId, fields);
+  } catch {
+    return null;
+  }
 }
 
 async function sendOne(

@@ -357,6 +357,7 @@ export async function propagateWorkItemOutcome(input: {
   const routedRef = `wi:${input.workItemId}`;
   const now = Date.now();
   const { sql } = getOrgPg();
+  return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = await sql<{ idea_id: string }[]>`
     UPDATE harness_shared.scout_routed_ideas
        SET outcome = ${outcome},
@@ -366,7 +367,9 @@ export async function propagateWorkItemOutcome(input: {
        ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
        AND outcome IS DISTINCT FROM ${outcome}
     RETURNING idea_id`;
+  await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceIds: rows.map((row) => row.idea_id) });
   return rows.length;
+  });
 }
 
 /**
@@ -408,6 +411,7 @@ export async function propagatePlanOutcome(input: {
   const routedRef = `plan:${input.planSlug}`;
   const now = Date.now();
   const { sql } = getOrgPg();
+  return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = await sql<{ idea_id: string }[]>`
     UPDATE harness_shared.scout_routed_ideas
        SET outcome = ${outcome},
@@ -417,7 +421,9 @@ export async function propagatePlanOutcome(input: {
        AND routed_ref = ${routedRef}
        AND outcome IS DISTINCT FROM ${outcome}
     RETURNING idea_id`;
+  await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceIds: rows.map((row) => row.idea_id) });
   return rows.length;
+  });
 }
 
 /** Input to {@link gradeRoutedIdea} — one grader's verdict on a routed idea (C-2). */
@@ -471,9 +477,11 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
   // self-join FROM reads the PRE-update grade in the same statement (FB-15:
   // 'regrade' detection for the owner-interaction capture below) — same
   // unnarrowed idea_id predicate as before, so apply semantics are unchanged.
-  const updated = await sql<
+  const updated = await withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await sql<
     {
       idea_id: string;
+      workspace_id: string;
       lens: string;
       rail: string;
       routed_ref: string;
@@ -492,8 +500,13 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
              WHERE idea_id = ${input.ideaId}) prev
      WHERE t.idea_id = prev.idea_id
        AND (${input.gradedBy} = 'owner' OR t.graded_by IS DISTINCT FROM 'owner')
-     RETURNING t.idea_id, t.lens, t.rail, t.routed_ref, t.title,
+     RETURNING t.idea_id, t.workspace_id, t.lens, t.rail, t.routed_ref, t.title,
                prev.prev_grade, prev.prev_graded_by`;
+  for (const row of rows) await recordProducerObservation(sql, {
+    producer: 'scout', workspaceId: row.workspace_id, sourceId: row.idea_id,
+  });
+  return rows;
+  });
   if (updated.length === 0) {
     const exists = await sql<{ idea_id: string }[]>`
       SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`;
@@ -1560,6 +1573,7 @@ export async function refreshScoutOutcomes(
     const outcomes = selectedProvenance.map((p) => classifyIdeaOutcome(p, byRef) as string);
     const now = Date.now();
     // One batched UPDATE … FROM unnest(…) — no per-row serial loop.
+    await withProducerLifecycleWrite(sql, async (sql) => {
     await sql`
       UPDATE harness_shared.scout_routed_ideas AS t
          SET outcome = d.outcome, outcome_checked_at = ${now}
@@ -1567,6 +1581,8 @@ export async function refreshScoutOutcomes(
           SELECT * FROM unnest(${ids}::text[], ${outcomes}::text[]) AS u(idea_id, outcome)
         ) AS d
        WHERE t.idea_id = d.idea_id AND t.workspace_id = ${ws}`;
+    await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceIds: ids });
+    });
 
     if (opts.ideaIds) {
       const observedAt = new Date(now).toISOString();

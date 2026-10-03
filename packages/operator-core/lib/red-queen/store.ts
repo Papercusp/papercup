@@ -138,12 +138,17 @@ export async function updateDrillDetected(
   drillId: string,
   d: { detectedAt: string; detectedWatchdogKey: string; detectedKind?: string; issueId: string },
 ): Promise<void> {
-  await sql`
+  await withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await sql`
     UPDATE harness_shared.red_queen_drills
        SET status = 'detected', detected_at = ${d.detectedAt},
            detected_watchdog_key = ${d.detectedWatchdogKey},
            detected_kind = ${d.detectedKind ?? null}, issue_id = ${d.issueId}, updated_at = now()
-     WHERE id = ${drillId}`;
+     WHERE id = ${drillId} RETURNING workspace_id`;
+  if (rows.length) await recordProducerObservation(sql, {
+    producer: 'red-queen', workspaceId: String(rows[0].workspace_id), sourceId: drillId,
+  });
+  });
 }
 
 export async function updateDrillTriaged(
@@ -151,12 +156,17 @@ export async function updateDrillTriaged(
   drillId: string,
   d: { triagedAt: string; triagedDecision: string; triagedIdeaType?: string },
 ): Promise<void> {
-  await sql`
+  await withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await sql`
     UPDATE harness_shared.red_queen_drills
        SET status = 'triaged', triaged_at = ${d.triagedAt},
            triaged_decision = ${d.triagedDecision},
            triaged_idea_type = ${d.triagedIdeaType ?? null}, updated_at = now()
-     WHERE id = ${drillId}`;
+     WHERE id = ${drillId} RETURNING workspace_id`;
+  if (rows.length) await recordProducerObservation(sql, {
+    producer: 'red-queen', workspaceId: String(rows[0].workspace_id), sourceId: drillId,
+  });
+  });
 }
 
 export async function updateDrillResolved(
@@ -184,17 +194,23 @@ export async function updateDrillResolved(
 }
 
 export async function markDrillFailed(sql: Sql, drillId: string, error: string, leakCheck?: LeakCheckResult): Promise<void> {
-  await sql`
+  await withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await sql`
     UPDATE harness_shared.red_queen_drills
        SET status = 'failed', error = ${error.slice(0, 2000)},
            leak_check_passed = ${leakCheck ? leakCheck.passed : null},
            leak_check = ${leakCheck ? JSON.stringify(leakCheck) : null}::text::jsonb,
            updated_at = now()
-     WHERE id = ${drillId}`;
+     WHERE id = ${drillId} RETURNING workspace_id`;
+  if (rows.length) await recordProducerObservation(sql, {
+    producer: 'red-queen', workspaceId: String(rows[0].workspace_id), sourceId: drillId,
+  });
+  });
 }
 
 /** Hygiene: any OPEN drill older than the deadline flips 'expired' (count returned). */
 export async function expireStaleDrills(sql: Sql, workspaceId: string, olderThanHours = 24): Promise<number> {
+  return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.red_queen_drills
        SET status = 'expired', updated_at = now()
@@ -202,7 +218,9 @@ export async function expireStaleDrills(sql: Sql, workspaceId: string, olderThan
        AND status IN ('planted', 'detected', 'triaged')
        AND planted_at < now() - make_interval(hours => ${olderThanHours})
      RETURNING id`;
+  await recordProducerObservation(sql, { producer: 'red-queen', workspaceId, sourceIds: rows.map((row) => row.id) });
   return rows.length;
+  });
 }
 
 export interface ReadDrillOutcomesOpts {
