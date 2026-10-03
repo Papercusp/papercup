@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -2992,6 +2993,107 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     expect(refused.stderr).toContain('need=0');
     expect(refused.stderr).toContain('size=unknown');
   }, NATIVE_SHELL_TIMEOUT_MS);
+
+  describe('WI-10005931: the percentage reserve protects only the integration-root filesystem', () => {
+    // reserve = 50% of 100000 = 50000 on the protected fs; capped to 3000 elsewhere.
+    const scoped = (avail: number, sameFs: '0' | '1') => ({
+      ...fs(avail),
+      DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '50',
+      DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES: '3000',
+      DEPENDENCY_GENERATION_HEADROOM_SAME_FS: sameFs,
+    });
+
+    it('caps the reserve off the protected filesystem and keeps the margin', () => {
+      const { root, generation, source } = copyFixture();
+      writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t5000\n');
+      const dest = join(root, 'out/node_modules');
+      // other fs: required = 5000 + min(50000, 3000) + 1000 = 9000
+      const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        ...scoped(8999, '0'),
+        SOURCE: source,
+        DEST: dest,
+      });
+      expect(refused.status, refused.stderr).toBe(77);
+      expect(refused.stderr).toContain('reserve=3000 reserve_scope=other-fs');
+      expect(refused.stderr).toContain('required=9000');
+      expect(existsSync(dest)).toBe(false);
+
+      const allowed = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        ...scoped(9000, '0'),
+        SOURCE: source,
+        DEST: dest,
+      });
+      expect(allowed.status, allowed.stderr).toBe(0);
+      expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('v1\n');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('keeps the full percentage reserve on the protected filesystem', () => {
+      const { root, generation, source } = copyFixture();
+      writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t5000\n');
+      // protected fs: required = 5000 + 50000 + 1000 = 56000
+      const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        ...scoped(9000, '1'),
+        SOURCE: source,
+        DEST: join(root, 'out/node_modules'),
+      });
+      expect(refused.status, refused.stderr).toBe(77);
+      expect(refused.stderr).toContain('reserve=50000 reserve_scope=protected-fs');
+      expect(refused.stderr).toContain('required=56000');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('admits the incident copy (9.1 GB needed, 165.7 GB free on an 8 TB data disk) only off the protected fs', () => {
+      // Measured on papercusp-public-site run 05385367 (2026-10-03 08:50Z):
+      // need=9138462720 avail=165755830272 reserve=159988524482 (2% of total).
+      const incident = (sameFs: '0' | '1') => ({
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '165755830272',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '7999426224100',
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '10737418240',
+        // The 20 GiB other-fs cap is deliberately left at its default.
+        DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES: '',
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: sameFs,
+      });
+      const { root, generation, source } = copyFixture();
+      writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t9138462720\n');
+      const check = 'rc=0; dependency_generation_check_headroom "$SOURCE" "$DEST" || rc=$?; echo "RC=$rc"';
+      const dest = join(root, 'out/node_modules');
+      mkdirSync(join(root, 'out'), { recursive: true });
+      const dataDisk = runShell(check, { ...incident('0'), SOURCE: source, DEST: dest });
+      expect(dataDisk.stdout, dataDisk.stderr).toContain('RC=0');
+      const protectedFs = runShell(check, { ...incident('1'), SOURCE: source, DEST: dest });
+      expect(protectedFs.stdout, protectedFs.stderr).toContain('RC=77');
+      expect(protectedFs.stderr).toContain('reserve=159988524482 reserve_scope=protected-fs');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('compares real devices, and treats an unknown protected path as protected', () => {
+      const { root } = copyFixture();
+      const probe = (protectedPath: string, dir: string) =>
+        runShell(
+          'rc=0; dependency_generation_on_reserve_fs "$DIR" || rc=$?; echo "RC=$rc"',
+          { DEPENDENCY_GENERATION_RESERVE_FS_PATH: protectedPath, DIR: dir },
+        ).stdout.trim();
+      expect(probe(root, join(root, 'generation'))).toBe('RC=0');
+      // procfs is always a distinct device from a tmpdir.
+      expect(probe(root, '/proc')).toBe('RC=1');
+      expect(probe('', '/proc')).toBe('RC=0');
+      expect(probe(join(root, 'does-not-exist'), '/proc')).toBe('RC=0');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('a sourced caller starts unscoped, and main records the integration root', () => {
+      const { root } = copyFixture();
+      const result = runShell(
+        [
+          'echo "BEFORE=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'rc=0; dependency_generation_main --integration "$ROOT" --generation-root "$ROOT/no-store" --prune-only || rc=$?',
+          'echo "RC=$rc AFTER=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+        ].join('\n'),
+        { ROOT: root, DEPENDENCY_GENERATION_RESERVE_FS_PATH: '' },
+      );
+      const real = realpathSync(root);
+      expect(result.stdout, result.stderr).toContain('BEFORE=[]');
+      expect(result.stdout, result.stderr).toContain(`RC=0 AFTER=[${real}]`);
+    }, NATIVE_SHELL_TIMEOUT_MS);
+  });
 
   it('materialize_tree propagates the typed headroom exit instead of a generic mv error', () => {
     const { root, source } = copyFixture();
