@@ -875,6 +875,18 @@ describe('composeModelSpec (D-001: effort rides the model spec)', () => {
 });
 
 describe('resolveResumeTarget', () => {
+  it('resolves a tracked OMP thread-only row and keeps the raw session binding distinct', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22663, workspace_id: 'ws-omp', coord_owner_id: OWNER, session_id: null, omp_thread_id: 'omp-native-thread',
+      agent: 'omp', cwd: '/repo', started_at: '2026-09-05T23:16:36.945Z',
+      binding_started_at: '2026-09-05 23:16:36.945123+00', ended_at: null, ended_by: null,
+    }] as unknown[]);
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true, sessionId: 'omp-native-thread', ompThreadId: 'omp-native-thread', resumeId: 'omp-native-thread',
+      binding: { coordOwnerId: OWNER, sessionId: null, ompThreadId: 'omp-native-thread' },
+    });
+  });
+
   it('rejects a ref with neither agentId nor sessionId (no DB round-trip)', async () => {
     const r = await resolveResumeTarget({});
     expect(r.ok).toBe(false);

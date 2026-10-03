@@ -250,6 +250,17 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
 });
 
 describe('dispatchConsultResponder — the fork leg', () => {
+  it.each(['sess-1', 'different-thread'])('requires the exact tracked OMP thread-only binding (%s)', async (threadId) => {
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'omp', model: 'opus' }],
+    }, { source: { agent: 'omp', sessionId: 'sess-1', ompThreadId: 'sess-1',
+      binding: { coordOwnerId: 'su-expert', sessionId: null, ompThreadId: threadId, startedAt: '2026-09-22T00:00:00Z' } } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(threadId === 'sess-1');
+    expect(calls.spawn).toHaveLength(threadId === 'sess-1' ? 1 : 0);
+    if (threadId !== 'sess-1') expect(result.attempts[0]).toMatchObject({ reason: 'source-session-untracked' });
+  });
+
   it.each(['claude', 'codex', 'omp'] as const)('reaches all three targets from fresh and ended %s sources under separate answer identities', async (sourceAgent) => {
     for (const live of [false, true]) {
       for (const targetAgent of ['claude', 'codex', 'omp'] as const) {

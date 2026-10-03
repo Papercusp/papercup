@@ -360,7 +360,8 @@ export async function resolveResumeTarget(ref: {
       ${
         sessionId
           ? sql`SELECT ${sessionId}::text AS candidate_session_id`
-          : sql`SELECT s.session_id AS candidate_session_id
+          : sql`SELECT CASE WHEN s.agent = 'omp' THEN COALESCE(s.omp_thread_id, s.session_id)
+                            ELSE s.session_id END AS candidate_session_id
                   FROM harness_shared.adv_sessions s
                  WHERE s.coord_owner_id LIKE ${agentId + '%'}
                  ORDER BY s.started_at DESC
@@ -382,6 +383,7 @@ export async function resolveResumeTarget(ref: {
      WHERE ${
        sessionId
          ? sql`session_id = ${sessionId}
+                 OR (agent = 'omp' AND omp_thread_id = ${sessionId})
                  OR coord_owner_id = (SELECT owner FROM indexed_owner)`
          : sql`coord_owner_id LIKE ${agentId + '%'}
                  OR coord_owner_id = (SELECT owner FROM indexed_owner)`
@@ -404,7 +406,7 @@ export async function resolveResumeTarget(ref: {
     };
   }
   const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
-  const nativeSessionId = resolvedNativeSessionId(sessionId, row.sessionId);
+  const nativeSessionId = resolvedNativeSessionId(sessionId, row.agent === 'omp' ? row.ompThreadId ?? row.sessionId : row.sessionId);
   const launchMetadata = resumeLaunchMetadata(row.launchArgv);
   // The psu launcher already supports tracked Codex rows with no native UUID:
   // `psu --resume=<adv row id>` resolves the row, restores its isolated
@@ -439,6 +441,7 @@ export async function resolveResumeTarget(ref: {
     binding: row.coordOwnerId && rows[0].binding_started_at ? {
       coordOwnerId: row.coordOwnerId,
       sessionId: row.sessionId,
+      ...(row.agent === 'omp' ? { ompThreadId: row.ompThreadId } : {}),
       startedAt: rows[0].binding_started_at,
     } : null,
   };

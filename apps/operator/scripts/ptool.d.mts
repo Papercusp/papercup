@@ -628,7 +628,7 @@ export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: objec
  */
 export function connectWithOperatorCandidates<T>(connectOnce: (url: string, scope: object, options?: {
     timeoutMs: number;
-}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, allowHttpNotFoundFallback, ...retryOptions }?: Record<string, any> & {
+}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, allowHttpNotFoundFallback, prepareConnection, ...retryOptions }?: Record<string, any> & {
     primaryAttemptOptions?: object;
     onFallback?: ((url: string, error: unknown) => void) | null;
 }): Promise<{
@@ -702,6 +702,27 @@ export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, 
     doImport?: ((spec: any) => Promise<any>) | undefined;
     loadInstallMutex?: (() => Promise<[typeof import("../../../scripts/lib/fs-mutex.mjs"), typeof import("../../../scripts/npm-install-safe.mjs")]>) | undefined;
 }): Promise<any>;
+/**
+ * Load the transport implementation before starting the network handshake
+ * retry budget. SDK imports can wait for install:safe's repo reader lease for
+ * up to ten minutes; that wait is bootstrap time, not operator network time.
+ *
+ * @param {{transport?: string}} [scope]
+ * @param {{importSdkModule?: (specifier: string) => Promise<object>}} [options]
+ */
+export function preparePtoolConnectionModules({ transport: requestedTransport }?: {
+    transport?: string;
+}, { importSdkModule }?: {
+    importSdkModule?: (specifier: string) => Promise<object>;
+}): Promise<{
+    mode: string;
+    Client?: undefined;
+    StreamableHTTPClientTransport?: undefined;
+} | {
+    mode: string;
+    Client: any;
+    StreamableHTTPClientTransport: any;
+}>;
 /**
  * List every tool, following pagination if the server returns a cursor.
  * @param {{listTools: (params?: {cursor?: string}, options?: {timeout?: number,

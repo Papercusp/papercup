@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "plan": "open-source-release-2026-09-29",
+  "workItem": "WI-10004113",
+  "observedAt": "2026-10-03T10:47:00Z",
+  "status": "five current semantic counterexamples; release unshipped",
+  "sourceCommit": "b5fc663f4411222bdefc549acea0165773afc7d5",
+  "origin": "pristine maintained lint:as-committed clone",
+  "mechanism": "scripts/mutation-probe.sh",
+  "options": ["--relocation", "overlay", "--fake-destructive"],
+  "scope": {"workspace": "papercusp-workspace", "harness": "papercusp"},
+  "controls": "Each command passed both original-source and unmutated relocated controls. Every mutant parsed, failed assertions, and produced verdict=caught. Named source/test/instrument files were byte-identical to current canonical files before and after the probes.",
+  "currentness": {
+    "reader": "plans:get-spec-evidence on current-build :3170",
+    "expected": 5,
+    "current": 5,
+    "errors": [],
+    "dimensions": ["spec", "source", "test", "testRun"],
+    "inapplicableDimensions": ["fixture", "rubric", "environment", "coverageEvidence"]
+  },
+  "probes": [
+    {
+      "bar": "R3",
+      "specId": "AUTO-BAR-R-3-P-017",
+      "specRevision": 3,
+      "source": "scripts/check-licenses.mjs",
+      "mutation": "s/const tier = Math\\.min\\(a\\.tier, b\\.tier\\);/const tier = Math.max(a.tier, b.tier);/",
+      "testCommand": "npm run test:file -- packages/operator-core/lib/license-gate.test.ts",
+      "controls": {"originalPassed": 37, "relocatedPassed": 37, "skipped": 0},
+      "mutant": {"passed": 35, "failed": 2, "skipped": 0, "testRunId": 20676927},
+      "caughtBy": ["SPDX AND takes the worst alternative", "AND precedence and parentheses"],
+      "bindingId": 23652,
+      "correction": "Binding23645 incorrectly said32 control tests; binding23652 and parent comment1157269 correct the count to37. The recorded run and caught verdict are unchanged."
+    },
+    {
+      "bar": "R7",
+      "specId": "AUTO-BAR-R-7-P-002",
+      "specRevision": 5,
+      "source": "scripts/source-preview.mjs",
+      "mutation": "s/other\\.key !== target\\.key && named === other\\.repo\\.toLowerCase\\(\\)/false/",
+      "testCommand": "npm run test:file -- packages/operator-core/lib/source-preview-public.test.ts",
+      "controls": {"originalPassed": 13, "relocatedPassed": 13, "skipped": 0},
+      "mutant": {"passed": 11, "failed": 2, "skipped": 0, "testRunId": 20676928},
+      "caughtBy": ["cross-target remote rejection", "pushSnapshot refuses a crossed remote"],
+      "bindingId": 23646
+    },
+    {
+      "bar": "R8",
+      "specId": "AUTO-BAR-R-8-P-003",
+      "specRevision": 4,
+      "source": "scripts/source-preview.mjs",
+      "mutation": "s/const append = t\\.history === 'append';/const append = false;/",
+      "testCommand": "npm run test:file -- packages/operator-core/lib/source-preview-public.test.ts",
+      "controls": {"originalPassed": 13, "relocatedPassed": 13, "skipped": 0},
+      "mutant": {"passed": 11, "failed": 2, "skipped": 0, "testRunId": 20676926},
+      "caughtBy": ["new public commit has previous public head as parent", "contributed commit remains in ancestry"],
+      "bindingId": 23647
+    },
+    {
+      "bar": "R9",
+      "specId": "AUTO-BAR-R-9-P-004",
+      "specRevision": 4,
+      "source": "scripts/source-preview.mjs",
+      "mutation": "s/if \\(target\\.key === 'public'\\) log\\(`desktop shell/if (false) log(`desktop shell/",
+      "testCommand": "npm run test:file -- packages/operator-core/lib/source-preview-public.test.ts",
+      "controls": {"originalPassed": 13, "relocatedPassed": 13, "skipped": 0},
+      "mutant": {"passed": 12, "failed": 1, "skipped": 0, "testRunId": 20677582},
+      "caughtBy": ["exported papercusp-desktop/README.md exists"],
+      "bindingId": 23650
+    },
+    {
+      "bar": "R12",
+      "specId": "AUTO-BAR-R-12-P-007",
+      "specRevision": 5,
+      "source": "scripts/source-preview.mjs",
+      "mutation": "s/if \\(license !== null\\) await fs\\.writeFile\\(join\\(partial, 'LICENSE'\\), license\\);//",
+      "testCommand": "npm run test:file -- packages/operator-core/lib/source-preview-public.test.ts",
+      "controls": {"originalPassed": 13, "relocatedPassed": 13, "skipped": 0},
+      "mutant": {"passed": 11, "failed": 2, "skipped": 0, "testRunId": 20677584},
+      "caughtBy": ["export/LICENSE matches ELv2 text", "remote main:LICENSE exists"],
+      "positiveCoverage": ["source-available README wording", "no OSI/open-source claim"],
+      "bindingId": 23651
+    }
+  ],
+  "sourceSha256": {
+    "scripts/source-preview.mjs": "a47ec2572dfe1eb697d57f9871cec377652156d3c2c2ab6fd0c65a61c69059da",
+    "scripts/check-licenses.mjs": "65aa2a49b65f82a35458c48f7d869d6c5bad0c16340023d17fc677130640c739",
+    "packages/operator-core/lib/source-preview-public.test.ts": "3821aff36178f7bc42922367e050b2470ca4f47e3a0f5c187d1ea0a9afa7b6a4",
+    "packages/operator-core/lib/license-gate.test.ts": "8db059df1b58254bbe05bddcf288b075748c489355696152cc075da8b910441e"
+  },
+  "limitations": ["These are current source/unit counterexamples. They do not discharge live serving, hosted credential delivery, published installer, or final shipment obligations."]
+}

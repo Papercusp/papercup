@@ -1012,6 +1012,8 @@ export function hasAdvSessionTerminalEvidence(
 export interface AdvSessionExpectedBinding {
   coordOwnerId: string;
   sessionId: string | null;
+  /** Exact OMP source handle, alongside the unchanged session_id binding. */
+  ompThreadId?: string | null;
   /** PostgreSQL's full-precision started_at::text, never a JS Date round-trip. */
   startedAt: string;
 }

@@ -75,7 +75,16 @@ function linkFromSibling(f: Fixture, rel: string): { shared: string; ino: number
 }
 
 function run(f: Fixture, script: string): void {
-  const r = spawnSync('bash', [join(f.app, 'scripts', script)], { encoding: 'utf8' });
+  // Model BSD cp: macOS rejects GNU's --remove-destination option. The real
+  // script must both preserve the linked sibling and work with this cp.
+  const bin = join(f.root, 'bin');
+  mkdirSync(bin, { recursive: true });
+  const cp = join(bin, 'cp');
+  writeFileSync(cp, '#!/bin/sh\nfor arg in "$@"; do\n  [ "$arg" = "--remove-destination" ] && exit 64\ndone\nexec /bin/cp "$@"\n', { mode: 0o755 });
+  const r = spawnSync('bash', [join(f.app, 'scripts', script)], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+  });
   expect(r.status, `${r.stdout ?? ''}${r.stderr ?? ''}`).toBe(0);
 }
 

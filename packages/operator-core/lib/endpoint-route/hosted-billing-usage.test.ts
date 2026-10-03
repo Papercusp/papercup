@@ -27,12 +27,12 @@ const billingStore: HostedBillingStore = {
   currentSubscription: async () => null, applyEvent: async () => ({ outcome: 'ignored', organizationId: null }),
   recordRejectedEvent: async () => 'recorded',
 };
-function statement(input: Parameters<HostedBillingUsageSource>[0]) {
+function statement(input: Parameters<HostedBillingUsageSource>[0], complete = false) {
   const record: HostedUsageRecord = { ...input.scope, customerWorkspaceId: input.scope.customerWorkspaceId ?? 'customer-a',
     provider: 'fixture-provider', recordId: 'r-1', usageId: 'u-1', revision: 1, category: 'compute', payer: 'consumption',
     occurredAtMs: T - 1, observedAtMs: T, quantity: 60, unit: 'seconds', costSource: 'provider-billed',
     costMicros: 20_003, sourceRef: 'fixture:bill' };
-  return buildHostedUsageStatement({ ...input, source: { complete: false, observedAtMs: T,
+  return buildHostedUsageStatement({ ...input, source: { complete, observedAtMs: T,
     maximumAgeMs: 0, evidenceRef: 'fixture:partial-census' }, records: [record] });
 }
 async function runtime(usage?: HostedBillingUsageSource, runService?: HostedServiceContextRunner) {
@@ -55,6 +55,17 @@ describe('GET /hosted/billing/usage', () => {
     expect(body.statement.consumptionBilled).toEqual({ micros: 20_003, wholeCents: 2, roundingMicros: 3 });
     expect(body.statement.settlementEligible).toBe(false);
     expect(body.statement.gaps).toContain('incomplete-source');
+    expect(body.statement.forecast).toMatchObject({ projectedConsumptionMicros: null, unavailableReason: 'incomplete-source' });
+  });
+
+  it('exposes a provisional monthly forecast while retaining the exact billed amount', async () => {
+    const built = await runtime(async input => statement(input, true));
+    const response = await built.app.request('/api/hosted/billing/usage?month=2026-10', headers());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.statement.consumptionBilled.micros).toBe(20_003);
+    expect(body.statement.forecast).toMatchObject({ method: 'linear-elapsed-utc-month', basisMicros: 20_003,
+      projectedConsumptionMicros: 620_093, provisional: true, unavailableReason: null });
   });
 
   it('defaults to the UTC month and organization-wide scope without requiring Stripe configuration', async () => {
@@ -98,6 +109,7 @@ describe('GET /hosted/billing/usage', () => {
     const built = await runtime(async input => {
       const result = statement(input);
       return { ...result, providerPayload: 'private', scope: { ...result.scope, providerPayload: 'private' },
+        forecast: { ...result.forecast, providerPayload: 'private' },
         lines: result.lines.map(line => ({ ...line, providerPayload: 'private' })),
         history: result.history.map(history => ({ ...history, providerPayload: 'private',
           revisions: history.revisions.map(revision => ({ ...revision, providerPayload: 'private' })) })),

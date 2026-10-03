@@ -139,6 +139,10 @@ function usageView(statement: HostedUsageStatement): HostedUsageStatement {
     consumptionBilled: { micros: statement.consumptionBilled.micros, wholeCents: statement.consumptionBilled.wholeCents,
       roundingMicros: statement.consumptionBilled.roundingMicros },
     platformBilledMicros: statement.platformBilledMicros, customerDirectBilledMicros: statement.customerDirectBilledMicros,
+    forecast: { method: statement.forecast.method, basisMicros: statement.forecast.basisMicros,
+      elapsedMs: statement.forecast.elapsedMs, periodMs: statement.forecast.periodMs,
+      projectedConsumptionMicros: statement.forecast.projectedConsumptionMicros,
+      provisional: statement.forecast.provisional, unavailableReason: statement.forecast.unavailableReason },
     history: statement.history.map(history => ({ customerWorkspaceId: history.customerWorkspaceId,
       provider: history.provider, usageId: history.usageId, revisions: history.revisions.map(revision => ({
         recordId: revision.recordId, revision: revision.revision, sourceRef: revision.sourceRef,
