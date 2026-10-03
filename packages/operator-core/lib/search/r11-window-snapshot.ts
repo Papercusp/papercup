@@ -188,14 +188,14 @@ export function evaluateR11Snapshots(t0: R11Snapshot, cut: R11Snapshot, t1: R11S
       table: startTarget.table, t0Stale: t0StaleRows.length, t0Retained: t0Retained.length,
       t0Embedded, inWindowEligible: inWindowRows.length, inWindowRetained: inWindowRetained.length,
       inWindowEmbedded,
-      passed: (t0Retained.length === 0 || t0Embedded > 0) && inWindowEmbedded === inWindowRetained.length,
+      passed: (t0StaleRows.length === 0 || t0Embedded > 0) && inWindowEmbedded === inWindowRetained.length,
     };
   });
   if (targets.every((target) => target.t0Stale === 0)) {
     return { verdict: 'inconclusive', targets, reason: 'All T0 stale cohorts were empty' };
   }
-  if (targets.every((target) => target.t0Retained === 0)) {
-    return { verdict: 'inconclusive', targets, reason: 'No originally stale eligible rows remained at T1 to prove clause 1' };
+  if (targets.some((target) => target.t0Stale > 0 && target.t0Retained === 0)) {
+    return { verdict: 'inconclusive', targets, reason: 'A target lost every originally stale eligible row before T1, so clause 1 is unproven' };
   }
   return targets.every((target) => target.passed)
     ? { verdict: 'healthy', targets, reason: 'All nonempty retained cohorts met the progress rule' }

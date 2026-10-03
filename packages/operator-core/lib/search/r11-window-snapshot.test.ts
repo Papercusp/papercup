@@ -86,4 +86,19 @@ describe('R-11 prospective snapshot', () => {
     const t1 = snapshot('T1', end, [{ key: '[2]', stale: false }]);
     expect(evaluateR11Snapshots(t0, tcut, t1).verdict).toBe('inconclusive');
   });
+
+  it('does not let a passing target hide another target whose stale cohort disappeared', () => {
+    const t0 = snapshot('T0', 0, [{ key: '[1]', stale: true }]);
+    const tcut = snapshot('Tcut', cut, []);
+    const t1 = snapshot('T1', end, []);
+    t0.targets.push({ ...snapshot('T0', 0, [{ key: '[2]', stale: true }]).targets[0]!, table: 's.other' });
+    tcut.targets.push({ ...snapshot('Tcut', cut, []).targets[0]!, table: 's.other' });
+    t1.targets.push({ ...snapshot('T1', end, [{ key: '[2]', stale: false }]).targets[0]!, table: 's.other' });
+
+    const result = evaluateR11Snapshots(t0, tcut, t1);
+    expect(result.verdict).toBe('inconclusive');
+    expect(result.targets.map(({ table, passed }) => ({ table, passed }))).toEqual([
+      { table: 's.t', passed: false }, { table: 's.other', passed: true },
+    ]);
+  });
 });
