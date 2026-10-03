@@ -903,7 +903,7 @@ export default defineTool({
       .max(500)
       .optional()
       .describe(
-        `Max entries returned (most-recent kept). Default ${DEFAULT_INBOX_LIMIT}.`,
+        `Max entries in the priority-ranked window; newest-first overall is not guaranteed. Default ${DEFAULT_INBOX_LIMIT}.`,
       ),
     include_ambient: z
       .boolean()
