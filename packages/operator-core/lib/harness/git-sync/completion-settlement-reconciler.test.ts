@@ -944,48 +944,48 @@ describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh'
         version: number;
         generation: number;
         evidenceHash: string;
-        repositoryRoot: string;
-        closeHeadSha: string;
-        emittedCommitSha: string;
-        paths: Array<{
-          path: string;
-          workingTreeBlobSha: string;
-          fromHeadSha: string;
-          toCommitSha: string;
-          proof: string;
+        checkouts: Array<{
+          repositoryRoot: string;
+          closeHeadSha: string;
+          emittedCommitSha: string;
+          paths: Array<{
+            path: string;
+            workingTreeBlobSha: string;
+            fromHeadSha: string;
+            toCommitSha: string;
+            proof: string;
+          }>;
         }>;
       } | null;
       treeStamp?: unknown;
     };
     expect(evidence.historyAttestation).toEqual({
-      version: 1,
+      version: 2,
       generation: manifest.generation,
       evidenceHash: manifest.evidenceHash,
-      repositoryRoot: manifest.repositoryRoot,
-      closeHeadSha: manifest.headSha,
-      emittedCommitSha: SHA,
-      // EI-24710716781971154: a MIXED row. a.ts was superseded (history proof); nested/b.ts is
-      // still exact in the emitted tree. The close-time treeStamp cannot be refreshed (a.ts's
-      // blob is not in this tree), and the migration-1207 floor demands a proof for EVERY
-      // identity entry whose working blob differs from head — so nested/b.ts must be attested
-      // too. Attesting only a.ts (the previous expectation) left the floor rejecting the row
-      // and the trigger reverting the upgrade on every pass.
-      paths: [
-        {
-          path: 'a.ts',
-          workingTreeBlobSha: 'd'.repeat(40),
-          fromHeadSha: manifest.headSha,
-          toCommitSha: SHA,
-          proof: 'exact-path-blob-history',
-        },
-        {
-          path: 'nested/b.ts',
-          workingTreeBlobSha: 'e'.repeat(40),
-          fromHeadSha: manifest.headSha,
-          toCommitSha: SHA,
-          proof: 'exact-path-blob-history',
-        },
-      ],
+      // The superseded path and the exact-in-emitted-tree sibling path are both
+      // bound to this checkout/head. The truthful close-time treeStamp stays intact.
+      checkouts: [{
+        repositoryRoot: manifest.repositoryRoot,
+        closeHeadSha: manifest.headSha,
+        emittedCommitSha: SHA,
+        paths: [
+          {
+            path: 'a.ts',
+            workingTreeBlobSha: 'd'.repeat(40),
+            fromHeadSha: manifest.headSha,
+            toCommitSha: SHA,
+            proof: 'exact-path-blob-history',
+          },
+          {
+            path: 'nested/b.ts',
+            workingTreeBlobSha: 'e'.repeat(40),
+            fromHeadSha: manifest.headSha,
+            toCommitSha: SHA,
+            proof: 'exact-path-blob-history',
+          },
+        ],
+      }],
     });
     expect(evidence.treeStamp).toEqual(originalTreeStamp);
   });
@@ -1036,10 +1036,10 @@ describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh'
       (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
     const evidence = (updateCall?.[1] as unknown as Record<string, unknown>)[
       TERMINAL_COMPLETION_EVIDENCE_KEY
-    ] as { historyAttestation: { paths: Array<{ path: string }> } };
+    ] as { historyAttestation: { checkouts: Array<{ paths: Array<{ path: string }> }> } };
     // a.ts (history) + nested/b.ts (exact in tree, unproven at close). NOT c.ts (already exact
     // at close), NOT the deletion, NOT the out-of-repo artifact.
-    expect(evidence.historyAttestation.paths.map((p) => p.path)).toEqual(['a.ts', 'nested/b.ts']);
+    expect(evidence.historyAttestation.checkouts[0]?.paths.map((p) => p.path)).toEqual(['a.ts', 'nested/b.ts']);
   });
 
   it('does not count a row the authority floor kept proposed as settled, and emits no settled event', async () => {
@@ -1692,5 +1692,71 @@ describe('WI-10004711 — superseded-before-commit verdict and the one-time clos
     expect(result.stranded).toEqual(['WI-42476']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('became unsettleable by waiting'));
     warn.mockRestore();
+  });
+});
+
+describe('reconcileProposedCompletionsAtCommit — sibling checkouts', () => {
+  it('settles identical relative paths independently and CAS-merges checkout progress', async () => {
+    const path = 'src/fix.ts';
+    const roots = ['/repo', '/sibling'];
+    const heads = ['1'.repeat(40), '2'.repeat(40)];
+    const blobs = ['3'.repeat(40), '4'.repeat(40)];
+    const commits = ['5'.repeat(40), '6'.repeat(40)];
+    const multiManifest = {
+      version: 1 as const, generation: 9, evidenceHash: '7'.repeat(64),
+      repositoryRoot: roots[0]!, headSha: heads[0]!, normalizedPaths: [path, path],
+      contentIdentity: roots.map((repositoryRoot, index) => ({
+        path, repositoryRoot, headSha: heads[index]!,
+        workingTreeBlobSha: blobs[index]!, headBlobSha: 'a'.repeat(40 + index),
+      })),
+    };
+    let payload: Record<string, unknown> = {
+      [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
+        filesChanged: [path],
+        treeStamp: { repositoryRoot: roots[0], headSha: heads[0], contentIdentity: multiManifest.contentIdentity },
+        settlementManifest: multiManifest,
+      },
+    };
+    const queries: string[] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?');
+      queries.push(query);
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        return [{ feature_id: 'WI-CHECKOUT', harness_slug: 'papercusp', payload }];
+      }
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        payload = values[0] as Record<string, unknown>;
+        const evidence = payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+        const residuals = (evidence.settlementManifest as { residualPaths?: unknown[] }).residualPaths ?? [];
+        return [{ feature_id: 'WI-CHECKOUT', authority: residuals.length ? 'proposed' : 'committed' }];
+      }
+      throw new Error(`unexpected SQL: ${query}`);
+    }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
+    (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+    const lookup = vi.fn(async (root: string) => new Map([[path, resolved(blobs[roots.indexOf(root)]!)]]));
+    const emit = settlementEmitMock();
+
+    const first = await reconcileProposedCompletionsAtCommit(commits[0]!, {
+      installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: roots[0]!,
+    }, { sql, lookup, emit });
+    const firstManifest = (payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>)
+      .settlementManifest as { residualPaths: Array<Record<string, unknown>> };
+    expect(first.upgraded).toEqual([]);
+    expect(firstManifest.residualPaths).toEqual([{
+      path, repositoryRoot: roots[1], headSha: heads[1], reason: 'checkout-not-processed',
+    }]);
+
+    const second = await reconcileProposedCompletionsAtCommit(commits[1]!, {
+      installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: roots[1]!,
+    }, { sql, lookup, emit });
+    expect(second.upgraded).toEqual(['WI-CHECKOUT']);
+    expect(lookup.mock.calls.map(([root, , paths]) => [root, paths])).toEqual([
+      [roots[0], [path]], [roots[1], [path]],
+    ]);
+    expect(queries.filter((query) => query.includes('SELECT feature_id, harness_slug, payload'))[0])
+      .toContain('jsonb_array_elements');
+    expect(queries.filter((query) => query.includes('UPDATE harness_shared.work_items'))
+      .every((query) => query.includes('IS NOT DISTINCT FROM'))).toBe(true);
+    expect(emit).toHaveBeenCalledTimes(1);
   });
 });
