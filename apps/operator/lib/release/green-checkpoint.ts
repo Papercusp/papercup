@@ -3534,6 +3534,83 @@ export function createFatalCheckpointFinalizer(deps: {
   };
 }
 
+/** WI-10005994: the marker's `summary` cap. The human result on stderr keeps the full text. */
+export const CHECKPOINT_RESULT_MARKER_SUMMARY_MAX_CHARS = 1000;
+/** POSIX PIPE_BUF on Linux: a single write of at most this many bytes into a pipe is atomic. */
+export const CHECKPOINT_RESULT_MARKER_ATOMIC_BYTES = 4096;
+
+/**
+ * WI-10005994 — the payload the stdout result marker carries.
+ *
+ * Measured 2026-10-03 over 400 checkpoint logs: 392 markers, 3 torn, and every torn one was a
+ * repair-queue verdict of 8-65 KB, dominated by `repairQueue.admissions` (43-58 KB), its
+ * `manifest`, `signature`, and per-leg `repairTickLegs` output tails. No marker reader uses
+ * those (release-actions reads reason/green/candidate/from/runId/summary/failingTests/
+ * flakeSuspects/recorded/candidateSource/diagnostic/advancedTo/promotionPending/gateFireId and
+ * repairQueue.{candidate,phase,repairHead,convergenceRounds}), and the run records the full
+ * result before the marker is written. So the marker drops them, caps `summary`, and names what
+ * it omitted in `markerCompacted`. A result with nothing to compact is returned unchanged, so
+ * ordinary markers stay byte-identical to `JSON.stringify(result)`.
+ */
+export function checkpointResultMarkerPayload(
+  result: CheckpointResult,
+): Record<string, unknown> {
+  const omitted: string[] = [];
+  const out: Record<string, unknown> = { ...result };
+  const max = CHECKPOINT_RESULT_MARKER_SUMMARY_MAX_CHARS;
+  if (typeof result.summary === "string" && result.summary.length > max) {
+    out.summary = `${result.summary.slice(0, max)}… [marker cut ${result.summary.length - max} chars; full summary in the stderr result]`;
+    omitted.push("summary(tail)");
+  }
+  if (result.repairQueue) {
+    const { admissions, manifest, signature, ...queue } = result.repairQueue as unknown as Record<string, unknown>;
+    if (admissions !== undefined) omitted.push("repairQueue.admissions");
+    if (manifest !== undefined) omitted.push("repairQueue.manifest");
+    if (signature !== undefined) omitted.push("repairQueue.signature");
+    if (omitted.some((path) => path.startsWith("repairQueue."))) out.repairQueue = queue;
+  }
+  if (result.repairTickLegs) {
+    const legs = result.repairTickLegs;
+    const compact = {
+      head: legs.head,
+      atMs: legs.atMs,
+      ok: legs.ok,
+      failingSignatures: legs.failingSignatures.slice(0, 20).map((s) => s.slice(0, 128)),
+      legs: legs.legs.map((leg) => ({ id: leg.id, status: leg.status, durationMs: leg.durationMs })),
+    };
+    if (JSON.stringify(compact) !== JSON.stringify(legs)) {
+      out.repairTickLegs = compact;
+      omitted.push("repairTickLegs(outputTails, signature caps)");
+    }
+  }
+  if (omitted.length > 0) out.markerCompacted = { omitted };
+  return out;
+}
+
+/** The one stdout result line: the marker token, a space, then the compacted JSON payload. */
+export function checkpointResultMarkerLine(result: CheckpointResult): string {
+  return `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(checkpointResultMarkerPayload(result))}`;
+}
+
+/**
+ * WI-10005994: write to a stdio stream and resolve only once the chunk has been handed to the
+ * OS (the write callback). The terminal seam awaits this between the stderr dump and the
+ * stdout marker so the two cannot interleave inside a shared `2>&1` pipe. An errored or
+ * destroyed stream still calls back, so this never hangs the terminal path.
+ */
+export function writeStdioFlushed(
+  stream: Pick<NodeJS.WritableStream, "write">,
+  text: string,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    try {
+      stream.write(text, () => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
 /** Testable terminal-emission seam used by the CLI for every result, including process fatals. */
 export async function emitTerminalCheckpointResult(
   result: CheckpointResult,
@@ -3543,8 +3620,16 @@ export async function emitTerminalCheckpointResult(
      * successor. Optional for callers that are only rendering an already-recorded result.
      */
     record?(result: CheckpointResult): Promise<boolean>;
-    writeHuman(result: CheckpointResult): void;
-    writeMarker(line: string): void;
+    /**
+     * WI-10005994: may return a promise that resolves once the text has been handed to the OS.
+     * The seam AWAITS it before the marker is written: the scheduled launcher runs this CLI as
+     * `2>&1 | sed -u`, so stdout and stderr share ONE pipe, and an unflushed ~170 KB stderr dump
+     * interleaves with the stdout marker in chunks, tearing the marker JSON mid-line.
+     * Typed `unknown` (not `void | Promise<void>`): the seam awaits whatever comes back, and a
+     * plain function returning a value (e.g. `lines.push`) must stay assignable.
+     */
+    writeHuman(result: CheckpointResult): unknown;
+    writeMarker(line: string): unknown;
     emitInconclusive(result: CheckpointResult): Promise<void>;
     emitTerminalEvents?(result: CheckpointResult, recorded: boolean): Promise<void>;
     retire(result: CheckpointResult): Promise<void>;
@@ -3552,10 +3637,8 @@ export async function emitTerminalCheckpointResult(
 ): Promise<void> {
   const recorded = deps.record ? await deps.record(result) : false;
   const terminal = recorded ? { ...result, recorded: true } : result;
-  deps.writeHuman(terminal);
-  deps.writeMarker(
-    `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(terminal)}`,
-  );
+  await deps.writeHuman(terminal);
+  await deps.writeMarker(checkpointResultMarkerLine(terminal));
   await deps.emitTerminalEvents?.(terminal, recorded);
   if (
     terminal.green === null &&
@@ -21562,8 +21645,10 @@ if (require.main === module) {
       // The pre-lock crash path also calls emitResult; keeping the recorder here prevents an
       // emitted inconclusive wake from leaving its logical qualification falsely `running`.
       record: recordOwnVerdict,
-      writeHuman: (result) => console.error(JSON.stringify(result, null, 2)),
-      writeMarker: (line) => console.log(line),
+      // WI-10005994: flush-awaited writes, so the stderr dump is fully in the shared `2>&1`
+      // pipe before the first marker byte is written (an unawaited dump tore the marker).
+      writeHuman: (result) => writeStdioFlushed(process.stderr, `${JSON.stringify(result, null, 2)}\n`),
+      writeMarker: (line) => writeStdioFlushed(process.stdout, `${line}\n`),
       // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
       emitInconclusive: emitInconclusiveVerdict,
       emitTerminalEvents: async (result, recorded) => {
