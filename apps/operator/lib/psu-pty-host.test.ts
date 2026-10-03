@@ -247,7 +247,7 @@ describe('socketPathFor / metaPathFor', () => {
   });
 });
 
-describe('publishKickoffProofReceipt (detached plain-launch proof)', () => {
+describe('publishKickoffProofReceipt (detached parent proof)', () => {
   it('atomically replaces a parent-owned placeholder with a persisted native proof', () => {
     if (typeof process.getuid !== 'function') return;
     const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'psu-kickoff-proof-'));
@@ -304,6 +304,31 @@ describe('publishKickoffProofReceipt (detached plain-launch proof)', () => {
       nodeFs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each(['invalid-token', 'stale-placeholder', 'insecure-mode'])(
+    'preserves the parent file when the proof request has %s',
+    (failure) => {
+      if (typeof process.getuid !== 'function') return;
+      const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'psu-kickoff-proof-refused-'));
+      const path = pathJoin(root, 'proof.json');
+      const original = failure === 'stale-placeholder' ? 'existing-parent-receipt' : '';
+      try {
+        nodeFs.writeFileSync(path, original, { mode: 0o600 });
+        nodeFs.chmodSync(path, failure === 'insecure-mode' ? 0o644 : 0o600);
+        expect(publishKickoffProofReceipt(
+          { persisted: true, nativeRef: '/tmp/native-session.jsonl' },
+          {
+            [KICKOFF_PROOF_PATH_ENV]: path,
+            [KICKOFF_PROOF_TOKEN_ENV]: failure === 'invalid-token' ? 'not-a-parent-token' : 'c'.repeat(48),
+          },
+        ).published).toBe(false);
+        expect(nodeFs.readFileSync(path, 'utf8')).toBe(original);
+        expect(nodeFs.readdirSync(root)).toEqual(['proof.json']);
+      } finally {
+        nodeFs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('control wire protocol (v1)', () => {
@@ -3035,6 +3060,28 @@ describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
     const d = makeQuotaBlockDetector({ agent: 'claude' });
     expect(d.observe(advisory)).toBeNull();
     expect(d.isBlocked()).toBe(false);
+  });
+
+  it('detects the captured Claude long-context credit wall without blocking credit advisories', () => {
+    const wall = 'API Error: 429 Usage credits are required for long context requests';
+    const hit = quotaLimitBannerMatch(wall, 'claude');
+    expect(hit.matched).toBe(true);
+    expect(hit.excerpt).toContain('Usage credits are required for long context requests');
+    const detector = makeQuotaBlockDetector({ agent: 'claude' });
+    expect(detector.observe(`\x1b[31m${wall}\x1b[0m`)).toBe('detected');
+    expect(detector.isBlocked()).toBe(true);
+    for (const advisory of [
+      'Usage credits are available for long context requests',
+      'Long context requests use usage credits',
+      "You've used 75% of your weekly limit · resets Sep 17, 7am (America/New_York)",
+    ]) {
+      expect(quotaLimitBannerVisible(advisory, 'claude')).toBe(false);
+      const healthy = makeQuotaBlockDetector({ agent: 'claude' });
+      expect(healthy.observe(advisory)).toBeNull();
+      expect(healthy.isBlocked()).toBe(false);
+    }
+    expect(quotaLimitBannerVisible(wall, 'codex')).toBe(false);
+    expect(quotaLimitBannerVisible(wall, 'omp')).toBe(false);
   });
 
   it('still detects a real Claude wall when an advisory shares the screen', () => {
