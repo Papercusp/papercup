@@ -8,7 +8,7 @@
     "JAVA_HOME=\"$(tools/build-scripts/resolve-java-home.sh)\" android/gradlew -p android --console=plain :app:compileDebugAndroidTestKotlin :app:generateReleaseResources :app:mergeReleaseResources -x :app:generateUniFfiKotlin"
   ],
   "workingDirectory": "papercup-rust-mobile",
-  "startedAt": "2026-10-03 03:20:55.364063857 -0400",
+  "startedAt": "2026-10-03T03:20:55.364063-04:00",
   "finishedAt": "2026-10-03T07:22:51.712560+00:00",
   "timestampSource": "First retained make log birth time to last retained resource log modification time; actual shell envelopes both exited0.",
   "exitCode": 0,
