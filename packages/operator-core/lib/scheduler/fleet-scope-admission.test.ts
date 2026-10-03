@@ -123,6 +123,7 @@ import {
   fleetScopeLeaderRemedy,
   fleetScopedMiss,
   hasLiveFleetRouteTarget,
+  fencePreservingWidenFilter,
   itemMatchesRawClaimSpec,
   notifyFleetScopeRefusal,
   readFleetPauseState,
@@ -130,6 +131,7 @@ import {
   type FleetScopeAdmission,
   type FleetScopeContext,
 } from './fleet-scope-admission';
+import { evaluateGoalFenceGuard } from './spec-pool-preview';
 /** A VALUE import, deliberately: the vi.mock factory above passes the real
  *  `mapIssueClaimExclusionCounts` through, so every `excluded` fixture below derives its
  *  per-floor zero baseline from ISSUE_CLAIM_FLOORS. Same reasoning as ZERO_QUEUE_CONTROL,
@@ -3106,5 +3108,51 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
     // table is satisfiable at all, so the two failures above mean discrimination rather
     // than a table nothing could satisfy.
     expect(cases.every((c) => selfFiledFalloutAdmission(aWorkItem(c.item), scope) === c.admit)).toBe(true);
+  });
+});
+
+/**
+ * WI-10005683 — the CROSS-MODULE contract, which is the part that actually drifted.
+ *
+ * Each side was individually defensible: the admission notice recommends a widen that
+ * keeps the incumbent fence, and the write door refuses any `any` node with an unfenced
+ * arm. Composed, the platform recommended a repair its own write door rejected, and
+ * nothing failed — no type changed and each module's own unit tests stayed green. Only a
+ * test that COMPOSES them can catch it, so this asserts the composition, not either half.
+ */
+describe("WI-10005683: fleet-scope admission's own widen recommendation passes its own write door", () => {
+  const goalFence: FilterNode = { field: 'goal', op: '=', value: 'goal-60d3a8' };
+
+  it('fencePreservingWidenFilter output is NOT refused for a goal-fenced incumbent lane', () => {
+    const candidateFilter = fencePreservingWidenFilter(goalFence, 'WI-10005683');
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goalFence,
+      candidateFilter,
+      previousSource: 'authored',
+      confirm: false,
+    });
+    // A refusal here means a leader following the fleet_scope_violation notice verbatim
+    // is told to send a revision that set_claim_spec will reject.
+    expect(verdict.refuse).toBe(false);
+    expect(verdict.errors).toEqual([]);
+  });
+
+  it('CALIBRATION: the composition is discriminating — a hand-rolled class widen is still refused', () => {
+    // Proves the test above is not passing because the guard accepts everything.
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goalFence,
+      candidateFilter: { any: [goalFence, { field: 'kind', op: '=', value: 'bug' }] },
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(verdict.refuse).toBe(true);
+  });
+
+  it('the no-incumbent-filter branch still yields a bare id leaf, which needs no fence carve-out', () => {
+    expect(fencePreservingWidenFilter(undefined, 'WI-10005683')).toEqual({
+      field: 'id',
+      op: '=',
+      value: 'WI-10005683',
+    });
   });
 });
