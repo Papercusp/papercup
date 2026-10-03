@@ -50,6 +50,11 @@ function runFixture(
   sourceImage?: { ref: string; exists?: boolean },
   inhibitFails = false,
   diskMetadata: 'pass' | 'bad-release-dir' | 'bad-firewall-config' | 'missing-root' = 'pass',
+  /**
+   * WI-10005761. imageRelease: what the pinned image answers at /opt/papercusp/current (default:
+   * the --release-version asked for, or none). clouds: the --clouds list (default gcp).
+   */
+  options: { imageRelease?: string; clouds?: string } = {},
 ): {
   status: number;
   output: string;
@@ -135,6 +140,19 @@ case "$subcommand" in
       printf 'sha256:%064d\\n' 1
       exit 0
     fi
+    # WI-10005761: step 3c reads the release back out of the pinned image.
+    for arg in "$@"; do
+      case "$arg" in *PAPERCUSP_IMAGE_RELEASE*)
+        case "$BAKE_TEST_IMAGE_RELEASE" in
+          '') printf 'PAPERCUSP_IMAGE_RELEASE_NONE=1\\n' ;;
+          podman-error) printf 'Error: image not known\\n' >&2; exit 125 ;;
+          silent) ;;
+          dangling) printf 'PAPERCUSP_IMAGE_RELEASE_INVALID=dangling:releases/gone\\n' ;;
+          *) printf 'PAPERCUSP_IMAGE_RELEASE=%s\\n' "$BAKE_TEST_IMAGE_RELEASE" ;;
+        esac
+        exit 0 ;;
+      esac
+    done
     previous=""
     for arg in "$@"; do
       if [ "$previous" = "-v" ]; then
@@ -287,7 +305,7 @@ set -euo pipefail
       '--pubkey',
       pubkey,
       '--clouds',
-      'gcp',
+      options.clouds ?? 'gcp',
       '--out',
       out,
       ...optionalArgs,
@@ -308,7 +326,9 @@ set -euo pipefail
         BAKE_TEST_SOURCE_EXISTS: sourceImage?.exists === false ? '0' : '1',
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
         BAKE_TEST_RENDER: render,
-        BAKE_TEST_RELEASE_VERSION: release?.version ?? '',
+        // The fake disk holds whatever release the image carries.
+        BAKE_TEST_RELEASE_VERSION: options.imageRelease ?? release?.version ?? '',
+        BAKE_TEST_IMAGE_RELEASE: options.imageRelease ?? release?.version ?? '',
         BAKE_TEST_DISK_METADATA: diskMetadata,
         RELEASE_STORAGE_DRIVER: 'overlay',
         UDISKS2_INHIBIT_BIN: join(bin, 'udisks2-inhibit'),
@@ -534,6 +554,83 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     } finally {
       rmSync(releaseRoot, { recursive: true, force: true });
     }
+  });
+
+  // WI-10005761: a bootc release is image CONTENT, so the manifest records the release read back
+  // out of the pinned image (never restated from the flag) and release consumers refuse a mismatch.
+  describe('records the release the image carries (WI-10005761)', () => {
+    it('records the built release and checks it on the disk', () => {
+      const releaseRoot = mkdtempSync(join(tmpdir(), 'wi10005761-release-root-'));
+      try {
+        const result = runFixture(SOURCE, 'raw', { root: releaseRoot, version: '0.0.21-p318r63' });
+        expect(result.status, result.output).toBe(0);
+        expect(result.output).toContain('BAKE_IMAGE_RELEASE=0.0.21-p318r63');
+        expect(parseWorkspaceHostBootcBakeManifest(result.manifest).release).toEqual({ version: '0.0.21-p318r63' });
+        expect(result.podmanCalls.some((call) => call.includes('--entrypoint /bin/sh') && call.includes('--pull=never'))).toBe(true);
+      } finally {
+        rmSync(releaseRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('records an OS-only bake as release null and skips the disk release check', () => {
+      const result = runFixture(SOURCE);
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain('BAKE_IMAGE_RELEASE=none');
+      expect(result.output).not.toContain('BAKE_RELEASE_DISK_METADATA');
+      expect((result.manifest as { release?: unknown }).release).toBeNull();
+    });
+
+    it('derives the release a --source-image reuse carries and checks it on the disk', () => {
+      const result = runFixture(SOURCE, 'raw', undefined, { ref: 'localhost/r62b:baked' }, false, 'pass', {
+        imageRelease: '0.0.21-p318r62b',
+      });
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain('BAKE_RELEASE_DISK_METADATA=PASS version=0.0.21-p318r62b');
+      expect(parseWorkspaceHostBootcBakeManifest(result.manifest).release).toEqual({ version: '0.0.21-p318r62b' });
+    });
+
+    it('checks the AWS raw disk too, not only GCP', () => {
+      const releaseRoot = mkdtempSync(join(tmpdir(), 'wi10005761-aws-root-'));
+      try {
+        const pass = runFixture(SOURCE, 'raw', { root: releaseRoot, version: '0.0.21-p318r63' }, undefined, false, 'pass', { clouds: 'aws' });
+        expect(pass.status, pass.output).toBe(0);
+        expect(pass.output).toContain('BAKE_RELEASE_DISK_METADATA=PASS version=0.0.21-p318r63');
+        const bad = runFixture(SOURCE, 'raw', { root: releaseRoot, version: '0.0.21-p318r63' }, undefined, false, 'bad-release-dir', {
+          clouds: 'aws',
+        });
+        expect(bad.status).toBe(1);
+        expect(bad.output).toContain('aws: FAILED — converted disk did not preserve the immutable release metadata');
+        expect(bad.manifest).toBeNull();
+      } finally {
+        rmSync(releaseRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses before rendering when the built image carries a different release than --release-version', () => {
+      const releaseRoot = mkdtempSync(join(tmpdir(), 'wi10005761-mismatch-root-'));
+      try {
+        const result = runFixture(SOURCE, 'raw', { root: releaseRoot, version: '0.0.21-p318r63' }, undefined, false, 'pass', {
+          imageRelease: '0.0.21-p318r62b',
+        });
+        expect(result.status).toBe(1);
+        expect(result.output).toContain('--release-version 0.0.21-p318r63, but the built image carries 0.0.21-p318r62b');
+        expect(result.manifest).toBeNull();
+        expect(result.podmanCalls.some((call) => call.startsWith('run --rm --privileged'))).toBe(false);
+      } finally {
+        rmSync(releaseRoot, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ['a podman failure', 'podman-error', 'could not read the release'],
+      ['an empty answer', 'silent', 'gave no verdict'],
+      ['a dangling current link', 'dangling', 'unusable /opt/papercusp/current'],
+    ] as const)('fails closed on %s instead of recording OS-only', (_name, imageRelease, message) => {
+      const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { imageRelease });
+      expect(result.status).toBe(1);
+      expect(result.output).toContain(message);
+      expect(result.manifest).toBeNull();
+    });
   });
 
   it('reuses an explicitly named local image without rebuilding it', () => {

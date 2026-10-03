@@ -544,6 +544,57 @@ if [ "$DRY_RUN" -eq 0 ]; then
   }
 fi
 
+# ── 3c. Read back the release the IMAGE carries (WI-10005761) ─────────────────────────────────
+# On the bootc model a release is image CONTENT: the bootstrap never installs one, it requires
+# /opt/papercusp/releases/<version> to already be in the booted image. So bake-manifest.json
+# records the release read out of the pinned image itself, never restated from --release-version:
+# a --source-image reuse carries whatever its REF was built with, and only the image can say what
+# that is. Release consumers (bootc-image-release-request-cli, the release gate) refuse a release
+# the manifest does not record. That check was missing, and an OS-only bake paired with a release
+# cost two billable clean rooms that booted, passed harden-os, then died at install-runtime.
+IMAGE_RELEASE=""
+if [ "$DRY_RUN" -eq 1 ]; then
+  IMAGE_RELEASE="$RELEASE_VERSION"
+  echo "DRY_RUN: would read the baked release from /opt/papercusp/current in $PINNED"
+else
+  echo "### 3c/4 read back the release the image carries"
+  # Every branch prints a verdict line, so an empty answer is a failed probe, never "OS-only".
+  release_probe='if [ -L /opt/papercusp/current ]; then t="$(readlink /opt/papercusp/current)"; case "$t" in releases/*) if [ -d "/opt/papercusp/$t" ]; then printf "PAPERCUSP_IMAGE_RELEASE=%s\n" "${t#releases/}"; else printf "PAPERCUSP_IMAGE_RELEASE_INVALID=dangling:%s\n" "$t"; fi;; *) printf "PAPERCUSP_IMAGE_RELEASE_INVALID=target:%s\n" "$t";; esac; elif [ -e /opt/papercusp/current ]; then echo PAPERCUSP_IMAGE_RELEASE_INVALID=not-a-symlink; else echo PAPERCUSP_IMAGE_RELEASE_NONE=1; fi'
+  release_probe_out="$("${PODMAN[@]}" run --rm --pull=never --network=none --entrypoint /bin/sh "$PINNED" -c "$release_probe" 2>&1)"
+  release_probe_rc=$?
+  if [ "$release_probe_rc" -ne 0 ]; then
+    echo "BAKE_RESULT=FAILED could not read the release $PINNED carries (podman exit $release_probe_rc): $release_probe_out"
+    exit 1
+  fi
+  case "$release_probe_out" in
+    *PAPERCUSP_IMAGE_RELEASE_INVALID=*)
+      echo "BAKE_RESULT=FAILED $PINNED has an unusable /opt/papercusp/current: $release_probe_out"
+      exit 1;;
+    *PAPERCUSP_IMAGE_RELEASE_NONE=1*) IMAGE_RELEASE="";;
+    *PAPERCUSP_IMAGE_RELEASE=*)
+      IMAGE_RELEASE="$(printf '%s\n' "$release_probe_out" | sed -n 's/^PAPERCUSP_IMAGE_RELEASE=//p' | tail -n 1)";;
+    *)
+      echo "BAKE_RESULT=FAILED the release probe on $PINNED gave no verdict: ${release_probe_out:-<empty>}"
+      exit 1;;
+  esac
+  # The same charset the Containerfile enforces; it is also what keeps the manifest JSON well-formed.
+  case "$IMAGE_RELEASE" in
+    '') ;;
+    [A-Za-z0-9]*)
+      case "$IMAGE_RELEASE" in *[!A-Za-z0-9._+-]*)
+        echo "BAKE_RESULT=FAILED the image carries an unsafe release name: $IMAGE_RELEASE"; exit 1;;
+      esac
+      [ "${#IMAGE_RELEASE}" -le 128 ] \
+        || { echo "BAKE_RESULT=FAILED the image release name is longer than 128 characters"; exit 1; };;
+    *) echo "BAKE_RESULT=FAILED the image carries an unsafe release name: $IMAGE_RELEASE"; exit 1;;
+  esac
+fi
+if [ -n "$RELEASE_VERSION" ] && [ "$IMAGE_RELEASE" != "$RELEASE_VERSION" ]; then
+  echo "BAKE_RESULT=FAILED --release-version $RELEASE_VERSION, but the built image carries ${IMAGE_RELEASE:-no release}"
+  exit 1
+fi
+echo "BAKE_IMAGE_RELEASE=${IMAGE_RELEASE:-none}"
+
 # ── 4. Render each cloud from the SAME pinned digest ──────────────────────────────────────────
 bake_one() { # $1 cloud  $2 pinned ref
   local cloud="$1" ref="$2" type="${CLOUD_TYPE[$1]}" dest="$OUT/$1"
@@ -595,8 +646,10 @@ bake_one() { # $1 cloud  $2 pinned ref
     echo "  $cloud: FAILED — exited 0 but produced no disk at ${CLOUD_FILE[$cloud]}"
     return 1
   fi
-  if [ "$cloud" = gcp ] && [ -n "$RELEASE_VERSION" ]; then
-    verify_release_disk_metadata "$dest/${CLOUD_FILE[$cloud]}" "$RELEASE_VERSION" || {
+  # Every RAW disk that carries a release (gcp and aws; WI-10005761 found the aws disk was never
+  # checked). The azure VHD is not loop-mounted here.
+  if [ -n "$IMAGE_RELEASE" ] && [ "${CLOUD_FILE[$cloud]##*.}" = raw ]; then
+    verify_release_disk_metadata "$dest/${CLOUD_FILE[$cloud]}" "$IMAGE_RELEASE" || {
       echo "  $cloud: FAILED — converted disk did not preserve the immutable release metadata"
       return 1
     }
@@ -634,6 +687,12 @@ fi
   echo "  \"pinnedRef\": \"$PINNED\","
   echo "  \"registryNamespace\": \"$REGISTRY\","
   echo "  \"dryRun\": $( [ "$DRY_RUN" -eq 1 ] && echo true || echo false ),"
+  # Read back from the image in step 3c (WI-10005761); null = OS-only.
+  if [ -n "$IMAGE_RELEASE" ]; then
+    echo "  \"release\": {\"version\": \"$IMAGE_RELEASE\"},"
+  else
+    echo "  \"release\": null,"
+  fi
   printf '  "clouds": ['
   for i in "${!rendered[@]}"; do
     [ "$i" -gt 0 ] && printf ', '
