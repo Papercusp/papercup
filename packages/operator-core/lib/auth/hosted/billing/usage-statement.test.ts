@@ -119,6 +119,24 @@ describe('hosted usage statement projection (collector fixtures, not customer bi
     expect(statement([], { source: { complete: true, observedAtMs: NOW + 1, maximumAgeMs: 1000, evidenceRef: 'collector:future' } }).settlementEligible).toBe(false);
   });
 
+  it('cannot call a future month or a receipt newer than its completeness census ready for settlement', () => {
+    expect(statement([], { month: '2026-03' })).toMatchObject({ settlementEligible: false, gaps: ['window-not-started'] });
+    const result = statement([receipt({ observedAtMs: NOW })], {
+      source: { complete: true, observedAtMs: NOW - 1, maximumAgeMs: 1000, evidenceRef: 'collector:older' },
+    });
+    expect(result).toMatchObject({ settlementEligible: false, gaps: ['receipt-newer-than-census'] });
+  });
+
+  it('refuses unattributable rows instead of dropping them as foreign and asserting zero usage', () => {
+    expect(() => statement([receipt({ organizationId: undefined as unknown as string })])).toThrow('identifier');
+    expect(() => statement([null as unknown as HostedUsageRecord])).toThrow('invalid usage receipt');
+  });
+
+  it('keeps exact cents and residue at the largest supported micro amount', () => {
+    const result = statement([receipt({ costMicros: Number.MAX_SAFE_INTEGER })]);
+    expect(result.consumptionBilled).toEqual({ micros: 9_007_199_254_740_991, wholeCents: 900_719_925_474, roundingMicros: 991 });
+  });
+
   it('accepts an explicit zero provider bill without calling unknown cost free', () => {
     expect(statement([receipt({ costMicros: 0 })]).settlementEligible).toBe(true);
     expect(() => statement([receipt({ costMicros: null })])).toThrow('safe integers');

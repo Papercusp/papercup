@@ -127,16 +127,21 @@ export function buildHostedUsageStatement(input: {
   if (typeof source.complete !== 'boolean' || !Array.isArray(input.records)) throw new Error('invalid usage source census');
   const { startMs, endMs } = shadowMonthBounds(input.month);
   const gaps = new Set<string>();
+  if (asOfMs < startMs) gaps.add('window-not-started');
   if (!source.complete) gaps.add('incomplete-source');
   if (source.observedAtMs > asOfMs || asOfMs - source.observedAtMs > source.maximumAgeMs) gaps.add('source-not-current');
   const seenReceipts = new Map<string, string>();
   const usages = new Map<string, HostedUsageRecord[]>();
   for (const record of input.records) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('invalid usage receipt');
+    // An unattributable row cannot be treated as foreign and silently omitted.
+    id(record.controlWorkspaceId); id(record.organizationId); id(record.customerWorkspaceId);
     // Filter the exact composite scope before retaining evidence or identifiers.
     if (record?.controlWorkspaceId !== scope.controlWorkspaceId || record?.organizationId !== scope.organizationId ||
         (scope.customerWorkspaceId !== null && record?.customerWorkspaceId !== scope.customerWorkspaceId)) continue;
     validateRecord(record);
     if (record.observedAtMs > asOfMs) continue;
+    if (record.observedAtMs > source.observedAtMs) gaps.add('receipt-newer-than-census');
     const receiptKey = JSON.stringify([record.customerWorkspaceId, record.provider, record.recordId]);
     const fingerprint = JSON.stringify(RECORD_KEYS.map((key) => record[key]));
     const previous = seenReceipts.get(receiptKey);
@@ -193,7 +198,7 @@ export function buildHostedUsageStatement(input: {
     scope: { controlWorkspaceId: scope.controlWorkspaceId, organizationId: scope.organizationId, customerWorkspaceId: scope.customerWorkspaceId },
     month: input.month, currency: 'USD', asOfMs, sourceRef: source.evidenceRef,
     settlementEligible: gaps.size === 0, gaps: [...gaps].sort(), lines: ordered,
-    consumptionBilled: { micros, wholeCents: Math.floor(micros / MICROS_PER_CENT), roundingMicros: micros % MICROS_PER_CENT },
+    consumptionBilled: { micros, wholeCents: Number(BigInt(micros) / BigInt(MICROS_PER_CENT)), roundingMicros: Number(BigInt(micros) % BigInt(MICROS_PER_CENT)) },
     platformBilledMicros: total('platform'), customerDirectBilledMicros: total('customer-direct'), history,
   };
 }
