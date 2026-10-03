@@ -224,7 +224,6 @@ const BASELINE: ReadonlyMap<string, number> = new Map<string, number>([
   ['lib/release/checkpoint-qualification-transaction.ts', 1], // systemctl --user is-active
   ['lib/release/checkpoint-required-ancestor.ts', 2], // git probes via spawnSync(cmd, argv)
   ['lib/release/gate-fire-drill-deps.ts', 2], // systemctl is-active; systemctl stop (timeout 60s)
-  ['lib/release/green-stall-watchdog.ts', 1], // git helper
   ['lib/release/in-flight-retriage.ts', 1], // git probe
   // The next two run on the admission worker since WI-10005223 (release/admission-offthread.ts).
   // Each is still imported on the main thread by repair-queue.ts's legacy sameAdmissionPrecheck

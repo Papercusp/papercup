@@ -25,11 +25,15 @@ const targetFor = (sessionId: string) => ({
   endedBy: 'self' as const,
   live: false,
   advSessionId: 17,
-  binding: null,
+  binding: {
+    coordOwnerId: 'su-expert',
+    sessionId,
+    startedAt: '2026-09-22T00:00:00.000Z',
+  },
 });
 
 function depsFor(input: { ranks: AllowedExpertModel[]; resolved?: string[] }) {
-  const launched: Array<{ envelope: { env: Record<string, string>; greetingCmd: string; cwd: string } }> = [];
+  const launched: Array<Parameters<ConsultDispatchDeps['spawnHeadless']>[0]> = [];
   const resolved: unknown[] = [];
   let minted = 0;
   const deps: Partial<ConsultDispatchDeps> = {
@@ -83,9 +87,11 @@ describe('P-007 consult evidence span routing', () => {
       brief: 'answer from the selected evidence',
     }, context, fakes.deps);
 
-    expect(result).toMatchObject({ dispatched: true, operation: 'convert', answeringOwnerId: 'su-expert' });
+    expect(result).toMatchObject({ dispatched: true, operation: 'convert', answeringOwnerId: 'su-answer-1' });
     expect(fakes.resolved).toEqual([{ sessionId: 'session-best' }]);
     const env = fakes.launched[0]!.envelope.env;
+    expect(fakes.launched[0]!.coordOwnerId).toBe('su-answer-1');
+    expect(fakes.launched[0]!.coordOwnerId).not.toBe('su-expert');
     expect(JSON.parse(env.PAPERCUSP_CONSULT_EVIDENCE_SPAN!)).toEqual({
       sessionId: 'session-best',
       turnIndices: [4, 6],
@@ -141,7 +147,7 @@ describe('EI-24833606853730057 evidence sessions tied across fork copies', () =>
       sourceOwnerId: 'su-expert', conversationId: 'conv-tied', evidence: tied, brief: 'answer',
     }, context, fakes.deps);
 
-    expect(result).toMatchObject({ dispatched: true, operation: 'convert', answeringOwnerId: 'su-expert' });
+    expect(result).toMatchObject({ dispatched: true, operation: 'convert', answeringOwnerId: 'su-answer-1' });
     // Tried in rank order and stopped at the first session the candidate owns.
     expect(fakes.resolved).toEqual([
       { sessionId: '0b0ccf95-foreign-seed-copy' }, { sessionId: '1010aec4-candidate-own' },

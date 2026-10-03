@@ -37,7 +37,8 @@
  * Kill-switch: PAPERCUSP_GREEN_STALL_WATCHDOG='0'.
  */
 import type { Sql } from 'postgres';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 // EI-21297913810967409: every `(non-fatal)` swallow below reports its outcome here, so a pass
 // that CANNOT RUN is distinguishable from a pass that ran and found nothing. Called from each
 // pass's `finally` — see recordWatchdogPassOutcome's own note on why the tail of the try is the
@@ -84,6 +85,12 @@ import { buildKey } from '../events/await/catalog';
 import type { EmitAwaitedEventOpts } from '../events/await/engine';
 import type { GateOwnershipAssessment } from '../coord/gate-ownership';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+
+// Lazy + memoized: some test modules stub `node:child_process` without execFile's custom
+// promisifier, so creating it eagerly can make unrelated imports fail.
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -2766,17 +2773,16 @@ export function mainBehindRecoverySummary(
   );
 }
 
-function gitOut(root: string, args: string[]): string | null {
+async function gitOut(root: string, args: string[]): Promise<string | null> {
   try {
     // EI-9922 (EI-8794 class): a failing git call — e.g. this watchdog's boot pass
     // running in a PACKAGED install's non-repo dir — must NOT leak "fatal: not a git
-    // repository" onto the parent's own stderr/serve.log. `execFileSync`'s default
-    // stdio inherits the child's stderr; pin it to ['ignore','pipe','ignore'] so we
-    // capture stdout but discard stderr (mirrors build-info.ts / workspace-map.ts).
-    return execFileSync('git', ['-C', root, ...args], {
+    // repository" onto the parent's own stderr/serve.log. `execFile` captures both output
+    // streams instead of inheriting them; consume stdout and discard stderr on failure.
+    const { stdout } = await execFileAsync('git', ['-C', root, ...args], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    });
+    return stdout.trim();
   } catch {
     return null;
   }
@@ -2788,19 +2794,19 @@ function gitOut(root: string, args: string[]): string | null {
  *  operator-core; mirrors dev-deploy-state.ts's own self-contained pattern).
  *  Fails open (all-null) on any git error — a missing branch/checkout must
  *  never itself trigger the alarm it's trying to compute. */
-export function computeMainBehindStaging(
+export async function computeMainBehindStaging(
   root: string,
   mainBranch = 'main',
   stagingBranch = 'staging',
-): MainBehindStagingSnapshot {
-  const countRaw = gitOut(root, ['rev-list', '--count', `${mainBranch}..${stagingBranch}`]);
+): Promise<MainBehindStagingSnapshot> {
+  const countRaw = await gitOut(root, ['rev-list', '--count', `${mainBranch}..${stagingBranch}`]);
   const commitsBehind = countRaw != null && /^\d+$/.test(countRaw) ? Number(countRaw) : null;
   if (commitsBehind == null || commitsBehind === 0) return { commitsBehind: commitsBehind ?? null, behindMs: null };
 
   // The OLDEST commit reachable from staging but not main — its age is how
   // long main has been behind by at least this much (a fresh-only lag from
   // commits landing in the last minute reads as ~0, not an hours-old stall).
-  const oldestTsRaw = gitOut(root, [
+  const oldestTsRaw = await gitOut(root, [
     'log',
     `${mainBranch}..${stagingBranch}`,
     '--format=%ct',
@@ -2870,10 +2876,10 @@ export async function checkMainBehindStaging(
     const root =
       opts.root ??
       process.env.PAPERCUSP_INTEGRATION_ROOT ??
-      gitOut(process.cwd(), ['rev-parse', '--show-toplevel']) ??
+      (await gitOut(process.cwd(), ['rev-parse', '--show-toplevel'])) ??
       process.cwd();
     const harnessSlug = opts.harnessSlug ?? 'papercusp';
-    const gitSnapshot = computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
+    const gitSnapshot = await computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
     // EI-10202: fold in "has the gate advanced main recently?" so a deep-but-
     // healthy backlog (gate greening every cycle) is not mislabeled STALLED.
     // Only read the DB signal when the git snapshot could even alarm — a quiet

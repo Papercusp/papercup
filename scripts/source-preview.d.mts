@@ -11,6 +11,77 @@ export function resolveTarget(name?: string): Target;
  * @param {Target} target @param {string} remote
  */
 export function assertRemoteMatchesTarget(target: Target, remote: string): void;
+/**
+ * R13: inspect the current public population and actual default-branch license bytes.
+ * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Unknown text, an API failure, incomplete pagination or a changed population refuses.
+ * GitHub's license metadata is supplementary; it is never the license oracle.
+ * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string> }} [options]
+ */
+export function auditPublicRepositoryLicenses({ api, licenseHashes }?: {
+    api?: (endpoint: string) => Promise<{
+        headers: Record<string, string>;
+        body: any;
+    }> | {
+        headers: Record<string, string>;
+        body: any;
+    };
+    licenseHashes?: Record<string, string>;
+}): Promise<{
+    schemaVersion: number;
+    kind: string;
+    name: string;
+    framework: string;
+    command: string[];
+    startedAt: string;
+    finishedAt: string;
+    exitCode: number;
+    evidencePlane: string;
+    summary: string;
+    assertions: ({
+        id: string;
+        passed: boolean;
+        evidence: {
+            firstPages: {
+                endpoint: string;
+                size: number;
+                next: string | null;
+            }[];
+            lastPages: {
+                endpoint: string;
+                size: number;
+                next: string | null;
+            }[];
+            checked?: undefined;
+            failures?: undefined;
+        };
+    } | {
+        id: string;
+        passed: boolean;
+        evidence: {
+            checked: any[];
+            failures: {
+                repo: any;
+                defaultBranch: any;
+                metadataSpdx: any;
+                head: null;
+                licenses: never[];
+                errors: never[];
+            }[];
+            firstPages?: undefined;
+            lastPages?: undefined;
+        };
+    })[];
+    rows: {
+        repo: any;
+        defaultBranch: any;
+        metadataSpdx: any;
+        head: null;
+        licenses: never[];
+        errors: never[];
+    }[];
+    licenseTexts: {};
+}>;
 /** Resolve a ref to a full commit SHA in `repo`. */
 export function resolveCommit(repo: any, ref: any): string;
 /** Every gitlink (submodule pin) recorded in `sha`'s tree: [{ path, sha }]. */
