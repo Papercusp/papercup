@@ -81,6 +81,10 @@ function run(f: Fixture, script: string): void {
   mkdirSync(bin, { recursive: true });
   const cp = join(bin, 'cp');
   writeFileSync(cp, '#!/bin/sh\nfor arg in "$@"; do\n  [ "$arg" = "--remove-destination" ] && exit 64\ndone\nexec /bin/cp "$@"\n', { mode: 0o755 });
+  // Model BSD sed's bare -i behavior: `-e` is consumed as the backup suffix,
+  // leaving the following expression to be opened as a file. -i.bak is portable.
+  const sed = join(bin, 'sed');
+  writeFileSync(sed, '#!/bin/sh\nfor arg in "$@"; do\n  [ "$arg" = "-i" ] && { echo "sed: -e: No such file or directory" >&2; exit 64; }\ndone\nexec /bin/sed "$@"\n', { mode: 0o755 });
   const r = spawnSync('bash', [join(f.app, 'scripts', script)], {
     encoding: 'utf8',
     env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
