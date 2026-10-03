@@ -61,6 +61,14 @@ describe('LSP admission registration under the D-038 contract', () => {
     const invalid = { ...LSP_ADMISSION_CELL, unknownHoist: undefined };
     expect(validateCellSpec(invalid).map((rejection) => rejection.rule)).toContain('unknown-not-hoisted');
   });
+
+  it('rejects pairing the unknown hoist as a measured subject', () => {
+    const invalid = {
+      ...LSP_ADMISSION_CELL,
+      assessment: { ...LSP_ADMISSION_CELL.assessment!, measuredBy: { unknown: 'measurement' } },
+    };
+    expect(validateCellSpec(invalid).map((rejection) => rejection.rule)).toContain('measured-by-hoist-paired');
+  });
 });
 
 /**

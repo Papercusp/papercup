@@ -91,6 +91,8 @@ import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
 import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-brief';
 import { portfolioAssessmentFor } from './goals/portfolio-throughput';
+import { LspAdmissionController } from './code-intelligence/lsp-admission';
+import { buildLspAdmissionStatePayload } from './agent-tools/state/lsp-admission';
 
 /**
  * The no-real-PG rail's DOCUMENTED opt-out, taken for the same reason the falsifier
@@ -178,6 +180,63 @@ const DIRECTIVE_CELLS = BUILTIN_CELLS.filter(
 const GATE_OWNERSHIP_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'dev:gate_ownership',
 );
+const LSP_ADMISSION_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'lsp:admission_snapshot',
+);
+
+// Exercise the actual daemon controller and state lens. A hand-authored code list
+// cannot detect a constant/inverted snapshot or an unavailable read becoming idle.
+type LspStatePayload = Awaited<ReturnType<typeof buildLspAdmissionStatePayload>>;
+const lspPayloads: Record<string, LspStatePayload> = {};
+beforeAll(async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let settlementRecovered = false;
+  const controller = new LspAdmissionController({
+    enqueue: async () => ({
+      start: async () => {},
+      finish: async () => {},
+      cancel: async () => {
+        if (!settlementRecovered) throw new Error('receipt store unavailable');
+      },
+    }),
+  });
+  const read = () => buildLspAdmissionStatePayload('test-lsp-reality', async () => controller.snapshot());
+  const context = {
+    workspaceId: 'test-lsp-reality', language: 'typescript', projectRoot: '/repo',
+    op: 'references', deadlineAtMs: Date.now() + 10_000,
+  };
+  lspPayloads.idle = await read();
+  const first = controller.run({ ...context, requestId: 'active' }, () => held);
+  const abort = new AbortController();
+  let queued: Promise<unknown> | undefined;
+  try {
+    lspPayloads.active = await read();
+    queued = controller.run({ ...context, requestId: 'queued', signal: abort.signal }, async () => {});
+    const rejected = expect(queued).rejects.toMatchObject({ code: 'cancelled' });
+    lspPayloads.pressure = await read();
+    abort.abort();
+    await rejected;
+    await vi.waitFor(() => expect(controller.snapshot().settlementFailures).toHaveLength(1));
+    lspPayloads['settlement-failed'] = await read();
+    lspPayloads.unknown = await buildLspAdmissionStatePayload('test-lsp-reality', async () => {
+      throw new Error('daemon socket unavailable');
+    });
+    lspPayloads.stale = await buildLspAdmissionStatePayload('test-lsp-reality', async () => ({
+      ...controller.snapshot(), sampledAtMs: Date.now() - 30_001,
+    }));
+    CONTROLS['lsp.admission'] = ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'stale'].map(
+      (label) => ({ label, expect: lspPayloads[label]!.assessment }),
+    );
+  } finally {
+    settlementRecovered = true;
+    abort.abort();
+    release();
+    await first;
+    await queued?.catch(() => undefined);
+    await vi.waitFor(() => expect(controller.snapshot().settlementFailures).toEqual([]), { timeout: 2_000 });
+  }
+}, 10_000);
 
 /**
  * Drives the REAL pipeline end to end — deriveDirectiveStatus() then the exported
@@ -1199,6 +1258,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'governor.queue': ['empty', 'draining', 'growing', 'unknown'],
   'governor.resources': ['unconstrained', 'constrained', 'unknown'],
   'governor.recovery': ['stable', 'recovering', 'stalled', 'unknown'],
+  'lsp.admission': ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'unknown'],
   'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
   'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
   'workspace.workScope': ['absent', 'off', 'off', 'enforce'],
@@ -1224,7 +1284,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(27);
+    expect(BUILTIN_CELLS).toHaveLength(28);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1236,7 +1296,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         ROLE_LAUNCH_CELLS.length +
         WORK_SCOPE_CELLS.length +
         DIRECTIVE_CELLS.length +
-        GATE_OWNERSHIP_CELLS.length,
+        GATE_OWNERSHIP_CELLS.length +
+        LSP_ADMISSION_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(11);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -1249,6 +1310,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(WORK_SCOPE_CELLS).toHaveLength(1);
     expect(DIRECTIVE_CELLS).toHaveLength(1);
     expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
+    expect(LSP_ADMISSION_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1361,6 +1423,21 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
     20_000,
   );
 
+  it.each(LSP_ADMISSION_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment and evidence paths survive measured, failed and stale daemon reads',
+    (_id, spec) => {
+      for (const payload of Object.values(lspPayloads)) {
+        expect(missingAssessmentPaths(spec, payload)).toEqual([]);
+        expect(pathExists(payload, spec.unknownHoist!).exists).toBe(true);
+        expect(Object.keys(spec.assessment!.codes)).toContain(payload.assessment);
+      }
+      expect(lspPayloads.pressure).toMatchObject({ measurement: 'measured', admission: { queued: 1, inFlight: 1 } });
+      expect(lspPayloads.unknown).toMatchObject({ measurement: 'unknown', admission: null });
+      expect(lspPayloads.stale).toMatchObject({ measurement: 'unknown', admission: null });
+      expect(lspPayloads.unknown!.unknown).not.toEqual([]);
+    },
+  );
+
   /**
    * ⚠ THE LIVE CODE MUST BE A DECLARED ONE. This is drift in the direction the READ
    * refuses rather than the one it reports: `assessmentFrom` will not pass an
@@ -1461,6 +1538,14 @@ describe('P-004: every declared code is PRODUCIBLE, and nothing outside the decl
 });
 
 describe('P-004: assessments MOVE with their inputs, in the declared direction', () => {
+  it('lsp.admission distinguishes no work, running work, pressure and failed settlement', () => {
+    expect(lspPayloads.idle!.assessment).toBe('idle');
+    expect(lspPayloads.active!.assessment).toBe('active');
+    expect(lspPayloads.pressure!.assessment).toBe('pressure');
+    expect(lspPayloads['settlement-failed']!.assessment).toBe('settlement-failed');
+    expect(lspPayloads.unknown!.assessment).toBe('unknown');
+    expect(lspPayloads.stale!.assessment).toBe('unknown');
+  });
   /**
    * THE CONSTANCY DETECTOR. An assessment that answers the same code for every input
    * distinguishes nothing, and it is the failure a path-existence check cannot see:
@@ -2047,6 +2132,7 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...COVERAGE_CELLS.map((c) => [c.cell, c, liveCoveragePayload] as const),
     ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
+    ...LSP_ADMISSION_CELLS.map((c) => [c.cell, c, async () => lspPayloads.pressure] as const),
   ];
   const PAYLOADLESS = [
     ...GOAL_CELLS,
