@@ -186,7 +186,11 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     });
     const row = storedClause('R-1', 'P-001', { barHash: criteria[0]!.barHash });
     const manualTemplate = { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
-    await synchronizeAcceptanceBarRevision(sqlStub([row]) as never, {
+    const rows = [row, storedClause('R-2', 'P-002')];
+    // The sync judges the whole projection population, including the unchanged
+    // sibling. A missing fixture row is a mapping error, not a classifier verdict.
+    expect(rows.map((entry) => entry.source_bar_key).sort()).toEqual(criteria.map((entry) => entry.barKey).sort());
+    await synchronizeAcceptanceBarRevision(sqlStub(rows) as never, {
       workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
       templateData: manualTemplate, previousTemplateData: manualTemplate, actorId: 'amender',
     });
