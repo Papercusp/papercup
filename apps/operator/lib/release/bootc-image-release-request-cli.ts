@@ -279,24 +279,26 @@ export function signedBaseImage(sbom: unknown, digest: string): { reference: str
 }
 
 /**
- * The two artifact types an EL9 vendor kernel reaches grype as. `rpm` is the packaged kernel
+ * The two artifact types an EL vendor kernel reaches grype as. `rpm` is the packaged kernel
  * (kernel, kernel-core, ...). `linux-kernel` is syft's binary cataloger reading the kernel image
  * itself (usr/lib/modules/<release>/vmlinuz, purl pkg:generic/linux-kernel); on a bootc image it is
- * the SAME vendor kernel as the RPMs, carries the same `.el9` release, and grype can only match it
- * by upstream NVD CPE. Measured on the P-012 AWS bake (WI-10005674): 2,226 of 2,328 "actionable"
- * findings were this artifact while the RPMs stayed matched in redhat:distro. Mirrored exactly by
- * release-supply-chain.sh's generic_kernel_cpe.
+ * the SAME vendor kernel as the RPMs, carries the same `.elN` release, and grype can only match it
+ * by upstream NVD CPE. Measured on the P-012 AWS bake (WI-10005674, EL9): 2,226 of 2,328
+ * "actionable" findings were this artifact while the RPMs stayed matched in redhat:distro. The
+ * release tag is matched as `el<major>` rather than `el9` because the base moved to EL10 (D-035,
+ * WI-10005910) and will move again. Mirrored exactly by release-supply-chain.sh's
+ * generic_kernel_cpe.
  */
-const EL9_KERNEL_ARTIFACT_TYPES: ReadonlySet<string> = new Set(["rpm", "linux-kernel"]);
+const EL_KERNEL_ARTIFACT_TYPES: ReadonlySet<string> = new Set(["rpm", "linux-kernel"]);
 
-function isGenericEl9KernelCpe(match: Record<string, unknown>): boolean {
+export function isGenericElKernelCpe(match: Record<string, unknown>): boolean {
   const artifact = isRecord(match.artifact) ? match.artifact : {};
   const vulnerability = isRecord(match.vulnerability) ? match.vulnerability : {};
   const lower = (value: unknown) => (typeof value === "string" ? value.toLowerCase() : "");
   return (
     /(^|-)kernel($|-)/.test(lower(artifact.name)) &&
-    EL9_KERNEL_ARTIFACT_TYPES.has(lower(artifact.type)) &&
-    /(^|[.-])el9([._-]|$)/.test(lower(artifact.version)) &&
+    EL_KERNEL_ARTIFACT_TYPES.has(lower(artifact.type)) &&
+    /(^|[.-])el\d+([._-]|$)/.test(lower(artifact.version)) &&
     lower(vulnerability.namespace) === "nvd:cpe"
   );
 }
@@ -479,7 +481,7 @@ export function actionableGrypeReport(report: unknown, vendor?: VendorPendingEvi
       excludedUnfixed += 1;
       return false;
     }
-    if (isGenericEl9KernelCpe(match)) {
+    if (isGenericElKernelCpe(match)) {
       excludedGenericKernelCpe += 1;
       return false;
     }
