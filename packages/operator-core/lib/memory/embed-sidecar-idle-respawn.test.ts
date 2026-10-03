@@ -170,6 +170,21 @@ describe('localSidecarEnsure (wiring, P-531)', () => {
   });
 
   it('returns no hook when no sidecar is in play (pure in-process)', () => {
-    expect(localSidecarEnsure(deps(null), null, 'embed')).toBeUndefined();
+    expect(localSidecarEnsure(deps(null), null, 'embed', () => false)).toBeUndefined();
+  });
+
+  // WI-10005932: a null URL with the local sidecar ENABLED is a sidecar whose
+  // start timed out, not "no sidecar". It must still get the hook, or the
+  // client builds the model in-process in the main Server (P-532d pct3).
+  it('returns a hook for a null URL when the local sidecar is enabled', async () => {
+    const d = deps(null);
+    const hook = localSidecarEnsure(d, null, 'embed', () => true);
+    expect(hook).toBeTypeOf('function');
+    await expect(hook!()).resolves.toBe('http://127.0.0.1:3384');
+    expect(d.ensure).toHaveBeenCalledWith(['embed']);
+  });
+
+  it('an explicit URL still wins over an enabled local sidecar', () => {
+    expect(localSidecarEnsure(deps('http://10.0.0.5:3384'), null, 'embed', () => true)).toBeUndefined();
   });
 });

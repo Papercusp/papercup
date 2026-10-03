@@ -17,9 +17,12 @@
  * Everything here is dark — the OFF path never spawns. Since WI-4021 (D-003
  * retired) a host that RESOLVES a sidecar URL requires it: embed failures
  * throw (writes park in the memory write journal) instead of failing over to
- * an in-process model. ensureEmbedSidecar() returning null (disabled or
- * unspawnable) still leaves the caller on the pure in-process engine — that
- * path is for hosts with no sidecar story at all, not an outage fallback.
+ * an in-process model. ensureEmbedSidecar() returning null while the spawner
+ * is DISABLED leaves the caller on the pure in-process engine — that path is
+ * for hosts with no sidecar story at all, not an outage fallback. While it is
+ * ENABLED, null only means "not up yet" (e.g. a start that timed out): the
+ * wiring still hands the client an ensure hook and the client stays
+ * sidecar-only (WI-10005932).
  * Hosts with the systemd-owned sidecar (papercup-embed-sidecar.service)
  * should set PAPERCUSP_EMBED_SIDECAR_URL and never enable this spawner.
  */
@@ -698,8 +701,10 @@ export function _setNoSidecarWarnUnderTest(enabled: boolean): void {
 /**
  * Ensure the host-local sidecar is up and return its base URL, or null when
  * disabled/unspawnable. The lazy front door consumers call on first embed —
- * mirrors spawnInvokeOnceWithFallback's shape: failure returns null (caller
- * stays on its in-process path), never throws.
+ * mirrors spawnInvokeOnceWithFallback's shape: failure returns null, never
+ * throws. While the spawner is enabled the wiring treats that null as "not up
+ * yet" and keeps calling this per attempt; only a disabled spawner means
+ * in-process (WI-10005932).
  *
  * Default (P-530, no PAPERCUSP_EMBED_SIDECAR_PORT): the sidecar binds an
  * ephemeral port and this Server records it in its own data dir. A sibling

@@ -252,14 +252,22 @@ function reportSidecarTransition(subject: string) {
  * period, and the client calls this before each attempt to re-launch it.
  * Returns undefined when no local sidecar is in play: an explicit URL points
  * at a sidecar another process supervises (e.g. a systemd unit), and a null
- * URL means pure in-process.
+ * URL with the local sidecar disabled means pure in-process.
+ *
+ * WI-10005932: a null URL with the local sidecar ENABLED is a sidecar that did
+ * not come up in time (P-532d: a contended cold boot timed out its first
+ * start). That still gets the hook, so the client stays sidecar-only and picks
+ * up the URL on a later attempt. Returning undefined there built the in-process
+ * model in the main Server and kept it next to the sidecar for good.
  */
 export function localSidecarEnsure(
   deps: SidecarWiringDeps,
   url: string | null,
   capability: string,
+  sidecarEnabled: () => boolean = embedSidecarEnabled,
 ): (() => Promise<unknown>) | undefined {
-  if (url === null || deps.resolveUrl()) return undefined;
+  if (deps.resolveUrl()) return undefined;
+  if (url === null && !sidecarEnabled()) return undefined;
   return () => deps.ensure([capability]);
 }
 
