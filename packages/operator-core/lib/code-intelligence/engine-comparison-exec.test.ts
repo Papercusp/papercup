@@ -67,7 +67,12 @@ describe('execTimed deadline enforcement', () => {
   it('a command that finishes inside the deadline is unaffected (exit code and peak RSS still measured)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'engine-cmp-exec-ok-'));
     try {
-      const r = await execTimed('sh', ['-c', 'echo hi'], { cwd: dir, timeoutMs: 20_000 });
+      // GNU time can legitimately report zero RSS for a shell that only runs
+      // a builtin before exiting. Touch real memory so a positive measurement
+      // checks the instrument rather than depending on that scheduling race.
+      const r = await execTimed(process.execPath, ['-e',
+        'const bytes = Buffer.alloc(16 * 1024 * 1024, 1); console.log(bytes[bytes.length - 1] === 1 ? "hi" : "bad");',
+      ], { cwd: dir, timeoutMs: 20_000 });
       expect(r.code).toBe(0);
       expect(r.stdout.trim()).toBe('hi');
       expect(r.peakRssKb).toBeGreaterThan(0);
