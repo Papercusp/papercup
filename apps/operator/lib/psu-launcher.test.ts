@@ -4810,6 +4810,7 @@ describe("psu-launcher arg parsing", () => {
         plan: null,
         account: "codex-main",
         ownerId: "su-auditor-canonical",
+        launchedBy: "system:acceptance-bar-amendment-review",
         bootstrapIdempotencyKey: "role-launch-stable-key",
       }),
     ).toEqual({
@@ -4821,6 +4822,7 @@ describe("psu-launcher arg parsing", () => {
       plan: null,
       account: "codex-main",
       owner_id: "su-auditor-canonical",
+      launched_by: "system:acceptance-bar-amendment-review",
       bootstrap_idempotency_key: "role-launch-stable-key",
       model: CODEX_SAFE_DEFAULT_MODEL,
       model_source: "configured-default",

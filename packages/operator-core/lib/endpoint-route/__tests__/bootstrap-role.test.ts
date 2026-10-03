@@ -306,6 +306,26 @@ describe('bootstrap-role', () => {
     }));
   });
 
+  it('preserves the independent launcher separately from the role owner for managed recovery', async () => {
+    const launchedBy = 'system:acceptance-bar-amendment-review';
+    const response = await callPost({ ...pinnedRequest, launched_by: launchedBy, bootstrap_idempotency_key: 'reviewer-provenance' });
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.envelopeEnv.PAPERCUSP_SID).toBe(pinnedOwner);
+    expect(result.envelopeEnv.PAPERCUSP_LAUNCHED_BY).toBe(launchedBy);
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith(expect.objectContaining({ launchedBy }));
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      launchArgv: expect.arrayContaining([`--launched-by=${launchedBy}`]),
+    }));
+  });
+
+  it.each([42, 'system:bad launcher', 'x'.repeat(121)])('refuses malformed launcher provenance before any launch effect (%s)', async (launchedBy) => {
+    const response = await callPost({ ...pinnedRequest, launched_by: launchedBy, bootstrap_idempotency_key: 'invalid-provenance' });
+    expect(response.status).toBe(400);
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
   it('replays the completed response before checking whether its pre-pinned owner is live', async () => {
     const prior = { status: 'ok', sessionId: 19, role: 'worker', agent: 'claude' };
     claimAgentLaunchMock.mockResolvedValueOnce({

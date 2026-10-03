@@ -187,6 +187,8 @@ const post = defineTool({
       agent?: string;
       /** Coordination identity reserved by the canonical launcher. Does not change role authority. */
       owner_id?: string | null;
+      /** Attribution for safe managed-host recovery; does not change role authority. */
+      launched_by?: string | null;
       /** Stable psu request key for safe same-launch retries after an upstream timeout. */
       bootstrap_idempotency_key?: unknown;
       workspace?: string | null;
@@ -223,6 +225,14 @@ const post = defineTool({
       if (text.trim()) body = JSON.parse(text);
     } catch {
       return jsonRes({ status: 'error', error: 'invalid JSON body' }, 400);
+    }
+
+    if (body.launched_by != null && typeof body.launched_by !== 'string') {
+      return jsonRes({ status: 'error', error: 'launched_by must be a string' }, 400);
+    }
+    const launchedBy = body.launched_by?.trim() || null;
+    if (launchedBy && !/^[A-Za-z0-9._:-]{1,120}$/.test(launchedBy)) {
+      return jsonRes({ status: 'error', error: 'launched_by must be an owner id' }, 400);
     }
 
     const role = body.role?.trim() || '';
@@ -408,7 +418,7 @@ const post = defineTool({
       const claim = await claimAgentLaunch({
         workspaceId: workspace,
         idempotencyKey: bootstrapLedgerKey,
-        launchedBy: typeof body.owner_id === 'string' ? body.owner_id.trim() || null : null,
+        launchedBy: launchedBy ?? (typeof body.owner_id === 'string' ? body.owner_id.trim() || null : null),
       });
       if (!claim.won) {
         const prior = claim.priorSummary;
@@ -655,6 +665,7 @@ const post = defineTool({
       account: body.account?.trim() || null,
       fleet: body.fleet?.trim() || body.fleet_name?.trim() || null,
     });
+    if (launchedBy) launchArgv.push(`--launched-by=${launchedBy}`);
 
     // Complete the canonical launcher's precursor rather than introducing a
     // second roster row. A lost adoption race must not create a duplicate.
@@ -935,6 +946,7 @@ const post = defineTool({
         // session's calls + hooks share one owner and concurrent sessions
         // don't collide. Same value recorded as adv_sessions.coord_owner_id.
         PAPERCUSP_SID: sid,
+        ...(launchedBy ? { PAPERCUSP_LAUNCHED_BY: launchedBy } : {}),
         // P-021/D-013 — see the ompNativeLsp resolution above. Set-when-true, so
         // ABSENT is the safe reading: the launcher strips omp's native `lsp`
         // builtin unless this explicitly says it may keep it.
