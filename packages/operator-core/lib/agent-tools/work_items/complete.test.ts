@@ -190,6 +190,7 @@ import {
   COMPLETION_OBJECT_EXAMPLE,
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
+  describeUnparseableCompletionJsonString,
   gatherFlatCompletion,
   hoistMisplacedCompletionFields,
 } from './completion-coerce';
@@ -4436,6 +4437,56 @@ describe('work_items:complete (keyed-array)', () => {
       expect(message).toContain(COMPLETION_OBJECT_EXAMPLE);
     });
 
+    // WI-10005684 (EI-24822105308825949): the caller's JSON-encoded completion carried one extra `}`;
+    // the old rejection said "bare string" and sent them hunting a door bug that did not exist.
+    describe('WI-10005684: a malformed JSON-encoded completion string', () => {
+      type Safe = {
+        success: boolean;
+        data?: unknown;
+        error?: { issues: Array<{ message: string }> };
+      };
+      const safeParse = (completion: unknown): Safe =>
+        (complete.args as { safeParse: (x: unknown) => Safe }).safeParse({
+          id: 'F-12',
+          state: 'passed',
+          assumptions: 'none',
+          completion,
+        });
+      const evidence = {
+        summary: 'closed with evidence',
+        testsRun: 'npm run test:file -- complete.test.ts',
+        testResult: 'passed',
+        verifiedHow: 'unit',
+        filesChanged: [] as string[],
+      };
+
+      it('an extra trailing } is repaired: the string validates exactly like the same object', () => {
+        const fromObject = safeParse(evidence);
+        const fromString = safeParse(`${JSON.stringify(evidence)}}`);
+        expect(fromObject.success).toBe(true);
+        expect(fromString.success).toBe(true);
+        expect(fromString.data).toEqual(fromObject.data);
+      });
+
+      it('unrepairable brace-delimited junk is refused with the JSON-parse reason PREPENDED to the shared repair text', () => {
+        const result = safeParse('{fixed the thing, verified it works}');
+        expect(result.success).toBe(false);
+        const messages = result.error?.issues.map((issue) => issue.message) ?? [];
+        const rejection = messages.find((m) => m.endsWith(COMPLETION_STRING_REJECTION));
+        expect(rejection).toBeDefined();
+        expect(rejection).toMatch(/looks like a JSON object but is NOT valid JSON/);
+        expect(rejection).toContain(COMPLETION_OBJECT_EXAMPLE);
+      });
+
+      it('genuine prose keeps the generic rejection with NO JSON-parse prefix', () => {
+        const result = safeParse('shipped it, all green');
+        expect(result.success).toBe(false);
+        const messages = result.error?.issues.map((issue) => issue.message) ?? [];
+        expect(messages).toContain(COMPLETION_STRING_REJECTION);
+        expect(messages.join(' ')).not.toMatch(/NOT valid JSON/);
+      });
+    });
+
     it('does not invoke the work-item reader or state writer after refusal', () => {
       const result = (
         complete.args as {
@@ -4905,6 +4956,45 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         'src/na/config.ts',
         'packages/operator-core/lib/none-of-the-above.ts',
       ]);
+    });
+
+    // WI-10005684 (EI-23774140426573307): the sentinel set only matches a WHOLE string, so a
+    // truthful negation written as a SENTENCE was comma-split into fabricated "paths" and the
+    // close landed authority:'proposed'. A negation LEAD with NO path-shaped token is the empty set.
+    it.each([
+      'None. This is a not-a-defect close, no source, test, or config file was modified.',
+      'none - investigation only, nothing was edited',
+      'No files changed; this was a verification-only close.',
+      'No changes were needed, the item was already fixed at HEAD.',
+      'N/A, read-only audit',
+    ])('WI-10005684: a path-free negation sentence %j normalizes to an empty filesChanged array', (sentence) => {
+      const out = coerceCompletionShape({ summary: 's', filesChanged: sentence }) as { filesChanged: unknown };
+      expect(out.filesChanged).toEqual([]);
+      const nested = coerceCompletionShape({
+        summary: 's',
+        verification: { filesChanged: sentence, testsRun: 'unit', testResult: 'passed' },
+      }) as { verification: { filesChanged: unknown } };
+      expect(nested.verification.filesChanged).toEqual([]);
+    });
+
+    it.each([
+      // The control that stops the lead-word match from swallowing real evidence: it names a path.
+      ['None, but I did edit src/a.ts', ['None', 'but I did edit src/a.ts']],
+      ['no changes to docs, only packages/operator-core/lib/x.ts', ['no changes to docs', 'only packages/operator-core/lib/x.ts']],
+      // No negation lead at all — an ordinary comma-separated path list is untouched.
+      ['src/a.ts, src/b.ts', ['src/a.ts', 'src/b.ts']],
+      // A dotted extension alone (no separator) is path-shaped.
+      ['none, edited a.ts', ['none', 'edited a.ts']],
+    ])('WI-10005684: %j names a path, so it is NOT a negation and keeps the list rescue', (value, expected) => {
+      const out = coerceCompletionShape({ summary: 's', filesChanged: value }) as { filesChanged: unknown };
+      expect(out.filesChanged).toEqual(expected);
+    });
+
+    it('WI-10005684: a negation lead that is only a PREFIX of a word is not a negation (nonexistent.ts-style paths survive)', () => {
+      const out = coerceCompletionShape({ summary: 's', filesChanged: 'nothingness-config, notes' }) as {
+        filesChanged: unknown;
+      };
+      expect(out.filesChanged).toEqual(['nothingness-config', 'notes']);
     });
 
     it('accepts server-generated root treeStamp and settlementManifest on a read→retry (EI-21599866958764530)', () => {
@@ -5383,6 +5473,42 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const jsonString = JSON.stringify({ summary: 's', tests: '5 green' });
       const out = coerceCompletionShape(jsonString) as { __shapeCoercedFrom?: unknown };
       expect(out.__shapeCoercedFrom).toBeUndefined();
+    });
+
+    // WI-10005684 (EI-24822105308825949): the measured ledger row (tool_invocations 30937604)
+    // was a JSON string with ONE EXTRA trailing `}` — malformed by the caller, not mangled by
+    // the door. Extra closers carry no data, so the peel is lossless and carries NO marker.
+    it('WI-10005684: a JSON string with extra trailing closers is recovered LOSSLESSLY and is NOT marked truncated', () => {
+      const body = { summary: 'closed', tests: '5 green', filesChanged: ['src/a.ts'] };
+      for (const suffix of ['}', '}}', ' }\n', ']}']) {
+        const out = coerceCompletionShape(JSON.stringify(body) + suffix) as Record<string, unknown>;
+        expect(out.summary).toBe('closed');
+        expect(out.tests).toBe('5 green');
+        expect(out.filesChanged).toEqual(['src/a.ts']);
+        expect(out.__shapeCoercedFrom).toBeUndefined();
+      }
+    });
+
+    it('WI-10005684: peeling never turns a TRUNCATED object (a closer MISSING) into a clean one — that still takes the marked truncation repair', () => {
+      const whole = JSON.stringify({ summary: 'closed', nested: { a: [1, 2] } });
+      const truncated = whole.slice(0, -1); // drop the final `}` only
+      const out = coerceCompletionShape(truncated) as Record<string, unknown>;
+      expect(out.summary).toBe('closed');
+      expect(out.__shapeCoercedFrom).toBe('truncated-json');
+    });
+
+    it('WI-10005684: excess closers on a string with NO completion key are not rescued (prose in braces stays a string)', () => {
+      const notCompletion = '{"foo":"bar"}}';
+      expect(coerceCompletionShape(notCompletion)).toBe(notCompletion);
+    });
+
+    it('WI-10005684: describeUnparseableCompletionJsonString names the parser reason for brace-delimited junk and stays silent for prose / valid JSON', () => {
+      const reason = describeUnparseableCompletionJsonString('{fixed the thing, verified it works}');
+      expect(reason).toMatch(/NOT valid JSON/);
+      expect(reason).toMatch(/structured object value/);
+      expect(describeUnparseableCompletionJsonString('shipped it, all green')).toBeUndefined();
+      expect(describeUnparseableCompletionJsonString(JSON.stringify({ summary: 's' }))).toBeUndefined();
+      expect(describeUnparseableCompletionJsonString({ summary: 's' })).toBeUndefined();
     });
   });
 
