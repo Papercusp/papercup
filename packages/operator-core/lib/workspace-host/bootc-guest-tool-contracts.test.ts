@@ -155,7 +155,9 @@ const APT_TO_BOOTC_RPM: Readonly<Record<string, string>> = {
   libssl3: 'openssl-libs',
   'libstdc++6': 'libstdc++',
   libzstd1: 'libzstd',
-  zlib1g: 'zlib',
+  // EL10 (centos-bootc:stream10, D-035 / WI-10005910) provides libz.so.1 from zlib-ng in
+  // compat mode; the EL9 package name `zlib` no longer exists there.
+  zlib1g: 'zlib-ng-compat',
 };
 
 describe('bootc image carries the apt host contract (WI-10005779)', () => {

@@ -65,7 +65,7 @@ export const DEFAULT_WORKSPACE_HOST_MODEL: WorkspaceHostModel =
  * deployment's origin against it.
  */
 export const WORKSPACE_HOST_BOOTC_BASE_IMAGE =
-  'quay.io/centos-bootc/centos-bootc:stream9';
+  'quay.io/centos-bootc/centos-bootc:stream10';
 
 /**
  * The ONE containers signature policy a bootc pull actually consults — D-286.

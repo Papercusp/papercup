@@ -18,7 +18,7 @@
 #
 # Re-verify the table against the live base before editing this list:
 #   sudo -n podman run --rm -i --entrypoint /bin/bash \
-#     quay.io/centos-bootc/centos-bootc:stream9 -s < verify-rpm-equivalents.sh
+#     quay.io/centos-bootc/centos-bootc:stream10 -s < verify-rpm-equivalents.sh
 # (the `-i` is load-bearing: without it the container exits 0 having run NOTHING.)
 #
 # ── What is NOT here, and why ─────────────────────────────────────────────────
@@ -30,7 +30,7 @@
 # boot. D-314 therefore bakes its access as ordinary group ownership and makes
 # host prepare verify that metadata without writing to `/opt`.
 
-FROM quay.io/centos-bootc/centos-bootc:stream9 AS workspace-host-os
+FROM quay.io/centos-bootc/centos-bootc:stream10 AS workspace-host-os
 
 # The image records the base it was built FROM, because a BOOTED host cannot
 # otherwise answer that question about itself: `bootc status` reports the ref
@@ -39,7 +39,7 @@ FROM quay.io/centos-bootc/centos-bootc:stream9 AS workspace-host-os
 # it image content — read-only on a running bootc host, replaced atomically by
 # an upgrade — so the attested `bootc-base-image` check is reading a fact the
 # image carries rather than one the host was told.
-ARG PAPERCUSP_BASE_IMAGE=quay.io/centos-bootc/centos-bootc:stream9
+ARG PAPERCUSP_BASE_IMAGE=quay.io/centos-bootc/centos-bootc:stream10
 RUN install -d -m 0755 /usr/lib/papercusp \
  && printf '%s\n' "${PAPERCUSP_BASE_IMAGE}" > /usr/lib/papercusp/base-image \
  && chmod 0644 /usr/lib/papercusp/base-image
@@ -82,7 +82,7 @@ ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 # without the guest agent plus OS Login NSS/PAM modules, the VM reaches RUNNING
 # and sshd listens, but `enable-oslogin=TRUE` can never authenticate a user.
 # P-305 measured exactly that silent 15-minute failure. Install Google's
-# maintained EL9 metapackage into the one signed image so the capability also
+# maintained EL10 metapackage into the one signed image so the capability also
 # survives bootc upgrade/rollback; patching only the rendered GCE disk would
 # disappear on the first signed switch and violate P-307's one-image seam.
 #
@@ -120,7 +120,7 @@ RUN set -eux; \
     printf '%s\n' \
       '[google-compute-engine]' \
       'name=Google Compute Engine' \
-      'baseurl=https://packages.cloud.google.com/yum/repos/google-compute-engine-el9-x86_64-stable' \
+      'baseurl=https://packages.cloud.google.com/yum/repos/google-compute-engine-el10-x86_64-stable' \
       'enabled=0' \
       'gpgcheck=1' \
       'repo_gpgcheck=0' \
@@ -161,7 +161,7 @@ RUN set -eux; \
          nftables \
          `# unattended-upgrades is NOT-IN-REPOS; dnf-automatic replaces it (layer 5)` \
          dnf-automatic \
-         `# minisign is NOT-IN-REPOS; EPEL 9 carries it (see note above)` \
+         `# minisign is NOT-IN-REPOS; EPEL 10 carries it (see note above)` \
          minisign \
          `# the bootstrap apt-get installs zstd ON DEMAND at runtime because stock` \
          `# Ubuntu ships no unzstd. Baking it removes that imperative install.` \
@@ -177,7 +177,8 @@ RUN set -eux; \
          libstdc++     `# libstdc++.so.6  <- libstdc++6` \
          openssl-libs  `# libssl.so.3     <- libssl3` \
          lz4-libs      `# liblz4.so.1     <- liblz4-1` \
-         zlib          `# libz.so.1       <- zlib1g` \
+         `# EL10 ships libz.so.1 from zlib-ng in compat mode; the EL9 'zlib' name is gone (WI-10005910).` \
+         zlib-ng-compat `# libz.so.1      <- zlib1g` \
          libzstd       `# libzstd.so.1    <- libzstd1` \
     && dnf -y install --setopt=install_weak_deps=False \
          --setopt=tsflags=noscripts \
