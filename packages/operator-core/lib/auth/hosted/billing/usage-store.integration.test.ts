@@ -1,5 +1,5 @@
 /** Real roles, transactions, concurrent writers and tenant boundaries (monetization P-004). */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -7,8 +7,9 @@ import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { PILOT_COST_CATEGORIES } from './unit-economics';
 import { buildHostedUsageStatement, type HostedUsageRecord, type HostedUsageScope } from './usage-statement';
-import { PostgresHostedUsageStore } from './usage-store';
-import { OpenRouterHostedUsageCollector, type OpenRouterUsageBinding } from './openrouter-usage';
+import { PostgresHostedUsageStore, type OpenRouterGenerationBinding } from './usage-store';
+import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, type OpenRouterUsageBinding } from './openrouter-usage';
+import { createHostedUsageSource } from './usage-service';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -76,6 +77,13 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       exactMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1354-hosted-usage-exact-micros.sql', import.meta.url), 'utf8');
     }
     await db.adminSql.unsafe(exactMigration); await db.adminSql.unsafe(exactMigration);
+    let bindingMigration: string;
+    try { bindingMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1355-hosted-openrouter-generation-binding.sql.DRAFT', import.meta.url), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      bindingMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1355-hosted-openrouter-generation-binding.sql', import.meta.url), 'utf8');
+    }
+    await db.adminSql.unsafe(bindingMigration); await db.adminSql.unsafe(bindingMigration);
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
@@ -110,6 +118,8 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     expect(await store().append(tiny)).toBe('recorded');
     expect((await read(scope)).find(r => r.recordId === tiny.recordId)).toEqual(tiny);
     await expect(runService(sql => sql`INSERT INTO papercusp_auth.hosted_usage_receipts
+      (control_workspace_id, organization_id, customer_workspace_id, provider, record_id, usage_id,
+       revision, category, payer, occurred_at_ms, observed_at_ms, quantity, unit, cost_source, cost_micros, source_ref, received_at)
       SELECT control_workspace_id, organization_id, customer_workspace_id, provider, ${randomUUID()}, ${randomUUID()},
         1, category, payer, occurred_at_ms, observed_at_ms, quantity, unit, cost_source,
         9007199254740991.1, source_ref, received_at FROM papercusp_auth.hosted_usage_receipts WHERE record_id = ${a.recordId}`))
@@ -248,5 +258,90 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       source: { complete: false, observedAtMs: T + 200, maximumAgeMs: 1000, evidenceRef: 'fixture:partial-census' }, records });
     expect(result.lines[0]).toMatchObject({ usages: 1, reportedMicros: 2000, billedMicros: 0 });
     expect(result.settlementEligible).toBe(false);
+  });
+
+  const captured = (scope: OpenRouterGenerationBinding['scope']): OpenRouterGenerationBinding => ({
+    scope, generationId: 'gen-' + randomUUID(), payer: 'consumption', isByok: false,
+    credentialRef: 'env:FIXTURE_OPENROUTER_KEY', credentialSha256: createHash('sha256').update('execution-key').digest('hex'),
+    occurredAtMs: T, observedAtMs: T + 10, evidenceRef: 'execution:bound-generation',
+  });
+  const bindings = (scope: HostedUsageScope, asOfMs = T + 1000) => store().readOpenRouterBindings({ scope, month: MONTH, asOfMs });
+
+  it('durably binds once across concurrent execution receipts, survives restart and excludes private metadata from public records', async () => {
+    const scope = await tenant(); const b = captured(scope);
+    const outcomes = await Promise.all(Array.from({ length: 8 }, () => store().bindOpenRouterGeneration(b)));
+    expect(outcomes.filter(x => x === 'recorded')).toHaveLength(1);
+    expect(outcomes.filter(x => x === 'duplicate')).toHaveLength(7);
+    const stored = await read(scope); expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ usageId: b.generationId, costSource: 'unpriced', costMicros: null, revision: 1 });
+    expect(JSON.stringify(stored)).not.toMatch(/credential|sha256|execution-key|FIXTURE_OPENROUTER/);
+    expect(await bindings(scope)).toEqual([{ ...b, revision: 2, observedAtMs: T + 1000, evidenceRef: 'openrouter:metadata-read' }]);
+    const changed = { ...b, credentialSha256: createHash('sha256').update('other-account').digest('hex') };
+    expect(await store().bindOpenRouterGeneration(changed)).toBe('replay-mismatch');
+    expect(await store().bindOpenRouterGeneration({ ...b, credentialRef: 'env:OTHER_ACCOUNT' })).toBe('replay-mismatch');
+    expect(await store().bindOpenRouterGeneration({ ...b, isByok: true })).toBe('replay-mismatch');
+    expect(await store().bindOpenRouterGeneration({ ...b, payer: 'customer-direct' })).toBe('replay-mismatch');
+    expect(await read(scope)).toEqual(stored);
+  });
+
+  it('prevents global generation reassignment across racing tenants and hides foreign/time/month bindings', async () => {
+    const a = await tenant(); const otherOrg = await tenant(a.controlWorkspaceId);
+    const otherWorkspace = await tenant(a.controlWorkspaceId, a.organizationId); const otherControl = await tenant();
+    const b = captured(a);
+    const outcomes = await Promise.all([store().bindOpenRouterGeneration(b), store().bindOpenRouterGeneration({ ...b, scope: otherOrg })]);
+    expect(outcomes.sort()).toEqual(['recorded', 'replay-mismatch']);
+    const winner = (await read(a)).length ? a : otherOrg; const loser = winner === a ? otherOrg : a;
+    expect(await bindings(loser)).toEqual([]); expect(await bindings(otherWorkspace)).toEqual([]);
+    expect(await bindings(otherControl)).toEqual([]); expect(await bindings(winner, T + 9)).toEqual([]);
+    expect(await store().readOpenRouterBindings({ scope: winner, month: '2026-11', asOfMs: T + 1000 })).toEqual([]);
+    expect(await bindings({ ...winner, customerWorkspaceId: null })).toHaveLength(1);
+    const report = record(loser, { provider: 'openrouter', usageId: b.generationId, revision: 2,
+      category: 'inference-fees', quantity: 1, unit: 'generations', costSource: 'provider-reported' });
+    expect(await store().append(report)).toBe('replay-mismatch'); expect(await read(loser)).toEqual([]);
+  });
+
+  it('collects through a new store instance, keeps exact corrections, and refuses changed keys before provider reads', async () => {
+    const scope = await tenant(); const b = captured(scope); await store().bindOpenRouterGeneration(b);
+    let key = 'other-key'; let calls = 0; let cost = '0.001234560000000000001';
+    const fresh = store();
+    const source = createHostedUsageSource({ store: fresh, maximumAgeMs: 1000, collectors: [createOpenRouterHostedUsageCollector({
+      store: fresh, readCredential: async () => key, fetch: async () => {
+        calls++;
+        return new Response('{"data":{"id":"' + b.generationId + '","is_byok":false,"total_cost":' + cost + ',"prompt":"private"}}');
+      },
+    })] });
+    const input = { scope, month: MONTH, asOfMs: T + 1000 };
+    expect((await source(input)).lines[0]).toMatchObject({ unpricedUsages: 1, reportedMicros: 0 });
+    expect(calls).toBe(0); expect(await read(scope)).toHaveLength(1);
+    key = 'execution-key';
+    const first = await source(input); expect(first.lines[0]).toMatchObject({ usages: 1, reportedMicrosExact: '1234.560000000000001' });
+    expect(first.settlementEligible).toBe(false); expect(first.forecast.unavailableReason).toBe('incomplete-source');
+    expect(JSON.stringify(first)).not.toMatch(/private|credential|execution-key|FIXTURE_OPENROUTER/);
+    expect((await bindings(scope))[0]?.revision).toBe(3);
+    cost = '0.0000001';
+    const correction = await source({ ...input, asOfMs: T + 2000 });
+    expect(correction.lines[0]).toMatchObject({ usages: 1, reportedMicrosExact: '0.1', billedMicros: 0 });
+    expect(await bindings(scope, T + 1000)).toEqual([]); // Newer committed report cannot reuse its old revision.
+    expect(await read(scope, T + 2000)).toHaveLength(3); expect(calls).toBe(2);
+  });
+
+  it('rejects malformed durable bindings and SQL bypasses of the private binding constraint', async () => {
+    const scope = await tenant(); const b = captured(scope);
+    for (const change of [{ credentialRef: 'raw-key-value' }, { credentialSha256: 'not-a-fingerprint' },
+      { credentialRef: 'env:KEY\nInjected' }, { generationId: 'not-a-generation' }, { revision: 7 }, { customerContent: 'private' }]) {
+      await expect(store().bindOpenRouterGeneration({ ...b, ...change } as OpenRouterGenerationBinding)).rejects.toThrow(/binding/);
+    }
+    await store().bindOpenRouterGeneration(b);
+    const rows = await runService(sql => sql`SELECT openrouter_credential_ref, openrouter_key_sha256, openrouter_is_byok
+      FROM papercusp_auth.hosted_usage_receipts WHERE usage_id = ${b.generationId}`);
+    expect(rows[0]).toMatchObject({ openrouter_credential_ref: b.credentialRef, openrouter_key_sha256: b.credentialSha256, openrouter_is_byok: false });
+    await expect(runService(sql => sql`INSERT INTO papercusp_auth.hosted_usage_receipts
+      (control_workspace_id, organization_id, customer_workspace_id, provider, record_id, usage_id,
+       revision, category, payer, occurred_at_ms, observed_at_ms, quantity, unit, cost_source, cost_micros, source_ref,
+       openrouter_credential_ref, openrouter_key_sha256, openrouter_is_byok)
+      SELECT control_workspace_id, organization_id, customer_workspace_id, provider, ${randomUUID()}, ${'gen-' + randomUUID()},
+        1, category, payer, occurred_at_ms, observed_at_ms, quantity, unit, cost_source, cost_micros, source_ref,
+        openrouter_credential_ref, NULL, openrouter_is_byok
+      FROM papercusp_auth.hosted_usage_receipts WHERE usage_id = ${b.generationId}`)).rejects.toMatchObject({ code: '23514' });
   });
 });

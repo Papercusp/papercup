@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { OpenRouterHostedUsageCollector, openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
+import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
+import { createHostedUsageSource } from './usage-service';
 import { buildHostedUsageStatement, type HostedUsageRecord } from './usage-statement';
 
 const scope = { controlWorkspaceId: 'control', organizationId: 'org', customerWorkspaceId: 'customer' };
@@ -115,6 +117,55 @@ describe('OpenRouter hosted usage collector', () => {
     } });
     await s.collector.collect({ scope, generationId: binding.generationId });
     expect(s.append.mock.calls[0]![0]).toMatchObject({ organizationId: scope.organizationId, payer: 'consumption' });
+  });
+  it('refuses a rotated/unrelated key before provider I/O and strips the fingerprint from a matching report', async () => {
+    const pinned = { ...binding, credentialSha256: createHash('sha256').update('server-secret').digest('hex') };
+    const s = setup({ readBinding: async () => pinned });
+    expect((await s.collector.collect({ scope, generationId: binding.generationId })).outcome).toBe('recorded');
+    expect(JSON.stringify(s.append.mock.calls[0]![0])).not.toMatch(/credential|sha256|server-secret/);
+    const rotated = setup({ readBinding: async () => pinned, readCredential: async () => 'other-account-key' });
+    expect(await rotated.collector.collect({ scope, generationId: binding.generationId }))
+      .toEqual({ outcome: 'unavailable', reason: 'credential-mismatch' });
+    expect(rotated.fetch).not.toHaveBeenCalled(); expect(rotated.append).not.toHaveBeenCalled();
+    const malformed = setup({ readBinding: async () => ({ ...pinned, credentialSha256: 'bad-hash' }) });
+    await expect(malformed.collector.collect({ scope, generationId: binding.generationId })).rejects.toThrow('invalid OpenRouter usage binding');
+    expect(malformed.readCredential).not.toHaveBeenCalled();
+  });
+  it('keeps a failing credential resolver unavailable without leaking its error or calling the provider', async () => {
+    const s = setup({ readCredential: async () => { throw new Error('private secret server-secret'); } });
+    expect(await s.collector.collect({ scope, generationId: binding.generationId }))
+      .toEqual({ outcome: 'unavailable', reason: 'missing-credential' });
+    expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
+  });
+  it('composes the durable binding reader through the existing source without inventing provider census or billing finality', async () => {
+    const pinned = { ...binding, credentialSha256: createHash('sha256').update('server-secret').digest('hex') };
+    const readOpenRouterBindings = vi.fn(async () => [pinned]);
+    const records: HostedUsageRecord[] = [];
+    const store = { readOpenRouterBindings, append: vi.fn(async (r: HostedUsageRecord) => {
+      records.push(r); return 'recorded' as const;
+    }), readRecords: async () => records };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify(payload(0.0000001))));
+    const source = createHostedUsageSource({ store, maximumAgeMs: 1000,
+      collectors: [createOpenRouterHostedUsageCollector({ store, readCredential: async () => 'server-secret', fetch })] });
+    const input = { scope, month: '2026-10', asOfMs: time + 2000 };
+    const result = await source(input);
+    expect(readOpenRouterBindings).toHaveBeenCalledWith(input);
+    expect(store.append).toHaveBeenCalledTimes(1); expect(fetch).toHaveBeenCalledTimes(1);
+    expect(result.lines[0]).toMatchObject({ reportedMicros: 0, reportedMicrosExact: '0.1', billedMicros: 0 });
+    expect(result.settlementEligible).toBe(false); expect(result.forecast.unavailableReason).toBe('incomplete-source');
+    expect(JSON.stringify(result)).not.toMatch(/server-secret|credential|sha256|private/);
+  });
+  it('does not resolve keys for an empty/foreign population or turn an account failure into a zero receipt', async () => {
+    const readCredential = vi.fn(async () => 'wrong-key');
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const empty = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => [] }, readCredential, fetch });
+    const input = { scope, month: '2026-10', asOfMs: time + 2000 };
+    expect(await empty.read(input)).toMatchObject({ complete: false, records: [] });
+    expect(readCredential).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+    const mismatched = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => [{ ...binding,
+      credentialSha256: createHash('sha256').update('correct-key').digest('hex') }] }, readCredential, fetch });
+    expect(await mismatched.read(input)).toMatchObject({ complete: false, records: [] });
+    expect(fetch).not.toHaveBeenCalled();
   });
   it('rejects malformed server authority before credential lookup', async () => {
     const s = setup({ readBinding: async () => ({ ...binding, revision: 0 }) });

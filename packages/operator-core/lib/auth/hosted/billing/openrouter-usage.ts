@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { formatMicrosDecimal, splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { PostgresHostedUsageStore, type HostedUsageAppendResult } from './usage-store';
 import { validateHostedUsageRecord, type HostedUsageRecord } from './usage-statement';
+import type { HostedUsageCollector } from './usage-service';
 
 type Scope = Pick<HostedUsageRecord, 'controlWorkspaceId' | 'organizationId' | 'customerWorkspaceId'>;
 export interface OpenRouterUsageBinding {
@@ -20,6 +21,8 @@ export interface OpenRouterUsageBinding {
   readonly payer: HostedUsageRecord['payer'];
   readonly isByok: boolean;
   readonly credentialRef: string;
+  /** SHA-256 of the actual key used for execution. Durable bindings require it. */
+  readonly credentialSha256?: string;
   readonly revision: number;
   readonly occurredAtMs: number;
   readonly observedAtMs: number;
@@ -76,7 +79,8 @@ function exactMicros(value: unknown): { micros: number; exact: string } | null {
 export function openRouterUsageRecord(binding: OpenRouterUsageBinding, payload: unknown): HostedUsageRecord {
   const scope = snapshotScope(binding.scope);
   if (!GENERATION.test(binding.generationId) || !IDENTIFIER.test(binding.credentialRef)
-      || !IDENTIFIER.test(binding.evidenceRef) || typeof binding.isByok !== 'boolean') {
+      || !IDENTIFIER.test(binding.evidenceRef) || typeof binding.isByok !== 'boolean'
+      || (binding.credentialSha256 !== undefined && !/^[a-f0-9]{64}$/.test(binding.credentialSha256))) {
     throw new Error('invalid OpenRouter usage binding');
   }
   if (!record(payload) || !record(payload.data) || payload.error !== undefined
@@ -115,9 +119,13 @@ export class OpenRouterHostedUsageCollector {
     }
     // Validate server counters/account ref before asking for a secret or doing I/O.
     openRouterUsageRecord(binding, { data: { id: generationId, is_byok: binding.isByok, total_cost: null } });
-    const secret = await this.options.readCredential(binding.credentialRef);
+    const secret = await this.options.readCredential(binding.credentialRef).catch(() => null);
     if (typeof secret !== 'string' || !secret || secret.trim() !== secret || /[\r\n]/.test(secret)) {
       return { outcome: 'unavailable' as const, reason: 'missing-credential' as const };
+    }
+    if (binding.credentialSha256 !== undefined
+        && createHash('sha256').update(secret).digest('hex') !== binding.credentialSha256) {
+      return { outcome: 'unavailable' as const, reason: 'credential-mismatch' as const };
     }
     let response: Response;
     try {
@@ -142,4 +150,37 @@ export class OpenRouterHostedUsageCollector {
     const outcome = await append(normalized);
     return { outcome, record: normalized };
   }
+}
+
+/** Production reader of server-captured bindings on the SAME usage ledger.
+ * Only known generations are read; this cannot certify the provider's entire
+ * population or final invoice. Private binding fields never enter a receipt.
+ * Revision races are refused; a later read reconciles from committed history. */
+export function createOpenRouterHostedUsageCollector(options: {
+  readonly store: Pick<PostgresHostedUsageStore, 'readOpenRouterBindings'>;
+  readonly readCredential: (reference: string) => Promise<string | null>;
+  readonly fetch?: typeof globalThis.fetch;
+}): HostedUsageCollector {
+  return {
+    id: 'openrouter:bound-generations', provider: 'openrouter', categories: ['inference-fees'],
+    async read(input) {
+      const bindings = await options.store.readOpenRouterBindings(input);
+      const records: HostedUsageRecord[] = [];
+      // Sequential provider reads keep account rate pressure bounded. No
+      // incomplete/failed read is represented as a zero charge or full census.
+      for (const binding of bindings) {
+        const collector = new OpenRouterHostedUsageCollector({
+          readBinding: async (scope, generationId) => sameScope(scope, binding.scope)
+            && generationId === binding.generationId ? binding : null,
+          readCredential: options.readCredential, fetch: options.fetch,
+          // createHostedUsageSource validates the whole batch before appending.
+          append: async () => 'recorded',
+        });
+        const result = await collector.collect({ scope: binding.scope, generationId: binding.generationId });
+        if (result.outcome === 'recorded' && 'record' in result) records.push(result.record);
+      }
+      return { scope: input.scope, month: input.month, complete: false,
+        observedAtMs: input.asOfMs, evidenceRef: 'openrouter:bound-generations', records };
+    },
+  };
 }
