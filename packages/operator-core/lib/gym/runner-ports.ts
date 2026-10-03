@@ -270,16 +270,18 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       return { workflowStatus: wf[0]?.status ?? 'PENDING', featureStatus: feat[0]?.status ?? null };
     },
 
-    async runOracle({ clonePath, testPath, pinCommit }) {
+    async runOracle({ clonePath, testPath, pinCommit, implPath }) {
       // Keep the old standalone result shape when no oracle pin was requested.
       // The runner always requests a pin and requires this actual IO receipt.
-      const ownHash = (): string | null => {
-        try { return createHash('sha256').update(readFileSync(join(clonePath, testPath))).digest('hex'); }
+      const safeRepoPath = (path: string): boolean => path.length > 0 && !isAbsolute(path) &&
+        !path.split('/').some((part) => part === '..' || part === '.') && !path.includes('\\');
+      const fileHash = (path: string): string | null => {
+        if (!safeRepoPath(path)) return null;
+        try { return createHash('sha256').update(readFileSync(join(clonePath, path))).digest('hex'); }
         catch { return null; }
       };
       let pinned: string | null = null;
-      const safePath = testPath.length > 0 && !testPath.startsWith('/') &&
-        !testPath.split('/').some((part) => part === '..' || part === '.') && !testPath.includes('\\');
+      const safePath = safeRepoPath(testPath);
       if (pinCommit && isPinnedCommit(pinCommit) && safePath) {
         try {
           const blob = await execCapture('git', ['show', `${pinCommit}:${testPath}`],
@@ -287,12 +289,13 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           pinned = createHash('sha256').update(blob.stdout).digest('hex');
         } catch { /* missing immutable oracle is explicitly unmeasured */ }
       }
-      const before = safePath ? ownHash() : null;
+      const before = fileHash(testPath);
+      const implementationBefore = implPath ? fileHash(implPath) : null;
       const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
+      const command = ['npm', 'run', 'test:file', '--', testPath, '--', '--reporter=json', `--outputFile=${reportPath}`];
       try {
         await execCapture(
-          'npm',
-          ['run', 'test:file', '--', testPath, '--', '--reporter=json', `--outputFile=${reportPath}`],
+          command[0], command.slice(1),
           { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
         );
       } catch {
@@ -300,10 +303,15 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         // not, the caller records deterministic evidence as not measured.
       }
       try {
-        const results = parseVitestOracleResults(readFileSync(reportPath, 'utf8')).map((t) =>
+        const report = readFileSync(reportPath, 'utf8');
+        const results = parseVitestOracleResults(report).map((t) =>
           t.file ? { ...t, file: (isAbsolute(t.file) ? relative(clonePath, t.file) : t.file).split('\\').join('/') } : t);
         return pinCommit ? { results, testPath, pinCommit,
-          sourceHashes: { pinned, before, after: safePath ? ownHash() : null } } : results;
+          sourceHashes: { pinned, before, after: fileHash(testPath) },
+          implementation: implPath ? { path: implPath, before: implementationBefore, after: fileHash(implPath) } : null,
+          execution: { command, cwd: clonePath, report,
+            unresolved: ['oracle-imported-dependencies', 'test-command-runtime', 'pipeline-runtime'] },
+        } : results;
       } catch {
         return undefined;
       } finally {

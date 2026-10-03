@@ -72,6 +72,31 @@ describe('papercup-backup-health-check.sh', () => {
     );
   });
 
+  it('never pipes a producer into an early-exit grep under pipefail (WI-10005986)', () => {
+    // The script runs `set -uo pipefail`. In `producer | grep -q PAT`, grep exits on
+    // the first match. A producer that writes in more than one chunk then dies of
+    // SIGPIPE on its next write, and pipefail turns the pipeline non-zero WITH a
+    // match. The gate recorded exactly that at repairHead c697f739 (2026-10-03): mawk
+    // wrote the 5.3 KB check_db_disk_headroom range as 4096 + 1222 bytes, and
+    // self-test check 19 read a present `${consumers}` as FAIL. It depends on load, so
+    // it rarely reproduces locally. Here-strings (`grep -q PAT <<<"$x"`) have no producer.
+    const earlyExitGrep = /\|\s*grep\s+(?:-[A-Za-z]+\s+)*(?:-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)\b/;
+    // Calibration: the detector must flag the defective shape and pass the fixed one,
+    // or a clean result below would be vacuous.
+    expect(earlyExitGrep.test(`  if guard_body | grep -q '\\\${consumers}'; then`)).toBe(true);
+    expect(earlyExitGrep.test(`  if printf '%s' "$out" | grep -E -q "$want_re"; then`)).toBe(true);
+    expect(earlyExitGrep.test(`  if grep -q '\\\${consumers}' <<<"$guard_text"; then`)).toBe(false);
+
+    const health = readFileSync(SCRIPT, 'utf8');
+    expect(health).toMatch(/^set -uo pipefail$/m);
+    const offenders = health
+      .split('\n')
+      .map((line, index) => ({ line, lineNo: index + 1 }))
+      .filter(({ line }) => !line.trimStart().startsWith('#') && earlyExitGrep.test(line))
+      .map(({ line, lineNo }) => `${lineNo}: ${line.trim()}`);
+    expect(offenders).toEqual([]);
+  });
+
   it("keeps the health probe's producer-fit policy synchronized with db-backup.sh", () => {
     const health = readFileSync(SCRIPT, 'utf8');
     const producer = readFileSync(PRODUCER, 'utf8');

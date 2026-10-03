@@ -115,7 +115,7 @@ describe('createGymRunnerPorts', () => {
         return { stdout: '', stderr: '' };
       } });
       const pinCommit = 'a'.repeat(40);
-      expect(await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit })).toEqual({
+      expect(await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit })).toMatchObject({
         results: [{ name: 't', file: 'oracle.test.js', passed: true }], testPath: 'oracle.test.js', pinCommit,
         sourceHashes: { pinned: digest(original), before: digest(original), after: digest(mutated ? changed : original) },
       });
@@ -139,6 +139,34 @@ describe('createGymRunnerPorts', () => {
       const receipt = await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit: 'a'.repeat(40) });
       expect(receipt).toMatchObject({ results: [{ name: 't', file: 'oracle.test.js', passed: true }],
         sourceHashes: { pinned: null } });
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])('retains the exact evaluated implementation and raw test report (mutated=%s)', async (mutated) => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-artifact-'));
+    const before = 'export const answer = 42;\n';
+    const after = 'export const answer = 0;\n';
+    const report = JSON.stringify({ testResults: [{ name: join(clonePath, 'oracle.test.js'),
+      assertionResults: [{ fullName: 'task', status: 'passed' }] }] });
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    try {
+      writeFileSync(join(clonePath, 'impl.js'), before);
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        if (cmd === 'git') return { stdout: 'oracle', stderr: '' };
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), report);
+        if (mutated) writeFileSync(join(clonePath, 'impl.js'), after);
+        return { stdout: '', stderr: '' };
+      } });
+      const input = { clonePath, testPath: 'oracle.test.js', implPath: 'impl.js', pinCommit: 'a'.repeat(40) };
+      const receipt = await createGymRunnerPorts(config).runOracle!(input);
+      expect(receipt).toMatchObject({
+        implementation: { path: 'impl.js', before: hash(before), after: hash(mutated ? after : before) },
+        execution: { cwd: clonePath, report,
+          command: ['npm', 'run', 'test:file', '--', 'oracle.test.js', '--', '--reporter=json', expect.stringMatching(/^--outputFile=/)],
+          unresolved: ['oracle-imported-dependencies', 'test-command-runtime', 'pipeline-runtime'] },
+      });
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   });
 
