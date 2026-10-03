@@ -45,7 +45,7 @@ export async function dispatchLspDaemonApply(
   return lspAdmissionController(workspaceId).run({
     workspaceId, requestId, language, projectRoot: project.root, op: method,
     actor: request.actorId, deadlineAtMs: request.deadlineAtMs ?? Date.now() + 90_000,
-    signal, queryKey: await lspDaemonCostKey(method, request),
+    signal, query: file, queryKey: await lspDaemonCostKey(method, request),
   }, task);
 }
 
@@ -68,6 +68,7 @@ export async function dispatchLspDaemonRequest(
     priority: request.priority,
     deadlineAtMs: request.deadlineAtMs ?? Date.now() + 90_000,
     signal,
+    query: request.args.file ?? request.args.name ?? request.op,
     queryKey: await lspDaemonCostKey(request.op, request.args),
   }, () => lspDaemonFacade(request.op, request.args));
 }
