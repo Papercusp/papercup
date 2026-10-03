@@ -15,6 +15,7 @@
  * the connector reads with.
  */
 import { getOctokit } from '../identity/octokit-client';
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   DEFAULT_FIELD_AUTHORITY,
   registerAdmissionSource,
@@ -130,5 +131,8 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
 }
 
 /** The process-wide registration. Idempotent across module re-imports (same object). */
-export const recordAdmissionSource = createRecordAdmissionSource();
+export const recordAdmissionSource = pinModuleState(
+  '@papercusp/operator-core.work-admission.record-source',
+  () => createRecordAdmissionSource(),
+);
 registerAdmissionSource(recordAdmissionSource);
