@@ -306,6 +306,31 @@ describe("buildMcpProxyTransportBlock (D-005, pure given an injected reader)", (
     expect(out.mcpProxyTransport.hardFailures).toBe(1);
   });
 
+  it("surfaces only sustained critical-continuation waits to the affected agent", () => {
+    expect(
+      buildMcpProxyTransportBlock(
+        () => [at("critical_continuation_queue_wait", { traceId: "checkpoint-short", waitedMs: 61_800 })],
+        NOW_MS,
+      ),
+    ).toEqual({});
+    const out = buildMcpProxyTransportBlock(
+      () => [at("critical_continuation_queue_wait", { traceId: "checkpoint-stalled", waitedMs: 701_000 })],
+      NOW_MS,
+    ) as {
+      mcpProxyTransport: {
+        criticalContinuationQueueStalls: number;
+        criticalContinuationQueueMaxWaitMs: number;
+        note: string;
+      };
+    };
+    expect(out.mcpProxyTransport).toMatchObject({
+      criticalContinuationQueueStalls: 1,
+      criticalContinuationQueueMaxWaitMs: 701_000,
+    });
+    expect(out.mcpProxyTransport.note).toMatch(/≥5m/);
+    expect(out.mcpProxyTransport.note).toMatch(/non-expiring/);
+  });
+
   it("inherits the listenPort:0 exclusion from the shared summarizer — test/sidecar noise never surfaces", () => {
     // ~18% of live ledger records are written by test/sidecar proxies (EI-19388683897769817).
     // This block must not re-implement the filter; it must inherit it by delegating.

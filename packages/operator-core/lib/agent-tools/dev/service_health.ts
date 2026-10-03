@@ -32,6 +32,7 @@ import {
   summarizeMcpProxyHealth,
   type McpProxyFailureRecord,
 } from "../../system-health/mcp-proxy-health";
+import { MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS } from "../../system-health/thresholds";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
   return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
@@ -496,7 +497,7 @@ export function buildMcpProxyTransportBlock(
   const h = summarizeMcpProxyHealth(recs, nowMs);
   // `recovered` is deliberately NOT in this sum: on its own it means the proxy absorbed a deploy
   // blip, which is the resilience working. The notable set is what an agent should act on.
-  const notable = h.hardFailures + h.handshakeStalls + h.shed + h.otherNon2xx;
+  const notable = h.hardFailures + h.handshakeStalls + h.shed + h.otherNon2xx + h.criticalContinuationQueueStalls;
   if (notable === 0) return {};
   return {
     mcpProxyTransport: {
@@ -504,12 +505,16 @@ export function buildMcpProxyTransportBlock(
       hardFailures: h.hardFailures,
       handshakeStalls: h.handshakeStalls,
       shed: h.shed,
+      criticalContinuationQueueStalls: h.criticalContinuationQueueStalls,
+      criticalContinuationQueueMaxWaitMs: h.criticalContinuationQueueMaxWaitMs,
       otherNon2xx: h.otherNon2xx,
       recovered: h.recovered,
       byKind: h.byKind,
       newestAt: h.newestAt,
       note:
-        h.handshakeStalls > 0
+        h.criticalContinuationQueueStalls > 0
+          ? `${h.criticalContinuationQueueStalls} critical continuation write(s) waited ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m (longest ${Math.round(h.criticalContinuationQueueMaxWaitMs / 1000)}s). Checkpoint/completion writes remain non-expiring and are still waiting.`
+          : h.handshakeStalls > 0
           ? `${h.handshakeStalls} upstream-silence stall(s) on the MCP handshake (WI-6740). Each was RETRIED and survived — but this is the class that leaves a session tool-dark for its entire life if the retry ever runs out. Not benign.`
           : `${h.hardFailures} hard tool-transport failure(s) the proxy could not hide from callers.`,
     },
