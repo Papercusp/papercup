@@ -8,6 +8,7 @@ const {
   buildContextBudget,
   CODEX_DENIED_MODEL_IDS,
   CODEX_SAFE_DEFAULT_MODEL,
+  claudeInheritedEffortOverride,
   codexModelConfigToml,
   formatCodexLaunchContextSection,
   isCodexModelDenied,
@@ -37,6 +38,39 @@ describe('Claude Opus 5 effort compatibility', () => {
       'gpt-5.5:xhigh',
     ]) {
       expect(normalizeClaudeModelEffortSpec(spec)).toBe(spec);
+    }
+  });
+
+  // WI-10005900: a launch whose argv names no effort inherits settings.json effortLevel.
+  it('clamps an inherited Opus 5 xhigh effortLevel to max', () => {
+    // Model-less launch: the settings model decides.
+    expect(
+      claudeInheritedEffortOverride({ model: null, settings: { model: 'opus[1m]', effortLevel: 'xhigh' } }),
+    ).toBe('max');
+    // Model without an effort suffix: the argv model decides, not settings.model.
+    expect(
+      claudeInheritedEffortOverride({
+        model: 'claude-opus-5-5',
+        settings: { model: 'sonnet', effortLevel: 'XHIGH' },
+      }),
+    ).toBe('max');
+  });
+
+  it('leaves the inherited effort alone when nothing needs clamping', () => {
+    const cases: Array<Parameters<typeof claudeInheritedEffortOverride>[0]> = [
+      // The argv carries its own effort, so settings.effortLevel never applies.
+      { model: 'opus:high', settings: { model: 'opus', effortLevel: 'xhigh' } },
+      // Supported level, or a family that keeps xhigh.
+      { model: null, settings: { model: 'opus[1m]', effortLevel: 'max' } },
+      { model: 'claude-sonnet-5', settings: { effortLevel: 'xhigh' } },
+      // Nothing to inherit, or no model to judge it against.
+      { model: 'opus', settings: { model: 'opus' } },
+      { model: null, settings: { effortLevel: 'xhigh' } },
+      { model: 'opus', settings: null },
+      { model: 'opus', settings: { effortLevel: 42 } },
+    ];
+    for (const input of cases) {
+      expect(claudeInheritedEffortOverride(input)).toBeNull();
     }
   });
 });

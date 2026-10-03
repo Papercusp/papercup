@@ -164,6 +164,7 @@ import {
   modelArgsFor,
   normalizeOmpModelSpec,
   ompModelCompatibilityNotice,
+  readClaudeLaunchSettings,
   reconcileResumeModelForAccountRoute,
   ompTitleMitigationArgs,
   ompResponsesCompatibilityEnv,
@@ -11797,6 +11798,128 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
         notice: null,
         reconciled: false,
       });
+    }
+  });
+
+  // WI-10005900: an argv with no effort of its own falls back to settings.json
+  // effortLevel, which Claude Code writes itself. On the `default` route there is
+  // no gateway clamp, so the launch boundary must pass the clamped level.
+  it("WI-10005900: claude argv clamps an inherited Opus 5 xhigh effortLevel on every launch path", () => {
+    const xhighSettings = { model: "opus[1m]", effortLevel: "xhigh" };
+
+    expect(
+      modelArgsFor("claude", "opus[1m]", { claudeSettings: xhighSettings }),
+    ).toEqual(["--model", "opus[1m]", "--effort", "max"]);
+    expect(
+      modelArgsFor("claude", null, { claudeSettings: xhighSettings }),
+    ).toEqual(["--effort", "max"]);
+    expect(
+      suWrapperExtraArgs("claude", { claudeSettings: xhighSettings }),
+    ).toEqual(["--effort", "max"]);
+
+    const resumed = resumeArgsFor(
+      { agent: "claude", sessionId: "uuid-1" },
+      { claudeSettings: xhighSettings },
+    ).args;
+    expect(resumed.slice(-2)).toEqual(["--effort", "max"]);
+
+    const role = roleLaunchArgs("claude", {
+      promptFile: "/tmp/p.md",
+      mcpJsonPath: "/tmp/m.json",
+      model: "opus[1m]",
+      claudeSettings: xhighSettings,
+    }).args;
+    expect(role.slice(-4)).toEqual(["--model", "opus[1m]", "--effort", "max"]);
+  });
+
+  it("WI-10005900: claude argv stays byte-identical when there is nothing to clamp", () => {
+    // No settings supplied: the pre-WI-10005900 argv.
+    expect(modelArgsFor("claude", "opus[1m]")).toEqual(["--model", "opus[1m]"]);
+    expect(modelArgsFor("claude", null)).toEqual([]);
+    expect(suWrapperExtraArgs("claude", {})).toEqual([]);
+    // A model-less non-claude launch still emits nothing (and never resolves a default).
+    expect(suWrapperExtraArgs("omp", {})).toEqual(["--no-title"]);
+    // An explicit effort wins; supported or non-Opus-5 inherited levels pass through.
+    expect(
+      modelArgsFor("claude", "opus:high", {
+        claudeSettings: { model: "opus", effortLevel: "xhigh" },
+      }),
+    ).toEqual(["--model", "opus", "--effort", "high"]);
+    expect(
+      modelArgsFor("claude", "opus[1m]", {
+        claudeSettings: { effortLevel: "max" },
+      }),
+    ).toEqual(["--model", "opus[1m]"]);
+    expect(
+      modelArgsFor("claude", "claude-sonnet-5", {
+        claudeSettings: { effortLevel: "xhigh" },
+      }),
+    ).toEqual(["--model", "claude-sonnet-5"]);
+    // Codex and OMP ignore claude settings entirely.
+    expect(
+      modelArgsFor("omp", "opus:high", {
+        claudeSettings: { model: "opus", effortLevel: "xhigh" },
+      }),
+    ).toEqual(modelArgsFor("omp", "opus:high"));
+  });
+
+  it("WI-10005900: readClaudeLaunchSettings reads the settings the child will read, fail-open", () => {
+    const files: Record<string, string> = {
+      "/iso/settings.json": JSON.stringify({ model: "opus[1m]", effortLevel: "xhigh", theme: "dark" }),
+      "/h/.claude/settings.json": JSON.stringify({ model: "sonnet", effortLevel: "high" }),
+    };
+    const readFile = (p: string) => {
+      if (!(p in files)) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
+      return files[p];
+    };
+    // The per-session isolated CLAUDE_CONFIG_DIR wins over ~/.claude.
+    expect(
+      readClaudeLaunchSettings({ CLAUDE_CONFIG_DIR: "/iso" }, { home: "/h", readFile }),
+    ).toEqual({ model: "opus[1m]", effortLevel: "xhigh" });
+    expect(readClaudeLaunchSettings({}, { home: "/h", readFile })).toEqual({
+      model: "sonnet",
+      effortLevel: "high",
+    });
+    // ANTHROPIC_MODEL outranks settings.model, as in the CLI.
+    expect(
+      readClaudeLaunchSettings(
+        { CLAUDE_CONFIG_DIR: "/iso", ANTHROPIC_MODEL: "claude-sonnet-5" },
+        { home: "/h", readFile },
+      ),
+    ).toEqual({ model: "claude-sonnet-5", effortLevel: "xhigh" });
+    // Missing or malformed settings never fail a launch.
+    expect(
+      readClaudeLaunchSettings({ CLAUDE_CONFIG_DIR: "/missing" }, { home: "/h", readFile }),
+    ).toBeNull();
+    expect(
+      readClaudeLaunchSettings({}, { home: "/h", readFile: () => "{not json" }),
+    ).toBeNull();
+    // A programming error is not "no settings": it must surface, not fail open.
+    expect(() =>
+      readClaudeLaunchSettings({}, {
+        home: "/h",
+        readFile: () => {
+          throw new ReferenceError("readFileSync is not defined");
+        },
+      }),
+    ).toThrow(ReferenceError);
+  });
+
+  it("WI-10005900: readClaudeLaunchSettings reads a real isolated settings.json through its default reader", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wi5900-claude-config-"));
+    try {
+      writeFileSync(
+        join(dir, "settings.json"),
+        JSON.stringify({ model: "opus[1m]", effortLevel: "xhigh" }),
+      );
+      const settings = readClaudeLaunchSettings({ CLAUDE_CONFIG_DIR: dir });
+      expect(settings).toEqual({ model: "opus[1m]", effortLevel: "xhigh" });
+      expect(modelArgsFor("claude", null, { claudeSettings: settings })).toEqual([
+        "--effort",
+        "max",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
