@@ -43,6 +43,7 @@ import {
   readVettingConsultCritique,
 } from './get-feedback-core';
 import { peersKnowLookup } from './peers-know';
+import { readRoutingHealthRows, routingHealthFromRows } from './consult-routing-health';
 import { consultReplyCore, consultDeclineCore } from './consult-verbs-core';
 import { sweepExpiredConsults } from './consult-expiry-core';
 import { advanceCascade } from './cascade-core';
@@ -71,6 +72,9 @@ const MIGRATION_837 = fileURLToPath(
 );
 const MIGRATION_847 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/847-widen-consult-interest-vecs-to-768.sql', import.meta.url),
+);
+const MIGRATION_1225 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql', import.meta.url),
 );
 // The shared chunk store (generic-rag-chunking P-003): peersKnowLookup ranks each
 // settled question by its own vector and its window chunks (P-012, D-027).
@@ -114,6 +118,7 @@ beforeAll(async () => {
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe(readFileSync(MIGRATION_837, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_847, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_1225, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_1242, 'utf8'));
   await rootSql.unsafe(`
     ALTER TABLE harness_shared.consult_state
@@ -992,6 +997,33 @@ describe('getFeedbackCore — routed', () => {
     const result = asOk(await getFeedbackCore({ ...baseReq, allowDispatch }, deps));
     const stored = await stateRow(result.conversation_id);
     expect((stored.routing as RoutingSnapshot).deliveryIntent).toBe(allowDispatch ? 'dispatch' : 'retrieval-only');
+  });
+
+  it('reads typed responder receipts after expiry independently of the bounded cascade digest', async () => {
+    const { deps } = makeDeps(routeOf([cand('agent-a')]));
+    const result = asOk(await getFeedbackCore(baseReq, deps));
+    const sql = deps.getSql();
+    const sinceMs = Date.now() - 60_000;
+    await sql`
+      UPDATE harness_shared.consult_state
+         SET state = 'expired', cascade_digest = '[]'::jsonb
+       WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id}
+    `;
+    await sql`
+      INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, 910001, ${result.conversation_id}, ${baseReq.requesterId}, 'new_fact')
+    `;
+    const read = async () => readRoutingHealthRows(sql, WS, new Date(sinceMs).toISOString(), new Date(Date.now() + 10_000).toISOString());
+    expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(false);
+    await sql`
+      INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, 910002, ${result.conversation_id}, 'agent-a-fork', 'answer')
+    `;
+    const { rows, truncated } = await read();
+    expect(rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(true);
+    const health = routingHealthFromRows(rows, { sinceMs, untilMs: Date.now() + 10_000, nowMs: Date.now(), truncatedByLimit: truncated });
+    expect(health.requestCohort.totals.outcomes.received).toBe(1);
+    expect(health.requestCohort.totals.outcomes.failed).toBe(0);
   });
 
   it('R-2: a DEAD top candidate is selected, not skipped — deadness changes neither rank nor eligibility', async () => {
