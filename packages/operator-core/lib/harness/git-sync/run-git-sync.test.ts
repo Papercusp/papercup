@@ -4878,7 +4878,7 @@ const UNWRAPPED_INDEX_WRITER_ALLOWLIST: Record<string, string> = {
   "runGit(['merge', '--abort']":
     'Cleanup after a merge that already ran through recoverIndexLockContention this tick, which reclaimed any orphaned lock.',
   "runGit(['add', '--', ...g.files]":
-    'commitAttributedGroups has no logger and ignores this result by design. The wrapped catch-all `git add -A` re-stages anything a lock-blocked group add missed (STRANDING GUARD, WI-1316).',
+    'A nonzero group add returns before its commit; the caller logs the error, then the STRANDING GUARD catch-all `git add -A` retries these files (WI-1316).',
 };
 
 async function findUnwrappedIndexWriters(source: string): Promise<Array<{ line: number; text: string }>> {
