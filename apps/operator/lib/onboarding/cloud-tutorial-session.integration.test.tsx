@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { FakeEventSource } from "@/app/_components/chat/fake-event-source.testkit";
-import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_TASK, CLOUD_TUTORIAL_VERSION } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_TASK, CLOUD_TUTORIAL_PLAN_TASK, CLOUD_TUTORIAL_REVISION_TASK, CLOUD_TUTORIAL_VERSION } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import type { TimelineEntry } from "@/app/harness/AgentThinkingStream";
 import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import { CloudTutorialCompanion } from "./cloud-tutorial-companion";
@@ -40,7 +40,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn(); window.scrollTo = vi.fn();
   vi.stubGlobal("fetch", vi.fn(async (input, init) => {
     const url = String(input); const body = init?.body ? JSON.parse(String(init.body)) : {};
-    if (url.includes("tutorial-progress")) return Response.json({ record: { revision: 0, progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version: CLOUD_TUTORIAL_VERSION, disposition: body.disposition ?? "active", ...(body.inspectedResult ? { inspectedResult: body.inspectedResult } : {}) } } });
+    if (url.includes("tutorial-progress")) return Response.json({ record: { revision: 0, progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version: body.version ?? (url.includes("version=2") ? 2 : CLOUD_TUTORIAL_VERSION), disposition: body.disposition ?? "active", ...(body.inspectedResult ? { inspectedResult: body.inspectedResult } : {}), ...(body.inspectedRevision ? { inspectedRevision: body.inspectedRevision } : {}), ...(body.inspectedPractice ? { inspectedPractice: body.inspectedPractice } : {}) } } });
     if (url.includes("launch-su")) { actions.push({ url, body }); return Response.json({ status: "ok", ownerId: "su-first" }); }
     if (url.includes("sessions/list")) return Response.json({ sessions: [{ source_kind: "codex", session_id: "native-first", active: true, last_ts: null }] });
     if (url.includes("coord/send")) { actions.push({ url, body }); sentPrompt = String(body.body); return Response.json({ results: [{ wake: { queued: 1 } }] }); }
@@ -62,14 +62,60 @@ async function answer(outcome: "succeeded" | "failed", prompt = sentPrompt) {
     ]));
   });
 }
-async function launch() {
+async function launch(version = 1) {
+  const taskButton = version === 2 ? "Send action-plan task" : "Send sample task";
   fireEvent.click(await screen.findByRole("button", { name: "+ New session" }));
-  await screen.findByRole("button", { name: "Send sample task" });
+  await screen.findByRole("button", { name: taskButton });
   await waitFor(() => expect(liveStream()).toBeTruthy());
   expect(within(screen.getByRole("region", { name: "First agent workspace session" })).getByTestId("papercup-chat-transcript").clientHeight).toBeGreaterThan(0);
   await act(async () => { liveStream().fireOpen(); liveStream().fire("backfill", "[]"); });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Send sample task" }).hasAttribute("disabled")).toBe(false));
+  await waitFor(() => expect(screen.getByRole("button", { name: taskButton }).hasAttribute("disabled")).toBe(false));
 }
+describe("beginner meaningful work and self-written practice", () => {
+  it("requires correlated reviewed first, revision and different self-written answers through the actual owner chat", async () => {
+    render(view({ ...props, version: 2, connection: null }));
+    const guide = await screen.findByRole("region", { name: "First agent guide" });
+    await launch(2);
+    expect(screen.getByText(/a suggested action is not your approval/)).toBeTruthy();
+    expect(screen.getByText(/Pausing or closing this guide only pauses its instructions/)).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Your different task" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send action-plan task" }));
+    await waitFor(() => expect(sentPrompt).toContain(CLOUD_TUTORIAL_PLAN_TASK));
+    const firstPrompt = sentPrompt;
+    expect(sentPrompt).toContain("Do not use tools");
+    const timeline: TimelineEntry[] = [];
+    const finish = async (prompt: string, text: string, outcome: "succeeded" | "failed" = "succeeded") => {
+      timeline.push({ kind: "prompt", text: prompt }, { kind: "text", text }, { kind: "result", outcome, ts: `2026-10-03T12:00:${String(timeline.length).padStart(2, '0')}Z` });
+      await act(async () => { liveStream().fire("backfill", JSON.stringify(timeline)); });
+    };
+    await finish("Unrelated task", "Other answer");
+    expect(screen.getByRole("button", { name: "I've reviewed the action plan" }).hasAttribute("disabled")).toBe(true);
+    await finish(firstPrompt, "Mira: ask the library by Friday. Date and budget are unknown.");
+    fireEvent.click(screen.getByRole("button", { name: "I've reviewed the action plan" }));
+    await within(guide).findByRole("heading", { name: "Ask for a correction and review it" });
+    fireEvent.click(screen.getByRole("button", { name: "Send revision request" }));
+    await waitFor(() => expect(sentPrompt).toContain(CLOUD_TUTORIAL_REVISION_TASK));
+    await finish(sentPrompt, "Open decisions: date and budget. Confirmed: Mira contacts the library by Friday.");
+    fireEvent.click(screen.getByRole("button", { name: "I've reviewed the revision" }));
+    await within(guide).findByRole("heading", { name: "Write a different task yourself" });
+    const input = await screen.findByRole("textbox", { name: "Your different task" });
+    const send = screen.getByRole("button", { name: "Send my own task" });
+    expect(input).toHaveProperty("value", ""); expect(send.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(input, { target: { value: CLOUD_TUTORIAL_PLAN_TASK } });
+    expect(send.hasAttribute("disabled")).toBe(true);
+    const ownTask = "Goal: draft a packing checklist. Context: a two-day library workshop, indoors, bring our own lunch. Output: five bullets and open questions.";
+    fireEvent.change(input, { target: { value: ownTask } }); fireEvent.click(send);
+    await waitFor(() => expect(sentPrompt).toContain(ownTask));
+    expect(sentPrompt).not.toContain(CLOUD_TUTORIAL_PLAN_TASK);
+    expect(sentPrompt).toContain("external actions are not approved");
+    expect(screen.getByRole("button", { name: "I've reviewed my own task's answer" }).hasAttribute("disabled")).toBe(true);
+    await finish(sentPrompt, "Bring lunch, water, a notebook, a pen and workshop materials. Ask which materials are needed.");
+    fireEvent.click(screen.getByRole("button", { name: "I've reviewed my own task's answer" }));
+    await within(guide).findByText("7 of 7 steps confirmed");
+    expect(actions.filter(action => action.url.includes("coord/send"))).toHaveLength(3);
+    expect(actions.filter(action => action.url.includes("launch-su"))).toHaveLength(1);
+  });
+});
 describe("authenticated first-agent product journey", () => {
   it.each(["new-user", "existing-workspace"])("%s reaches an inspected successful correlated result using explicit real controls", async path => {
     const initial = path === "new-user" ? { ...props, connection: null, workspace: null, boundWorkspaceId: null, configurationValid: false, configurationReviewed: false } : { ...props, configurationReviewed: false };

@@ -1,7 +1,7 @@
 "use client";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/app/harness/Button";
-import type { TutorialStepId } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import type { TutorialStepId, TutorialVersion } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import type { WorkspaceHostConnectionRow, WorkspaceHostControlRow } from "@/app/cloud-workspaces/workspace-view-model";
 import type { TutorialSessionObservation } from "./cloud-tutorial-session";
 import { CloudTutorialGuide } from "./cloud-tutorial-guide";
@@ -36,14 +36,15 @@ export function CloudTutorialPreparedEntry({ workspaces, loading, error, onSelec
   </section>;
 }
 
-export function CloudTutorialCompanion({ selectionKey, connection, workspace, boundWorkspaceId, configurationValid, configurationReviewed, controlLoading, controlError, onCheckAgain, onShowStep }: {
+export function CloudTutorialCompanion({ selectionKey, version = 1, connection, workspace, boundWorkspaceId, configurationValid, configurationReviewed, controlLoading, controlError, onCheckAgain, onShowStep }: {
+  version?: TutorialVersion;
   selectionKey: string; connection: WorkspaceHostConnectionRow | null;
   workspace: WorkspaceHostControlRow | null; boundWorkspaceId: string | null;
   configurationValid: boolean; configurationReviewed: boolean;
   controlLoading: boolean; controlError: Error | null;
   onCheckAgain: () => void; onShowStep: (step: TutorialStepId) => void;
 }) {
-  const { state, dispatch, loading, notice, retry } = useCloudTutorialProgress(selectionKey);
+  const { state, dispatch, loading, notice, retry } = useCloudTutorialProgress(selectionKey, version);
   const revision = useRef(0);
   const [session, setSession] = useState<{ selectionKey: string; value: TutorialSessionObservation } | null>(null);
   const onSessionObservation = useCallback((value: TutorialSessionObservation) => setSession({ selectionKey, value }), [selectionKey]);
@@ -53,7 +54,7 @@ export function CloudTutorialCompanion({ selectionKey, connection, workspace, bo
     dispatch({ type: "observe", observation: { scope: state.scope, revision: ++revision.current,
       access: controlError ? "denied" : "allowed",
       ...(connection?.target === "gcp" ? { connection: { id: connection.id, provider: "gcp", validated: connection.status === "connected" } } : {}),
-      ...(connection ? { configuration: { connectionId: connection.id, valid: configurationValid, costReviewed: configurationReviewed } } : {}),
+      ...(workspace || connection ? { configuration: { connectionId: workspace?.connectionId ?? connection!.id, valid: configurationValid, costReviewed: configurationReviewed } } : {}),
       ...(workspace && state ? { workspace: { id: state.scope.workspaceId, connectionId: workspace.connectionId, healthy: workspaceReady } } : {}),
       ...(session?.selectionKey === selectionKey && workspaceReady ? session.value : {}),
       ...(workspace && !workspaceReady ? { attempt: { step: "workspace", status: workspace.operation?.status === "failed" ? "failed" : "pending" } } : {}),
@@ -65,10 +66,10 @@ export function CloudTutorialCompanion({ selectionKey, connection, workspace, bo
       {!loading && <Button onClick={retry}>Check lesson again</Button>}</> :
       <CloudTutorialGuide state={state} dispatch={dispatch} onShowStep={onShowStep}
         assistance={(step, status) => <Suspense fallback={<p>Preparing lesson help. You can continue with the instructions.</p>}><CloudTutorialAssistance
-          key={`${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}:${step.id}`} scope={state.scope} step={step} status={status} onShowStep={() => onShowStep(step.id)} /></Suspense>}
+          key={`${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}:${version}:${step.id}`} scope={state.scope} version={version} step={step} status={status} onShowStep={() => onShowStep(step.id)} /></Suspense>}
         onCheckAgain={() => { onCheckAgain(); if (notice) retry(); }} />}
     {state && workspaceReady && configurationValid && configurationReviewed && !controlError && <Suspense fallback={<p role="status">Preparing your workspace session controls…</p>}><CloudTutorialSession
-      key={`${selectionKey}:${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}`} scope={state.scope}
-      onObservation={onSessionObservation} onInspect={task => dispatch({ type: "inspect-result", scope: state.scope, sessionId: task.sessionId, taskId: task.id, resultId: task.resultId! })} /></Suspense>}
+      key={`${selectionKey}:${version}:${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}`} scope={state.scope} version={version}
+      onObservation={onSessionObservation} onInspect={(task, kind) => dispatch({ type: "inspect-result", kind, scope: state.scope, sessionId: task.sessionId, taskId: task.id, resultId: task.resultId! })} /></Suspense>}
   </div>;
 }
