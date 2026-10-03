@@ -209,7 +209,9 @@ export async function runReplayBattery(
   // accumulated runner+judge spend reaches the cap (one in-flight cell may
   // overshoot it — a cutoff, not a precise limiter).
   let spentUsd = 0;
+  let judgeChargeUnknown = false;
   const guard = () => {
+    if (judgeChargeUnknown) throw new Error('replay judge charge unmeasured — remaining cells refused before spending');
     if (config.maxSpendUsd !== undefined && spentUsd >= config.maxSpendUsd) {
       throw new ReplayBudgetExceededError(spentUsd, config.maxSpendUsd);
     }
@@ -287,9 +289,11 @@ export async function runReplayBattery(
         } catch (error) {
           const cost = (error as { costUsd?: unknown } | null)?.costUsd;
           if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) spentUsd += cost;
+          else judgeChargeUnknown = true;
           throw error;
         }
         if (Number.isFinite(reply.costUsd) && reply.costUsd >= 0) spentUsd += reply.costUsd;
+        else judgeChargeUnknown = true;
         return reply;
       },
       now: deps.now,

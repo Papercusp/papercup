@@ -236,6 +236,30 @@ describe('runReplayBattery — synthetic case', () => {
 });
 
 describe('runReplayBattery — budget cutoff', () => {
+  it('counts failed judge repairs against the next cell budget', async () => {
+    const calls: Array<{ systemPrompt: string; contextText: string }> = [];
+    const result = await runReplayBattery(config({ variants: [candidate], cases: [syntheticCase], repeats: 2, maxSpendUsd: 0.06 }), {
+      runner: fakeRunner(calls), now: () => 1000,
+      llmCall: async () => ({ text: 'invalid', costUsd: 0.01, inputTokens: 1, outputTokens: 1 }),
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.totalCostUsd).toBeCloseTo(0.07);
+    expect(result.costMeasured).toBe(true);
+    expect(result.outcomes[1].error).toContain('replay budget cap reached');
+  });
+
+  it('refuses further spending after an unmeasured judge charge', async () => {
+    const calls: Array<{ systemPrompt: string; contextText: string }> = [];
+    const result = await runReplayBattery(config({ variants: [candidate], cases: [syntheticCase], repeats: 2 }), {
+      runner: fakeRunner(calls), now: () => 1000,
+      llmCall: async () => { throw new Error('unknown transport charge'); },
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.totalCostUsd).toBe(0.05);
+    expect(result.costMeasured).toBe(false);
+    expect(result.outcomes[1].error).toContain('remaining cells refused before spending');
+  });
+
   it('refuses cells past the high-water cap before spending, records them errored', async () => {
     const runnerCalls: Array<{ systemPrompt: string; contextText: string }> = [];
     const events: StoreEvent[] = [];

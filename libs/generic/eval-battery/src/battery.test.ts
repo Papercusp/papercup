@@ -120,6 +120,7 @@ describe('runBattery — never abort', () => {
   });
 
   it('records a run error as `errored` and continues to the next cell', async () => {
+    // Ordinary subject errors still use the engine's independent-cell policy.
     const subject = fakeSubject({
       run: async (cell) => {
         if (cell.caseId === 'c1') throw new Error('boom on c1');
