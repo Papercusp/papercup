@@ -79,6 +79,13 @@ const KNOWN_INAPPLICABLE: KnownInapplicableMigration[] = [
       'This deliberately minimal fixture has no payload column, but 1294 derives STORED ' +
       'readiness projections from payload. The canonical live-shape fixture covers it.',
   },
+  {
+    file: '1308-work-items-severity-projection.sql',
+    reason:
+      'This deliberately minimal fixture has no payload column, but 1308 derives a STORED ' +
+      'severity_projection from payload and verifies it against payload. The canonical ' +
+      'live-shape fixture covers it.',
+  },
 ];
 
 const WS = 'ws-closed-ts';

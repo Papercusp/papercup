@@ -1928,7 +1928,6 @@ export const LSP_ADMISSION_CELL: CellSpec = {
       unknown: { meaning: 'Daemon queue state could not be measured.', safeAction: 'Inspect the explicit daemon read failure; do not treat it as an empty queue.' },
     },
     evidence: ['measurement', 'unknown'],
-    measuredBy: { unknown: 'measurement' },
   },
   changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'admission' },
   shape: '{ queued, inFlight, classes[{ classKey, queued, pendingPersistence, oldestWaitMs, desiredWindow, effectiveWindow, health, feedback }], settlementFailures, measured, sampledAtMs, generation }',

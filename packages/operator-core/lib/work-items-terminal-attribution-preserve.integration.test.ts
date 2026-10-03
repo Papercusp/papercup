@@ -91,6 +91,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
         '1135-work-items-epoch-ms-timestamp-guard.sql',
         '1194-work-items-directive-ref.sql',
         '1294-work-item-readiness-payload-projections.sql',
+        '1308-work-items-severity-projection.sql',
       ],
       {
         label: 'work-items-terminal-attribution',

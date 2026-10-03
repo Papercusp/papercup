@@ -52,6 +52,7 @@ import {
   GIT_SYNC_BOT_NAME,
   affectsToolRouting,
   affectsGeneratedDeclarations,
+  migrationDependencyFenceSkips,
   checkToolRoutingBeforeCommit,
   generatedDeclarationPair,
   DECLARATION_STATUS_MAX_RETRIES,
@@ -66,7 +67,7 @@ import {
   censusStrandedSubmodules,
   type RunGit,
 } from './run-git-sync';
-import type { FileAttribution } from './git-sync-attribution';
+import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
@@ -125,6 +126,60 @@ afterAll(() => {
 });
 
 const REPO_ROOT = resolve(__dirname, '../../../../..');
+
+describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
+  const refused = {
+    scope: 'libs/sub',
+    path: 'libs/db/sql/999-unreserved-migration.sql',
+    reason: 'migration-reservation' as const,
+    detail: 'reservation missing',
+  };
+
+  it('holds same-work-item root sources while allowing unrelated attributed work to advance', () => {
+    const roster: AttributionRosterEntry[] = [
+      {
+        agent: 'su-migration',
+        files: ['libs/sub/libs/db/sql/999-unreserved-migration.sql', 'schema-consumer.ts'],
+        workItems: ['WI-migration'],
+      },
+      { agent: 'su-unrelated', files: ['root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster)).toEqual([
+      {
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+          'libs/sub/libs/db/sql/999-unreserved-migration.sql',
+      },
+    ]);
+  });
+
+  it('holds every dirty root source when the refused migration itself is unattributed', () => {
+    const roster: AttributionRosterEntry[] = [
+      { agent: 'su-other', files: ['schema-consumer.ts', 'root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster)).toEqual([
+      {
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known',
+      },
+      {
+        scope: 'superproject',
+        path: 'root-unrelated.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known',
+      },
+    ]);
+  });
+});
 
 describe('EI-24827889655898454 git-sync TSX install boundary', () => {
   it('holds all three TSX generator launches behind install:safe and releases readers afterward', async () => {
@@ -3056,6 +3111,104 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // and that submodule commit exists on the submodule's origin (pin is reachable remotely)
       expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
     });
+  });
+
+  const makeMigrationFenceInputs = () => {
+    const migration = 'libs/db/sql/999-unreserved-migration.sql';
+    const subRepo = join(repo, 'libs/sub');
+    mkdirSync(join(subRepo, 'libs/db/sql'), { recursive: true });
+    writeFileSync(join(subRepo, migration), '-- intentionally unreserved\n');
+    writeFileSync(join(subRepo, 'sub-unrelated.txt'), 'submodule work\n');
+    writeFileSync(join(repo, 'schema-consumer.ts'), 'export const schemaVersion = 2;\n');
+    writeFileSync(join(repo, 'root-unrelated.txt'), 'unrelated root work\n');
+    const checker = vi.fn(async (paths: readonly string[]) =>
+      paths.includes(migration)
+        ? [{ path: migration, reason: '[migration-reservation-guard] reservation missing' }]
+        : [],
+    );
+    return { migration, subRepo, checker };
+  };
+
+  it('EI-24940157290396415: a refused migration fences same-work-item root sources while unrelated files advance', async () => {
+    const { migration, subRepo, checker } = makeMigrationFenceInputs();
+    const loadMigrationFenceRoster = vi.fn(async (): Promise<AttributionRosterEntry[]> => [
+      {
+        agent: 'su-migration',
+        files: ['libs/sub/' + migration, 'schema-consumer.ts'],
+        workItems: ['WI-migration'],
+      },
+      { agent: 'su-unrelated', files: ['root-unrelated.txt'], workItems: ['WI-other'] },
+    ]);
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      migrationReservationChecker: checker,
+      loadMigrationFenceRoster,
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
+    expect(loadMigrationFenceRoster).toHaveBeenCalledOnce();
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'libs/sub',
+        path: migration,
+        reason: 'migration-reservation',
+      }),
+    );
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+      }),
+    );
+    expect(git(subOrigin, 'show', 'main:sub-unrelated.txt')).toBe('submodule work');
+    expect(() => git(subOrigin, 'show', 'main:' + migration)).toThrow();
+    expect(git(superOrigin, 'show', 'main:root-unrelated.txt')).toBe('unrelated root work');
+    expect(() => git(superOrigin, 'show', 'main:schema-consumer.ts')).toThrow();
+    expect(git(subRepo, 'status', '--porcelain', '--', migration)).toMatch(/999-unreserved-migration\.sql/);
+    expect(git(repo, 'status', '--porcelain', '--', 'schema-consumer.ts')).toMatch(/schema-consumer\.ts/);
+    expect(git(repo, 'status', '--porcelain', '--', 'root-unrelated.txt')).toBe('');
+  });
+
+  it('EI-24940157290396415: an unattributed refused migration holds all root sources fail-closed', async () => {
+    const { migration, subRepo, checker } = makeMigrationFenceInputs();
+    const loadMigrationFenceRoster = vi.fn(async (): Promise<AttributionRosterEntry[]> => [
+      { agent: 'su-other', files: ['schema-consumer.ts', 'root-unrelated.txt'], workItems: ['WI-other'] },
+    ]);
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      migrationReservationChecker: checker,
+      loadMigrationFenceRoster,
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
+    expect(loadMigrationFenceRoster).toHaveBeenCalledOnce();
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail: expect.stringContaining('could not be attributed'),
+      }),
+    );
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'superproject',
+        path: 'root-unrelated.txt',
+        reason: 'migration-dependency-fence',
+      }),
+    );
+    expect(git(subOrigin, 'show', 'main:sub-unrelated.txt')).toBe('submodule work');
+    expect(() => git(subOrigin, 'show', 'main:' + migration)).toThrow();
+    expect(git(repo, 'status', '--porcelain', '--', 'schema-consumer.ts')).toMatch(/schema-consumer\.ts/);
+    expect(git(repo, 'status', '--porcelain', '--', 'root-unrelated.txt')).toMatch(/root-unrelated\.txt/);
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(git(subRepo, 'rev-parse', 'HEAD'));
+    expect(() => git(superOrigin, 'show', 'main:schema-consumer.ts')).toThrow();
+    expect(() => git(superOrigin, 'show', 'main:root-unrelated.txt')).toThrow();
   });
 
   it('EI-24433253827583139: refuses to publish an importer when submodule fetch failed before the export was observed', async () => {

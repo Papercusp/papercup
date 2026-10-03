@@ -4537,6 +4537,7 @@ describe('WI-10001350 migration-reservation admission wiring', () => {
 
     const opts = runGitSyncMock.mock.calls[0]?.[1] as RunGitSyncOpts;
     expect(opts.migrationReservationChecker).toEqual(expect.any(Function));
+    expect(opts.loadMigrationFenceRoster).toEqual(expect.any(Function));
     const beforeRead = templateCalls.length;
     await expect(opts.migrationReservationChecker!(['README.md'])).resolves.toEqual([]);
     await expect(opts.migrationReservationChecker!(['libs/db/sql/999-new-migration.sql'])).resolves.toEqual([

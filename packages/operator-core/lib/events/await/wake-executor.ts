@@ -50,6 +50,7 @@ import {
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { resolveInheritedOperatorBaseUrl } from '../../mcp-base-url';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { packWakeText, recordWakePack, renderSectionIndex } from './wake-text-budget';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -94,6 +95,8 @@ import {
 } from './wake-executor-fresh-context';
 import { appendCrashResumeAdvisory } from './crash-resume-advisory';
 import { getPresence, touchHeartbeat } from '../../agent-tools/coordination/presence';
+import { resolveWakeMode } from '../../agent-tools/coordination/wake-mode';
+import { stagePendingWake } from '../../agent-tools/coordination/pending-wakes';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
@@ -189,6 +192,7 @@ import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
  *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
  *  is at the END of its output, so a tail is enough to classify it. */
 const RESUME_OUTPUT_TAIL_BYTES = Number(process.env.PAPERCUSP_RESUME_OUTPUT_TAIL_BYTES) || 8192;
+const WAKE_MODE_DELIVERY_LOOKUP_TIMEOUT_MS = 15_000;
 
 /** WI-666: bound the attended-loop recovery leg. A resumable loop owner may be
  * alive in a terminal the operator cannot inject, so send SIGINT and wait only
@@ -2547,6 +2551,11 @@ export interface ExecuteWakeDeps {
   presence?: typeof getPresence;
   /** EI-203843: durable release-latch read, before any wake reanimation. */
   getSessionLifecycle?: (ownerId: string) => Promise<SessionBriefLifecycle | null>;
+  /** Re-read the target's effective mode before consuming a queued wake. */
+  resolveWakeModeFn?: typeof resolveWakeMode;
+  /** Stage a queued delivery when manual mode became active after its emit. */
+  stageManualWakeFn?: typeof stagePendingWake;
+  wakeModeDeliveryLookupTimeoutMs?: number;
   /** EI-22449230917085417: delivery-time ownership read for positive
    *  `lock:grant:*` wakes. A confirmed false downgrades a delayed grant to the
    *  coord inbox; null/rejection/timeout preserves the normal wake. */
@@ -3550,6 +3559,60 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `session ${d.subscriberId} is released from fleet ${released.fleet} ` +
           `(marked ${released.at} by ${released.by}) — end now; queued wake suppressed`,
       };
+    }
+
+    // A wake may wait in the delivery queue after its emit-time admission. Re-read
+    // the authoritative mode before any continuation/injection/resume branch so a
+    // later manual pause moves the wake into the same owner-review queue as a
+    // send that arrived while already paused.
+    const wakeModeRead = await withBoundedTimeout(
+      () => (deps.resolveWakeModeFn ?? resolveWakeMode)(d.subscriberId),
+      {
+        fallback: 'auto' as const,
+        timeoutMs: deps.wakeModeDeliveryLookupTimeoutMs ?? WAKE_MODE_DELIVERY_LOOKUP_TIMEOUT_MS,
+        label: 'wake-executor:delivery-mode',
+      },
+    ).catch(() => ({ value: 'auto' as const }));
+    if (wakeModeRead.value === 'manual') {
+      const [
+        {
+          isLoopWakeSource,
+          isOwnerGuiWakeSource,
+          isDeliveryLadderWakeSource,
+          isEscalationSlaRerouteWakeSource,
+          MANUAL_WAKE_QUEUE_RELEASE_SOURCE_PREFIX,
+        },
+        { isOwnerVerifiedRelay, readRelayProvenance },
+      ] = await Promise.all([
+        import('../../agent-tools/coordination/inbox-wake'),
+        import('../../agent-tools/coordination/relay-provenance'),
+      ]);
+      const source = d.source ?? undefined;
+      const payloadRecord =
+        d.payload !== null && typeof d.payload === 'object' && !Array.isArray(d.payload)
+          ? (d.payload as Record<string, unknown>)
+          : null;
+      const relay = readRelayProvenance(payloadRecord);
+      const bypassManualGate =
+        isLoopWakeSource(source) ||
+        isOwnerGuiWakeSource(source) ||
+        isDeliveryLadderWakeSource(source) ||
+        isEscalationSlaRerouteWakeSource(source) ||
+        (source ?? '').startsWith(MANUAL_WAKE_QUEUE_RELEASE_SOURCE_PREFIX) ||
+        isOwnerVerifiedRelay(relay);
+      if (!bypassManualGate) {
+        await (deps.stageManualWakeFn ?? stagePendingWake)({
+          ownerId: d.subscriberId,
+          summary: d.summary ?? undefined,
+          payload: d.payload,
+          source: d.source ?? undefined,
+          workspaceId: d.workspaceId,
+        });
+        return {
+          kind: 'drop',
+          reason: 'effective wake mode is manual at delivery time; queued wake staged for owner review',
+        };
+      }
     }
 
     // EI-24119981583160918: an auto-armed blocked-item await can fire before

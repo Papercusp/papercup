@@ -3523,6 +3523,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       toRepoLockCoordinates(liveLockHoldingRows, true),
     );
 
+    let mergedAttributionRosterForTick: Promise<AttributionRosterEntry[]> | undefined;
+    const loadAttributionRosterForTick = (): Promise<AttributionRosterEntry[]> => {
+      if (!mergedAttributionRosterForTick) {
+        mergedAttributionRosterForTick = loadAttributionRosterMerged(workspaceId);
+      }
+      return mergedAttributionRosterForTick;
+    };
+
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await guarded('run-git-sync', () =>
       runGitSync(slug, {
@@ -3590,7 +3598,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           guarded('refresh-live-file-locks', () => acquireWithContentionRetry(readCensus)).then(
             (rows) => toRepoLockCoordinates(rows, false),
           ),
-        loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
+        loadRoster: attributionOn ? loadAttributionRosterForTick : undefined,
+        loadMigrationFenceRoster: loadAttributionRosterForTick,
         // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
         // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
         step: runCheckpointedStep,

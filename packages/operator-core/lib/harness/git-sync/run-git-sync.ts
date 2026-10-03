@@ -1259,7 +1259,8 @@ export interface GitSyncLockHolding {
 /** A dirty path deferred by this pass, with lock provenance or a guard reason. */
 export type GitSyncSkippedPath =
   | { scope: string; path: string; owner: string; intent: string }
-  | { scope: string; path: string; reason: 'migration-reservation' | 'migration-dependency-fence'; detail: string };
+  | { scope: string; path: string; reason: 'migration-reservation'; detail: string }
+  | { scope: string; path: string; reason: 'migration-dependency-fence'; detail: string };
 
 /**
  * Keep a superproject edit from outrunning a migration quarantined in one of its
@@ -1651,6 +1652,7 @@ export interface RunGitSyncOpts {
    *  derives a per-repo attribution map and peels per-agent commits; when absent (flag OFF / no
    *  caller) commits are unchanged (today's single whole-tree commit). DERIVED, never authored. */
   loadRoster?: () => Promise<AttributionRosterEntry[]>;
+  loadMigrationFenceRoster?: () => Promise<AttributionRosterEntry[]>;
   /** WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS, default ON): commit subjects are DIFF-derived
    *  (`sync(<areas>): <what> (<n> files, +A/-D)`) with the agent's intent line demoted to
    *  the commit body. false = the pre-WI-38594 subjects (intent line / message stem). */
@@ -3995,6 +3997,12 @@ interface CommitRepoOpts {
   diffSubjects?: boolean;
   /** Fail-closed reservation check for newly armed migration files, before staging. */
   migrationReservationChecker?: MigrationReservationChecker;
+  /** Reservation refusals from child repos whose paired superproject sources must stay dirty. */
+  migrationDependencyRefusals?: readonly Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>[];
+  /** Root paths that are submodule gitlinks, not superproject source files for dependency fencing. */
+  migrationDependencySubmodulePaths?: readonly string[];
+  migrationFenceRoster?: readonly AttributionRosterEntry[];
+  loadMigrationFenceRoster?: () => Promise<AttributionRosterEntry[]>;
 }
 
 /** The commit-stage seam for the shared migration reservation admission guard. */
@@ -4245,6 +4253,47 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       };
     }
   }
+  const migrationFenceRefusals = [
+    ...(o.migrationDependencyRefusals ?? []),
+    ...preStageMigrationRefusals.map((refusal) => ({
+      scope: o.scope,
+      path: refusal.path,
+      reason: 'migration-reservation' as const,
+      detail: refusal.reason,
+    })),
+  ];
+  const migrationDependencyFenceSkippedPaths: GitSyncSkippedPath[] = [];
+  if (o.scope === 'superproject' && migrationFenceRefusals.length > 0 && dirty.length > 0) {
+    const nestedRepoPaths = o.migrationDependencySubmodulePaths ?? [];
+    const dirtySuperprojectPaths = dirty.filter(
+      (path) => !nestedRepoPaths.some((submodule) => path === submodule || path.startsWith(submodule + '/')),
+    );
+    if (dirtySuperprojectPaths.length > 0) {
+      let migrationFenceRoster = [...(o.migrationFenceRoster ?? [])];
+      if (o.loadMigrationFenceRoster) {
+        try {
+          const loaded = await o.loadMigrationFenceRoster();
+          migrationFenceRoster = Array.isArray(loaded) ? loaded : [];
+        } catch (error) {
+          migrationFenceRoster = [];
+          o.log(
+            '[git-sync] superproject: migration attribution read failed; holding dirty source paths fail-closed: ' +
+              (error instanceof Error ? error.message : String(error)),
+          );
+        }
+      }
+      migrationDependencyFenceSkippedPaths.push(
+        ...migrationDependencyFenceSkips(migrationFenceRefusals, dirtySuperprojectPaths, migrationFenceRoster),
+      );
+      skippedPaths.push(...migrationDependencyFenceSkippedPaths);
+      if (migrationDependencyFenceSkippedPaths.length > 0) {
+        o.log(
+          '[git-sync] superproject: migration dependency fence deferred ' +
+            migrationDependencyFenceSkippedPaths.map((entry) => entry.path).join(', '),
+        );
+      }
+    }
+  }
   const hasDirtyFiles = await isDirty(runGit, repoPath);
   noteSlowPhase('dirty check');
   if (hasDirtyFiles) {
@@ -4361,7 +4410,12 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // lock plane cannot be read.
     let protectedHoldings = o.protectedHoldings;
     let effectiveExcludePaths = [
-      ...new Set([...o.excludePaths, ...protectedHoldings.map((holding) => holding.path), ...migrationQuarantinedPaths]),
+      ...new Set([
+        ...o.excludePaths,
+        ...protectedHoldings.map((holding) => holding.path),
+        ...migrationQuarantinedPaths,
+        ...migrationDependencyFenceSkippedPaths.map((entry) => entry.path),
+      ]),
     ];
     if (o.refreshLiveLockHoldings) {
       let refreshedHoldings: GitSyncLockHolding[];
@@ -4395,6 +4449,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           ...o.excludePaths,
           ...refreshedHoldings.map((holding) => holding.path.trim()).filter(Boolean),
           ...migrationQuarantinedPaths,
+          ...migrationDependencyFenceSkippedPaths.map((entry) => entry.path),
         ]),
       ];
     }
@@ -5389,6 +5444,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     isTempPackOpen: opts.isTempPackOpen,
     diffSubjects: opts.diffSubjects ?? true,
     migrationReservationChecker: opts.migrationReservationChecker,
+    loadMigrationFenceRoster: opts.loadMigrationFenceRoster,
     excludePaths: protectedPaths,
   };
 
@@ -5732,6 +5788,12 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     return commitOneRepo(runGit, repo, {
       ...repoO,
       scope: 'superproject',
+      migrationFenceRoster: roster,
+      migrationDependencyRefusals: sub.skippedPaths.filter(
+        (entry): entry is Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }> =>
+          'reason' in entry && entry.reason === 'migration-reservation',
+      ),
+      migrationDependencySubmodulePaths: submodulePaths,
       excludePaths: [...superprojectExcludePaths, ...deferredDeclarationPaths],
       protectedHoldings: superprojectProtectedHoldings,
       refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', submodulePaths),

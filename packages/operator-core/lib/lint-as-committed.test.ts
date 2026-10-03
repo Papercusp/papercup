@@ -137,8 +137,8 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       expect(normalizer?.enforce).toBe('pre');
       const sharedComponent = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/components/Page.astro'));
       const virtualStyleId = `${sharedComponent}?astro&type=style&index=0&lang.css`;
-      expect(normalizer?.resolveId?.(sharedComponent)).toBe(`/@fs${sharedComponent}`);
-      expect(normalizer?.resolveId?.(virtualStyleId)).toBe(`/@fs${virtualStyleId}`);
+      expect(normalizer?.resolveId?.(sharedComponent)).toBe(sharedComponent);
+      expect(normalizer?.resolveId?.(virtualStyleId)).toBe(virtualStyleId);
       expect(normalizer?.resolveId?.('/@fs' + virtualStyleId)).toBe(virtualStyleId);
 
       const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
@@ -146,12 +146,12 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       const virtualRouteQuery = '?astro&type=page';
       const noncanonicalFilesystemRoute = `/@fs/${relative(cloneAppRoot, sharedRoute)}${virtualRouteQuery}`;
       expect(noncanonicalFilesystemRoute).toContain('/../');
-      expect(normalizer?.resolveId?.(noncanonicalFilesystemRoute)).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
+      expect(normalizer?.resolveId?.(noncanonicalFilesystemRoute)).toBe(`${sharedRoute}${virtualRouteQuery}`);
 
       const relativeTraversalRoute = `${relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute)}${virtualRouteQuery}`;
       expect(relativeTraversalRoute).toContain('../');
       const normalizedTraversalRoute = normalizer?.resolveId?.(relativeTraversalRoute);
-      expect(normalizedTraversalRoute).toBe('/@fs' + sharedRoute + virtualRouteQuery);
+      expect(normalizedTraversalRoute).toBe(sharedRoute + virtualRouteQuery);
       expect(normalizer?.resolveId?.(normalizedTraversalRoute ?? '')).toBe(sharedRoute + virtualRouteQuery);
 
       const localComponent = resolve(repoRoot, 'apps/papercusp-docs/src/components/Local.astro');
