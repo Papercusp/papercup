@@ -60,6 +60,19 @@ function namedRequestQueryResults(
   return results;
 }
 
+// Conserve every exact query tuple before a costly request-linked snapshot.
+function assertNamedQueryHeapSelection(
+  records: { pool: string; source: PgResultDiagnostic['source']; connectionId: number; queryId: number; requestId: string }[],
+  expected: ReturnType<typeof namedRequestQueryResults>,
+) {
+  const key = (row: typeof records[number]) => JSON.stringify([row.requestId, row.pool,
+    row.source.processInstanceId, row.source.buildSha, row.source.poolInstanceId, row.connectionId, row.queryId]);
+  const selected = records.map(key), wanted = expected.map(row => key({ ...row, requestId: row.correlation!.requestId! }));
+  if (!wanted.length || selected.length !== wanted.length || new Set(selected).size !== selected.length ||
+      new Set(wanted).size !== wanted.length || selected.some(value => !wanted.includes(value)))
+    throw Error('HTTP/query/heap exact identity drift or incomplete query selection');
+}
+
 // Buffer complete startup lines: stderr chunks can split an endpoint, and an
 // in-place exec keeps the PID while replacing its ephemeral inspector listener.
 function inspectorEndpoints(output: string): string[] {
@@ -1568,6 +1581,18 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(() => joinRequests(pools, invalid)).toThrow('Exact HTTP request IDs');
   });
 
+  it('checks every distinct query tuple before a request-linked snapshot, independent of completion order', () => {
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const source = { processInstanceId: 'process', buildSha: 'build', poolInstanceId: 'pool' };
+    const records = [1, 2].map(queryId => ({ pool: 'org-app', source, connectionId: 1, queryId, requestId }));
+    const expected = records.map(row => ({ ...row, correlation: { requestId }, rowCount: row.queryId === 1 ? 129 : 0 }));
+    const check = new Function('return (' + assertNamedQueryHeapSelection.toString() + ')')();
+    expect(() => check([...records].reverse(), expected)).not.toThrow();
+    for (const selected of [[], records.slice(0, 1), [records[0], records[0]],
+      [{ ...records[0], source: { ...source, poolInstanceId: 'other' } }, records[1]]])
+      expect(() => check(selected, expected)).toThrow('exact identity');
+  });
+
   it('resolves evidence destinations before runtime preparation independently of runner cwd', () => {
     expect(evidenceDestination('docs/evidence/p011-relative-report.json')).toBe(join(root, 'docs/evidence/p011-relative-report.json'));
     expect(evidenceDestination(join(tmpdir(), 'p011-absolute-report.json'))).toBe(join(tmpdir(), 'p011-absolute-report.json'));
@@ -2375,6 +2400,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const inspectorEndpoints = ${inspectorEndpoints.toString()};
       const completedQuerySamples = ${completedQuerySamples.toString()};
       const namedRequestQueryResults = ${namedRequestQueryResults.toString()};
+      const assertNamedQueryHeapSelection = ${assertNamedQueryHeapSelection.toString()};
       const retainedContainerCensus = ${retainedContainerCensus.toString()};
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const e = process.env, base = e.PAPERCUSP_OPERATOR_URL;
@@ -2607,21 +2633,22 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           phase('private-heap-snapshot');
           const snapshotPath = e.TEST_REPORT_PATH + '.heapsnapshot';
           const started = Date.now();
-          report.profilerOperations.push('v8.writeHeapSnapshot (forced GC/synchronous pause)');
           try {
+            let objectIds;
+            const captureSnapshot = async metadata => {
+              if (metadata) {
+                assertNamedQueryHeapSelection(metadata.records, report.windows.at(-1).completedPageResults);
+                report.heapQueryRegistryBeforeSnapshot = metadata; publish();
+                await cdp.send('HeapProfiler.enable'); report.profilerOperations.push('HeapProfiler.enable (object IDs)');
+              }
+              const writeStarted = Date.now();
+              report.profilerOperations.push('v8.writeHeapSnapshot (forced GC/synchronous pause)');
+              const captured = (await cdp.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
+                JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
+              if (captured !== snapshotPath) throw Error('Private snapshot destination mismatch');
+              report.heapSnapshotWriteMs = Date.now() - writeStarted; publish();
+            };
             if (report.mode === 'retainers' && e.TEST_NATIVE_HEAP_ADAPTER) {
-              await cdp.send('HeapProfiler.enable'); report.profilerOperations.push('HeapProfiler.enable (object IDs)');
-            }
-            const captured = (await cdp.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
-              JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
-            if (captured !== snapshotPath) throw Error('Private snapshot destination mismatch');
-            const { summarizeHeapSnapshotStream, summarizeHeapRetainers } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
-            const summary = await summarizeHeapSnapshotStream(require('node:fs').createReadStream(snapshotPath));
-            report.heapSnapshot = { ...summary, durationMs: Date.now() - started, pid: host.pid };
-            if (report.mode === 'retainers') {
-              phase('private-heap-retainer-analysis');
-              let objectIds;
-              if (e.TEST_NATIVE_HEAP_ADAPTER) {
                 const { readPinnedHeapObjectIds } = await import(pathToFileURL(path.join(process.cwd(), 'scripts/cdp-inspector.mjs')));
                 report.heapOwnerBinding = await readPinnedHeapObjectIds(cdp, { expectedPid: host.pid, owners: [
                   '@papercusp/memory:host', '@papercusp/memory.local-embedder-worker',
@@ -2629,19 +2656,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   '@papercusp/operator-core.snapshot-fold-slots', '@papercusp/lexicon:host',
                   '@papercusp/operator-core.repoCitationTrackingCache', '@papercusp/operator-core.agentsAcrossWorkspaceCache',
                   '@papercusp/operator-core.midTurnMemoryAdmission',
-                ], pgRequestIds: report.windows.at(-1).responses.map(row => row.requestId) });
+                ], pgRequestIds: report.windows.at(-1).responses.map(row => row.requestId), captureSnapshot });
                 const queries = report.heapOwnerBinding.queries;
                 if (queries.unobservedRequestIds.length || queries.omitted || queries.omittedPools || queries.omittedRows)
                   throw Error('Exact request weak-object coverage is incomplete');
-                for (const identity of queries.records) {
-                  const result = report.windows.at(-1).completedPageResults.find(row =>
-                    row.correlation.requestId === identity.requestId && row.pool === identity.pool &&
-                    row.connectionId === identity.connectionId && row.queryId === identity.queryId);
-                  if (!result || identity.pool !== result.pool || identity.connectionId !== result.connectionId ||
-                      identity.queryId !== result.queryId || ['processInstanceId', 'buildSha', 'poolInstanceId']
-                        .some(field => identity.source[field] !== result.source[field]))
-                    throw Error('HTTP/query/heap exact identity drift');
-                }
+                assertNamedQueryHeapSelection(queries.records, report.windows.at(-1).completedPageResults);
                 objectIds = [...new Set([
                   ...report.heapOwnerBinding.roots.filter(root => root.status === 'found').map(root => root.id),
                   ...queries.records.flatMap(row => row.objects.filter(object => object.status === 'found').map(object => object.id)),
@@ -2651,7 +2670,15 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   throw Error('Operator cache snapshot binding unobserved');
                 await cdp.send('HeapProfiler.disable'); report.profilerOperations.push('HeapProfiler.disable (object IDs)');
                 publish();
-              }
+            } else await captureSnapshot(null);
+            const { summarizeHeapSnapshotStream, summarizeHeapRetainers } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
+            const summaryStarted = Date.now();
+            const summary = await summarizeHeapSnapshotStream(require('node:fs').createReadStream(snapshotPath));
+            report.heapSnapshot = { ...summary, durationMs: Date.now() - started,
+              writeMs: report.heapSnapshotWriteMs, summaryMs: Date.now() - summaryStarted, pid: host.pid };
+            publish();
+            if (report.mode === 'retainers') {
+              phase('private-heap-retainer-analysis');
               const analysisStarted = Date.now();
               report.heapRetainers = { ...(await summarizeHeapRetainers(readFileSync(snapshotPath),
                 { top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32,
@@ -2749,6 +2776,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             expect(report.heapOwnerBinding.pid).toBe(report.pid);
             expect(report.heapOwnerBinding.roots).toHaveLength(9);
             const queryBindings = report.heapOwnerBinding.queries;
+            expect(queryBindings.selection).toBe('pre-snapshot-metadata-and-weakrefs');
+            expect(queryBindings.registryBeforeSnapshot).toEqual(report.heapQueryRegistryBeforeSnapshot);
+            expect(queryBindings.registryAfterSnapshot.status).toBe('observed');
+            expect(() => assertNamedQueryHeapSelection(queryBindings.records, report.windows.at(-1).completedPageResults)).not.toThrow();
             expect(queryBindings.unobservedRequestIds).toEqual([]);
             expect(queryBindings.records.length).toBeGreaterThanOrEqual(8);
             expect(new Set(queryBindings.records.map((row: any) => row.requestId))).toEqual(
