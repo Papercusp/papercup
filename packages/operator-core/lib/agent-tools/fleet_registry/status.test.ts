@@ -633,6 +633,46 @@ describe('fleet:status', () => {
     expect(out).not.toHaveProperty('leadershipBlockage');
   });
 
+  // EI-24962274233684871: a parked (wakeable, between-turns) or draining leader
+  // holds its seat. It must not read vacant / registered-leader-missing.
+  it.each(['parked', 'draining'])('reports a %s registered leader as present, not missing', async (state) => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        alive: true,
+        sessionState: 'live',
+      }],
+      leaderEntry: {
+        agentId: 'su-leader',
+        agentRole: 'su',
+        fleetRole: 'leader',
+        fleetSlug: 'rocket',
+        alive: true,
+        sessionState: state,
+        heartbeatFresh: true,
+        lastActiveSecAgo: 30,
+      },
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: true,
+        recordedLive: false,
+        sessionState: state,
+        complete: true,
+      },
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leader).toMatchObject({ agentId: 'su-leader', sessionState: state });
+    expect(out.leaderLive).toBe(true);
+    expect(out.leaderVacant).toBe(false);
+    expect(out.leaderVacancy).toMatchObject({ state: 'leader-live', vacant: false });
+    expect(out).not.toHaveProperty('leadershipBlockage');
+  });
+
   it('uses a leader liveness-only enrichment without changing the queried fleet census', async () => {
     h.listFleetRosterDiagnosed.mockResolvedValueOnce({
       entries: [

@@ -36,6 +36,7 @@ import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
 import { getLoopStatuses } from '../../harness/routines/loop';
 import type { LifecycleBackoffInfo, LoopStatus } from '../../harness/routines/loop';
 import { FLEET_LEADER_MISSING_GRACE_MS } from '../../scheduler/fleet-scope-admission';
+import { isLeaderPresentSessionState } from '../../fleet/leader-presence';
 
 /**
  * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped
@@ -621,7 +622,7 @@ export default defineTool({
     const leaderEvidenceComplete =
       fleet.leaderOwnerId == null || rosterResult.leaderLiveness?.complete === true;
     const leaderLive =
-      leaderSessionState === 'live' ||
+      isLeaderPresentSessionState(leaderSessionState) ||
       (leaderEvidenceComplete && (leaderSessionState === 'recorded' || leaderRecordedLive));
     const leaderVacant = fleet.leaderOwnerId == null || (leaderEvidenceComplete && !leaderLive);
     const leaderMissingSinceMs = leaderVacant ? fleet.leaderMissingSinceMs ?? null : null;
