@@ -22,6 +22,19 @@ export interface LspDaemonRequest {
   deadlineAtMs?: number;
 }
 
+/** Internal read/refresh operations used by the operator's locked rename writer. */
+export interface LspDaemonApplyRequest {
+  workspaceId: string;
+  file: string;
+  rootPath: string;
+  line1?: number;
+  character?: number;
+  newName?: string;
+  newText?: string;
+  actorId?: string;
+  deadlineAtMs?: number;
+}
+
 export interface LspDaemonDispatchContext {
   op: LspFacadeOp;
   language: LspLanguage;

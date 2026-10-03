@@ -122,7 +122,6 @@ import { pinLspDaemonSocketForCluster } from '@papercusp/operator-core/lib/code-
 import { pinSetupTokenForCluster } from '@papercusp/operator-core/lib/auth-setup-token';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
-import { runLspDaemonServer } from '@papercusp/operator-core/lib/code-intelligence/lsp-daemon-server';
 import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via-sidecar';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
@@ -174,7 +173,12 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
             : null;
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
-if (sidecarMode === 'lsp') runLspDaemonServer();
+if (sidecarMode === 'lsp') {
+  void import('@papercusp/operator-core/lib/code-intelligence/lsp-daemon-server').then(
+    ({ runLspDaemonServer }) => runLspDaemonServer(),
+    (error) => { console.error('[lsp-daemon] fatal boot:', error); process.exit(1); },
+  );
+}
 if (sidecarMode === 'gateway') {
   runGatewaySidecarMain().catch((e) => {
     console.error('[inference-gateway] fatal:', e);
