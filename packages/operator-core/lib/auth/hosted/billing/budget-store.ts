@@ -11,6 +11,7 @@ import type { Sql } from 'postgres';
 import type { HostedEntitlementSet } from '../../hosted-entitlement-schema';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { addMicrosDecimals, splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { evaluateHostedBudget, settleHostedReservation, type HostedBudgetDecision, type HostedBudgetPolicy } from './budget-policy';
 import { HOSTED_COST_SOURCE_RANK, type HostedCostSource } from './usage-statement';
 
@@ -35,8 +36,10 @@ export interface HostedBudgetLimit {
   readonly entitlements: Pick<HostedEntitlementSet, 'budgets'>;
   /** Verified funding attributable to this window, net of older settled spend. */
   readonly fundedMicros: number;
+  readonly fundedMicrosExact?: string;
   /** Costs outside this reservation ledger; exclude its settled receipts. */
   readonly externalSpentMicros: number;
+  readonly externalSpentMicrosExact?: string;
   readonly retainedReserveMicros: number | null;
   readonly unreconciled: boolean;
 }
@@ -60,6 +63,7 @@ export interface HostedBudgetObservation {
   readonly observedAtMs: number;
   readonly costSource: HostedCostSource;
   readonly costMicros: number | null;
+  readonly costMicrosExact?: string;
   readonly providerFinal: boolean;
   readonly evidenceRef: string;
 }
@@ -79,6 +83,7 @@ interface Receipt extends Omit<HostedBudgetRequest, 'asOfMs'> {
   readonly observedAtMs: number;
   readonly costSource: HostedCostSource;
   readonly costMicros: number | null;
+  readonly costMicrosExact?: string;
   readonly providerFinal: boolean;
   readonly evidenceRef: string;
 }
@@ -106,18 +111,29 @@ const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).di
 const requestHash = (r: HostedBudgetRequest) => digest([r.scope.controlWorkspaceId, r.scope.organizationId,
   r.scope.customerWorkspaceId, r.reservationId, r.month, r.budgetKey, r.maximumCostMicros, r.providerLimitRef]);
 const canonical = (r: Receipt) => JSON.stringify([r.requestHash, r.eventId, r.revision, r.observedAtMs,
-  r.costSource, r.costMicros, r.providerFinal, r.evidenceRef]);
+  r.costSource, r.costMicrosExact ?? (r.costMicros === null ? null : String(r.costMicros)), r.providerFinal, r.evidenceRef]);
 const settlement = (r: Receipt) => settleHostedReservation({ reservedMicros: r.maximumCostMicros,
-  observedCostMicros: r.costMicros, costSource: r.costSource, providerFinal: r.providerFinal, evidenceRef: r.evidenceRef });
+  observedCostMicros: r.costMicros, observedCostMicrosExact: r.costMicrosExact,
+  costSource: r.costSource, providerFinal: r.providerFinal, evidenceRef: r.evidenceRef });
+
+function exactCounter(value: number, exact: string | undefined): string {
+  if (!safe(value)) throw new Error('invalid external budget spend');
+  if (exact === undefined) return String(value);
+  const amount = splitMicrosDecimal(exact);
+  if (amount.micros !== value || amount.exact !== exact) throw new Error('invalid exact external budget spend');
+  return exact;
+}
 
 function receipt(r: Row): Receipt {
+  const cost = r.cost_micros === null ? null : splitMicrosDecimal(String(r.cost_micros));
   return { scope: scope({ controlWorkspaceId: r.control_workspace_id as string, organizationId: r.organization_id as string,
     customerWorkspaceId: r.customer_workspace_id as string }), reservationId: r.reservation_id as string,
     month: r.month as string, budgetKey: r.budget_key as string, maximumCostMicros: number(r.maximum_cost_micros),
     providerLimitRef: r.provider_limit_ref as string, eventId: r.event_id as string, revision: number(r.revision),
     requestHash: r.request_hash as string, policyId: r.policy_id as string, policyRevision: number(r.policy_revision),
     observedAtMs: number(r.observed_at_ms), costSource: r.cost_source as HostedCostSource,
-    costMicros: r.cost_micros === null ? null : number(r.cost_micros), providerFinal: r.provider_final as boolean,
+    costMicros: cost?.micros ?? null, ...(cost?.exact.includes('.') ? { costMicrosExact: cost.exact } : {}),
+    providerFinal: r.provider_final as boolean,
     evidenceRef: r.evidence_ref as string };
 }
 async function lock(sql: Sql, s: HostedBudgetScope): Promise<void> {
@@ -138,7 +154,7 @@ async function insert(sql: Sql, r: Receipt): Promise<void> {
      observed_at_ms, cost_source, cost_micros, provider_final, evidence_ref)
     VALUES (${r.scope.controlWorkspaceId}, ${r.scope.organizationId}, ${r.scope.customerWorkspaceId}, ${r.reservationId},
       ${r.eventId}, ${r.revision}, ${r.month}, ${r.budgetKey}, ${r.maximumCostMicros}, ${r.providerLimitRef},
-      ${r.requestHash}, ${r.policyId}, ${r.policyRevision}, ${r.observedAtMs}, ${r.costSource}, ${r.costMicros},
+      ${r.requestHash}, ${r.policyId}, ${r.policyRevision}, ${r.observedAtMs}, ${r.costSource}, ${r.costMicrosExact ?? r.costMicros},
       ${r.providerFinal}, ${r.evidenceRef})`;
 }
 
@@ -222,10 +238,12 @@ export class PostgresHostedBudgetStore {
       const decisions = limits.map(limit => {
         const relevant = latest.filter(r => limit.customerWorkspaceId === null || r.scope.customerWorkspaceId === limit.customerWorkspaceId);
         const amounts = relevant.map(r => ({ month: r.month, ...settlement(r) }));
-        if (!safe(limit.externalSpentMicros)) throw new Error('invalid external budget spend');
+        const spent = splitMicrosDecimal(addMicrosDecimals(exactCounter(limit.externalSpentMicros, limit.externalSpentMicrosExact),
+          ...amounts.filter(a => a.month === input.month).map(a => a.chargedMicrosExact ?? String(a.chargedMicros))));
         return evaluateHostedBudget({ entitlements: limit.entitlements, policy, maximumCostMicros: input.maximumCostMicros,
           asOfMs: input.asOfMs, position: { fundedMicros: limit.fundedMicros,
-            spentMicros: sum([limit.externalSpentMicros, ...amounts.filter(a => a.month === input.month).map(a => a.chargedMicros)]),
+            fundedMicrosExact: limit.fundedMicrosExact, spentMicros: spent.micros,
+            ...(spent.exact.includes('.') ? { spentMicrosExact: spent.exact } : {}),
             openReservedMicros: sum(amounts.map(a => a.heldMicros)), retainedReserveMicros: limit.retainedReserveMicros,
             unreconciled: limit.unreconciled || amounts.some(a => a.suspend) } });
       });
@@ -242,12 +260,16 @@ export class PostgresHostedBudgetStore {
    * corrections REPLACE the charge for this reservation; they do not add it.
    * No timer, cancellation flag or process restart can release this hold. */
   async observe(input: HostedBudgetObservation) {
-    if (Object.keys(input).some(k => !['scope', 'reservationId', 'eventId', 'revision', 'observedAtMs', 'costSource', 'costMicros', 'providerFinal', 'evidenceRef'].includes(k))
+    if (Object.keys(input).some(k => !['scope', 'reservationId', 'eventId', 'revision', 'observedAtMs', 'costSource', 'costMicros', 'costMicrosExact', 'providerFinal', 'evidenceRef'].includes(k))
         || !identifier(input.reservationId) || !identifier(input.eventId) || !identifier(input.evidenceRef)
         || !safe(input.revision) || input.revision < 1 || !safe(input.observedAtMs)
         || !Object.hasOwn(HOSTED_COST_SOURCE_RANK, input.costSource)
         || (input.costSource === 'unpriced' ? input.costMicros !== null : !safe(input.costMicros))
         || typeof input.providerFinal !== 'boolean') throw new Error('invalid budget observation');
+    // Validate the exact/integer pair before any transaction or history write.
+    settleHostedReservation({ reservedMicros: 0, observedCostMicros: input.costMicros,
+      observedCostMicrosExact: input.costMicrosExact, costSource: input.costSource,
+      providerFinal: input.providerFinal, evidenceRef: input.evidenceRef });
     input = Object.freeze({ ...input, scope: scope(input.scope) });
     return this.run(async sql => {
       await lock(sql, input.scope);

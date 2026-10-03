@@ -74,6 +74,12 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     try { migration = readFileSync(draft, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; migration = readFileSync(armed, 'utf8'); }
     await db.adminSql.unsafe(migration); await db.adminSql.unsafe(migration);
+    const exactDraft = new URL('../../../../../../libs/papercusp/libs/db/sql/1356-hosted-budget-exact-micros.sql.DRAFT', import.meta.url);
+    const exactArmed = new URL('../../../../../../libs/papercusp/libs/db/sql/1356-hosted-budget-exact-micros.sql', import.meta.url);
+    let exactMigration: string;
+    try { exactMigration = readFileSync(exactDraft, 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; exactMigration = readFileSync(exactArmed, 'utf8'); }
+    await db.adminSql.unsafe(exactMigration); await db.adminSql.unsafe(exactMigration);
     await db.adminSql.unsafe(`CREATE TABLE papercusp_auth.test_budget_authority (
       control text NOT NULL, org text NOT NULL, cap bigint NOT NULL, funding bigint NOT NULL,
       retained bigint, workspace_cap bigint, PRIMARY KEY(control, org));

@@ -7,7 +7,7 @@
  * It never creates funding, charges Stripe or releases a crashed reservation.
  */
 import type { HostedEntitlementSet } from '../../hosted-entitlement-schema';
-import { MICROS_PER_CENT } from '../../../cupboard/money-journal';
+import { MICROS_PER_CENT, parseMicrosDecimal, formatMicrosDecimal, splitMicrosDecimal } from '../../../cupboard/money-journal';
 import type { HostedUsageRecord } from './usage-statement';
 
 export interface HostedBudgetPolicy {
@@ -23,7 +23,9 @@ export interface HostedBudgetPosition {
   /** Total verified prepaid/finite allowance funding for this policy window,
    * including money already spent. A balance-after-spend is NOT this field. */
   readonly fundedMicros: number;
+  readonly fundedMicrosExact?: string;
   readonly spentMicros: number;
+  readonly spentMicrosExact?: string;
   /** Includes crashed, cancelled-but-unbilled and expired process holds. */
   readonly openReservedMicros: number;
   /** Bounded continuing storage/IP/etc. exposure. Null is unknown, not zero. */
@@ -39,6 +41,8 @@ export interface HostedBudgetDecision {
   readonly reason: HostedBudgetRefusal | null;
   readonly capMicros: number | null;
   readonly availableMicros: number | null;
+  readonly capMicrosExact?: string;
+  readonly availableMicrosExact?: string;
   readonly reserveMicros: number;
   readonly warning: boolean;
 }
@@ -46,6 +50,16 @@ export interface HostedBudgetDecision {
 function amount(value: unknown, field: string): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(`invalid hosted budget ${field}`);
 }
+function exactAmount(value: number, exact: string | undefined, field: string): string {
+  amount(value, field);
+  if (exact === undefined) return String(value);
+  try {
+    const parsed = splitMicrosDecimal(exact);
+    if (parsed.exact === exact && parsed.micros === value) return exact;
+  } catch { /* Refuse unsupported precision/range with the budget field named. */ }
+  throw new Error(`invalid hosted budget exact ${field}`);
+}
+const fractional = (exact: string) => exact.includes('.') ? exact : undefined;
 const identifier = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(value);
 const refusal = (reason: HostedBudgetRefusal, capMicros: number | null = null,
   availableMicros: number | null = null, warning = false): HostedBudgetDecision =>
@@ -69,7 +83,9 @@ export function evaluateHostedBudget(input: {
   amount(input.asOfMs, 'time'); amount(policy.effectiveFromMs, 'policy start'); amount(policy.effectiveUntilMs, 'policy end');
   if (policy.effectiveUntilMs <= policy.effectiveFromMs) throw new Error('invalid hosted budget interval');
   amount(input.maximumCostMicros, 'maximum cost');
-  amount(position.fundedMicros, 'funding'); amount(position.spentMicros, 'spent'); amount(position.openReservedMicros, 'holds');
+  const funded = exactAmount(position.fundedMicros, position.fundedMicrosExact, 'funding');
+  const spent = exactAmount(position.spentMicros, position.spentMicrosExact, 'spent');
+  amount(position.openReservedMicros, 'holds');
   if (typeof position.unreconciled !== 'boolean') throw new Error('invalid hosted budget reconciliation');
   if (position.retainedReserveMicros !== null) amount(position.retainedReserveMicros, 'retained reserve');
   if (input.asOfMs < policy.effectiveFromMs || input.asOfMs >= policy.effectiveUntilMs) return refusal('inactive-policy');
@@ -78,26 +94,38 @@ export function evaluateHostedBudget(input: {
   amount(cents, 'entitlement cap');
   const entitlementMicros = cents * MICROS_PER_CENT;
   amount(entitlementMicros, 'entitlement conversion');
-  const capMicros = Math.min(entitlementMicros, position.fundedMicros);
+  const amounts = [funded, spent].map(parseMicrosDecimal);
+  const scale = Math.max(...amounts.map(a => a.scale));
+  const divisor = 10n ** BigInt(scale);
+  const units = amounts.map(a => a.coefficient * 10n ** BigInt(scale - a.scale));
+  const entitlement = BigInt(entitlementMicros) * divisor;
+  const cap = units[0]! < entitlement ? units[0]! : entitlement;
+  const capAmount = splitMicrosDecimal(formatMicrosDecimal(cap, scale));
+  const capMicros = capAmount.micros;
   if (position.unreconciled) return refusal('unreconciled-charge', capMicros);
   if (position.retainedReserveMicros === null) return refusal('unbounded-retained-cost', capMicros);
-  // BigInt comparisons retain exactness even if individually valid counters
-  // sum past Number.MAX_SAFE_INTEGER. An overspent position always refuses.
-  const committed = BigInt(position.spentMicros) + BigInt(position.openReservedMicros) + BigInt(position.retainedReserveMicros);
-  const cap = BigInt(capMicros);
-  const availableMicros = committed >= cap ? 0 : Number(cap - committed);
-  const requested = BigInt(input.maximumCostMicros);
+  // Aggregate exact liabilities BEFORE projecting available whole micros.
+  // Per-receipt flooring loses spend; per-receipt ceiling over-reserves it.
+  const committed = units[1]! + (BigInt(position.openReservedMicros) + BigInt(position.retainedReserveMicros)) * divisor;
+  const available = splitMicrosDecimal(formatMicrosDecimal(committed >= cap ? 0n : cap - committed, scale));
+  const availableMicros = available.micros;
+  const requested = BigInt(input.maximumCostMicros) * divisor;
   const warning = (committed + requested) * 10_000n >= cap * BigInt(policy.warningBps);
-  if (committed > cap || requested > BigInt(availableMicros)) return refusal('budget-exhausted', capMicros, availableMicros, warning);
-  return { admitted: true, reason: null, capMicros, availableMicros, reserveMicros: input.maximumCostMicros, warning };
+  const exactFields = { ...(fractional(capAmount.exact) ? { capMicrosExact: capAmount.exact } : {}),
+    ...(fractional(available.exact) ? { availableMicrosExact: available.exact } : {}) };
+  if (committed > cap || requested > cap - committed) return { ...refusal('budget-exhausted', capMicros, availableMicros, warning), ...exactFields };
+  return { admitted: true, reason: null, capMicros, availableMicros, reserveMicros: input.maximumCostMicros, warning, ...exactFields };
 }
 
 export interface HostedReservationSettlement {
   readonly state: 'pending' | 'settled';
   readonly chargedMicros: number;
+  readonly chargedMicrosExact?: string;
   readonly heldMicros: number;
   readonly releasedMicros: number;
+  readonly releasedMicrosExact?: string;
   readonly overrunMicros: number;
+  readonly overrunMicrosExact?: string;
   readonly suspend: boolean;
   readonly evidenceRef: string;
 }
@@ -109,23 +137,33 @@ export interface HostedReservationSettlement {
 export function settleHostedReservation(input: {
   readonly reservedMicros: number;
   readonly observedCostMicros: number | null;
+  readonly observedCostMicrosExact?: string;
   readonly costSource: HostedUsageRecord['costSource'];
   readonly providerFinal: boolean;
   readonly evidenceRef: string;
 }): HostedReservationSettlement {
   amount(input.reservedMicros, 'settlement reserve');
-  if (input.observedCostMicros !== null) amount(input.observedCostMicros, 'settlement cost');
+  const exact = input.observedCostMicros === null ? null
+    : exactAmount(input.observedCostMicros, input.observedCostMicrosExact, 'settlement cost');
   if (!['estimate', 'provider-reported', 'provider-billed', 'unpriced'].includes(input.costSource)
       || typeof input.providerFinal !== 'boolean' || !identifier(input.evidenceRef)
-      || (input.costSource === 'unpriced' && input.observedCostMicros !== null)) {
+      || (input.costSource === 'unpriced' && input.observedCostMicros !== null)
+      || (input.observedCostMicros === null && input.observedCostMicrosExact !== undefined)) {
     throw new Error('invalid hosted budget settlement evidence');
   }
-  const overrunMicros = input.observedCostMicros === null ? 0 : Math.max(0, input.observedCostMicros - input.reservedMicros);
+  const parsed = parseMicrosDecimal(exact ?? '0');
+  const reserved = BigInt(input.reservedMicros) * 10n ** BigInt(parsed.scale);
+  const excess = parsed.coefficient > reserved ? parsed.coefficient - reserved : 0n;
+  const overrun = splitMicrosDecimal(formatMicrosDecimal(excess, parsed.scale));
+  const overrunFields = fractional(overrun.exact) ? { overrunMicrosExact: overrun.exact } : {};
+  const overrunMicros = overrun.micros;
   if (!input.providerFinal || input.costSource !== 'provider-billed' || input.observedCostMicros === null) {
     return { state: 'pending', chargedMicros: 0, heldMicros: input.reservedMicros,
-      releasedMicros: 0, overrunMicros, suspend: overrunMicros > 0, evidenceRef: input.evidenceRef };
+      releasedMicros: 0, overrunMicros, suspend: excess > 0n, evidenceRef: input.evidenceRef, ...overrunFields };
   }
+  const released = splitMicrosDecimal(formatMicrosDecimal(reserved > parsed.coefficient ? reserved - parsed.coefficient : 0n, parsed.scale));
   return { state: 'settled', chargedMicros: input.observedCostMicros, heldMicros: 0,
-    releasedMicros: Math.max(0, input.reservedMicros - input.observedCostMicros),
-    overrunMicros, suspend: overrunMicros > 0, evidenceRef: input.evidenceRef };
+    releasedMicros: released.micros, ...(fractional(released.exact) ? { releasedMicrosExact: released.exact } : {}),
+    ...(fractional(exact!) ? { chargedMicrosExact: exact! } : {}),
+    overrunMicros, suspend: excess > 0n, evidenceRef: input.evidenceRef, ...overrunFields };
 }
