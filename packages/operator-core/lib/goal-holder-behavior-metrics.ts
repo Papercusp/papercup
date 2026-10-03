@@ -24,7 +24,11 @@ import { costLineIsUnmeasured, GOAL_OWNER_REPORT_FIELD, walledEntries } from './
 // The classifiers live with the report contract (the send gate refuses on the same
 // definitions, P-005); re-exported so existing importers keep one source.
 export { costLineIsUnmeasured, walledEntries };
-import { GOAL_REVIEW_CLUSTER_MIN_ITEMS, GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS } from './goal-planning-review';
+import {
+  GOAL_DAY_MIN_CANDIDATES,
+  GOAL_REVIEW_CLUSTER_MIN_ITEMS,
+  GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS,
+} from './goal-planning-review';
 import { readGoalHolderRows } from './goals/holder';
 
 export const GOAL_HOLDER_METRICS_VERSION = 1 as const;
@@ -243,7 +247,7 @@ export function rateGoalHolderBehavior(
           `${ideation.reviewsWithUncoveredClusterNeed} review(s) with an uncovered 3+ item need in the goal-day since ${ideation.since}.`,
       };
     }
-    if (candidates >= 1) {
+    if (candidates >= GOAL_DAY_MIN_CANDIDATES) {
       return { verdict: 'pass', reason: `${candidates} evaluated candidate(s) (plans ${ideation.plansNew}, ideas ${ideation.ideasFiled}) in the goal-day.` };
     }
     return { verdict: 'fail', reason: `0 evaluated new candidates for the goal in the goal-day since ${ideation.since}.` };
@@ -345,6 +349,45 @@ export async function resolveHolderGoalForWindow(
     .filter((row) => row.ownerId === input.holderOwnerId && row.setAtMs <= end.getTime())
     .sort((a, b) => b.setAtMs - a.setAtMs)[0];
   return fromLease ? { workspaceId: fromLease.workspaceId, goalId: fromLease.goalId } : null;
+}
+
+/**
+ * P-004 (D-001): the goal-day candidate count for one goal at one instant: plans proposed
+ * for the goal (plans:new stamped with its goal_id, by any author) plus the ideas its
+ * reviews report filing. The same population collectGoalHolderBehaviorMetrics grades, so
+ * the blender:ideate-pass-record receipt and the WOE ideation-yield verdict agree.
+ * tool_invocations rows are written when a call settles, so a caller reading this from
+ * inside its own call is not yet counted and must add its own ideas.
+ */
+export async function readGoalDayCandidates(
+  input: { workspaceId: string; goalId: string; at: Date },
+  deps: { sql: Sql },
+): Promise<{ since: string; plansNew: number; ideasFiled: number }> {
+  const { sql } = deps;
+  const since = new Date(input.at.getTime() - GOAL_DAY_MS);
+  const [planRows, ideaRows] = await Promise.all([
+    sql<{ n: string }[]>`
+      SELECT count(*)::text AS n
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ${input.workspaceId}
+         AND goal_id = ${input.goalId}
+         AND status = 'ok'
+         AND tool_name IN ${sql([...PLAN_CANDIDATE_TOOLS])}
+         AND invoked_at BETWEEN ${since} AND ${input.at}`,
+    sql<{ ideas_filed: unknown }[]>`
+      SELECT t.args_json -> 'ideasFiled' AS ideas_filed
+        FROM harness_shared.tool_invocations t
+       WHERE t.workspace_id = ${input.workspaceId}
+         AND t.tool_name = 'blender:ideate-pass-record'
+         AND t.status = 'ok'
+         AND t.args_json -> 'goalReview' ->> 'goalId' = ${input.goalId}
+         AND t.invoked_at BETWEEN ${since} AND ${input.at}`,
+  ]);
+  return {
+    since: since.toISOString(),
+    plansNew: Number(planRows[0]?.n ?? 0),
+    ideasFiled: ideaRows.reduce((sum, row) => sum + countIdeas(row.ideas_filed), 0),
+  };
 }
 
 /**
