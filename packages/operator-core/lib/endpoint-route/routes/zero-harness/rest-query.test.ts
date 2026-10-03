@@ -59,6 +59,8 @@ describe('P011 named HTTP request exact object guards', () => {
     ));
     const [diagnostic] = pgResultDiagnosticSnapshot('org-app', 1, { includeObjectRefs: true }).results;
     expect(diagnostic.correlation).toMatchObject({ operation: 'workItems.byHarness', requestId: expect.any(String) });
+    expect(response.headers.get('x-papercusp-request-id')).toBe(diagnostic.correlation!.requestId);
+    expect(response.headers.get('x-papercusp-request-id')).toMatch(/^[a-f0-9-]{36}$/i);
     expect(diagnostic.objectRefs?.decodedResult?.deref()).toBe(raw);
     expect(diagnostic.objectRefs?.resolvedRows?.deref()).toBe(rows);
     expect(diagnostic.objectRefs?.responseValue?.deref()).toBe(serializeJsonResponseMock.mock.calls[0][0]);
@@ -68,6 +70,34 @@ describe('P011 named HTTP request exact object guards', () => {
     expect(body).not.toContain(diagnostic.correlation!.requestId!);
     expect(JSON.stringify(pgResultDiagnosticSnapshot('org-app'))).not.toContain('never-retain-args');
     expect(hooks.onquerycontext()).toEqual({ state: 'unobserved' });
+  });
+
+  it('returns distinct server-generated request IDs for concurrent requests despite a caller-supplied ID', async () => {
+    const hooks = createPgDiagnosticHooks('org-app');
+    let queryId = 0;
+    resolveNamedQueryMock.mockImplementation(async () => {
+      const id = ++queryId;
+      await new Promise(resolve => setTimeout(resolve, id === 1 ? 10 : 0));
+      const rows = [{ id }];
+      hooks.onresult({ connectionId: 1, queryId: id, backendPid: null, query: 'select 1',
+        rowCount: 1, wireBytes: 1, status: 'ok', result: rows, context: hooks.onquerycontext() });
+      return rows;
+    });
+    const handler = (await route()).handler;
+    const responses = await Promise.all([1, 2].map(() => handler(new Request(
+      'http://localhost:3170/api/zero-harness/rest-query?name=workItems.byHarness',
+      { headers: { 'x-papercusp-request-id': 'caller-secret' } },
+    ))));
+    const diagnostics = pgResultDiagnosticSnapshot('org-app').results;
+    const ids = responses.map(response => response.headers.get('x-papercusp-request-id'));
+    expect(new Set(ids).size).toBe(2);
+    expect(ids).not.toContain('caller-secret');
+    for (const response of responses) {
+      const id = response.headers.get('x-papercusp-request-id');
+      const body = await response.json();
+      expect(diagnostics.find(row => row.correlation?.requestId === id)?.queryId).toBe(body.rows[0].id);
+    }
+    expect(JSON.stringify(diagnostics)).not.toContain('caller-secret');
   });
 
   it('does not record an unregistered caller-provided operation name', async () => {

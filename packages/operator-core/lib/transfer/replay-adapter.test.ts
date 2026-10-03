@@ -4,6 +4,7 @@
  * refusal/unscored error paths. Fake governed-replay, zero LLM/PG.
  */
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { DEFAULT_REPLAY_RUBRIC, REPLAY_BASELINE_VARIANT, runReplayBattery, type ReplayBatteryConfig } from '../replay';
 import type { ReplayTranscript, ReplayTurnRole } from '../replay/types';
 import {
@@ -170,6 +171,49 @@ describe('transferReplayPort', () => {
     });
   });
 
+  it('pins the source before awaiting and retains immutable request and response artifacts', async () => {
+    const sourceLesson = structuredClone(lesson);
+    const source = transcript(['user', 'assistant', 'tool_use', 'assistant']);
+    const originalSource = structuredClone(source);
+    const originalLesson = structuredClone(sourceLesson);
+    const output = { outputText: 'actual continuation bytes', costUsd: 0.02,
+      inputTokens: 3, outputTokens: 4, replayed: true,
+      execution: { model: 'wire-student', codeHash: null, unresolved: ['remote-runtime'] } };
+    const port = transferReplayPort({ workspaceId: 'ws',
+      runner: async (input) => {
+        // A port must not rewrite the task seen by the next arm or its receipt.
+        input.replayCase.kind === 'historical' && (input.replayCase.transcript.turns[0].text = 'port mutation');
+        input.variant.label = 'port mutation';
+        return output;
+      },
+      llmCall: async () => {
+        // Original caller objects can change while an evaluation is in flight.
+        source.turns[0].text = 'caller mutation';
+        sourceLesson.lessonText = 'caller mutation';
+        return { text: JSON.stringify({ d1: 7, d2: 7, d3: 7, rationale: 'controlled fixture' }),
+          inputTokens: 1, outputTokens: 1, costUsd: 0.01 };
+      },
+      runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 },
+        result: await runReplayBattery(config, deps) }),
+    });
+    const proof = (await port({ lesson: sourceLesson, transcript: source })).evaluation!;
+    const replayCase = { kind: 'historical', caseId: lesson.id, transcript: originalSource,
+      turnIndex: pickTransferCutIndex(originalSource) };
+    expect(proof.experiment.taskHash).toBe(createHash('sha256').update(JSON.stringify(replayCase)).digest('hex'));
+    expect(proof).toMatchObject({ source: { lesson: originalLesson, transcript: originalSource } });
+    expect(proof.invocations).toHaveLength(2);
+    for (const invocation of proof.invocations) {
+      expect(invocation).toMatchObject({ request: { replayCase }, response: output });
+    }
+    expect(proof.invocations[0]).toMatchObject({ request: { variant: { label: 'matched baseline' } } });
+    expect(proof.invocations[1]).toMatchObject({ request: { variant: { label: 'Run tests first' } } });
+    output.outputText = 'late mutation';
+    output.execution.unresolved[0] = 'late mutation';
+    expect(proof.invocations.every((v) => JSON.stringify(v).includes('actual continuation bytes'))).toBe(true);
+    expect(proof.invocations.every((v) => !JSON.stringify(v).includes('late mutation'))).toBe(true);
+    expect(proof.experiment.codeHash).toBeNull();
+  });
+
   it('retains every actual judge repair receipt and snapshots student transport coverage', async () => {
     const execution = { model: 'wire-model', codeHash: null,
       loadedCode: { client: 'loaded-client' }, unresolved: ['remote-gateway'] };
@@ -191,10 +235,16 @@ describe('transferReplayPort', () => {
     expect(result.judgeExecutions).toHaveLength(3);
     expect(result.judgeExecutions?.[0]).toBeNull();
     expect(result.judgeExecutions?.[1]).toEqual(execution);
+    expect(result.judgeInvocations).toHaveLength(3);
+    expect(result.judgeResponses).toHaveLength(3);
+    expect(result.judgeResponses?.[0]?.text).toBe('invalid JSON');
+    expect(result.judgeResponses?.[1]).toMatchObject({ inputTokens: 1, outputTokens: 1,
+      costUsd: 0.01, execution });
     expect(result.invocations[0]).toMatchObject({ loadedCode: { client: 'loaded-client' }, unresolved: ['remote-gateway'] });
     execution.loadedCode.client = 'later-checkout';
     execution.unresolved.length = 0;
     expect(result.judgeExecutions?.[1]?.loadedCode?.client).toBe('loaded-client');
+    expect(result.judgeResponses?.[1]?.execution?.loadedCode?.client).toBe('loaded-client');
     expect(result.invocations[0].unresolved).toEqual(['remote-gateway']);
     expect(result.experiment.codeHash).toBeNull();
   });

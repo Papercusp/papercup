@@ -1578,13 +1578,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/dead-target-probe.ts: execFileAsync(git rev-parse --verify --quiet HEAD^{commit}) and (git status --porcelain --untracked-files=no) are two bounded, explicitly-timed-out reads (probeTimeoutMs) run per install per sweep to classify an install's git object store as readable/corrupt/absent/unknown; both are awaited, read-only, and create no independent resident queue.",
   },
   {
-    path: "packages/operator-core/lib/harness/routines/frozen-candidate-drift-sweep-action.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/frozen-candidate-drift-sweep-action.ts: spawnSync(git log <candidate>..<branch> --name-only) is one bounded synchronous metadata read (explicit maxBuffer) used to compute a residual drift finding; it creates no independent resident queue.",
-  },
-  {
     // frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-003 / D-010: this is the
     // read-only half of the former converge-repair-head.ts (renamed when the fast-forward plan
     // was deleted); the disposition below carries over with the code it describes.

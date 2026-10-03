@@ -24,6 +24,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   MICROS_PER_CENT,
   daoShareCents,
+  splitMicrosDecimal,
   journalEntryForMovement,
   validateJournalEntry,
   type ExternalRef,
@@ -220,12 +221,16 @@ interface RollupRow {
 }
 
 function rollupFromRow(row: RollupRow, accrualIds: readonly string[]): MicrosRollup {
+  const total = splitMicrosDecimal(String(row.total_micros));
+  const rounding = splitMicrosDecimal(String(row.rounding_micros));
   return {
     rollupId: row.rollup_id,
     currency: row.currency,
-    totalMicros: toSafeInt(row.total_micros, 'total_micros'),
+    totalMicros: total.micros,
     settledCents: toSafeInt(row.settled_cents, 'settled_cents'),
-    roundingMicros: toSafeInt(row.rounding_micros, 'rounding_micros'),
+    roundingMicros: rounding.micros,
+    ...(total.exact.includes('.') ? { totalMicrosExact: total.exact } : {}),
+    ...(rounding.exact.includes('.') ? { roundingMicrosExact: rounding.exact } : {}),
     accrualIds: new Set(accrualIds),
   };
 }
@@ -248,7 +253,7 @@ export async function readMicrosRollup(
 }
 
 export type AccrueStoreResult =
-  | { ok: true; duplicate: boolean; totalMicros: number; roundingMicros: number }
+  | { ok: true; duplicate: boolean; totalMicros: number; roundingMicros: number; totalMicrosExact?: string; roundingMicrosExact?: string }
   | { ok: false; code: 'invalid-micros' | 'invalid-rollup' | 'currency-mismatch'; detail: string };
 
 /** Accrue one per-use charge (micros) into its roll-up. Idempotent on accrualId. */
@@ -258,12 +263,17 @@ export async function accrueUsageMicros(
     readonly rollupId: string;
     readonly accrualId: string;
     readonly micros: number;
+    readonly microsExact?: string;
     readonly currency?: string;
   },
   deps: MoneyJournalStoreDeps = {},
 ): Promise<AccrueStoreResult> {
   const currency = input.currency ?? 'USD';
-  if (!Number.isSafeInteger(input.micros) || input.micros <= 0) {
+  let amount: ReturnType<typeof splitMicrosDecimal>;
+  try { amount = splitMicrosDecimal(input.microsExact ?? String(input.micros)); }
+  catch { return { ok: false, code: 'invalid-micros', detail: 'invalid exact micro amount' }; }
+  if (!Number.isSafeInteger(input.micros) || amount.micros !== input.micros || amount.exact === '0'
+      || (input.microsExact !== undefined && amount.exact !== input.microsExact)) {
     return { ok: false, code: 'invalid-micros', detail: `micros must be a positive whole number, got ${String(input.micros)}` };
   }
   if (input.rollupId.length === 0 || input.rollupId.length > 256 || input.accrualId.length === 0 || input.accrualId.length > 256) {
@@ -285,35 +295,43 @@ export async function accrueUsageMicros(
     }
     const inserted = await tx`
       INSERT INTO harness_shared.money_journal_micro_accruals (workspace_id, rollup_id, accrual_id, micros)
-      VALUES (${input.workspaceId}, ${input.rollupId}, ${input.accrualId}, ${input.micros})
+      VALUES (${input.workspaceId}, ${input.rollupId}, ${input.accrualId}, ${amount.exact})
       ON CONFLICT (workspace_id, rollup_id, accrual_id) DO NOTHING
       RETURNING accrual_id`;
     if (inserted.length === 0) {
+      const [prior] = await tx<{ micros: string }[]>`
+        SELECT micros FROM harness_shared.money_journal_micro_accruals
+         WHERE workspace_id = ${input.workspaceId} AND rollup_id = ${input.rollupId} AND accrual_id = ${input.accrualId}`;
+      if (!prior || splitMicrosDecimal(String(prior.micros)).exact !== amount.exact) {
+        return { ok: false, code: 'invalid-micros', detail: 'accrual replay mismatch' } as const;
+      }
+      const saved = rollupFromRow(rollup, []);
       return {
         ok: true,
         duplicate: true,
-        totalMicros: toSafeInt(rollup.total_micros, 'total_micros'),
-        roundingMicros: toSafeInt(rollup.rounding_micros, 'rounding_micros'),
+        totalMicros: saved.totalMicros, roundingMicros: saved.roundingMicros,
+        totalMicrosExact: saved.totalMicrosExact, roundingMicrosExact: saved.roundingMicrosExact,
       } as const;
     }
     const [updated] = await tx<RollupRow[]>`
       UPDATE harness_shared.money_journal_rollups
-         SET total_micros = total_micros + ${input.micros},
-             rounding_micros = rounding_micros + ${input.micros},
+         SET total_micros = total_micros + ${amount.exact}::numeric,
+             rounding_micros = rounding_micros + ${amount.exact}::numeric,
              updated_at = now()
        WHERE workspace_id = ${input.workspaceId} AND rollup_id = ${input.rollupId}
        RETURNING rollup_id, currency, total_micros, settled_cents, rounding_micros`;
+    const saved = rollupFromRow(updated!, []);
     return {
       ok: true,
       duplicate: false,
-      totalMicros: toSafeInt(updated!.total_micros, 'total_micros'),
-      roundingMicros: toSafeInt(updated!.rounding_micros, 'rounding_micros'),
+      totalMicros: saved.totalMicros, roundingMicros: saved.roundingMicros,
+      totalMicrosExact: saved.totalMicrosExact, roundingMicrosExact: saved.roundingMicrosExact,
     } as const;
   });
 }
 
 export type SettleStoreResult =
-  | { ok: true; settledCents: number; roundingMicros: number; entry: JournalEntry | null; duplicate: boolean }
+  | { ok: true; settledCents: number; roundingMicros: number; roundingMicrosExact?: string; entry: JournalEntry | null; duplicate: boolean }
   | JournalRejection
   | { ok: false; code: 'unknown-rollup' | 'entry-id-conflict'; detail: string };
 
@@ -342,15 +360,17 @@ export async function settleUsageRollup(
        FOR UPDATE`;
     if (!rollup) return { ok: false, code: 'unknown-rollup', detail: `no roll-up ${input.rollupId}` } as const;
     const prior = await existingEntry(tx, input.workspaceId, input.entryId);
-    const roundingMicros = toSafeInt(rollup.rounding_micros, 'rounding_micros');
+    const rounding = splitMicrosDecimal(String(rollup.rounding_micros));
+    const roundingMicros = rounding.micros;
+    const roundingMicrosExact = rounding.exact.includes('.') ? rounding.exact : undefined;
     if (prior) {
       if (prior.rollupId !== input.rollupId) {
         return { ok: false, code: 'entry-id-conflict', detail: `entry ${input.entryId} settles a different roll-up` } as const;
       }
-      return { ok: true, settledCents: 0, roundingMicros, entry: prior, duplicate: true } as const;
+      return { ok: true, settledCents: 0, roundingMicros, roundingMicrosExact, entry: prior, duplicate: true } as const;
     }
     const cents = Math.floor(roundingMicros / MICROS_PER_CENT);
-    if (cents === 0) return { ok: true, settledCents: 0, roundingMicros, entry: null, duplicate: false } as const;
+    if (cents === 0) return { ok: true, settledCents: 0, roundingMicros, roundingMicrosExact, entry: null, duplicate: false } as const;
     const built = journalEntryForMovement({
       entryId: input.entryId,
       occurredAtMs: input.occurredAtMs,
@@ -369,10 +389,12 @@ export async function settleUsageRollup(
              updated_at = now()
        WHERE workspace_id = ${input.workspaceId} AND rollup_id = ${input.rollupId}
        RETURNING rollup_id, currency, total_micros, settled_cents, rounding_micros`;
+    const remainder = splitMicrosDecimal(String(updated!.rounding_micros));
     return {
       ok: true,
       settledCents: cents,
-      roundingMicros: toSafeInt(updated!.rounding_micros, 'rounding_micros'),
+      roundingMicros: remainder.micros,
+      ...(remainder.exact.includes('.') ? { roundingMicrosExact: remainder.exact } : {}),
       entry: built.entry,
       duplicate: false,
     } as const;

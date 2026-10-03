@@ -5,7 +5,7 @@
  * journal, payment instruction or substitute for authenticated provider reads.
  * The caller must derive the scope and completeness receipt on the server.
  */
-import { MICROS_PER_CENT } from '../../../cupboard/money-journal';
+import { MICROS_PER_CENT, addMicrosDecimals, parseMicrosDecimal, splitMicrosDecimal, formatMicrosDecimal } from '../../../cupboard/money-journal';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { PILOT_COST_CATEGORIES, type CostPayer, type PilotCostCategory } from './unit-economics';
 
@@ -34,6 +34,8 @@ export interface HostedUsageRecord extends Omit<HostedUsageScope, 'customerWorks
   readonly unit: string;
   readonly costSource: HostedCostSource;
   readonly costMicros: number | null;
+  /** Canonical exact micro amount; costMicros is its integer projection. */
+  readonly costMicrosExact?: string;
   /** Opaque evidence pointer. Customer content never belongs in this record. */
   readonly sourceRef: string;
 }
@@ -50,12 +52,16 @@ export interface HostedUsageStatementLine {
   readonly estimatedMicros: number;
   readonly reportedMicros: number;
   readonly billedMicros: number;
+  readonly estimatedMicrosExact?: string;
+  readonly reportedMicrosExact?: string;
+  readonly billedMicrosExact?: string;
 }
 
 export interface HostedUsageForecast {
   readonly method: 'linear-elapsed-utc-month';
   /** Latest known consumption costs; estimates/reports remain provisional. */
   readonly basisMicros: number | null;
+  readonly basisMicrosExact?: string;
   readonly elapsedMs: number;
   readonly periodMs: number;
   readonly projectedConsumptionMicros: number | null;
@@ -73,23 +79,26 @@ export interface HostedUsageStatement {
   readonly settlementEligible: boolean;
   readonly gaps: readonly string[];
   readonly lines: readonly HostedUsageStatementLine[];
-  readonly consumptionBilled: { readonly micros: number; readonly wholeCents: number; readonly roundingMicros: number };
+  readonly consumptionBilled: { readonly micros: number; readonly wholeCents: number; readonly roundingMicros: number;
+    readonly microsExact?: string; readonly roundingMicrosExact?: string };
   readonly platformBilledMicros: number;
   readonly customerDirectBilledMicros: number;
+  readonly platformBilledMicrosExact?: string;
+  readonly customerDirectBilledMicrosExact?: string;
   /** Display projection only: never funding, a reservation bound or a bill. */
   readonly forecast: HostedUsageForecast;
   readonly history: readonly {
     readonly customerWorkspaceId: string;
     readonly provider: string;
     readonly usageId: string;
-    readonly revisions: readonly Pick<HostedUsageRecord, 'recordId' | 'revision' | 'sourceRef' | 'costSource' | 'costMicros' | 'observedAtMs'>[];
+    readonly revisions: readonly Pick<HostedUsageRecord, 'recordId' | 'revision' | 'sourceRef' | 'costSource' | 'costMicros' | 'costMicrosExact' | 'observedAtMs'>[];
   }[];
 }
 
 const RECORD_KEYS = [
   'controlWorkspaceId', 'organizationId', 'customerWorkspaceId', 'recordId', 'usageId', 'revision',
   'provider', 'category', 'payer', 'occurredAtMs', 'observedAtMs', 'quantity', 'unit',
-  'costSource', 'costMicros', 'sourceRef',
+  'costSource', 'costMicros', 'costMicrosExact', 'sourceRef',
 ] as const;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 export const HOSTED_COST_SOURCE_RANK: Readonly<Record<HostedCostSource, number>> = Object.freeze({ unpriced: 0, estimate: 1, 'provider-reported': 2, 'provider-billed': 3 });
@@ -118,8 +127,28 @@ export function validateHostedUsageRecord(record: HostedUsageRecord): void {
       !['platform', 'consumption', 'customer-direct'].includes(record.payer) ||
       !Object.hasOwn(SOURCES, record.costSource)) throw new Error('invalid usage receipt');
   if (record.costSource === 'unpriced') {
-    if (record.costMicros !== null) throw new Error('unpriced usage requires unknown cost');
-  } else integer(record.costMicros);
+    if (record.costMicros !== null || record.costMicrosExact !== undefined) throw new Error('unpriced usage requires unknown cost');
+  } else {
+    integer(record.costMicros);
+    if (record.costMicrosExact !== undefined) {
+      const amount = splitMicrosDecimal(record.costMicrosExact);
+      if (amount.exact !== record.costMicrosExact || amount.micros !== record.costMicros) throw new Error('exact usage cost mismatch');
+    }
+  }
+}
+
+const exactCost = (record: HostedUsageRecord) => record.costMicrosExact ?? String(record.costMicros ?? 0);
+const exactLine = (line: HostedUsageStatementLine, kind: 'estimated' | 'reported' | 'billed') =>
+  line[`${kind}MicrosExact`] ?? String(line[`${kind}Micros`]);
+function lineAmounts(line: HostedUsageStatementLine, record: HostedUsageRecord) {
+  const result: Record<string, number | string | undefined> = {};
+  for (const [kind, source] of [['estimated', 'estimate'], ['reported', 'provider-reported'], ['billed', 'provider-billed']] as const) {
+    const amount = splitMicrosDecimal(addMicrosDecimals(exactLine(line, kind), record.costSource === source ? exactCost(record) : '0'));
+    result[`${kind}Micros`] = amount.micros;
+    result[`${kind}MicrosExact`] = amount.exact.includes('.') ? amount.exact : undefined;
+  }
+  return result as Pick<HostedUsageStatementLine, 'estimatedMicros' | 'reportedMicros' | 'billedMicros'
+    | 'estimatedMicrosExact' | 'reportedMicrosExact' | 'billedMicrosExact'>;
 }
 
 /**
@@ -158,7 +187,7 @@ export function buildHostedUsageStatement(input: {
     if (record.observedAtMs > asOfMs) continue;
     if (record.observedAtMs > source.observedAtMs) gaps.add('receipt-newer-than-census');
     const receiptKey = JSON.stringify([record.customerWorkspaceId, record.provider, record.recordId]);
-    const fingerprint = JSON.stringify(RECORD_KEYS.map((key) => record[key]));
+    const fingerprint = JSON.stringify(RECORD_KEYS.map((key) => key === 'costMicrosExact' ? exactCost(record) : record[key]));
     const previous = seenReceipts.get(receiptKey);
     if (previous !== undefined) {
       if (previous !== fingerprint) throw new Error('usage receipt replay mismatch');
@@ -196,19 +225,18 @@ export function buildHostedUsageStatement(input: {
     lines.set(key, {
       ...line, quantity: sum(line.quantity, latest.quantity), usages: line.usages + 1,
       unpricedUsages: line.unpricedUsages + (latest.costSource === 'unpriced' ? 1 : 0),
-      estimatedMicros: sum(line.estimatedMicros, latest.costSource === 'estimate' ? latest.costMicros! : 0),
-      reportedMicros: sum(line.reportedMicros, latest.costSource === 'provider-reported' ? latest.costMicros! : 0),
-      billedMicros: sum(line.billedMicros, latest.costSource === 'provider-billed' ? latest.costMicros! : 0),
+      ...lineAmounts(line, latest),
     });
     history.push({
       customerWorkspaceId: latest.customerWorkspaceId, provider: latest.provider, usageId: latest.usageId,
       revisions: rows.map((row) => ({ recordId: row.recordId, revision: row.revision, sourceRef: row.sourceRef,
-        costSource: row.costSource, costMicros: row.costMicros, observedAtMs: row.observedAtMs })),
+        costSource: row.costSource, costMicros: row.costMicros, costMicrosExact: row.costMicrosExact, observedAtMs: row.observedAtMs })),
     });
   }
   const ordered = [...lines].sort(([a], [b]) => a.localeCompare(b)).map(([, line]) => line);
-  const total = (payer: CostPayer) => ordered.filter((line) => line.payer === payer).reduce((value, line) => sum(value, line.billedMicros), 0);
-  const micros = total('consumption');
+  const total = (payer: CostPayer) => splitMicrosDecimal(addMicrosDecimals(...ordered.filter((line) => line.payer === payer).map(line => exactLine(line, 'billed'))));
+  const consumption = total('consumption'); const platform = total('platform'); const direct = total('customer-direct');
+  const micros = consumption.micros;
   const periodMs = endMs - startMs;
   // Extrapolate from the census cutoff, not time for which no source was read.
   const elapsedMs = Math.max(0, Math.min(asOfMs, source.observedAtMs, endMs) - startMs);
@@ -216,15 +244,17 @@ export function buildHostedUsageStatement(input: {
   for (const reason of ['window-not-started', 'incomplete-source', 'source-not-current', 'receipt-newer-than-census', 'unpriced-usage'] as const) {
     if (gaps.has(reason)) { unavailableReason = reason; break; }
   }
-  const basis = ordered.filter(line => line.payer === 'consumption').reduce((value, line) =>
-    value + BigInt(line.billedMicros) + BigInt(line.reportedMicros) + BigInt(line.estimatedMicros), 0n);
-  const safeBasis = basis <= BigInt(Number.MAX_SAFE_INTEGER);
+  const basisExact = addMicrosDecimals(...ordered.filter(line => line.payer === 'consumption').flatMap(line =>
+    [exactLine(line, 'billed'), exactLine(line, 'reported'), exactLine(line, 'estimated')]));
+  const basis = parseMicrosDecimal(basisExact); const divisor = 10n ** BigInt(basis.scale);
+  const safeBasis = basis.coefficient <= BigInt(Number.MAX_SAFE_INTEGER) * divisor;
   if (!unavailableReason && elapsedMs === 0) unavailableReason = 'no-elapsed-time';
   const projected = unavailableReason ? null :
-    (basis * BigInt(periodMs) + BigInt(elapsedMs) - 1n) / BigInt(elapsedMs);
+    (basis.coefficient * BigInt(periodMs) + BigInt(elapsedMs) * divisor - 1n) / (BigInt(elapsedMs) * divisor);
   if (!unavailableReason && (!safeBasis || projected! > BigInt(Number.MAX_SAFE_INTEGER))) unavailableReason = 'amount-overflow';
   const forecast: HostedUsageForecast = {
-    method: 'linear-elapsed-utc-month', basisMicros: unavailableReason || !safeBasis ? null : Number(basis),
+    method: 'linear-elapsed-utc-month', basisMicros: unavailableReason || !safeBasis ? null : Number(basis.coefficient / divisor),
+    ...(!unavailableReason && safeBasis && basisExact.includes('.') ? { basisMicrosExact: basisExact } : {}),
     elapsedMs, periodMs, projectedConsumptionMicros: unavailableReason ? null : Number(projected),
     provisional: elapsedMs < periodMs || gaps.size > 0 || unavailableReason !== null, unavailableReason,
   };
@@ -232,7 +262,11 @@ export function buildHostedUsageStatement(input: {
     scope: { controlWorkspaceId: scope.controlWorkspaceId, organizationId: scope.organizationId, customerWorkspaceId: scope.customerWorkspaceId },
     month: input.month, currency: 'USD', asOfMs, sourceRef: source.evidenceRef,
     settlementEligible: gaps.size === 0, gaps: [...gaps].sort(), lines: ordered,
-    consumptionBilled: { micros, wholeCents: Number(BigInt(micros) / BigInt(MICROS_PER_CENT)), roundingMicros: Number(BigInt(micros) % BigInt(MICROS_PER_CENT)) },
-    platformBilledMicros: total('platform'), customerDirectBilledMicros: total('customer-direct'), forecast, history,
+    consumptionBilled: { micros, wholeCents: Number(BigInt(micros) / BigInt(MICROS_PER_CENT)), roundingMicros: Number(BigInt(micros) % BigInt(MICROS_PER_CENT)),
+      ...(consumption.exact.includes('.') ? { microsExact: consumption.exact,
+        roundingMicrosExact: formatMicrosDecimal(parseMicrosDecimal(consumption.exact).coefficient % (BigInt(MICROS_PER_CENT) * 10n ** BigInt(parseMicrosDecimal(consumption.exact).scale)), parseMicrosDecimal(consumption.exact).scale) } : {}) },
+    platformBilledMicros: platform.micros, customerDirectBilledMicros: direct.micros,
+    ...(platform.exact.includes('.') ? { platformBilledMicrosExact: platform.exact } : {}),
+    ...(direct.exact.includes('.') ? { customerDirectBilledMicrosExact: direct.exact } : {}), forecast, history,
   };
 }

@@ -77,6 +77,21 @@ describe('version / channel validation', () => {
 });
 
 describe('buildCutEnv — LOCAL-only enforced', () => {
+  it('transports D166 private inputs as a fresh full read-only source cut, with no cached seed', () => {
+    const seedUuidIdempotency = { plansPath: '/private/row plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen source' };
+    expect(buildCutEnv({}, sourceSha, { ownerName: 'Avi', fullHistory: true, seedUuidIdempotency }))
+      .toMatchObject({ PAPERCUSP_SEED_UUID_PLAN_PATH: seedUuidIdempotency.plansPath,
+        PAPERCUSP_SEED_UUID_PLAN_SHA256: seedUuidIdempotency.plansSha256,
+        PAPERCUSP_SEED_STORE_DIR: seedUuidIdempotency.sourceStoreDir, PAPERCUSP_SEED_REUSE_CORESTORE: '0',
+        PAPERCUSP_SEED_FORCE: '1', PAPERCUSP_SEED_CORESTORE: '1', PAPERCUSP_SEED_SPARSE: '0',
+        PAPERCUSP_SEED_SNAPSHOT_DIR: '', PAPERCUSP_SEED_DEPTH: '' });
+    for (const bad of [{ reuseSeed: true }, { seedless: true },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, plansSha256: 'bad' } },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, sourceStoreDir: 'relative' } }]) {
+      expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', seedUuidIdempotency, ...bad })).toThrow();
+    }
+  });
+
   it('passes only the explicitly supplied private seed finding proof to the detached cut', () => {
     const source = 'a'.repeat(40);
     expect(buildCutEnv({}, source, { ownerName: 'Avi' }))

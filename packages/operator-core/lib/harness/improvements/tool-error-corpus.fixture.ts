@@ -13,6 +13,7 @@
  * The acceptance-BAR vetting refusal was added 2026-10-01 from the repeated
  * watchdog sample (n=3) to keep caller-authored readiness failures out of the
  * structural repair lane.
+ * The reviewer-model allowlist refusal was added 2026-10-03 from EI-24950089856585512.
  * Kernel identity-ceiling refusals were added 2026-10-01 from a 24h sample
  * (n=33/16) to keep expected no-grant identities out of the structural lane.
  * The operator admission-shed row was added 2026-10-02 from the retryable
@@ -216,6 +217,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'acceptance BAR contract is not ready for vetting — 7 of 7 BAR(s) blocking, 0 clean: R-1: bar_snapshot_role_invalid; R-2: bar_snapshot_role_invalid; R-3: bar_snapshot_role_invalid; R-4: bar_snapshot_role_invalid; R-5: bar_snapshot_role_invalid; R-6: bar_snapshot_role_invalid; R-7: bar_snapshot_role_invalid',
     expectedClass: 'caller',
     note: 'the caller-authored BAR roles fail lifecycle pre-vetting; deterministic readiness refusal is caller input, not a structural tool defect',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'reviewer_model_not_allowed: codex/gpt-6.1-sol is absent from the workspace expert allowlist',
+    expectedClass: 'caller',
+    note: 'explicit reviewer-model allowlist refusal for the caller-selected model; do not promote it as a structural tool bug (EI-24950089856585512)',
   },
   {
     n: 3, errorCode: 'unauthorized', status: 'error',

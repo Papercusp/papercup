@@ -126,6 +126,13 @@ const cutReuseSeedArg = z
 const cutSeedFindingProofArg = z.string().trim().min(1).optional().describe(
   'Private reviewed exact-content seed finding proof (D-140). The credential gate still scans every seed file and validates source, epoch keys, config, authentication and plaintext evidence; changed or missing evidence refuses the cut.',
 );
+const cutSeedUuidIdempotencyArg = z.object({
+  plansPath: z.string().startsWith('/'),
+  plansSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  sourceStoreDir: z.string().startsWith('/'),
+}).strict().optional().describe(
+  'D166 private source-bound UUID row-drop plan/hash plus frozen ORIGINAL source store. Requires a fresh cut; forbids reuse/seedless, refresh and sparse mode. Does not waive independent source containment, artifact coverage or GO.',
+);
 const cutFullHistoryArg = z
   .boolean()
   .optional()
@@ -333,6 +340,7 @@ function cutRuntimeEnv(
     fullHistory?: boolean;
     reuseSeed?: boolean;
     seedFindingProof?: string;
+    seedUuidIdempotency?: CutRuntimeEnv['seedUuidIdempotency'];
     seedless?: boolean;
     migrationBootSmokeOverride?: MigrationBootSmokeOverride;
   },
@@ -346,6 +354,7 @@ function cutRuntimeEnv(
     ...(args.fullHistory ? { fullHistory: true } : {}),
     reuseSeed: args.reuseSeed,
     ...(args.seedFindingProof ? { seedFindingProof: args.seedFindingProof } : {}),
+    ...(args.seedUuidIdempotency ? { seedUuidIdempotency: args.seedUuidIdempotency } : {}),
     ...(args.seedless ? { seedless: true } : {}),
     ...(args.migrationBootSmokeOverride ? { migrationBootSmokeOverride: args.migrationBootSmokeOverride } : {}),
     // P-001: present ⇒ release-local.sh runs its phase journal and the cut becomes
@@ -605,7 +614,11 @@ function resolveCutSeedMode(args: {
   fullHistory?: boolean;
   reuseSeed?: boolean;
   seedless?: boolean;
+  seedUuidIdempotency?: CutRuntimeEnv['seedUuidIdempotency'];
 }): CutSeedModeResolution {
+  if (args.seedUuidIdempotency && (args.reuseSeed || args.seedless)) {
+    return { ok: false, reason: 'seed_uuid_mode_conflict — UUID plans require a fresh frozen-source cut' };
+  }
   if (args.reuseSeed && args.seedless) {
     return { ok: false, reason: 'seed_mode_conflict — reuseSeed and seedless are mutually exclusive' };
   }
@@ -953,6 +966,7 @@ export default defineTool({
       fullHistory: cutFullHistoryArg,
       reuseSeed: cutReuseSeedArg,
       seedFindingProof: cutSeedFindingProofArg,
+      seedUuidIdempotency: cutSeedUuidIdempotencyArg,
       seedless: cutSeedlessArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg
         .optional()
@@ -1010,6 +1024,7 @@ export default defineTool({
       fullHistory: cutFullHistoryArg,
       reuseSeed: cutReuseSeedArg,
       seedFindingProof: cutSeedFindingProofArg,
+      seedUuidIdempotency: cutSeedUuidIdempotencyArg,
       seedless: cutSeedlessArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg
         .optional()

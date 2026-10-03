@@ -55,7 +55,7 @@ export default defineTool({
     if (req.signal.aborted) {
       return new Response(null, { status: 499 });
     }
-    return withNamedQueryDiagnosticContext(isRegisteredV2(name) ? name : null, async () => {
+    return withNamedQueryDiagnosticContext(isRegisteredV2(name) ? name : null, async (requestId) => {
     const startedMs = Date.now();
     let resolverFailureObserved = false;
     try {
@@ -162,7 +162,7 @@ export default defineTool({
       const body = await serializeJsonResponse(responseValue, itemCount);
       return new Response(body, {
         status: 200,
-        headers: { 'content-type': 'application/json; charset=utf-8' },
+        headers: { 'content-type': 'application/json; charset=utf-8', 'x-papercusp-request-id': requestId },
       });
     } catch (err: any) {
       const msg = err?.message ?? String(err);

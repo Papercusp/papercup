@@ -16,6 +16,8 @@ import { provisionGymDatabase } from '../gym/gym-db-init';
 import { adaptTransferOutput } from '../experiment/lifecycle-adapter';
 import { readProducerObservations } from '../experiment/producer-lifecycle-store';
 import type { TransferLesson, TransferReplayEvidence } from './types';
+import { transferReplayPort } from './replay-adapter';
+import { runReplayBattery } from '../replay';
 import {
   admitTransferLesson,
   getLessonBySignature,
@@ -186,6 +188,39 @@ describe('common decision promotion boundary', () => {
     transition: { tier: 'validated' as const, status: 'passed' as const,
       passCount: lesson.passCount + 1, failCount: lesson.failCount, forgetMemory: false },
     batteryId: `transfer:${lesson.id}:t${lesson.testCount + 1}`, delta: 1.2, evaluation,
+  });
+
+  it('round-trips actual runner artifacts without turning narrative evidence into promotion', async () => {
+    const admitted = await admitTransferLesson(sql, { workspaceId: WS, signature: 'runner-artifact-receipt',
+      lessonText: 'Controlled lesson bytes', sourceRef: '/controlled/artifacts', potSlug: 'test-pot' });
+    if (!admitted.admitted) throw new Error('fixture admission failed');
+    const port = transferReplayPort({ workspaceId: WS,
+      runner: async () => ({ outputText: 'controlled runner response bytes', costUsd: 0.01,
+        inputTokens: 3, outputTokens: 4, replayed: true,
+        execution: { model: 'controlled-student', codeHash: null, unresolved: ['remote-runtime'] } }),
+      llmCall: async ({ messages }) => {
+        const score = messages[0].content.includes('variant: Controlled lesson bytes') ? 8 : 6;
+        return { text: JSON.stringify({ d1: score, d2: score, d3: score, rationale: 'controlled judge bytes' }),
+          inputTokens: 1, outputTokens: 1, costUsd: 0.01 };
+      },
+      runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 },
+        result: await runReplayBattery(config, deps), reservation: evaluated(admitted.lesson).reservation! }),
+    });
+    const outcome = await port({ lesson: admitted.lesson, transcript: { ref: admitted.lesson.sourceRef!, turns: [
+      { index: 0, role: 'user', text: 'controlled source task bytes' },
+      { index: 1, role: 'assistant', text: 'controlled historical continuation bytes' },
+    ] } });
+    const proof = outcome.evaluation!;
+    expect(await recordTransferOutcome(sql, { ...proposal(admitted.lesson, proof),
+      delta: outcome.withComposite - outcome.baselineComposite })).toMatchObject({ tier: 'probationary', status: 'error' });
+    const receipts = await readProducerObservations(sql, { producer: 'transfer', workspaceId: WS, limit: 100 });
+    const receipt = receipts.find((r) => r.sourceRef === `transfer:${admitted.lesson.id}`);
+    expect(receipt).toMatchObject({ promotionAllowed: false, sourceCurrent: true, evaluationCurrent: true });
+    expect(receipt?.evaluation).toEqual(proof);
+    expect(receipt?.evaluation).toMatchObject({ source: { lesson: admitted.lesson },
+      invocations: [{ response: { outputText: 'controlled runner response bytes' } },
+        { response: { outputText: 'controlled runner response bytes' } }],
+      experiment: { codeHash: null }, contract: { decision: { verdict: 'inconclusive' } } });
   });
 
   it('persists the complete common decision atomically and invalidates its authority on later source drift', async () => {

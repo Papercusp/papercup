@@ -69,6 +69,13 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     }
     await db.adminSql.unsafe(migration);
     await db.adminSql.unsafe(migration);
+    let exactMigration: string;
+    try { exactMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1354-hosted-usage-exact-micros.sql.DRAFT', import.meta.url), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      exactMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1354-hosted-usage-exact-micros.sql', import.meta.url), 'utf8');
+    }
+    await db.adminSql.unsafe(exactMigration); await db.adminSql.unsafe(exactMigration);
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
@@ -80,6 +87,33 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     expect(await read(scope)).toEqual([r]);
     expect(await store().append({ ...r, costMicros: 99 })).toBe('replay-mismatch');
     expect(await read(scope)).toEqual([r]);
+  });
+
+  it('persists submicro provider charges exactly across concurrent replay, corrections and tenant scopes', async () => {
+    const scope = await tenant(); const foreign = await tenant(scope.controlWorkspaceId);
+    const a = record(scope, { costSource: 'provider-billed', costMicros: 4999, costMicrosExact: '4999.6' });
+    const b = record(scope, { costSource: 'provider-billed', costMicros: 5000, costMicrosExact: '5000.6' });
+    const outcomes = await Promise.all(Array.from({ length: 8 }, () => store().append(a)));
+    expect(outcomes.filter(x => x === 'recorded')).toHaveLength(1);
+    expect(outcomes.filter(x => x === 'duplicate')).toHaveLength(7);
+    expect(await store().append({ ...a, costMicrosExact: '4999.7' })).toBe('replay-mismatch');
+    expect(await store().append(b)).toBe('recorded');
+    const records = await read(scope); expect(records).toHaveLength(2);
+    expect(records.find(r => r.recordId === a.recordId)).toEqual(a);
+    const projected = () => read(scope).then(records => buildHostedUsageStatement({ scope, month: MONTH, asOfMs: T + 1000,
+      source: { complete: true, observedAtMs: T + 1000, maximumAgeMs: 0, evidenceRef: 'fixture:exact-census' }, records }));
+    expect((await projected()).consumptionBilled).toMatchObject({ wholeCents: 1, microsExact: '10000.2', roundingMicrosExact: '0.2' });
+    expect(await store().append({ ...a, recordId: randomUUID(), revision: 2, observedAtMs: T + 1, costMicrosExact: '4999.3' })).toBe('recorded');
+    expect((await projected()).consumptionBilled).toMatchObject({ wholeCents: 0, microsExact: '9999.9' });
+    expect(await read(foreign)).toEqual([]);
+    const tiny = record(scope, { costSource: 'provider-reported', costMicros: 0, costMicrosExact: '0.' + '0'.repeat(317) + '5' });
+    expect(await store().append(tiny)).toBe('recorded');
+    expect((await read(scope)).find(r => r.recordId === tiny.recordId)).toEqual(tiny);
+    await expect(runService(sql => sql`INSERT INTO papercusp_auth.hosted_usage_receipts
+      SELECT control_workspace_id, organization_id, customer_workspace_id, provider, ${randomUUID()}, ${randomUUID()},
+        1, category, payer, occurred_at_ms, observed_at_ms, quantity, unit, cost_source,
+        9007199254740991.1, source_ref, received_at FROM papercusp_auth.hosted_usage_receipts WHERE record_id = ${a.recordId}`))
+      .rejects.toMatchObject({ code: '23514' });
   });
 
   it('serializes conflicting revisions and catches a receipt-id collision across different usage streams', async () => {

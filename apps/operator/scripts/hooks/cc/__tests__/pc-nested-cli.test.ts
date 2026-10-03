@@ -631,6 +631,9 @@ const NESTED_CLI_POLICY: Record<string, NestedPolicy> = {
   "posttoolbatch-locks-release.sh": "as-owner",
   // The su's identity guard only ever votes deny and writes nothing: the su's rail.
   "pretooluse-identity-guard.sh": "as-owner",
+  // A nested CLI inherits the su SID, so its egress checks must keep enforcing the
+  // parent's disclosure state rather than skipping the guard.
+  "pretooluse-restricted-egress-guard.mjs": "as-owner",
   // Enforcement (holds, exclusives, deny rules) as the su; only its say-once advisory
   // seen-set re-keys to the nested CLI's own session (_advisory_session_key).
   "pretooluse-bash-resource-gate.sh": "as-owner",

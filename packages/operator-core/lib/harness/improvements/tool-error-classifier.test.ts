@@ -178,6 +178,19 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'invalid_input: database constraint failed')).toBe('structural');
   });
 
+  it('classifies the code:run dynamic-import sandbox refusal as caller even when reproduced', () => {
+    const message =
+      'code:run rejects dynamic import/require of repo modules and node builtins; use the exposed tools whitelist.';
+    expect(classifyToolError('dynamic_import_unsupported', 'failed', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'code:run',
+      errorCode: 'dynamic_import_unsupported',
+      status: 'failed',
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies the nested tools:invoke checkpoint replacement safety refusal as caller', () => {
     // Live rows keep the nested { ok:false, error, errorCode } refusal as JSON
     // in error_message, while the wrapper records error_code='handler_error'.

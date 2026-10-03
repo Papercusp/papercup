@@ -6,6 +6,7 @@
  * the ledger_chain_links stream. Substituted: nothing.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { pgLedgerChainLinkStore, verifyLedger } from './ledger-chain';
@@ -41,6 +42,13 @@ function entryFor(entryId: string, movement: MoneyMovement, externalRef: Externa
 
 beforeAll(async () => {
   db = await createOrgTestDb({ adminPoolMax: 6 });
+  let migration: string;
+  try { migration = readFileSync(new URL('../../../../../libs/papercusp/libs/db/sql/1354-hosted-usage-exact-micros.sql.DRAFT', import.meta.url), 'utf8'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    migration = readFileSync(new URL('../../../../../libs/papercusp/libs/db/sql/1354-hosted-usage-exact-micros.sql', import.meta.url), 'utf8');
+  }
+  await db.adminSql.unsafe(migration); await db.adminSql.unsafe(migration);
   deps = { sql: db.adminSql, ledgerChain: pgLedgerChainLinkStore(db.adminSql) };
 }, 180_000);
 
@@ -49,6 +57,24 @@ afterAll(async () => {
 });
 
 describe('money journal on Postgres (P-042, R-30)', () => {
+  it('keeps exact residue in durable rollups under concurrent replay and settlement', async () => {
+    const rollupId = 'exact-decimal';
+    const input = { workspaceId: WS, rollupId, accrualId: 'decimal-a', micros: 4999, microsExact: '4999.6' };
+    const deliveries = await Promise.all(Array.from({ length: 8 }, () => accrueUsageMicros(input, deps)));
+    expect(deliveries.filter(r => r.ok && !r.duplicate)).toHaveLength(1);
+    expect(deliveries.filter(r => r.ok && r.duplicate)).toHaveLength(7);
+    expect(await accrueUsageMicros({ ...input, microsExact: '4999.7' }, deps)).toMatchObject({ ok: false, detail: 'accrual replay mismatch' });
+    expect(await accrueUsageMicros({ ...input, accrualId: 'decimal-b', micros: 5000, microsExact: '5000.6' }, deps)).toMatchObject({ ok: true, totalMicrosExact: '10000.2' });
+    const settle = { workspaceId: WS, rollupId, entryId: 'exact-cent', occurredAtMs: 1_790_000_000_000, externalRef: chainRef(1234), daoBasisPoints: 0 };
+    const results = await Promise.all([settleUsageRollup(settle, deps), settleUsageRollup(settle, deps)]);
+    expect(results.filter(r => r.ok && !r.duplicate)).toHaveLength(1);
+    const rollup = await readMicrosRollup(WS, rollupId, deps);
+    expect(rollup).toMatchObject({ totalMicros: 10000, totalMicrosExact: '10000.2', settledCents: 1, roundingMicros: 0, roundingMicrosExact: '0.2' });
+    expect(rollupInvariant(await readMoneyJournalEntries(WS, deps), rollup!).holds).toBe(true);
+    const other = await readMicrosRollup('other-workspace', rollupId, deps); expect(other).toBeNull();
+    await expect(db.adminSql`UPDATE harness_shared.money_journal_rollups SET rounding_micros = 0.3 WHERE workspace_id = ${WS} AND rollup_id = ${rollupId}`)
+      .rejects.toMatchObject({ code: '23514' });
+  });
   it('posts balanced entries for each movement, reads them back exactly, and is idempotent on entryId', async () => {
     const entries = [
       entryFor('pay-1', { kind: 'customer-payment', grossCents: 10_000, feeCents: 320, taxCents: 800, daoCents: 920, refundReserveCents: 100 }, { kind: 'stripe-balance-transaction', id: 'txn_1Pay' }),

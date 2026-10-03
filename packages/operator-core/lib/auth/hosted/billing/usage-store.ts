@@ -8,6 +8,7 @@ import { withHostedServiceContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { splitMicrosDecimal } from '../../../cupboard/money-journal';
 import {
   buildHostedUsageStatement,
   validateHostedUsageRecord,
@@ -25,13 +26,15 @@ type ReceiptRow = {
 };
 
 function receipt(row: ReceiptRow): HostedUsageRecord {
+  const amount = row.cost_micros === null ? null : splitMicrosDecimal(String(row.cost_micros));
   const record: HostedUsageRecord = {
     controlWorkspaceId: row.control_workspace_id, organizationId: row.organization_id,
     customerWorkspaceId: row.customer_workspace_id, provider: row.provider,
     recordId: row.record_id, usageId: row.usage_id, revision: Number(row.revision),
     category: row.category, payer: row.payer, occurredAtMs: Number(row.occurred_at_ms),
     observedAtMs: Number(row.observed_at_ms), quantity: Number(row.quantity), unit: row.unit,
-    costSource: row.cost_source, costMicros: row.cost_micros === null ? null : Number(row.cost_micros),
+    costSource: row.cost_source, costMicros: amount?.micros ?? null,
+    ...(amount?.exact.includes('.') ? { costMicrosExact: amount.exact } : {}),
     sourceRef: row.source_ref,
   };
   validateHostedUsageRecord(record);
@@ -41,9 +44,10 @@ function receipt(row: ReceiptRow): HostedUsageRecord {
 const keys = [
   'controlWorkspaceId', 'organizationId', 'customerWorkspaceId', 'provider', 'recordId',
   'usageId', 'revision', 'category', 'payer', 'occurredAtMs', 'observedAtMs', 'quantity',
-  'unit', 'costSource', 'costMicros', 'sourceRef',
+  'unit', 'costSource', 'costMicros', 'costMicrosExact', 'sourceRef',
 ] as const;
-const canonical = (record: HostedUsageRecord) => JSON.stringify(keys.map(key => record[key]));
+const canonical = (record: HostedUsageRecord) => JSON.stringify(keys.map(key =>
+  key === 'costMicrosExact' ? record.costMicrosExact ?? String(record.costMicros) : record[key]));
 
 export type HostedUsageAppendResult = 'recorded' | 'duplicate' | 'replay-mismatch' | 'revision-conflict';
 
@@ -82,7 +86,7 @@ export class PostgresHostedUsageStore {
         VALUES (${record.controlWorkspaceId}, ${record.organizationId}, ${record.customerWorkspaceId},
                 ${record.provider}, ${record.recordId}, ${record.usageId}, ${record.revision},
                 ${record.category}, ${record.payer}, ${record.occurredAtMs}, ${record.observedAtMs},
-                ${record.quantity}, ${record.unit}, ${record.costSource}, ${record.costMicros}, ${record.sourceRef})
+                ${record.quantity}, ${record.unit}, ${record.costSource}, ${record.costMicrosExact ?? record.costMicros}, ${record.sourceRef})
         ON CONFLICT DO NOTHING RETURNING record_id`;
       if (inserted.length) return 'recorded';
       // One receipt id can race under two DIFFERENT usage ids. The table's

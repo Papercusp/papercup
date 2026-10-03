@@ -83,7 +83,11 @@ export interface TransferReplayAdapterDeps {
 /** Bind lib/replay's battery as the tick's TransferReplayPort. */
 export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferReplayPort {
   const run = deps.runGoverned ?? runGovernedReplay;
-  return async ({ lesson, transcript }) => {
+  return async (input) => {
+    // Caller objects and injected ports may change while the battery is awaited.
+    // Keep the source artifact and the task used by both arms independent of them.
+    const lesson = structuredClone(input.lesson);
+    const transcript = structuredClone(input.transcript);
     if (lesson.workspaceId !== deps.workspaceId || lesson.sourceRef !== transcript.ref) {
       throw new Error('transfer replay source does not match the lesson workspace/transcript');
     }
@@ -95,6 +99,7 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
       transcript,
       turnIndex: pickTransferCutIndex(transcript),
     };
+    const taskHash = hash(replayCase);
     const config: ReplayBatteryConfig = {
       // Deterministic per test round: lesson id + how many tests it has had.
       batteryId: `transfer:${lesson.id}:t${lesson.testCount + 1}`,
@@ -107,14 +112,17 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
     const invocations: TransferReplayEvidence['invocations'][number][] = [];
     const judgeInvocations: Parameters<JudgeLlmCall>[0][] = [];
     const judgeExecutions: NonNullable<TransferReplayEvidence['judgeExecutions']>[number][] = [];
+    const judgeResponses: NonNullable<TransferReplayEvidence['judgeResponses']>[number][] = [];
     const runner: ReplayRunner = async (input) => {
-      const handle = await deps.runner(input);
+      const request = structuredClone(input);
+      const handle = structuredClone(await deps.runner(structuredClone(request)));
       invocations.push({
-        variantId: input.variant.variantId,
-        systemPromptHash: hash(input.systemPrompt), contextHash: hash(input.contextText),
+        variantId: request.variant.variantId,
+        systemPromptHash: hash(request.systemPrompt), contextHash: hash(request.contextText),
         model: handle.execution?.model ?? null, codeHash: handle.execution?.codeHash ?? null,
         ...(handle.execution?.loadedCode ? { loadedCode: structuredClone(handle.execution.loadedCode) } : {}),
         ...(handle.execution?.unresolved ? { unresolved: [...handle.execution.unresolved] } : {}),
+        request, response: structuredClone(handle),
       });
       return handle;
     };
@@ -124,8 +132,10 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
         // Pin every actual judge attempt, including repair/retry prompts.
         judgeInvocations.push(structuredClone(input));
         const index = judgeExecutions.push(null) - 1;
-        const reply = await deps.llmCall(input);
+        judgeResponses.push(null);
+        const reply = structuredClone(await deps.llmCall(structuredClone(input)));
         judgeExecutions[index] = reply.execution ? structuredClone(reply.execution) : null;
+        judgeResponses[index] = structuredClone(reply);
         return reply;
       }, now },
     );
@@ -144,11 +154,12 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
       );
     }
     const evaluation: TransferReplayEvidence = {
+        source: { lesson: structuredClone(lesson), transcript: structuredClone(transcript) },
         costMeasured: result.costMeasured,
         experiment: {
           batteryId: result.batteryId, testId: 'replay',
           baselineId: REPLAY_BASELINE_VARIANT.variantId, challengerId: WITH_LESSON_VARIANT_ID,
-          taskHash: hash(replayCase),
+          taskHash,
           modelHash: invocations.length === 2 && invocations.every((v) => v.model !== null) && judgeInvocations.length >= 2
             ? hash({ students: invocations.map((v) => ({ variantId: v.variantId, model: v.model })),
               judges: judgeInvocations.map((v, index) => ({ model: v.model,
@@ -164,7 +175,7 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
           repeats: config.repeats, startedAt, completedAt: new Date(now()).toISOString(),
         },
         reservation: reservation ?? null, outcomes: result.outcomes,
-        budgetExhausted: result.budgetExhausted, invocations, judgeExecutions,
+        budgetExhausted: result.budgetExhausted, invocations, judgeExecutions, judgeInvocations, judgeResponses,
         loadedCode: { adapter: TRANSFER_ADAPTER_SOURCE_HASH, battery: REPLAY_BATTERY_SOURCE_HASH,
           evaluator: result.loadedCode ? structuredClone(result.loadedCode) : null },
     };

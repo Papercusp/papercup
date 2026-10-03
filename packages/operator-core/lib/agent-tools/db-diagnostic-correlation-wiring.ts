@@ -24,7 +24,7 @@ const REQUEST_CONTEXT = pinModuleState(
 );
 
 /** The route passes only a registry-confirmed name, or null for an unknown operation. */
-export function withNamedQueryDiagnosticContext<T>(operation: string | null, fn: () => T): T {
+export function withNamedQueryDiagnosticContext<T>(operation: string | null, fn: (requestId: string) => T): T {
   const requestId = randomUUID();
   return REQUEST_CONTEXT.run(Object.freeze({
     ...pgDiagnosticIdentity(),
@@ -35,7 +35,7 @@ export function withNamedQueryDiagnosticContext<T>(operation: string | null, fn:
     boundary: null,
     requestId,
     ...(operation ? { operation } : {}),
-  }), fn);
+  }), () => fn(requestId));
 }
 
 /** Record the exact main-process objects, never a serializer-worker clone. */

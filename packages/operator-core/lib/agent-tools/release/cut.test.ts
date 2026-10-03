@@ -957,6 +957,23 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(tool.args.safeParse({ ...runArgs, seedless: true }).success).toBe(true);
     expect(tool.args.safeParse({ ...runArgs, fullHistory: true }).success).toBe(true);
   });
+  it('transports D166 inputs through the public cut schema, preview and detached runtime', async () => {
+    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original' };
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency }).success).toBe(true);
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency: { ...seedUuidIdempotency, plansSha256: 'bad' } }).success).toBe(false);
+    const preview = body(await tool.handler({ ...runArgs, seedUuidIdempotency } as never, { role: 'operator' } as never));
+    expect(preview.wouldRun).toContain("PAPERCUSP_SEED_UUID_PLAN_PATH='/private/plans.json'");
+    await tool.handler({ ...runArgs, seedUuidIdempotency, confirm: true } as never, { role: 'operator' } as never);
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({ runtime: expect.objectContaining({ seedUuidIdempotency }) }));
+  });
+  it('refuses UUID plans with seed reuse or seedless before opening a managed operation', async () => {
+    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original' };
+    for (const bad of [{ reuseSeed: true }, { seedless: true }]) {
+      const result = body(await tool.handler({ ...runArgs, seedUuidIdempotency, ...bad } as never, { role: 'operator' } as never));
+      expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('seed_uuid_mode_conflict') });
+    }
+    expect(beginOpM).not.toHaveBeenCalled(); expect(launchM).not.toHaveBeenCalled();
+  });
   it('binds the whole-cut task, detached tests, and preview to the same caller harness', async () => {
     const ctx = { role: 'operator', harnessSlug: 'customer-app' } as never;
     const preview = body(await tool.handler(runArgs as never, ctx));

@@ -119,6 +119,21 @@ describe('GET /hosted/billing/usage', () => {
     expect(response.status).toBe(200); expect(await response.text()).not.toContain('private');
   });
 
+  it('returns whitelisted exact amounts and fractional residue through the authenticated usage route', async () => {
+    const built = await runtime(async input => buildHostedUsageStatement({ ...input,
+      source: { complete: false, observedAtMs: T, maximumAgeMs: 0, evidenceRef: 'fixture:decimal' }, records: [{
+        ...input.scope, customerWorkspaceId: input.scope.customerWorkspaceId ?? 'customer-a', provider: 'fixture-provider',
+        recordId: 'decimal-r', usageId: 'decimal-u', revision: 1, category: 'compute', payer: 'consumption',
+        occurredAtMs: T - 1, observedAtMs: T, quantity: 1, unit: 'seconds', costSource: 'provider-billed',
+        costMicros: 20003, costMicrosExact: '20003.56', sourceRef: 'fixture:decimal-bill',
+      }] }));
+    const response = await built.app.request('/api/hosted/billing/usage', headers());
+    expect(response.status).toBe(200); const body = await response.json();
+    expect(body.statement.consumptionBilled).toMatchObject({ microsExact: '20003.56', roundingMicrosExact: '3.56', wholeCents: 2 });
+    expect(body.statement.lines[0]).toMatchObject({ billedMicrosExact: '20003.56' });
+    expect(body.statement.history[0].revisions[0]).toMatchObject({ costMicrosExact: '20003.56' });
+  });
+
   it('mounts the default durable store source and keeps an empty unmeasured population incomplete', async () => {
     const sql = vi.fn(async () => []);
     const runService: HostedServiceContextRunner = fn => fn(sql as unknown as Sql);

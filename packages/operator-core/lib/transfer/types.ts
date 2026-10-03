@@ -134,6 +134,8 @@ export interface TransferTestOutcome {
 export interface TransferReplayEvidence {
   /** Complete evaluated contract; absent evidence never authorizes promotion. */
   contract?: LearningContract;
+  /** Caller source bytes captured before any awaited execution. */
+  source?: { lesson: TransferLesson; transcript: ReplayTranscript };
   costMeasured?: boolean;
   experiment: Omit<LearningExperiment, 'modelHash' | 'promptHash' | 'codeHash'> & {
     modelHash: string | null;
@@ -144,6 +146,8 @@ export interface TransferReplayEvidence {
   outcomes: readonly ReplayOutcome[];
   budgetExhausted: boolean;
   judgeExecutions?: readonly (import('@papercusp/testing-shell/llm').LlmExecutionReceipt | null)[];
+  judgeInvocations?: readonly Parameters<import('@papercusp/eval-battery').JudgeLlmCall>[0][];
+  judgeResponses?: readonly (Awaited<ReturnType<import('@papercusp/eval-battery').JudgeLlmCall>> | null)[];
   invocations: readonly {
     variantId: string;
     systemPromptHash: string;
@@ -152,6 +156,9 @@ export interface TransferReplayEvidence {
     codeHash: string | null;
     loadedCode?: Readonly<Record<string, string | null>>;
     unresolved?: readonly string[];
+    /** Actual runner boundary artifacts, separate from task-success evidence. */
+    request?: Parameters<import('../replay/types').ReplayRunner>[0];
+    response?: Awaited<ReturnType<import('../replay/types').ReplayRunner>>;
   }[];
   /** Measured modules, kept separately from a complete execution-code pin. */
   loadedCode: { adapter: string | null; battery: string | null;

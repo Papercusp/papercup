@@ -8,6 +8,7 @@
  * Docs: https://openrouter.ai/docs/cookbook/administration/usage-accounting
  */
 import { createHash } from 'node:crypto';
+import { formatMicrosDecimal, splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { PostgresHostedUsageStore, type HostedUsageAppendResult } from './usage-store';
 import { validateHostedUsageRecord, type HostedUsageRecord } from './usage-statement';
 
@@ -48,22 +49,20 @@ const sameScope = (a: Scope, b: Scope) => a.controlWorkspaceId === b.controlWork
   && a.organizationId === b.organizationId && a.customerWorkspaceId === b.customerWorkspaceId;
 
 /** Convert the provider's decimal USD representation without float multiplication.
- * The existing receipt rail has integer micros. A fraction of one micro remains
- * unpriced until an exact finer-grained roll-up is available; never round a bill
- * up/down or turn absent, malformed, negative or overflowing costs into zero.
+ * Preserve submicro charges as canonical decimals on the same receipt rail;
+ * never round requests or turn absent/invalid/overflowing costs into zero.
  * The shadow display's usdToMicros intentionally rounds and maps missing to
  * zero, so it cannot supply this commercial receipt's exact/unknown contract. */
-function exactMicros(value: unknown): number | null {
+function exactMicros(value: unknown): { micros: number; exact: string } | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
   const parts = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/.exec(String(value));
   if (!parts) return null;
   const fraction = parts[2] ?? '';
   const coefficient = BigInt(parts[1]! + fraction);
   const power = 6 + Number(parts[3] ?? 0) - fraction.length;
-  const divisor = power < 0 ? 10n ** BigInt(-power) : 1n;
-  if (coefficient % divisor !== 0n) return null;
-  const micros = power < 0 ? coefficient / divisor : coefficient * 10n ** BigInt(power);
-  return micros <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(micros) : null;
+  try {
+    return splitMicrosDecimal(formatMicrosDecimal(power < 0 ? coefficient : coefficient * 10n ** BigInt(power), Math.max(0, -power)));
+  } catch { return null; }
 }
 
 /** Whitelist only the account charge; no prompts, keys or arbitrary metadata.
@@ -78,12 +77,13 @@ export function openRouterUsageRecord(binding: OpenRouterUsageBinding, payload: 
       || payload.data.id !== binding.generationId || payload.data.is_byok !== binding.isByok) {
     throw new Error('OpenRouter generation binding mismatch');
   }
-  const costMicros = exactMicros(payload.data.total_cost);
+  const amount = exactMicros(payload.data.total_cost);
+  const costMicros = amount?.micros ?? null;
   const values = { ...scope, provider: 'openrouter', usageId: binding.generationId,
     revision: binding.revision, category: 'inference-fees' as const, payer: binding.payer,
     occurredAtMs: binding.occurredAtMs, observedAtMs: binding.observedAtMs,
     quantity: 1, unit: 'generations', costSource: costMicros === null ? 'unpriced' as const : 'provider-reported' as const,
-    costMicros, sourceRef: binding.evidenceRef };
+    costMicros, ...(amount?.exact.includes('.') ? { costMicrosExact: amount.exact } : {}), sourceRef: binding.evidenceRef };
   // A replay pins the same observation; changed provider charges under an old
   // server revision are refused by the store, not silently replaced or added.
   const recordId = 'openrouter:' + createHash('sha256').update(JSON.stringify(values)).digest('hex');

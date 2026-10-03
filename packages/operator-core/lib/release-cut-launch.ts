@@ -185,6 +185,9 @@ export interface CutRuntimeEnv {
   reuseSeed?: boolean;
   /** Reviewed private D-140 exact-content seed finding evidence, never a path skip. */
   seedFindingProof?: string;
+  /** Private D166 plan bound to a frozen ORIGINAL store. Transport only;
+   * independent source/candidate acceptance remains required. */
+  seedUuidIdempotency?: { plansPath: string; plansSha256: string; sourceStoreDir: string };
   /** Explicit new-build path: package the validated placeholder-only seed directory
    * without cutting or reusing a hive seed. Unlike reuseSeed, this does not restore
    * retry-owned version residue before launch. */
@@ -295,6 +298,21 @@ export function buildCutEnv(
     );
   }
   if (runtime.reuseSeed || runtime.seedless) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  if (runtime.seedUuidIdempotency) {
+    const { plansPath, plansSha256, sourceStoreDir } = runtime.seedUuidIdempotency;
+    if (runtime.reuseSeed || runtime.seedless || !plansPath?.startsWith('/')
+        || !sourceStoreDir?.startsWith('/') || !/^[0-9a-f]{64}$/.test(plansSha256)) {
+      throw new Error('seed_uuid_mode_conflict — UUID plans require exact absolute private inputs and a fresh frozen-source cut');
+    }
+    env.PAPERCUSP_SEED_UUID_PLAN_PATH = plansPath;
+    env.PAPERCUSP_SEED_UUID_PLAN_SHA256 = plansSha256;
+    env.PAPERCUSP_SEED_STORE_DIR = sourceStoreDir;
+    env.PAPERCUSP_SEED_FORCE = '1';
+    env.PAPERCUSP_SEED_CORESTORE = '1';
+    env.PAPERCUSP_SEED_REUSE_CORESTORE = '0';
+    env.PAPERCUSP_SEED_SPARSE = '0';
+    env.PAPERCUSP_SEED_SNAPSHOT_DIR = '';
+  }
   if (runtime.seedFindingProof) env.PAPERCUSP_RELEASE_SEED_FINDING_PROOF = runtime.seedFindingProof;
   if (runtime.fullHistory) env.PAPERCUSP_SEED_DEPTH = '';
   // BOTH-OR-NEITHER, enforced HERE rather than discovered in the cut. release-local.sh's
