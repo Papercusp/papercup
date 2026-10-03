@@ -5,7 +5,7 @@ import { installFlagOverrideStore } from '../../flag-override-store.ts';
 import { getPilotCapabilityManifest } from '../../dream/capability-catalog.ts';
 import { buildCapabilityPacket } from '../../dream/capability-packets.ts';
 import { buildCapabilityReviewSources } from '../../dream/capability-review-sources.ts';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../../module-repo-root.ts';
 
 if (process.env.PAPERCUSP_EMBED_SIDECAR_URL !== 'http://127.0.0.1:3384') throw new Error('Use the verified local scorer');
 process.env.PAPERCUSP_WORKSPACE_ID = 'papercusp-workspace';
@@ -31,7 +31,7 @@ try {
   } catch (error) {
     console.log(JSON.stringify({ phase: 'direct-error', elapsedMs: Date.now() - started, error: String(error), cause: String(error?.cause ?? '') }));
   }
-  const rootPath = fileURLToPath(new URL('../../../../../', import.meta.url));
+  const rootPath = moduleRepoRoot(import.meta.url);
   const manifest = getPilotCapabilityManifest();
   const scope = { workspaceId: 'papercusp-workspace', potSlug: 'papercusp', repositoryId: 'papercusp' };
   const packets = [];

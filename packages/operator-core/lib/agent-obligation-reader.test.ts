@@ -804,7 +804,10 @@ describe('consult-reconciliation source (EI-23764501791910357 slice 2)', () => {
   /** Replaces `getOrgPg().sql` with a recorder; the default dep imports it lazily. */
   function mockConsultSql(rows: unknown[]) {
     const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => rows);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({
+      ...(await orig<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql: Object.assign(sql, { begin: vi.fn() }) }),
+    }));
     return {
       sql,
       /** The one statement the dep issued, whitespace-collapsed, with `$` where a value was bound. */

@@ -18,6 +18,7 @@ import { getDreamRun } from '../../dream/dream-run-store.ts';
 import { dreamCapabilityRun } from '../../dream/dream-run-provenance.ts';
 import { captureStudyTiming } from './timing.mts';
 import { enableStudyMaster, prepareStudyRoutine, restoreStudyControls, studyRestorationPorts, studyRoutinePorts } from './controls.mts';
+import { moduleRepoRoot } from '../../module-repo-root.ts';
 
 // This standalone driver does not inherit the operator service's environment.
 // A fresh in-process model can miss the review deadline after generation is paid.
@@ -27,7 +28,7 @@ if (!sidecar || !/^http:\/\/(127\.0\.0\.1|localhost):[0-9]+\/?$/.test(sidecar))
   throw new Error('D017 study requires PAPERCUSP_EMBED_SIDECAR_URL from the local operator service before any settings change or paid call');
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, '../../../../..');
+const root = moduleRepoRoot(import.meta.url);
 const workspaceId = 'papercusp-workspace';
 process.env.PAPERCUSP_WORKSPACE_ID = workspaceId;
 const blockArg = process.argv.find(arg => arg.startsWith('--block='))?.slice('--block='.length) ?? 'haiku';

@@ -4,7 +4,8 @@ const pgMock = vi.hoisted(() => ({
   queries: [] as Array<{ text: string; values: unknown[] }>,
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: async (_workspaceId: string, callback: (tx: unknown) => unknown) => {
     const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
       pgMock.queries.push({ text: strings.join(' ? '), values });

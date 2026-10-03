@@ -20,9 +20,10 @@ import { buildCapabilitySamplingSnapshot } from '../../dream/capability-sampler.
 import { STUDY_BLOCKS, validateStudyBlocks, readStudyTotals, requireStudyRoom } from './accounting.mts';
 import { createBlenderAdmission } from './blender-guard.mts';
 import { enableStudyMaster, restoreStudyControls, studyRestorationPorts } from './controls.mts';
+import { moduleRepoRoot } from '../../module-repo-root.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, '../../../../..');
+const root = moduleRepoRoot(import.meta.url);
 const workspaceId = 'papercusp-workspace';
 process.env.PAPERCUSP_WORKSPACE_ID = workspaceId;
 const sidecar = process.env.PAPERCUSP_EMBED_SIDECAR_URL;

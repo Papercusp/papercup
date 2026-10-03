@@ -81,10 +81,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return {
     ...actual,
     getOrgPg: () => ({
-      sql: vi.fn(async (strings: unknown, ...values: unknown[]) => {
-        state.sqlCalls.push({ text: Array.isArray(strings) ? strings.join('?') : String(strings), values });
-        return { count: 0 };
-      }),
+      sql: Object.assign(
+        vi.fn(async (strings: unknown, ...values: unknown[]) => {
+          state.sqlCalls.push({ text: Array.isArray(strings) ? strings.join('?') : String(strings), values });
+          return { count: 0 };
+        }),
+        { begin: vi.fn() },
+      ),
     }),
     listDueCronRoutines: vi.fn(async () => []),
   };
