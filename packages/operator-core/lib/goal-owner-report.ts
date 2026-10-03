@@ -160,6 +160,15 @@ export interface GoalOwnerReportStamp {
   killed: string;
   /** Absent on stamps written before WI-10005205; always present on new stamps. */
   nextWake?: string;
+  /**
+   * State of every work-item ref the MOVED field cited, read at send time. The
+   * NEXT report is checked against it: a ref reported as done that has since
+   * regressed must be corrected explicitly (P-005 (c), WI-10005610). Absent on
+   * stamps written before that check existed, and when the state read failed.
+   */
+  citedRefStates?: GoalReportCitedRef[];
+  /** What the send-time truth checks could establish (P-005); absent on older stamps. */
+  truth?: GoalOwnerReportTruthSummary;
 }
 
 export interface GoalOwnerReportParseResult {
@@ -304,7 +313,11 @@ export function parseGoalOwnerReport(input: GoalOwnerReportTextInput): GoalOwner
   };
 }
 
-export function stampGoalOwnerReport(goalId: string, parsed: GoalOwnerReportParseResult): GoalOwnerReportStamp {
+export function stampGoalOwnerReport(
+  goalId: string,
+  parsed: GoalOwnerReportParseResult,
+  truth?: { citedRefStates?: GoalReportCitedRef[] | null; summary?: GoalOwnerReportTruthSummary | null },
+): GoalOwnerReportStamp {
   const id = goalId.trim();
   if (!id) throw new Error('goal owner report stamp requires a goal id');
   if (!parsed.complete) throw new Error('cannot stamp an incomplete goal owner report');
@@ -316,6 +329,8 @@ export function stampGoalOwnerReport(goalId: string, parsed: GoalOwnerReportPars
     ownerWalled: parsed.fields.ownerWalled!,
     killed: parsed.fields.killed!,
     nextWake: parsed.fields.nextWake!,
+    ...(truth?.citedRefStates ? { citedRefStates: truth.citedRefStates } : {}),
+    ...(truth?.summary ? { truth: truth.summary } : {}),
   };
 }
 
