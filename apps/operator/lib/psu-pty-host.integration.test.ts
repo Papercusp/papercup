@@ -1416,7 +1416,8 @@ describe('session-port managed seed + native persistence helpers', () => {
       "process.stdout.write('psu: launcher banner\\n');",
       "setTimeout(()=>{process.stdout.write('\\x1b[6n');setTimeout(()=>process.stdout.write('\\x1b[1;1H│ >_ OpenAI Codex (v0.156.1) │\\n│ model: GPT-5.6-Sol high /model to change │\\n› Ask Codex to do anything   Starting · GPT-5.6-Sol high · Context 100% left\\n'),50);},100);",
       "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3H› Ask Codex to do anything   Ready · GPT-5.6-Sol high · Context 100% left\\n');},1200);",
-      'setTimeout(()=>process.exit(0),6000);',
+      // The host owns teardown. A fixed child lifetime can end between the
+      // kickoff text and submit CR, so readiness must be proved before QUIT.
     ].join('');
     let done: Promise<number> | undefined;
     try {
@@ -2978,9 +2979,9 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
     25_000,
   );
 
-  it(
-    'stores only the direct-3170 enum for an interactive stale host and preserves the D-008 no-reexec refusal',
-    async () => {
+  it.each(['staging-proxy', undefined] as const)(
+    'stores only operator-pin enums for an interactive stale host (route=%s) and preserves the D-008 no-reexec refusal',
+    async (route) => {
       const ownerId = `su-stale-host-direct-3170-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
@@ -3012,6 +3013,12 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
           io,
           bridgeTty: true,
           hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
+          healOperatorPin: async () => {
+            const from = env.PAPERCUSP_OPERATOR_URL;
+            const to = 'http://agent:DESTINATION-CREDENTIAL@127.0.0.1:9171/api/mcp?token=DESTINATION-TOKEN';
+            env.PAPERCUSP_OPERATOR_URL = to;
+            return { from, to, route };
+          },
           mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
           onReexec: ({ code }: { code: number }) => { reexecs.push(code); },
           onExit: () => {},
@@ -3032,7 +3039,9 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
               .filter(Boolean)
               .map((line) => JSON.parse(line))
               .find((event) => event.kind === 'host-code-stale');
-            if (staleRow) break;
+            // Inspect the complete transition: the old snapshot could stop at
+            // host-code-stale, before the routing/healing event leaked its URL.
+            if (staleRow && eventLogText.includes('"kind":"respawned"')) break;
           }
           await sleep(25);
         }
@@ -3045,8 +3054,14 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
           willAdopt: false,
         });
         expect(reexecs).toEqual([]);
+        const pinEvent = eventLogText.split('\n').filter(Boolean).map((line) => JSON.parse(line))
+          .find((event) => event.kind === (route === 'staging-proxy' ? 'operator-pin-routed' : 'operator-pin-healed'));
+        expect(pinEvent).toMatchObject({ from: 'direct-3170', to: 'other', mode: 'recycle' });
+        expect(env.PAPERCUSP_OPERATOR_URL).toContain('DESTINATION-CREDENTIAL');
         expect(eventLogText).not.toContain('PRIVATE-CREDENTIAL');
         expect(eventLogText).not.toContain('PRIVATE-TOKEN');
+        expect(eventLogText).not.toContain('DESTINATION-CREDENTIAL');
+        expect(eventLogText).not.toContain('DESTINATION-TOKEN');
         expect(eventLogText).not.toContain('UNRELATED-PRIVATE-VALUE');
       } finally {
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
