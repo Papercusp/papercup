@@ -1,0 +1,918 @@
+{
+  "schemaVersion": "papercusp-comparative-input-census-v1",
+  "workItem": "WI-10005898",
+  "plan": {
+    "slug": "papercusp-log-performance-remediation-2026-09-23",
+    "version": 100,
+    "contentHash": "b678363f55c3263dedc0c7989cdadd948da36542286119e119bd2f2cde1ac7eb",
+    "preparationItem": "P-018",
+    "finalAcceptanceItem": "P-009"
+  },
+  "spec": {
+    "id": "PERF-P-018-PREPARATION",
+    "revision": 1,
+    "fingerprint": "c40aa18664ab3fb2d99800d4c7c023f028bdd74bbf8d920c7aa84bbebfa6e64b"
+  },
+  "recordedAt": "2026-10-03T06:43:13.924517+00:00",
+  "status": "Prepared qualified input census; missing comparison descriptors and final acceptance/shipment remain open.",
+  "method": {
+    "readScope": "17 producing work-items. Initial15 usable plus2 timed out; one bounded follow-up resolved P016/P017. Original partial result preserved.",
+    "reuse": "Existing producing work-items, audit documents, docs/evidence and accepted P018 clause. No new monitor/benchmark mechanism.",
+    "receiptMeaning": "Stored completion text quoted verbatim; terminal status does not imply current tested source, loaded build, speedup or shipment. Native input retains the original failed wrapper.",
+    "findingScope": "12 exact September finding headings, six October follow-up headings, and six Phase6 owner-directed plan additions. Requirements and final integration obligations remain in the plan."
+  },
+  "laneInputs": [
+    {
+      "planItem": "P-001",
+      "scope": "performance producer",
+      "producingWorkItem": "WI-10002823",
+      "receiptRef": "work-item:papercusp:WI-10002823",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "Restored the backend performance-series producer on the existing active system-health sweep without re-enabling the owner-paused learning watchdog. The independent Health reader now reports stale, absent, unreadable, future-timestamp and disabled states truthfully; current integration/counterexample/census proof and committed live-series evidence both pass.",
+        "testsRun": "test_run 19210434: six integration scenarios, pass, zero skips; exact PERF-P-001 adequacy pass on bindings 10747/11264/11265. Operational test_run 19674031 recorded docs/evidence/p001-performance-producer-live-2026-09-26.json at commit 1ae55c476b27d5e13108f6644ba761cb9670a6bc, sha256 2e985e190715c49568c7210511dc8b1cb19ba6531e18500d5bfa6bfe0f6d3d0f.",
+        "testResult": "PASS. papercusp-bg-host.service ActiveState=active MainPID=1357826; loaded build e45de4f8f8e0a0bc49dfec4360645755e7ac92b6 contains exact current P-001 blobs. Health status=ok, lastCapturedAt=2026-09-26T22:41:59.784Z; four persisted samples had 15-16 minute gaps below the 30-minute stale threshold. AUTO-BAR-R-1-P-001@1 and PERF-P-001@1 both pass with no wouldBlock criteria.",
+        "verifiedHow": "live-service"
+      },
+      "completionFreshness": "stale",
+      "verifiedTreeHead": "1ae55c476b27d5e13108f6644ba761cb9670a6bc",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [
+        "docs/evidence/p001-performance-producer-live-2026-09-26.json",
+        "docs/evidence/papercusp-performance-remediation-2026-09-23.md"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "Stored terminal verification is stale on the current tree; retain it as historical evidence, not current acceptance.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-002",
+      "scope": "indexed search and activity-hook compatibility",
+      "producingWorkItem": "WI-10002824",
+      "receiptRef": "work-item:papercusp:WI-10002824",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "P-002 verified the existing indexed session-search and bounded fallback corrections plus activity-hook payload compatibility on the serving runtime; PERF-P-002@1 now has current integration and caught-counterexample proof.",
+        "testsRun": "Canonical npm run test:file -- packages/operator-core/lib/agent-tools/activity/report-args-contract.test.ts under scripts/mutation-probe.sh: baseline test_run 19666174, mutant test_run 19666185. Existing activity.integration.test.ts test_run 19214046. Release build 7708e activity invocation 29774138 and indexed search invocation 29774140.",
+        "testResult": "Baseline passed 6/6; removing glance_stale made the guard fail with exit 1, and MUTATION_PROBE_RESULT recorded verdict=caught. Serving runtime accepted the real glance_stale payload (activity id 6284156). PERF-P-002@1 evidence bindings 13646 and 10781 are current; spec-test-adequacy plan-class-bugfix verdict pass with wouldBlock=[].",
+        "verifiedHow": "integration"
+      },
+      "completionFreshness": "not-applicable",
+      "verifiedTreeHead": "cda1e874920686cd480c227ee2d975a4180743e1",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [
+        "docs/evidence/papercusp-performance-remediation-2026-09-23.md"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-003",
+      "scope": "Git spawning and profiler overhead",
+      "producingWorkItem": "WI-10002825",
+      "receiptRef": "work-item:papercusp:WI-10002825",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "P-003 is complete on current staging source: cancellation waits for real Git/sidecar descendant exit before repository-lease cleanup, signal-bearing Git uses the fenced sidecar path, and the existing lag monitor owns the bounded warm 100 Hz recorder. PERF-P-003@1 has a current L4 cohort and passed independent audit EI-24369994970704109.",
+        "testsRun": "89 transport cases; 77 warm-recorder cases; four-repository benchmark 19294494; current process integrations 19671152/53; focused baseline 19674061; single-mutation counterexample 19674069.",
+        "testResult": "All selected baselines passed. Mutant 19674069 failed both premature-return assertions with verdict=caught. Bindings 13709/13710/13731/13732 are current; evaluator verdict=pass at L4 with wouldBlock=[]; scorecard EI-24369823001432785 passed independent audit EI-24369994970704109.",
+        "verifiedHow": "integration"
+      },
+      "completionFreshness": "stale",
+      "verifiedTreeHead": "dae49a2ce2d9df926ce08f3c30698dcd96abb198",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [
+        "docs/evidence/papercusp-p003-git-sidecar-benchmark-2026-09-24.md",
+        "docs/evidence/papercusp-performance-remediation-2026-09-23.md"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "Stored terminal verification is stale on the current tree; retain it as historical evidence, not current acceptance.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-004",
+      "scope": "identity lineage and lexical retrieval",
+      "producingWorkItem": "WI-10002826",
+      "receiptRef": "work-item:papercusp:WI-10002826",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "Completed P-004 by reusing the existing identity-edge recursion and canonical lexical-search paths, projecting launch parents into a scalar migration-backed column, and proving the frozen representative workload, lineage semantics, lexical ranking, and bounded latency with current real-Postgres evidence.",
+        "testsRun": "test-run 19678668: current real-Postgres acceptance-author-identity performance suite; test-run 19680159: copy-out 600ms targeted mutation probe; test-run 19295830: canonical lexical unit suite; test-run 19295840: canonical lexical real-Postgres integration suite",
+        "testResult": "All production-path suites passed; frozen 100-call lineage p95 was 17.435ms control and 15.345ms relocated, projected EXPLAIN hits fell from 25,086 to 86, and the isolated 600ms delay was caught at 818.969ms by the <=500ms oracle. Independent grading audit passed.",
+        "verifiedHow": "Current PERF-P-004 bindings 13778 and 13838 are server-measured current; scorecard EI-24371639863308070 is terminal with gradingAudit.state=passed. Earlier lexical suites covered 103 passing tests and measured the canonical lower/LIKE ranking path."
+      },
+      "completionFreshness": "stale",
+      "verifiedTreeHead": "dae49a2ce2d9df926ce08f3c30698dcd96abb198",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [
+        "docs/evidence/papercusp-performance-remediation-2026-09-23.md"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "Stored terminal verification is stale on the current tree; retain it as historical evidence, not current acceptance.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-005",
+      "scope": "attention and coordination reads",
+      "producingWorkItem": "WI-10002827",
+      "receiptRef": "work-item:papercusp:WI-10002827",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "P-005 source and benchmark acceptance is complete: attention counts/refs use compact shared derivation, orientation overlaps independent reads, resumable-session and Learning queries avoid the measured full-row/materialization costs, and the existing roster cache was measured and retained.",
+        "testsRun": "Current bindings 11236/11237 from test run 19267334 (14 pass, 0 skipped), plus source suites recorded in the checkpoint: attention 72 pass, resumable-session 75 pass, orientation 215 unit + 7 integration pass, Learning 23 pass, and real-PG fresh/concurrent run 19270264.",
+        "testResult": "pass",
+        "verifiedHow": "PERF-P-005 current evidence records 100 warmed reads at p95 0.176041ms against the 250ms bar and a six-slow-read counterexample at p95 275.197474ms that the budget assertion rejects. Independent scorecard audit EI-24134111853441553 passed. Result-parity checks cover attention, orientation, resumable sessions, Learning summary/page, and concurrent readers."
+      },
+      "completionFreshness": "stale",
+      "verifiedTreeHead": "50934eba49c72b1034465474d2e2e9a45ea14081",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [
+        "docs/evidence/papercusp-performance-remediation-2026-09-23.md"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "Stored terminal verification is stale on the current tree; retain it as historical evidence, not current acceptance.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-006",
+      "scope": "useful recall within deadline",
+      "producingWorkItem": "WI-10002828",
+      "receiptRef": "work-item:papercusp:WI-10002828",
+      "observedState": "blocked",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": 1790852208710,
+      "checkpointContentHash": "225a82d3c7ef",
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "Useful-context delivery acceptance is unresolved."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-007",
+      "scope": "packaged native popup and startup",
+      "producingWorkItem": "WI-10002829",
+      "receiptRef": "work-item:papercusp:WI-10002829",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "P-007 packaged Tauri/WDIO plan-popup and Web Vitals acceptance is verified on the named private build. Ten frozen native runs (five cold, five warm) met popup, FCP, and LCP budgets; the original integer-only wrapper false failure is preserved and independently corrected. Exact current clause evidence and falsifying mutation probe are bound; both independent spec-test-adequacy audits passed.",
+        "testsRun": "Independent r188 decimal-safe evaluator over ten hashed packaged WDIO logs; npm run test:file -- packages/operator-core/lib/system-health/desktop-perf-budgets.test.ts packages/operator-core/lib/endpoint-route/routes/admin/testing-desktop-perf-ingest.test.ts; test-run 20593863 mutation probe",
+        "testResult": "10/10 native WDIO suites passed; popup 433-1076ms <=1500, FCP 720-1114ms <=3000, LCP 2023-3615ms <=4000; source tests 24/24; mutation probe caught; adequacy 2/2 pass and independent audits passed.",
+        "verifiedHow": "Committed docs/evidence/p007-r188-native-cohort-2026-10-02.json at e04a3c7c4a (SHA-256 2e2c872ebec8fbf387512fba3f4f8167676d3108890f619d49bdc54368c82863); current exact spec bindings 23000-23003 to test-runs 20593847/20593863; plans:evaluate-spec-test-adequacy two pass rows; scorecards EI-24915401155101792 and EI-24915402192277360 gradingAudit passed/current."
+      },
+      "completionFreshness": "fresh",
+      "verifiedTreeHead": "6730b7a5bb05747376d387bb9c7350e5aa1ad8f4",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [
+        "docs/evidence/p007-r188-native-cohort-2026-10-02.json"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-008",
+      "scope": "gateway/proxy/portal and migration leads",
+      "producingWorkItem": "WI-10002830",
+      "receiptRef": "work-item:papercusp:WI-10002830",
+      "observedState": "blocked",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": 1790963045361,
+      "checkpointContentHash": "df64f9375925",
+      "localArtifactRefs": [
+        "docs/evidence/papercusp-performance-remediation-2026-09-23.md"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "R8 secondary-lead acceptance remains unresolved."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-009",
+      "scope": "final comparison and shipment",
+      "producingWorkItem": "WI-10002831",
+      "receiptRef": "work-item:papercusp:WI-10002831",
+      "observedState": "blocked",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": 1790459603938,
+      "checkpointContentHash": "9974cd794b60",
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "Final comparison, sustained workload, independent acceptance and shipment belong to P009 and remain open."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-010",
+      "scope": "global plan coverage scan",
+      "producingWorkItem": "WI-10004889",
+      "receiptRef": "work-item:papercusp:WI-10004889",
+      "observedState": "open",
+      "observedAssignee": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": 1790988342907,
+      "checkpointContentHash": "3760a34d360e",
+      "localArtifactRefs": [
+        "docs/evidence/papercusp-oct1-p010-deadline-preflight-2026-10-02.json",
+        "docs/evidence/papercusp-oct1-p010-input-diagnostic-2026-10-01.json",
+        "docs/evidence/papercusp-oct1-p010-live-diagnostic-2026-10-01.json",
+        "docs/evidence/papercusp-oct1-p010-live-frozen-final-2026-10-01.json",
+        "docs/evidence/papercusp-oct1-p010-live-matrix-2026-10-01.json",
+        "docs/evidence/papercusp-oct1-p010-live-matrix-r25-2026-10-02.json",
+        "docs/evidence/papercusp-oct1-p010-live-pilot-2026-10-01.json",
+        "docs/evidence/papercusp-oct1-p010-live-preflight-r23-2026-10-02.json",
+        "docs/evidence/papercusp-oct1-p010-orient-representative-r8-2026-10-02.json"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "Saved reader/macro source limits and full executed graph uncertainty remain; no end-to-end closure."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-011",
+      "scope": "retained service memory",
+      "producingWorkItem": "WI-10004890",
+      "receiptRef": "work-item:papercusp:WI-10004890",
+      "observedState": "open",
+      "observedAssignee": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": 1791005705021,
+      "checkpointContentHash": "10fb10a7ff46",
+      "localArtifactRefs": [
+        "docs/evidence/papercusp-oct1-p011-pinned-owners-r2-2026-10-02.json",
+        "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-identity-guards-r1-2026-10-03.json",
+        "docs/evidence/papercusp-oct1-p011-staging-worker-metadata-guards-r2-2026-10-03.json"
+      ],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "Private PSS/cumulative allocation comparisons do not establish unique retained/native ownership or production recovery."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-012",
+      "scope": "dependency generation IO",
+      "producingWorkItem": "WI-10004927",
+      "receiptRef": "work-item:papercusp:WI-10004927",
+      "observedState": "blocked",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": 1790928708872,
+      "checkpointContentHash": "a6981bdcb384",
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "Next immutable-generation IO acceptance remains unresolved in the saved producing checkpoint."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-013",
+      "scope": "work-items sync hydration and invalidation",
+      "producingWorkItem": "WI-10004929",
+      "receiptRef": "work-item:papercusp:WI-10004929",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "P-013 work-items list resolver cost, both halves. (1) Query cost: the page selects its keys first on hfc_updated_idx and hydrates payload + spine for the page only; the summary reads the stored severity_projection (migration 1308) instead of detoasting every payload. A/B on the same DB, 8 interleaved calls per port (server resolverMs): summary 1385 ms (:3070, old resolver blob e0b9c56f) -> 389 ms (:3170, new blob 0fc0d54c), -72%; page 272 -> 100 ms, -63%. Response bodies byte-identical between old and new (summary md5 c89464ff..., page id list md5 b329c549..., 87,698 matched). (2) Call rate (D-012): expensive aggregate targets get a 10 s bridged coalesce window. Concurrent SSE A/B 20:22-20:25Z: 47 -> 22 summary invalidations per 180 s (-53%); byHarness is delivered at the summary rate when subscribed (9/9 in 60 s on :3170), so page refetch tracks it. Matched calls/s x ms/call per open panel: 0.261/s x 1657 ms = 433 ms/s -> 0.122/s x 489 ms = 60 ms/s (-86%). Live write-to-summary staleness on :3170: p50 4.76 s, p90 9.90 s, max 10.59 s over 49 writes; the 10 s bound is at the bus and the <=0.59 s excess is [inferred] commit + NOTIFY + SSE transport.",
+        "testsRun": "libs/generic/sync/src/server/invalidation-bus.test.ts (run 20431686, 34/34; new per-source rate + staleness test across six write cadences with an in-bus default-window calibration); packages/operator-core/lib/sync-resolver/work-items-list-query.integration.test.ts (20431881, pass); packages/operator-core/lib/sync-resolver/work-items-list-query.test.ts (20431836, pass); packages/operator-core/lib/sync-resolver/bounded-list-read.test.ts (20431834, pass); packages/operator-core/lib/sync-resolver/work-items-detail-query.test.ts (20431837, pass); packages/operator-core/lib/sync-resolver/work-items-ui-projection.test.ts (20431833, pass); packages/operator-core/lib/sync-resolver/work-items-touchpoint-contract.test.ts (20431832, pass); packages/operator-core/lib/sync-sse.test.ts (20431835, pass); build:typecheck libs/generic/sync (0 errors; test file in program)",
+        "testResult": "all pass",
+        "verifiedHow": "Live A/B with the build as the only variable: :3070 f52b2457ba (old resolver + old bus) vs :3170 f27961b45b (new), same Postgres and write load. resolverMs from /api/zero-harness/rest-query?name=workItems.summary|workItems.byHarness&args={harnessSlug:papercusp}; body md5 parity; concurrent 180 s SSE captures for invalidation rate; 150 s timestamped :3170 capture joined to work_items.updated_ts for staleness. Raw files under .papercusp/scratch/p013/."
+      },
+      "completionFreshness": "stale",
+      "verifiedTreeHead": "ad184e821e67c905bc7976025833b62f2691daa1",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "Stored terminal verification is stale on the current tree; retain it as historical evidence, not current acceptance.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-014",
+      "scope": "DB CPU hotspots",
+      "producingWorkItem": "WI-10004964",
+      "receiptRef": "work-item:papercusp:WI-10004964",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "P-014 DB CPU hotspots fixed and measured live. One 601 s A/B window (20:56:40-21:06:40Z, .papercusp/scratch/p014/win-2056/report.txt): new code was live on bg-host + staging while release :3070 still ran old code against the same DB, so per-call cost compares directly. (a) goals/spend-rollup goal_owners: 1,082 ms/call in window (cumulative new 526 ms/call, 140 calls), against 24,823 ms/call before (1,062 calls); about 23-47x. (b) presence-wakeability last-tool-call: new top-1-per-owner 0.70 ms/call (267 blocks/call), old GROUP BY max() 37.0 ms/call (17,984 blocks/call) in the same window; about 53x per call. The old shape still costs 154 ms DB time per wall second from :3070 until it deploys. (c) directive recipients: new index-usable shape (queryid 795733546427306199, text tagged '-- P-014(c)') 129 ms/call, 25,488 blocks; old 544 ms/call, 831,709 blocks; about 4.2x time and 33x fewer blocks (cumulative 119 vs 646 ms). (d) moved to P-015 with no change here. (e) su resource locks (migration 030 resource_acquire_shared/release_shared, mid-turn admission atomic ops): new shared acquire 1.01 ms/call, release 13.1 ms/call, vs the old exclusive lock(int,hashtext) at 4.17 ms/call in window and 35.4 ms/call cumulative. A bg-host restart at ~21:00Z inside the window undercounts bg-host call RATES for (a)/(e); per-call costs are unaffected. Full fleet-wide DB-time drop lands when :3070 deploys the same code.",
+        "testsRun": "spend-rollup.integration.test.ts (run 20424207); spend-rollup-scope-labels.test.ts (20432989, ci); presence-wakeability.test.ts (20432147, ci); 6 locks integration files incl. new resource-atomic-semaphore + resource-broadcast-resume and mid-turn-admission.test.ts in a fresh with-test-pg with the real bootstrap applying 030 (.papercusp/scratch/p014/armed-4.log); lint:tsc on the changed files",
+        "testResult": "all pass; locks batch 50/50 skippedTests=0; lint:tsc clean (per checkpoint 18:51Z)",
+        "verifiedHow": "Live pg_stat_statements A/B window (two snapshots, per-queryid delta) over the shared DB with old and new code running concurrently; new (c) queryid confirmed by its query text comment 21:25Z; migration 030 applied live (papercusp_su su_meta 18:46:42Z)."
+      },
+      "completionFreshness": "stale",
+      "verifiedTreeHead": "8d8b2136ff4689f33d2aa49a3262b7bf485f20d6",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "Stored terminal verification is stale on the current tree; retain it as historical evidence, not current acceptance.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-015",
+      "scope": "DB write amplification",
+      "producingWorkItem": "WI-10005005",
+      "receiptRef": "work-item:papercusp:WI-10005005",
+      "observedState": "done",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {
+        "summary": "P-015 write amplification: (b) gateway spool bodies stored as content-defined chunks + zstd (D-017, migration 1314) cut WAL per spool write by 90.8% live (396,066 -> 36,550 B/call); the chunk sweep reclaims live (483 chunks by 20:44:47Z). (d) migration 1312 made the memory_canonical surfaced bump HOT (155/210 HOT vs ~0.4% before) and cut its WAL per row 55% over a full checkpoint cycle (28,706 -> 12,901 B/row). (a) ruled D-016 (no session_turns redesign; 4-9% share), (c) D-015 (existing price_table_version gate already writes nothing at steady state), (e) D-014 (keep pglz; measured A/B says zstd stores more WAL here). (f) pg_stat_statements.max=20000 is staged and needs a coordinated PG restart: residue WI-10005072 (owned, blocked). Cluster WAL 105 MB/60 s (1.76 MB/s) at 20:45-20:46Z vs 264 MB/60 s at the 19:05Z baseline (one window, load-dependent).",
+        "testsRun": "packages/operator-core/lib/inference-gateway/payload-spool.test.ts (run 20430969, 29/29); libs/generic/artifact-registry/src/content-defined-chunks.test.ts (20430971, 9/9); packages/operator-core/lib/inference-gateway/payload-spool.integration.test.ts (20430979, 28/28); schema-object-drift (20431113, 20431112); scripts/check-behavioural-strands.mjs --run base 1f73a7cf3d (42 files, 116 tests, exit 0); build:typecheck libs/generic/artifact-registry (0 errors); lint:tsc --files operator-core leg (clean, status=partial routed)",
+        "testResult": "all pass",
+        "verifiedHow": "Live pg_stat_statements deltas: D-017 chunk INSERT + manifest INSERT + refresh = 36,550 B/call over 242 calls vs the old whole-body INSERT 396,066 B/call; 1312 queryid -7476173419318200064 delta 20:20:57-20:36:27Z (931 s, one full checkpoint cycle): 1497 rows, 19,312,597 B; chunk sweep statement 32 calls, 483 rows deleted by 20:44:47Z with oldest last_ref_at advancing 20:13:07 -> 20:14:07; migrations 1312/1314 applied (db:migrations); cluster WAL via pg_current_wal_lsn over 60 s."
+      },
+      "completionFreshness": "stale",
+      "verifiedTreeHead": "ad184e821e67c905bc7976025833b62f2691daa1",
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "Stored terminal verification is stale on the current tree; retain it as historical evidence, not current acceptance.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-016",
+      "scope": "cross-pot verdict/routine reliability",
+      "producingWorkItem": "WI-10005078",
+      "receiptRef": "work-item:papercusp:WI-10005078",
+      "observedState": "open",
+      "observedAssignee": null,
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "Dated checkpoint does not verify current verdict/routine acceptance; no LIVE_GATE_OPS action."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    },
+    {
+      "planItem": "P-017",
+      "scope": "steady-state service CPU",
+      "producingWorkItem": "WI-10005145",
+      "receiptRef": "work-item:papercusp:WI-10005145",
+      "observedState": "open",
+      "observedAssignee": "su-fa4c1948-0cb1-4552-a7a3-dc274c5e1b0a",
+      "readOk": true,
+      "completionFields": {},
+      "completionFreshness": "unknown",
+      "verifiedTreeHead": null,
+      "checkpointUpdatedAtMs": null,
+      "checkpointContentHash": null,
+      "localArtifactRefs": [],
+      "inputStatus": "qualified-input-with-explicit-gaps",
+      "unresolvedGaps": [
+        "No terminal completion evidence returned. Saved checkpoint is an input pointer, not a passed outcome.",
+        "No exact local evidence artifact cited by this selected receipt; the authoritative work-item record remains addressable.",
+        "A complete artifact/host/workload/sample/metric comparison is not established by the lifecycle label. Any descriptor absent from the quoted producing receipt remains unknown and needs the producing lane exact evidence.",
+        "CPU producing lane keeps its claim; final matched after-window/current loaded release evidence is unresolved in this receipt."
+      ],
+      "acceptanceOwnership": "Producing lane retains acceptance; this census does not change or certify its outcome."
+    }
+  ],
+  "auditFindingMap": [
+    {
+      "ref": "2026-09-23:F1",
+      "title": "Session search forces a wide scan; staging already contains a correction",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-002"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F2",
+      "title": "Activity-hook schema mismatch creates repeated rejected requests",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-002"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F3",
+      "title": "Git process launches block the background event loop",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-003"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F4",
+      "title": "The profiler substantially perturbs its own measurements",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-003"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F5",
+      "title": "Identity-lineage reconstruction is repeatedly expensive",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-004"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F6",
+      "title": "Small attention responses still pay for full aggregation",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-005",
+        "P-010"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F7",
+      "title": "Memory retrieval misses useful deadlines and drops context",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-006"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F8",
+      "title": "Native desktop interaction budgets are failing",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-007"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F9",
+      "title": "Backend regression history stopped despite an enabled flag",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-001"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F10",
+      "title": "Interactive coordination and bootstrap have long tails",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-005",
+        "P-010",
+        "P-013",
+        "P-014"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F11",
+      "title": "Repeated background failures and long migration waits",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-008",
+        "P-016"
+      ]
+    },
+    {
+      "ref": "2026-09-23:F12",
+      "title": "Gateway/proxy/portal failures require correlation",
+      "auditSource": "docs/audits/application-performance-audit-2026-09-23.md",
+      "planItems": [
+        "P-008"
+      ]
+    },
+    {
+      "ref": "2026-10-01:Recurring coverage work scans the complete table",
+      "auditSource": "docs/audits/application-performance-reliability-audit-2026-10-01.md",
+      "planItems": [
+        "P-010"
+      ]
+    },
+    {
+      "ref": "2026-10-01:Context retrieval still times out",
+      "auditSource": "docs/audits/application-performance-reliability-audit-2026-10-01.md",
+      "planItems": [
+        "P-006"
+      ]
+    },
+    {
+      "ref": "2026-10-01:Bootstrap and coordination retain long tails",
+      "auditSource": "docs/audits/application-performance-reliability-audit-2026-10-01.md",
+      "planItems": [
+        "P-005",
+        "P-010",
+        "P-013",
+        "P-014"
+      ]
+    },
+    {
+      "ref": "2026-10-01:Native startup remains outside budget",
+      "auditSource": "docs/audits/application-performance-reliability-audit-2026-10-01.md",
+      "planItems": [
+        "P-007"
+      ]
+    },
+    {
+      "ref": "2026-10-01:Memory needs retained-state attribution",
+      "auditSource": "docs/audits/application-performance-reliability-audit-2026-10-01.md",
+      "planItems": [
+        "P-011"
+      ]
+    },
+    {
+      "ref": "2026-10-01:Reliability is stronger than a service up flag",
+      "auditSource": "docs/audits/application-performance-reliability-audit-2026-10-01.md",
+      "planItems": [
+        "P-008",
+        "P-016"
+      ]
+    },
+    {
+      "ref": "2026-10-01:phase6:P-012",
+      "title": "dependency generation IO",
+      "auditSource": "plan:papercusp-log-performance-remediation-2026-09-23@100#Phase 6 — October 1 live-measurement findings",
+      "planItems": [
+        "P-012"
+      ]
+    },
+    {
+      "ref": "2026-10-01:phase6:P-013",
+      "title": "work-items sync hydration and invalidation",
+      "auditSource": "plan:papercusp-log-performance-remediation-2026-09-23@100#Phase 6 — October 1 live-measurement findings",
+      "planItems": [
+        "P-013"
+      ]
+    },
+    {
+      "ref": "2026-10-01:phase6:P-014",
+      "title": "DB CPU hotspots",
+      "auditSource": "plan:papercusp-log-performance-remediation-2026-09-23@100#Phase 6 — October 1 live-measurement findings",
+      "planItems": [
+        "P-014"
+      ]
+    },
+    {
+      "ref": "2026-10-01:phase6:P-015",
+      "title": "DB write amplification",
+      "auditSource": "plan:papercusp-log-performance-remediation-2026-09-23@100#Phase 6 — October 1 live-measurement findings",
+      "planItems": [
+        "P-015"
+      ]
+    },
+    {
+      "ref": "2026-10-01:phase6:P-016",
+      "title": "cross-pot verdict/routine reliability",
+      "auditSource": "plan:papercusp-log-performance-remediation-2026-09-23@100#Phase 6 — October 1 live-measurement findings",
+      "planItems": [
+        "P-016"
+      ]
+    },
+    {
+      "ref": "2026-10-01:phase6:P-017",
+      "title": "steady-state service CPU",
+      "auditSource": "plan:papercusp-log-performance-remediation-2026-09-23@100#Phase 6 — October 1 live-measurement findings",
+      "planItems": [
+        "P-017"
+      ]
+    }
+  ],
+  "artifactIndex": [
+    {
+      "path": "docs/evidence/p001-performance-producer-live-2026-09-26.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 7663,
+      "sha256": "03d72ed082265f25477bb36bb1e462f582f378f7acbf7d8b8551e9346ce176d8"
+    },
+    {
+      "path": "docs/evidence/papercusp-performance-remediation-2026-09-23.md",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 333031,
+      "sha256": "15194af0ef1bd0969969c967f026119048551b00ae4aa563bfcdb828505fe474"
+    },
+    {
+      "path": "docs/evidence/papercusp-p003-git-sidecar-benchmark-2026-09-24.md",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 5519,
+      "sha256": "0bb2aac07feeb1e16252896b01f4d3ff0f3df56765b87c4b352e8de8811d3712"
+    },
+    {
+      "path": "docs/evidence/p007-r188-native-cohort-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 7164,
+      "sha256": "2e2c872ebec8fbf387512fba3f4f8167676d3108890f619d49bdc54368c82863"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-deadline-preflight-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 69324,
+      "sha256": "4009a9391d164e23942fd177448ba19701d8170d95f91a57c2b6318ec6114897"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-input-diagnostic-2026-10-01.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 21343,
+      "sha256": "2a3e7d1c8a82132f9318506ea1824be8f7550360634eaff03bad82df437d1b0d"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-live-diagnostic-2026-10-01.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 62485,
+      "sha256": "21c170c8eb2e54ac080cafc68350ece0b4730d34bfb565a0258e719ede9f243a"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-live-frozen-final-2026-10-01.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 35656,
+      "sha256": "e5d3844717b4a11de5f6fcc65b3228f29fc403fcd32e4e6ba154d0db7cbe8ee9"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-live-matrix-2026-10-01.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 3177920,
+      "sha256": "80b7f1c9d4fe1d293461db54b3e89638bc8b60b8d703dff695c96ab6d0d65f39"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-live-matrix-r25-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 3682942,
+      "sha256": "bf3482124c6a7586c8adaec9ff5997404f5f54f1dc6e73e681a0daa6c3368ac0"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-live-pilot-2026-10-01.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 41903,
+      "sha256": "20adf2fc113f4268c3c311d8c172c3706a94a56d11c92c992db41d44dc6db004"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-live-preflight-r23-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 21625,
+      "sha256": "3fbd03824de478d82bc1fd4595d01986db8930a3d6201f801251c33f020ca552"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-orient-representative-r8-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 513853,
+      "sha256": "28fc861816103be221243ab900985df8d45c2e78f4addd84a0ce98c04c9d02f2"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-pinned-owners-r2-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 150743,
+      "sha256": "bf5838c8703b1efa1f68a4e7c73bbb845d5e20a9696eb5008e7e59ec2126516c"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-identity-guards-r1-2026-10-03.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 11191,
+      "sha256": "fb64bc1f8b3560a72ede8583efb7b1e0f82df9ff4ab76d2649e47fafa344a687"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-staging-worker-metadata-guards-r2-2026-10-03.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 5170,
+      "sha256": "a6998523f00842b2e9d33be172589c44278f5b0fab35bfb5b5bf12320c76b3a7"
+    },
+    {
+      "path": "docs/audits/application-performance-audit-2026-09-23.md",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 24866,
+      "sha256": "3276bdcc6c1746349d30fa27d28ce9ac4e70cf9765dee4b5a924e797bf62371f"
+    },
+    {
+      "path": "docs/audits/application-performance-reliability-audit-2026-10-01.md",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 17234,
+      "sha256": "b6defd4efed6dc58172140a070a8c1495fbf2b1b50c36688f17aaa8688ca2926"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 43488,
+      "sha256": "ce7f942025573298f90a487a65775c63ec48861b20bde6eb2bcb82a0d6efb950"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-observed-pair-r1-qualification-2026-10-03.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 11068,
+      "sha256": "2366ca36b2038ff2752adc43c4d7ee3e8d075c479c76a030b5f1831984a2b4c7"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-baseline-qualification-r1-2026-10-03.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 11316,
+      "sha256": "43c6d01d721890e54830969361a2a1ca0dce61ee37d745e1c42c91d8c956244f"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-live-matrix-r28-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 3682232,
+      "sha256": "0d037f39efc82a19f44a8f18b522a2d5e33a01abf00e395e87722bbee15a773f"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-source-live-matrix-r28-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 365068,
+      "sha256": "7249dc943161ff66eeb342c243b01891440ec7eceefdc1c6d7c3ef94f689264f"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-orient-representative-guard-r7-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 438435,
+      "sha256": "ed7a32f58739777ef33b2e46e0d003e1eb4aae2ca08c5c6e457df6cdb93ebbd7"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p010-orient-representative-r8-qualification-2026-10-02.json",
+      "resolution": "present",
+      "scope": "Current local bytes; this hash alone does not identify a tested or loaded runtime.",
+      "bytes": 2740,
+      "sha256": "0643b8aac1f2ed8968d71403a1ce79795073409474cee0f470848eb9253b9177"
+    }
+  ],
+  "nativeAcceptedInput": {
+    "receipt": "docs/evidence/p007-r188-native-cohort-2026-10-02.json",
+    "build": {
+      "buildSha": "fe10e95f1d90b02e2325261d2db47312190e22d8",
+      "dirty": false,
+      "packageSha256": "8bb4870b889f8595e38cea5a7926df150dd6514d3a37a1e85e126094fe90e210",
+      "extractedBinarySha256": "badda89ad54d89503f0e3a1fa8907f9311a95f1ade08f87f030ead6e21c4f2c0",
+      "packageSpaIndexSha256": "0ce2514188015823b049257e8be6913e88eb6921d082624ebc53d5f8c3d1e873",
+      "frozenHostSpaIndexSha256": "0ce2514188015823b049257e8be6913e88eb6921d082624ebc53d5f8c3d1e873",
+      "frozenHostApiBundleSha256": "ff52afe9a8b9cf0a92493ea19caa9fc68332c331b4d651c6c064b4dbab004b53",
+      "runtimeFontStyle": "font-family: Noto Sans, sans-serif",
+      "runtimeProtocol": "papercusp://localhost/"
+    },
+    "scenario": "existing WDIO plan-popup-open.perf.spec.ts in the extracted, privately repacked Papercusp GUI package",
+    "budgetsMs": {
+      "popup": 1500,
+      "fcp": 3000,
+      "lcp": 4000
+    },
+    "runOrder": [
+      "c1",
+      "w1",
+      "c2",
+      "w2",
+      "c3",
+      "w3",
+      "c4",
+      "w4",
+      "c5",
+      "w5"
+    ],
+    "startedAt": "2026-10-02T23:54:29Z",
+    "finishedAt": "2026-10-02T23:56:44Z",
+    "result": {
+      "coldProfilesInitiallyEmpty": 5,
+      "warmProfilesInitiallyPopulated": 5,
+      "wdioSuiteExitZero": 10,
+      "publishedPerRun": 25,
+      "publishedStatus": "pass",
+      "publishedOverBudget": 0,
+      "popupMinMaxMs": [
+        433,
+        1076
+      ],
+      "fcpMinMaxMs": [
+        720,
+        1114
+      ],
+      "lcpMinMaxMs": [
+        2023.0000000000002,
+        3615
+      ],
+      "correctedCohortPass": true
+    },
+    "originalWrapper": {
+      "summarySha256": "02ea9495f0bb303811d0ea8849d3b38aa24d76710dc05e5171e9c49d866469fc",
+      "exit": 1,
+      "reportedPass": false,
+      "cause": "Its integer-only FCP/LCP regex parsed three valid decimal readings as missing. The original summary was preserved.",
+      "runnerSha256": "c2ca5d093f973fa05857d338ef1bda1d5871e24ce6455586eb9cbe40d47fb490",
+      "independentEvaluatorSha256": "4189b0b375db7e3fdf616c855890dcbe1a543bc0af9ff78ccd88116e33d40909"
+    },
+    "limits": "This is acceptance on the named private packaged build and frozen local host. It does not assert that the release checkout or deployed :3070 is at that build. The archived raw logs live outside the repository; their hashes and corrected values are recorded here.",
+    "qualification": "Supporting producing P007 private-package acceptance; not final shipped-runtime proof."
+  },
+  "openObligations": [
+    "Fresh authenticated owner affirmation for activation re-audit; native dialog pending, no response assumed.",
+    "Preserve audit6 mappings/ranges, reviewed P018/P009 split and immutable P009 specs.",
+    "Complete producing comparisons and missing descriptors; no stale/unknown input silently passes.",
+    "P009 final comparable report, 30-minute normal workload plus isolated burst, independent acceptance and exact shipped-runtime verification.",
+    "No LIVE_GATE_OPS, native launch, service restart, profiler/GC intervention or production load performed."
+  ]
+}
