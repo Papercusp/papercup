@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, hashJson, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, alignRetainedRelevanceDocuments, embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, hashJson, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
 import type { WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
@@ -495,6 +495,32 @@ describe('incremental relevance vector reuse', () => {
     expect(await embedIncrementalRelevanceDocuments(retained, retained.documentTexts, embed))
       .toEqual(f.vectors.vectors.mdenseon.docVectors);
     expect(embed).not.toHaveBeenCalled();
+  });
+  it('qualifies only document alignment before labels, never accepting reordered, altered or duplicate source rows', () => {
+    const f = retainedPreparedFixture(), { expanded } = expandSnapshot(f);
+    const previous = JSON.parse(fs.readFileSync(f.donor.inputs.snapshot.path, 'utf8')).suites.memory.entries;
+    const result = alignRetainedRelevanceDocuments(previous, expanded.suites.memory.entries, f.vectors.vectors.mdenseon.docVectors);
+    expect(result.missingDocumentIndexes).toEqual([1]);
+    for (const failure of ['order', 'text', 'metadata', 'duplicate', 'removed', 'vector-count']) {
+      const rows = structuredClone(expanded.suites.memory.entries), vectors = structuredClone(f.vectors.vectors.mdenseon.docVectors);
+      if (failure === 'order') rows.reverse();
+      if (failure === 'text') rows[0].text += ' altered';
+      if (failure === 'metadata') rows[0].metadata.extra = 'altered';
+      if (failure === 'duplicate') rows.push(rows[0]);
+      if (failure === 'removed') rows.pop();
+      if (failure === 'vector-count') vectors.pop();
+      expect(() => alignRetainedRelevanceDocuments(previous, rows, vectors)).toThrow('document population');
+    }
+  });
+  it('refuses altered missing-index maps before calling either embedder', async () => {
+    const f = retainedPreparedFixture(); expandSnapshot(f);
+    const retained = (await loadRetainedRelevanceVectors(f.p, 'memory'))!;
+    retained.missingDocumentIndexes.push(0);
+    const noCalls = vi.fn(async () => []);
+    await expect(embedIncrementalRelevanceDocuments(retained, retained.documentTexts, noCalls)).rejects.toThrow('missing-index identity');
+    retained.missingIndexes.reverse();
+    await expect(embedIncrementalRelevanceQueries(retained, retained.queryTexts, noCalls)).rejects.toThrow('missing-index identity');
+    expect(noCalls).not.toHaveBeenCalled();
   });
   it.each(['opt-in', 'text', 'metadata', 'removed', 'order', 'seed', 'date', 'format', 'invalid-option'])
     ('refuses expanded snapshot %s before vector embedding', async (failure) => {

@@ -368,14 +368,8 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
     throw new Error('retained relevance vector population/order/normalization mismatch');
   }
   const oldIndexes = new Map(previous.queries.map((q, i) => [q.id, i]));
-  const oldDocumentIndexes = new Map(previous.entries.map((e, i) => [e.key, i]));
-  const missingDocumentIndexes: number[] = [];
-  const documentVectors = current.entries.map((e, index): number[] | undefined => {
-    const oldIndex = oldDocumentIndexes.get(e.key);
-    if (oldIndex === undefined) { missingDocumentIndexes.push(index); return undefined; }
-    if (hashJson(e) !== hashJson(previous.entries[oldIndex])) throw new Error('retained relevance document identity changed');
-    return vectors.docVectors[oldIndex];
-  });
+  const { documentVectors, missingDocumentIndexes } = alignRetainedRelevanceDocuments(previous.entries,
+    current.entries, vectors.docVectors);
   const queryIdentity = (q: typeof current.queries[number]) => ({ id: q.id, query: q.query, class: q.class,
     group: q.group, partition: q.partition });
   const missingIndexes: number[] = [];
@@ -399,6 +393,25 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
       timingComparableToFullInference: false } };
 }
 
+/** Shared document-map preflight, also usable before new labels exist. This
+ * only qualifies source/array alignment; the loader still requires independent
+ * labels and the full owner/arm/completion/snapshot contract before scoring. */
+export function alignRetainedRelevanceDocuments(previous: CorpusEntry[], current: CorpusEntry[], vectors: number[][]) {
+  const indexes = new Map(previous.map((e, i) => [e.key, i]));
+  if (indexes.size !== previous.length || new Set(current.map((e) => e.key)).size !== current.length
+    || vectors.length !== previous.length
+    || hashJson(current.filter((e) => indexes.has(e.key))) !== hashJson(previous)) {
+    throw new Error('retained relevance document population/content/provenance/order mismatch');
+  }
+  const missingDocumentIndexes: number[] = [];
+  const documentVectors = current.map((e, index): number[] | undefined => {
+    const oldIndex = indexes.get(e.key);
+    if (oldIndex === undefined) { missingDocumentIndexes.push(index); return undefined; }
+    return vectors[oldIndex];
+  });
+  return { documentVectors, missingDocumentIndexes };
+}
+
 /** Merge both vector kinds through the same validated receipt and local index
  * map. The retained arrays stay immutable; only absent vectors are embedded. */
 async function embedIncrementalRelevancePopulation(
@@ -410,6 +423,9 @@ async function embedIncrementalRelevancePopulation(
   const declaredTexts = kind === 'query' ? retained.queryTexts : retained.documentTexts;
   if (texts.length !== vectors.length) throw new Error(`incremental relevance ${kind} population mismatch`);
   if (hashJson(texts) !== hashJson(declaredTexts)) throw new Error(`incremental relevance ${kind} text identity mismatch`);
+  if (hashJson(indexes) !== hashJson(vectors.flatMap((v, i) => v === undefined ? [i] : []))) {
+    throw new Error(`incremental relevance ${kind} missing-index identity mismatch`);
+  }
   const newVectors = indexes.length ? await embedMissing(indexes.map((i) => texts[i])) : [];
   if (newVectors.length !== indexes.length) throw new Error('incremental relevance new vector population mismatch');
   if (newVectors.some((v) => !Array.isArray(v) || v.length !== retained.dimensions
