@@ -28,8 +28,12 @@ function normalizeExternalAstroModuleIds() {
       const importerFilename = importerId?.startsWith('/@fs/')
         ? importerId.slice('/@fs'.length)
         : importerId;
-      const resolutionBase = !isAbsolute(filename) && importerFilename && isAbsolute(importerFilename)
-        ? dirname(importerFilename)
+      const importerIsPath = importerFilename !== null && importerFilename !== undefined &&
+        importerFilename.charCodeAt(0) !== 0 && !importerFilename.startsWith('/@id/') &&
+        !/^[A-Za-z][A-Za-z\d+.-]*:/.test(importerFilename);
+      const absoluteImporter = importerIsPath ? resolvePath(projectRoot, importerFilename) : null;
+      const resolutionBase = !isAbsolute(filename) && absoluteImporter
+        ? dirname(absoluteImporter)
         : projectRoot;
       const absoluteFilename = isAbsolute(filename)
         ? resolvePath(filename)

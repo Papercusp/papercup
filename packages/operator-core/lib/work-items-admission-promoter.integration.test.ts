@@ -2098,11 +2098,14 @@ describe('work-item admission promoter (real Postgres)', () => {
     });
 
     it.each([false, true])('does not admit or report terminal pending rows (scope policy: %s)', async (withPolicy) => {
-      const platformHome = `operator:${WS}`;
+      // The production scope-decision log is throttled once per harness/process.
+      // Keep this census cohort separate from the following log-assertion case.
+      const platformHome = `operator:terminal-control-${WS}`;
+      const otherPot = 'terminal-control-other-pot';
       const old = NOW - 61 * 60_000;
       h.scopeTerms = withPolicy ? { exact: [HARNESS], likePrefixes: [] } : null;
       const terminalStates = ['done', 'dropped', 'deprecated', 'passed', 'failed', 'resolved', 'closed'];
-      for (const harness of [HARNESS, platformHome, 'email']) {
+      for (const harness of [HARNESS, platformHome, otherPot]) {
         for (const status of terminalStates) {
           await seedItem({
             id: `WI-terminal-${harness}-${status}`,
@@ -2116,7 +2119,7 @@ describe('work-item admission promoter (real Postgres)', () => {
       }
       await seedItem({ id: 'WI-live-home', createdAtMs: old, vector: null });
       await seedItem({ id: 'WI-live-platform', harness: platformHome, createdAtMs: old, vector: null });
-      await seedItem({ id: 'WI-live-other', harness: 'email', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-live-other', harness: otherPot, createdAtMs: old, vector: null });
       await seedItem({ id: 'WI-live-legacy', createdAtMs: old, vector: null });
       await db.sql`UPDATE harness_shared.work_items SET status = NULL WHERE feature_id = 'WI-live-legacy'`;
       const onNewlyAdmitted = vi.fn(async (_rows: readonly { id: string; harness: string }[]) => {});
@@ -2137,13 +2140,13 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(result.autoPromoted).toEqual(expectedAdmitted);
       expect(onNewlyAdmitted).toHaveBeenCalledOnce();
       expect(onNewlyAdmitted.mock.calls[0]?.[0].map((row) => row.id).sort()).toEqual(expectedAdmitted);
-      expect(result.heldByScope).toEqual(withPolicy ? { email: 1, [platformHome]: 1 } : {});
+      expect(result.heldByScope).toEqual(withPolicy ? { [otherPot]: 1, [platformHome]: 1 } : {});
       const [run] = await db.sql<Array<{ misHomed: unknown; held: unknown }>>`
         SELECT detail->'misHomedByScope' AS "misHomed", detail->'heldByScope' AS held
           FROM harness_shared.admission_runs WHERE id = ${`fail-open-terminal-control-${withPolicy}`}`;
       expect(run).toEqual({
         misHomed: withPolicy ? { [platformHome]: 1 } : {},
-        held: withPolicy ? { email: 1, [platformHome]: 1 } : {},
+        held: withPolicy ? { [otherPot]: 1, [platformHome]: 1 } : {},
       });
       const terminalRows = await db.sql<Array<{
         status: string; admission: string; admitted_at: string | null; admitted_by: string | null;

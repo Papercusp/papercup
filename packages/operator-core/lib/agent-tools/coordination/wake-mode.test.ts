@@ -202,6 +202,14 @@ describe('ensureLaunchedWakeAuto — generalized launched-wake-immunity (EI-1996
     expect(kv.store.get('wake_mode:agent:s-solo-launched')).toBe('auto');
     expect(await resolveWakeMode('s-solo-launched')).toBe('auto'); // immune to the manual global default
   });
+  it('preserves an explicit per-agent manual override for a launched member', async () => {
+    await setDefaultWakeMode('auto');
+    await setWakeMode('s-manual-member', 'manual');
+
+    expect(await ensureLaunchedWakeAuto('s-manual-member', { fleetRole: 'member', launchedByAgent: true })).toBeNull();
+    expect(await getWakeModeOverride('s-manual-member')).toBe('manual');
+    expect(await resolveWakeMode('s-manual-member')).toBe('manual');
+  });
   it('is a NO-OP for a fleetless, NOT agent-launched session (a human typing `psu su` directly)', async () => {
     await setDefaultWakeMode('manual');
     expect(await ensureLaunchedWakeAuto('s-human', { fleetRole: null, launchedByAgent: false })).toBeNull();

@@ -43,6 +43,18 @@ function post(path: string, origin: string | null, body: unknown) {
 }
 
 describe('coord admin routes — CSRF backstop (requireAllowedOriginOr403)', () => {
+  it('admits the read-only wake-mode lookup and refuses its write shape', async () => {
+    const readReq = post('/admin/coord/wake-mode', null, { agent: 'su-read-only' });
+    const readRes = (await coordWrite.handler(readReq as never, { params: { verb: 'wake-mode' } } as never)) as Response;
+    expect(readRes.status).toBe(200);
+    expect(await readRes.json()).toMatchObject({ agent: 'su-read-only', mode: 'auto' });
+
+    const writeReq = post('/admin/coord/wake-mode', null, { agent: 'su-read-only', mode: 'manual' });
+    const writeRes = (await coordWrite.handler(writeReq as never, { params: { verb: 'wake-mode' } } as never)) as Response;
+    expect(writeRes.status).toBe(405);
+    expect(await writeRes.json()).toMatchObject({ error: { code: 'read_only_verb' } });
+  });
+
   it('POST /admin/coord/:verb refuses a cross-origin browser POST', async () => {
     const req = post('/admin/coord/resolve', 'https://evil.example', { msg_id: 'x' });
     const res = (await coordWrite.handler(req as never, { params: { verb: 'resolve' } } as never)) as Response;

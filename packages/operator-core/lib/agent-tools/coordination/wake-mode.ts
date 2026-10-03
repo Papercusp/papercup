@@ -156,6 +156,9 @@ export async function ensureLaunchedWakeAuto(
   const { fleetRole, launchedByAgent } = opts;
   if (fleetRole === 'leader') return null;
   if (fleetRole !== 'member' && !launchedByAgent) return null;
+  // Owner-set per-agent manual mode is stronger than launch immunity. Preserve
+  // that explicit pause; only an inherited global manual default is overridden.
+  if ((await getWakeModeOverride(ownerId)) === 'manual') return null;
   await setWakeMode(
     ownerId,
     'auto',

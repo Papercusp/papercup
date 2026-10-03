@@ -341,6 +341,57 @@ export function inspectNativeLifecycleCapture(stderr, terminal, expected) {
     scope: 'Observed operation boundaries only; an open operation at SIGABRT does not identify the corrupting write or free.' };
 }
 
+export function inspectNativeOwnershipCapture(stdout, debuggerTerminal, expected) {
+  const terminal = inspectHostDebuggerCapture(stdout, debuggerTerminal);
+  const records = stdout.split('\n').filter(line => line.startsWith('PC_NATIVE_OWNERSHIP\t'))
+    .map(line => JSON.parse(line.slice('PC_NATIVE_OWNERSHIP\t'.length)));
+  const operations = ['initializer', 'singleton-create', 'singleton-destroy',
+    'session-dispose', 'session-finalize', 'instance-finalize'];
+  const calls = new Map();
+  if (records.length === 0 || records.length > 256 || operations.some(key => !expected.symbols[key])) {
+    throw new Error('missing native ownership observation');
+  }
+  for (const [index, row] of records.entries()) {
+    if (row.sequence !== index + 1 || row.processId !== terminal.processId
+      || !Number.isSafeInteger(row.nativeThreadId) || row.nativeThreadId <= 0
+      || !Number.isSafeInteger(row.callId) || row.callId <= 0
+      || !operations.includes(row.operation) || row.symbol !== expected.symbols[row.operation]
+      || row.binding?.path !== expected.binding.path || row.binding?.bytes !== expected.binding.bytes
+      || row.binding?.sha256 !== expected.binding.sha256 || !/^0x[0-9a-f]+$/.test(row.programCounter)
+      || !['enter', 'return', 'unwound'].includes(row.event)) {
+      throw new Error('unbound native ownership observation');
+    }
+    if (row.event === 'enter') {
+      if (row.callId !== calls.size + 1) throw new Error('duplicate native ownership call');
+      calls.set(row.callId, { operation: row.operation, nativeThreadId: row.nativeThreadId,
+        symbol: row.symbol, programCounter: row.programCounter, enteredAt: row.sequence,
+        returnedAt: null, unwoundAt: null });
+    } else {
+      const call = calls.get(row.callId);
+      if (!call || call.operation !== row.operation || call.nativeThreadId !== row.nativeThreadId
+        || call.symbol !== row.symbol || call.programCounter !== row.programCounter
+        || call.returnedAt !== null || call.unwoundAt !== null) {
+        throw new Error('unpaired native ownership return');
+      }
+      call[row.event === 'return' ? 'returnedAt' : 'unwoundAt'] = row.sequence;
+    }
+  }
+  const observed = [...calls.values()];
+  const creates = observed.filter(row => row.operation === 'singleton-create');
+  const destroys = observed.filter(row => row.operation === 'singleton-destroy');
+  if (creates.length !== 1 || destroys.length > 1
+    || (destroys.length && (creates[0].returnedAt === null || destroys[0].enteredAt < creates[0].returnedAt))) {
+    throw new Error('invalid native ownership singleton lifetime');
+  }
+  const missingOperations = operations.filter(operation => !observed.some(row => row.operation === operation));
+  return { ...terminal, source: 'native-ownership-calls', calls: observed, missingOperations,
+    completeOwnershipBoundariesObserved: missingOperations.length === 0
+      && observed.every(row => row.returnedAt !== null) && terminal.signal === null,
+    initializerNativeThreadId: creates[0].nativeThreadId,
+    heapCorruptionRootCauseConfirmed: false,
+    scope: 'Qualified native call and return boundaries; no attribution of a corrupting write or free.' };
+}
+
 async function debugCapture(root, config, debuggerConfig) {
   if (!isAbsolute(debuggerConfig.binary) || !isAbsolute(debuggerConfig.commands)) {
     throw new Error('native debugger requires absolute binary and command paths');
@@ -352,7 +403,11 @@ async function debugCapture(root, config, debuggerConfig) {
   writeFileSync(join(root, 'debugger-invocation.json'), JSON.stringify(invocation, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   const stdoutFd = openSync(join(root, 'debugger.stdout.log'), 'wx', 0o600);
   const stderrFd = openSync(join(root, 'debugger.stderr.log'), 'wx', 0o600);
-  const child = spawn(debuggerConfig.binary, ['-q', '-nx', '-batch', '-x', debuggerConfig.commands,
+  if (debuggerConfig.nativeOwnership !== undefined && typeof debuggerConfig.nativeOwnership !== 'boolean') {
+    throw new Error('invalid native ownership debugger option');
+  }
+  const child = spawn(debuggerConfig.binary, ['-q', '-nx', '-batch',
+    ...(debuggerConfig.nativeOwnership === true ? ['-ex', 'set $pc_native_ownership = 1'] : []), '-x', debuggerConfig.commands,
     '--args', process.execPath, file, 'target', JSON.stringify(config)], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', data => {
     if (writeSync(stdoutFd, data) !== data.length) throw new Error('short debugger stdout write');

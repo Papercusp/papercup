@@ -5540,6 +5540,12 @@ export async function runWorkItemAdmissionFailOpen(opts: {
       ? sql`(harness_slug = ANY(${scopeTerms.exact}::text[]) OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[]))`
       : null;
     const scopePredicate = scopeMatch ? sql`AND ${scopeMatch}` : sql``;
+    // Admission and the held census share one eligibility floor. Terminal rows can
+    // retain admission='pending' after cleanup, but must not be reopened or reported
+    // as live work needing re-homing. Preserve legacy NULL statuses as nonterminal.
+    const pendingEligibility = sql`admission = 'pending'
+      AND (status IS NULL OR NOT harness_shared.work_item_status_is_terminal(status))
+      AND created_ts < ${cutoffMs}`;
     // The workspace_id predicate is NEVER dropped: a workspace sweep widens across harnesses
     // inside one tenant, never across tenants.
     const rows = await sql<Array<{ feature_id: string; harness_slug: string }>>`
@@ -5577,8 +5583,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
        WHERE workspace_id = ${opts.workspaceId}
          ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
          ${scopePredicate}
-         AND admission = 'pending'
-         AND created_ts < ${cutoffMs}
+         AND ${pendingEligibility}
        RETURNING feature_id, harness_slug`;
     await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
       rows.map((row) => ({ id: row.feature_id, harness: row.harness_slug })),
@@ -5602,8 +5607,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
          WHERE workspace_id = ${opts.workspaceId}
            ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
            AND NOT ${scopeMatch}
-           AND admission = 'pending'
-           AND created_ts < ${cutoffMs}
+           AND ${pendingEligibility}
          GROUP BY 1
          ORDER BY 1`;
       for (const row of heldRows) heldByScope[row.harness_slug] = Number(row.held) || 0;
