@@ -96,7 +96,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .boolean()
       .optional()
       .describe(
-        'Preview a BAR meaning amendment without writing; returns approval JSON. If approvalRequired, post preview.approval as a work_items:comment, then re-run with reviewPreviewPost (see chaining).',
+        'Preview without writing. For BAR approval, post preview.approval as a work_items:comment, then repeat with reviewPreviewPost (see chaining).',
       ),
     reviewPreviewPost: z
       .string()
@@ -104,14 +104,14 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .regex(/^thread-post:[1-9][0-9]*$/)
       .optional()
       .describe(
-        "dryRun only: thread-post:<id> of your post carrying this preview's approval JSON. When approval is required, the relevance router opens a lineage-screened review for it; returns review { state, conversationId, screenedOut, next }.",
+        "dryRun only: thread-post:<id> containing this preview's approval JSON; opens the routed review when required and returns its state/next.",
       ),
     reviewerModel: z.object({
       agent: z.enum(['claude', 'codex', 'omp']),
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     }).strict().optional().describe(
-      'dryRun reviewPreviewPost only: required backend/model (+ optional effort) for reviewers; an unavailable model refuses rather than substituting.',
+      'Routed-review backend/model and optional effort; required with reviewPreviewPost. Unavailable choices are refused, never substituted.',
     ),
     criteria: z
       .array(amendmentCriterionSchema)
@@ -119,7 +119,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(200)
       .optional()
       .describe(
-        'acceptance-kind only: replace the COMPLETE criterion set atomically (adding a BAR, binding checks); read rubrics:get and resubmit every stored criterion. Prefer intent/acceptance/verification sections over legacy aliases; if both are sent (`bar`/`model`↔`acceptance.condition`, `driftMarkers`↔`acceptance.falsifier`) they must match or fail `requirement_alias_conflict`',
+        'acceptance-kind only: atomically replace the full set; read rubrics:get and resubmit all stored criteria. Prefer structured acceptance/verification; legacy aliases must match or fail requirement_alias_conflict.',
       ),
     criterionEvidencePlane: z
       .object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
@@ -147,7 +147,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       })
       .optional()
       .describe(
-        "set one criterion's grading class (P-008). UPGRADE-ONLY here: tagging 'violatable' tightens grading, so it keeps status + ratifier; downgrading a stored 'violatable' is refused — use rubrics:propose with classDowngradeReason",
+        "Set one grading class (P-008); upgrade-only. Marking 'violatable' tightens grading and preserves status/ratifier; downgrades require rubrics:propose with classDowngradeReason.",
       ),
     methodRef: z
       .string()
@@ -161,7 +161,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(120)
       .optional()
       .describe(
-        'acceptance-kind only: bind a missing class to an existing standard rubric while preserving every BAR and criterion; an existing class may be repeated but not replaced',
+        'Bind a missing class to an existing standard rubric while preserving BARs/criteria; an existing class may repeat but cannot change.',
       ),
     composes: z
       .array(z.string().trim().min(1))
@@ -169,7 +169,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(16)
       .optional()
       .describe(
-        'replace the unpinned composition refs with existing standard-kind rubric ids; omit to preserve the current list (revision pins are intentionally not supported)',
+        'Replace unpinned refs with existing standard rubric IDs; omit to preserve. Revision pins are unsupported.',
       ),
     allowMethodShrink: z
       .boolean()
@@ -208,7 +208,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(240)
       .optional()
       .describe(
-        'thread-post:<id> containing the preview approval JSON, authored by an authenticated outside-lineage reviewer. This authorizes a patch but is not itself a patch; include at least one amendment field.',
+        'thread-post:<id> of an authenticated outside-lineage reviewer with preview approval JSON. It authorizes a patch, not its fields; include an amendment field.',
       ),
     approvedBy: z
       .string()
@@ -216,7 +216,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(200)
       .optional()
       .describe(
-        'optional assertion of the reviewer identity; must match the approval post author. dryRun:true returns approverEligibility (diagnostic; the routed review screens candidates itself). approvedBy = caller yields { selfScreen:true, eligible:null }, which is no verdict. relatedVia:"caller" is curable with an unrelated applier (WI-10002357).',
+        'Optional reviewer identity assertion; must match the approval post author. dryRun eligibility is diagnostic; routed review screens candidates. approvedBy=caller yields selfScreen:true/eligible:null (no verdict); relatedVia=caller needs an unrelated applier (WI-10002357).',
       ),
     approvedAt: z
       .string()

@@ -320,7 +320,30 @@ export function inheritFreshCodexConfiguredModel(agent: string, args: any, { hom
     home?: string;
     readConfig?: (path: string, encoding: string) => string;
 }): any;
-export function modelArgsFor(agent: any, model: any): any[];
+/**
+ * `--effort <level>` for a claude argv that names no effort of its own, when the
+ * settings the CLI will fall back to carry an effortLevel the model rejects
+ * (WI-10005900; see claudeInheritedEffortOverride). `[]` without settings, so
+ * every caller that passes none stays byte-identical. Pure — exported for tests.
+ */
+export function claudeInheritedEffortArgs(model: any, claudeSettings: any): string[];
+/**
+ * The `{ model, effortLevel }` a claude child falls back to when its argv names
+ * no effort: the effective settings.json (the per-session isolated
+ * CLAUDE_CONFIG_DIR when set, else ~/.claude), with `ANTHROPIC_MODEL` taking
+ * precedence over settings.model as it does in the CLI. Fail-open to null — a
+ * missing or unreadable file must never fail a launch. `readFile` for tests.
+ */
+export function readClaudeLaunchSettings(env?: NodeJS.ProcessEnv, { home, readFile }?: {
+    home?: string | undefined;
+    readFile?: ((p: any) => string) | undefined;
+}): {
+    model: any;
+    effortLevel: any;
+} | null;
+export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {
+    claudeSettings?: null | undefined;
+}): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
  * wrappers all end with `"$@"`). Maps a model fuzzy-match + a resume-by-id
@@ -330,7 +353,9 @@ export function modelArgsFor(agent: any, model: any): any[];
  * `buildEngineerOmpLaunchCommand` (P-032): omp `--model`/`-r`, claude
  * `--model`/`--resume`, codex `-m`/`resume`.
  */
-export function suWrapperExtraArgs(agent: any, { model, resumeSession }?: {}): any[];
+export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings }?: {
+    claudeSettings?: null | undefined;
+}): any[];
 /**
  * Map psu's repeated `--add-dir <dir>` onto each backend's native flag. claude
  * AND codex both expose `--add-dir` (extra tool-accessible directories); omp has
@@ -446,7 +471,9 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  * @returns {string[]}
  */
 export function ompLspArgs(allowNativeLsp?: boolean): string[];
-export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, }?: {}): {
+export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, }?: {
+    claudeSettings?: null | undefined;
+}): {
     bin: string;
     args: any[];
 };
@@ -627,7 +654,7 @@ export function resolveOmpInjectHookPath(agent: any, home?: string): string | un
  * @param {any} session
  * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv }} [opts]
  */
-export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, env, }?: {
+export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, env, claudeSettings, }?: {
     coordExtPath?: string;
     injectHookPath?: string;
     fork?: boolean;

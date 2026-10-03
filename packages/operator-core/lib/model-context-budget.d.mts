@@ -35,6 +35,27 @@ export function resolveCodexModelSelection(model: unknown, { source }?: {
  */
 export function normalizeClaudeModelEffortSpec(spec: string): string;
 /**
+ * The `--effort` a Claude launch must pass when its argv names no effort of its own (WI-10005900).
+ * Without one, Claude Code falls back to the effective settings.json `effortLevel`, a key it writes
+ * itself on an /effort or /model change. A session whose settings were written while Opus 5 offered
+ * `xhigh` therefore resumes with `xhigh` and gets a 400 on its first request. The inference gateway
+ * clamps that on the `auto` and pinned routes, but the `default` route skips the gateway, so the
+ * launch boundary applies the same `normalizeClaudeModelEffortSpec` rule to the inherited value.
+ *
+ * `model` is the argv model (empty when the launch passes none); `settings` carries the effective
+ * `effortLevel` and the fallback `model` the CLI would use. Returns the level to pass as `--effort`,
+ * or null when the inherited effort is absent, already supported, or the argv names its own effort.
+ * @param {{ model?: string | null, settings?: { model?: unknown, effortLevel?: unknown } | null }} [input]
+ * @returns {string | null}
+ */
+export function claudeInheritedEffortOverride({ model, settings }?: {
+    model?: string | null;
+    settings?: {
+        model?: unknown;
+        effortLevel?: unknown;
+    } | null;
+}): string | null;
+/**
  * Render the root model settings that must survive a model-less resume.  The
  * model id and effort are separated because Codex's TOML schema accepts the
  * effort as `model_reasoning_effort`, not as part of `model`.
