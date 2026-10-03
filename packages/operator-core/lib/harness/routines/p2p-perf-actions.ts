@@ -492,8 +492,9 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
     return;
   }
 
+  let summaryPath: string | null = null;
   try {
-    const summaryPath = path.join(os.tmpdir(), `p2p-perf-${tier.slice(2)}-${Date.now()}.json`);
+    summaryPath = path.join(os.tmpdir(), `p2p-perf-${tier.slice(2)}-${Date.now()}.json`);
     const r = await runRunner(root, [tier, '--profile', 'ci', '--summary-json', summaryPath], timeoutMs);
 
     let summary: RunSummary | null = null;
@@ -568,6 +569,15 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
     await fileFindings(summary, label);
     void ctx;
   } finally {
+    if (summaryPath) {
+      try {
+        rmSync(summaryPath, { force: true });
+      } catch (error) {
+        console.warn(
+          `[p2p-perf] ${label}: failed to remove run summary ${summaryPath}: ${(error as Error)?.message ?? String(error)}`,
+        );
+      }
+    }
     releasePerfLock(tier);
   }
 }
