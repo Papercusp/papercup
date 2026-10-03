@@ -47,7 +47,10 @@ it('builds the guarded standalone graph and preserves its prior bytes when compi
   } finally { rmSync(output, { recursive: true, force: true }); }
 }, 150_000);
 
-it('serves packaged process and invokeOnce RPC through the maintained sibling with private state and graceful cleanup', () => {
+it.each([
+  { label: 'identity-less bundle', bakedSha: null },
+  { label: 'baked source with a mismatched runtime environment', bakedSha: 'frozen-spawner-fixture-source' },
+])('serves packaged process and invokeOnce RPC with $label and private state and graceful cleanup', ({ bakedSha }) => {
   const output = mkdtempSync(join(tmpdir(), 'papercusp-spawner-runtime-'));
   try {
     // Execute the desktop builder's actual boundary and call, rather than a
@@ -63,7 +66,9 @@ it('serves packaged process and invokeOnce RPC through the maintained sibling wi
     });
     const command = ['set -euo pipefail', 'source "$1"', 'REPO_ROOT="$2"', 'SIDECAR_DIR="$3"',
       'PAPERCUSP_DESKTOP_VERSION=0.0.0-packaged-fixture', 'PAPERCUP_DOGFOOD_REPO_REF=packaged-fixture-ref',
-      externals, minify, version, spawner].join('\n');
+      externals, minify, version,
+      ...(bakedSha ? [`VERSION_DEFINE_ARGS+=('--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__="${bakedSha}"')`] : []),
+      spawner].join('\n');
     const build = spawnSync('bash', ['-c', command, 'spawner-runtime-test',
       join(root, 'apps/operator/bin/bundle-host-common.sh'), root, output], {
       cwd: join(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
@@ -110,12 +115,15 @@ it('serves packaged process and invokeOnce RPC through the maintained sibling wi
           host = spawn(plan.cmd, plan.args, { cwd: path.join(e.TEST_REPO_ROOT, 'apps/operator'),
             env: { ...e, ...plan.env, VITEST: '', MALLOC_ARENA_MAX: '2', PAPERCUSP_HARNESS_DIR: harness,
               PAPERCUSP_SPAWNER_IPC_SOCKET: socket, PAPERCUSP_DB_POOL_MAX: '2',
-              PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_AGENT_SPAWN_SCOPE: '0' },
+              PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_AGENT_SPAWN_SCOPE: '0',
+              PAPERCUSP_BUILD_SHA: e.TEST_BAKED_SHA ? 'wrong-runtime-environment' : '',
+              PAPERCUSP_BUILD_VERSION: '' },
             stdio: ['ignore', 'pipe', 'pipe'] });
           report.hostPid = host.pid; report.entry = plan.args[0];
           for (const stream of [host.stdout, host.stderr]) stream.on('data', value => { tail = (tail + value).slice(-12000); });
           const deadline = Date.now() + 90000;
-          while (!tail.includes('PAPERCUSP_SPAWNER_READY socket=' + socket)) {
+          while (!tail.includes('PAPERCUSP_SPAWNER_READY socket=' + socket) ||
+              !/PAPERCUSP_SPAWNER_IDENTITY (\{[^\n]+\})/.test(tail)) {
             if (host.exitCode !== null || host.signalCode !== null) throw Error('packaged boot exited: ' + tail);
             if (Date.now() >= deadline) throw Error('packaged boot deadline: ' + tail);
             await wait(50);
@@ -125,6 +133,21 @@ it('serves packaged process and invokeOnce RPC through the maintained sibling wi
           const options = { timeoutMs: 20000, onPid: pid => childPids.add(pid) };
           const capability = await client.call('spawn:cancel', {}, options);
           assert.equal(capability.processExecCancellation, true);
+          const readyIdentity = JSON.parse(tail.match(/PAPERCUSP_SPAWNER_IDENTITY (\{[^\n]+\})/)[1]);
+          const expectedBuild = { sha: e.TEST_BAKED_SHA || null, version: '0.0.0-packaged-fixture' };
+          assert.deepEqual(capability.processExecIdentity, { pid: host.pid, buildInfo: expectedBuild });
+          assert.deepEqual(readyIdentity, { ...capability.processExecIdentity,
+            serverGeneration: capability.processExecFence.serverGeneration });
+          // Reconnecting proves the advertised identity belongs to this server,
+          // while the request fence remains scoped to each distinct connection.
+          const second = new SpawnerIpcClient(socket);
+          try {
+            const repeated = await second.call('spawn:cancel', {}, options);
+            assert.deepEqual(repeated.processExecIdentity, capability.processExecIdentity);
+            assert.equal(repeated.processExecFence.serverGeneration, readyIdentity.serverGeneration);
+            assert.notEqual(repeated.processExecFence.connectionId, capability.processExecFence.connectionId);
+          } finally { second.close(); }
+          report.loadedIdentity = readyIdentity; report.identityConnectionChecked = true;
           const commandResult = await client.call('process:exec', { command: process.execPath,
             args: ['-e', 'process.stdout.write("packaged-process-ok")'], cwd: e.TMPDIR,
             timeoutMs: 15000, workspaceId: e.PAPERCUSP_WORKSPACE_ID, ownerId: 'p011-packaged-fixture',
@@ -162,11 +185,13 @@ it('serves packaged process and invokeOnce RPC through the maintained sibling wi
     const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
       process.execPath, '--import', 'tsx', '-e', probe], {
       cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, TEST_REPORT_PATH: reportPath, TEST_BUNDLE_DIR: output, TEST_REPO_ROOT: root },
+      env: { ...process.env, TEST_REPORT_PATH: reportPath, TEST_BUNDLE_DIR: output, TEST_REPO_ROOT: root,
+        TEST_BAKED_SHA: bakedSha ?? '' },
     });
     const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null;
     expect(result.status, JSON.stringify({ report, stderr: result.stderr, stdout: result.stdout, error: result.error?.message })).toBe(0);
     expect(report).toMatchObject({ incomplete: false, isolated: true, ready: true,
+      identityConnectionChecked: true, loadedIdentity: { buildInfo: { sha: bakedSha, version: '0.0.0-packaged-fixture' } },
       processRpc: true, gracefulExit: true, socketRemoved: true, forcedCleanup: false });
     console.log('PACKAGED_SPAWNER_RUNTIME_RECEIPT ' + JSON.stringify(report));
   } finally { rmSync(output, { recursive: true, force: true }); }
