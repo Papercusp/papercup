@@ -206,21 +206,20 @@ describe('blind label collection through the injected stateless transport', () =
     const f = fixture();
     try {
       const original = path.join(f.root, 'original'), partial = path.join(f.root, 'partial');
-      await collectIndependentCohort({ snapshot: f.snapshot, out: original, llm: f.llm, targetsPerPartition: 1 });
+      const judgeContract = BLIND_COHORT_CONTRACT.judge;
+      try {
+        BLIND_COHORT_CONTRACT.judge += ' altered';
+        await collectIndependentCohort({ snapshot: f.snapshot, out: original, llm: f.llm, targetsPerPartition: 1 });
+      } finally { BLIND_COHORT_CONTRACT.judge = judgeContract; }
       const identityFile = path.join(original, 'identity.json');
       const ancestor = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
-      ancestor.identity.contract.judge += ' altered';
-      ancestor.identityHash = hashJson(ancestor.identity);
-      fs.writeFileSync(identityFile, JSON.stringify(ancestor));
-      // Authors-only recovery is permitted across judge-contract changes;
-      // exact-call recovery must not widen that permission at a later hop.
-      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: partial,
-        llm: async () => { throw new Error('fixture pause'); }, reuseAuthorsFrom: original, targetsPerPartition: 1 }))
-        .rejects.toThrow('fixture pause');
-      const file = path.join(partial, 'identity.json'), saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-      saved.identity.callReuse = saved.identity.authorReuse;
-      saved.identityHash = hashJson(saved.identity);
-      fs.writeFileSync(file, JSON.stringify(saved));
+      // An interrupted exact-call donor with no local calls and an altered
+      // ancestor: author prompts still match, judge contracts do not.
+      const reference = { identity: await fingerprintFile(identityFile), identityHash: ancestor.identityHash };
+      const identity = { ...ancestor.identity, contract: { ...BLIND_COHORT_CONTRACT },
+        authorReuse: reference, callReuse: reference };
+      fs.mkdirSync(partial);
+      fs.writeFileSync(path.join(partial, 'identity.json'), JSON.stringify({ identity, identityHash: hashJson(identity) }));
       // No paid call is allowed while testing the missing-judge ancestry branch.
       const llm: LlmCallFn = vi.fn(async () => { throw new Error('unexpected generation'); });
       await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'final'),
