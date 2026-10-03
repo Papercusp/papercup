@@ -23,6 +23,8 @@ import {
   RESTRICTED_HOLD_PREFLIGHT_ENV,
   RESTRICTED_HOLD_PREFLIGHT_EXIT,
   RESTRICTED_HOLD_PREFLIGHT_MARKER,
+  COMMITTED_SOURCE_LOADER,
+  censusSpawnArgs,
   formatTreeRestrictedHoldRefusal,
   runTreeRestrictedHoldPreflight,
   treeDoorPreflightSkipReason,
@@ -65,7 +67,8 @@ describe('runTreeRestrictedHoldPreflight', () => {
     const [command, args, options] = spawn.mock.calls[0] as unknown as [string, string[], { cwd: string }];
     expect(command).toBe(process.execPath);
     const abs = resolve('relative/root');
-    expect(args).toEqual(['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, '--tree', abs, '/abs/other']);
+    // WI-10005764: the committed-source loader precedes tsx, so the census runs committed bytes only.
+    expect(args).toEqual(['--import', COMMITTED_SOURCE_LOADER, '--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, '--tree', abs, '/abs/other']);
     expect(options.cwd).toBe(abs);
   });
 
@@ -100,9 +103,11 @@ describe('restricted-hold-preflight-cli --tree (end to end, test-census seam)', 
     const dir = tempDir('wi5763-census-');
     const file = join(dir, 'census.json');
     writeFileSync(file, JSON.stringify(census));
-    const result = spawnSync(process.execPath, ['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, ...args], {
+    // The real door argv and env (loader first), so this also proves the census runs under the loader.
+    const door = censusSpawnArgs(args, { ...process.env, VITEST: 'true', PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: file });
+    const result = spawnSync(process.execPath, door.argv, {
       cwd: REPO,
-      env: { ...process.env, VITEST: 'true', PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: file },
+      env: door.env,
       encoding: 'utf8',
       timeout: 60_000,
     });

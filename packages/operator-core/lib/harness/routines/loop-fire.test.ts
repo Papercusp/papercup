@@ -1928,3 +1928,42 @@ describe('P-008: wake-template scaffold byte budgets', () => {
     );
   });
 });
+
+describe('defaultOwnerStewardsActiveGoal — only the ELECTED holder of an active goal is exempt (WI-10005778)', () => {
+  const OWNER = 'su-holder';
+  const PREDECESSOR = 'su-predecessor';
+  const row = (ownerId: string, goalId = 'goal-1') => ({ goalId, workspaceId: 'ws', ownerId, setAtMs: 1 });
+  const mk = (over: Partial<OwnerStewardshipDeps>): OwnerStewardshipDeps => ({
+    readRows: vi.fn(async () => [row(OWNER), row(PREDECESSOR)]),
+    readActiveGoals: vi.fn<OwnerStewardshipDeps['readActiveGoals']>(async (_sql, ids) =>
+      ids.map((goalId) => ({ goalId, workspaceId: 'ws' })),
+    ),
+    resolveBatch: vi.fn<OwnerStewardshipDeps['resolveBatch']>(async (_sql, goals) =>
+      new Map(goals.map((g) => [g.goalId, { elected: { ...row(OWNER, g.goalId) } as never }] as const)),
+    ),
+    ...over,
+  });
+
+  it('is true for the elected lease holder of an active goal, resolved from the same row read', async () => {
+    const deps = mk({});
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: OWNER, sql: {} as never }, deps)).toBe(true);
+    const [, , opts] = (deps.resolveBatch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.rows).toHaveLength(2);
+  });
+
+  it('is false for a predecessor whose goal-mode row outlived the election', async () => {
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: PREDECESSOR, sql: {} as never }, mk({}))).toBe(false);
+  });
+
+  it('is false when the only goal the owner has a row for is not active', async () => {
+    const deps = mk({ readActiveGoals: vi.fn(async () => []) });
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: OWNER, sql: {} as never }, deps)).toBe(false);
+    expect(deps.resolveBatch).not.toHaveBeenCalled();
+  });
+
+  it('is false without reading goals when the owner has no goal-mode row', async () => {
+    const deps = mk({});
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: 'su-stranger', sql: {} as never }, deps)).toBe(false);
+    expect(deps.readActiveGoals).not.toHaveBeenCalled();
+  });
+});
