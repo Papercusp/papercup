@@ -209,9 +209,13 @@ function githubPage(endpoint) {
  * Reuses the public export's canonical ELv2 and the maintained Apache library text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
- * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string> }} [options]
+ * @typedef {{ path: string, gitBlob: string, sha256: string, license: string | null, url: string }} PublicRepositoryLicense
+ * @typedef {{ repo: string, defaultBranch: string, metadataSpdx: string | null, head: string | null, licenses: PublicRepositoryLicense[], errors: string[] }} PublicRepositoryLicenseRow
  */
-export async function auditPublicRepositoryLicenses({ api = githubPage, licenseHashes } = {}) {
+/**
+ * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, log?: Log }} [options]
+ */
+export async function auditPublicRepositoryLicenses({ api = githubPage, licenseHashes, log = () => {} } = {}) {
   const startedAt = new Date().toISOString();
   const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
   const reviewed = licenseHashes ?? {
@@ -252,9 +256,13 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
     return { repositories, pages };
   }
   const first = await population();
+  /** @type {PublicRepositoryLicenseRow[]} */
   const rows = [];
+  /** @type {Record<string, string>} */
   const licenseTexts = {};
   for (const repo of first.repositories) {
+    log(`license census: ${repo.full_name} default=${repo.default_branch}`);
+    /** @type {PublicRepositoryLicenseRow} */
     const row = { repo: repo.full_name, defaultBranch: repo.default_branch, metadataSpdx: repo.license?.spdx_id ?? null, head: null, licenses: [], errors: [] };
     try {
       const { body: commit } = await api(`repos/${row.repo}/commits/${encodeURIComponent(row.defaultBranch)}`);
@@ -281,7 +289,7 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
         }
       }
     } catch (error) {
-      row.errors.push(error.message);
+      row.errors.push(error instanceof Error ? error.message : String(error));
     }
     rows.push(row);
   }
@@ -1126,7 +1134,7 @@ async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
   if (cmd === 'licenses') {
-    const census = await auditPublicRepositoryLicenses();
+    const census = await auditPublicRepositoryLicenses({ log });
     if (opts.json) await fs.writeFile(opts.json, `${JSON.stringify(census, null, 2)}\n`);
     console.log(census.summary);
     return census.exitCode;

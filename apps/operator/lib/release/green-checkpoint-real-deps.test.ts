@@ -541,8 +541,12 @@ describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI
           runId,
         });
         await emitTerminalCheckpointResult(result, {
-          writeHuman: () => observed.push("human"),
-          writeMarker: (line) => observed.push(`marker:${line}`),
+          writeHuman: () => {
+            observed.push("human");
+          },
+          writeMarker: (line) => {
+            observed.push(`marker:${line}`);
+          },
           emitInconclusive: async (terminal) => {
             observed.push(`event:${terminal.candidate}:${terminal.green}`);
           },

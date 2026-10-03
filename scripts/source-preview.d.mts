@@ -16,9 +16,13 @@ export function assertRemoteMatchesTarget(target: Target, remote: string): void;
  * Reuses the public export's canonical ELv2 and the maintained Apache library text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
- * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string> }} [options]
+ * @typedef {{ path: string, gitBlob: string, sha256: string, license: string | null, url: string }} PublicRepositoryLicense
+ * @typedef {{ repo: string, defaultBranch: string, metadataSpdx: string | null, head: string | null, licenses: PublicRepositoryLicense[], errors: string[] }} PublicRepositoryLicenseRow
  */
-export function auditPublicRepositoryLicenses({ api, licenseHashes }?: {
+/**
+ * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, log?: Log }} [options]
+ */
+export function auditPublicRepositoryLicenses({ api, licenseHashes, log }?: {
     api?: (endpoint: string) => Promise<{
         headers: Record<string, string>;
         body: any;
@@ -27,6 +31,7 @@ export function auditPublicRepositoryLicenses({ api, licenseHashes }?: {
         body: any;
     };
     licenseHashes?: Record<string, string>;
+    log?: Log;
 }): Promise<{
     schemaVersion: number;
     kind: string;
@@ -59,28 +64,14 @@ export function auditPublicRepositoryLicenses({ api, licenseHashes }?: {
         id: string;
         passed: boolean;
         evidence: {
-            checked: any[];
-            failures: {
-                repo: any;
-                defaultBranch: any;
-                metadataSpdx: any;
-                head: null;
-                licenses: never[];
-                errors: never[];
-            }[];
+            checked: string[];
+            failures: PublicRepositoryLicenseRow[];
             firstPages?: undefined;
             lastPages?: undefined;
         };
     })[];
-    rows: {
-        repo: any;
-        defaultBranch: any;
-        metadataSpdx: any;
-        head: null;
-        licenses: never[];
-        errors: never[];
-    }[];
-    licenseTexts: {};
+    rows: PublicRepositoryLicenseRow[];
+    licenseTexts: Record<string, string>;
 }>;
 /** Resolve a ref to a full commit SHA in `repo`. */
 export function resolveCommit(repo: any, ref: any): string;
@@ -422,6 +413,33 @@ export class PreviewError extends Error {
 }
 export const ALLOWLIST_PATH: string;
 export { main as runCli };
+/**
+ * R13: inspect the current public population and actual default-branch license bytes.
+ * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Unknown text, an API failure, incomplete pagination or a changed population refuses.
+ * GitHub's license metadata is supplementary; it is never the license oracle.
+ */
+export type PublicRepositoryLicense = {
+    path: string;
+    gitBlob: string;
+    sha256: string;
+    license: string | null;
+    url: string;
+};
+/**
+ * R13: inspect the current public population and actual default-branch license bytes.
+ * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Unknown text, an API failure, incomplete pagination or a changed population refuses.
+ * GitHub's license metadata is supplementary; it is never the license oracle.
+ */
+export type PublicRepositoryLicenseRow = {
+    repo: string;
+    defaultBranch: string;
+    metadataSpdx: string | null;
+    head: string | null;
+    licenses: PublicRepositoryLicense[];
+    errors: string[];
+};
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one

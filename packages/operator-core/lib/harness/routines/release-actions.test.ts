@@ -4964,4 +4964,45 @@ describe('WI-10004928 part 1 manual leg: sweepManualCheckpointToolingCrash', () 
     expect(missing.result.status).toBe('no-log');
     expect(clean.emit).not.toHaveBeenCalled();
   });
+
+  it('WI-10005994: a torn marker (begins mid-line, JSON cut) is result-marker-torn, never an alarmed crash', async () => {
+    const torn = `{\n  "reason": "not-green",\n  "paths": [  __GREEN_CHECKPOINT_RESULT__ {"reason":"not-green","green":false,"repairQueue":{"adm\n  "x": 1\n}${crashTuple}`;
+    const { result, emit, claimSentinel } = await sweep(torn);
+    expect(result).toEqual({ status: 'result-marker-torn', logPath: '/tmp/run-1.log' });
+    expect(emit).not.toHaveBeenCalled();
+    expect(claimSentinel).not.toHaveBeenCalled();
+  });
+
+  it('WI-10005994: an intact marker that begins mid-line is still a rendered verdict, not a crash', async () => {
+    const { result, emit } = await sweep(`tail of the stderr dump __GREEN_CHECKPOINT_RESULT__ {"reason":"not-green","green":false}${crashTuple}`);
+    expect(result.status).toBe('not-a-tooling-crash');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('WI-10005994: checkpointResultMarkerState separates absent / parsed / torn and skips fixture lines', async () => {
+    const { checkpointResultMarkerState } = await import('./release-actions');
+    const { ORCHESTRATOR_STDOUT_TAG_UNDER_TEST } = await import('../../release/checkpoint-log-tags');
+    expect(checkpointResultMarkerState('no verdict here\n')).toBe('absent');
+    expect(checkpointResultMarkerState('__GREEN_CHECKPOINT_RESULT__ {"reason":"advanced","green":true}\n')).toBe('parsed');
+    expect(checkpointResultMarkerState('x __GREEN_CHECKPOINT_RESULT__ {"reason":"adv\nanced"}\n')).toBe('torn');
+    expect(
+      checkpointResultMarkerState('__GREEN_CHECKPOINT_RESULT__ {"rea\n__GREEN_CHECKPOINT_RESULT__ {"reason":"advanced","green":true}\n'),
+    ).toBe('parsed');
+    expect(checkpointResultMarkerState(`${ORCHESTRATOR_STDOUT_TAG_UNDER_TEST} __GREEN_CHECKPOINT_RESULT__ {"rea\n`)).toBe('absent');
+  });
+
+  it('WI-10005994: the torn cause wakes inconclusive awaiters with an honest reason, not "no suite ran"', async () => {
+    const { emitGateToolingCrashEvent } = await import('./release-actions');
+    const emit = vi.fn(async (..._a: unknown[]) => ({}));
+    await emitGateToolingCrashEvent(
+      '/x/papercusp',
+      { exitCode: 1, runId: 'r1', logPath: '/tmp/run-1.log', tail: null, cause: 'result-marker-torn' },
+      emit as never,
+    );
+    const calls = emit.mock.calls.map(([a]) => a as { key: string; summary: string; payload: Record<string, unknown> });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].payload).toMatchObject({ reason: 'result-marker-torn', logPath: '/tmp/run-1.log' });
+    expect(calls[0].summary).toContain('RESULT MARKER TORN');
+    expect(calls[0].summary).not.toContain('no suite ran');
+  });
 });
