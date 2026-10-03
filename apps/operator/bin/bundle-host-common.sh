@@ -157,8 +157,13 @@ bundle_host_workers() {
     [ -s "$source" ] || { echo "FATAL: missing runtime worker $source" >&2; return 1; }
     tmp="$out_dir/$output.new.$$"
     cp "$source" "$tmp" && mv -f "$tmp" "$out_dir/$output" || return 1
+    # WI-10005745: bundle-host.sh's restricted-hold gate needs every input it published.
+    if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ]; then
+      printf '%s\n' "$source" >> "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt" || return 1
+    fi
     index=$((index + 1))
   done
+  local -a meta_args
   for source in \
     "$repo_root/packages/operator-core/lib/event-loop-sentinel.worker.ts" \
     "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts" \
@@ -169,9 +174,12 @@ bundle_host_workers() {
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"
     [ -s "$source" ] || { echo "FATAL: missing runtime worker $source" >&2; return 1; }
     tmp="$out_dir/$output.new.$$.mjs"
+    meta_args=()
+    [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ] && meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")
     if ! npx --yes esbuild@0.25.0 "$source" \
       --bundle --platform=node --format=esm --target=node22 \
-      --external:sodium-native --external:esbuild --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" --outfile="$tmp" --log-limit=5; then
+      --external:sodium-native --external:esbuild --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" --outfile="$tmp" --log-limit=5 \
+      "${meta_args[@]}"; then
       rm -f "$tmp"
       echo "FATAL: failed to bundle runtime worker $source" >&2
       return 1
