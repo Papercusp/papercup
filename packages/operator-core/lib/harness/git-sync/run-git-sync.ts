@@ -5267,7 +5267,14 @@ async function syncOneRepo(
   },
 ): Promise<RepoSyncResult> {
   const c = await commitOneRepo(runGit, repoPath, o);
-  if (c.skippedPaths && c.skippedPaths.length > 0) {
+  // A reservation refusal is a path-level quarantine: commitOneRepo has
+  // excluded the migration while still committing unrelated files. Blocking
+  // this repo's push here would strand that safe commit and the unrelated work.
+  // Other skip kinds (such as live locks) still defer the repo's network step.
+  const repoWideSkip = (c.skippedPaths ?? []).some(
+    (entry) => !('reason' in entry && entry.reason === 'migration-reservation'),
+  );
+  if (repoWideSkip) {
     return {
       status: 'skipped-locked',
       dirtyPathCount: c.dirtyPathCount,
@@ -5290,6 +5297,7 @@ async function syncOneRepo(
   const r = await reconcileAndPushOneRepo(runGit, repoPath, o, c.committedLocal);
   return {
     ...r,
+    ...(c.skippedPaths && c.skippedPaths.length > 0 ? { skippedPaths: c.skippedPaths } : {}),
     dirtyPathCount: c.dirtyPathCount,
     committedCount: c.committedCount,
     oversized: c.oversized,
