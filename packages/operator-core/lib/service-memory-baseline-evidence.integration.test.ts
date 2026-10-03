@@ -381,7 +381,7 @@ describe('P011 independent exact singleton retained-owner evidence', () => {
     r.heapRetainers.groups = [{ class: 'Object', retainedSizeBytes: 999999 }];
     expect(auditExactOwners(r)).toEqual(before);
     expect(before).not.toHaveProperty('totalRetainedBytes');
-    expect(before.owners.every(x => x.observedDirectParentIndexes[0] === 20)).toBe(true);
+    expect(before.owners.every((x: any) => x.observedDirectParentIndexes[0] === 20)).toBe(true);
   });
   it('preserves an explicitly bounded incomplete direct-parent census', () => {
     const r = ownerFixture(), n = r.heapRetainers.requestedNodes[0].node;
@@ -393,8 +393,8 @@ describe('P011 independent exact singleton retained-owner evidence', () => {
     const bytes = readFileSync(resolve(root, path));
     expect(digest(bytes)).toBe('283cd13234d20676fc29a85bf883c21b607f099da449c404ca3c1ece7f4bd235');
     const result = auditExactOwners(JSON.parse(bytes.toString()));
-    expect(result.owners.map(x => x.owner)).toEqual(exactOwners);
-    expect(result.owners.find(x => x.owner.endsWith('.operatorCache'))?.dominatorRetainedV8Bytes).toBe(1328);
+    expect(result.owners.map((x: any) => x.owner)).toEqual(exactOwners);
+    expect(result.owners.find((x: any) => x.owner.endsWith('.operatorCache'))?.dominatorRetainedV8Bytes).toBe(1328);
     const destination = process.env.PAPERCUSP_P011_OWNER_ORACLE_REPORT;
     if (destination) writeFileSync(resolve(root, destination), serializeIdentitySafeJson({
       schemaVersion: 'p011-exact-owner-independent-v1',
