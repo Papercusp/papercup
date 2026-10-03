@@ -50,7 +50,9 @@ const sameScope = (a: Scope, b: Scope) => a.controlWorkspaceId === b.controlWork
 /** Convert the provider's decimal USD representation without float multiplication.
  * The existing receipt rail has integer micros. A fraction of one micro remains
  * unpriced until an exact finer-grained roll-up is available; never round a bill
- * up/down or turn absent, malformed, negative or overflowing costs into zero. */
+ * up/down or turn absent, malformed, negative or overflowing costs into zero.
+ * The shadow display's usdToMicros intentionally rounds and maps missing to
+ * zero, so it cannot supply this commercial receipt's exact/unknown contract. */
 function exactMicros(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
   const parts = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/.exec(String(value));

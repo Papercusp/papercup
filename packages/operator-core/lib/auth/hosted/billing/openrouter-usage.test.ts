@@ -60,7 +60,8 @@ describe('OpenRouter hosted usage collector', () => {
   });
   it.each([null, undefined, '0.001', -1, NaN, Infinity, 0.0000001, 0.00123456, 1e20])(
     'preserves missing/invalid/finer-than-micro/overflow charge %s as unpriced', cost => {
-      const r = openRouterUsageRecord(binding, payload(cost));
+      const body = cost === undefined ? { data: { id: binding.generationId, is_byok: false } } : payload(cost);
+      const r = openRouterUsageRecord(binding, body);
       expect(r).toMatchObject({ costSource: 'unpriced', costMicros: null });
       expect(statement([r]).lines[0]?.unpricedUsages).toBe(1);
     });
@@ -129,5 +130,15 @@ describe('OpenRouter hosted usage collector', () => {
     expect((await s.collector.collect({ scope, generationId: binding.generationId })).outcome).toBe('revision-conflict');
     const failed = setup({ append: async () => { throw new Error('database unavailable'); } });
     await expect(failed.collector.collect({ scope, generationId: binding.generationId })).rejects.toThrow('database unavailable');
+  });
+  it('rejects caller-supplied payer/cost/account fields and invalid generation selectors before I/O', async () => {
+    const s = setup();
+    for (const input of [
+      { scope, generationId: '../generation/content' },
+      { scope, generationId: binding.generationId, payer: 'platform' },
+      { scope, generationId: binding.generationId, total_cost: 0 },
+      { scope: { ...scope, account: 'other' }, generationId: binding.generationId },
+    ]) await expect(s.collector.collect(input)).rejects.toThrow(/invalid OpenRouter usage/);
+    expect(s.readBinding).not.toHaveBeenCalled(); expect(s.fetch).not.toHaveBeenCalled();
   });
 });

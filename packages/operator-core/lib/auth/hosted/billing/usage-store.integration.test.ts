@@ -8,6 +8,7 @@ import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { PILOT_COST_CATEGORIES } from './unit-economics';
 import { buildHostedUsageStatement, type HostedUsageRecord, type HostedUsageScope } from './usage-statement';
 import { PostgresHostedUsageStore } from './usage-store';
+import { OpenRouterHostedUsageCollector, type OpenRouterUsageBinding } from './openrouter-usage';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -176,5 +177,42 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     await expect(read({ ...scope, organizationId: '' })).rejects.toThrow('identifier');
     await expect(read(scope, Number.NaN)).rejects.toThrow('safe integers');
     expect(await read(scope)).toEqual([]);
+  });
+
+  it('persists authenticated OpenRouter reports once and replaces corrections using real service transactions', async () => {
+    const scope = await tenant(); const foreign = await tenant(scope.controlWorkspaceId);
+    const generationId = 'gen-' + randomUUID();
+    let binding: OpenRouterUsageBinding = { scope, generationId, payer: 'consumption', isByok: true,
+      credentialRef: 'secret-ref:fixture-account', revision: 1, occurredAtMs: T,
+      observedAtMs: T + 100, evidenceRef: 'receipt:openrouter-report-1' };
+    let cost = 0.0015; let keyReads = 0;
+    const collector = new OpenRouterHostedUsageCollector({
+      readBinding: async () => binding,
+      readCredential: async () => { keyReads++; return 'fixture-account-secret'; },
+      fetch: async () => new Response(JSON.stringify({ data: {
+        id: generationId, is_byok: true, total_cost: cost, cancelled: true,
+        upstream_inference_cost: 9, prompts: ['private fixture content'], api_key: 'private fixture key',
+      } })),
+      append: r => store().append(r),
+    });
+    const outcomes = await Promise.all(Array.from({ length: 8 }, () => collector.collect({ scope, generationId })));
+    expect(outcomes.filter(o => o.outcome === 'recorded')).toHaveLength(1);
+    expect(outcomes.filter(o => o.outcome === 'duplicate')).toHaveLength(7);
+    const initial = await read(scope); expect(initial).toHaveLength(1);
+    expect(initial[0]).toMatchObject({ usageId: generationId, costSource: 'provider-reported', costMicros: 1500, payer: 'consumption' });
+    expect(JSON.stringify(initial)).not.toMatch(/private|secret|prompts|upstream/);
+    expect(keyReads).toBe(8);
+    expect((await collector.collect({ scope: foreign, generationId })).outcome).toBe('unavailable');
+    expect(keyReads).toBe(8); expect(await read(foreign)).toEqual([]);
+    cost = 0.002;
+    expect((await collector.collect({ scope, generationId })).outcome).toBe('revision-conflict');
+    expect(await read(scope)).toEqual(initial);
+    binding = { ...binding, revision: 2, observedAtMs: T + 200, evidenceRef: 'receipt:openrouter-report-2' };
+    expect((await collector.collect({ scope, generationId })).outcome).toBe('recorded');
+    const records = await read(scope); expect(records).toHaveLength(2);
+    const result = buildHostedUsageStatement({ scope, month: MONTH, asOfMs: T + 1000,
+      source: { complete: false, observedAtMs: T + 200, maximumAgeMs: 1000, evidenceRef: 'fixture:partial-census' }, records });
+    expect(result.lines[0]).toMatchObject({ usages: 1, reportedMicros: 2000, billedMicros: 0 });
+    expect(result.settlementEligible).toBe(false);
   });
 });
