@@ -37,6 +37,7 @@ import {
 } from './gcp-image-family';
 import { evaluateImageScanPolicy, GCP_IMAGE_SCAN_POLICY } from './image-scan-policy';
 import { workspaceHostReleaseSubjectSha256 } from './bootc-bake-manifest';
+import { measureGcpBaseImage } from './gcp-base-image-identity';
 import {
   IAP_TCP_FORWARDING_SOURCE_RANGE,
   iapSshRuleAdmits,
@@ -1451,6 +1452,22 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
       fail(`bootcArtifact is invalid for builder.kind '${input.builderKind}'`);
     }
     const builderNetworkTags = parseBuilderNetworkTags(bytes.toString('utf8'));
+    const sourceImage = assertGcpImmutableImageId(
+      text(this.options.sourceImage ?? context.artifact.buildManifest.baseImage.reference, 'baseImage.reference'),
+      'baseImage.reference',
+    );
+    const attestedBaseSha256 = digest(context.artifact.buildManifest.baseImage.sha256, 'baseImage.sha256');
+    // ⚠ RE-MEASURE the image Packer will actually boot, not the one the manifest names: the
+    // `sourceImage` override can point elsewhere, and the provenance below records
+    // `base_image_sha256` as fact (WI-10005746). This is a read, so it runs before anything billable.
+    const measuredBase = await measureGcpBaseImage(this.compute, sourceImage);
+    if (measuredBase.sha256 !== attestedBaseSha256) {
+      fail(
+        `base image ${sourceImage} measures ${measuredBase.sha256} (id ${measuredBase.identity.id}, ` +
+          `created ${measuredBase.identity.creationTimestamp}), but the build manifest attests ` +
+          `baseImage.sha256 ${attestedBaseSha256}; refusing to build from an image the release did not measure`,
+      );
+    }
     const vars: Readonly<Record<string, string | number | boolean>> = {
       project_id: project(input.projectId, 'projectId'),
       zone: text(context.request.cleanRoom.zone, 'cleanRoom.zone'),
@@ -1458,11 +1475,8 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
       service_account_email: text(context.request.cleanRoom.serviceAccountEmail, 'cleanRoom.serviceAccountEmail'),
       candidate_image_name: candidateName,
       build_manifest_identity: manifest(input.buildManifestIdentity, 'buildManifestIdentity'),
-      source_image: assertGcpImmutableImageId(
-        text(this.options.sourceImage ?? context.artifact.buildManifest.baseImage.reference, 'baseImage.reference'),
-        'baseImage.reference',
-      ),
-      base_image_sha256: digest(context.artifact.buildManifest.baseImage.sha256, 'baseImage.sha256'),
+      source_image: sourceImage,
+      base_image_sha256: measuredBase.sha256,
       architecture: text(input.architecture, 'architecture'),
       release_version: ensureVersion(input.releaseVersion, 'releaseVersion'),
       release_bundle_url: text(context.artifact.release.bundleUrl, 'release.bundleUrl'),
