@@ -13639,6 +13639,7 @@ export function roleBootstrapBody({
   role,
   agent,
   ownerId,
+  launchedBy,
   bootstrapIdempotencyKey,
   workspace,
   harness,
@@ -13669,6 +13670,7 @@ export function roleBootstrapBody({
     feature,
     plan,
     ...(ownerId ? { owner_id: ownerId } : {}),
+    ...(launchedBy ? { launched_by: launchedBy } : {}),
     ...(bootstrapIdempotencyKey
       ? { bootstrap_idempotency_key: bootstrapIdempotencyKey }
       : {}),
@@ -15475,6 +15477,7 @@ async function roleFlow(args, role, rolesMeta) {
         role,
         agent,
         ownerId: args.ownerId,
+        launchedBy: args.launchedBy,
         bootstrapIdempotencyKey,
         workspace,
         harness,

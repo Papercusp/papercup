@@ -44,6 +44,21 @@ describe('deriveWakeReachability — channel ladder mirrors executeWake', () => 
       const v = deriveWakeReachability({ ...BASE, wakeable: false });
       expect(v.awaitRepairable).toBe(true);
       expect(v.wouldBeChannel).toBe('resume');
+      expect(v.summary).toContain('resumable handle');
+      expect(v.summary).not.toContain('otherwise live');
+      expect(v.warning).toContain('starts a fresh process');
+      expect(v.warning).not.toContain('the process is alive and injectable');
+      expect(v.durableWhileAlive).toBe(false);
+    });
+
+    it('a repairable resume of an uninjectable live process still waits for its exit', () => {
+      const v = deriveWakeReachability({
+        ...BASE, wakeable: false, ended: false, pid: 17, pidAlive: true,
+      });
+      expect(v.wouldBeChannel).toBe('resume');
+      expect(v.summary).toContain('after the previous process exits');
+      expect(v.warning).toContain('once the previous process has exited');
+      expect(v.warning).not.toContain('would take the resume channel the moment');
     });
 
     it('CONTROL — no await AND nothing live/resumable (a corpse) ⇒ NOT repairable', () => {
