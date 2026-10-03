@@ -15,6 +15,7 @@ import {
   WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC,
 } from './scorecards';
 import {
+  emptyDissolvedClusterFates,
   HOLDER_BEHAVIOR_CRITERIA,
   HOLDER_BEHAVIOR_INSTRUMENT_KEYS,
   type GoalHolderBehaviorMetrics,
@@ -56,6 +57,9 @@ const witnessed = (): GoalHolderBehaviorMetrics => ({
     unplannedOpenGoalItems: 39,
     unplannedClusters: 1,
     overdueUnplannedClusters: 1,
+    overdueClustersAtStart: 1,
+    dissolvedOverdueClusters: emptyDissolvedClusterFates(),
+    overdueClustersNudged: 0,
   },
   ideation: {
     since: '2026-10-02T02:13:10Z',
@@ -88,6 +92,9 @@ const healthy = (): GoalHolderBehaviorMetrics => ({
     unplannedOpenGoalItems: 0,
     unplannedClusters: 0,
     overdueUnplannedClusters: 0,
+    overdueClustersAtStart: 0,
+    dissolvedOverdueClusters: emptyDissolvedClusterFates(),
+    overdueClustersNudged: 0,
   },
   ideation: { ...witnessed().ideation, plansNew: 1, ideasFiled: 1, noNewPlanReviews: 0, noNewPlanReviewsOverUnplannedCluster: 0 },
   ownerReports: { reports: 2, costNotMeasured: 0, walledEntries: 2, bareWalledEntries: 0 },
