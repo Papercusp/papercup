@@ -49,7 +49,14 @@ const witnessed = (): GoalHolderBehaviorMetrics => ({
     windowStart: subject.windowStart,
     windowEnd: subject.windowEnd,
   },
-  planAuthorship: { plansNew: 0, plansStarted: 0, planFleetLaunches: 0, unplannedOpenGoalItems: 39 },
+  planAuthorship: {
+    plansNew: 0,
+    plansStarted: 0,
+    planFleetLaunches: 0,
+    unplannedOpenGoalItems: 39,
+    unplannedClusters: 1,
+    overdueUnplannedClusters: 1,
+  },
   ideation: {
     since: '2026-10-02T02:13:10Z',
     plansNew: 0,
@@ -74,7 +81,14 @@ const witnessed = (): GoalHolderBehaviorMetrics => ({
 /** A window that meets every bar. */
 const healthy = (): GoalHolderBehaviorMetrics => ({
   ...witnessed(),
-  planAuthorship: { plansNew: 1, plansStarted: 1, planFleetLaunches: 1, unplannedOpenGoalItems: 0 },
+  planAuthorship: {
+    plansNew: 1,
+    plansStarted: 1,
+    planFleetLaunches: 1,
+    unplannedOpenGoalItems: 0,
+    unplannedClusters: 0,
+    overdueUnplannedClusters: 0,
+  },
   ideation: { ...witnessed().ideation, plansNew: 1, ideasFiled: 1, noNewPlanReviews: 0, noNewPlanReviewsOverUnplannedCluster: 0 },
   ownerReports: { reports: 2, costNotMeasured: 0, walledEntries: 2, bareWalledEntries: 0 },
   loop: { deliveredFires: 5, suppressedFires: 0, windowHours: 1.33 },
