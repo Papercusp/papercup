@@ -426,7 +426,10 @@ async function readServingInboxPin(directory: string, expectedBuild: string, pid
 }
 
 async function readServingInboxHealth(endpoint: string, expectedBuild: string) {
-  const response = await fetch(endpoint, { signal: AbortSignal.timeout(10000) });
+  // These identity reads straddle spawnSync. Client idle timers and close
+  // callbacks cannot run while it blocks, so an independently retired pooled
+  // socket can look reusable. Finish each pin on its own connection.
+  const response = await fetch(endpoint, { headers: { connection: 'close' }, signal: AbortSignal.timeout(10000) });
   if (!response.ok) throw Error('Serving inbox health HTTP failure: ' + response.status);
   return servingInboxHealth(await response.json(), expectedBuild);
 }
