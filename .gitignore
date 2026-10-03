@@ -128,6 +128,10 @@ apps/operator-docs/src/content/docs/preview/
 apps/papercusp-docs/dist/
 apps/papercusp-docs/.astro/
 
+# Repo-root Astro prerender cache. Its generated modules contain checkout-specific
+# absolute source IDs and are runtime build output, not repository content.
+/.astro/
+
 # src-as-entry packages — `build` (tsc) emits dist/, but package.json "exports"
 # routes every subpath to ./src/*, so nothing ever consumes the emitted dist/.
 #
