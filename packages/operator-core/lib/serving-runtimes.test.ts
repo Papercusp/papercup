@@ -13,6 +13,7 @@ import {
   SERVING_RUNTIME_IDS,
   describeServingRuntimes,
   evaluateServingRuntime,
+  parseHealthBundleState,
   pickVintageForUnit,
   probeServingRuntime,
   resolveServingRuntimeAlias,
@@ -142,6 +143,111 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
       .toMatchObject({ containsChange: false, method: 'start-after-mtime' });
   });
 
+  describe('WI-10005936: a host that booted a last-known-good bundle after its rebuild failed', () => {
+    // The measured shape: bg-host restarted at 09:04:45Z onto a bundle built at 07:39Z;
+    // the edit landed at 08:57Z. start-after-mtime called that a pass.
+    const BUILT = 7_39;
+    const EDIT = 8_57;
+    const START = 9_04;
+
+    it('judges by the bundle build time, not the start time ⇒ false', () => {
+      const e = evaluateServingRuntime(
+        probe({
+          runtime: 'bg-host',
+          buildShaSource: 'health',
+          blobContains: false,
+          startedAtMs: START,
+          fileMtimeMs: EDIT,
+          bundle: { stale: true, servingBuiltAtMs: BUILT },
+        }),
+      );
+      expect(e).toMatchObject({ containsChange: false, method: 'bundle-mtime', unknownReason: null });
+    });
+
+    it('the pre-fix rules alone would have answered true for the same probe (control)', () => {
+      const e = evaluateServingRuntime(
+        probe({ runtime: 'bg-host', buildShaSource: 'health', blobContains: false, startedAtMs: START, fileMtimeMs: EDIT }),
+      );
+      expect(e).toMatchObject({ containsChange: true, method: 'start-after-mtime' });
+    });
+
+    it('a stale bundle built after the edit does carry it', () => {
+      const e = evaluateServingRuntime(
+        probe({ runtime: 'bg-host', blobContains: false, startedAtMs: START, fileMtimeMs: 7_00, bundle: { stale: true, servingBuiltAtMs: BUILT } }),
+      );
+      expect(e).toMatchObject({ containsChange: true, method: 'bundle-mtime' });
+    });
+
+    it('a matching blob at the boot HEAD (runtime-vintage) is NOT accepted: that HEAD postdates the bundle', () => {
+      const e = evaluateServingRuntime(
+        probe({
+          runtime: 'bg-host',
+          buildShaSource: 'runtime-vintage',
+          blobContains: true,
+          startedAtMs: START,
+          fileMtimeMs: EDIT,
+          bundle: { stale: true, servingBuiltAtMs: BUILT },
+        }),
+      );
+      expect(e).toMatchObject({ containsChange: false, method: 'bundle-mtime' });
+    });
+
+    it('a matching blob at the health sha (baked into the bundle) is accepted', () => {
+      const e = evaluateServingRuntime(
+        probe({ runtime: 'bg-host', buildShaSource: 'health', blobContains: true, fileMtimeMs: EDIT, bundle: { stale: true, servingBuiltAtMs: BUILT } }),
+      );
+      expect(e).toMatchObject({ containsChange: true, method: 'blob' });
+    });
+
+    it('no baked-sha match and no bundle build time ⇒ unknown, never a start-time guess', () => {
+      const e = evaluateServingRuntime(
+        probe({ runtime: 'bg-host', blobContains: false, startedAtMs: START, fileMtimeMs: EDIT, bundle: { stale: true, servingBuiltAtMs: null } }),
+      );
+      expect(e.containsChange).toBeNull();
+      expect(e.unknownReason?.code).toBe('insufficient-data');
+    });
+
+    it('a healthy (non-stale) bundle keeps the start-after-mtime rule', () => {
+      const e = evaluateServingRuntime(
+        probe({ runtime: 'bg-host', blobContains: false, startedAtMs: START, fileMtimeMs: EDIT, bundle: { stale: false, servingBuiltAtMs: null } }),
+      );
+      expect(e).toMatchObject({ containsChange: true, method: 'start-after-mtime' });
+    });
+
+    it('parses the bundleStale field of /api/health', () => {
+      expect(parseHealthBundleState({ ok: true, sha: 'x' })).toEqual({ stale: false, servingBuiltAtMs: null });
+      expect(
+        parseHealthBundleState({ ok: true, bundleStale: { outfile: 'dist-host/hono-host.mjs', servingBundleMtime: '2026-10-03T07:39:41Z' } }),
+      ).toEqual({ stale: true, servingBuiltAtMs: Date.parse('2026-10-03T07:39:41Z') });
+      expect(parseHealthBundleState({ bundleStale: { outfile: '(unreadable marker)', servingBundleMtime: null } })).toEqual({
+        stale: true,
+        servingBuiltAtMs: null,
+      });
+      expect(parseHealthBundleState(null)).toBeNull();
+    });
+
+    it('probes bg-host health on :3271 and only canonical-tree hosts read the bundle state', async () => {
+      const bundlePorts: number[] = [];
+      const deps = {
+        probeUnitStart: async () => ({ pid: 7, startedAtMs: START }),
+        probeHealthSha: async (port: number) => (port === 3271 ? 'c'.repeat(40) : 'h'.repeat(40)),
+        probeHealthBundle: async (port: number) => {
+          bundlePorts.push(port);
+          return { stale: true, servingBuiltAtMs: BUILT };
+        },
+        vintageRows: [],
+        localHost: 'box',
+        fileMtimeMs: EDIT,
+        blobContainsAt: async () => ({ contains: false, unknown: null }),
+      };
+      const bg = await probeServingRuntime({ runtime: 'bg-host', role: 'owner' }, deps);
+      expect(bg).toMatchObject({ buildSha: 'c'.repeat(40), buildShaSource: 'health', bundle: { stale: true, servingBuiltAtMs: BUILT } });
+      await probeServingRuntime({ runtime: 'release-operator', role: 'owner' }, deps);
+      expect(bundlePorts).toEqual([3271]);
+      expect(evaluateServingRuntime(bg)).toMatchObject({ containsChange: false, method: 'bundle-mtime' });
+    });
+  });
+
   it('canonical-tree host that is not running is unknown, not false', () => {
     const e = evaluateServingRuntime(
       probe({ runtime: 'embed-sidecar', pid: null, startedAtMs: null, buildSha: null, buildShaSource: null }),
@@ -251,6 +357,9 @@ describe('probes', () => {
       localHost: 'box',
       readCgroup: async () => null,
       fileMtimeMs: 1_000,
+      // bg-host has a health port (:3271); stub it so this test never reaches a live host.
+      probeHealthSha: async () => null,
+      probeHealthBundle: async () => null,
       blobContainsAt: async (sha: string) => {
         seen.push(sha);
         return { contains: sha.startsWith('h'), unknown: null };
