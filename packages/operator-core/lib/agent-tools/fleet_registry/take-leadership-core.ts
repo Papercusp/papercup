@@ -242,6 +242,20 @@ export async function takeFleetLeadership(
   if (!installed) {
     throw new Error(`fleet_leadership_superseded: '${slug}' leader changed after authorization; re-orient before retrying`);
   }
+  if (previousLeader !== ownerId) {
+    try {
+      const { emitAwaitedEvent } = await import('../../events/await/engine');
+      await emitAwaitedEvent({
+        key: `fleet:leader-changed:${slug}`,
+        summary: `Fleet '${slug}' leadership changed to ${ownerId}.`,
+        payload: { fleet: slug, previousLeader, leader: ownerId },
+        source: identity.ownerId,
+        workspaceId,
+      });
+    } catch {
+      // The registry CAS is authoritative; event delivery is a wake hint.
+    }
+  }
   // 2. The caller's presence → this fleet's leader.
   // Explicit take-leadership calls transfer to the caller and need a heartbeat
   // to ensure there is a row to label. Scheduler succession can elect another
