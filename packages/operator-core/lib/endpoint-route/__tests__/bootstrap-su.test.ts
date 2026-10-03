@@ -1142,6 +1142,45 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
+  it('bootstraps a prepared isolated answer under its bound owner without touching source identity or authority', async () => {
+    const port = sessionPortRow();
+    port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    const res = await callPost({
+      agent: 'codex', model: 'gpt-5.5', owner_id: 'su-answer-owner',
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+      session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).envelopeEnv.PAPERCUSP_SID).toBe('su-answer-owner');
+    expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(expect.objectContaining({
+      target: expect.objectContaining({ coordOwnerId: 'su-answer-owner' }),
+    }));
+    expect(resolveSessionStatesMock).toHaveBeenCalledWith([{ ownerId: 'su-answer-owner' }], { hydratePerId: true });
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
+    expect(setModeMock).not.toHaveBeenCalled();
+    expect(port.metadata.sourceCoordOwnerId).toBe('su-source-owner');
+  });
+
+  it.each(['su-source-owner', 'su-unprepared-answer'])('refuses isolated bootstrap owner substitution %s before reservation', async (ownerId) => {
+    const port = sessionPortRow();
+    port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    const res = await callPost({
+      agent: 'codex', model: 'gpt-5.5', owner_id: ownerId,
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+      session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(409);
+    expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
   it('refuses an old launcher missing the transform handshake before creating a target row', async () => {
     const res = await callPost({
       agent: 'codex',
