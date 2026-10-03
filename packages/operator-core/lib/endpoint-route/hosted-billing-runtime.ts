@@ -15,6 +15,7 @@
  *   PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF       env:/file: ref to the endpoint's whsec_…
  *   PAPERCUSP_HOSTED_BILLING_PLANS            JSON [{ planKey, priceId, label, description? }]
  *   PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID  optional bpc_… (API-created portal configuration)
+ *   PAPERCUSP_STRIPE_ACCOUNT_ID               optional acct_…; credentials must resolve to this account
  *   PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID
  *                                             optional: the workspace whose reconciliation pass
  *                                             records this Stripe account's payment receipts
@@ -30,7 +31,7 @@ import type { RefusalContract } from '../capability-envelope/refusal-contract-ty
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
 import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
-import { createStripeBillingClient } from '../auth/hosted/billing/stripe-billing-client';
+import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { customerPaymentReceipts } from '../cupboard/payment-receipt-store';
 import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
@@ -54,11 +55,14 @@ export interface HostedBillingRuntimeConfiguration {
   readonly plans: readonly HostedBillingPlan[];
   /** Explicit customer-portal configuration (`bpc_…`, not a secret); null = Stripe's dashboard default. */
   readonly stripePortalConfigurationId?: string | null;
+  /** Pin the credential's account identity, independently of its test/live mode. */
+  readonly stripeAccountId?: string | null;
   /** Workspace whose ledger holds this Stripe account's payment receipts; null = receipts not served. */
   readonly receiptsWorkspaceId?: string | null;
 }
 
 const PORTAL_CONFIGURATION_ID = /^bpc_[A-Za-z0-9]+$/;
+const ACCOUNT_ID = /^acct_[A-Za-z0-9]+$/;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
 /** A malformed receipts workspace id is a configuration error, never silently ignored. */
@@ -93,6 +97,13 @@ export function parseStripePortalConfigurationId(raw: string | undefined): strin
   if (!PORTAL_CONFIGURATION_ID.test(value)) {
     throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID');
   }
+  return value;
+}
+
+export function parseStripeAccountId(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  if (!ACCOUNT_ID.test(value)) throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_STRIPE_ACCOUNT_ID');
   return value;
 }
 
@@ -138,6 +149,7 @@ export function readHostedBillingRuntimeConfiguration(
     stripeWebhookSecretRef: optionalRef(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF),
     plans: parseHostedBillingPlans(env.PAPERCUSP_HOSTED_BILLING_PLANS),
     stripePortalConfigurationId: parseStripePortalConfigurationId(env.PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID),
+    stripeAccountId: parseStripeAccountId(env.PAPERCUSP_STRIPE_ACCOUNT_ID),
     receiptsWorkspaceId: parseReceiptsWorkspaceId(env.PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID),
   };
 }
@@ -179,10 +191,12 @@ async function resolveStripe(
   }
   if (configuration.plans.length === 0) return { stripe: null, reason: 'no_plans_configured' };
   const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
-  const [secretKey, webhookSecret] = await Promise.all([
+  const [resolvedSecretKey, resolvedWebhookSecret] = await Promise.all([
     resolveSecret(configuration.stripeSecretKeyRef),
     resolveSecret(configuration.stripeWebhookSecretRef),
   ]);
+  const secretKey = resolvedSecretKey.trim();
+  const webhookSecret = resolvedWebhookSecret.trim();
   if (!/^whsec_[A-Za-z0-9]+$/.test(webhookSecret)) return { stripe: null, reason: 'invalid_webhook_secret' };
   const liveModeAllowed = dependencies.liveModeAllowed ? await dependencies.liveModeAllowed().catch(() => false) : false;
   const built = createStripeBillingClient({
@@ -191,6 +205,25 @@ async function resolveStripe(
     liveModeAllowed,
   });
   if (!built.ok) return { stripe: null, reason: built.code };
+  if (configuration.stripeAccountId) {
+    // A test credential is not proof that it belongs to the intended business.
+    // Verify once at composition; never expose credentials or provider errors.
+    try {
+      const response = await (dependencies.fetchImpl ?? fetch)(`${STRIPE_API_BASE}/account`, {
+        headers: { Authorization: `Bearer ${secretKey}` },
+        signal: AbortSignal.timeout(10_000),
+        redirect: 'error',
+      });
+      if (!response.ok) return { stripe: null, reason: 'stripe_account_unavailable' };
+      const account: unknown = await response.json();
+      if (!account || typeof account !== 'object' || !('id' in account) || typeof account.id !== 'string') {
+        return { stripe: null, reason: 'stripe_account_unavailable' };
+      }
+      if (account.id !== configuration.stripeAccountId) return { stripe: null, reason: 'stripe_account_mismatch' };
+    } catch {
+      return { stripe: null, reason: 'stripe_account_unavailable' };
+    }
+  }
   return {
     stripe: {
       client: built.client,

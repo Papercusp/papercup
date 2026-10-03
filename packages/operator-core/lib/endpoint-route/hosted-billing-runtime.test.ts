@@ -31,6 +31,7 @@ import {
   parseHostedBillingPlans,
   parseReceiptsWorkspaceId,
   parseStripePortalConfigurationId,
+  parseStripeAccountId,
   readHostedBillingRuntimeConfiguration,
   type HostedBillingRuntimeConfiguration,
   type HostedBillingRuntimeDependencies,
@@ -223,6 +224,12 @@ const activeSnapshot = (status: HostedSubscriptionSnapshot['status'] = 'active')
 // ── configuration ───────────────────────────────────────────────────────────
 
 describe('hosted billing configuration parsing', () => {
+  it('accepts an absent or valid expected Stripe account and refuses a malformed identity', () => {
+    expect(parseStripeAccountId(undefined)).toBeNull();
+    expect(parseStripeAccountId(' acct_papercusp ')).toBe('acct_papercusp');
+    expect(() => parseStripeAccountId('cus_other')).toThrow('PAPERCUSP_STRIPE_ACCOUNT_ID');
+    expect(() => parseStripeAccountId('acct_x/other')).toThrow('PAPERCUSP_STRIPE_ACCOUNT_ID');
+  });
   it('accepts an absent or valid portal configuration id and refuses a malformed one', () => {
     expect(parseStripePortalConfigurationId(undefined)).toBeNull();
     expect(parseStripePortalConfigurationId('   ')).toBeNull();
@@ -256,6 +263,7 @@ describe('hosted billing configuration parsing', () => {
       stripeWebhookSecretRef: null,
       plans: [{ planKey: 'team', priceId: 'price_1', label: 'Team', description: null }],
       stripePortalConfigurationId: 'bpc_9',
+      stripeAccountId: null,
       receiptsWorkspaceId: null,
     });
     expect(readHostedBillingRuntimeConfiguration({
@@ -276,6 +284,42 @@ describe('hosted billing configuration parsing', () => {
 // ── runtime composition ─────────────────────────────────────────────────────
 
 describe('createHostedBillingRuntime', () => {
+  it('checks the configured Stripe account before admitting billing', async () => {
+    const built = await runtime({ config: { stripeAccountId: 'acct_papercusp' }, stripe: [{ body: { id: 'acct_papercusp' } }] });
+    expect(built.configured).toBe(true);
+    expect(built.stripe.calls[0].url).toBe('https://api.stripe.com/v1/account');
+    expect(built.stripe.calls[0].headers.Authorization).toBe('Bearer sk_test_key123');
+  });
+
+  it.each([
+    [{ body: { id: 'acct_wrong_business' } }, 'stripe_account_mismatch'],
+    [{ status: 401, body: { error: { message: 'expired' } } }, 'stripe_account_unavailable'],
+    [{ body: {} }, 'stripe_account_unavailable'],
+  ])('fails closed when the credential account cannot satisfy its pin', async (response, reason) => {
+    const built = await runtime({ config: { stripeAccountId: 'acct_papercusp' }, stripe: [response] });
+    expect(built.configured).toBe(false);
+    expect(built.unavailableReason).toBe(reason);
+    const checkout = await built.app.request('/api/hosted/billing/checkout', post({ cookie: 'owner', body: { planKey: 'team' } }));
+    expect(checkout.status).toBe(503);
+    expect(built.stripe.calls).toHaveLength(1);
+  });
+
+  it('refuses billing on account verification transport failure without exposing the error', async () => {
+    const built = await runtime({ config: { stripeAccountId: 'acct_papercusp' }, deps: { fetchImpl: (async () => { throw new Error('sensitive provider details'); }) as typeof fetch } });
+    expect(built.unavailableReason).toBe('stripe_account_unavailable');
+    expect(built.configured).toBe(false);
+  });
+
+  it('keeps both cloud offers distinct and never exposes provider price ids', async () => {
+    const offers = [
+      { planKey: 'papercusp-cloud', priceId: 'price_hosted', label: 'Papercusp cloud', description: 'Managed by Papercusp' },
+      { planKey: 'byoc-cloud', priceId: 'price_byoc', label: 'Bring your own cloud', description: 'Runs in your cloud account' },
+    ];
+    const built = await runtime({ config: { plans: offers } });
+    const body = await (await built.app.request('/api/hosted/billing/plans')).json();
+    expect(body.plans).toEqual(offers.map(({ priceId: _priceId, ...publicOffer }) => publicOffer));
+    expect(body.livemode).toBe(false);
+  });
   it('mounts exactly the declared surface', async () => {
     const built = await runtime();
     expect(built.mounted.map((r) => `${r.method} ${r.path}`)).toEqual(HOSTED_BILLING_RUNTIME_MOUNTED_ROUTE_KEYS);
