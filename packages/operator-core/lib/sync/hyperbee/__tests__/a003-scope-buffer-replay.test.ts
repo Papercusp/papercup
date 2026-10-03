@@ -40,7 +40,8 @@
  * `it.skip`, not a gap (see the rationale at that test).
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, onTestFailed } from 'vitest';
+import { channel } from 'node:diagnostics_channel';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,7 +51,8 @@ import {
   type BootHarnessOpts,
 } from '../boot';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
-import { _resetCacheForTests } from '../corestore';
+import { CORESTORE_OPEN_CHANNEL, type CorestoreOpenObservation, _resetCacheForTests } from '../corestore';
+import { processMonotonicClock } from '../../../process-monotonic-clock';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 
@@ -64,6 +66,24 @@ function bootHarnessSubstrate(opts: BootHarnessOpts) {
 }
 
 const cleanups: Array<() => void | Promise<void>> = [];
+const openStages: CorestoreOpenObservation[] = [];
+const openChannel = channel(CORESTORE_OPEN_CHANNEL);
+const recordOpenStage = (message: unknown) => {
+  const observation = message as CorestoreOpenObservation;
+  if (observation.workspaceRoot.includes('a003-')) openStages.push(observation);
+};
+
+beforeEach(() => {
+  openStages.length = 0;
+  openChannel.subscribe(recordOpenStage);
+  onTestFailed(() => {
+    const last = openStages.at(-1);
+    console.info('A003_NATIVE_OPEN_DIAGNOSTIC', JSON.stringify({
+      stages: openStages,
+      pendingStageMs: last ? processMonotonicClock.now() - last.atMs : null,
+    }));
+  });
+});
 
 /** Own a pending boot before awaiting it: timed-out tests must not delete
  * the native store directory while its open is still in flight. */
@@ -93,6 +113,10 @@ async function drainFixtureCleanups() {
 
 afterEach(async () => {
   await drainFixtureCleanups();
+  if (openStages.length) {
+    console.info('A003_NATIVE_OPEN_RESULT', JSON.stringify(openStages));
+  }
+  openChannel.unsubscribe(recordOpenStage);
   _resetCacheForTests();
   _clearRegistryForTests();
   _resetBootHistoryForTests();

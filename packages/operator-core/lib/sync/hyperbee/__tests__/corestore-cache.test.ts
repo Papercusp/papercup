@@ -14,12 +14,15 @@
 
 import { afterEach, afterAll, describe, expect, it } from 'vitest';
 import Corestore from 'corestore';
+import { channel } from 'node:diagnostics_channel';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   getHarnessStore,
+  CORESTORE_OPEN_CHANNEL,
+  type CorestoreOpenObservation,
   closeHarnessStore,
   harnessStoreLockPath,
   _resetCacheForTests,
@@ -50,6 +53,37 @@ function tmpRoot(prefix = 'mb-cstore-'): string {
 }
 
 describe('getHarnessStore — per-(workspaceRoot, harnessSlug) cache (A5)', () => {
+  it('reports real open stages in order and the actual failed lock stage', async () => {
+    const root = tmpRoot();
+    const events: CorestoreOpenObservation[] = [];
+    const diagnostic = channel(CORESTORE_OPEN_CHANNEL);
+    const listener = (message: unknown) => {
+      const event = message as CorestoreOpenObservation;
+      if (event.workspaceRoot === root) events.push(event);
+    };
+    diagnostic.subscribe(listener);
+    cleanups.push(() => { diagnostic.unsubscribe(listener); });
+    const opts = { workspaceRoot: root, harnessSlug: 'observed' };
+    await getHarnessStore(opts);
+    cleanups.push(() => closeHarnessStore(opts));
+    expect(events.map(({ stage, outcome }) => [stage, outcome])).toEqual([
+      ['directory', 'started'], ['lock', 'started'], ['device-heal', 'started'],
+      ['native-ready', 'started'], ['ready', 'succeeded'],
+    ]);
+    expect(events.every((event, index) => event.elapsedMs >= 0 &&
+      (index === 0 || event.atMs >= events[index - 1].atMs))).toBe(true);
+    await getHarnessStore(opts);
+    expect(events).toHaveLength(5); // Cached callers do not invent another open.
+
+    const locked = { workspaceRoot: root, harnessSlug: 'blocked' };
+    await mkdir(join(root, '.papercusp', 'blocked', 'hyperbee'), { recursive: true });
+    await writeFile(harnessStoreLockPath(locked), JSON.stringify({ pid: process.pid, token: 'live' }));
+    await expect(getHarnessStore(locked)).rejects.toThrow('already open by process');
+    expect(events.slice(5).map(({ stage, outcome }) => [stage, outcome])).toEqual([
+      ['directory', 'started'], ['lock', 'started'], ['lock', 'failed'],
+    ]);
+  });
+
   it('returns the SAME instance for the same key, a DIFFERENT instance for a different key', async () => {
     const root = tmpRoot();
     const a1 = await getHarnessStore({ workspaceRoot: root, harnessSlug: 'A' });
