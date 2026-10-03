@@ -61,7 +61,16 @@ export type LoopNextWakeInput =
     > &
       // Optional so hand-built inputs (and older fixtures) stay valid; getLoopStatus
       // always populates both from the loop's newest wake-delivery row.
-      Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError' | 'lastDeliveryOutcome'>>)
+      Partial<
+        Pick<
+          LoopStatus,
+          | 'lastWakeStatus'
+          | 'lastWakeError'
+          | 'lastDeliveryOutcome'
+          | 'lastFiredAt'
+          | 'lastFailedFireLoopTurnCompletedAt'
+        >
+      >)
   | null
   | undefined;
 
@@ -84,6 +93,20 @@ export function lastLoopFireParked(
 ): boolean {
   if (loop?.lastWakeStatus !== 'parked') return false;
   return !/retry remains durable/i.test(loop.lastWakeError ?? '');
+}
+
+function hasCompletedLoopTurnAfterLastFire(
+  loop:
+    | Partial<Pick<LoopStatus, 'lastFiredAt' | 'lastFailedFireLoopTurnCompletedAt'>>
+    | null
+    | undefined,
+): boolean {
+  const firedAtMs = loop?.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
+  const completedAtMs =
+    loop?.lastFailedFireLoopTurnCompletedAt == null
+      ? Number.NaN
+      : Date.parse(loop.lastFailedFireLoopTurnCompletedAt);
+  return Number.isFinite(firedAtMs) && Number.isFinite(completedAtMs) && completedAtMs > firedAtMs;
 }
 
 export type LoopNextWakeVerdict =
@@ -126,10 +149,14 @@ export function classifyLoopNextWake(
 
   // EI-24609463764219558: a delivered wake can still fail to produce a model turn. The
   // reconciler records this exact outcome only after its bounded grace found no
-  // loop-origin assistant turn and re-armed the loop as an error. Treat that confirmed
-  // failure as a broken continuation path even when the generic fire/turn-starvation
-  // counters have not crossed their own thresholds yet.
-  if (loop.lastDeliveryOutcome === 'loop-delivered-wake-no-loop-turn') {
+  // loop-origin assistant turn and re-armed the loop as an error. A delayed turn may
+  // complete after that verdict, including after a later loop:arm; clear the failure
+  // only when the per-fire status query proves completion strictly after lastFiredAt.
+  // Missing, stale, or malformed proof keeps the previous fail-closed behavior.
+  if (
+    loop.lastDeliveryOutcome === 'loop-delivered-wake-no-loop-turn' &&
+    !hasCompletedLoopTurnAfterLastFire(loop)
+  ) {
     return { guaranteed: false, reason: 'last-fire-no-loop-turn' };
   }
 

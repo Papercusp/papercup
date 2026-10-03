@@ -554,6 +554,60 @@ describe('loop surface round-trip (real PG)', () => {
     expect(recovered!.turnsStalled).toBe(false);
   });
 
+  it('EI-24933871787030971: preserves a late fire completion across a later arm', async () => {
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await sql`DELETE FROM harness_shared.autoloop_state WHERE workspace_id = ${WS} AND role = ${loopRoutineName(OWNER)}`;
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    const lastFired = new Date(Date.now() - 5 * 60_000);
+    const loopPrompt = new Date(lastFired.getTime() + 10_000);
+    const loopAssistant = new Date(lastFired.getTime() + 30_000);
+    const rearmedAt = new Date(lastFired.getTime() + 60_000);
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', ${1}::int,
+               'armed_at', ${rearmedAt.toISOString()}::text
+             )
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    await sql`
+      INSERT INTO harness_shared.autoloop_state
+        (workspace_id, harness_slug, role, last_fired_at, last_status, consecutive_errors)
+      VALUES
+        (${WS}, ${HARNESS}, ${loopRoutineName(OWNER)}, ${lastFired.toISOString()}::timestamptz,
+         'loop-delivered-wake-no-loop-turn', 1)
+    `;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'claude', 'late-loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', '⟦turn-origin:loop-fire nonce:fedcba9876543210⟧ wake',
+         'loop-fire', 'agent-injected', 1),
+        (${WS}, 'claude', 'late-loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'late loop turn completed', NULL, 'not-user-turn', 1)
+    `;
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.lastDeliveryOutcome).toBe('loop-delivered-wake-no-loop-turn');
+    // The arm-scoped turn clock deliberately stays empty after re-arm; only the separate
+    // last-fire proof may recover the false historical no-turn verdict.
+    expect(status!.lastLoopTurnAt).toBeNull();
+    expect(status!.lastFailedFireLoopTurnCompletedAt).toBe(loopAssistant.toISOString());
+  });
+
   it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {
     await materializeLoop({
       workspaceId: WS,

@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Both deployed Papercusp LLC Stripe TEST cloud subscription lifecycles",
+  "framework": "playwright",
+  "command": [
+    "PORTAL_BILLING_LIVE_E2E=1 PLAYWRIGHT_JSON_OUTPUT_FILE=/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-final-20261003-0706-report.json PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:browser -- e2e/portal-billing-live.spec.ts --reporter=list,json --output=test-results/billing-live-final-20261003-0706"
+  ],
+  "cwd": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+  "exitCode": 0,
+  "startedAt": "2026-10-03T07:06:02.641Z",
+  "finishedAt": "2026-10-03T07:06:59.867Z",
+  "summary": "Both actual HTTPS billing journeys passed with genuine WorkOS TEST authentication, real TEST Checkout, signed webhook activation, customer-portal cancellation and deployed ended status. TEST customers/sessions cleaned up. This does not certify upstream AuthKit signup UI or commercial metering/provisioning.",
+  "assertions": [
+    {
+      "id": "papercusp-cloud-test-account-auth",
+      "passed": true,
+      "evidence": "Papercusp cloud: deployed Checkout, webhook active state and customer portal; genuine WorkOS TEST sealed session, own tenant, Papercusp LLC account pin."
+    },
+    {
+      "id": "papercusp-cloud-checkout-webhook-active",
+      "passed": true,
+      "evidence": "Actual Stripe Checkout, direct customer/subscription TEST metadata reads, signed webhook persisted active state and active dashboard screenshot."
+    },
+    {
+      "id": "papercusp-cloud-portal-webhook-cancellation",
+      "passed": true,
+      "evidence": "Actual cancellation confirmation, direct Stripe canceled status, deployed subscription API canceled state and ended dashboard UI."
+    },
+    {
+      "id": "byoc-cloud-test-account-auth",
+      "passed": true,
+      "evidence": "Bring your own cloud: deployed Checkout, webhook active state and customer portal; genuine WorkOS TEST sealed session, own tenant, Papercusp LLC account pin."
+    },
+    {
+      "id": "byoc-cloud-checkout-webhook-active",
+      "passed": true,
+      "evidence": "Actual Stripe Checkout, direct customer/subscription TEST metadata reads, signed webhook persisted active state and active dashboard screenshot."
+    },
+    {
+      "id": "byoc-cloud-portal-webhook-cancellation",
+      "passed": true,
+      "evidence": "Actual cancellation confirmation, direct Stripe canceled status, deployed subscription API canceled state and ended dashboard UI."
+    }
+  ],
+  "receipts": [
+    {
+      "accountId": "acct_1UChLcF3Zj0ZNLH5",
+      "mode": "test",
+      "planKey": "papercusp-cloud",
+      "organizationId": "ff08eb22-c7b0-4bd0-a0be-5eb0bf159725",
+      "authFixture": "genuine WorkOS TEST authentication + server-side tenant admission; upstream AuthKit UI not exercised",
+      "sessionPreflight": {
+        "status": 200,
+        "ok": true,
+        "organizationId": "ff08eb22-c7b0-4bd0-a0be-5eb0bf159725"
+      },
+      "cookieScope": [
+        {
+          "name": "__Host-papercusp_session",
+          "domain": "app.papercusp.com",
+          "path": "/",
+          "secure": true
+        }
+      ],
+      "localCookieValid": true,
+      "cookieSent": true,
+      "checkoutResponseStatus": 200,
+      "customerId": "cus_VN7FMDN7pOqhGf",
+      "checkoutOpened": true,
+      "checkoutReturned": "success",
+      "webhookActive": true,
+      "subscriptionId": "sub_1UMN1VF3Zj0ZNLH5lOJul13V",
+      "customerPortalOpened": true,
+      "webhookCanceled": true
+    },
+    {
+      "accountId": "acct_1UChLcF3Zj0ZNLH5",
+      "mode": "test",
+      "planKey": "byoc-cloud",
+      "organizationId": "355355a6-60bd-4889-b5a7-607bfda9d54b",
+      "authFixture": "genuine WorkOS TEST authentication + server-side tenant admission; upstream AuthKit UI not exercised",
+      "sessionPreflight": {
+        "status": 200,
+        "ok": true,
+        "organizationId": "355355a6-60bd-4889-b5a7-607bfda9d54b"
+      },
+      "cookieScope": [
+        {
+          "name": "__Host-papercusp_session",
+          "domain": "app.papercusp.com",
+          "path": "/",
+          "secure": true
+        }
+      ],
+      "localCookieValid": true,
+      "cookieSent": true,
+      "checkoutResponseStatus": 200,
+      "customerId": "cus_VN7GYiSpQOJ79N",
+      "checkoutOpened": true,
+      "checkoutReturned": "success",
+      "webhookActive": true,
+      "subscriptionId": "sub_1UMN1tF3Zj0ZNLH5eFTV1Idj",
+      "customerPortalOpened": true,
+      "webhookCanceled": true
+    }
+  ],
+  "publicOrigin": "https://app.papercusp.com",
+  "deployedArtifact": {
+    "schemaVersion": 2,
+    "buildId": "Ef2IdRnEHq2KjHDE1fsNA",
+    "release": "Ef2IdRnEHq2KjHDE1fsNA-20261003072929681-1539187-1fbf9999",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-10-03T07:29:29.681Z",
+    "sourceRootDigest": "d70af07a1dbd6f730ea09c90be1d275b9f063eec14ef2ffb16b7548e4e486aec"
+  },
+  "deploymentVerification": {
+    "command": "bash apps/operator/scripts/systemd/deploy-cloud-portal.sh --handoff",
+    "exitCode": 0,
+    "sourceDigestVerified": true,
+    "managedUnitAlreadyServingCurrentArtifact": true
+  },
+  "rawReport": {
+    "sourcePath": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-final-20261003-0706-report.json",
+    "sha256": "1ab5d6a0f0a17d98d72388d09492bc10ef6748da0c47d854966d7df89b2f7ee2"
+  },
+  "measuredBlobs": [
+    {
+      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "path": "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.ts",
+      "sha256": "eeb8ce14f355b123c2d1e179d141ae22b7cddb8bf3c400af170d8e257b2778ea"
+    },
+    {
+      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "path": "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.test.ts",
+      "sha256": "48aa238c85b66b1831a69a3ab0b51d0ce8bac9c7d46f90d9fa2bc160d0e58bea"
+    },
+    {
+      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "path": "packages/operator-core/lib/auth/hosted/self-signup.ts",
+      "sha256": "6492f96249807c33c7c1883e0895fa1ed79055bf25eff2b83431496bb5d239b1"
+    },
+    {
+      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "path": "packages/operator-core/lib/auth/hosted/self-signup.integration.test.ts",
+      "sha256": "934fd3728d5656af5b2b33bcc52ff2f8b876e3f829f6a7346c079cb82ce9e42e"
+    },
+    {
+      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "path": "packages/ui/src/billing.tsx",
+      "sha256": "35f71c717cfa79359c25c3816682894490f4ab9e8f6620458d88ad7abebe2b72"
+    },
+    {
+      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "path": "tests/billing-ui.test.tsx",
+      "sha256": "df140a929859b729e00266a4c8ccb6a3e2ed0dc749bcb20f3ea02ed793aa0877"
+    },
+    {
+      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "path": "e2e/portal-billing.spec.ts",
+      "sha256": "21ab4bf74516bcbbf2b8fe7764eb4b4be94d8721f3c228102764c3ae6d8fdae1"
+    },
+    {
+      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "path": "e2e/portal-billing-live.spec.ts",
+      "sha256": "adb23f5cac86f4170af6b8cb67a2c0fe8e15f53f7d94fdcf819f601d41e88209"
+    },
+    {
+      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "path": "playwright.config.ts",
+      "sha256": "911fb2120d0d44b1dca7535240f3b471953f17420b39f345ce702145671ada7b"
+    }
+  ],
+  "testLedgerRefs": {
+    "runtimePass": 20649419,
+    "accountGuardMutationFail": 20649885,
+    "accountGuardMutationBaselines": [
+      20649882,
+      20649883
+    ]
+  },
+  "screenshots": [
+    {
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-checkout.png",
+      "sha256": "ab447c0954fdc9151b7d607616b88727c11fe25089da1ee7e0e0a93ab01dc8c6"
+    },
+    {
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-active.png",
+      "sha256": "8aa624ceb0268c0e675c09fa226b01cc246ba851590c955966db11c2184e80e6"
+    },
+    {
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-cancellation.png",
+      "sha256": "c3b15904e6a5a23dc008c933117296d33d5cc83ba70516ad7158940f4231658e"
+    },
+    {
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/offers.png",
+      "sha256": "a2923b32b790dd440c438a3bb51cd7dba74b625c2510a67273315ed582c40ad1"
+    },
+    {
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-checkout.png",
+      "sha256": "5df38faad30a0ce809264d0f1baa17ee38340815ed253c4515ac9438baf0721f"
+    },
+    {
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-active.png",
+      "sha256": "1957064b5fb8977110b573ae7790b4eae4b94ee85cb2a6075f3df937b4cc8d9d"
+    },
+    {
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-cancellation.png",
+      "sha256": "20be01e4db546c430be8c44a615d2f21eab40b247e6023d1823c41b96365afb8"
+    }
+  ],
+  "sourceCommit": "035b7869624dc1a978ba7b4ab9011b08c403b7b7"
+}

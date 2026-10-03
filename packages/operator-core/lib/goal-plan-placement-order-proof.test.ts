@@ -38,6 +38,10 @@ async function portfolio(scenario: Scenario, applyControl = true) {
   }
   const sql = ((first: TemplateStringsArray) => {
     const statement = first.join(' ');
+    // The owner-wall fragments (goal-owner-report-truth.ts) use the same tag and are
+    // interpolated into the portfolio read. They are not statements, so return an
+    // inert fragment; anything else that is not the portfolio read stays an error.
+    if (/^\s*(COALESCE\(\s*NULLIF\(wall\.payload|wall\.status <> ALL)/.test(statement)) return { fragment: statement };
     if (!statement.includes('WITH goal_row AS')) throw new Error('Unexpected portfolio SQL');
     return Promise.resolve([{
       status: 'active', properties: { worklist: { value: ['plan:papercusp/alpha', 'plan:papercusp/beta'] } },

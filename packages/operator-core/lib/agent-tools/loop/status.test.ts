@@ -340,6 +340,22 @@ describe('loop:status rewake verdict (P-013)', () => {
     expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-no-loop-turn' });
   });
 
+  it('restores the re-wake guarantee when a delayed loop turn completes after that fire', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastFiredAt: '2026-10-03T05:00:00.000Z',
+      lastFailedFireLoopTurnCompletedAt: '2026-10-03T05:00:00.001Z',
+      lastWakeStatus: 'delivered',
+      lastWakeError: null,
+      lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn',
+      fireStarved: false,
+      turnsStalled: false,
+    });
+    const out = await run();
+    expect(out.loop.lastFailedFireLoopTurnCompletedAt).toBe('2026-10-03T05:00:00.001Z');
+    expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
   it('keeps the turn-settle wake guarantee for a parked loop with no concrete nextFireAt', async () => {
     getLoopStatusMock.mockResolvedValue({
       ...armed,
@@ -362,6 +378,7 @@ describe('loop:status rewake verdict (P-013)', () => {
     const returns = (statusTool as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
     expect(returns).toContain('rewakeGuaranteed');
     expect(returns).toContain('last-fire-parked');
+    expect(returns).toContain('lastFailedFireLoopTurnCompletedAt');
   });
 });
 

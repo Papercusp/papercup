@@ -1334,12 +1334,18 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // written first, so both forms carry the same schema-valid capability:read
     // cursor and no client ever has to parse a chopped prefix plus a prose footer.
     const parsedJsonBody = bodyShape.json != null;
-    // A valid JSON body can still be only the tool's emitted SAMPLE: custom
-    // shapers such as plans:get mark clipped record fields with
-    // `body_truncated:true`.  It is safe to expose the spill for inspection,
-    // but it is NOT safe to advertise the byte boundary as an exact, complete
-    // JSON recovery point — the omitted records were never serialized.
-    const partialJsonBody = parsedJsonBody && innerTruncationMarkers.length > 0;
+    // A valid JSON body can still be only a sample: custom shapers mark field
+    // cutoffs in the body, while payload-tier marks an upstream projection in
+    // metadata. Both make the spill incomplete; neither removes the byte locator.
+    const upstreamJsonProjection = Boolean(upstreamProjection?.truncated);
+    const partialJsonBody =
+      parsedJsonBody && (upstreamJsonProjection || innerTruncationMarkers.length > 0);
+    const partialJsonSource = upstreamJsonProjection
+      ? 'upstream payloadProjection'
+      : `the tool marked ${innerTruncationMarkers.join(', ')}`;
+    const partialJsonReRead = upstreamJsonProjection
+      ? `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args).`
+      : `Re-call ${opts.toolName} with a wider per-field limit.`;
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -1418,9 +1424,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               `use a runtime codec, verify decoded.length===byte_length, follow next_cursor; ` +
               `parse JSON only at eof:true + next_cursor:null. ` +
               (partialJsonBody
-                ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The tool marked ` +
-                  `${innerTruncationMarkers.join(', ')}; this JSON is partial (bodyComplete:false) and ` +
-                  `paging cannot recover omitted fields. Re-call ${opts.toolName} with a wider per-field limit.`
+                ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The source is already ` +
+                  `partial (${partialJsonSource}); this JSON is partial (bodyComplete:false) and ` +
+                  `paging cannot recover omitted fields. ${partialJsonReRead}`
                 : parsedJsonBody
                   ? `JSON starts after cursor.bodyOffsetInPayload in response.data.`
                   : `the spill opens with a text header.`) +

@@ -39,6 +39,16 @@ function declaredKeys(): string[] {
 }
 
 describe("coord:inbox argument contract (P-001)", () => {
+  it("documents that the limit uses priority ranking rather than newest-first overall", () => {
+    const shape = inboxTool.args as unknown as {
+      shape: Record<string, { description?: string }>;
+    };
+    const description = shape.shape.limit.description ?? "";
+    expect(description).toMatch(/priority-ranked/i);
+    expect(description).toMatch(/newest-first overall is not guaranteed/i);
+    expect(description).not.toMatch(/most-recent kept/i);
+  });
+
   // The alias half. `unanswered` is a genuine, unambiguous synonym for
   // `unanswered_only` — the plan's ALIAS rule — so it is ACCEPTED rather than
   // redirected, and the caller's first call succeeds instead of round-tripping.

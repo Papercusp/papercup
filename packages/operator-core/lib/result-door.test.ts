@@ -1593,6 +1593,31 @@ describe('applyResultDoor', () => {
       expect(spill).toContain('NOT recoverable from this file');
     });
 
+    it('an upstream-projected JSON spill keeps its locator and marks the body incomplete', () => {
+      const text = JSON.stringify({
+        rows: Array.from({ length: 300 }, (_, index) => ({ id: `row-${index}`, evidence: 'e'.repeat(80) })),
+      });
+      expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { payloadProjection } },
+        { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const body = boundedBody(doored) as {
+        _projection: {
+          cursor: { bodyOffsetInPayload?: number; bodyComplete?: boolean };
+          next: string;
+        };
+      };
+
+      expect(body._projection.cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
+      expect(body._projection.cursor.bodyComplete).toBe(false);
+      expect(body._projection.next).toContain('upstream payloadProjection');
+      expect(body._projection.next).toContain('this JSON is partial (bodyComplete:false)');
+      expect(body._projection.next).toContain('paging cannot recover omitted fields');
+      expect(body._projection.next).toContain("Re-call coord:orient with payloadTier:'full'");
+    });
+
     it(
       'a result WITHOUT any marker gets the HONEST default wording — never an unconditional ' +
         '"FULL result" claim (EI-18762253154342502: no marker firing proves nothing was cut ' +
