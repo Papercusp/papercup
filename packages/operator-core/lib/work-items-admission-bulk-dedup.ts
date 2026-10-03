@@ -57,6 +57,8 @@ import type { OrgSql } from './work-items';
 export const WORK_ITEM_ADMISSION_BULK_DEDUP = 'work-item-admission-bulk-dedup';
 export const BULK_DEDUP_ACTOR = `system:${WORK_ITEM_ADMISSION_BULK_DEDUP}`;
 export const DEFAULT_BULK_MAX_STAGES = 12;
+/** D-009: reach a committed stage even when the full corpus needs days of judging. */
+export const DEFAULT_BULK_MAX_PAIRS_PER_STAGE = 512;
 export const DEFAULT_BULK_PAIRS_PER_CALL = 150;
 /**
  * Output-token budget for ONE judge batch, and the per-pair/overhead rates the
@@ -224,6 +226,7 @@ interface BulkStageEnvelope {
     recordedAt: string;
   }>;
   checkpoints?: { batches?: Record<string, BulkBatchCheckpoint> };
+  workBudget?: { pairLimit: number; availablePairs: number; selectedPairs: number; deferredPairs: number };
   failure?: { class: string; message: string; retryable: boolean };
   [key: string]: unknown;
 }
@@ -312,7 +315,7 @@ export interface BulkDedupRunResult {
   runId: string;
   scope: BulkDedupScope;
   converged: boolean;
-  convergenceReason: 'global-zero' | 'scope-zero';
+  convergenceReason: 'global-zero' | 'scope-zero' | 'stage-budget';
   initialCensus: number;
   finalCensus: number;
   finalScopedPairs: number;
@@ -351,6 +354,8 @@ export interface BulkDedupRunOptions {
   sql?: OrgSql;
   runId?: string;
   maxStages?: number;
+  /** Pair work before one atomic commit; residual pairs remain in the next census. */
+  maxPairsPerStage?: number;
   pairsPerCall?: number;
   shardConcurrency?: number;
   census?: Omit<AdmissionCensusRunOptions, 'workspaceId' | 'harnessSlug' | 'sql' | 'runId' | 'withinTransaction'>;
@@ -1996,6 +2001,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       : DEFAULT_BULK_STAGE_LEASE_MS;
   const step: BulkDedupStepRunner = opts.step ?? (async <T>(_name: string, fn: () => Promise<T>) => fn());
   const maxStages = Math.max(1, Math.floor(opts.maxStages ?? DEFAULT_BULK_MAX_STAGES));
+  const maxPairsPerStage = Math.max(
+    1,
+    Math.min(10_000, Math.floor(opts.maxPairsPerStage ?? DEFAULT_BULK_MAX_PAIRS_PER_STAGE)),
+  );
   // Clamp to what ONE batch's output budget can actually hold. A larger request
   // does not produce a bigger answer, it produces a TRUNCATED one that fails
   // parsing identically on every retry (see BULK_JUDGE_MAX_OUTPUT_TOKENS).
@@ -2174,13 +2183,15 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   const stages: BulkDedupStageResult[] = [];
 
   for (let stageIndex = 1; stageIndex <= stageLimit; stageIndex += 1) {
-    const input = await readBulkInput(sql, {
+    const fullInput = await readBulkInput(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       censusRunId: census.runId,
       expectedMembers: census.corpusSize,
       scope,
     });
+    const scopedPairsBefore = fullInput.pairs.length;
+    const input = { ...fullInput, pairs: fullInput.pairs.slice(0, maxPairsPerStage) };
     // Pair checkpoints are valid only for the exact quality identity that
     // admitted them. Including the gate key here prevents a model/prompt/
     // threshold/dataset drift from replaying old production judgements under a
@@ -2188,6 +2199,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     const stageInputFingerprint = admissionMergeQualityHash({
       corpusFingerprint: input.fingerprint,
       mergeQualityGateKey: mergeQualityPrepared.gateKey,
+      maxPairsPerStage,
     });
     const stageRunId = `${rootRunId}-stage-${stageIndex}`;
     const leaseState = await acquireBulkStageLease(sql, {
@@ -2236,6 +2248,16 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       }
     }
 
+    const workBudget = {
+      pairLimit: maxPairsPerStage,
+      availablePairs: scopedPairsBefore,
+      selectedPairs: input.pairs.length,
+      deferredPairs: scopedPairsBefore - input.pairs.length,
+    };
+    if (JSON.stringify(stageEnvelope.workBudget) !== JSON.stringify(workBudget)) {
+      stageEnvelope = { ...stageEnvelope, workBudget };
+      await writeBulkStageEnvelope(sql, stageRunId, stageEnvelope, executionId);
+    }
     const preflightResult =
       stageEnvelope.preflight ??
       (await preflight({
@@ -2464,7 +2486,8 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                  detail = detail || ${JSON.stringify({
                    status: 'complete',
                    resultCensusRunId: nextCensus.runId,
-                   scopedPairsBefore: input.pairs.length,
+                   scopedPairsBefore,
+                   workBudget,
                    scopedPairsAfter: nextInput.pairs.length,
                    convergence:
                      nextInput.pairs.length === 0
@@ -2573,9 +2596,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           stages,
         };
       }
-      if (committed.scopedPairsAfter >= input.pairs.length) {
+      if (committed.scopedPairsAfter >= scopedPairsBefore) {
         throw new Error(
-          `bulk dedup made no scoped progress: ${input.pairs.length} -> ${committed.scopedPairsAfter} pair(s)`,
+          `bulk dedup made no scoped progress: ${scopedPairsBefore} -> ${committed.scopedPairsAfter} pair(s)`,
         );
       }
       census = committed.census;
@@ -2585,5 +2608,17 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     }
   }
 
-  throw new Error(`bulk dedup did not converge within ${stageLimit} stage(s)`);
+  // A bounded pass can succeed without exhausting the corpus. Its committed
+  // stage and fresh census are useful to the digest; the next fire continues
+  // the residuals rather than treating ordinary budget exhaustion as a defect.
+  return {
+    runId: rootRunId,
+    scope,
+    converged: false,
+    convergenceReason: 'stage-budget',
+    initialCensus,
+    finalCensus: census.censusAfter,
+    finalScopedPairs: stages.at(-1)?.scopedPairsAfter ?? 0,
+    stages,
+  };
 }

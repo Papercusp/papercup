@@ -49,7 +49,7 @@ export const ideatePassRecordArgs = z
       .optional()
       .describe('a short free-form note on the pass (theme, corpus, what was skipped) — stored on the tick detail'),
     goalReview: goalPlanningReviewInputSchema.optional().describe(
-      'Evidence-backed review of your current GOAL: adopt/revise/create a necessary plan, route work, report a blocker, or explain why existing plans suffice. Zero new ideas is valid. The server measures scope and portfolio fingerprint; this is not execution authority or a worker claim.',
+      'Evidence-backed review of your current GOAL: adopt/revise/create a necessary plan, route work, report a blocker, or explain why existing plans suffice. existing-plans-sufficient/no-eligible-work need coverage: each recurring need, its itemRefs and its live planRef; a 3+ item need with no plan is refused. The server measures scope and portfolio fingerprint; this is not execution authority or a worker claim.',
     ),
   })
   .strict();

@@ -95,11 +95,11 @@ describe('runIdeatePassRecord', () => {
     await runIdeatePassRecord({ ideasFiled: 0 }, { harnessSlug: 'my-harness' }, deps);
     expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'my-harness' }));
 
-    recordTick.mockClear();
+    vi.mocked(recordTick).mockClear();
     await runIdeatePassRecord({ ideasFiled: 0 }, {}, deps);
     expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'papercusp' }));
 
-    recordTick.mockClear();
+    vi.mocked(recordTick).mockClear();
     await runIdeatePassRecord({ ideasFiled: 0 }, { harnessSlug: '*' }, deps);
     expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'papercusp' }));
   });

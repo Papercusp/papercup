@@ -38,6 +38,8 @@ function input(p = portfolio(), disposition: GoalPlanningReview['disposition'] =
     review: { schemaVersion: 1, goalId: base.goalId, disposition, rationale: 'Review of the named fixture outcome.',
       evidenceRefs: ['goal:goal-local'], planRefs: ['plan:fixture/existing'],
       ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover checkout' } : {}),
+      ...(disposition === 'existing-plans-sufficient' || disposition === 'no-eligible-work'
+        ? { coverage: [{ need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:fixture/existing' }] } : {}),
       portfolioFingerprint: goalPlanningPortfolioFingerprint(p), reviewedAt: NOW },
     authorities: { fixture: { allowed: true, reason: 'caller-goal-owns-pot', ownerGoalId: base.goalId, ownerGoalTitle: 'Goal' } },
   } } };

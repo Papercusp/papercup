@@ -82,6 +82,9 @@ async function record(disposition: 'existing-plans-sufficient' | 'plan-needed') 
       ? 'The existing plan covers documenting retries, but not reconciliation.'
       : 'The existing plan covers the goal outcome of documenting the retry contract.',
     ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Reconcile failed payments.' } : {}),
+    // P-003: a real coverage planRef, resolved against harness_plans by the live handler.
+    ...(disposition === 'existing-plans-sufficient'
+      ? { coverage: [{ need: 'retry contract', itemRefs: ['WI-fixture-1', 'WI-fixture-2', 'WI-fixture-3'], planRef: PLAN }] } : {}),
   } }), { isSuperuser: true, uiClientId: OWNER, workspaceId: WS, harnessSlug: 'papercusp',
     metadata: vi.fn(), log: vi.fn(), progress: vi.fn(), signal: new AbortController().signal,
     emit: vi.fn(async () => {}),

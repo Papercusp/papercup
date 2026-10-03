@@ -226,6 +226,7 @@ export function waitForPtyTextEcho({ read, text, timeoutMs, pollMs, headLossGrac
     cancelled?: undefined;
     observedChars?: undefined;
     markerTailSeen?: undefined;
+    markerWhitespaceLost?: undefined;
     markerHeadLost?: undefined;
     visibleTail?: undefined;
 } | {
@@ -235,10 +236,22 @@ export function waitForPtyTextEcho({ read, text, timeoutMs, pollMs, headLossGrac
     reason?: undefined;
     observedChars?: undefined;
     markerTailSeen?: undefined;
+    markerWhitespaceLost?: undefined;
     markerHeadLost?: undefined;
     visibleTail?: undefined;
 } | {
     echoed: boolean;
+    elapsedMs: number;
+    observedChars: number;
+    markerTailSeen: boolean;
+    reason?: undefined;
+    cancelled?: undefined;
+    markerWhitespaceLost?: undefined;
+    markerHeadLost?: undefined;
+    visibleTail?: undefined;
+} | {
+    echoed: boolean;
+    markerWhitespaceLost: number;
     elapsedMs: number;
     observedChars: number;
     markerTailSeen: boolean;
@@ -254,6 +267,7 @@ export function waitForPtyTextEcho({ read, text, timeoutMs, pollMs, headLossGrac
     markerTailSeen: boolean;
     reason?: undefined;
     cancelled?: undefined;
+    markerWhitespaceLost?: undefined;
     visibleTail?: undefined;
 } | {
     echoed: boolean;
@@ -263,6 +277,7 @@ export function waitForPtyTextEcho({ read, text, timeoutMs, pollMs, headLossGrac
     markerTailSeen: boolean;
     visibleTail: string;
     cancelled?: undefined;
+    markerWhitespaceLost?: undefined;
     markerHeadLost?: undefined;
 }>;
 /**
@@ -371,6 +386,21 @@ export function truncatedTurnOriginMarkerLoss(marker: any, value: any, { minNonc
 export function composerEchoMarkerHeadLoss(marker: any, visible: any, { minNonceChars }?: {
     minNonceChars?: number | undefined;
 }): number | null;
+/** WI-10005331: the composer word-wraps a long kickoff, and a wrap that lands on the
+ * marker's only space renders the two halves on separate rows with the break space
+ * omitted. The echo tap strips ANSI and row breaks, so the visible text holds every
+ * other marker byte in order. Measured 2026-10-02 15:11:07Z on a host already running
+ * the head-loss fix: visibleTail `⟦turn-origin:fleet-kickoffnonce:b413517be82f7380⟧`
+ * (49 of 50 characters, the space missing), and the kickoff was dropped after ~586s.
+ *
+ * Returns how many of `marker`'s whitespace characters are missing when `visible`
+ * holds the marker with only its whitespace changed (dropped, or padded to the row
+ * end, which counts 0 lost); otherwise null, including when the exact marker is
+ * present (the exact proof owns that case). Only turn-origin markers qualify: their
+ * random nonce keeps the whitespace-insensitive match specific to this injection.
+ * Any non-whitespace loss (a dropped head or middle byte) does not match. Pure and
+ * exported for tests. */
+export function composerEchoMarkerWhitespaceLoss(marker: any, visible: any): number | null;
 /** A carry requested in THIS turn may use its exact native completion as a
  * safe boundary even while the terminal keeps repainting. Never scan other
  * sessions or accept an older turn's completion. Missing/partial proof falls

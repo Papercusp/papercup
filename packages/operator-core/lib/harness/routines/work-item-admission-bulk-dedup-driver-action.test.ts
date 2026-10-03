@@ -58,13 +58,13 @@ describe('work-item admission bulk-dedup driver', () => {
 
   it('arms one bounded run on the fixed scheduled routine when nothing is in flight', async () => {
     const d = deps();
-    const outcome = await runBulkDedupDriver(ctx({ maxStages: 3, pairsPerCall: 100 }), d);
+    const outcome = await runBulkDedupDriver(ctx({ maxStages: 3, maxPairsPerStage: 512, pairsPerCall: 100 }), d);
     expect(outcome.kind).toBe('enqueued');
     expect(d.enqueue).toHaveBeenCalledTimes(1);
     expect(d.enqueue).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-1', installSlug: 'papercusp' }), {
       runId: 'bulk-dedup-scheduled-1',
       routineName: BULK_DEDUP_SCHEDULED_ROUTINE_NAME,
-      controls: { maxStages: 3, pairsPerCall: 100 },
+      controls: { maxStages: 3, maxPairsPerStage: 512, pairsPerCall: 100 },
     });
   });
 

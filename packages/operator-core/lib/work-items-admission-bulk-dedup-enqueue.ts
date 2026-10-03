@@ -28,6 +28,7 @@ export const DEFAULT_DRIVER_MAX_STAGES = 2;
 /** Optional run controls, passed through to the action payload unchanged. */
 export interface BulkDedupRunControls {
   maxStages?: number;
+  maxPairsPerStage?: number;
   pairsPerCall?: number;
   shardConcurrency?: number;
   targetTokens?: number;
@@ -292,6 +293,7 @@ export async function enqueueBulkDedupRun(
   const payloadTemplate: Record<string, unknown> = {
     runId,
     maxStages: controls.maxStages,
+    maxPairsPerStage: controls.maxPairsPerStage,
     pairsPerCall: controls.pairsPerCall,
     shardConcurrency: controls.shardConcurrency,
     targetTokens: controls.targetTokens,

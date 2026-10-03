@@ -20,7 +20,9 @@ import {
   LOOP_AWAIT_HEARTBEAT_MS,
   LOOP_NON_PARKING_AWAIT_BINDING_KINDS,
   LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD,
+  defaultOwnerStewardsActiveGoal,
   type LoopFireDeps,
+  type OwnerStewardshipDeps,
 } from './loop-fire';
 import { AGENT_OBLIGATION_REMINDER_BINDING_KIND } from '../../agent-obligation-reminders';
 

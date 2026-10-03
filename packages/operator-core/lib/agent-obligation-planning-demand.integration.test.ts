@@ -78,7 +78,7 @@ async function record(disposition: 'plan-needed' | 'existing-plans-sufficient') 
   const result = await recordTool.handler(ideatePassRecordArgs.parse({ ideasFiled: 0, goalReview: {
     goalId: GOAL, disposition, rationale: 'Review of the isolated recovery portfolio.',
     evidenceRefs: [`goal:${GOAL}`],
-    ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : {}),
+    ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : { coverage: [] }),
   } }), { isSuperuser: true, uiClientId: OWNER, workspaceId: WS, harnessSlug: 'papercusp',
     metadata: vi.fn(), log: vi.fn(), progress: vi.fn(), signal: new AbortController().signal,
     emit: vi.fn(async () => {}),

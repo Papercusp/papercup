@@ -280,6 +280,53 @@ async function runBlockedMergeQualityGate(
 }
 
 describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
+  it.each([1, 2])('commits bounded pair work with maxStages=%i without hiding residuals or mistaking them for no progress', async (maxStages) => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'Separate second pair', 'open', NULL, '{}'::jsonb,
+              'change', 'watch:other', 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    const judgedPairs: string[] = [];
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: `bulk-pair-budget-${maxStages}`,
+      sql: db.sql,
+      maxStages,
+      maxPairsPerStage: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        judgedPairs.push(...keys);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'Separate findings' })) },
+          inputTokens: 25,
+          outputTokens: 10,
+        };
+      },
+    });
+    expect(result.scope).toBe('full-corpus');
+    expect(result.initialCensus).toBe(2);
+    expect(result.stages).toHaveLength(maxStages);
+    expect(result.stages.every((stage) => stage.pairs === 1)).toBe(true);
+    expect(result.stages[0]).toMatchObject({ censusBefore: 2, censusAfter: 1, scopedPairsAfter: 1 });
+    expect(result.finalScopedPairs).toBe(2 - maxStages);
+    expect(result.converged).toBe(maxStages === 2);
+    expect(judgedPairs).toEqual(maxStages === 1 ? ['a::b'] : ['a::b', 'c::d']);
+    const [ledger] = await db.sql<Array<{ status: string; before: number; after: number; budget: unknown }>>`
+      SELECT detail->>'status' AS status, (detail->>'scopedPairsBefore')::int AS before,
+             (detail->>'scopedPairsAfter')::int AS after, detail->'workBudget' AS budget
+        FROM harness_shared.admission_runs WHERE id = ${`bulk-pair-budget-${maxStages}-stage-1`}`;
+    expect(ledger).toEqual({
+      status: 'complete', before: 2, after: 1,
+      budget: { pairLimit: 1, availablePairs: 2, selectedPairs: 1, deferredPairs: 1 },
+    });
+  }, 60_000);
+
   it('preserves a merge endpoint with explicit unknown implementation readiness', async () => {
     await seed();
     await db.sql`

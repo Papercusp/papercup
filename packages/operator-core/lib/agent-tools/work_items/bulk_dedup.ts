@@ -78,6 +78,8 @@ export default defineTool({
       .describe('Exact scope-bound hash returned by preview-reviewed; required by apply-reviewed.'),
     runId: z.string().min(1).max(160).optional().describe('Optional stable root run id for operator correlation.'),
     maxStages: z.number().int().min(1).max(50).optional().describe('Full-corpus convergence ceiling; default 12.'),
+    maxPairsPerStage: z.number().int().min(1).max(10_000).optional()
+      .describe('Maximum pairs judged before each atomic stage commit; default 512. Residuals stay in the census.'),
     pairsPerCall: z
       .number()
       .int()
@@ -169,6 +171,7 @@ export default defineTool({
       runId,
       controls: {
         maxStages: args.maxStages,
+        maxPairsPerStage: args.maxPairsPerStage,
         pairsPerCall: args.pairsPerCall,
         shardConcurrency: args.shardConcurrency,
         targetTokens: args.targetTokens,

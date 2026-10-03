@@ -46,6 +46,7 @@ export const BULK_DEDUP_SCHEDULED_RUN_PREFIX = 'bulk-dedup-scheduled';
 
 const CONTROL_KEYS = [
   'maxStages',
+  'maxPairsPerStage',
   'pairsPerCall',
   'shardConcurrency',
   'targetTokens',

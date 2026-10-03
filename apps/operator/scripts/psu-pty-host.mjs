@@ -636,6 +636,12 @@ export async function waitForPtyTextEcho({
     if (visible.includes(expected)) {
       return { echoed: true, elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
     }
+    // WI-10005331: a composer that word-wraps the marker at its only space renders
+    // every other byte in order; waiting cannot bring the break space back.
+    const markerWhitespaceLost = composerEchoMarkerWhitespaceLoss(expected, visible);
+    if (markerWhitespaceLost != null) {
+      return { echoed: true, markerWhitespaceLost, elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
+    }
     const elapsedMs = Date.now() - startedAt;
     // WI-10005331: the exact proof gets the first grace window. After it, a marker
     // that lost only its head is this kickoff's own echo; waiting cannot complete it.
@@ -869,6 +875,35 @@ export function composerEchoMarkerHeadLoss(
     }
   }
   return null;
+}
+
+/** WI-10005331: the composer word-wraps a long kickoff, and a wrap that lands on the
+ * marker's only space renders the two halves on separate rows with the break space
+ * omitted. The echo tap strips ANSI and row breaks, so the visible text holds every
+ * other marker byte in order. Measured 2026-10-02 15:11:07Z on a host already running
+ * the head-loss fix: visibleTail `⟦turn-origin:fleet-kickoffnonce:b413517be82f7380⟧`
+ * (49 of 50 characters, the space missing), and the kickoff was dropped after ~586s.
+ *
+ * Returns how many of `marker`'s whitespace characters are missing when `visible`
+ * holds the marker with only its whitespace changed (dropped, or padded to the row
+ * end, which counts 0 lost); otherwise null, including when the exact marker is
+ * present (the exact proof owns that case). Only turn-origin markers qualify: their
+ * random nonce keeps the whitespace-insensitive match specific to this injection.
+ * Any non-whitespace loss (a dropped head or middle byte) does not match. Pure and
+ * exported for tests. */
+export function composerEchoMarkerWhitespaceLoss(marker, visible) {
+  const exact = String(marker ?? '');
+  if (!LEADING_TURN_ORIGIN_RE.test(exact)) return null;
+  const text = String(visible ?? '');
+  if (text.includes(exact)) return null;
+  const pattern = exact
+    .split(/\s+/u)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s*');
+  const match = new RegExp(pattern, 'u').exec(text);
+  if (!match) return null;
+  const whitespaceIn = (value) => (value.match(/\s/gu) ?? []).length;
+  return Math.max(0, whitespaceIn(exact) - whitespaceIn(match[0]));
 }
 
 /** Read the user-message content from Claude, Codex, or OMP native row shapes. */
@@ -9302,6 +9337,9 @@ export function hostThroughPty(o) {
                 markerChars: marker.length,
                 // WI-10005331: non-null when only a head-truncated marker echoed.
                 markerHeadLost: echoProof.markerHeadLost ?? null,
+                // WI-10005331: non-null when the marker echoed with only its
+                // whitespace changed (a composer wrap at the marker's space).
+                markerWhitespaceLost: echoProof.markerWhitespaceLost ?? null,
               });
             }
           }
