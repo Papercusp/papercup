@@ -26,7 +26,7 @@ import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from
 import { applyResultDoor, resetResultDoorAggregatesForTests } from '../../result-door';
 
 const readScorecardEvidenceM = vi.mocked(readScorecardEvidence);
-const getTool = (await import('./get')).default;
+const { default: getTool, scorecardGetArgs } = await import('./get');
 /** The registered output contract, narrowed to the parse surface these cases exercise. */
 const resultContract = getTool.result as unknown as {
   safeParse: (value: unknown) => { success: boolean };
@@ -251,6 +251,27 @@ describe('scorecards:get evidence-first projection', () => {
     await expect(getTool.handler({ issueId: 'WI-not-card' } as never, makeDispatchContext())).resolves.toMatchObject({
       data: { ok: false, error: "'WI-not-card' is not a scorecard" },
     });
+  });
+
+  it('accepts generic id reads and prefers issueId when both identifiers are supplied', async () => {
+    const aliasCard = { ...scorecard, issueId: 'EI-id-alias' };
+    readScorecardEvidenceM.mockResolvedValueOnce({ kind: 'found', scorecard: aliasCard });
+    const byAlias = await getTool.handler({ id: aliasCard.issueId } as never, makeDispatchContext());
+    expect(readScorecardEvidenceM).toHaveBeenLastCalledWith(aliasCard.issueId);
+    expect(byAlias).toMatchObject({ data: { ok: true, scorecard: { issueId: aliasCard.issueId } } });
+
+    const preferredCard = { ...scorecard, issueId: 'EI-issue-id-preferred' };
+    readScorecardEvidenceM.mockResolvedValueOnce({ kind: 'found', scorecard: preferredCard });
+    const byPreferred = await getTool.handler(
+      { issueId: preferredCard.issueId, id: 'EI-ignored-alias' } as never,
+      makeDispatchContext(),
+    );
+    expect(readScorecardEvidenceM).toHaveBeenLastCalledWith(preferredCard.issueId);
+    expect(byPreferred).toMatchObject({ data: { ok: true, scorecard: { issueId: preferredCard.issueId } } });
+
+    const parsedAlias = scorecardGetArgs.safeParse({ id: aliasCard.issueId });
+    expect(parsedAlias.success).toBe(true);
+    expect(scorecardGetArgs.safeParse({}).success).toBe(false);
   });
 
   it('makes oversized cards explicitly incomplete and recovers every probe through bounded dispatch pages', async () => {
