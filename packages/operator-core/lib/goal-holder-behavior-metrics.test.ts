@@ -32,7 +32,17 @@ function witnessed(): GoalHolderBehaviorMetrics {
   return {
     version: 1,
     window: WINDOW,
-    planAuthorship: { plansNew: 0, plansStarted: 0, planFleetLaunches: 0, unplannedOpenGoalItems: 31 },
+    // The rating's fail case is an OVERDUE CLUSTER, not the 31 unplanned singletons
+    // (WI-10005920). Whether the real 00:53Z window had one depends on the detector
+    // (unplanned-clusters.ts); this fixture pins the rule, not that measurement.
+    planAuthorship: {
+      plansNew: 0,
+      plansStarted: 0,
+      planFleetLaunches: 0,
+      unplannedOpenGoalItems: 31,
+      unplannedClusters: 1,
+      overdueUnplannedClusters: 1,
+    },
     ideation: {
       since: '2026-10-02T02:13:10.000Z',
       plansNew: 0,
@@ -63,7 +73,14 @@ function healthy(): GoalHolderBehaviorMetrics {
   return {
     version: 1,
     window: WINDOW,
-    planAuthorship: { plansNew: 1, plansStarted: 1, planFleetLaunches: 1, unplannedOpenGoalItems: 2 },
+    planAuthorship: {
+      plansNew: 1,
+      plansStarted: 1,
+      planFleetLaunches: 1,
+      unplannedOpenGoalItems: 2,
+      unplannedClusters: 0,
+      overdueUnplannedClusters: 0,
+    },
     ideation: {
       since: '2026-10-02T02:13:10.000Z',
       plansNew: 1,
@@ -136,16 +153,43 @@ describe('rateGoalHolderBehavior thresholds', () => {
     }
   });
 
-  it('plan authorship: 3 unplanned items and 0 plans fails; 2 unplanned is not exercised; written-but-unstarted is unknown', () => {
-    const at = (unplanned: number, plansNew: number, started: number) =>
+  it('plan authorship: an overdue cluster fails unless a plan is written AND staffed; singletons never fail (WI-10005920)', () => {
+    const at = (p: { unplanned?: number; clusters?: number; overdue: number; plansNew: number; started?: number; fleets: number }) =>
       rateGoalHolderBehavior({
         ...healthy(),
-        planAuthorship: { plansNew, plansStarted: started, planFleetLaunches: 0, unplannedOpenGoalItems: unplanned },
+        planAuthorship: {
+          plansNew: p.plansNew,
+          plansStarted: p.started ?? 0,
+          planFleetLaunches: p.fleets,
+          unplannedOpenGoalItems: p.unplanned ?? 3,
+          unplannedClusters: p.clusters ?? p.overdue,
+          overdueUnplannedClusters: p.overdue,
+        },
       })['holder-plan-authorship'].verdict;
-    expect(at(3, 0, 0)).toBe('fail');
-    expect(at(2, 0, 0)).toBe('unknown');
-    expect(at(3, 1, 0)).toBe('unknown');
-    expect(at(3, 1, 1)).toBe('pass');
+    // Overdue cluster: nothing written, written only, written+started all fail; staffed passes.
+    expect(at({ overdue: 1, plansNew: 0, fleets: 0 })).toBe('fail');
+    expect(at({ overdue: 1, plansNew: 1, fleets: 0 })).toBe('fail');
+    expect(at({ overdue: 1, plansNew: 1, started: 1, fleets: 0 })).toBe('fail');
+    expect(at({ overdue: 1, plansNew: 1, fleets: 1 })).toBe('pass');
+    // The measured su-a70547cc shape: 29 unplanned singletons, 0 clusters, 0 plans -> not exercised.
+    expect(at({ unplanned: 29, clusters: 0, overdue: 0, plansNew: 0, fleets: 0 })).toBe('unknown');
+    // A cluster younger than 2 reporting cycles is not yet due.
+    expect(at({ unplanned: 5, clusters: 1, overdue: 0, plansNew: 0, fleets: 0 })).toBe('unknown');
+    // Written but not staffed with nothing overdue is unknown; written and staffed passes.
+    expect(at({ overdue: 0, plansNew: 1, fleets: 0 })).toBe('unknown');
+    expect(at({ overdue: 0, plansNew: 1, fleets: 1 })).toBe('pass');
+  });
+
+  it("review quality counts only the graded holder's reviews; ideas count for the goal (WI-10005920)", () => {
+    const legacy = { disposition: 'existing-plans-sufficient', coverage: undefined, unplannedAtReview: 30 };
+    const predecessor = summarizeGoalReviews([
+      { invokedAt: '2026-10-03T00:15:35Z', ...legacy, ideasFiled: undefined, byHolder: false },
+      { invokedAt: '2026-10-03T08:08:22Z', disposition: 'route-work', coverage: [], ideasFiled: ['EI-1'], unplannedAtReview: 28, byHolder: true },
+    ]);
+    expect(predecessor.noNewPlanReviewsOverUnplannedCluster).toBe(0);
+    expect(predecessor.ideasFiled).toBe(1);
+    const own = summarizeGoalReviews([{ invokedAt: '2026-10-03T08:30:00Z', ...legacy, ideasFiled: undefined }]);
+    expect(own.noNewPlanReviewsOverUnplannedCluster).toBe(1);
   });
 
   it('ideation: zero candidates in a goal-day fails even with no review; one candidate passes', () => {
