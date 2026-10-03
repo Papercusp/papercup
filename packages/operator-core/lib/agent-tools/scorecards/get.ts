@@ -20,11 +20,21 @@ export const scorecardGetArgs = z.object({
     .string()
     .min(1)
     .max(120)
-    .describe('the scorecard issue id (EI-/WI-) whose criterion evidence must be re-run'),
+    .optional()
+    .describe('the scorecard issue id (EI-/WI-) whose criterion evidence must be re-run; preferred over the id alias'),
+  id: z
+    .string()
+    .min(1)
+    .max(120)
+    .optional()
+    .describe('Compatibility alias for issueId for generic id-based read callers; issueId wins when both are supplied.'),
   criterionKey: z.string().min(1).max(200).optional()
     .describe('Read one criterion from an oversized card index. Evidence remains exact; follow evidenceRead.next until complete.'),
   evidenceOffset: z.number().int().min(0).optional()
     .describe('UTF-16 offset from evidenceRead.next for one criterion. Concatenate pages in order; never grade from an incomplete page.'),
+}).refine(({ issueId, id }) => issueId !== undefined || id !== undefined, {
+  message: 'issueId or id is required',
+  path: ['issueId'],
 });
 
 // Bound the JSON-encoded result before both payload shaping and the later MCP
@@ -186,6 +196,7 @@ const scorecardGetResultSchema = z.object({
 function boundedEvidenceRead(
   scorecard: ScorecardEvidenceRow,
   args: z.infer<typeof scorecardGetArgs>,
+  issueId: string,
   inlineBudgetChars: number,
 ) {
   if (args.criterionKey === undefined) {
@@ -203,7 +214,7 @@ function boundedEvidenceRead(
         instruction: 'Evidence has NOT been read. Read every indexed criterion and concatenate its pages before grading; this index is not evidence of a missing probe.',
         criteria: scorecard.criteria.map(({ key, rating, evidence }) => ({
           key, rating, evidenceChars: evidence.length,
-          read: evidenceReadCall(args.issueId, key),
+          read: evidenceReadCall(issueId, key),
         })),
       },
     };
@@ -235,7 +246,7 @@ function boundedEvidenceRead(
         offset,
         totalChars: criterion.evidence.length,
         instruction: 'Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index.',
-        ...(!complete ? { next: evidenceReadCall(args.issueId, criterion.key, nextOffset) } : {}),
+        ...(!complete ? { next: evidenceReadCall(issueId, criterion.key, nextOffset) } : {}),
       },
     };
   };
@@ -254,9 +265,9 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. The scorecard includes its stored evidenceFingerprint when present, so auditors can verify the exact evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.',
+    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins when both are supplied. The scorecard includes its stored evidenceFingerprint when present, so auditors can verify the exact evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.',
   guidance: {
-    when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.',
+    when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation; generic id-based callers may use id as a compatibility alias.',
     notWhen:
       'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
     chaining:
@@ -279,14 +290,18 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
       try {
-        const result = await readScorecardEvidence(args.issueId);
+        const issueId = args.issueId ?? args.id;
+        if (!issueId) {
+          return { data: { ok: false as const, error: 'issueId or id is required' } };
+        }
+        const result = await readScorecardEvidence(issueId);
         if (result.kind === 'not_found') {
-          return { data: { ok: false as const, error: `scorecard '${args.issueId}' not found` } };
+          return { data: { ok: false as const, error: `scorecard '${issueId}' not found` } };
         }
         if (result.kind === 'not_scorecard') {
-          return { data: { ok: false as const, error: `'${args.issueId}' is not a scorecard` } };
+          return { data: { ok: false as const, error: `'${issueId}' is not a scorecard` } };
         }
-        return { data: boundedEvidenceRead(result.scorecard, args, inlineResultBudgetChars(identity.ownerId)) };
+        return { data: boundedEvidenceRead(result.scorecard, args, issueId, inlineResultBudgetChars(identity.ownerId)) };
       } catch (error) {
         if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
           return {
