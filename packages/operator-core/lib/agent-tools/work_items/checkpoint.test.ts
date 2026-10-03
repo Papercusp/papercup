@@ -3860,6 +3860,72 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
         });
 
+        it('P-025: at the cap, replaces re-words an id-less check in place and preserves its evidence', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe ${i + 1}`,
+            ...(i === 5 ? { verified: 'observed before reword' } : {}),
+          }));
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'refreshed the sixth check',
+            append: true,
+            rowsMode: 'merge',
+            checks: [
+              {
+                claim: 'PEER-06 refreshed holds',
+                replaces: 'PEER-06 holds',
+                recheck: 'probe refreshed 6',
+              },
+            ],
+          })) as {
+            ok: boolean;
+            checks: number;
+            errorCode?: string;
+            checksDropped?: string[];
+            unmatchedRowRefs?: string[];
+          };
+
+          expect(r).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS });
+          expect(r.errorCode).toBeUndefined();
+          expect(r.checksDropped).toBeUndefined();
+          expect(r.unmatchedRowRefs).toBeUndefined();
+          const stored = readCurrent();
+          expect(stored).toContain('refreshed the sixth check');
+          expect(stored).toContain('PEER-06 refreshed holds');
+          expect(stored).not.toContain('PEER-06 holds');
+          expect(stored).toContain('observed before reword');
+          expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+        });
+
+        it('reports an unmatched replaces ref when it remains a net addition past the cap', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe ${i + 1}`,
+          }));
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            append: true,
+            rowsMode: 'merge',
+            checks: [{ claim: 'NEW row', replaces: 'no such carried check' }],
+          })) as { ok: boolean; errorCode?: string; unmatchedRowRefs?: string[] };
+
+          expect(r.ok).toBe(false);
+          expect(r.errorCode).toBe('append_checks_overflow');
+          expect(r.unmatchedRowRefs).toEqual(['no such carried check']);
+          expect(readCurrent()).toBe(prior);
+        });
+
         /**
          * EI-22669633054802773: a compacted 7,276-character checkpoint carrying
          * the full 12-row set was refused as `append_body_overflow` when a normal
