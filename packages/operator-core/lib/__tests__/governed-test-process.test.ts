@@ -15,6 +15,7 @@ import {
   isRetryableAdmissionFailure,
   resolveGovernedProcessTree,
   runGovernedTestProcess,
+  selectGovernedByteProcessFailure,
   GOVERNED_PROCESS_TREE_WALK_PID_CAP,
   GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES,
   GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS,
@@ -47,6 +48,19 @@ describe('governed byte-input process', () => {
       governedExecutionLeaseTtlForTimeout: () => 4000,
       runGovernedOperation,
     }, ...extra,
+  });
+
+  it('does not turn a successful zero-input command into an EPIPE failure', async () => {
+    const closedStdin = Object.assign(new Error('closed stdin'), { code: 'EPIPE' });
+    expect(selectGovernedByteProcessFailure(null, closedStdin, 0, 0)).toBeUndefined();
+    expect(selectGovernedByteProcessFailure(null, closedStdin, 1, 0)).toBe(closedStdin);
+    expect(selectGovernedByteProcessFailure(null, closedStdin, 0, 1)).toBe(closedStdin);
+    const childError = Object.assign(new Error('child failed'), { code: 'ENOENT' });
+    expect(selectGovernedByteProcessFailure(childError, closedStdin, 0, 0)).toBe(childError);
+
+    const result = await executeGovernedByteProcess(process.execPath,
+      ['-e', 'process.exit(0)'], Buffer.alloc(0), options(async (_input, run) => run(context)));
+    expect(result).toMatchObject({ status: 0, error: undefined });
   });
 
   it('starts only after admission and releases after byte input and pipe EOF', async () => {
