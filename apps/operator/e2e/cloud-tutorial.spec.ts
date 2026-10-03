@@ -192,6 +192,10 @@ test('beginner reviews a useful plan, explicit revision and different self-writt
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
   await fixture.sync.waitForServed(['workspaceHosts.control']);
+  if (process.env.PAPERCUSP_TUTORIAL_ORCA_REVIEW === '1') {
+    await page.getByRole('button', { name: 'Use prepared workspace My workspace' }).focus();
+    await page.pause();
+  }
   await page.getByRole('button', { name: 'Use prepared workspace My workspace' }).click();
   await page.getByRole('button', { name: "I've reviewed the configuration and cost" }).click();
   await page.getByRole('region', { name: 'Browser workspace session for My workspace' }).getByRole('button', { name: 'Connect', exact: true }).click();
