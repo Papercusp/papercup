@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { CorpusEntry } from '@papercusp/memory/bench';
 import { candidateSourcePartition } from './candidate-hybrid-bench';
 import { hashJson, fingerprintFile } from './measurement-manifest';
 
