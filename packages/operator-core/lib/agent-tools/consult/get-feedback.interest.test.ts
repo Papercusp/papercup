@@ -42,6 +42,7 @@ vi.mock('../../consult/consult-dispatch', () => ({
 }));
 
 import tool from './get-feedback';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const handle = {
   event_keys: ['consult:reply:consult-1'],
@@ -167,6 +168,10 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
 });
 
 describe('consult:get_feedback requester guidance', () => {
+  it('stays within the live prompt-weight budget', () => {
+    expect(promptWeight(tool)).toBeLessThanOrEqual(BUDGET);
+  });
+
   it('clearly distinguishes opening a consult from reading an existing conversation', () => {
     expect((tool as any).description).toContain('request/creation verb');
     expect((tool as any).description).toContain('not a reader for an existing conversation');
