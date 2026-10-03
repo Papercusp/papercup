@@ -256,6 +256,36 @@ describe('small native ORT teardown control', () => {
     expect(() => inspect(encode(destroyBeforeReturn), terminal, expected)).toThrow(/singleton lifetime/);
   });
 
+  it('retains a native ownership observer abort with the exact open call instead of the debugger exit', async () => {
+    const { inspectNativeOwnershipCapture: inspect } = await import('./fixtures/native-ort-teardown-control.mjs');
+    const operations = ['initializer', 'singleton-create', 'singleton-destroy', 'session-dispose',
+      'session-finalize', 'instance-finalize'];
+    const symbols = Object.fromEntries(operations.map(key => [key, 'qualified-' + key]));
+    const relativeAddresses = Object.fromEntries(operations.map((key, i) => [key, 0x1000 + i * 16]));
+    const binding = { path: '/fixture/onnxruntime_binding.node', bytes: 384040, sha256: 'a'.repeat(64) };
+    const host = (row: object) => 'PC_NATIVE_DEBUGGER\t' + JSON.stringify(row) + '\n';
+    const native = (operation: string, callId: number, event: string, sequence: number) =>
+      'PC_NATIVE_OWNERSHIP\t' + JSON.stringify({ operation, callId, event, sequence,
+        processId: 123, nativeThreadId: 124, symbol: symbols[operation],
+        relativeAddress: relativeAddresses[operation], programCounter: '0x1234', binding }) + '\n';
+    const stdout = host({ event: 'start', processId: 123 })
+      + native('initializer', 1, 'enter', 1) + native('singleton-create', 2, 'enter', 2)
+      + native('singleton-create', 2, 'return', 3) + native('initializer', 1, 'return', 4)
+      + native('session-dispose', 3, 'enter', 5)
+      + host({ event: 'signal', processId: 123, signal: 'SIGABRT' })
+      + 'PC_NATIVE_BACKTRACE_BEGIN\n#0 abort\nPC_NATIVE_BACKTRACE_END\n'
+      + host({ event: 'exit', processId: 123, exitCode: null, signal: 'SIGABRT', signalDelivered: true });
+    const terminal = { eof: true, exitCode: 0, signal: null };
+    const expected = { binding, symbols, relativeAddresses };
+    const partial = inspect(stdout, terminal, expected);
+    expect(partial).toMatchObject({ exitCode: null, signal: 'SIGABRT', hostBacktraceCaptured: true,
+      completeOwnershipBoundariesObserved: false, heapCorruptionRootCauseConfirmed: false });
+    expect(partial.calls.at(-1)).toMatchObject({ operation: 'session-dispose', returnedAt: null, unwoundAt: null });
+    expect(partial.missingOperations).toContain('singleton-destroy');
+    expect(() => inspect(stdout.replace('PC_NATIVE_BACKTRACE_END\n', ''), terminal, expected)).toThrow();
+    expect(() => inspect(stdout.replace('"signalDelivered":true', '"signalDelivered":false'), terminal, expected)).toThrow();
+  });
+
   it.each(['success', 'shape-error'] as const)('captures exact FILE-worker %s and process EOF after explicit release', outcome => {
     const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
     const child = spawnSync(process.execPath, [controlFixture, 'capture', root,

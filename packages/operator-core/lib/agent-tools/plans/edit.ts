@@ -234,6 +234,7 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
+            ...(v.planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
             ...(v.nowStamped ? { nowStamped: true } : {}),
             version: result.version,
             filePath: result.filePath,

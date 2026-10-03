@@ -487,6 +487,9 @@ export default defineTool({
           bytes: draft.meta.bytes,
           chunks: draft.meta.chunks,
           contentHash: result.value.ok ? result.value.contentHash : undefined,
+          ...(result.value.ok && result.value.planDrainTransitionChanged
+            ? { planDrainTransitionChanged: true }
+            : {}),
           // Surfacing (EI-83 fix #2): present only when the commit removed
           // items/decisions, even an allowed shrink.
           ...(result.value.ok && result.value.warning ? { warning: result.value.warning } : {}),

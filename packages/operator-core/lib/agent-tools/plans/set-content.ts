@@ -34,6 +34,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { derivePlanLifecycle, derivePlanStatusTransition } from '@papercusp/plan-parser';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
@@ -116,6 +117,9 @@ export type SetContentValue =
        * whoever is executing it. Empty/absent ⇒ this write touched no item text.
        */
       itemTextChanges?: PlanItemTextChange[];
+      /** True when this write changes whether the current lifecycle status warrants
+       *  an automatic drained-plan transition. The reaction rule rechecks under lock. */
+      planDrainTransitionChanged?: boolean;
     }
   | { ok: false; code: 'not_found' }
   | {
@@ -545,6 +549,11 @@ export async function evaluateSetContent(
   // stamp above. The PG lookup for work_items minted from these items is the
   // HANDLER's job (this evaluator stays pure); see plan-items/text-drift-report.
   const itemTextChanges = detectItemTextChanges(currentParsed, proposed);
+  const priorDrainTarget =
+    derivePlanStatusTransition(currentStatus, derivePlanLifecycle(currentParsed.items))?.to ?? null;
+  const nextDrainTarget =
+    derivePlanStatusTransition(currentStatus, derivePlanLifecycle(proposed.items))?.to ?? null;
+  const planDrainTransitionChanged = priorDrainTarget !== nextDrainTarget;
   return {
     newBody: body,
     value: {
@@ -555,6 +564,7 @@ export async function evaluateSetContent(
       ...(nowStamped ? { nowStamped: true } : {}),
       parseFeedback,
       ...(itemTextChanges.length > 0 ? { itemTextChanges } : {}),
+      ...(planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
     },
   };
 }
@@ -707,6 +717,7 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
+            ...(v.planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
             // Surfacing (EI-83 fix #2): present only when the write removed
             // items/decisions — so even an allowed shrink is visible.
             ...(v.warning ? { warning: v.warning } : {}),

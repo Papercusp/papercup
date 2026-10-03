@@ -230,3 +230,50 @@ describe('evaluateSetContent — terminal Now invariant (WI-38303)', () => {
     expect((second.newBody!.match(new RegExp(TERMINAL_NOW_STAMP_MARK, 'g')) ?? [])).toHaveLength(1);
   });
 });
+
+describe('evaluateSetContent — plan-drain transition detection (EI-24932476076513699)', () => {
+  const readyWithLiveItem = FRONTMATTER
+    .replace('status: draft', 'status: ready')
+    .concat(BODY.replace('- [ ] P-001 First item', '- **P-001** `todo` First item'));
+
+  it('signals when a content rewrite drains the last live item', async () => {
+    const drained = readyWithLiveItem.replace('`todo`', '`done`');
+    const result = await evaluateSetContent(readyWithLiveItem, drained, 'ei-1812-test', undefined, {
+      allowShrink: true,
+      wholeDocumentRewrite: true,
+    });
+
+    expect(result.value).toMatchObject({ ok: true, planDrainTransitionChanged: true });
+  });
+
+  it('signals when a content rewrite reopens an awaiting plan', async () => {
+    const awaiting = readyWithLiveItem
+      .replace('status: ready', 'status: awaiting-acceptance')
+      .replace('`todo`', '`done`');
+    const reopened = awaiting.replace('`done`', '`blocked`');
+    const result = await evaluateSetContent(awaiting, reopened, 'ei-1812-test', undefined, {
+      allowShrink: true,
+      wholeDocumentRewrite: true,
+    });
+
+    expect(result.value).toMatchObject({ ok: true, planDrainTransitionChanged: true });
+  });
+
+  it('does not signal live-to-live item changes or prose edits', async () => {
+    const liveToLive = readyWithLiveItem.replace('`todo`', '`wip`');
+    const result = await evaluateSetContent(readyWithLiveItem, liveToLive, 'ei-1812-test', undefined, {
+      allowShrink: true,
+      wholeDocumentRewrite: true,
+    });
+    expect(result.value.ok).toBe(true);
+    if (result.value.ok) expect(result.value.planDrainTransitionChanged).toBeUndefined();
+
+    const prose = readyWithLiveItem.replace('Where it stands now.', 'A revised status note.');
+    const proseResult = await evaluateSetContent(readyWithLiveItem, prose, 'ei-1812-test', undefined, {
+      allowShrink: true,
+      wholeDocumentRewrite: true,
+    });
+    expect(proseResult.value.ok).toBe(true);
+    if (proseResult.value.ok) expect(proseResult.value.planDrainTransitionChanged).toBeUndefined();
+  });
+});
