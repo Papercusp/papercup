@@ -2004,7 +2004,7 @@ describe('hostThroughPty real round-trip', () => {
   );
 
   it(
-    'acknowledges a managed session-port seed only after the target-native transcript persists its exact marker',
+    'publishes managed session-port parent proof before HTTP ack and preserves success across child exit',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'psu-port-host-'));
       const agentDir = join(root, 'omp-agent');
@@ -2016,18 +2016,29 @@ describe('hostThroughPty real round-trip', () => {
       const seed = join(root, 'seed.md');
       writeFileSync(seed, `ported history\n${marker}\n`, { mode: 0o600 });
       chmodSync(seed, 0o600);
+      const proofPath = join(root, 'proof.json');
+      const token = 'c'.repeat(48);
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      chmodSync(proofPath, 0o600);
       const ownerId = `su-port-itest-${process.pid}-${Math.floor(performance.now())}`;
-      const { io } = fakeIo();
-      const onKickoffPersisted = vi.fn(async () => undefined);
+      const { captured, io } = fakeIo();
+      let finishAck!: () => void;
+      const ackDone = new Promise<void>((resolve) => { finishAck = resolve; });
+      const expectedReceipt = { token, persisted: true, nativeRef: nativeFile, reason: null };
+      const onKickoffPersisted = vi.fn(async () => {
+        expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual(expectedReceipt);
+        await ackDone;
+      });
+      let done: Promise<number> | undefined;
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
         "let ready=false,b='',wrote=false;process.stdout.write('\\x1b[6n');setTimeout(()=>{ready=true;process.stdout.write('omp v16.3.3\\nREADY\\n');},400);",
-        "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',text:process.env.PORT_MARKER})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>process.exit(0),1200);}});",
+        "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',text:process.env.PORT_MARKER})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>{process.stdout.write('EXITING\\n');process.exit(0);},1200);}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
       try {
-        const done = hostThroughPty({
+        done = hostThroughPty({
           command: execPath,
           args: ['-e', childCode],
           cwd: root,
@@ -2044,6 +2055,8 @@ describe('hostThroughPty real round-trip', () => {
             PI_CODING_AGENT_DIR: agentDir,
             PORT_MARKER: marker,
             PORT_NATIVE_FILE: nativeFile,
+            [KICKOFF_PROOF_PATH_ENV]: proofPath,
+            [KICKOFF_PROOF_TOKEN_ENV]: token,
             TERM: 'xterm-256color',
           },
           ownerId,
@@ -2064,7 +2077,83 @@ describe('hostThroughPty real round-trip', () => {
           renderedHash: hash,
           nativeRef: nativeFile,
         });
-        await done;
+        while (!captured().includes('EXITING') && Date.now() < deadline) await sleep(25);
+        expect(captured()).toContain('EXITING');
+        expect(await Promise.race([done.then(() => true), sleep(50).then(() => false)])).toBe(false);
+        expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual(expectedReceipt);
+        expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+        finishAck();
+        expect(await done).toBe(0);
+      } finally {
+        finishAck();
+        await done?.catch(() => undefined);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  it.each(['child-exit', 'missing-native-marker'])(
+    'publishes a managed session-port negative parent proof for %s before acknowledgement and cleanup',
+    async (failure) => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-port-negative-'));
+      const hash = 'b'.repeat(64);
+      const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${hash}]`;
+      const seed = join(root, 'seed.md');
+      const proofPath = join(root, 'proof.json');
+      const token = 'b'.repeat(48);
+      writeFileSync(seed, `ported history\n${marker}\n`, { mode: 0o600 });
+      chmodSync(seed, 0o600);
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      chmodSync(proofPath, 0o600);
+      const ownerId = `su-port-negative-${process.pid}-${failure}-${Math.floor(performance.now())}`;
+      const { io } = fakeIo();
+      const onKickoffPersisted = vi.fn(async (proof) => {
+        expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual({
+          token, persisted: false, nativeRef: null, reason: proof.error,
+        });
+      });
+      const childCode = [
+        "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+        "process.stdout.write('omp v16.3.3\\nREADY\\n');let b='',submitted=false;",
+        "process.stdin.on('data',d=>{b+=d;if(!submitted&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){submitted=true;process.stdout.write('SUBMITTED\\n');if(process.env.PORT_FAILURE==='child-exit')setTimeout(()=>process.exit(3),50);}});",
+        "setTimeout(()=>process.exit(2),10000);",
+      ].join('');
+      try {
+        await hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode],
+          cwd: root,
+          env: {
+            ...process.env,
+            PAPERCUSP_SID: ownerId,
+            PAPERCUSP_AGENT: 'omp',
+            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+            PAPERCUSP_TURN_PROVENANCE_DIR: join(root, 'provenance'),
+            PI_CODING_AGENT_DIR: join(root, 'omp-agent'),
+            PORT_MARKER: marker,
+            PORT_FAILURE: failure,
+            [KICKOFF_PROOF_PATH_ENV]: proofPath,
+            [KICKOFF_PROOF_TOKEN_ENV]: token,
+            TERM: 'xterm-256color',
+          },
+          ownerId,
+          io,
+          bridgeTty: false,
+          kickoffFile: seed,
+          sessionPort: { renderedHash: hash },
+          onKickoffPersisted,
+          nativePersistenceTimeoutMs: 300,
+          onExit: () => undefined,
+        });
+        expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+        expect(onKickoffPersisted.mock.calls[0]?.[0]).toMatchObject({ persisted: false, renderedHash: hash });
+        const receipt = JSON.parse(readFileSync(proofPath, 'utf8'));
+        expect(receipt.reason).toContain(failure === 'child-exit' ? 'target child exited' : 'not found in the omp native transcript');
+        expect(receipt.persisted).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

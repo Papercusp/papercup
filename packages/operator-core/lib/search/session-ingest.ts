@@ -577,7 +577,8 @@ export function parseOmpLine(line: string, options: TurnTextParseOptions = {}): 
   if (!message) return null;
   const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null;
-  const text = cleanTurnText(textFromContent(message.content), options);
+  const rawText = textFromContent(message.content);
+  const text = cleanTurnText(rawText, options);
   if (!text) return null;
   const messageId = typeof obj.id === 'string' ? obj.id : null;
   const parentMessageId = typeof obj.parentId === 'string' ? obj.parentId : null;
@@ -600,6 +601,7 @@ export function parseOmpLine(line: string, options: TurnTextParseOptions = {}): 
     messageId,
     parentMessageId,
     responseDisposition,
+    promptHash: speaker === 'user' ? promptOriginHash(rawText) : null,
   };
 }
 
@@ -624,7 +626,7 @@ export function parseCodexLine(line: string, options: TurnTextParseOptions = {})
     const ts = typeof rawTs === 'number' && rawTs < 10_000_000_000
       ? new Date(rawTs * 1000)
       : parseTs(rawTs);
-    return { ts, speaker: 'user', text, sessionId: obj.session_id };
+    return { ts, speaker: 'user', text, sessionId: obj.session_id, promptHash: promptOriginHash(obj.text) };
   }
   if (obj.type !== 'response_item') return null;
   const payload = obj.payload as {
@@ -638,7 +640,8 @@ export function parseCodexLine(line: string, options: TurnTextParseOptions = {})
   if (!payload || payload.type !== 'message') return null;
   const speaker = payload.role === 'user' ? 'user' : payload.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null; // 'developer'/'system' = injected instructions, skip
-  const text = cleanTurnText(textFromContent(payload.content), options);
+  const rawText = textFromContent(payload.content);
+  const text = cleanTurnText(rawText, options);
   if (!text) return null;
   const metadata =
     payload.internal_chat_message_metadata_passthrough != null &&
@@ -664,6 +667,8 @@ export function parseCodexLine(line: string, options: TurnTextParseOptions = {})
     messageId: typeof payload.id === 'string' ? payload.id : null,
     parentMessageId: null,
     responseDisposition,
+    // Correlate the hook's original prompt, before display cleanup/truncation.
+    promptHash: speaker === 'user' ? promptOriginHash(rawText) : null,
   };
 }
 

@@ -4041,6 +4041,26 @@ export function makeCarryRearmController({
       const key = keyFor(msg);
       return pendingMessages.get(key)?.has(msg) === true;
     },
+    /**
+     * Refresh an already-queued retry only when the same delivery is still the
+     * current payload. A later distinct delivery may have superseded it, so a
+     * delayed duplicate of the older id must never roll the re-arm backwards.
+     * Keep the original receipt time: retrying the delivery updates its snapshot,
+     * not its age or ordering against a newer host generation.
+     */
+    refreshPendingMessage(msg) {
+      const key = keyFor(msg);
+      const deliveryId = String(msg?.deliveryId ?? '');
+      if (!deliveryId || !pending.has(key)) return false;
+      const current = latest.get(key);
+      if (String(current?.deliveryId ?? '') !== deliveryId) return false;
+      latest.set(key, {
+        ...current,
+        ...msg,
+        receivedAtMs: current.receivedAtMs,
+      });
+      return true;
+    },
     /** EI-18681914950138372: call the MOMENT a carry-respawn control message is
      *  accepted by the host, before it enters its own busy-gate wait — marks it
      *  in-flight so a wake arriving during that wait is correctly deferred. */
@@ -4580,6 +4600,8 @@ const CLAUDE_QUOTA_LIMIT_BANNER_PATTERNS = [
   /weekly limit/i,
   /5-hour limit/i,
   /usage limit/i,
+  // Captured gateway 429 from the routed BAR reviewer (EI-24930415587482619).
+  /usage credits are required for long context requests/i,
   /you'?ve reached your fable(?:\s+\d+(?:\.\d+)?)?\s+limit\b/i,
   /\blimit\b[^\n]{0,60}\breset(?:s|ting)?\b/i,
 ];
@@ -8089,7 +8111,17 @@ export function hostThroughPty(o) {
     if (!managedKickoffDisposition) {
       // First terminal outcome wins. Child exit and persistence verification can
       // race; sharing one promise prevents delivered→failed double transitions.
-      managedKickoffDisposition = Promise.resolve().then(() => onKickoffPersisted(proof));
+      managedKickoffDisposition = Promise.resolve().then(() => {
+        // The detached parent consumes this receipt; the session-port HTTP ack
+        // alone cannot prove delivery to it. Publish before that potentially slow
+        // ack, under the same first-terminal guard as the child-exit failure.
+        publishKickoffProofReceipt({
+          persisted: proof.persisted === true,
+          nativeRef: proof.persisted === true ? proof.nativeRef ?? null : null,
+          reason: proof.persisted === true ? null : proof.error ?? 'session-port-kickoff-not-persisted',
+        }, env);
+        return onKickoffPersisted(proof);
+      });
     }
     return managedKickoffDisposition;
   };
@@ -10259,12 +10291,17 @@ export function hostThroughPty(o) {
           pendingLoopKey != null
             ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata)
             : false;
+        const refreshedPendingCarryRespawn =
+          duplicateState === 'pending' && msg.mode === 'carry-respawn' && !msg.drillId
+            ? carryRearm.refreshPendingMessage(msg)
+            : false;
         const duplicateReason =
           duplicateState === 'pending' ? 'pending-delivery-id' : 'duplicate-delivery-id';
         appendHostEvent(ownerId, 'duplicate-delivery-id', {
           state: duplicateState,
           mode: msg.mode,
           refreshedPendingTurn,
+          refreshedPendingCarryRespawn,
         });
         try {
           writeHostDiagnostic(
