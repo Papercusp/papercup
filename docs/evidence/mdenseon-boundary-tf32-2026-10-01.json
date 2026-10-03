@@ -1,4 +1,107 @@
 {
+  "nativeHostAllocatorPositiveControl": {
+    "status": "Corruption-specific host allocator detector qualified for a bounded tail overwrite; historical ORT corruption root cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-allocator-positive-v1",
+      "artifact": "completion.json",
+      "bytes": 10789,
+      "sha256": "7c0db0313803046057c893d3a2f9c8363c35b489a54a9a7803a587a8bc7dc07f"
+    },
+    "task": "0murwvpzm1li2lsc1nn",
+    "exitCode": 0,
+    "finishedAt": "2026-10-03T04:48:19.142Z",
+    "reuse": "Extended the existing native-ort-teardown-control capture and observation seam. Its old abort-control intentionally raises a signal and cannot qualify allocator sensitivity. A tiny opt-in stable N-API fixture keeps the controlled 64-byte malloc/free inside the same measured Node process; no allocator interposer, parallel harness or embedding worker was introduced.",
+    "runtime": {
+      "retainedNodeSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "sameAllocatorLibrariesAsPriorControls": true,
+      "sameAllocatorEnvironmentAsPriorControls": true,
+      "coreDumpsDisabledBeforeFault": true,
+      "embeddingWeightsLoaded": false,
+      "ortSessionConstructed": false,
+      "gpuRequests": 0
+    },
+    "admission": {
+      "bridge": "scripts/lib/governed-test-process.mjs::runGovernedTestProcess",
+      "receiptId": "RG-61395e73-d631-4e56-90c1-c95ab23e4b98",
+      "forwardedSerializationVerifiedInBothNativeProcesses": true,
+      "boundedCells": 2
+    },
+    "controls": [
+      {
+        "fault": "clean",
+        "requestedBytes": 64,
+        "processId": 334448,
+        "exitCode": 0,
+        "signal": null,
+        "pipeEof": true,
+        "debugAllocatorMapped": true,
+        "detectorTriggered": false
+      },
+      {
+        "fault": "tail-overwrite",
+        "requestedBytes": 64,
+        "mutationBytes": 1,
+        "processId": 335197,
+        "exitCode": null,
+        "signal": "SIGABRT",
+        "pipeEof": true,
+        "debugAllocatorMapped": true,
+        "detectorTriggered": true,
+        "allocatorCorruptionDiagnosticRequired": true,
+        "manualAbortUsed": false
+      }
+    ],
+    "verification": {
+      "canonicalTestRunGroup": "1f13cd5c-92e2-48ec-a75e-d531a0436faa",
+      "canonicalTestRunIds": [20635116],
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0,
+      "scopedCompilerAndCanonicalCliTask": "0murwvp0v41heq112a8",
+      "scopedCompilerErrors": 0,
+      "scopedCompilerNamedFiles": 2,
+      "compilerScope": "The named test and declaration files through the shared compiler, not a whole-project typecheck.",
+      "canonicalCliProvenance": "The earlier detached CLI passed all 31 with zero skips but Git HEAD advanced during its run, so its router marked provenance unknown. The subsequent canonical ledger run separately records 31 passing tests. Current source and retained runtime pins are bound by the immutable actual-control capture.",
+      "adjacentGovernanceRecoveryRun": "aa58ad2a-1f7b-4b21-817e-394378aa4637",
+      "adjacentGovernanceRecoveryStatus": "pass",
+      "recurrenceGuard": "Conventional tests exercise actual clean/corrupt native processes and reject missing or foreign PID, partial EOF, synthetic signal without corruption diagnostic, missing mutation marker, foreign admission context and changed binding/allocator pins.",
+      "sourceFiles": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-allocator-detector-control.c",
+          "bytes": 2839,
+          "sha256": "132743bd60d8e58411f253c871e15c4957d59ab303341fdeef83c0ed31ce5580"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 15889,
+          "sha256": "4bd03acf2603bc55f829390eff0c4898568a6a0a7474b1de5d0518b06638d740"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 21496,
+          "sha256": "a7c0d38a69a31e49dc1b9d254d844195638c21e7f06cc5c69d93d4c5453e2a14"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.d.mts",
+          "bytes": 1141,
+          "sha256": "f87e10bed4b4e5522ce3ca9b715d3461fd0d76b69bf65864801a358e87afca5b"
+        }
+      ]
+    },
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "limitations": [
+      "Sensitivity is qualified only for this intentional one-byte tail overwrite at free, not all heap-corruption classes.",
+      "No historical abort is attributed to this injected fault and no historical no-crash control proves absence of corruption.",
+      "Compiler, stable N-API, actual Node, allocator library, typed admission, raw stderr and terminal evidence are retained privately.",
+      "No old capture, full embedding matrix, clock calibration or large GPU operation was replayed."
+    ],
+    "next": "Keep WI-10005599 open. Inspect the historical allocator/session teardown ownership and qualify a new distinguishing allocator or initializer probe before any further native ORT attempt. Do not repeat old glibc/GDB batches or large inference merely because this detector positive control passed."
+  },
   "formatVersion": 1,
   "plan": "mdenseon-adoption-measurements-2026-10-01",
   "item": "P-006",
