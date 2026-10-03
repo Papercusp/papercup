@@ -7489,8 +7489,8 @@ try {
       "NOT MEASURED — this run's launcher gave it a wall clock shorter than the work it was " +
         "asked to do, so it refused before running anything rather than being killed mid-suite " +
         "with no verdict. Nothing here is a test verdict. Re-fire with a longer timeout: the " +
-        "TASK_DEADLINE_REFUSAL line above names the remaining clock and the KNOWN work (a lower " +
-        "bound — unknown-duration tasks are counted as zero and reported separately).",
+      "TASK_DEADLINE_REFUSAL line above names the remaining clock and the lane-aware historical " +
+        "wall projection (unknown-duration tasks are counted as zero and reported separately).",
     );
     // EI-22431012667356741: the documented triage grep includes AFFECTED_EXIT, but this
     // deliberate refusal previously emitted only status=refused and NOT MEASURED. Publish the
