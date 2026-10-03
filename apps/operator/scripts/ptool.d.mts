@@ -671,13 +671,14 @@ export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, m
  * Accept either an operator base URL or an already-qualified `/api/mcp`
  * endpoint; explicit endpoint URLs must not receive a second MCP path.
  * @param {string} operatorUrl
- * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string}} [options]
+ * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string, env?: EnvironmentMap}} [options]
  */
-export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, contextTier, }?: {
+export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, contextTier, env, }?: {
     workspace?: string;
     harness?: string;
     client?: string;
     contextTier?: string;
+    env?: EnvironmentMap;
 }): URL;
 /**
  * EI-21860372620642128 — install:safe reifies shared node_modules in place

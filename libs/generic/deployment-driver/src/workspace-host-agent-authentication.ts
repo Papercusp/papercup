@@ -31,6 +31,7 @@
  * exists to catch.
  */
 import { spawn as nodeSpawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 
@@ -663,7 +664,31 @@ export function workspaceHostAgentSubjectDigest(subject: string): string {
  * clean failure rather than as a probe that mysteriously took a minute.
  */
 export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProbeRunner {
-  constructor(private readonly spawnImpl: typeof nodeSpawn = nodeSpawn) {}
+  // Keep the child-process boundary independent of a host application's ambient
+  // NodeJS.ProcessEnv augmentation (Next.js makes NODE_ENV required). The child
+  // receives the complete allowlisted string map; consumer globals must not change
+  // spawn overload resolution or reduce the returned handle to `never`.
+  constructor(
+    private readonly spawnImpl: (
+      command: string,
+      args: string[],
+      options: {
+        cwd?: string;
+        detached: boolean;
+        env?: Record<string, string>;
+        stdio: ["ignore", "pipe", "pipe"];
+      },
+    ) => ChildProcess = nodeSpawn as unknown as (
+      command: string,
+      args: string[],
+      options: {
+        cwd?: string;
+        detached: boolean;
+        env?: Record<string, string>;
+        stdio: ["ignore", "pipe", "pipe"];
+      },
+    ) => ChildProcess,
+  ) {}
 
   run(
     invocation: WorkspaceHostAgentProbeInvocation,
@@ -680,15 +705,21 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
       // output pipes open. This awaited probe owns one POSIX process group so its
       // deadline and output bound cover the launcher and its descendants together.
       const ownsProcessGroup = process.platform !== "win32";
+      const spawnOptions: {
+        cwd?: string;
+        detached: boolean;
+        env?: Record<string, string>;
+        stdio: ["ignore", "pipe", "pipe"];
+      } = {
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: ownsProcessGroup,
+        ...(processInput.cwd ? { cwd: processInput.cwd } : {}),
+        ...(processInput.env ? { env: { ...processInput.env } } : {}),
+      };
       const child = this.spawnImpl(
         processInput.command,
         [...processInput.args],
-        {
-          stdio: ["ignore", "pipe", "pipe"],
-          detached: ownsProcessGroup,
-          ...(processInput.cwd ? { cwd: processInput.cwd } : {}),
-          ...(processInput.env ? { env: { ...processInput.env } } : {}),
-        },
+        spawnOptions,
       );
       let stdout = "";
       let bytes = 0;

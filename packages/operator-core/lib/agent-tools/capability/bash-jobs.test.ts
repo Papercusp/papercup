@@ -1719,6 +1719,31 @@ describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
     expect(detectSelfOutputRedirect('echo "x > y"')).toBeNull();
   });
 
+  it('ignores truncation redirects owned by no-output builtins or by no command', () => {
+    expect(detectSelfOutputRedirect(': > "$L"')).toBeNull();
+    expect(detectSelfOutputRedirect('true > f')).toBeNull();
+    expect(detectSelfOutputRedirect('false > f')).toBeNull();
+    expect(detectSelfOutputRedirect('> f')).toBeNull();
+  });
+
+  it('still detects output redirects owned by commands after no-output redirects', () => {
+    expect(detectSelfOutputRedirect(': > "$L"; cmd > f')).toEqual({
+      target: 'f',
+      op: '>',
+      literalPath: false,
+    });
+    expect(detectSelfOutputRedirect('cmd >> f')).toEqual({
+      target: 'f',
+      op: '>>',
+      literalPath: false,
+    });
+    expect(detectSelfOutputRedirect('cmd 2>&1 > f')).toEqual({
+      target: 'f',
+      op: '>',
+      literalPath: false,
+    });
+  });
+
   it('does not mistake JavaScript arrows inside a quoted heredoc for stdout redirection', () => {
     const command = [
       "node --input-type=module <<'NODE' | tee logs/r28-r7-repair.log",

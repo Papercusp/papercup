@@ -2869,13 +2869,14 @@ export async function listToolsWithLocalRetry(
  * Accept either an operator base URL or an already-qualified `/api/mcp`
  * endpoint; explicit endpoint URLs must not receive a second MCP path.
  * @param {string} operatorUrl
- * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string}} [options]
+ * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string, env?: EnvironmentMap}} [options]
  */
 export function buildMcpUrl(operatorUrl, {
   workspace,
   harness,
   client,
   contextTier = 'trimmed',
+  env = process.env,
 } = {}) {
   const url = new URL(operatorUrl);
   const pathWithoutTrailingSlash = url.pathname.replace(/\/+$/, '');
@@ -2888,6 +2889,16 @@ export function buildMcpUrl(operatorUrl, {
   if (workspace) url.searchParams.set('workspace', workspace);
   if (harness) url.searchParams.set('harness', harness);
   if (client) url.searchParams.set('client', client);
+  // A retained owner can have several native incarnations. Carry the current
+  // Codex session through this fallback just as the native MCP config does;
+  // the server verifies that binding before selecting its launch record.
+  // An explicit endpoint binding wins, and another client's identity must
+  // never inherit this process's native session.
+  const nativeSession = String(env.CODEX_SESSION_ID ?? '').trim();
+  if (!url.searchParams.has('native_session') && nativeSession &&
+      client && client === String(env.PAPERCUSP_SID ?? '').trim()) {
+    url.searchParams.set('native_session', nativeSession);
+  }
   if (contextTier) url.searchParams.set('ctx_tier', contextTier);
   return url;
 }

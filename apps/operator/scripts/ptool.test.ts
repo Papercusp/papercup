@@ -205,6 +205,33 @@ describe('ptool MCP identity binding', () => {
     expect(url.searchParams.get('harness')).toBe('papercusp');
   });
 
+  it('binds each Codex incarnation of the same owner across operator fallback routes', () => {
+    const client = 'su-retained-owner';
+    for (const nativeSession of ['native-predecessor', 'native-successor']) {
+      for (const host of ['http://127.0.0.1:9071', 'http://127.0.0.1:3170']) {
+        const url = buildMcpUrl(host, {
+          client,
+          env: { PAPERCUSP_SID: client, CODEX_SESSION_ID: nativeSession },
+        });
+        expect(url.searchParams.get('client')).toBe(client);
+        expect(url.searchParams.get('native_session')).toBe(nativeSession);
+      }
+    }
+  });
+
+  it('preserves an explicitly selected native session and avoids binding another owner', () => {
+    const env = { PAPERCUSP_SID: 'su-current', CODEX_SESSION_ID: 'native-current' };
+    expect(buildMcpUrl('http://127.0.0.1:3170/api/mcp?native_session=native-explicit', {
+      client: 'su-current', env,
+    }).searchParams.get('native_session')).toBe('native-explicit');
+    expect(buildMcpUrl('http://127.0.0.1:3170', {
+      client: 'su-other', env,
+    }).searchParams.has('native_session')).toBe(false);
+    expect(buildMcpUrl('http://127.0.0.1:3170', {
+      client: 'su-current', env: { PAPERCUSP_SID: 'su-current' },
+    }).searchParams.has('native_session')).toBe(false);
+  });
+
   it('defaults direct sessions to trimmed payloads and allows an explicit full escape hatch', () => {
     expect(resolveContextTier({ env: { NODE_ENV: 'test' } })).toBe('trimmed');
     expect(resolveContextTier({ env: { NODE_ENV: 'test', PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
