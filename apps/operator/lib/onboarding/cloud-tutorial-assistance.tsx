@@ -4,12 +4,14 @@ import { Button } from "@/app/harness/Button";
 import { OperatorChat } from "@/app/_components/OperatorChat";
 import type { ChatMessage } from "@/app/_components/chat/chat-types";
 import { createVoiceOutputPlayback, isVoiceOutputMuted, setVoiceOutputMuted } from "@/app/_components/voice/voice-mode";
-import type { LessonStep, StepStatus, TutorialScope } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import type { LessonStep, StepStatus, TutorialScope, TutorialVersion } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { publicTutorialRecovery, TUTORIAL_RECOVERY } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-help";
 import { recordTutorialHelpRequest } from './cloud-tutorial-analytics';
 
 /** Mounted only for the displayed authorized lesson. No product mutators or
  * controller dispatch are available to this chat or its model output. */
-export function CloudTutorialAssistance({ scope, step, status, onShowStep }: {
+export function CloudTutorialAssistance({ scope, version = 1, step, status, onShowStep }: {
+  version?: TutorialVersion;
   scope: TutorialScope; step: LessonStep; status: StepStatus; onShowStep?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -20,8 +22,10 @@ export function CloudTutorialAssistance({ scope, step, status, onShowStep }: {
   const pending = useRef<AbortController | null>(null);
   const helpTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSpoken = useRef(`${step.title}. ${step.brief} ${step.details}`);
-  const requestContext = useRef({ expectedScope: scope, context: { step: step.id, status } });
-  requestContext.current = { expectedScope: scope, context: { step: step.id, status } };
+  const recoveryCategory = publicTutorialRecovery(status, step.id);
+  const context = { step: step.id, status, ...(version === 2 ? { version, recoveryCategory } : {}) };
+  const requestContext = useRef({ expectedScope: scope, context });
+  requestContext.current = { expectedScope: scope, context };
   const playback = useMemo(() => createVoiceOutputPlayback(async (question, engine, voiceId, signal) => {
     const response = await fetch('/api/hosted/browser/onboarding/tutorial-speech', { method: 'POST',
       headers: { 'content-type': 'application/json' }, signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
@@ -37,7 +41,7 @@ export function CloudTutorialAssistance({ scope, step, status, onShowStep }: {
   }, [playback]);
   const ask = async (question: string) => {
     if (pending.current || !question.trim()) return;
-    recordTutorialHelpRequest(step.id, status);
+    recordTutorialHelpRequest(step.id, status, version);
     const controller = new AbortController(); pending.current = controller;
     const timeout = setTimeout(() => { controller.abort(); if (pending.current === controller) { pending.current = null; setBusy(false); setError('AI help is taking too long. You can continue with the lesson instructions.'); } }, 15_000);
     helpTimeout.current = timeout;
@@ -63,6 +67,7 @@ export function CloudTutorialAssistance({ scope, step, status, onShowStep }: {
     }
   };
   return <section aria-label="Lesson help and speech">
+    {version === 2 && ['waiting', 'delayed', 'error', 'blocked', 'missing-target'].includes(status) && <p role="status">{TUTORIAL_RECOVERY[recoveryCategory]}</p>}
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
       <Button onClick={() => { setVoiceOutputMuted(!muted); if (muted) void playback.play(lastSpoken.current); }} aria-pressed={muted}>{muted ? 'Unmute guide' : 'Mute guide'}</Button>
       <Button onClick={playback.stop}>Stop speech</Button>
