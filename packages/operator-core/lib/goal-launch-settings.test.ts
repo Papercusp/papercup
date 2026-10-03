@@ -2888,21 +2888,29 @@ describe('P-006: the budget launch gate', () => {
     expect(liveSpend.calls).toBe(1);
   });
 
-  it('re-measures a stale snapshot and admits stale live usage as unmeasured headroom', async () => {
-    liveSpend.freshnessStatus = 'stale';
-    liveSpend.legs = { spentCents: null, lineage: 1, lineageUnpriced: 0, pot: 0, session: 1 };
-    const r = await launchWithBudget({
-      budget_cents: 5000,
-      spent_cents: 6000,
-      spent_cents_source: 'goal-lineage-rollup',
-      spent_cents_freshness_status: 'fresh',
-      spent_cents_freshness_last_ingested_at_ms: Date.now() - 31 * 60_000,
-    });
-    expect(liveSpend.calls).toBe(1);
-    expect(r.refusal).toBeNull();
-    expect(r.degradedReasons.some((reason) => reason.includes('interactive-usage-stale') && reason.includes('unmeasured')))
-      .toBe(true);
-  });
+  it.each(['stale', 'unavailable'] as const)(
+    're-measures a stale snapshot and refuses %s live usage without an authoritative spend figure', async (status) => {
+      liveSpend.freshnessStatus = status;
+      liveSpend.legs = { spentCents: null, lineage: 1, lineageUnpriced: 0, pot: 0, session: 1 };
+      const r = await launchWithBudget({
+        budget_cents: 5000,
+        spent_cents: 6000,
+        spent_cents_source: 'goal-lineage-rollup',
+        spent_cents_freshness_status: 'fresh',
+        spent_cents_freshness_last_ingested_at_ms: Date.now() - 31 * 60_000,
+      });
+      expect(liveSpend.calls).toBe(1);
+      expect(r.refusal).toMatchObject({
+        reason: 'goal_budget_unmeasurable',
+        current: null,
+        currentScope: REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
+      });
+      expect(r.refusal?.message).toContain(`interactive usage stream is ${status}`);
+      expect(r.degradedReasons).not.toContain('admitted as headroom');
+      await vi.waitFor(() => expect(escalated.calls.length).toBe(1));
+      expect(String(escalated.calls[0]?.summary)).toContain('UNMEASURABLE');
+    },
+  );
 
   it('opens a distinctly-deduped owner escalation, so the refusal is never silent', async () => {
     await launchWithBudget({
@@ -3060,9 +3068,9 @@ describe('per-turn goal inference budget admission (WI-10003507)', () => {
   });
 
   it.each(['interactive-usage-stale', 'interactive-usage-unavailable'] as const)(
-    'admits %s live spend as unmeasured headroom even when usage rows exist', (unmeasuredReason) => {
+    'refuses %s live spend when usage rows exist but its price cannot be verified', (unmeasuredReason) => {
       const status = unmeasuredReason === 'interactive-usage-stale' ? 'stale' : 'unavailable';
-      expect(evaluateGoalInferenceBudget({
+      const decision = evaluateGoalInferenceBudget({
         ...base,
         rollup: rollup({
           unmeasuredReason,
@@ -3074,7 +3082,15 @@ describe('per-turn goal inference budget admission (WI-10003507)', () => {
             status, lastIngestedAtMs: null, ageMs: null, windowMs: 30 * 60_000, reason: unmeasuredReason,
           },
         }),
-      })).toEqual({ allowed: true, goalId: 'goal-1', reason: unmeasuredReason });
+      });
+      expect(decision).toMatchObject({
+        allowed: false,
+        goalId: 'goal-1',
+        status: 503,
+        code: 'goal_budget_unmeasurable',
+        spentCents: null,
+      });
+      if (!decision.allowed) expect(decision.message).toContain(unmeasuredReason);
     },
   );
 

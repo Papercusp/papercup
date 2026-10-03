@@ -39,6 +39,8 @@ describe('scope-aware goal planning obligations', () => {
       review: { schemaVersion: 1, goalId: 'goal-1', disposition,
         rationale: 'Measured missing recovery coverage.', evidenceRefs: ['work-item:WI-fixture'],
         planRefs: [], ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : {}),
+        ...(disposition === 'existing-plans-sufficient' || disposition === 'no-eligible-work'
+          ? { coverage: [{ need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/checkout' }] } : {}),
         portfolioFingerprint: goalPlanningPortfolioFingerprint(value), reviewedAt: NOW },
       authorities: { papercusp: { allowed: true, reason: 'caller-goal-owns-pot', ownerGoalId: 'goal-1', ownerGoalTitle: 'Goal' } },
     } } };
@@ -56,6 +58,32 @@ describe('scope-aware goal planning obligations', () => {
   });
   it('accepts a current supported sufficient-plan review without an idea quota', () => {
     expect(goalPlanningObligation(input('existing-plans-sufficient'))).toMatchObject({ status: 'satisfied', applicableDemand: 0 });
+  });
+  // P-009 (goal-holder-plans-ideation-truthful-reports-2026-10-03): measured
+  // 2026-10-01..03, 18 of 24 reviews said existing-plans-sufficient and no holder
+  // wrote a plan. A no-new-plan review now discharges only with a passing map.
+  it('keeps the nudge due when a no-new-plan review carries no coverage map', () => {
+    const unbacked = input('existing-plans-sufficient');
+    delete (known(unbacked).review as { coverage?: unknown }).coverage;
+    expect(goalPlanningObligation(unbacked)).toMatchObject({
+      status: 'due', title: 'Back the no-new-plan review with a coverage map', applicableDemand: 1, ruleRevision: 'goal-planning-needed-v3',
+    });
+  });
+  it('keeps the nudge due when a 3+ item cluster maps to no plan, and names it', () => {
+    const uncovered = input('existing-plans-sufficient');
+    known(uncovered).review!.coverage = [
+      { need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/checkout' },
+      { need: 'stale loop wakes', itemRefs: ['WI-4', 'WI-5', 'WI-6'] },
+    ];
+    const obligation = goalPlanningObligation(uncovered);
+    expect(obligation).toMatchObject({ status: 'due', title: 'Write a plan for the uncovered need', applicableDemand: 1 });
+    expect(obligation.reason).toContain('stale loop wakes');
+    expect(obligation.reason).toContain('plans:new');
+  });
+  it('accepts an explicitly empty map for no-eligible-work', () => {
+    const none = input('no-eligible-work');
+    known(none).review!.coverage = [];
+    expect(goalPlanningObligation(none)).toMatchObject({ status: 'satisfied' });
   });
   it('reviews the standing frontier instead of equating terminal plans with goal completion', () => {
     const value = input(); const state = known(value);
