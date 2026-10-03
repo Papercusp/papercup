@@ -7954,6 +7954,24 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     ).toThrow(/tracked source/);
   });
 
+  it("selects isolated ports for the complete backend matrix and preserves ordinary native resume", () => {
+    for (const sourceAgent of ['claude', 'codex', 'omp']) {
+      for (const targetAgent of ['claude', 'codex', 'omp']) {
+        const nativeSource = { ...source, agent: sourceAgent };
+        const args = { agent: targetAgent, model: targetAgent === 'codex' ? 'sol:high' : 'opus', ownerId: 'su-answer-owner', launchedBy: 'su-requester' };
+        const resolved = resolveResumeTarget(nativeSource, args);
+        expect(resolved).toMatchObject({ operation: 'port', targetAgent });
+        expect(sessionPortRequestBody(nativeSource, resolved, {}, args)).toMatchObject({ targetOwnerId: 'su-answer-owner' });
+        expect(sessionPortTargetArgs(nativeSource, resolved, {}, args, { portId: 'p', token: 'p.token' }))
+          .toMatchObject({ ownerId: 'su-answer-owner', launchedBy: 'su-requester', fork: false, resume: false });
+        expect(nativeSource.coordOwnerId).toBe(source.coordOwnerId);
+      }
+      expect(resolveResumeTarget({ ...source, agent: sourceAgent }, {
+        agent: sourceAgent, model: sourceAgent === 'codex' ? 'sol:high' : 'opus',
+      })).toMatchObject({ operation: 'native' });
+    }
+  });
+
   it("carries the consult evidence-span selection into the session-port inspection request", () => {
     const previous = process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
     process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN = JSON.stringify({
