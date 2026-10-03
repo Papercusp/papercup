@@ -56,6 +56,7 @@ import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
 import { resolvePlanScope } from './source';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
+import { restoreHistoricalShipment } from './restore-historical-shipment';
 import {
   settleAcceptanceReviewReservationsForPlan,
   type AcceptanceReviewReservationSettlement,
@@ -131,6 +132,14 @@ const argsSchema = z
       .describe(
         'Optional note on why the lifecycle moved. Stored on the plan revision (D-009), not in the frontmatter.',
       ),
+    restoreShippedRevision: z.object({
+      seq: z.number().int().positive(),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+      expectedVersion: z.number().int().positive(),
+      expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    }).optional().describe(
+      'Restore an exact previously shipped revision after an unrecorded remote rollback. Requires the latest revision to be that shipment, the current body to equal its immediate predecessor, a local shipment capture, and the original rubric retirement with shipment. Refuses authored reopenings or changed work; does not reopen acceptance or recruit a grader.',
+    ),
     // ── queen-scout-feedback-loop-2026-06-20 P-006 / B10: the DEPRECATE path.
     learnings: z
       .object({
@@ -181,6 +190,13 @@ const argsSchema = z
   .refine((a) => !a.force?.acceptanceBarProofMetadata || normalizePlanStatus(a.status).status === 'shipped', {
     message: 'force.acceptanceBarProofMetadata is only valid for a shipped target',
     path: ['force', 'acceptanceBarProofMetadata'],
+  })
+  .refine((a) => !a.restoreShippedRevision || (
+    normalizePlanStatus(a.status).status === 'shipped' && Boolean(a.slug) && !a.slugs &&
+    Boolean(a.expectedCurrent) && !a.force
+  ), {
+    message: 'restoreShippedRevision requires one slug, status shipped, expectedCurrent, and no force',
+    path: ['restoreShippedRevision'],
   });
 
 type SetPlanStatusValue =
@@ -636,6 +652,15 @@ export default defineTool({
     const env = await runBulk(
       slugs,
       async (slug) => {
+        if (args.restoreShippedRevision) {
+          const restored = await restoreHistoricalShipment(sctx, {
+            slug,
+            harnessSlug,
+            expectedCurrent: args.expectedCurrent!,
+            ...args.restoreShippedRevision,
+          });
+          return { slug, ...restored };
+        }
         // Completion gate (acceptance-rubrics-on-every-plan-2026-08-11 P-004/P-005):
         // shipping requires a graded acceptance rubric — the refusal message IS the
         // authoring nudge (author it post-implementation, D-007; grader ≠ implementer,

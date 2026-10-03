@@ -1,0 +1,158 @@
+/** Exact historical recovery through plans:set-plan-status (EI-24954628187176721).
+ * A retired rubric remains ineligible for fresh shipment. This restores bytes whose
+ * shipment already passed, only when the remote row rolled back to the predecessor.
+ */
+import { withWorkspace } from '@papercusp/db-org';
+import { parsePlan } from '@papercusp/plan-parser';
+import { hashPlanContent } from './content-hash';
+import { summarizeForcedPast } from './forced-past-stamp';
+import { withPlanLock } from './with-plan-lock';
+import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { resolvePlanScope } from './source';
+import { emitPlanEventForCaller } from '../coordination/plan-events';
+
+export interface HistoricalShipmentRequest {
+  slug: string;
+  harnessSlug?: string;
+  expectedCurrent: string;
+  seq: number;
+  contentHash: string;
+  expectedVersion: number;
+  expectedContentHash: string;
+}
+
+export interface HistoricalShipmentWitness {
+  version: number;
+  content: string;
+  contentHash: string;
+  origin: string;
+  seq: number;
+  shippedBody: string;
+  shippedHash: string;
+  predecessorBody: string;
+  localShipmentCaptured: boolean;
+  rubricRetiredWithShipment: boolean;
+}
+
+type HistoricalShipmentValue =
+  | { ok: false; code: string }
+  | { ok: true; changed: true; oldStatus: string; newStatus: string;
+      restoredShippedRevision: number; restoredContentHash: string };
+
+/** Fail closed on unknown proof, changed work, or an authored lifecycle change. */
+export function historicalShipmentRefusal(
+  w: HistoricalShipmentWitness | null,
+  request: HistoricalShipmentRequest,
+): string | null {
+  if (!w) return 'historical_shipment_not_found';
+  if (w.version !== request.expectedVersion || w.contentHash !== request.expectedContentHash ||
+      hashPlanContent(w.content) !== request.expectedContentHash) return 'historical_shipment_stale';
+  if (w.seq !== request.seq || w.shippedHash !== request.contentHash ||
+      hashPlanContent(w.shippedBody) !== request.contentHash) return 'historical_shipment_head_changed';
+  if (parsePlan(w.shippedBody).frontmatter.status !== 'shipped' || summarizeForcedPast(w.shippedBody)) {
+    return 'historical_shipment_not_validated';
+  }
+  if (w.origin !== 'remote' || w.content !== w.predecessorBody ||
+      parsePlan(w.content).frontmatter.status !== request.expectedCurrent || w.content === w.shippedBody) {
+    return 'historical_shipment_not_remote_rollback';
+  }
+  if (!w.localShipmentCaptured || !w.rubricRetiredWithShipment) return 'historical_shipment_proof_missing';
+  return null;
+}
+
+async function readWitness(
+  scope: { workspaceId: string; harnessSlug: string },
+  slug: string,
+): Promise<HistoricalShipmentWitness | null> {
+  return withWorkspace(scope.workspaceId, async (tx) => {
+    const rows = await tx<{
+      version: string | number; content: string; content_hash: string; origin: string;
+      seq: number; shipped_body: string; shipped_hash: string; predecessor_body: string;
+      local_shipment_captured: boolean; rubric_retired_with_shipment: boolean;
+    }[]>`
+      SELECT p.version, p.content, p.content_hash, p.origin, head.seq,
+             head.content_snapshot AS shipped_body, head.content_hash AS shipped_hash,
+             prior.content_snapshot AS predecessor_body,
+             EXISTS (
+               SELECT 1 FROM harness_shared.substrate_outbox o
+                WHERE o.workspace_id = p.workspace_id AND o.harness_slug = p.harness_slug
+                  AND o.table_name = 'harness_plans' AND o.key = p.plan_slug
+                  AND o.row->>'content_hash' = head.content_hash
+                  AND o.row->>'status' = 'shipped' AND o.row->>'origin' = 'local'
+             ) AS local_shipment_captured,
+             EXISTS (
+               SELECT 1 FROM harness_shared.harness_plans rubric
+               JOIN LATERAL (
+                 SELECT r.rationale FROM harness_shared.plan_revisions r
+                  WHERE r.workspace_id = rubric.workspace_id AND r.harness_slug = rubric.harness_slug
+                    AND r.plan_slug = rubric.plan_slug ORDER BY r.seq DESC LIMIT 1
+               ) retired ON true
+                WHERE rubric.workspace_id = p.workspace_id AND rubric.template = 'rubric'
+                  AND rubric.template_data->>'kind' = 'acceptance'
+                  AND rubric.template_data->>'subjectPlan' = p.plan_slug
+                  AND rubric.template_data->>'subjectHarnessSlug' = p.harness_slug
+                  AND rubric.status = 'superseded'
+                  AND retired.rationale = 'acceptance rubric retired with its shipped subject plan'
+             ) AS rubric_retired_with_shipment
+        FROM harness_shared.harness_plans p
+        JOIN LATERAL (
+          SELECT r.seq, r.content_snapshot, r.content_hash FROM harness_shared.plan_revisions r
+           WHERE r.workspace_id = p.workspace_id AND r.harness_slug = p.harness_slug
+             AND r.plan_slug = p.plan_slug ORDER BY r.seq DESC LIMIT 1
+        ) head ON true
+        JOIN harness_shared.plan_revisions prior ON prior.workspace_id = p.workspace_id
+          AND prior.harness_slug = p.harness_slug AND prior.plan_slug = p.plan_slug AND prior.seq = head.seq - 1
+       WHERE p.workspace_id = ${scope.workspaceId} AND p.harness_slug = ${scope.harnessSlug}
+         AND p.plan_slug = ${slug}
+    `;
+    const row = rows[0];
+    return row ? {
+      version: Number(row.version), content: row.content, contentHash: row.content_hash, origin: row.origin,
+      seq: Number(row.seq), shippedBody: row.shipped_body, shippedHash: row.shipped_hash,
+      predecessorBody: row.predecessor_body, localShipmentCaptured: row.local_shipment_captured,
+      rubricRetiredWithShipment: row.rubric_retired_with_shipment,
+    } : null;
+  });
+}
+
+export async function restoreHistoricalShipment(ctx: PlanRevisionCtx, request: HistoricalShipmentRequest) {
+  const scope = await resolvePlanScope({
+    harnessSlug: request.harnessSlug,
+    ...((ctx as { workspaceId?: string }).workspaceId ? { workspaceId: (ctx as { workspaceId: string }).workspaceId } : {}),
+  });
+  const witness = await readWitness(scope, request.slug);
+  const refusal = historicalShipmentRefusal(witness, request);
+  if (refusal || !witness) return { ok: false as const, code: refusal ?? 'historical_shipment_not_found' };
+  const revision = planRevisionCapture(ctx, request.slug,
+    `Restored historical shipped revision ${request.seq} after an unrecorded remote rollback`, scope);
+  const result = await withPlanLock<HistoricalShipmentValue>(ctx, {
+    slug: request.slug, ...scope, loadLatestRevision: true,
+    intent: `restore historically shipped revision ${request.seq}`,
+    revisionInTransaction: revision.inTransaction,
+    inTransaction: async (tx, body, lockedScope) => {
+      if (body !== witness.shippedBody) throw new Error('historical shipment changed before commit');
+      await tx`
+        SELECT set_config('papercusp.plan_shipment_acceptance_gate_receipt', jsonb_build_object(
+          'schemaVersion', '1', 'transactionId', txid_current()::text,
+          'workspaceId', ${lockedScope.workspaceId}::text,
+          'harnessSlug', ${lockedScope.harnessSlug}::text, 'planSlug', ${request.slug}::text
+        )::text, true)
+      `;
+    },
+  }, async (current, meta) => {
+    if (!meta || current !== witness.content || meta.version !== request.expectedVersion ||
+        meta.contentHash !== request.expectedContentHash || meta.latestRevision?.seq !== request.seq ||
+        meta.latestRevision.body !== witness.shippedBody) {
+      return { newBody: null, value: { ok: false as const, code: 'historical_shipment_stale' } };
+    }
+    return { newBody: witness.shippedBody, value: {
+      ok: true as const, changed: true, oldStatus: request.expectedCurrent, newStatus: 'shipped',
+      restoredShippedRevision: request.seq, restoredContentHash: request.contentHash,
+    } };
+  });
+  if (result.kind === 'busy') return { ...result, ok: false as const, code: 'busy' };
+  if (result.value.ok) await emitPlanEventForCaller(ctx, {
+    planSlug: request.slug, event: 'status_changed', before: request.expectedCurrent, after: 'shipped',
+  });
+  return { ...result.value, version: result.version, revision: revision.recorded.current };
+}
