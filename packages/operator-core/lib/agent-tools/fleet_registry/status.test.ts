@@ -449,13 +449,6 @@ describe('fleet:status', () => {
           lastActiveSecAgo: 4,
         },
       ],
-      leaderLiveness: {
-        ownerId: 'su-leader',
-        presenceRow: true,
-        recordedLive: false,
-        sessionState: 'ended',
-        complete: true,
-      },
       degradedLegs: [],
     });
 
@@ -497,6 +490,13 @@ describe('fleet:status', () => {
           sessionState: 'live',
         },
       ],
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: true,
+        recordedLive: false,
+        sessionState: 'ended',
+        complete: true,
+      },
       degradedLegs: [],
     });
 

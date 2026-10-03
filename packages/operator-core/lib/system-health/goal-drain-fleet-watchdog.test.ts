@@ -55,6 +55,11 @@ import { evaluateCollapseGuard } from '../scheduler/spec-pool-preview';
 
 const NOW = 1_800_000_000_000;
 const PAST_GRACE = NOW - GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS - 60_000;
+const noRegisteredActiveFleetsSql = (async (parts: TemplateStringsArray) => {
+  const statement = parts.join(' ');
+  if (statement.includes('FROM harness_shared.agent_fleets')) return [];
+  throw new Error(`unexpected SQL in an orchestration-only test: ${statement}`);
+}) as unknown as Sql;
 
 function makeGoal(over: Partial<GoalDrainRowLike> = {}): GoalDrainRowLike {
   return {
@@ -831,7 +836,7 @@ describe('scanGoalDrainFleets', () => {
 });
 
 describe('runGoalDrainFleetSweepOnce', () => {
-  const sql = null as unknown as Sql; // every dep is injected; sql must never be touched
+  const sql = noRegisteredActiveFleetsSql;
 
   const baseDeps = () => ({
     readGoals: vi.fn(async () => ({
@@ -1012,7 +1017,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
   it('spec scopes are resolved ONLY for alive fleets — dead ones already have their verdict', async () => {
     const deps = baseDeps(); // baseDeps liveness: dead
     await runGoalDrainFleetSweepOnce(sql, deps);
-    expect(deps.resolveFleetSpecScopes).toHaveBeenCalledWith([]);
+    expect(deps.resolveFleetSpecScopes).not.toHaveBeenCalled();
   });
 });
 
@@ -1205,7 +1210,7 @@ describe('parseGoalDrainRespawnLedger', () => {
 });
 
 describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
-  const sql = null as unknown as Sql;
+  const sql = noRegisteredActiveFleetsSql;
   const standingGoal = () =>
     makeGoal({ drainFleet: 'drain-1', standing: true, installSlug: 'papercusp', drainRespawn: null });
 
@@ -1562,7 +1567,7 @@ describe('plan-fleet delivery helpers (pure)', () => {
 });
 
 describe('runGoalDrainFleetSweepOnce — plan-fleet leg (P-002)', () => {
-  const sql = null as unknown as Sql; // every dep is injected; sql must never be touched
+  const sql = noRegisteredActiveFleetsSql;
 
   /** A live-held goal whose declared drain fleet is healthy, so ONLY the plan-fleet leg can speak. */
   const healthyDrainDeps = (cohort: GoalPlanFleetCohort) => ({
