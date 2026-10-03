@@ -7,6 +7,10 @@
  * differ, never which is better.
  */
 
+import { computeOwnSourceHash } from '../scout/src-hash';
+
+export const REPLAY_DIVERGENCE_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
+
 export interface DivergenceSignals {
   /** Jaccard similarity of the lowercase token sets (1 = same vocabulary). */
   tokenJaccard: number;

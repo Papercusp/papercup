@@ -620,17 +620,18 @@ export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: objec
  * not silently route a caller to another operator.
  *
  * @template T
- * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
+ * @param {(url: string, scope: object, options?: {timeoutMs: number}, connectionContext?: unknown) => Promise<T>} connectOnce
  * @param {string[]} operatorUrls
  * @param {object} scope
- * @param {Record<string, any> & {primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null}} [options]
+ * @param {Record<string, any> & {primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null, prepareConnection?: (scope: object) => Promise<unknown> | unknown}} [options]
  * @returns {Promise<{client: T, operatorUrl: string}>}
  */
 export function connectWithOperatorCandidates<T>(connectOnce: (url: string, scope: object, options?: {
     timeoutMs: number;
-}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, allowHttpNotFoundFallback, prepareConnection, ...retryOptions }?: Record<string, any> & {
+}, connectionContext?: unknown) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, allowHttpNotFoundFallback, prepareConnection, ...retryOptions }?: Record<string, any> & {
     primaryAttemptOptions?: object;
     onFallback?: ((url: string, error: unknown) => void) | null;
+    prepareConnection?: (scope: object) => Promise<unknown> | unknown;
 }): Promise<{
     client: T;
     operatorUrl: string;

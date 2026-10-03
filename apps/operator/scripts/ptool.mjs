@@ -2618,6 +2618,7 @@ export async function connectWithLocalRetry(
         : null;
       if (
         !local ||
+        error?.code === 'PTOOL_CONNECTION_BOOTSTRAP_NOT_PREPARED' ||
         (isExplicitHttpConnectFailure(error) && !isRetryableLocalHttpConnectFailure(error)) ||
         (failureKind === 'proxy-upstream-502' &&
           proxyUpstreamErrorAttempts >= PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS) ||
@@ -2669,10 +2670,10 @@ export async function connectWithLocalRetry(
  * not silently route a caller to another operator.
  *
  * @template T
- * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
+ * @param {(url: string, scope: object, options?: {timeoutMs: number}, connectionContext?: unknown) => Promise<T>} connectOnce
  * @param {string[]} operatorUrls
  * @param {object} scope
- * @param {Record<string, any> & {primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null}} [options]
+ * @param {Record<string, any> & {primaryAttemptOptions?: object, onFallback?: ((url: string, error: unknown) => void) | null, prepareConnection?: (scope: object) => Promise<unknown> | unknown}} [options]
  * @returns {Promise<{client: T, operatorUrl: string}>}
  */
 export async function connectWithOperatorCandidates(
@@ -2683,6 +2684,7 @@ export async function connectWithOperatorCandidates(
     primaryAttemptOptions = {},
     onFallback = null,
     allowHttpNotFoundFallback = false,
+    prepareConnection = null,
     ...retryOptions
   } = {},
 ) {
@@ -2692,13 +2694,21 @@ export async function connectWithOperatorCandidates(
   )];
   if (candidates.length === 0) throw new Error('ptool: no operator URL candidates were resolved');
 
+  // This phase may wait behind install:safe while importing the MCP SDK. Keep
+  // it outside every candidate's connection deadline and reuse the loaded
+  // modules for retries/fallbacks.
+  const connectionContext = prepareConnection ? await prepareConnection(scope) : undefined;
+  const connectAttempt = prepareConnection
+    ? (url, connectScope, options) => connectOnce(url, connectScope, options, connectionContext)
+    : connectOnce;
+
   let lastError;
   for (let index = 0; index < candidates.length; index += 1) {
     const operatorUrl = candidates[index];
     let liveOperatorUrl = operatorUrl;
     const onRebase = retryOptions.onRebase;
     try {
-      const client = await connectWithLocalRetry(connectOnce, operatorUrl, scope, {
+      const client = await connectWithLocalRetry(connectAttempt, operatorUrl, scope, {
         ...retryOptions,
         ...(index < candidates.length - 1 ? primaryAttemptOptions : {}),
         onRebase: (freshBase) => {
@@ -2964,6 +2974,47 @@ export async function importSdkModuleWithInstallAwareness(
   });
 }
 
+/**
+ * Load the transport implementation before starting the network handshake
+ * retry budget. SDK imports can wait for install:safe's repo reader lease for
+ * up to ten minutes; that wait is bootstrap time, not operator network time.
+ *
+ * @param {{transport?: string}} [scope]
+ * @param {{importSdkModule?: (specifier: string) => Promise<object>}} [options]
+ */
+export async function preparePtoolConnectionModules(
+  { transport: requestedTransport } = {},
+  { importSdkModule = importSdkModuleWithInstallAwareness } = {},
+) {
+  const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
+  if (!['http', 'uds', 'auto'].includes(mode)) {
+    throw new Error('Invalid MCP transport; expected http, uds or auto');
+  }
+  if (mode !== 'http') return { mode };
+
+  try {
+    const [clientModule, transportModule] = await Promise.all([
+      importSdkModule('@modelcontextprotocol/sdk/client/index.js'),
+      importSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+    ]);
+    return {
+      mode,
+      Client: clientModule.Client,
+      StreamableHTTPClientTransport: transportModule.StreamableHTTPClientTransport,
+    };
+  } catch (error) {
+    const detail = errorDetail(error);
+    const timedOutWaitingForInstall = /timed out after \d+ms waiting for fs-mutex writer/i.test(detail);
+    const reason = timedOutWaitingForInstall
+      ? 'timed out waiting for install:safe'
+      : 'failed';
+    throw new Error(
+      `ptool: SDK bootstrap ${reason} before operator connection: ${detail}`,
+      { cause: error },
+    );
+  }
+}
+
 /** Connect an MCP client to the operator's superuser endpoint. Returns the
  *  connected client; caller closes it.
  *
@@ -2974,7 +3025,12 @@ export async function importSdkModuleWithInstallAwareness(
  *  it works regardless of whether the host also honors a per-call `workspace`
  *  arg (the newer EI-30 path). The flags are ALSO merged into the args object
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
-async function connect(operatorUrl, { workspace, harness, tokenFile, transport: requestedTransport } = {}, { timeoutMs } = {}) {
+async function connect(
+  operatorUrl,
+  { workspace, harness, tokenFile, transport: requestedTransport } = {},
+  { timeoutMs } = {},
+  preparedConnection,
+) {
   const tokenPaths = resolveTokenPaths({ tokenFile });
   const tokenCandidates = tokenPaths
     .map((path) => ({ path, token: readToken({ tokenFile: path }) }))
@@ -3004,8 +3060,17 @@ async function connect(operatorUrl, { workspace, harness, tokenFile, transport: 
       selectedTokenPath = tokenCandidates.find((candidate) => candidate.token === token)?.path ?? selectedTokenPath;
       return connected.client;
     }
-    const { Client } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js');
-    const { StreamableHTTPClientTransport } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    if (
+      preparedConnection?.mode !== mode ||
+      !preparedConnection.Client ||
+      !preparedConnection.StreamableHTTPClientTransport
+    ) {
+      throw Object.assign(
+        new Error('ptool SDK bootstrap was not prepared before the operator connection retry budget started'),
+        { code: 'PTOOL_CONNECTION_BOOTSTRAP_NOT_PREPARED' },
+      );
+    }
+    const { Client, StreamableHTTPClientTransport } = preparedConnection;
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
     });
@@ -3403,6 +3468,7 @@ async function main() {
     const connectionScope = tokenFile ? { ...scope, tokenFile } : scope;
     const connected = await connectWithOperatorCandidates(connect, candidates, connectionScope, {
       ...retryOptions,
+      prepareConnection: preparePtoolConnectionModules,
       allowHttpNotFoundFallback: !args.url && candidates.length > 1,
       rediscover,
       primaryAttemptOptions: candidates.length > 1 ? { maxAttempts: 1 } : {},

@@ -11,8 +11,15 @@
  * is unit-tested without the network; the wiring passes the real `llmCall`, which
  * routes opus-4-8 with extended thinking through the shared backend.
  */
-import { tryParseJson } from './parse-json';
-import { composite, parseJudgeOutput, rubricHash, type BatteryRubric, type DimensionWeights } from './scoring';
+import type { LlmExecutionReceipt } from '@papercusp/testing-shell/llm';
+import { tryParseJson, PARSE_JSON_SOURCE_HASH } from './parse-json';
+import { composite, parseJudgeOutput, rubricHash, SCORING_SOURCE_HASH, type BatteryRubric, type DimensionWeights } from './scoring';
+import { captureSourceHash, SOURCE_IDENTITY_HASH } from './source-identity';
+
+export const JUDGE_SOURCE_HASHES = Object.freeze({
+  judge: captureSourceHash(import.meta.url), scoring: SCORING_SOURCE_HASH,
+  parser: PARSE_JSON_SOURCE_HASH, sourceIdentity: SOURCE_IDENTITY_HASH,
+});
 
 /** The injected LLM call (structurally the llm-testing `llmCall`). */
 export interface JudgeLlmCall {
@@ -23,7 +30,8 @@ export interface JudgeLlmCall {
     responseFormat?: 'text' | 'json';
     thinkingBudgetTokens?: number;
     maxTokens?: number;
-  }): Promise<{ text: string; json?: unknown; costUsd: number; inputTokens: number; outputTokens: number }>;
+  }): Promise<{ text: string; json?: unknown; costUsd: number; inputTokens: number; outputTokens: number;
+    execution?: LlmExecutionReceipt }>;
 }
 
 /** How much of the judge's raw reply is inlined into the thrown error's `.message`. */

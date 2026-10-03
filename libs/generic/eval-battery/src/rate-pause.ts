@@ -10,6 +10,9 @@
  * fake-clock test.
  */
 import { rateLimitInfo } from '@papercusp/testing-shell/llm';
+import { captureSourceHash } from './source-identity';
+
+export const RATE_PAUSE_SOURCE_HASH = captureSourceHash(import.meta.url);
 
 export const BATTERY_MAX_RATE_PAUSE_MS = Number(process.env.BATTERY_MAX_RATE_PAUSE_MS ?? 30 * 60_000);
 export const BATTERY_RATE_PAUSE_RETRIES = Number(process.env.BATTERY_RATE_PAUSE_RETRIES ?? 3);

@@ -19,6 +19,7 @@
  *     in-memory fakes in tests).
  */
 import type { SignalOrigin } from '../harness/improvements/provenance';
+import type { LlmExecutionReceipt } from '@papercusp/testing-shell/llm';
 
 /** The governor registration id for this loop (migration 244 vocabulary). */
 export const REPLAY_LOOP_ID = 'frontier:replay-harness';
@@ -124,7 +125,7 @@ export interface ReplayRunHandle {
   replayed: boolean;
   /** Identity supplied by the runner that actually made the continuation call.
    * Absent for historical echoes and runners that cannot attest their execution. */
-  execution?: { model: string; codeHash: string | null };
+  execution?: LlmExecutionReceipt;
 }
 
 /** Produces the replayed continuation for one cell. */

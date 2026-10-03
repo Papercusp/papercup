@@ -18,10 +18,17 @@
  * passed/meanComposite) — that part is genuinely subject-specific and stays caller-side.
  */
 import { rateLimitInfo } from '@papercusp/testing-shell/llm';
-import { judgeBatteryRun, type BatteryScore, type JudgeLlmCall } from './judge';
+import { judgeBatteryRun, JUDGE_SOURCE_HASHES, type BatteryScore, type JudgeLlmCall } from './judge';
 import type { BatteryRubric } from './scoring';
-import { runWithRatePause, type RatePauseDeps } from './rate-pause';
+import { runWithRatePause, RATE_PAUSE_SOURCE_HASH, type RatePauseDeps } from './rate-pause';
 import type { DistilledRun, Subject } from './subject';
+import { captureSourceHash } from './source-identity';
+
+/** Measured local engine modules; transport and external classifiers are
+ * deliberately outside this manifest, so this is not a complete code pin. */
+export const EVAL_BATTERY_SOURCE_HASHES = Object.freeze({
+  engine: captureSourceHash(import.meta.url), ...JUDGE_SOURCE_HASHES, ratePause: RATE_PAUSE_SOURCE_HASH,
+});
 
 /** One cell the engine will run: a (variant, case, repeat) with a stable run id. */
 export interface BatteryCell<TCell> {

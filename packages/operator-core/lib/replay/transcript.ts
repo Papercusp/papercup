@@ -24,6 +24,9 @@ import { readFile } from 'node:fs/promises';
 import type { ReplayTranscript, ReplayTurn, ReplayTurnRole, TranscriptSource } from './types';
 import { blockPayloadText, codexToolCallArgsRaw } from '../transcript-wire';
 import { canonicalToolName } from '../behaviour-suite/transcript';
+import { computeOwnSourceHash } from '../scout/src-hash';
+
+export const REPLAY_TRANSCRIPT_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
 
 const TOOL_INPUT_CAP = 2000;
 
