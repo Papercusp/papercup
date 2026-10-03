@@ -38,6 +38,7 @@
  * action module is side-effect imported so the system-action registry is
  * populated as in production (same pattern as routines/release-actions.test.ts).
  */
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -4325,6 +4326,55 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       }),
     );
     warn.mockRestore();
+  });
+
+  it('human escalation records the revalidated dirty snapshot and detector verdict hash', async () => {
+    const file = 'docs/evidence/snapshot.json';
+    const filePath = join(repoDir, file);
+    const leakedPath = `/${['home', 'fixture'].join('/')}/.cache/papercusp/validation/result`;
+    const text = JSON.stringify({ path: leakedPath });
+    mkdirSync(join(repoDir, 'docs/evidence'), { recursive: true });
+    writeFileSync(filePath, text, 'utf8');
+
+    const staleError = {
+      ...contentErrorOutcome.contentErrors[0]!,
+      file,
+      detectorKey: 'identity-leak',
+      error: 'stale error from an earlier working-tree snapshot',
+      contentHash: '0'.repeat(64),
+      detectorResultHash: '1'.repeat(64),
+    };
+    const contentErrors = [staleError];
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors });
+    counterRows = [{ et: 0, lo: [], ct: 4, cs: contentSignature(contentErrors) }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      const input = upsertConditionWorkItemMock.mock.calls[0]![1] as {
+        payload: { files: Array<Record<string, unknown>> };
+      };
+      const recorded = input.payload.files[0]!;
+      const expectedContentHash = createHash('sha256').update(text, 'utf8').digest('hex');
+      const expectedVerdictHash = createHash('sha256')
+        .update(JSON.stringify({ detectorKey: 'identity-leak', error: recorded.error }), 'utf8')
+        .digest('hex');
+
+      expect(recorded).toMatchObject({
+        scope: 'superproject',
+        file,
+        detector: 'identity-leak',
+        contentHash: expectedContentHash,
+        detectorResultHash: expectedVerdictHash,
+      });
+      expect(recorded.contentHash).not.toBe(staleError.contentHash);
+      expect(recorded.detectorResultHash).not.toBe(staleError.detectorResultHash);
+      expect(recorded.error).toContain('hardcoded home path');
+    } finally {
+      warn.mockRestore();
+      rmSync(join(repoDir, 'docs'), { recursive: true, force: true });
+    }
   });
 
   it('a new quarantined signature after the routine streak reaches MAX gets its own fixer budget', async () => {
