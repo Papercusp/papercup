@@ -35,6 +35,8 @@ import {
   exitForDeclaredRun,
   invokedInjectedMembers,
   partialInjectionFixtures,
+  seamControlFlowRecords,
+  runCli,
   EXIT_NOT_CHECKED,
   // @ts-expect-error — .mjs guard script, no type declarations by design
 } from '../../../../scripts/check-behavioural-strands.mjs';

@@ -1067,8 +1067,11 @@ function nearestConstScope(node, functionNode) {
 }
 
 function lexicalDistance(node, ancestor) {
+  // The cursor is read after the loop, so it must live outside it (WI-10005809: a loop-scoped
+  // `let` here threw `ReferenceError: current is not defined` on every const-bound seam argument).
   let distance = 0;
-  for (let current = node; current && current !== ancestor; current = current.parent) distance++;
+  let current = node;
+  for (; current && current !== ancestor; current = current.parent) distance++;
   return current === ancestor ? distance : Number.MAX_SAFE_INTEGER;
 }
 
@@ -2556,6 +2559,21 @@ function main() {
   return exit;
 }
 
-if (isCliEntry(import.meta.url)) process.exit(main());
+/**
+ * Run the detector and map an INTERNAL error to EXIT_NOT_CHECKED (WI-10005809). An uncaught throw
+ * otherwise exits 1, the code this script reserves for "strands named", so a crashed detector read
+ * as a finding. A crash measured nothing, which is exactly what exit 2 means.
+ */
+export function runCli(run = main, { writeError = (line) => console.error(line) } = {}) {
+  try {
+    return run();
+  } catch (err) {
+    const detail = err instanceof Error ? err.stack || err.message : String(err);
+    writeError(`⚠ NOT CHECKED — check-behavioural-strands crashed before it could compare anything:\n${detail}`);
+    return EXIT_NOT_CHECKED;
+  }
+}
+
+if (isCliEntry(import.meta.url)) process.exit(runCli());
 
 export { main, EXIT_NOT_CHECKED };
