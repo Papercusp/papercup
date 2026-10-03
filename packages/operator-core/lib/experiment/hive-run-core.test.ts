@@ -65,6 +65,8 @@ describe('hiveResultsToExperimentResult', () => {
       handle: { costUsd: 0.2 } as HiveRunHandle,
       score: mkScore(composite),
       status: 'scored',
+      judgeCostUsd: 0.01,
+      judgeCostMeasured: true,
       elapsedMs: 0,
     });
     const byArm = new Map<string, BatteryCellResult<HiveScenarioCell, HiveRunHandle, unknown>[]>([

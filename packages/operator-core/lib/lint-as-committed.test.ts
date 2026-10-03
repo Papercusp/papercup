@@ -866,4 +866,38 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', () => {
+    const { MAX_IDLE_KEPT_TREES } = mod as { MAX_IDLE_KEPT_TREES: number };
+    expect(MAX_IDLE_KEPT_TREES).toBe(4);
+    const root = mkdtempSync(join(tmpdir(), 'lac-cap-'));
+    try {
+      const now = Date.now();
+      const tree = (name: string, ageMs: number) => {
+        const p = join(root, `${WORK_ROOT_PREFIX}${name}`);
+        mkdirSync(join(p, '.git'), { recursive: true });
+        writeFileSync(join(p, OWNER_MARKER), JSON.stringify({ pid: 101, keep: true, createdAtMs: now - ageMs }));
+        return p;
+      };
+      // Six idle young kept trees (all under the TTL) plus the OLDEST one, which is busy.
+      for (let i = 1; i <= 6; i++) tree(`idle-${i}h`, i * 0.5 * H);
+      const busy = tree('busy-oldest', KEEP_TTL_MS - 60_000);
+      const names = (rows: { name: string }[]) => rows.map((r) => r.name.slice(WORK_ROOT_PREFIX.length)).sort();
+      const isAlive = () => false;
+
+      // Without /proc nothing is provably idle, so the cap removes nothing.
+      const blind = sweepStaleWorkRoots({ root, nowMs: now, cwds: null, isAlive });
+      expect(blind.removed).toEqual([]);
+
+      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'apps')], isAlive });
+      expect(names(res.removed)).toEqual(['idle-5h', 'idle-6h']);
+      expect(res.removed.every((r) => r.reason === 'keep-over-cap')).toBe(true);
+      expect(names(res.kept)).toEqual(['busy-oldest', 'idle-1h', 'idle-2h', 'idle-3h', 'idle-4h']);
+      expect(res.kept.find((r) => r.name.endsWith('busy-oldest'))?.reason).toBe('in-use');
+      expect(existsSync(busy)).toBe(true);
+      expect(existsSync(join(root, `${WORK_ROOT_PREFIX}idle-6h`))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

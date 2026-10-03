@@ -68,6 +68,8 @@ export const SCAN_FILES = [
   'lib/git-pipeline-position.ts',
   'lib/git-pipeline-stats.ts',
   'lib/git-trackedness.ts',
+  // This system action runs on the operator host; its Git log must stay off the event loop.
+  'lib/harness/routines/frozen-candidate-drift-sweep-action.ts',
 ] as const;
 
 const SYNC_SPAWN_NAMES: ReadonlySet<string> = new Set(['execFileSync', 'spawnSync', 'execSync']);

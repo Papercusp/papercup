@@ -1902,6 +1902,38 @@ export const GOVERNOR_RECOVERY_CELL: CellSpec = {
   shape: '{ state, completed, total, progress, nextProbeAtMs, evidenceRef, confidence }',
 };
 
+export const LSP_ADMISSION_CELL: CellSpec = {
+  cell: 'lsp.admission',
+  registeredOn: '2026-10-03',
+  owner: 'lsp-fleet-scale-all-languages-2026-08-21',
+  headline: 'admission',
+  nullable: true,
+  unknownHoist: 'unknown',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy: 'daemon-owned LspAdmissionController.snapshot() over the existing Unix-socket RPC transport',
+    liveExercised: true,
+    evidence: 'code-intelligence/lsp-admission.test.ts exercises the real controller under pressure; state/lsp-admission.test.ts reads its actual snapshot and rejects unavailable/stale readback.',
+  },
+  resolver: 'lsp:admission_snapshot → readLspDaemonAdmission → LspAdmissionController.snapshot()',
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  assessment: {
+    path: 'assessment',
+    codes: {
+      idle: { meaning: 'The daemon measured no active or waiting queries.', safeAction: 'Submit work through the daemon; the next request measures its own lane.' },
+      active: { meaning: 'Queries are running with no observed pressure waiters.', safeAction: 'Use the class windows and actual in-flight counts when assessing execution.' },
+      pressure: { meaning: 'Queries wait for class-specific service capacity.', safeAction: 'Inspect class queue age, caller deadlines and feedback; allow unrelated classes to proceed.' },
+      'settlement-failed': { meaning: 'At least one durable receipt failed to settle.', safeAction: 'Inspect the named failed receipts and restore durable settlement before asserting the queue drained.' },
+      unknown: { meaning: 'Daemon queue state could not be measured.', safeAction: 'Inspect the explicit daemon read failure; do not treat it as an empty queue.' },
+    },
+    evidence: ['measurement', 'unknown'],
+    measuredBy: { unknown: 'measurement' },
+  },
+  changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'admission' },
+  shape: '{ queued, inFlight, classes[{ classKey, queued, pendingPersistence, oldestWaitMs, desiredWindow, effectiveWindow, health, feedback }], settlementFailures, measured, sampledAtMs, generation }',
+};
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * goal-mode-drift-guards-2026-08-31 P-002 — IS THE STEWARD PLACING ANYTHING?
  *
@@ -2824,6 +2856,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GOVERNOR_QUEUE_CELL,
   GOVERNOR_RESOURCES_CELL,
   GOVERNOR_RECOVERY_CELL,
+  LSP_ADMISSION_CELL,
   CAPACITY_VERDICT_CELL,
   ROLE_LAUNCH_CELL,
   WORK_SCOPE_CELL,

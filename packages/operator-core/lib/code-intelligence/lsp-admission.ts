@@ -199,8 +199,12 @@ export class LspAdmissionController {
   snapshot() {
     const atMs = this.#now();
     const windows = this.#controller.snapshot(atMs);
+    const queued = this.#waiters.filter(w => !w.started && !w.abandoned).length;
+    const inFlight = [...this.#lanes.values()].reduce((sum, lane) => sum + lane.inFlight, 0);
     return {
       generation: windows.generation, sampledAtMs: atMs,
+      assessment: this.#settlementFailures.size ? 'settlement-failed' : queued ? 'pressure' : inFlight ? 'active' : 'idle',
+      queued, inFlight,
       measured: true, settlementFailures: [...this.#settlementFailures].map(([requestId, error]) => ({ requestId, error })),
       costObservations: this.#costs.size,
       classes: windows.classes.map(item => {
@@ -344,6 +348,8 @@ export class LspAdmissionController {
     }
   }
 }
+
+export type LspAdmissionSnapshot = ReturnType<LspAdmissionController['snapshot']>;
 
 async function persistWaiter(context: LspAdmissionContext, classKey: string): Promise<LspAdmissionReceipt> {
   const { governedExecutionRuntime, beginGovernedExecution } = await import('../resource-governor/execution');

@@ -496,10 +496,13 @@ export async function reclaimStaleWorkItemClaims(
                    OR ( (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
                           > make_interval(secs => ${unknownFallbackSec})
                         -- WI-10005928: only the node that last wrote the row judges a
-                        -- never-seen holder. On a peer, sign of life can simply not have
-                        -- replicated yet: the mac-VM rig freed a parked tower holder's claims
-                        -- at 2026-10-03 08:40:37Z because the tower's newer writes had not
-                        -- reached it. The home node still frees an abandoned row.
+                        -- never-seen holder. A holder's real liveness (presence) never
+                        -- federates, and a parked holder makes no content writes, so a peer
+                        -- sees 24h of federated silence for a live agent: the mac-VM rig freed
+                        -- a parked tower holder's claims at 2026-10-03 08:40:37Z, one minute
+                        -- after that holder's last federated write (10-02 08:39Z) aged past
+                        -- the horizon, while its tower presence was heartbeating. The home
+                        -- node still frees an abandoned row.
                         AND f.origin IS DISTINCT FROM 'remote'
                         -- WI-10005136: claim AGE alone is not death. A live remote holder
                         -- that has held one claim for >24h still claims, edits and closes

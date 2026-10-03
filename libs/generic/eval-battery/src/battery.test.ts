@@ -119,6 +119,21 @@ describe('runBattery — never abort', () => {
     expect(results[0]).toMatchObject({ status: 'errored', judgeCostUsd: costUsd ?? 0, judgeCostMeasured: costUsd !== undefined });
   });
 
+  it('counts measured calls before a rate-pause restart in the successful score', async () => {
+    let calls = 0;
+    const results = await runBattery(
+      { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },
+      { subject: fakeSubject(), now: () => 1, sleep: async () => {}, llmCall: async (opts) => {
+        if (++calls === 1) return { text: 'invalid reply', costUsd: 0.02, inputTokens: 1, outputTokens: 1 };
+        if (calls === 2) throw Object.assign(new LlmCallError({ class: 'rate_limited', message: 'limited', retryAfterMs: 1 }), { costUsd: 0 });
+        return { ...await okJudge(opts), costUsd: 0.03 };
+      } },
+    );
+    expect(calls).toBe(3);
+    expect(results[0]).toMatchObject({ status: 'scored', judgeCostUsd: 0.05, judgeCostMeasured: true,
+      score: { costUsd: 0.05 } });
+  });
+
   it('records a run error as `errored` and continues to the next cell', async () => {
     // Ordinary subject errors still use the engine's independent-cell policy.
     const subject = fakeSubject({

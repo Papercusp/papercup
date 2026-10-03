@@ -1732,6 +1732,7 @@ import './state/subscribe';
 // EI-20449419111876508: read-only resolver lens for the host.memoryPressure cell.
 import './state/host-memory';
 import './state/governor-state';
+import './state/lsp-admission';
 // event-await-discoverability-and-coverage-2026-07-03 P-002 — the awaitable-key
 // catalog ("what can I wait on instead of polling?"), rendered from the SSOT
 // registry events/await/catalog.ts.

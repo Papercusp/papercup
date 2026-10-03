@@ -17,7 +17,7 @@
  * reports a zero, because a zero from a sweep that could not measure is indistinguishable
  * from a real one — the exact all-clear this plan's own detectors are written to avoid.
  */
-import { spawnSync } from 'node:child_process';
+import { runGitBatch } from '../../git-batch';
 import { registerSystemAction } from './system-actions';
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
@@ -38,20 +38,20 @@ registerSystemAction('frozen-candidate-drift-sweep', async () => {
   // `%x00` separates commits; `%H` then the trailer then --name-only paths. The
   // `Papercusp-Agent:` trailer is the ONLY trustworthy attribution here — git-sync commits
   // the whole tree under one identity, so blame and the subject both name the wrong agent.
-  const log = spawnSync(
-    'git',
-    [
-      '-C',
-      root,
-      'log',
-      `${marker.candidate}..${branch}`,
-      '--no-merges',
-      '--name-only',
-      '--format=%x00%H%n%(trailers:key=Papercusp-Agent)',
-    ],
-    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+  const [log] = await runGitBatch(
+    [{
+      repo: root,
+      args: [
+        'log',
+        `${marker.candidate}..${branch}`,
+        '--no-merges',
+        '--name-only',
+        '--format=%x00%H%n%(trailers:key=Papercusp-Agent)',
+      ],
+    }],
+    { timeoutMs: 30_000, maxBuffer: 32 * 1024 * 1024, label: 'frozen-candidate-drift-sweep' },
   );
-  if (log.status !== 0 || typeof log.stdout !== 'string') return; // cannot measure ⇒ say nothing
+  if (!log || log.code !== 0) return; // cannot measure ⇒ say nothing
 
   const finding = detectFrozenCandidateDrift({
     marker,

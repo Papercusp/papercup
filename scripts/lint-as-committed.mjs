@@ -138,6 +138,13 @@ export const OWNER_MARKER = join('.git', 'lint-as-committed-owner.json');
 export const KEEP_TTL_MS = 6 * 3600_000;
 /** Absolute ceiling for any tree no live process is inside (covers pid reuse). */
 export const MAX_AGE_MS = 24 * 3600_000;
+/**
+ * WI-10005934: the TTL alone does not bound disk. The re-prove recipe passes `--keep`
+ * 2-5 times an hour and nobody deletes the tree after its follow-up testing:run, so a
+ * 6h TTL held ~27 idle trees (~37 GB) on root. Only the newest few idle kept trees are
+ * worth keeping; a tree with a live process inside is never counted or removed.
+ */
+export const MAX_IDLE_KEPT_TREES = 4;
 
 /**
  * Decide one tree's fate. Pure: the caller supplies liveness facts.
@@ -190,9 +197,18 @@ function liveProcessCwds() {
  * Without /proc it cannot prove a tree is idle, so it only removes trees whose marker
  * names a dead non-keep owner — the one verdict that needs no cwd scan.
  */
-export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }) } = {}) {
+export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
   const removed = [];
   const kept = [];
+  const idleKept = [];
+  const tryRemove = (name, path, reason) => {
+    try {
+      remove(path);
+      removed.push({ name, reason });
+    } catch {
+      kept.push({ name, reason: 'remove-failed' });
+    }
+  };
   let names;
   try {
     names = readdirSync(root).filter((n) => n.startsWith(WORK_ROOT_PREFIX));
@@ -223,16 +239,19 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     const ownerDead = marker !== null && !marker.keep && !ownerAlive;
     const provable = inUse !== null || ownerDead;
     if (verdict.remove && provable) {
-      try {
-        remove(path);
-        removed.push({ name, reason: verdict.reason });
-      } catch {
-        kept.push({ name, reason: 'remove-failed' });
-      }
+      tryRemove(name, path, verdict.reason);
+    } else if (verdict.reason === 'keep-young' && inUse === false) {
+      // Idle only when the cwd scan ran and found nobody inside (inUse === false, not null).
+      idleKept.push({ name, path, createdAtMs });
     } else {
       kept.push({ name, reason: verdict.remove ? 'unprovable-without-proc' : verdict.reason });
     }
   }
+  idleKept.sort((a, b) => b.createdAtMs - a.createdAtMs);
+  idleKept.forEach(({ name, path }, i) => {
+    if (i < maxIdleKept) kept.push({ name, reason: 'keep-young' });
+    else tryRemove(name, path, 'keep-over-cap');
+  });
   return { removed, kept };
 }
 

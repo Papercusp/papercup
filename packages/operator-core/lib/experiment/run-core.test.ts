@@ -8,6 +8,7 @@ import type { ExperimentLedger, ExperimentLedgerRow } from './ledger';
 function canned(): ReplayBatteryResult {
   return {
     batteryId: 'b1',
+    costMeasured: true,
     outcomes: [
       {
         runId: 'b1:baseline:c1:r0',
