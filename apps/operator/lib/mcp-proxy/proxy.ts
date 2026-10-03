@@ -62,6 +62,7 @@ import {
   isBoundedTestingRunStatusArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
+import { foreignLoopbackPeerForSocket } from "@papercusp/operator-core/lib/auth/loopback-peer-trust";
 export {
   CHEAP_REPEATING_BEAT_PATHS,
   isCheapRepeatingBeat,
@@ -413,6 +414,18 @@ export interface McpProxyOptions {
    * `DEFAULT_HEARTBEAT_INTERVAL_MS` (env `PAPERCUSP_MCP_PROXY_HEARTBEAT_MS`); `0` disables.
    */
   heartbeatIntervalMs?: number;
+  /**
+   * WI-10005688 — peer-uid gate for every request, the same one the inference gateway runs
+   * (WI-10003621). The proxy binds 127.0.0.1 and injects the superuser bearer, so on a host
+   * where loopback is shared with another account (a hosted workspace host, a vm-release
+   * Server, or several tenants' Servers on one Linux box) a caller of another uid must be
+   * refused before anything is forwarded. Returns the foreign verdict to refuse, null to
+   * proceed. Default `foreignLoopbackPeerForSocket`: a no-op unless the loopback peer-uid
+   * policy is active, so a single-user host pays no /proc read per connection.
+   */
+  loopbackPeerGate?: (
+    socket: import("node:net").Socket,
+  ) => { uid: number | null; reason: string } | null;
   log?: (s: string) => void;
 }
 
@@ -2920,8 +2933,32 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     });
   };
 
+  const loopbackPeerGate =
+    opts.loopbackPeerGate ?? ((socket: import("node:net").Socket) => foreignLoopbackPeerForSocket(socket));
   const server = http.createServer((req, res) => {
     const receivedAt = Date.now();
+    // WI-10005688: refuse a loopback caller of another uid before anything runs or is
+    // forwarded (the proxy injects the superuser bearer, so forwarding would act as us).
+    const foreignPeer = loopbackPeerGate(req.socket);
+    if (foreignPeer) {
+      log(`refused loopback peer uid=${foreignPeer.uid ?? "unknown"} (${foreignPeer.reason})`);
+      record({ kind: "foreign_loopback_peer_refused", uid: foreignPeer.uid, reason: foreignPeer.reason });
+      res.writeHead(403, { "content-type": "application/json", connection: "close" });
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32001,
+            message:
+              "mcp-proxy: loopback callers other than the operator service account are refused on this host",
+          },
+          reason: foreignPeer.reason,
+          mcpProxy: true,
+        }),
+      );
+      return;
+    }
     if (req.method === "GET" && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
       let target: McpProxyTarget | null = null;
       try {
