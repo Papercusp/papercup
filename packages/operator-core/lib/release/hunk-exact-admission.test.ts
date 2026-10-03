@@ -228,6 +228,30 @@ describe('buildHunkExactSource — only the caller\'s hunks enter (P-020 / D-008
     expect(built.detail).toContain('peer');
   });
 
+  it('path-under-gitlink: a file inside a submodule is refused naming the gitlink and its whole-pointer exit, never replayed onto an empty base (WI-10005976)', () => {
+    const { root, candidate: plain } = repo();
+    // ls-tree needs no .gitmodules: a 160000 index entry is a gitlink. Point it at any commit.
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${plain},vendor/sub`]);
+    git(root, ['commit', '-q', '-m', 'add submodule pointer']);
+    const withSub = git(root, ['rev-parse', 'HEAD']);
+    const inner = 'vendor/sub/src/x.ts';
+    const hunk = { kind: 'edit', old: 'export const x = 1;', new: 'export const x = 2;', replaceAll: false } as const;
+    // The gitlink at repairHead, and (second pair) only at the candidate.
+    for (const [candidate, repairHead] of [[withSub, withSub], [withSub, plain]] as const) {
+      const built = buildHunkExactSource({ root, candidate, repairHead, paths: [inner], ledger: [row('me', inner, hunk)], actor: 'me', nowMs: T0 });
+      expect(built).toMatchObject({ ok: false, code: 'path-under-gitlink', path: inner });
+      if (built.ok) throw new Error('unreachable');
+      expect(built.detail).toContain('vendor/sub');
+      expect(built.exits).toEqual([expect.stringContaining("paths:['vendor/sub'], wholeBlob:true")]);
+    }
+    // Control: a path absent from the tree but NOT under a gitlink still replays (and conflicts) as before.
+    const missing = buildHunkExactSource({
+      root, candidate: withSub, repairHead: withSub, paths: ['lib/missing.ts'], actor: 'me', nowMs: T0,
+      ledger: [row('me', 'lib/missing.ts', hunk)],
+    });
+    expect(missing).toMatchObject({ ok: false, code: 'hunk-conflict', path: 'lib/missing.ts' });
+  });
+
   it('an oversize (content-less) hunk cannot be replayed; a write creates a path repairHead lacks; replaying to the same bytes reads as unchanged', () => {
     const { root, candidate } = repo();
     const oversize = buildHunkExactSource({

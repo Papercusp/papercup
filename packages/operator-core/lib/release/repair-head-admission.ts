@@ -219,6 +219,35 @@ export function proveAdmissionDiff(input: {
   return { ok: true, admitted, unchanged };
 }
 
+/**
+ * `ls-tree <superproject> -- <path-inside-submodule>` returns no entry: gitlinks are commit
+ * pointers, not trees the superproject can walk. Walk up from `path` to the nearest enclosing
+ * gitlink at `commit`, so an absent leaf is never mistaken for a file absent from the tree.
+ * Returns `entry: null` when no ancestor is a gitlink. Shared by path-exact admission (which
+ * refuses `path-under-gitlink`) and hunk-exact admission (WI-10005976: it replayed a submodule
+ * file's hunks onto an empty base and misreported a `hunk-conflict`).
+ */
+export function findGitlinkAncestor(
+  run: (argv: readonly string[]) => AdmissionGitResult,
+  commit: string,
+  path: string,
+): { ok: true; entry: AdmissionTreeEntry | null } | { ok: false; step: string; result: AdmissionGitResult } {
+  const parts = path.split('/');
+  for (let length = parts.length - 1; length > 0; length -= 1) {
+    const ancestor = parts.slice(0, length).join('/');
+    const step = `ls-tree ${commit.slice(0, 12)} -- ${ancestor}`;
+    const r = run(['ls-tree', '-z', commit, '--', ancestor]);
+    if (r.status !== 0) return { ok: false, step, result: r };
+    const line = r.stdout.split('\0').find((candidate) => candidate.endsWith(`\t${ancestor}`));
+    if (!line) continue;
+    const m = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t(.*)$/.exec(line);
+    if (!m) return { ok: false, step, result: { ...r, stderr: `unparseable entry ${JSON.stringify(line)}` } };
+    if (m[2] === 'commit') return { ok: true, entry: { path: ancestor, kind: 'gitlink', mode: m[1]!, sha: m[3]! } };
+    if (m[2] !== 'tree') return { ok: true, entry: null };
+  }
+  return { ok: true, entry: null };
+}
+
 function buildAdmissionMessage(input: {
   candidate: string;
   repairHead: string;
@@ -387,38 +416,12 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     return { ok: true, entry: { path, kind, mode: m[1], sha: m[3] } };
   };
 
-  // `ls-tree <superproject> -- <path-inside-submodule>` returns no entry: gitlinks are
-  // commit pointers, not trees the superproject can walk. Find the nearest enclosing gitlink
-  // before treating an absent leaf as absent from the candidate/source/repairHead.
   const gitlinkAncestor = (
     commit: string,
     path: string,
   ): { ok: true; entry: AdmissionTreeEntry | null } | { ok: false; refusal: AdmissionRefusal } => {
-    const parts = path.split('/');
-    for (let length = parts.length - 1; length > 0; length -= 1) {
-      const ancestor = parts.slice(0, length).join('/');
-      const r = run(['ls-tree', '-z', commit, '--', ancestor]);
-      if (r.status !== 0) {
-        return { ok: false, refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${ancestor}`, r) };
-      }
-      const line = r.stdout.split('\0').find((candidate) => candidate.endsWith(`\t${ancestor}`));
-      if (!line) continue;
-      const m = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t(.*)$/.exec(line);
-      if (!m) {
-        return {
-          ok: false,
-          refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${ancestor}`, {
-            ...r,
-            stderr: `unparseable entry ${JSON.stringify(line)}`,
-          }),
-        };
-      }
-      if (m[2] === 'commit') {
-        return { ok: true, entry: { path: ancestor, kind: 'gitlink', mode: m[1], sha: m[3] } };
-      }
-      if (m[2] !== 'tree') return { ok: true, entry: null };
-    }
-    return { ok: true, entry: null };
+    const found = findGitlinkAncestor(run, commit, path);
+    return found.ok ? found : { ok: false, refusal: gitFailed(found.step, found.result) };
   };
 
   const atSource = new Map<string, AdmissionTreeEntry>();
