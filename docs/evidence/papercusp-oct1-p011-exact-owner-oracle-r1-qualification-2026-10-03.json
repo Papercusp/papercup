@@ -161,6 +161,24 @@
     "P010, R8/R9, independent acceptance and final shipment.",
     "Authenticated native owner affirmation for original activation provenance."
   ],
+  "bindingReceipts": {
+    "child": 23370,
+    "parent": 23371,
+    "testRunId": 20659110,
+    "currentness": "server-measured current for spec, source, test and run; applicable fixture/rubric/environment dimensions not asserted",
+    "evidencePlane": "tree",
+    "testLayer": "integration",
+    "oldBindingsRetracted": false
+  },
+  "diagnosticAdequacy": {
+    "governing": false,
+    "evaluatorBuild": "d740fc3802",
+    "workItemIds": ["WI-10005907"],
+    "verdict": "fail",
+    "wouldBlock": ["falsifiability", "correct-layer", "plan-class-risk-floor", "disclosed-gap"],
+    "passedCriteria": ["traceability", "oracle-independence", "execution-integrity", "freshness"],
+    "qualification": "Data-corruption guard tests passed, but falsifiable metadata does not replace the required successful ledger-backed mutation/counterexample proof. The clause requires live evidence and L4 proof. This diagnostic is not plan shipment acceptance."
+  },
   "closure": {
     "decision": "D-021",
     "state": "Keep P011 child and parent open until their whole resolved clause sets pass.",
