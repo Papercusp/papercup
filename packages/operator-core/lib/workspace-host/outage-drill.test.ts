@@ -2,19 +2,24 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from '@papercusp/deployment-driver';
 import { describe, expect, it } from 'vitest';
 import {
+  agentTaskInvocation,
   awsSubnetNetworkAcl,
   buildAwsNetworkAclEgressDeny,
   buildEgressDenyRule,
   classifyConnections,
+  evaluateGatedAgentTask,
   evaluateOutageDrill,
   GATE_RELEASED_MARKER,
   gateReleaseCommand,
   normalizeAddress,
   parseEstablishedConnections,
+  runGatedAgentTask,
   runOutageDrill,
   sha256Hex,
+  type GatedAgentTaskConfig,
   type HostCommandResult,
   type OutageDrillConfig,
   type OutageDrillDeps,
@@ -376,5 +381,82 @@ describe('runOutageDrill + evaluateOutageDrill', () => {
     const evidence = await runOutageDrill(config, shared);
     expect(host.cloud).toEqual([]);
     expect(evaluateOutageDrill(evidence).failures[0]).toMatch(/share addresses 104\.21\.73\.140/);
+  });
+
+  it('launches OMP with its own argv when the drill names agentKind omp', async () => {
+    const host = fakeHost();
+    const evidence = await runOutageDrill({ ...config, agentKind: 'omp', agentCommand: '/usr/local/bin/omp' }, host.deps);
+    const launch = host.commands.find((command) => command.includes('nohup'))!;
+    expect(launch).toContain('--print');
+    expect(launch).not.toContain('--allowedTools');
+    expect(evaluateOutageDrill(evidence)).toEqual({ passed: true, failures: [] });
+  });
+});
+
+describe('agentTaskInvocation', () => {
+  it('runs Claude non-interactively with only the Bash and Write tools', () => {
+    expect(agentTaskInvocation('claude', '/bin/claude', 'do it')).toBe(`'/bin/claude' -p 'do it' --allowedTools Bash,Write`);
+  });
+
+  it("runs OMP on the host's local-inference model with only bash and write, auto-approved", () => {
+    const omp = agentTaskInvocation('omp', '/usr/local/bin/omp', "it's");
+    expect(omp.startsWith(`'/usr/local/bin/omp' --model 'ollama/${WORKSPACE_HOST_OMP_LOCAL_MODEL}' `)).toBe(true);
+    expect(omp).toContain(' --print --tools bash,write --approval-mode yolo ');
+    expect(omp).toContain('--no-session');
+    expect(omp.endsWith(` 'it'\\''s'`)).toBe(true);
+  });
+});
+
+describe('runGatedAgentTask + evaluateGatedAgentTask', () => {
+  const task: GatedAgentTaskConfig = {
+    agentKind: 'omp',
+    agentCommand: '/usr/local/bin/omp',
+    workspaceDir: config.workspaceDir,
+    nonce: 't1',
+    secret: config.secret,
+    pollMs: 1_000,
+    agentTimeoutMs: 60_000,
+  };
+
+  it('passes when the agent takes its secret from the gate and writes its digest, and never touches the network', async () => {
+    const host = fakeHost();
+    const evidence = await runGatedAgentTask(task, host.deps);
+    expect(evaluateGatedAgentTask(evidence)).toEqual({ passed: true, failures: [] });
+    expect(host.cloud).toEqual([]);
+    const launch = host.commands.find((command) => command.includes('nohup'))!;
+    expect(launch).toMatch(/ && \{ nohup sh -c .* < \/dev\/null > \/dev\/null 2>&1 & \}$/);
+    expect(launch).toContain(`ollama/${WORKSPACE_HOST_OMP_LOCAL_MODEL}`);
+    expect(launch).not.toContain(task.secret);
+    expect(evidence.secretInInvocation).toBe(false);
+    expect(evidence.agent.expected).toBe(sha256Hex(task.secret));
+    const release = host.commands.findIndex((command) => command.startsWith('timeout') && command.includes('.gate'));
+    expect(release).toBeGreaterThan(host.commands.indexOf(launch));
+    expect(host.commands.at(-1)).toMatch(/^rm -f '.*\.gate'$/);
+  });
+
+  it('fails, naming the cause, when the output is wrong or the agent exits non-zero', async () => {
+    const wrong = evaluateGatedAgentTask(await runGatedAgentTask(task, fakeHost({ agentOutput: 'deadbeef' }).deps));
+    expect(wrong.failures).toEqual(['the agent output is missing or not the expected digest']);
+    const crashed = evaluateGatedAgentTask(await runGatedAgentTask(task, fakeHost({ agentExitCode: 1 }).deps));
+    expect(crashed.failures).toEqual(['the agent task exited 1']);
+  });
+
+  it('fails when the agent never opens its gate pipe, and still removes the gate', async () => {
+    const host = fakeHost({ agentNeverReadsGate: true });
+    const evidence = await runGatedAgentTask(task, host.deps);
+    expect(evaluateGatedAgentTask(evidence).failures).toEqual(expect.arrayContaining([
+      'task error: the agent never read its gate pipe within 60s (exit 124)',
+      'the agent never read its secret from the gate pipe',
+    ]));
+    expect(host.commands.at(-1)).toMatch(/^rm -f '.*\.gate'$/);
+  });
+
+  it('fails a task whose secret is visible in its own invocation', async () => {
+    const leaky = { ...task, agentCommand: `/usr/local/bin/omp-${task.secret}` };
+    const evidence = await runGatedAgentTask(leaky, fakeHost().deps);
+    expect(evidence.secretInInvocation).toBe(true);
+    expect(evaluateGatedAgentTask(evidence).failures).toEqual([
+      'the secret appears in the agent invocation, so the output proves nothing',
+    ]);
   });
 });

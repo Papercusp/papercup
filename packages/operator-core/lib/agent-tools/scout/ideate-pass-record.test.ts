@@ -126,6 +126,7 @@ const goalReview = {
   rationale: 'The current plan covers the remaining goal outcome.',
   evidenceRefs: ['plan:papercusp/existing-plan'],
   planRefs: ['plan:papercusp/existing-plan'],
+  coverage: [{ need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/existing-plan' }],
 };
 const reviewContext = {
   goalId: 'goal-1',
@@ -146,6 +147,39 @@ describe('goal-local planning review', () => {
       ideasFiled: 0,
       goalReview: { ...goalReview, portfolioFingerprint: 'caller-forged' },
     }).success).toBe(false);
+  });
+
+  // P-003: a no-new-plan review must show which plan covers each recurring need.
+  it('refuses a no-new-plan review without a coverage map, or with an unplanned 3+ item cluster', () => {
+    const { coverage: _omit, ...unbacked } = goalReview;
+    const missing = ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: unbacked });
+    expect(missing.success).toBe(false);
+    expect(JSON.stringify(missing.error?.issues)).toContain('coverage map');
+    const cluster = ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...goalReview, coverage: [{ need: 'stale loop wakes', itemRefs: ['WI-4', 'WI-5', 'WI-6'] }] },
+    });
+    expect(cluster.success).toBe(false);
+    expect(JSON.stringify(cluster.error?.issues)).toContain('plans:new');
+    expect(ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...goalReview, coverage: [{ need: 'one-off typo', itemRefs: ['WI-7'], justification: 'single item, drain handles it' }] },
+    }).success).toBe(true);
+  });
+
+  it('refuses a coverage planRef that names no live plan, recording nothing', async () => {
+    const recordTick = vi.fn(async () => {});
+    const result = await runIdeatePassRecord(
+      { ideasFiled: 0, goalReview },
+      { ownerId: 'su-goal', workspaceId: 'ws-1' },
+      {
+        recordTick,
+        readGoalReviewContext: async () => reviewContext,
+        missingPlanRefs: async (_ws, refs) => [...refs],
+      },
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'goal-review-unresolved-plan-ref' });
+    expect(recordTick).not.toHaveBeenCalled();
   });
 
   it('requires the uncovered outcome for a new-plan disposition', () => {

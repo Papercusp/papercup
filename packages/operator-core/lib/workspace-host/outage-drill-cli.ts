@@ -11,6 +11,11 @@
  *     --region <r> --instance-id <i-…> [--aws-profile <p>] \
  *     --host-id <host-…> --workspace-dir <dir> [--agent <cli>] [--nonce <n>] [--out <evidence.json>]
  *
+ * --agent-kind claude|omp (default claude) picks the agent's argv; OMP runs on the host's local inference.
+ * --mode task runs ONLY the gated agent task, with no egress block (no --network, no database needed):
+ * the agent reads a secret from its gate pipe and writes sha256(secret). It is controller-pushed over
+ * SSH, so its evidence is labelled that way (aws-byoc-gcp-parity-2026-10-01 R-13, D-031).
+ *
  * On AWS the drill reaches the host by SSH over SSM and blocks egress with deny entries on the
  * network ACL of the instance's subnet, which it looks up from the instance.
  *

@@ -8,6 +8,7 @@
  * a test beside the module under scripts/lib runs only under the root config, which no gate task runs.
  */
 import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER,
@@ -17,6 +18,8 @@ import {
   RESTRICTED_HOLD_PREFLIGHT_ENV,
   RESTRICTED_HOLD_PREFLIGHT_EXIT,
   RESTRICTED_HOLD_PREFLIGHT_MARKER,
+  COMMITTED_SOURCE_LOADER,
+  censusSpawnArgs,
   formatRestrictedHoldRefusal,
   formatVitestRestrictedHoldRefusal,
   interpretRestrictedHoldPreflight,
@@ -28,6 +31,9 @@ import {
 
 const line = (payload: unknown) => `${RESTRICTED_HOLD_PREFLIGHT_MARKER} ${JSON.stringify(payload)}\n`;
 const UNRESTRICTED_ENV = { PATH: '/usr/bin' };
+// WI-10005764: every census spawn loads the committed-source loader BEFORE tsx.
+const CENSUS_PREFIX = ['--import', COMMITTED_SOURCE_LOADER, '--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI];
+const LOADER_OPTION = `--import=${pathToFileURL(COMMITTED_SOURCE_LOADER).href}`;
 
 describe('interpretRestrictedHoldPreflight — fail closed', () => {
   it('admits only an explicit admit verdict with the admit exit code', () => {
@@ -122,7 +128,7 @@ describe('runVitestRootPreflight', () => {
       setEnv: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST },
     });
     const [, args] = spawn.mock.calls[0] as unknown as [string, string[]];
-    expect(args).toEqual(['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, '/repo', '/repo/a.test.ts']);
+    expect(args).toEqual([...CENSUS_PREFIX, '/repo', '/repo/a.test.ts']);
   });
 
   it('passes a refusal through and fails closed on a missing verdict, with no marker', () => {
@@ -182,8 +188,8 @@ describe('runRestrictedHoldPreflight', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = spawn.mock.calls[0] as unknown as [string, string[], { cwd: string; env: unknown }];
     expect(command).toBe(process.execPath);
-    expect(args).toEqual(['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, '/repo', '/repo/a.test.ts', '/repo/b.test.ts']);
-    expect(options).toMatchObject({ cwd: '/repo', env: UNRESTRICTED_ENV });
+    expect(args).toEqual([...CENSUS_PREFIX, '/repo', '/repo/a.test.ts', '/repo/b.test.ts']);
+    expect(options).toMatchObject({ cwd: '/repo', env: { ...UNRESTRICTED_ENV, NODE_OPTIONS: LOADER_OPTION } });
   });
 
   it('never spawns when skipping, and says why', () => {
@@ -196,6 +202,29 @@ describe('runRestrictedHoldPreflight', () => {
 
   it('resolves the CLI to a real file in this repo, independent of the checked root', () => {
     expect(existsSync(RESTRICTED_HOLD_PREFLIGHT_CLI)).toBe(true);
+    expect(existsSync(COMMITTED_SOURCE_LOADER)).toBe(true);
+  });
+});
+
+// WI-10005764: the census's own closure lives in the tree it judges; the loader (first on the argv,
+// and in NODE_OPTIONS for the processes the census forks) makes it run committed bytes only.
+describe('censusSpawnArgs', () => {
+  it('puts the loader before tsx on the argv and first in NODE_OPTIONS, keeping inherited options', () => {
+    const { argv, env } = censusSpawnArgs(['--tree', '/repo'], { PATH: '/usr/bin', NODE_OPTIONS: '--max-old-space-size=4096' });
+    expect(argv).toEqual([...CENSUS_PREFIX, '--tree', '/repo']);
+    expect(env).toEqual({ PATH: '/usr/bin', NODE_OPTIONS: `${LOADER_OPTION} --max-old-space-size=4096` });
+  });
+
+  it('does not add the loader to NODE_OPTIONS twice when a census spawns inside another', () => {
+    const once = censusSpawnArgs([], {}).env;
+    expect(once.NODE_OPTIONS).toBe(LOADER_OPTION);
+    expect(censusSpawnArgs([], once).env.NODE_OPTIONS).toBe(LOADER_OPTION);
+  });
+
+  it('never mutates the env it was given', () => {
+    const given = { PATH: '/usr/bin' };
+    censusSpawnArgs([], given);
+    expect(given).toEqual({ PATH: '/usr/bin' });
   });
 });
 

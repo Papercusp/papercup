@@ -137,7 +137,7 @@ function auditSavedInboxPair(report: any) {
   const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0;
   check(report.incomplete === false && report.runner.status === 0 && !report.error, 'incomplete run');
   check(report.cohorts.length === 2 && report.cohorts.map((c: any) => c.mode).join(',') === 'baseline,shared', 'paired hosts');
-  check(report.sources.before.length > 0 && JSON.stringify(report.sources.before) === JSON.stringify(report.sources.after), 'source drift');
+  check(Object.keys(report.sources.before).length > 0 && JSON.stringify(report.sources.before) === JSON.stringify(report.sources.after), 'source drift');
   const bodies = Array.from({ length: 256 }, (_, i) => ({ id: 'p011-' + (i + 1),
     body: ('useful-context-' + (i + 1) + ' ').repeat(32768).slice(0, 32768) }));
   bodies.sort((a, b) => a.id.localeCompare(b.id));
@@ -682,7 +682,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           actualConcurrency: 'unmeasured: per-request start/end timestamps absent', productionSavings: 'unmeasured' },
         cases: [
           ['incomplete', 'incomplete run', r => { r.incomplete = true; }],
-          ['source-drift', 'source drift', r => { r.sources.after[0].sha256 = '0'.repeat(64); }],
+          ['source-drift', 'source drift', r => { r.sources.after[Object.keys(r.sources.after)[0]] = '0'.repeat(64); }],
           ['pid-reused', 'sample identity', r => { r.cohorts[1].samples.at(-1).os.startTicks = '1'; }],
           ['rss-only', 'PSS required', r => { delete r.cohorts[1].samples[0].os.pssBytes; }],
           ['allocation-reset', 'cumulative V8 allocation required', r => { r.cohorts[1].samples.at(-1).heap.total_allocated_bytes = 1; }],

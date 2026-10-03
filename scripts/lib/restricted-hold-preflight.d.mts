@@ -79,3 +79,12 @@ export declare function runTreeRestrictedHoldPreflight(opts: {
 }): { verdict: 'admit' } | { verdict: 'skipped'; reason: TreeDoorPreflightSkipReason } | RestrictedHoldPreflightRefusal;
 
 export declare function formatTreeRestrictedHoldRefusal(door: string, refusal: { error: string; hint: string }): string;
+
+/** Absolute path of scripts/lib/committed-source-loader.mjs; every census spawn loads it before tsx. */
+export declare const COMMITTED_SOURCE_LOADER: string;
+
+/** The node argv (loader, then tsx, then the census CLI and `args`) and env (NODE_OPTIONS carries the loader) of a census spawn. */
+export declare function censusSpawnArgs(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): { argv: string[]; env: NodeJS.ProcessEnv };
