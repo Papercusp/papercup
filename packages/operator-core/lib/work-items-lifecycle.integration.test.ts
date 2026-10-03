@@ -1782,6 +1782,29 @@ describe('P-004 — completion authority round-trips through both family views',
 // (payload.held_open_by via setWorkItemClaimHold { by }) refuses a TERMINAL
 // transition by anyone but the holder — the dup-close guard for leader-gated items.
 describe('P-006 held-open guard — non-holder terminal transitions refuse', () => {
+  // A non-holder's terminal transition runs the inline hold-liveness check
+  // (isStaleHoldOpenAndCleared), which reads these relations and FAILS CLOSED (with a warn)
+  // when they are missing. Without them every refusal below would pass for the wrong reason
+  // and the WI-10005916 local control could never lift a dead hold. Minimal projections:
+  // migration 348 for the config row, work-items-hold-open.integration.test.ts for the rest.
+  beforeAll(async () => {
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.operator_coord_liveness_config (
+      workspace_id text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_at bigint NOT NULL DEFAULT 0)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
+      owner_id text PRIMARY KEY, heartbeat_at timestamptz)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
+      spawn_id text PRIMARY KEY, session_owner text, run_id text, status text NOT NULL,
+      heartbeat_at timestamptz, finished_at timestamptz, cancelled_at timestamptz)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.routines (
+      id text PRIMARY KEY, workspace_id text NOT NULL, name text NOT NULL,
+      active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text,
+      updated_at timestamptz NOT NULL DEFAULT now(), metadata jsonb NOT NULL DEFAULT '{}'::jsonb)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
+      id BIGSERIAL PRIMARY KEY, owner_id text NOT NULL, kind text NOT NULL, summary text,
+      created_at timestamptz NOT NULL DEFAULT now())`);
+  });
+
   async function heldBug(holder = 'leader-1', reason = 'gating on live evidence') {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'held', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemClaimHold(bug.id, true, { harness: 'papercup', by: holder, reason });
@@ -1813,21 +1836,6 @@ describe('P-006 held-open guard — non-holder terminal transitions refuse', () 
   });
 
   it('WI-10005916: a dead-looking hold on a PEER-WRITTEN (origin=remote) row still refuses a non-holder close', async () => {
-    // The inline liveness check reads these (liveHolderFragment / parkedHolderFragment) and
-    // FAILS CLOSED when they are missing, which would make the local control below vacuous.
-    // Same minimal projections as work-items-hold-open.integration.test.ts.
-    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
-      owner_id text PRIMARY KEY, heartbeat_at timestamptz)`);
-    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
-      spawn_id text PRIMARY KEY, session_owner text, run_id text, status text NOT NULL,
-      heartbeat_at timestamptz, finished_at timestamptz, cancelled_at timestamptz)`);
-    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.routines (
-      id text PRIMARY KEY, workspace_id text NOT NULL, name text NOT NULL,
-      active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text,
-      updated_at timestamptz NOT NULL DEFAULT now(), metadata jsonb NOT NULL DEFAULT '{}'::jsonb)`);
-    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
-      id BIGSERIAL PRIMARY KEY, owner_id text NOT NULL, kind text NOT NULL, summary text,
-      created_at timestamptz NOT NULL DEFAULT now())`);
     // Same invisible holder, same past-grace hold age on both rows; only `origin` differs.
     const local = await heldBug('su-peer-ghost', 'blocked');
     const remote = await heldBug('su-peer-ghost', 'blocked');
