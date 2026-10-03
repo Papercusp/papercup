@@ -1691,8 +1691,9 @@ describe('applyResultDoor', () => {
       ],
     ] as const)('returns an incomplete envelope for an under-budget %s marker', (_shape, text, marker) => {
       expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(BUDGET_CHARS);
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
       const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text }] },
+        input,
         { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
       );
       const envelope = JSON.parse((doored.content[0] as { text: string }).text);
@@ -1704,7 +1705,7 @@ describe('applyResultDoor', () => {
         content: [{ kind: 'reference', uri: expect.stringContaining('papercusp://scratch/ws-1/plans:get/') }],
       });
       expect(envelope.incomplete.note).toContain('paging this reference cannot recover');
-      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
         innerTruncationMarkers: [marker],
       });
       const spill = JSON.parse(readSpill('ws-1', 'plans:get', RUN_ID)) as {
@@ -1905,8 +1906,9 @@ describe('applyResultDoor', () => {
         summaryNotice: { truncated: true, originalChars: 9_296, returnedChars: 3_500 },
         padding: 'P'.repeat(BUDGET_CHARS * 3),
       });
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
       const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text }] },
+        input,
         { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
       );
       const pointer = boundedBody(doored)._projection.next;
@@ -1918,7 +1920,7 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain('bounded slices');
       expect(spill).toContain('summaryNotice.truncated');
       expect(spill).toContain('smaller return');
-      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
         innerTruncationMarkers: ['summaryNotice.truncated'],
       });
     });
@@ -1929,13 +1931,14 @@ describe('applyResultDoor', () => {
         summaryNotice: { truncated: false, originalChars: 3_500, returnedChars: 3_500 },
         padding: 'P'.repeat(BUDGET_CHARS * 3),
       });
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
       const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text }] },
+        input,
         { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
       );
 
       expect(boundedBody(doored)._projection.next).not.toContain('source is already partial');
-      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
         innerTruncationMarkers: [],
       });
     });
