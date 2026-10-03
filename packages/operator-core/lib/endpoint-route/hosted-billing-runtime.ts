@@ -31,6 +31,7 @@ import type { RefusalContract } from '../capability-envelope/refusal-contract-ty
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
 import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
+import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
 import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
 import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
 import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
@@ -174,6 +175,7 @@ export interface HostedBillingRuntimeDependencies {
   readonly receipts?: HostedBillingReceiptSource;
   /** Trusted server source overrides and collectors; no request can install a collector. */
   readonly usage?: HostedBillingUsageSource;
+  readonly usageStore?: Pick<PostgresHostedUsageStore, 'append' | 'readRecords' | 'readOpenRouterBindings'>;
   readonly usageCollectors?: readonly HostedUsageCollector[];
   /** Workspace-scoped transaction runner for the default receipts source. */
   readonly runWorkspace?: HostedBillingWorkspaceRunner;
@@ -250,6 +252,7 @@ export async function createHostedBillingRuntime(
 ): Promise<HostedBillingRuntime> {
   const { stripe, reason } = await resolveStripe(configuration, dependencies);
   const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext);
+  const usageStore = dependencies.usageStore ?? new PostgresHostedUsageStore(dependencies.runService ?? withHostedServiceContext);
   const routes = createHostedBillingRoutes({
     publicOrigin: configuration.publicOrigin,
     plans: configuration.plans,
@@ -262,8 +265,11 @@ export async function createHostedBillingRuntime(
         ? workspaceReceiptSource(configuration.receiptsWorkspaceId, dependencies.runWorkspace)
         : undefined),
     usage: dependencies.usage ?? createHostedUsageSource({
-      store: new PostgresHostedUsageStore(dependencies.runService ?? withHostedServiceContext),
-      collectors: dependencies.usageCollectors,
+      store: usageStore,
+      collectors: dependencies.usageCollectors ?? [createOpenRouterHostedUsageCollector({
+        store: usageStore, readCredential: dependencies.resolveSecret ?? resolveSecretRef,
+        fetch: dependencies.fetchImpl,
+      })],
       maximumAgeMs: 5 * 60_000,
     }),
     clock: dependencies.clock,
