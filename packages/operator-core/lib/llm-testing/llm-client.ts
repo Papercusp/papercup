@@ -22,6 +22,7 @@
 import { LlmCallError, tryParseJson, type LlmCallOpts, type LlmCallResult } from '@papercusp/testing-shell/llm';
 import { costFromTokens, priceFor } from '@papercusp/model-pricing';
 import { createHash } from 'node:crypto';
+import { writeSync } from 'node:fs';
 
 import {
   runAgentChat,
@@ -52,6 +53,13 @@ function providerForBackend(backend: AgentBackend): TurnProvider {
 const TEST_BACKEND = process.env.LLM_TEST_BACKEND as AgentBackend | undefined;
 const CODEX_GATEWAY_AUTH = 'papercusp-gateway';
 const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
+
+export type LlmTransportDiagnostic = Parameters<NonNullable<Parameters<typeof runAgentChat>[0]['onTransportDiagnostic']>>[0];
+/** The existing classified error with host transport evidence, when available. */
+export type LlmTransportCallError = LlmCallError & {
+  readonly transportDiagnostics: readonly LlmTransportDiagnostic[];
+  readonly promptSha256: string;
+};
 
 // The routing + price rule lives in codex-model-pricing.ts so write-time seams
 // (steering, pot overrides) apply the same rule this call path enforces (WI-10004526).
@@ -289,8 +297,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
 
   // Reuse the shared runner's actual HTTP boundary, rather than inferring egress
   // from its backend label. Retain before failure, including SDK-internal retries.
-  type Diagnostic = Parameters<NonNullable<Parameters<typeof runAgentChat>[0]['onTransportDiagnostic']>>[0];
-  const transportDiagnostics: Diagnostic[] = [];
+  const transportDiagnostics: LlmTransportDiagnostic[] = [];
   const promptSha256 = createHash('sha256').update(JSON.stringify({
     system: opts.system ?? null, messages: opts.messages,
   })).digest('hex');
@@ -333,9 +340,9 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     onTransportDiagnostic: diagnostic => {
       if (transportDiagnostics.length === 64) transportDiagnostics.shift();
       transportDiagnostics.push(diagnostic);
-      // Synchronous console output survives callers that throw before writing a
+      // Synchronous output survives callers that throw before writing a
       // successful-call receipt. No credentials, text, bodies or arbitrary headers.
-      console.info('[llm-transport]', JSON.stringify({ ...diagnostic, promptSha256 }));
+      writeSync(1, `[llm-transport] ${JSON.stringify({ ...diagnostic, promptSha256 })}\n`);
     },
     ownerId: opts.ownerId,
     // Usage attribution: the priority label already names the caller ('gym',
@@ -383,9 +390,11 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   if (lastErrMsg !== undefined) {
     const turn = lastErrTurn ?? classifyHttpError({ message: lastErrMsg }, providerForBackend(backend));
     const error = new LlmCallError(turn);
-    const last = transportDiagnostics.at(-1);
-    if (last) error.message += ` [llm-transport ${JSON.stringify({ ...last, promptSha256 })}]`;
-    // Keep the original classified turn intact (identity, class and retry policy).
+    if (transportDiagnostics.length) Object.defineProperties(error, {
+      transportDiagnostics: { value: Object.freeze([...transportDiagnostics]), enumerable: true },
+      promptSha256: { value: promptSha256, enumerable: true },
+    });
+    // Keep the original classified turn and user-visible message intact.
     throw error;
   }
   if (!sawResult) throw new Error(`llmCall: ${backend} backend produced no result event`);

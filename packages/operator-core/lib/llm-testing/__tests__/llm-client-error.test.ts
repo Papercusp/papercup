@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 
 const events: unknown[] = [];
+const diagnostics: Array<Record<string, unknown>> = [];
 // EI-315: captures the opts of the LAST runAgentChat call so a test can assert on the
 // priority label threaded through (the anthropic-direct path has no HTTP layer to spy
 // on the way the codex-gateway test spies on `fetch`).
@@ -21,6 +22,9 @@ vi.mock('../../agent-chat-stream', async (importOriginal) => {
     ...orig,
     runAgentChat: async function* (opts: Record<string, unknown>) {
       lastRunAgentChatOpts = opts;
+      for (const diagnostic of diagnostics) {
+        (opts.onTransportDiagnostic as ((value: unknown) => void) | undefined)?.(diagnostic);
+      }
       yield* events as never[];
     },
   };
@@ -267,6 +271,42 @@ describe('llmCall subprocess error surfacing', () => {
     );
     expect(isLlmCallError(err)).toBe(true);
     if (isLlmCallError(err)) expect(err.turn.class).toBe('rate_limited');
+  });
+});
+
+describe('llmCall transport evidence (WI-10005738)', () => {
+  const diagnostic = { callId: 'local-call', attempt: 2, phase: 'response', observedAt: '2026-10-03T01:00:00Z',
+    label: 'anthropic-direct', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+    requestedAccount: null, servedAccount: 'actual-serving-account', providerRequestId: 'req_bound', status: 429 };
+
+  it('keeps resolved egress in the thrown error without changing the classified turn', async () => {
+    diagnostics.push(diagnostic);
+    const turn = { class: 'rate_limited', message: '429 upstream refusal', retryable: true, retryAfterMs: 12000 };
+    events.length = 0;
+    events.push({ type: 'error', message: turn.message, turn });
+    try {
+      const { llmCall } = await import('../llm-client');
+      const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'secret-prompt' }] }).catch(e => e);
+      expect(isLlmCallError(err)).toBe(true);
+      expect(err.turn).toBe(turn);
+      expect(err.message).toBe(turn.message);
+      expect(err.transportDiagnostics).toEqual([diagnostic]);
+      expect(err.promptSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(err)).not.toContain('secret-prompt');
+    } finally { diagnostics.length = 0; events.length = 0; }
+  });
+
+  it('retains sanitized attempts on successful-call receipts', async () => {
+    diagnostics.push({ ...diagnostic, phase: 'request', status: null, servedAccount: null, providerRequestId: null },
+      { ...diagnostic, status: 200 });
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+    try {
+      const { llmCall } = await import('../llm-client');
+      const result = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged prompt' }] });
+      expect(result.raw).toMatchObject({ transportDiagnostics: diagnostics, promptSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(result.text).toBe('ok');
+    } finally { diagnostics.length = 0; events.length = 0; }
   });
 });
 
