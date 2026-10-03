@@ -15,8 +15,10 @@ import {
   type RetainFeedOpts,
 } from './learning-retain-read';
 
-const ROWS = 620;
-const DEEP = 611;
+// Half the fixtures are completed: keep more than 500 retained rows so a
+// client-side search over a capped window would miss the deep completed match.
+const ROWS = 1240;
+const DEEP = 1222;
 const workspaceId = 'p7-learning-retain-real-pg';
 const harnessSlug = 'p7-retain-hive';
 const deepId = `P7WI-${DEEP.toString().padStart(4, '0')}`;
@@ -98,11 +100,11 @@ afterAll(async () => {
 }, 300_000);
 
 describe('learning.retainFeed + summary — real Postgres P-007 contract', () => {
-  it('finds the only match beyond the first 500 unfiltered rows and returns exact scoped facets', async () => {
+  it('finds the only match beyond the first 500 retained rows and returns exact scoped facets', async () => {
     const opts = scoped({
       tab: 'wi',
       q: 'deep-only-retain-match',
-      filters: { statuses: ['open'], lenses: ['user-value', 'risk-first'] },
+      filters: { statuses: ['done'], lenses: ['user-value', 'risk-first'] },
       limit: 75,
     });
     const started = performance.now();
@@ -115,9 +117,9 @@ describe('learning.retainFeed + summary — real Postgres P-007 contract', () =>
       selection: retainFeedSummarySelection(normalized),
     });
     expect(page.rows.map((row) => row.id)).toEqual([deepId]);
-    expect(summary).toMatchObject({ total: ROWS, matched: 1 });
+    expect(summary).toMatchObject({ total: ROWS / 2, matched: 1 });
     expect(summary.facets.find((facet) => facet.key === 'status')?.values).toContainEqual(
-      expect.objectContaining({ value: 'open', count: 1 }),
+      expect.objectContaining({ value: 'done', count: 1 }),
     );
     expect(performance.now() - started).toBeLessThan(6_000);
   });
