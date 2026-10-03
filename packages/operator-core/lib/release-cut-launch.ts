@@ -187,7 +187,8 @@ export interface CutRuntimeEnv {
   seedFindingProof?: string;
   /** Private D166 plan bound to a frozen ORIGINAL store. Transport only;
    * independent source/candidate acceptance remains required. */
-  seedUuidIdempotency?: { plansPath: string; plansSha256: string; sourceStoreDir: string };
+  seedUuidIdempotency?: { plansPath: string; plansSha256: string; sourceStoreDir: string;
+    censusPath: string; censusSha256: string };
   /** Explicit new-build path: package the validated placeholder-only seed directory
    * without cutting or reusing a hive seed. Unlike reuseSeed, this does not restore
    * retry-owned version residue before launch. */
@@ -299,13 +300,18 @@ export function buildCutEnv(
   }
   if (runtime.reuseSeed || runtime.seedless) env.PAPERCUSP_SKIP_SEED_CUT = '1';
   if (runtime.seedUuidIdempotency) {
-    const { plansPath, plansSha256, sourceStoreDir } = runtime.seedUuidIdempotency;
+    const { plansPath, plansSha256, sourceStoreDir, censusPath, censusSha256 } = runtime.seedUuidIdempotency;
     if (runtime.reuseSeed || runtime.seedless || !plansPath?.startsWith('/')
-        || !sourceStoreDir?.startsWith('/') || !/^[0-9a-f]{64}$/.test(plansSha256)) {
+        || !sourceStoreDir?.startsWith('/') || !/^[0-9a-f]{64}$/.test(plansSha256)
+        || !censusPath?.startsWith('/') || !/^[0-9a-f]{64}$/.test(censusSha256)) {
       throw new Error('seed_uuid_mode_conflict — UUID plans require exact absolute private inputs and a fresh frozen-source cut');
     }
     env.PAPERCUSP_SEED_UUID_PLAN_PATH = plansPath;
     env.PAPERCUSP_SEED_UUID_PLAN_SHA256 = plansSha256;
+    // Keep census context after the seed function clears the one-use row plan:
+    // later copy points must discover mirrors without reapplying that plan.
+    env.PAPERCUSP_SEED_UUID_CENSUS_PATH = censusPath;
+    env.PAPERCUSP_SEED_UUID_CENSUS_SHA256 = censusSha256;
     env.PAPERCUSP_SEED_STORE_DIR = sourceStoreDir;
     env.PAPERCUSP_SEED_FORCE = '1';
     env.PAPERCUSP_SEED_CORESTORE = '1';

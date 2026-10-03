@@ -130,8 +130,10 @@ const cutSeedUuidIdempotencyArg = z.object({
   plansPath: z.string().startsWith('/'),
   plansSha256: z.string().regex(/^[0-9a-f]{64}$/),
   sourceStoreDir: z.string().startsWith('/'),
+  censusPath: z.string().startsWith('/'),
+  censusSha256: z.string().regex(/^[0-9a-f]{64}$/),
 }).strict().optional().describe(
-  'D166 private source-bound UUID row-drop plan/hash plus frozen ORIGINAL source store. Requires a fresh cut; forbids reuse/seedless, refresh and sparse mode. Does not waive independent source containment, artifact coverage or GO.',
+  'D166 private source-bound UUID row-drop plan/hash, exact census config/hash, and frozen ORIGINAL source store. Census context persists for output-only doc projections after the one-use row plan is cleared. Requires a fresh cut; forbids reuse/seedless, refresh and sparse mode. Does not waive independent source containment, artifact coverage or GO.',
 );
 const cutFullHistoryArg = z
   .boolean()
