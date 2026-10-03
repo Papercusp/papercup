@@ -618,6 +618,24 @@ export function selectBlindSourceTargets(snapshot: Snapshot, budget: BlindTarget
   })) as Record<'memory' | 'prose', { groups: Map<string, CorpusEntry[]>; chosen: Record<'calibration' | 'test', string[]> }>;
 }
 
+/** Publish a complete immutable receipt without exposing an interrupted write.
+ * A same-directory hard link is atomic and refuses an existing destination;
+ * rename would silently replace evidence from a competing writer. */
+export function writeBlindReceipt(file: string, value: unknown): void {
+  const pending = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.pending`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(pending, 'wx', 0o600);
+    fs.writeFileSync(descriptor, JSON.stringify(value, null, 2));
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor); descriptor = undefined;
+    fs.linkSync(pending, file);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    fs.rmSync(pending, { force: true });
+  }
+}
+
 export async function collectIndependentCohort(opts: { snapshot: string; out: string; llm: LlmCallFn;
   targetsPerPartition?: BlindTargetBudget; reuseAuthorsFrom?: string; reuseCallsFrom?: string;
   reuseSnapshotExpansion?: boolean; log?: (message: string) => void }) {
@@ -676,7 +694,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     ...(opts.reuseSnapshotExpansion ? { snapshotExpansion: true } : {}) };
   const identityHash = hashJson(identity);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  const write = (file: string, value: unknown) => fs.writeFileSync(file, JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 });
+  const write = writeBlindReceipt;
   const identityFile = path.join(root, 'identity.json');
   if (fs.existsSync(identityFile)) {
     if (JSON.parse(fs.readFileSync(identityFile, 'utf8')).identityHash !== identityHash) throw new Error('blind collection identity changed; use a new output');

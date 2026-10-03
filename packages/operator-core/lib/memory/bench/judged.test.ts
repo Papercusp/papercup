@@ -33,6 +33,7 @@ import {
   deriveBlindConsensus,
   BLIND_COHORT_CONTRACT,
   collectIndependentCohort,
+  writeBlindReceipt,
   parseBlindChunkVotes,
   parseBlindTargetBudget,
   selectBlindSourceTargets,
@@ -43,6 +44,45 @@ import type { BackendCtx } from './run-bench';
 function gq(id: string, cls: GoldQuery['class'], over: Partial<GoldQuery> = {}): GoldQuery {
   return { id, class: cls, query: `query ${id}`, expected: [`key-${id}`], ...over };
 }
+
+describe('immutable blind receipt publication', () => {
+  it('keeps an interrupted partial write out of the final receipt namespace', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'blind-receipt-write-'));
+    const file = path.join(root, 'call.json'), originalWrite = fs.writeFileSync;
+    const interrupted = new Error('interrupted receipt write');
+    const writer = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, data, options) => {
+      if (typeof target === 'number') {
+        originalWrite(target, '{');
+        expect(fs.existsSync(file)).toBe(false);
+        throw interrupted;
+      }
+      return originalWrite(target, data, options);
+    });
+    try {
+      expect(() => writeBlindReceipt(file, { result: 'complete' })).toThrow(interrupted);
+      expect(fs.existsSync(file)).toBe(false);
+      expect(fs.readdirSync(root)).toEqual([]);
+      writer.mockRestore();
+      writeBlindReceipt(file, { result: 'complete' });
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ result: 'complete' });
+      expect(fs.readdirSync(root)).toEqual(['call.json']);
+    } finally { writer.mockRestore(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  it('preserves a competing complete receipt rather than overwriting it', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'blind-receipt-race-'));
+    const file = path.join(root, 'call.json'), originalLink = fs.linkSync;
+    const winner = JSON.stringify({ invocationId: 'other', result: 'winner' });
+    const publish = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+      fs.writeFileSync(file, winner, { flag: 'wx' });
+      return originalLink(from, to);
+    });
+    try {
+      expect(() => writeBlindReceipt(file, { invocationId: 'this', result: 'loser' })).toThrow(/EEXIST/);
+      expect(fs.readFileSync(file, 'utf8')).toBe(winner);
+      expect(fs.readdirSync(root)).toEqual(['call.json']);
+    } finally { publish.mockRestore(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('independent blind label consensus', () => {
   const entries = ['a', 'b'].map((key) => ({ key, text: `source ${key}`, kind: 'fact',
