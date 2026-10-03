@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useReducedMotion } from "motion/react";
 import { Button } from "@/app/harness/Button";
 import { LazyDetails } from "@/app/_components/LazyDetails";
-import { CLOUD_TUTORIAL_STEPS, confirmedTutorialSteps, currentTutorialStep, tutorialStepStatus, type TutorialEvent, type TutorialState, type LessonStep, type StepStatus } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { CLOUD_TUTORIAL_STEPS, tutorialSteps, confirmedTutorialSteps, currentTutorialStep, tutorialStepStatus, type TutorialEvent, type TutorialState, type LessonStep, type StepStatus } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
 import { createTutorialAnalytics } from "./cloud-tutorial-analytics";
 
@@ -48,7 +48,8 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
     if (previousScope.current !== state.scope) { pendingFocus.current = null; setHighlightStatus("waiting"); setReviewIndex(null); previousScope.current = state.scope; }
   }, [state.scope]);
   const domainStep = currentTutorialStep(state);
-  const step = reviewIndex === null ? domainStep : CLOUD_TUTORIAL_STEPS[reviewIndex];
+  const steps = tutorialSteps(state.version);
+  const step = reviewIndex === null ? domainStep : steps[reviewIndex];
   const completed = confirmedTutorialSteps(state);
   const status = tutorialStepStatus(state);
   const displayStatus = reviewIndex !== null && highlightStatus === "missing" ? "missing-target" : status;
@@ -77,7 +78,7 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
   const replay = () => {
     const focused = document.activeElement as HTMLElement | null;
     if (focused && !focused.closest("[data-cloud-tutorial-guide]")) trigger.current = focused;
-    analytics.current!.action('replay', CLOUD_TUTORIAL_STEPS[0].id); setReviewIndex(0); dispatch({ type: "action", action: "replay" });
+    analytics.current!.action('replay', steps[0].id); setReviewIndex(0); dispatch({ type: "action", action: "replay" });
   };
   const action = (name: "pause" | "resume" | "skip" | "exit") => {
     pendingControlFocus.current = name === "pause" ? "resume" : name === "resume" ? "show" : name === "skip" ? "restart" : "entry";
@@ -89,8 +90,8 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
     <CloudTutorialHelpEntry onStart={replay} />
     <aside role="region" aria-label="First agent guide" data-cloud-tutorial-guide
       style={{ border: "1px solid var(--border)", background: "var(--bg-1)", borderRadius: 8, padding: 20, display: "flex", flexDirection: "column", gap: 12, width: "min(100%, 360px)", alignSelf: "start" }}>
-      <h2 id="cloud-tutorial-title">Get your first agent running</h2>
-      <p>{completed.length} of {CLOUD_TUTORIAL_STEPS.length} steps confirmed</p>
+      <h2 id="cloud-tutorial-title">{state.version === 2 ? "Do useful work with your first agent" : "Get your first agent running"}</h2>
+      <p>{completed.length} of {steps.length} steps confirmed</p>
       {active && step && <>
         <h3>{step.title}</h3><p>{step.brief}</p><p>{step.details}</p>
         {completed.includes(step.id) && <p>Already completed in this workspace.</p>}
@@ -112,7 +113,7 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
         {state.disposition === "paused" && <Button ref={resumeControl} onClick={() => action("resume")}>Resume guide</Button>}
         {state.disposition !== "skipped" && <Button onClick={() => action("skip")}>Skip lesson</Button>}
         <Button ref={restartControl} onClick={replay}>{status === "complete" ? "Replay lesson" : "Restart lesson"}</Button>
-        {reviewIndex !== null && active && <Button onClick={() => setReviewIndex(reviewIndex < CLOUD_TUTORIAL_STEPS.length - 1 ? reviewIndex + 1 : null)}>Next explanation</Button>}
+        {reviewIndex !== null && active && <Button onClick={() => setReviewIndex(reviewIndex < steps.length - 1 ? reviewIndex + 1 : null)}>Next explanation</Button>}
         <Button onClick={() => action("exit")}>Close guide</Button>
       </div>
       {active && displayStatus !== 'blocked' && <>{voice}{step && assistance ? assistance(step, displayStatus) : help ?? <p>Contextual help is unavailable. You can continue using the instructions above.</p>}</>}

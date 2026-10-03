@@ -102,7 +102,7 @@ export default function CloudWorkspacesPage() {
     parseAsStringEnum<StepId>(["connect", "configure", "operate"]),
   );
   const [hostParam, setHostParam] = useQueryState("host", parseAsString);
-  const [tutorialPath, setTutorialPath] = useQueryState("tutorial", parseAsStringEnum(["beginner", "advanced"]).withDefault("beginner"));
+  const [tutorialPath, setTutorialPath] = useQueryState("tutorial", parseAsStringEnum(["beginner", "advanced"]));
   const [tabParam, setTabParam] = useQueryState(
     "tab",
     parseAsStringEnum<HostTab>([...HOST_TABS]).withDefault("overview"),
@@ -628,12 +628,12 @@ export default function CloudWorkspacesPage() {
         </section>
       ) : null}
 
-      {hostedTutorial && tutorialPath === "beginner" && <CloudTutorialPreparedEntry workspaces={workspaces}
+      {hostedTutorial && tutorialPath !== "advanced" && <CloudTutorialPreparedEntry workspaces={workspaces}
         loading={control.loading} error={control.error}
         onSelect={id => {
           const row = workspaces.find(value => value.id === id);
           if (control.loading || control.error || row?.desiredState !== "running" || row.observedState !== "running" || row.health?.status !== "healthy") return;
-          void setHostParam(id); void setStepParam("operate"); void setTabParam("cost");
+          void setTutorialPath("beginner"); void setHostParam(id); void setStepParam("operate"); void setTabParam("cost");
         }}
         onAdvanced={() => { void setTutorialPath("advanced"); void setStepParam("connect"); void setConnectTarget("gcp"); }} />}
       {hostedTutorial && tutorialPath === "advanced" && <Button variant="ghost" onClick={() => void setTutorialPath("beginner")}>Use a prepared workspace instead</Button>}
@@ -729,6 +729,7 @@ export default function CloudWorkspacesPage() {
       </div>
 
       {hostedTutorial && <CloudTutorialCompanion
+        version={tutorialPath === "beginner" ? 2 : 1}
         selectionKey={`${hostedTutorial.controlPlaneWorkspaceId}:${hostParam ?? ""}`}
         connection={tutorialHost ? connections.find(row => row.id === tutorialHost.connectionId) ?? null : selectedConnection}
         workspace={tutorialHost} boundWorkspaceId={boundHost?.hostId === tutorialHost?.id ? boundHost?.workspaceId ?? null : null}

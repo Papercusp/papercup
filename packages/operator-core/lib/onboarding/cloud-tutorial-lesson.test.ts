@@ -1,6 +1,52 @@
 import { describe, expect, it } from 'vitest';
 import { CLOUD_TUTORIAL_STEPS, CLOUD_TUTORIAL_VERSION, confirmedTutorialSteps, createTutorialState, currentTutorialStep, tutorialProgress, tutorialReducer, tutorialStepStatus, type ProductObservation, type TutorialScope } from './cloud-tutorial-lesson';
 
+describe('versioned beginner independent work', () => {
+  const beginnerObservation = () => evidence({ connection: undefined,
+    workspace: { id: scope.workspaceId, connectionId: 'connection-a', healthy: true },
+    agent: { id: 'session-a', workspaceId: scope.workspaceId, launchedByUser: true, available: true },
+    revisionTask: { id: 'revision-a', sessionId: 'session-a', firstTaskId: 'task-a', sampleTask: true, submittedByUser: true, status: 'succeeded', resultId: 'revision-answer' },
+    practiceTask: { id: 'practice-a', sessionId: 'session-a', firstTaskId: 'task-a', sampleTask: false, submittedByUser: true, status: 'succeeded', resultId: 'practice-answer' } });
+  const start = () => tutorialReducer(createTutorialState(scope, undefined, 2), { type: 'observe', observation: beginnerObservation() });
+  const inspect = (state: ReturnType<typeof start>, kind: 'first' | 'revision' | 'practice') => tutorialReducer(state, { type: 'inspect-result', kind, scope,
+    sessionId: 'session-a', taskId: { first: 'task-a', revision: 'revision-a', practice: 'practice-a' }[kind], resultId: { first: 'answer-a', revision: 'revision-answer', practice: 'practice-answer' }[kind] });
+  it('requires ordered review of the exact first, revised and self-written answers without provider setup', () => {
+    let state = start();
+    expect(confirmedTutorialSteps(state)).toEqual(['configuration', 'workspace', 'agent', 'task']);
+    expect(inspect(state, 'revision')).toBe(state);
+    expect(inspect(state, 'practice')).toBe(state);
+    state = inspect(state, 'first'); expect(currentTutorialStep(state)?.id).toBe('revision');
+    state = inspect(state, 'revision'); expect(currentTutorialStep(state)?.id).toBe('practice');
+    state = inspect(state, 'practice'); expect(tutorialStepStatus(state)).toBe('complete');
+    const saved = tutorialProgress(state);
+    expect(saved.version).toBe(2);
+    expect(saved.inspectedRevision?.taskId).toBe('revision-a');
+    expect(saved.inspectedPractice?.taskId).toBe('practice-a');
+    expect(confirmedTutorialSteps(createTutorialState(scope, saved, 2))).toEqual([]);
+    expect(createTutorialState(scope, { ...saved, disposition: 'paused' }, 1).disposition).toBe('active');
+  });
+  it.each(['pending', 'failed', 'foreign-session', 'old-first', 'canned', 'same-request'] as const)('rejects %s independent practice', failure => {
+    let state = inspect(inspect(start(), 'first'), 'revision');
+    const o = beginnerObservation();
+    const task = { ...o.practiceTask! };
+    if (failure === 'pending' || failure === 'failed') task.status = failure;
+    if (failure === 'foreign-session') task.sessionId = 'other';
+    if (failure === 'old-first') task.firstTaskId = 'old-first';
+    if (failure === 'canned') task.sampleTask = true;
+    if (failure === 'same-request') task.id = 'revision-a';
+    state = tutorialReducer(state, { type: 'observe', observation: { ...o, revision: 2, practiceTask: task } });
+    state = inspect(state, 'practice');
+    expect(currentTutorialStep(state)?.id).toBe('practice');
+  });
+  it('rejects another authorized scope and invalidates downstream reviews after a new first task', () => {
+    let state = inspect(inspect(inspect(start(), 'first'), 'revision'), 'practice');
+    state = tutorialReducer(state, { type: 'observe', observation: { ...beginnerObservation(), revision: 2, task: { ...beginnerObservation().task!, id: 'new-first' } } });
+    expect(confirmedTutorialSteps(state)).toEqual(['configuration', 'workspace', 'agent', 'task']);
+    const wrongWorkspace = tutorialReducer(createTutorialState(scope, undefined, 2), { type: 'observe', observation: evidence() });
+    expect(confirmedTutorialSteps(wrongWorkspace)).toEqual(['configuration']);
+  });
+});
+
 const scope: TutorialScope = { tenantId: 'tenant-a', userId: 'user-a', workspaceId: 'customer-workspace-a' };
 function evidence(patch: Partial<ProductObservation> = {}): ProductObservation {
   return { scope, revision: 1, access: 'allowed',

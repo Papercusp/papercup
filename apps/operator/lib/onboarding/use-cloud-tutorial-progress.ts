@@ -1,30 +1,31 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readHostedBrowserApiMarker } from "../hosted-browser-api";
-import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, createTutorialState, sameTutorialScope, tutorialProgress, tutorialReducer, type SavedTutorialProgress, type TutorialEvent, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, createTutorialState, sameTutorialScope, tutorialProgress, tutorialReducer, type SavedTutorialProgress, type TutorialEvent, type TutorialState, type TutorialVersion } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 
 const endpoint = "/api/hosted/browser/onboarding/tutorial-progress";
 interface ProgressRecord { revision: number; progress: SavedTutorialProgress }
-function readRecord(value: unknown): ProgressRecord {
+function readRecord(value: unknown, version: TutorialVersion): ProgressRecord {
   const record = (value as { record?: ProgressRecord } | null)?.record;
   const progress = record?.progress;
   if (!record || !Number.isSafeInteger(record.revision) || record.revision < 0 || !progress ||
-    progress.lessonId !== CLOUD_TUTORIAL_ID || progress.version !== CLOUD_TUTORIAL_VERSION ||
+    progress.lessonId !== CLOUD_TUTORIAL_ID || progress.version !== version ||
     !["active", "paused", "skipped", "closed"].includes(progress.disposition) ||
     ![progress.scope?.tenantId, progress.scope?.userId, progress.scope?.workspaceId].every(id => typeof id === "string" && id.length > 0) ||
-    (progress.inspectedResult && ![progress.inspectedResult.sessionId, progress.inspectedResult.taskId, progress.inspectedResult.resultId].every(id => typeof id === "string" && id.length > 0))) throw new Error("Invalid saved lesson progress. Check again to reload it.");
+    [progress.inspectedResult, progress.inspectedRevision, progress.inspectedPractice].some(receipt => receipt && ![receipt.sessionId, receipt.taskId, receipt.resultId].every(id => typeof id === "string" && id.length > 0))) throw new Error("Invalid saved lesson progress. Check again to reload it.");
   return record;
 }
 const fingerprint = (progress: SavedTutorialProgress) => JSON.stringify([
   progress.scope.tenantId, progress.scope.userId, progress.scope.workspaceId,
   progress.lessonId, progress.version, progress.disposition,
   progress.inspectedResult?.sessionId ?? null, progress.inspectedResult?.taskId ?? null, progress.inspectedResult?.resultId ?? null,
+  progress.inspectedRevision ?? null, progress.inspectedPractice ?? null,
 ]);
 
 /** Extend the hosted progress seam. Server-returned scope is a consistency
  * token; cookies and server authorization remain the only source of authority.
  * Writes serialize per mount, coalesce UI changes, and never persist domain steps. */
-export function useCloudTutorialProgress(selectionKey: string) {
+export function useCloudTutorialProgress(selectionKey: string, version: TutorialVersion = CLOUD_TUTORIAL_VERSION) {
   const [state, setState] = useState<TutorialState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -39,17 +40,17 @@ export function useCloudTutorialProgress(selectionKey: string) {
   const restore = useCallback((record: ProgressRecord) => {
     recordRef.current = record;
     savedRef.current = fingerprint(record.progress);
-    setState(current => current && sameTutorialScope(current.scope, record.progress.scope)
-      ? { ...current, disposition: record.progress.disposition, inspectedResult: record.progress.inspectedResult }
-      : createTutorialState(record.progress.scope, record.progress));
-  }, []);
+    setState(current => current && current.version === version && sameTutorialScope(current.scope, record.progress.scope)
+      ? { ...current, disposition: record.progress.disposition, inspectedResult: record.progress.inspectedResult, inspectedRevision: record.progress.inspectedRevision, inspectedPractice: record.progress.inspectedPractice }
+      : createTutorialState(record.progress.scope, record.progress, version));
+  }, [version]);
   const request = useCallback((method: "GET" | "POST", signal: AbortSignal, body?: unknown) => {
     const marker = readHostedBrowserApiMarker();
     if (!marker) throw new Error("Sign in to the hosted app to save your lesson.");
-    return fetch(endpoint, { method, signal, credentials: "same-origin", cache: "no-store",
+    return fetch(version === 2 ? `${endpoint}?version=2` : endpoint, { method, signal, credentials: "same-origin", cache: "no-store",
       headers: { accept: "application/json", "x-papercusp-workspace": marker.controlPlaneWorkspaceId, ...(body ? { "content-type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}) });
-  }, []);
+  }, [version]);
 
   const reload = useCallback(async () => {
     const generation = ++generationRef.current;
@@ -61,7 +62,7 @@ export function useCloudTutorialProgress(selectionKey: string) {
     try {
       const response = await request("GET", controller.signal);
       if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "Sign in and select an authorized workspace, then check again." : "Saved lesson progress is unavailable. Check again to reload it.");
-      const record = readRecord(await response.json());
+      const record = readRecord(await response.json(), version);
       if (generation !== generationRef.current || controller.signal.aborted) return;
       restore(record);
     } catch (error) {
@@ -69,7 +70,7 @@ export function useCloudTutorialProgress(selectionKey: string) {
     } finally {
       if (generation === generationRef.current && !controller.signal.aborted) setLoading(false);
     }
-  }, [request, restore]);
+  }, [request, restore, version]);
 
   const flush = useCallback(async () => {
     const record = recordRef.current;
@@ -84,6 +85,7 @@ export function useCloudTutorialProgress(selectionKey: string) {
         const response = await request("POST", controller.signal, {
           expectedScope: current.progress.scope, expectedRevision: current.revision, mutationId: pending.mutationId,
           disposition: pending.progress.disposition, ...(pending.progress.inspectedResult ? { inspectedResult: pending.progress.inspectedResult } : {}),
+          ...(version === 2 ? { version, inspectedRevision: pending.progress.inspectedRevision, inspectedPractice: pending.progress.inspectedPractice } : {}),
         });
         if (generation !== generationRef.current || controller.signal.aborted) return;
         if (response.status === 401 || response.status === 403) {
@@ -91,7 +93,7 @@ export function useCloudTutorialProgress(selectionKey: string) {
           throw new Error("Your session or workspace changed. Sign in or select your workspace, then check again.");
         }
         if (!response.ok && response.status !== 409) throw new Error("Lesson progress could not be saved. Your Cloud controls still work; check again to retry saving.");
-        const next = readRecord(await response.json());
+        const next = readRecord(await response.json(), version);
         if (generation !== generationRef.current || controller.signal.aborted) return;
         if (!sameTutorialScope(current.progress.scope, next.progress.scope)) {
           pendingRef.current = null; recordRef.current = null; setState(null);
@@ -111,7 +113,7 @@ export function useCloudTutorialProgress(selectionKey: string) {
     } finally {
       if (generation === generationRef.current) writingRef.current = false;
     }
-  }, [request, restore]);
+  }, [request, restore, version]);
 
   useEffect(() => {
     void reload();

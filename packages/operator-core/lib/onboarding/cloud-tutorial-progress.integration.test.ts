@@ -52,6 +52,25 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     return createHostedTutorialProgressRoutes({ origin: ORIGIN, controlPlaneWorkspaceId: 'control', runTenant })
       .find(route => route.method === method)!.handler;
   }
+  it('isolates beginner v2 receipts and CAS from the retained advanced v1 record', async () => {
+    const s = { ...scope, workspaceId: randomUUID() };
+    const legacy = await withScope(s, tx => updateTutorialProgress(tx, s, change({}, s)));
+    expect((await withScope(s, tx => readTutorialProgress(tx, s, 2))).revision).toBe(0);
+    const receipt = { sessionId: 'session', taskId: 'revision', resultId: 'answer' };
+    const beginner = await withScope(s, tx => updateTutorialProgress(tx, s, change({ version: 2, inspectedRevision: receipt, disposition: 'active' }, s)));
+    expect(beginner.progress.version).toBe(2);
+    expect(beginner.progress.inspectedRevision).toEqual(receipt);
+    expect(await withScope(s, tx => readTutorialProgress(tx, s))).toEqual(legacy);
+    expect(await withScope(s, tx => readTutorialProgress(tx, s, 2))).toEqual(beginner);
+    await expect(withScope(s, tx => updateTutorialProgress(tx, s, change({ inspectedPractice: receipt }, s)))).rejects.toThrow('tutorial_version_mismatch');
+    expect(confirmedTutorialSteps(createTutorialState(s, beginner.progress, 2))).toEqual([]);
+  });
+  it('reads the explicit beginner version through the authenticated route and rejects unknown versions', async () => {
+    const response = await handler('GET')(new Request(`${ORIGIN}/api${HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH}?version=2`), context());
+    expect(response.status).toBe(200); expect((await response.json()).record.progress.version).toBe(2);
+    const invalid = await handler('GET')(new Request(`${ORIGIN}/api${HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH}?version=3`), context());
+    expect(invalid.status).toBe(400);
+  });
   it('restores UI state in a fresh request/later session without asserting domain completion', async () => {
     const update = change();
     const saved = await withScope(scope, tx => updateTutorialProgress(tx, scope, update));

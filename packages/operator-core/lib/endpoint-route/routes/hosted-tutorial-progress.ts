@@ -104,12 +104,15 @@ export function createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspa
         if (csrf) return csrf;
       }
       const scope = { tenantId: principal.activeOrganizationId, userId: principal.userId, workspaceId: principal.selectedWorkspaceId! };
+      const requestedVersion = new URL(request.url).searchParams.get('version');
+      if (requestedVersion !== null && requestedVersion !== '1' && requestedVersion !== '2') return jsonError('invalid_tutorial_version', 400);
+      const version = requestedVersion === '2' ? 2 : 1;
       const parsed = method === 'POST' ? tutorialProgressUpdateSchema.safeParse(await request.json().catch(() => null)) : null;
       if (parsed && !parsed.success) return jsonError('invalid_tutorial_progress', 400);
       if (parsed?.success && !sameTutorialScope(scope, parsed.data.expectedScope)) return jsonError('tutorial_scope_changed', 403);
       try {
         const record = await runTenant(tenantContext(principal), tx => parsed?.success
-          ? updateTutorialProgress(tx, scope, parsed.data) : readTutorialProgress(tx, scope));
+          ? updateTutorialProgress(tx, scope, parsed.data) : readTutorialProgress(tx, scope, version));
         return Response.json({ record }, { headers: { 'cache-control': 'no-store' } });
       } catch (error) {
         if (error instanceof TutorialProgressConflict) return Response.json({ error: 'tutorial_progress_conflict', record: error.current }, { status: 409, headers: { 'cache-control': 'no-store' } });

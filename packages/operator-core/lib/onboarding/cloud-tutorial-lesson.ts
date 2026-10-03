@@ -3,10 +3,15 @@
  * Reuses the onboarding pack's brief/details convention without its node-only loader. */
 export const CLOUD_TUTORIAL_ID = 'first-cloud-agent';
 export const CLOUD_TUTORIAL_VERSION = 1;
+export const CLOUD_TUTORIAL_BEGINNER_VERSION = 2;
+export type TutorialVersion = 1 | 2;
 export const CLOUD_TUTORIAL_TASK = 'Without running any tools or changing anything, list the tools available to you and explain what each is for.';
+export const CLOUD_TUTORIAL_NOTES = 'Meeting notes: We want a small community book swap next month. Mira will ask the library about a room by Friday. Leon will collect suggested books. We have not chosen a date or budget. The team needs a short plan before contacting anyone else.';
+export const CLOUD_TUTORIAL_PLAN_TASK = `Goal: turn these meeting notes into an action plan. Context: ${CLOUD_TUTORIAL_NOTES}\nOutput: a short table of actions, named owners, deadlines and open questions. Mark missing information as unknown; do not invent facts. Work only with the text above. Do not use tools, access files, contact anyone, or change anything.`;
+export const CLOUD_TUTORIAL_REVISION_TASK = 'Revise your action plan: separate confirmed commitments from proposed next steps, put unresolved decisions first, and keep it under 150 words. Use only our supplied notes; do not use tools, contact anyone, or change anything.';
 
 export interface TutorialScope { tenantId: string; userId: string; workspaceId: string }
-export type TutorialStepId = 'connection' | 'configuration' | 'workspace' | 'agent' | 'task' | 'result';
+export type TutorialStepId = 'connection' | 'configuration' | 'workspace' | 'agent' | 'task' | 'result' | 'revision' | 'practice';
 export type GuideAction = 'show-target' | 'check-again' | 'help' | 'pause' | 'resume' | 'skip' | 'replay' | 'exit';
 export type GuideDisposition = 'active' | 'paused' | 'skipped' | 'closed';
 export type StepStatus = 'loading' | 'ready' | 'waiting' | 'delayed' | 'error' | 'blocked' | 'missing-target' | 'complete';
@@ -42,6 +47,24 @@ export const CLOUD_TUTORIAL_STEPS: readonly LessonStep[] = [
     details: 'The lesson completes after the app confirms the sample task finished and you inspect its correlated answer. Other chats and unrelated task outputs do not count.',
     recovery: 'Open the same session and completed task. If its answer is still pending, keep using the app while the guide waits.' },
 ];
+export const CLOUD_TUTORIAL_BEGINNER_STEPS: readonly LessonStep[] = [
+  { ...CLOUD_TUTORIAL_STEPS[1], prerequisites: [], brief: 'Select a prepared workspace and review its existing cost. You do not need provider credentials or machine settings.' },
+  { ...CLOUD_TUTORIAL_STEPS[2], prerequisites: ['configuration'], brief: 'Wait for the selected prepared workspace and its authorized connection to be ready.' },
+  CLOUD_TUTORIAL_STEPS[3],
+  { ...CLOUD_TUTORIAL_STEPS[4], title: 'Turn notes into an action plan', brief: 'Give the agent a goal, useful context and a requested output. This exercise uses only supplied text.', details: CLOUD_TUTORIAL_PLAN_TASK },
+  { ...CLOUD_TUTORIAL_STEPS[5], brief: 'Compare the action plan with the notes. Check owners, deadlines and anything marked unknown.', details: 'An answer can sound confident and still be wrong. Check each claim against your supplied notes before confirming that you reviewed it.' },
+  { id: 'revision', title: 'Ask for a correction and review it', target: '[data-tutorial-target="cloud-revision"]', prerequisites: ['result'], actions,
+    brief: 'Explicitly request a revision, then compare its answer with the original notes.', details: CLOUD_TUTORIAL_REVISION_TASK,
+    recovery: 'Review this revision’s transcript and delivery status before explicitly retrying. An unrelated answer does not count.' },
+  { id: 'practice', title: 'Write a different task yourself', target: '[data-tutorial-target="cloud-practice"]', prerequisites: ['revision'], actions,
+    brief: 'Write a different goal, provide the text the agent needs, and describe the answer you want. Use a task that can be answered from that text alone.',
+    details: 'No sample prompt is filled in for you. Keep private information out of this exercise. Review the successful answer against your own context, then explain how you checked it.',
+    recovery: 'If the task needs tools or external actions, reframe it as a request for a proposal from supplied text. Review delivery and result status before retrying.' },
+];
+export const tutorialSteps = (version: number = CLOUD_TUTORIAL_VERSION) => version === CLOUD_TUTORIAL_BEGINNER_VERSION ? CLOUD_TUTORIAL_BEGINNER_STEPS : CLOUD_TUTORIAL_STEPS;
+
+export type TutorialTaskObservation = { id: string; sessionId: string; sampleTask: boolean; submittedByUser: boolean; status: 'pending' | 'failed' | 'succeeded'; resultId?: string; firstTaskId?: string };
+export type TutorialInspection = { sessionId: string; taskId: string; resultId: string };
 
 export interface ProductObservation {
   scope: TutorialScope;
@@ -52,44 +75,54 @@ export interface ProductObservation {
   configuration?: { connectionId: string; valid: boolean; costReviewed: boolean };
   workspace?: { id: string; connectionId: string; healthy: boolean };
   agent?: { id: string; workspaceId: string; launchedByUser: boolean; available: boolean };
-  task?: { id: string; sessionId: string; sampleTask: boolean; submittedByUser: boolean; status: 'pending' | 'failed' | 'succeeded'; resultId?: string };
+  task?: TutorialTaskObservation;
+  revisionTask?: TutorialTaskObservation;
+  practiceTask?: TutorialTaskObservation;
   attempt?: { step: TutorialStepId; status: 'pending' | 'failed' | 'delayed' };
 }
 export interface SavedTutorialProgress {
   lessonId: typeof CLOUD_TUTORIAL_ID; version: number; scope: TutorialScope;
   disposition: GuideDisposition;
   /** A UI inspection receipt, never a saved assertion that domain work succeeded. */
-  inspectedResult?: { sessionId: string; taskId: string; resultId: string };
+  inspectedResult?: TutorialInspection;
+  inspectedRevision?: TutorialInspection;
+  inspectedPractice?: TutorialInspection;
 }
 export interface TutorialState {
+  version: TutorialVersion;
   scope: TutorialScope; disposition: GuideDisposition; observation: ProductObservation | null;
   inspectedResult: SavedTutorialProgress['inspectedResult'];
+  inspectedRevision?: TutorialInspection; inspectedPractice?: TutorialInspection;
   targetStatus: 'waiting' | 'missing' | 'ready';
 }
 export type TutorialEvent =
   | { type: 'observe'; observation: ProductObservation }
   | { type: 'action'; action: GuideAction }
   | { type: 'target'; scope: TutorialScope; step: TutorialStepId; status: TutorialState['targetStatus'] }
-  | { type: 'inspect-result'; scope: TutorialScope; sessionId: string; taskId: string; resultId: string }
+  | { type: 'inspect-result'; scope: TutorialScope; sessionId: string; taskId: string; resultId: string; kind?: 'first' | 'revision' | 'practice' }
   | { type: 'change-scope'; scope: TutorialScope; saved?: SavedTutorialProgress };
 
 export function sameTutorialScope(a: TutorialScope, b: TutorialScope): boolean {
   return a.tenantId === b.tenantId && a.userId === b.userId && a.workspaceId === b.workspaceId;
 }
-export function createTutorialState(scope: TutorialScope, saved?: SavedTutorialProgress): TutorialState {
-  const compatible = saved?.lessonId === CLOUD_TUTORIAL_ID && saved.version === CLOUD_TUTORIAL_VERSION && sameTutorialScope(scope, saved.scope);
-  return { scope, disposition: compatible ? saved.disposition : 'active', observation: null,
-    inspectedResult: compatible ? saved.inspectedResult : undefined, targetStatus: 'waiting' };
+export function createTutorialState(scope: TutorialScope, saved?: SavedTutorialProgress, version: TutorialVersion = CLOUD_TUTORIAL_VERSION): TutorialState {
+  const compatible = saved?.lessonId === CLOUD_TUTORIAL_ID && saved.version === version && sameTutorialScope(scope, saved.scope);
+  return { scope, version, disposition: compatible ? saved.disposition : 'active', observation: null,
+    inspectedResult: compatible ? saved.inspectedResult : undefined,
+    ...(version === 2 && compatible ? { inspectedRevision: saved.inspectedRevision, inspectedPractice: saved.inspectedPractice } : {}), targetStatus: 'waiting' };
 }
+const inspectedTask = (task: TutorialTaskObservation | undefined, receipt: TutorialInspection | undefined) => Boolean(task?.status === 'succeeded' && task.resultId && receipt?.sessionId === task.sessionId && receipt.taskId === task.id && receipt.resultId === task.resultId);
 export function confirmedTutorialSteps(state: TutorialState): TutorialStepId[] {
   const o = state.observation;
   if (!o || o.access !== 'allowed') return [];
   const completed: TutorialStepId[] = [];
-  if (!o.connection?.validated) return completed;
-  completed.push('connection');
-  if (!o.configuration?.valid || !o.configuration.costReviewed || o.configuration.connectionId !== o.connection.id) return completed;
+  if (state.version === 1) {
+    if (!o.connection?.validated) return completed;
+    completed.push('connection');
+  }
+  if (!o.configuration?.valid || !o.configuration.costReviewed || o.configuration.connectionId !== (state.version === 2 ? o.workspace?.connectionId : o.connection?.id)) return completed;
   completed.push('configuration');
-  if (!o.workspace?.healthy || o.workspace.connectionId !== o.connection.id) return completed;
+  if (!o.workspace?.healthy || o.workspace.connectionId !== o.configuration.connectionId || (state.version === 2 && o.workspace.id !== state.scope.workspaceId)) return completed;
   completed.push('workspace');
   if (!o.agent?.available || !o.agent.launchedByUser || o.agent.workspaceId !== o.workspace.id) return completed;
   completed.push('agent');
@@ -97,12 +130,20 @@ export function confirmedTutorialSteps(state: TutorialState): TutorialStepId[] {
   if (!task?.submittedByUser || !task.sampleTask || task.sessionId !== o.agent.id || task.status !== 'succeeded' || !task.resultId) return completed;
   completed.push('task');
   const inspected = state.inspectedResult;
-  if (inspected?.sessionId === task.sessionId && inspected.taskId === task.id && inspected.resultId === task.resultId) completed.push('result');
+  if (!inspectedTask(task, inspected)) return completed;
+  completed.push('result');
+  if (state.version === 2) {
+    const revision = o.revisionTask, practice = o.practiceTask;
+    if (!revision?.submittedByUser || revision.firstTaskId !== task.id || revision.sessionId !== task.sessionId || revision.id === task.id || !inspectedTask(revision, state.inspectedRevision)) return completed;
+    completed.push('revision');
+    if (!practice?.submittedByUser || practice.sampleTask || practice.firstTaskId !== task.id || practice.sessionId !== task.sessionId || [task.id, revision.id].includes(practice.id) || !inspectedTask(practice, state.inspectedPractice)) return completed;
+    completed.push('practice');
+  }
   return completed;
 }
 export function currentTutorialStep(state: TutorialState): LessonStep | null {
   const completed = confirmedTutorialSteps(state);
-  return CLOUD_TUTORIAL_STEPS.find(step => !completed.includes(step.id)) ?? null;
+  return tutorialSteps(state.version).find(step => !completed.includes(step.id)) ?? null;
 }
 export function tutorialStepStatus(state: TutorialState): StepStatus {
   if (!state.observation) return 'loading';
@@ -119,7 +160,7 @@ export function tutorialStepStatus(state: TutorialState): StepStatus {
 }
 export function tutorialReducer(state: TutorialState, event: TutorialEvent): TutorialState {
   switch (event.type) {
-    case 'change-scope': return createTutorialState(event.scope, event.saved);
+    case 'change-scope': return createTutorialState(event.scope, event.saved, state.version);
     case 'observe': {
       const o = event.observation;
       if (!sameTutorialScope(state.scope, o.scope) || !Number.isSafeInteger(o.revision) || o.revision < 0 || (state.observation && o.revision <= state.observation.revision)) return state;
@@ -129,9 +170,11 @@ export function tutorialReducer(state: TutorialState, event: TutorialEvent): Tut
     case 'target':
       return sameTutorialScope(state.scope, event.scope) && currentTutorialStep(state)?.id === event.step ? { ...state, targetStatus: event.status } : state;
     case 'inspect-result': {
-      const task = state.observation?.task;
-      if (!sameTutorialScope(state.scope, event.scope) || task?.status !== 'succeeded' || task.sessionId !== event.sessionId || task.id !== event.taskId || task.resultId !== event.resultId || !confirmedTutorialSteps(state).includes('task')) return state;
-      return { ...state, inspectedResult: { sessionId: event.sessionId, taskId: event.taskId, resultId: event.resultId } };
+      const kind = event.kind ?? 'first';
+      const task = kind === 'revision' ? state.observation?.revisionTask : kind === 'practice' ? state.observation?.practiceTask : state.observation?.task;
+      const prior = kind === 'first' ? 'task' : kind === 'revision' ? 'result' : 'revision';
+      if ((kind !== 'first' && state.version !== 2) || !sameTutorialScope(state.scope, event.scope) || task?.status !== 'succeeded' || task.sessionId !== event.sessionId || task.id !== event.taskId || task.resultId !== event.resultId || !confirmedTutorialSteps(state).includes(prior)) return state;
+      return { ...state, [kind === 'first' ? 'inspectedResult' : kind === 'revision' ? 'inspectedRevision' : 'inspectedPractice']: { sessionId: event.sessionId, taskId: event.taskId, resultId: event.resultId } };
     }
     case 'action': {
       const disposition: Partial<Record<GuideAction, GuideDisposition>> = { pause: 'paused', resume: 'active', skip: 'skipped', replay: 'active', exit: 'closed' };
@@ -140,6 +183,7 @@ export function tutorialReducer(state: TutorialState, event: TutorialEvent): Tut
   }
 }
 export function tutorialProgress(state: TutorialState): SavedTutorialProgress {
-  return { lessonId: CLOUD_TUTORIAL_ID, version: CLOUD_TUTORIAL_VERSION, scope: state.scope, disposition: state.disposition,
-    ...(state.inspectedResult ? { inspectedResult: state.inspectedResult } : {}) };
+  return { lessonId: CLOUD_TUTORIAL_ID, version: state.version, scope: state.scope, disposition: state.disposition,
+    ...(state.inspectedResult ? { inspectedResult: state.inspectedResult } : {}),
+    ...(state.version === 2 ? { inspectedRevision: state.inspectedRevision, inspectedPractice: state.inspectedPractice } : {}) };
 }
