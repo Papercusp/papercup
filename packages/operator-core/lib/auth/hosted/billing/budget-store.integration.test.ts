@@ -37,7 +37,7 @@ const readContext: HostedBudgetContextReader = async (sql, input) => {
 };
 const store = (reader: HostedBudgetContextReader = readContext, run = service) => new PostgresHostedBudgetStore({ readContext: reader, run });
 
-async function tenant(controlWorkspaceId = randomUUID(), organizationId = randomUUID()): Promise<HostedBudgetScope> {
+async function tenant(controlWorkspaceId: string = randomUUID(), organizationId: string = randomUUID()): Promise<HostedBudgetScope> {
   const customerWorkspaceId = randomUUID();
   await db.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name)
     VALUES (${organizationId}::uuid, ${'budget-' + organizationId}, 'Budget fixture') ON CONFLICT DO NOTHING`;
@@ -125,6 +125,23 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     expect(next.decisions[0]?.reason).toBe('unreconciled-charge');
     await expect(store().observe(observation(r, { revision: 2, providerFinal: false }))).rejects.toThrow('downgrade');
     await expect(store().observe(observation(r, { revision: 2, costSource: 'estimate' }))).rejects.toThrow('downgrade');
+  });
+
+  it('serializes concurrent final-bill replays and corrections without double spend or lost revisions', async () => {
+    const s = await tenant(); const r = request(s); await store().reserve(r);
+    const first = observation(r, { costMicros: 20_000 });
+    const retries = await Promise.all(Array.from({ length: 8 }, () => store().observe(first)));
+    expect(retries.filter(o => o.outcome === 'recorded')).toHaveLength(1);
+    expect(retries.filter(o => o.outcome === 'duplicate')).toHaveLength(7);
+    const corrections = await Promise.all([
+      store().observe(observation(r, { revision: 2, observedAtMs: T + 2, costMicros: 40_000 })),
+      store().observe(observation(r, { revision: 3, observedAtMs: T + 3, costMicros: 60_000 })),
+    ]);
+    expect(corrections.every(o => o.outcome === 'recorded' || o.outcome === 'stale')).toBe(true);
+    const next = await store().reserve(request(s, { maximumCostMicros: 40_000 }));
+    expect(next.outcome).toBe('reserved');
+    expect(next.decisions[0]?.availableMicros).toBe(40_000);
+    expect((await store().reserve(request(s, { maximumCostMicros: 1 }))).outcome).toBe('refused');
   });
 
   it('keeps old-month unfinished work reserved in the next window', async () => {
