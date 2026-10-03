@@ -339,6 +339,111 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
   );
 });
 
+it(
+  'refreshes a pending Codex carry-respawn from a same-delivery retry before the re-arm commits (EI-24915900486106554)',
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-carry-retry-refresh-'));
+    const ownerId = uniqueOwner('CARRY-RETRY-REFRESH');
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const { captured, io } = fakeIo();
+    const marker = '⟦turn-origin:self-compaction nonce:1234567890abcdef⟧';
+    const staleText = `${marker} STALE_CHECKPOINT hash=old age=900s`;
+    const freshText = `${marker} FRESH_CHECKPOINT hash=new age=2s`;
+    const staleAddendum = 'STALE_CHECKPOINT hash=old age=900s';
+    const freshAddendum = 'FRESH_CHECKPOINT hash=new age=2s';
+    const originalCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('OLD-READY\\n');",
+      "const repaint=setInterval(()=>process.stdout.write('REPAINT\\n'),10);",
+      'setTimeout(()=>clearInterval(repaint),1000);',
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),8000);',
+    ].join('');
+    const freshCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('FRESH-BOOT\\n');",
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),5000);',
+    ].join('');
+    const mintedAddenda: string[] = [];
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', originalCode],
+      cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '150',
+        PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1500',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '700',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
+        PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+      }),
+      ownerId,
+      io,
+      bridgeTty: false,
+      mintCarryRespawnArgs: (_args, options) => {
+        mintedAddenda.push(options.systemPromptAddendum);
+        return { args: ['-e', freshCode], nativeId: null };
+      },
+      onExit: () => {},
+    });
+
+    try {
+      expect(await waitForHost(ownerId)).not.toBeNull();
+      expect(await waitForOutput(captured, 'OLD-READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const envelope = {
+        mode: 'carry-respawn' as const,
+        ownerId,
+        deliveryId: 'loop-fire-checkpoint-retry-1',
+      };
+      expect(await injectIntoHostWithConfirmation(sock, {
+        ...envelope,
+        data: staleText,
+        systemPromptAddendum: staleAddendum,
+      })).toMatchObject({ ok: true, reason: 'accepted' });
+
+      const queuedDeadline = Date.now() + 3000;
+      let events = '';
+      while (Date.now() < queuedDeadline) {
+        if (existsSync(eventLog)) {
+          events = readFileSync(eventLog, 'utf8');
+          if (events.includes('"kind":"respawn-rearm-queued"')) break;
+        }
+        await sleep(20);
+      }
+      expect(events).toContain('"kind":"respawn-rearm-queued"');
+
+      expect(await injectIntoHostWithConfirmation(sock, {
+        ...envelope,
+        data: freshText,
+        systemPromptAddendum: freshAddendum,
+      })).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+      expect(readFileSync(eventLog, 'utf8')).toContain('"refreshedPendingCarryRespawn":true');
+
+      const respawnDeadline = Date.now() + 5000;
+      while (mintedAddenda.length === 0 && Date.now() < respawnDeadline) await sleep(20);
+      expect(mintedAddenda).toEqual([freshAddendum]);
+      expect(await waitForOutput(captured, `ECHO:${freshText}`, 3000)).toBe(true);
+      expect(captured()).not.toContain(`ECHO:${staleText}`);
+    } finally {
+      if (existsSync(sock)) await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+      await done;
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  15_000,
+);
+
 describe('host-code-adopted carry with a late Codex native id (WI-10004791)', () => {
   it.each([true, false] as const)(
     'reports and emits only after exact first-turn proof when mapping confirmation is %s',
