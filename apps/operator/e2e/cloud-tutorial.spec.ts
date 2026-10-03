@@ -559,8 +559,13 @@ for (const existing of [false, true]) {
       await page.getByRole('button', { name: 'Provision workspace' }).click();
       await expect.poll(() => fixture.writes.find(write => write.path.endsWith('/provision'))?.body.name).toBe('My workspace');
       await page.getByRole('button', { name: 'Show me', exact: true }).click();
-      await page.getByRole('button', { name: 'My workspace', exact: false }).first().click();
+      // The prepared-workspace entry also names this host. Select the actual
+      // Operate row so this legacy BYOC journey never opts into version 2.
+      await page.getByRole('list', { name: 'Managed workspace hosts' })
+        .getByRole('button', { name: 'My workspace GCP', exact: false }).click();
+      expect(new URL(page.url()).searchParams.get('tutorial')).not.toBe('beginner');
     }
+    await expect(guide.getByRole('heading', { name: 'Get your first agent running', exact: true })).toBeVisible();
     // A 640 CSS-pixel viewport exercises the same layout width as the native
     // 200% zoom review. Measure rendered text, including overflowing glyphs.
     const fullViewport = page.viewportSize()!;
