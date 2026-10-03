@@ -176,6 +176,13 @@ import {
   type AnthropicCacheStats,
   type OpenAiCacheStats,
 } from './cache-policy';
+import {
+  chooseSupportedEffort,
+  createEffortClampCache,
+  parseUnsupportedEffortError,
+  readRequestEffort,
+  rewriteRequestEffort,
+} from './effort-clamp';
 import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
 import {
   AdmitImmediatelyDriver,
@@ -693,6 +700,11 @@ export const PIN_YIELDED_HEADER = 'x-papercusp-pin-yielded';
  *  sonnet so the call succeeds instead of hard-failing. Makes the silent-substitution VISIBLE to the
  *  caller + observable in the journal. Value: `opus->sonnet`. Not forwarded upstream. */
 export const MODEL_DOWNGRADED_HEADER = 'x-papercusp-model-downgraded';
+/** WI-10005833: set on the response back to the client when the gateway rewrote the request's
+ *  `output_config.effort` because the model refuses that level (learned from an upstream 400 naming the
+ *  supported levels). Makes the substitution visible to the caller. Value: `<from>-><to>`, e.g.
+ *  `xhigh->max`. Not forwarded upstream. */
+export const EFFORT_CLAMPED_HEADER = 'x-papercusp-effort-clamped';
 /** Set on the response back to the client when the gateway's internal retry ladder for a 429/529
  *  (bounded transient-wait + absorb +, for opus, the last-resort downgrade) is fully EXHAUSTED and
  *  the terminal upstream status is being forwarded as the gateway's final answer. Value: the number
@@ -874,11 +886,7 @@ function acceptedCodexModelAllows(
 }
 
 function forwardedClaudeEffort(bodyBuf: Buffer): string | null {
-  try {
-    const parsed = JSON.parse(bodyBuf.toString('utf8')) as { output_config?: { effort?: unknown } };
-    return typeof parsed.output_config?.effort === 'string' && parsed.output_config.effort.trim()
-      ? parsed.output_config.effort.trim().toLowerCase() : null;
-  } catch { return null; }
+  return readRequestEffort(bodyBuf);
 }
 
 /** Convert only an accepted Anthropic policy entry to an upstream API id.
@@ -1748,6 +1756,15 @@ export interface GatewayStats {
    *  pool-wide (a hard 403 org-disallow / usage-cap / unified-window rejection it could not route or wait
    *  around). A non-zero value = the fleet is running critical work on sonnet because opus is exhausted. */
   opusToSonnetDowngrades: number;
+  /** WI-10005833: unsupported reasoning-effort clamp. `retries` = requests retried once after an upstream
+   *  400 named their `output_config.effort` unsupported; `rewrites` = requests rewritten from a learned
+   *  clamp before they were sent; `learned` = the live (model, from → to) substitutions. A non-zero
+   *  `retries` means some launch path is still sending a level its model refuses. */
+  effortClamps: {
+    retries: number;
+    rewrites: number;
+    learned: Array<{ model: string; from: string; to: string; learnedAt: number; applied: number }>;
+  };
   /** The admission backlog cap that triggers load-shedding (0 = unbounded). */
   maxQueued: number;
   /** The CONFIGURED admission-concurrency cap (the AIMD ceiling). `admission.maxConcurrent` is the LIVE
@@ -3323,6 +3340,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let shedAllThrottled = 0; // fail-fast: 429s shed at admission because the whole pool was throttled (B-GW-1)
   let bareBurstRotateSuppressed = 0; // G1 (WI-649): bare-429 rotate-retries suppressed because ≥half the pool was out of rotation (fleet-wide storm)
   let opusToSonnetDowngrades = 0; // WI-1073: last-resort opus→sonnet downgrades (opus walled pool-wide → sonnet-vs-nothing)
+  // WI-10005833: unsupported reasoning-effort clamp. The cache is per gateway instance, learned from
+  // upstream 400s that list the model's supported levels.
+  const effortClampCache = createEffortClampCache();
+  let effortClampRetries = 0; // requests retried once after a 400 named their effort unsupported
+  let effortClampRewrites = 0; // requests rewritten from a learned clamp before they were sent
   let upstreamErrors = 0;
   let failovers = 0;
   let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
@@ -4550,6 +4572,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       shedAllThrottled,
       bareBurstRotateSuppressed,
       opusToSonnetDowngrades,
+      effortClamps: {
+        retries: effortClampRetries,
+        rewrites: effortClampRewrites,
+        learned: effortClampCache
+          .entries()
+          .map(({ model: m, from, to, learnedAt, applied }) => ({ model: m, from, to, learnedAt, applied })),
+      },
       clamp: {
         mode: clampMode,
         recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
@@ -5337,6 +5366,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // WI-1073: at-most-once guard — we downgrade a walled OPUS request to sonnet only ONCE per request,
     // so a failed sonnet retry forwards (never opus→sonnet→sonnet looping).
     let opusDowngraded = false;
+    // WI-10005833: at-most-once guard for the unsupported-effort retry, plus what was substituted (for
+    // the response header). A second effort 400 after the retry is forwarded, never looped on.
+    let effortClampRetried = false;
+    let effortClampedFrom: string | null = null;
+    let effortClampedTo: string | null = null;
     let est = { inTok: 0, outTok: 1024 };
     // Streaming requests get the SHORT TTFB headers deadline (first byte in seconds); non-streaming the
     // generous one (headers only after the full generation). Default false → generous, so an unparseable
@@ -6352,7 +6386,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // rather than the error's identity so no error-normalisation can lose it.
       const INTERCEPT = new Error('claude gateway: caller intercepted before relay');
       type Intercept = {
-        action: 'wait' | 'absorb' | 'downgrade';
+        action: 'wait' | 'absorb' | 'downgrade' | 'effort-clamp';
         status: number;
         outHeaders: Record<string, string>;
         peeked: string;
@@ -6402,6 +6436,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           outHeaders[PIN_YIELDED_HEADER] = `${pinned.accountId}->${metadata.accountId}`;
         }
         if (opusDowngraded) outHeaders[MODEL_DOWNGRADED_HEADER] = 'opus->sonnet';
+        if (effortClampedFrom && effortClampedTo) {
+          outHeaders[EFFORT_CLAMPED_HEADER] = `${effortClampedFrom}->${effortClampedTo}`;
+        }
         return outHeaders;
       };
 
@@ -6436,6 +6473,37 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
       };
 
+      // WI-10005833: an accepted operation policy that pins an exact effort is enforced before any I/O
+      // (the 503 above). Substituting a different level would violate it, so the clamp stays off there
+      // and the upstream 400 is forwarded unchanged.
+      const effortPinnedByPolicy =
+        operationModelPolicy.status === 'bound' && Boolean(operationModelPolicy.policy.effort);
+      /** Rewrite this request's `output_config.effort` from `from` to `to`; false when the body carries none. */
+      const clampRequestEffort = (from: string, to: string): boolean => {
+        const rewritten = rewriteRequestEffort(bodyBuf, to);
+        if (!rewritten) return false;
+        bodyBuf = rewritten;
+        effortClampedFrom ??= from;
+        effortClampedTo = to;
+        return true;
+      };
+      /**
+       * The substitution an upstream 400 body calls for, or null. Non-null only when the body names an
+       * unsupported effort, that level is the one this request carries in `output_config.effort`, a
+       * supported level exists to move to, and the body can be rewritten — so an intercept taken on it
+       * always retries instead of falling through to a forward that skips the outcome records.
+       */
+      const effortClampFor = (peeked: string): { from: string; to: string; supported: string[] } | null => {
+        if (effortPinnedByPolicy || effortClampRetried) return null;
+        const unsupported = parseUnsupportedEffortError(peeked);
+        if (!unsupported) return null;
+        const from = readRequestEffort(bodyBuf);
+        if (!from || from !== unsupported.requested) return null;
+        const to = chooseSupportedEffort(from, unsupported.supported);
+        if (!to || !rewriteRequestEffort(bodyBuf, to)) return null;
+        return { from, to, supported: unsupported.supported };
+      };
+
       for (;;) {
         clearIntercept();
         // A caller-level wait/absorb logs its own retry line, so a line left pending
@@ -6444,6 +6512,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
         shedRecorded = false;
         rotateSuppressRecorded = false;
         let attemptsThisPass = 0;
+
+        // WI-10005833: rewrite a level this model is already known to refuse BEFORE sending, so only
+        // the first request per (model, level) pays the 400 round trip. Checked on every pass because
+        // a pass may follow a model substitution (the WI-1073 downgrade), whose id has its own entry.
+        if (!effortPinnedByPolicy) {
+          const requestedEffort = readRequestEffort(bodyBuf);
+          const learned = requestedEffort ? effortClampCache.apply(model, requestedEffort) : null;
+          if (requestedEffort && learned && clampRequestEffort(requestedEffort, learned)) {
+            effortClampRewrites++;
+          }
+        }
 
         const kernelAdapter = createClaudeKernelAdapter({
           // D-010: `proxy` spent this request's one `pool.active()` across the ~500
@@ -6959,6 +7038,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const classification = metadata.classification;
                 const retryIntent = classification !== null && classification.kind !== 'forward';
 
+                // WI-10005833: a 400 refusing the request's reasoning effort names the supported levels
+                // itself, so retry once at a supported level instead of relaying a 400 that ends the
+                // caller's turn. Decided here, before anything is relayed; applied in the catch.
+                if (status === 400 && !res.headersSent && effortClampFor(metadata.peekedBody ?? '')) {
+                  interception.taken = {
+                    status,
+                    outHeaders,
+                    peeked: metadata.peekedBody ?? '',
+                    transient: false,
+                    action: 'effort-clamp',
+                    waitMs: 0,
+                    backoffMs: 0,
+                  };
+                  throw INTERCEPT;
+                }
+
                 if (retryIntent) {
                   const decision = decideThrottleRecovery({
                     status,
@@ -7132,6 +7227,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // `null` at the pass reset, which would make every field access below TS2339.
           const taken = takeIntercept();
           if (taken) {
+            if (taken.action === 'effort-clamp') {
+              // WI-10005833: at most once per request. `effortClampFor` already proved the rewrite
+              // applies; it is re-derived from the same peeked body and the unchanged request body.
+              const clamp = effortClampFor(taken.peeked);
+              effortClampRetried = true;
+              if (clamp && clampRequestEffort(clamp.from, clamp.to)) {
+                effortClampCache.learn(model, clamp.from, clamp.to);
+                effortClampRetries++;
+                log(
+                  'warn',
+                  `inference-gateway: upstream 400 — ${model} does not support effort '${clamp.from}' (supported: ${clamp.supported.join(', ')}) → retrying once at '${clamp.to}' for '${wantOwner ?? 'unpinned'}' on '${active.accountId}'; later ${model} '${clamp.from}' requests are rewritten before sending (WI-10005833)`,
+                );
+                continue;
+              }
+            }
             if (taken.action === 'wait') {
               transientWaitedMs += taken.waitMs;
               log(
