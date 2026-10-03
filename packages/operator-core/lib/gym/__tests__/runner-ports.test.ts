@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createGymRunnerPorts, parseVitestOracleResults, type GymRunnerPortsConfig } from '../runner-ports';
 import type { Sql } from 'postgres';
 
@@ -169,6 +171,48 @@ describe('createGymRunnerPorts', () => {
       });
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   });
+
+  it('measures real Git and Vitest oracle artifacts across an implementation change', async () => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-real-'));
+    const vitestDir = dirname(fileURLToPath(import.meta.resolve('vitest/package.json')));
+    const implementation = 'export const answer = 42;\n';
+    const changedImplementation = 'export const answer = 41;\n';
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    try {
+      // Reuse the installed framework; this fixture owns no agent or live DB.
+      mkdirSync(join(clonePath, 'node_modules'));
+      symlinkSync(vitestDir, join(clonePath, 'node_modules', 'vitest'), 'dir');
+      writeFileSync(join(clonePath, 'package.json'), JSON.stringify({ type: 'module', scripts: {
+        'test:file': `node ${JSON.stringify(join(vitestDir, 'vitest.mjs'))} run --config vitest.config.mjs`,
+      } }));
+      writeFileSync(join(clonePath, 'vitest.config.mjs'), `export default { test: {
+        include: ['oracle.test.mjs'], pool: 'forks', maxWorkers: 1, fileParallelism: false,
+        reporters: ['json'], outputFile: process.argv.find(a => a.startsWith('--outputFile='))?.slice(13),
+      } };\n`);
+      writeFileSync(join(clonePath, 'impl.mjs'), implementation);
+      writeFileSync(join(clonePath, 'oracle.test.mjs'), `import { test, expect } from 'vitest';
+        import { answer } from './impl.mjs';
+        test('actual task', () => expect(answer).toBe(42));\n`);
+      const git = (args: string[]) => execFileSync('git', args, { cwd: clonePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      git(['init', '--quiet']);
+      git(['add', 'package.json', 'vitest.config.mjs', 'impl.mjs', 'oracle.test.mjs']);
+      git(['-c', 'user.name=Gym fixture', '-c', 'user.email=gym-fixture@example.invalid', 'commit', '--quiet', '-m', 'Pinned oracle fixture']);
+      const pinCommit = git(['rev-parse', 'HEAD']).trim();
+      const port = createGymRunnerPorts(cfg().config).runOracle!;
+      const input = { clonePath, testPath: 'oracle.test.mjs', implPath: 'impl.mjs', pinCommit };
+      const pre = await port(input);
+      writeFileSync(join(clonePath, 'impl.mjs'), changedImplementation);
+      const post = await port(input);
+      if (!pre || Array.isArray(pre) || !post || Array.isArray(post)) throw new Error('Missing real oracle receipt');
+      expect(pre.results).toEqual([{ name: 'actual task', file: 'oracle.test.mjs', passed: true }]);
+      expect(post.results).toEqual([{ name: 'actual task', file: 'oracle.test.mjs', passed: false }]);
+      expect(pre.implementation).toEqual({ path: 'impl.mjs', before: digest(implementation), after: digest(implementation) });
+      expect(post.implementation).toEqual({ path: 'impl.mjs', before: digest(changedImplementation), after: digest(changedImplementation) });
+      expect(pre.sourceHashes).toEqual(post.sourceHashes);
+      expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
+      expect(JSON.parse(post.execution!.report).testResults[0].assertionResults[0].status).toBe('failed');
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  }, 30_000);
 
   it('retains file collection failures and handles malformed reports as unmeasured', () => {
     expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ name: 'broken.test.ts', assertionResults: [] }] })))
