@@ -505,6 +505,11 @@ describe('fleet:status', () => {
     expect(out.leaderLive).toBe(false);
     expect(out.leaderSessionState).toBe('ended');
     expect(out.leaderVacant).toBe(true);
+    expect(out.leadershipBlockage).toEqual({
+      reason: 'registered-leader-ended',
+      leaderOwnerId: 'su-leader',
+      liveMemberCount: 1,
+    });
   });
 
   it('does not present a durable leader with no presence row as live', async () => {
@@ -535,6 +540,7 @@ describe('fleet:status', () => {
     // Missing presence is not enough evidence to seize leadership on a read.
     expect(out.leaderSessionState).toBeNull();
     expect(out.leaderVacant).toBe(false);
+    expect(out).not.toHaveProperty('leadershipBlockage');
   });
 
   it('uses a leader liveness-only enrichment without changing the queried fleet census', async () => {

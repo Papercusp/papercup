@@ -6,6 +6,7 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import type { GoalHolderLike } from './goal-liveness-watchdog';
 import {
   GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
+  GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS,
   GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
   GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
   GOAL_DRAIN_RELAUNCH_SPEND_CEILING,
@@ -17,6 +18,7 @@ import {
   claimSpecIsGoalScoped,
   classifyDelegatedDrainFleetLiveness,
   classifyDrainWorkerLiveness,
+  classifyGoalDrainFleetPullStall,
   decideGoalDrainFleetRelaunch,
   goalDrainRelaunchEligibility,
   goalPinnedRemedySpec,
@@ -44,6 +46,7 @@ import {
   goalPlanFleetLegEventKey,
   goalPlanFleetRemedy,
   goalPlanFleetSubjectSignature,
+  oldestLiveDrainFleetMember,
 } from './goal-drain-fleet-watchdog';
 import { EVENT_CATALOG } from '../events/await/catalog';
 import { DEFAULT_CLAIM_SPEC, type ClaimSpec, type FilterNode } from '../scheduler/claim-spec';
@@ -86,6 +89,34 @@ function makeVerdict(
 const verdicts = (...vs: LivenessVerdict[]) => new Map(vs.map((v) => [v.ownerId, v]));
 const fleets = (entries: Record<string, DrainFleetLiveness>) => new Map(Object.entries(entries));
 const scopes = (entries: Record<string, DrainFleetSpecScope> = {}) => new Map(Object.entries(entries));
+
+describe('drain-fleet recovery guards', () => {
+  it('promotes only the oldest positively-live su member, excluding holders and non-su rows', () => {
+    expect(oldestLiveDrainFleetMember('su-dead-leader', ['su-holder'], [
+      { agentId: 'su-newer', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T10:00:00Z' },
+      { agentId: 'su-oldest', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T09:00:00Z' },
+      { agentId: 'su-holder', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T08:00:00Z' },
+      { agentId: 'su-unknown', agentRole: 'su', fleetRole: 'member', sessionState: null, startedAt: '2026-10-02T07:00:00Z' },
+      { agentId: 'bee', agentRole: 'cup', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T06:00:00Z' },
+    ])).toBe('su-oldest');
+  });
+
+  it('alarms only after ten minutes with positive live-member/start evidence and no successful pull', () => {
+    const member = {
+      agentId: 'su-member', agentRole: 'su', sessionState: 'live' as const,
+      startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+    };
+    expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(), nowMs: NOW }))
+      .toMatchObject({ liveMemberIds: ['su-member'] });
+    expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(['su-old-member']), nowMs: NOW })).toBeNull();
+    expect(classifyGoalDrainFleetPullStall({
+      members: [{ ...member, startedAt: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
+    })).toBeNull();
+    expect(classifyGoalDrainFleetPullStall({
+      members: [{ ...member, sessionState: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
+    })).toBeNull();
+  });
+});
 
 describe('P-014 drain worker liveness', () => {
   it('does not let a healthy leader conceal a fleet with zero live workers', () => {
@@ -740,6 +771,9 @@ describe('runGoalDrainFleetSweepOnce', () => {
     resolveFleetSpecScopes: vi.fn(async () => scopes()),
     escalate: vi.fn(async () => {}),
     emitDrainDead: vi.fn(async () => {}),
+    promoteDrainLeader: vi.fn(async () => false),
+    readPullStallAlerts: vi.fn(async () => []),
+    escalatePullStall: vi.fn(async () => {}),
     flagEnabled: vi.fn(async () => true),
     now: () => NOW,
     graceMs: GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
@@ -799,6 +833,22 @@ describe('runGoalDrainFleetSweepOnce', () => {
     expect(deps.escalate).toHaveBeenCalledTimes(1);
     expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
     expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ reason: 'drain-fleet-dead' }));
+  });
+
+  it('uses the dead-episode grace to promote a live member before relaunch or alarm', async () => {
+    const deps = {
+      ...baseDeps(),
+      markDrainDead: vi.fn(async () => NOW - GOAL_DRAIN_FLEET_DEAD_GRACE_MS),
+      promoteDrainLeader: vi.fn(async () => true),
+    };
+    await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(deps.promoteDrainLeader).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'drain-fleet-dead' }),
+      expect.objectContaining({ drainFleet: 'drain-1' }),
+    );
+    expect(deps.escalate).not.toHaveBeenCalled();
+    expect(deps.emitDrainDead).not.toHaveBeenCalled();
+    expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
   });
 
   it('resolves liveness only for holders of active goals, and fleet liveness only for declared fleets', async () => {

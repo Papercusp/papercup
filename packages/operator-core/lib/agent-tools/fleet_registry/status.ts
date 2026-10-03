@@ -631,6 +631,16 @@ export default defineTool({
           presenceRow: leaderMember != null,
         }
       : null;
+    const blockedLiveMemberCount = leaderSessionState === 'ended'
+      ? liveRoster.filter((member) => member.fleetRole === 'member' && member.sessionState === 'live').length
+      : 0;
+    const leadershipBlockage = blockedLiveMemberCount > 0
+      ? {
+          reason: 'registered-leader-ended' as const,
+          leaderOwnerId: fleet.leaderOwnerId!,
+          liveMemberCount: blockedLiveMemberCount,
+        }
+      : null;
 
     // agent-launch-resume-primitives P-006 / D-006: there is deliberately NO
     // "resume the fleet" verb — any single verb has to GUESS which dead members to
@@ -707,6 +717,7 @@ export default defineTool({
       leaderLive: leaderLiveness?.sessionState === 'live',
       leaderSessionState,
       leaderVacant,
+      ...(leadershipBlockage ? { leadershipBlockage } : {}),
       // P-009 (H4): the typed control state — 'winding-down' means members must
       // checkpoint + release and pull no new work until fleet:resume.
       controlState: fleet.controlState,
