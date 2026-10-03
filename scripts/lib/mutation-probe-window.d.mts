@@ -5,10 +5,10 @@
  * The admission directory `mutation-probe.sh` uses for one physical checkout.
  *
  * @param {string} checkoutRoot git toplevel of the checkout (symlinks are resolved, as the script does)
- * @param {{ uid?: number, tmpDir?: string }} [options] `tmpDir` is `/tmp` because the script hard-codes it
+ * @param {{ uid?: number, tmpDir?: string }} [options] tmpDir defaults to PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT or /tmp, matching the shell writer
  * @returns {string}
  */
-export function mutationProbeAdmissionDir(checkoutRoot: string, { uid, tmpDir }?: {
+export function mutationProbeAdmissionDir(checkoutRoot: string, { uid, tmpDir, }?: {
     uid?: number;
     tmpDir?: string;
 }): string;
