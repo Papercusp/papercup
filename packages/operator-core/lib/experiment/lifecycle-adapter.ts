@@ -105,6 +105,8 @@ export interface ProducerLifecycleObservation {
   recordedAt: string;
   contract: null;
   promotionAllowed: false;
+  /** Added on read; an unadapted later source update is visibly stale. */
+  sourceCurrent?: boolean;
   /** Missing full-contract sections; no synthetic pins, actors or zero-dollar spend. */
   missing: readonly ['candidate', 'experiment', 'evidence', 'spend', 'decision'];
 }

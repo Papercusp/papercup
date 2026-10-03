@@ -1,0 +1,126 @@
+/** Actual six producer writers, real migrated PG, no fabricated experiment fixtures. */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import type { OrgTestDb } from '../../test/_org-test-db';
+import { createOrgTestDb } from '../../test/_org-test-db';
+import { readProducerObservations } from './producer-lifecycle-store';
+
+const h = vi.hoisted(() => ({ sql: null as unknown }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../change-ledger/change-ledger', () => ({ recordBehaviorChange: vi.fn(async () => {}) }));
+
+const { recordRoutedIdea } = await import('../scout/routed-ledger');
+const { recordProposal, decideProposal } = await import('../gym/control-plane');
+const { insertPrediction, resolvePrediction, voidPrediction } = await import('../calibration/store');
+const { admitTransferLesson, recordTransferOutcome } = await import('../transfer/store');
+const { upsertFinding, recordReplayScores, markReportFiled } = await import('../replay/regret/store');
+const { insertDrillRow, updateDrillResolved } = await import('../red-queen/store');
+const { passingCandidateVerdict } = await import('../gym/__tests__/_candidate-verdict');
+
+let db: OrgTestDb;
+const WS = 'ws-producer-lifecycle';
+const migrationPath = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1349-producer-learning-lifecycle-receipts.sql', import.meta.url));
+
+beforeAll(async () => {
+  db = await createOrgTestDb();
+  h.sql = db.adminSql;
+  // Exercise the reserved draft before it is armed; after arming this is idempotent.
+  await db.adminSql.unsafe(readFileSync(existsSync(migrationPath) ? migrationPath : `${migrationPath}.DRAFT`, 'utf8'));
+}, 180_000);
+afterAll(async () => { await db?.cleanup(); });
+
+async function observation(producer: Parameters<typeof readProducerObservations>[1]['producer']) {
+  const rows = await readProducerObservations(db.adminSql, { producer, workspaceId: WS });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ stage: 'observation', contract: null, promotionAllowed: false, sourceCurrent: true });
+  return rows[0]!;
+}
+
+describe('six actual producer boundaries', () => {
+  it('records Scout source identity and resolved provenance; enrollment cannot overwrite an SU source', async () => {
+    await recordRoutedIdea({ workspaceId: WS, ideaId: 'scout-output', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-test', modelSpec: 'resolved-model', modelConfig: { temperature: 0.2 } });
+    const row = await observation('scout');
+    expect(row.source).toMatchObject({ idea_id: 'scout-output', routed_ref: 'wi:EI-test', model_spec: 'resolved-model', origin: 'scout' });
+    await recordRoutedIdea({ workspaceId: WS, ideaId: 'su-output', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'su-ideate', rail: 'improvement', routedRef: 'wi:EI-su', origin: 'su-ideate' });
+    await recordRoutedIdea({ workspaceId: WS, ideaId: 'su-output', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-su', preserveExisting: true });
+    expect((await readProducerObservations(db.adminSql, { producer: 'scout', workspaceId: WS })).map((r) => r.sourceRef)).toEqual(['scout:scout-output']);
+  });
+
+  it('preserves Gym immutable verdicts and actual decisions without upgrading them to common acceptance', async () => {
+    const id = await recordProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', cycle: 1, variantId: 'gym-output', role: 'worker', proposedMd: 'candidate prompt', candidateVersion: passingCandidateVerdict('gym-output') });
+    expect((await observation('gym')).source.status).toBe('pending');
+    const decision = await decideProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, decision: 'accepted' });
+    expect(decision).toMatchObject({ ok: true, promoted: true });
+    const row = await observation('gym');
+    expect(row.source).toMatchObject({ status: 'accepted', candidate_verdict: { candidateId: 'gym-output', verdict: 'accept' } });
+    await recordProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, cycle: 2, role: 'worker', proposedMd: 'must not resurrect' });
+    expect((await observation('gym')).source.proposed_md).toBe('candidate prompt');
+    expect((await decideProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, decision: 'rejected' })).ok).toBe(false);
+  });
+
+  it('captures scored and void calibration outcomes; a duplicate open prediction remains a no-op', async () => {
+    const input = { workspaceId: WS, predictor: 'predictor', domain: 'fix-survival', subjectKind: 'work-item', subjectId: 'EI-test', claim: 'fix survives', probability: 0.8, stated: true, origin: 'organic' as const, horizonTs: '2026-10-03T00:00:00Z', potSlug: null };
+    const first = await insertPrediction(db.adminSql, input);
+    expect(first.created).toBe(true);
+    expect(await insertPrediction(db.adminSql, input)).toEqual({ created: false, id: null });
+    expect((await observation('calibration')).source.outcome).toBeNull();
+    expect(await resolvePrediction(db.adminSql, { id: first.id!, outcome: false, nowIso: '2026-10-03T01:00:00Z' })).toBe(true);
+    expect((await observation('calibration')).source).toMatchObject({ outcome: false, probability: 0.8, pot_slug: null });
+    const other = await insertPrediction(db.adminSql, { ...input, subjectId: 'EI-void' });
+    expect(await voidPrediction(db.adminSql, { id: other.id!, note: 'undetermined', nowIso: '2026-10-03T01:00:00Z' })).toBe(true);
+    const rows = await readProducerObservations(db.adminSql, { producer: 'calibration', workspaceId: WS });
+    expect(rows.find((r) => r.source.id === other.id)?.source).toMatchObject({ outcome: null, resolution_note: 'undetermined' });
+  });
+
+  it('captures transfer admission and scored gate transitions with genuine battery identity', async () => {
+    const result = await admitTransferLesson(db.adminSql, { workspaceId: WS, signature: 'transfer-output', lessonText: 'preserve provenance', potSlug: 'papercusp', sourceRef: 'transcript:original' });
+    expect(result.admitted).toBe(true);
+    if (!result.admitted) throw new Error('fixture admission failed');
+    const id = result.lesson.id;
+    expect((await observation('transfer')).source).toMatchObject({ tier: 'probationary', source_ref: 'transcript:original' });
+    await recordTransferOutcome(db.adminSql, { workspaceId: WS, id, batteryId: 'actual-test-battery', delta: 0.1, transition: { tier: 'validated', status: 'passed', passCount: 1, failCount: 0 } });
+    expect((await observation('transfer')).source).toMatchObject({ tier: 'validated', last_battery_id: 'actual-test-battery', test_count: 1 });
+  });
+
+  it('captures regret replay/report output from persisted rows, including paid-for carry-forward on re-mine', async () => {
+    const finding = { workspaceId: WS, runId: 'regret-output', harnessSlug: 'papercusp', role: 'worker', badnessScore: 0.7, badnessReasons: ['timeout'], divergenceTurn: 2, divergenceKind: 'error-loop', divergenceEvidence: null, candidateChanges: [], replayStatus: 'pending' as const, replayScores: null, reportImprovementId: null, minedAt: '2026-10-03T00:00:00Z' };
+    await upsertFinding(db.adminSql, finding);
+    await recordReplayScores(db.adminSql, WS, finding.runId, []);
+    await markReportFiled(db.adminSql, WS, finding.runId, 'EI-report');
+    await upsertFinding(db.adminSql, { ...finding, badnessScore: 0.8 });
+    expect((await observation('regret')).source).toMatchObject({ replay_status: 'replayed', replay_scores: [], report_improvement_id: 'EI-report', badness_score: 0.8 });
+  });
+
+  it('retains Red Queen planted and resolved drill provenance without claiming a production experiment', async () => {
+    const { drillId } = await insertDrillRow(db.adminSql, { workspaceId: WS, drillClass: 'class-output', collectorFamily: 'test', expectedWatchdogKey: 'test:drill', expectedKind: 'bug', expectedSeverity: 'major', artifacts: { ref: 'drill:planted' } });
+    expect((await observation('red-queen')).source).toMatchObject({ status: 'planted', planted_artifacts: { ref: 'drill:planted' } });
+    await updateDrillResolved(db.adminSql, drillId, { resolvedAt: '2026-10-03T01:00:00Z', resolvedWithEvidence: false, mttsh: {}, leakCheck: { passed: true, organicReadClean: true, liveCollectorClean: true, capturedOriginIsDrill: true } });
+    expect((await observation('red-queen')).source).toMatchObject({ status: 'resolved', resolved_with_evidence: false, leak_check_passed: true });
+  });
+});
+
+describe('transaction and freshness guards', () => {
+  it('rolls back the source write if the common receipt cannot persist', async () => {
+    await db.adminSql.unsafe(`ALTER TABLE harness_shared.calibration_predictions ADD CONSTRAINT receipt_failure_test CHECK (learning_lifecycle IS NULL) NOT VALID`);
+    try {
+      await expect(insertPrediction(db.adminSql, { workspaceId: WS, predictor: 'rollback', domain: 'fix-survival', subjectKind: 'work-item', subjectId: 'EI-rollback', claim: 'rollback', probability: 0.5, stated: false, origin: 'drill', horizonTs: '2026-10-03T00:00:00Z', potSlug: null })).rejects.toThrow();
+      const rows = await db.adminSql`SELECT id FROM harness_shared.calibration_predictions WHERE workspace_id = ${WS} AND predictor = 'rollback'`;
+      expect(rows).toHaveLength(0);
+    } finally {
+      await db.adminSql.unsafe(`ALTER TABLE harness_shared.calibration_predictions DROP CONSTRAINT receipt_failure_test`);
+    }
+  });
+
+  it('reuses an outer transaction and reports stale receipts after an unadapted source update', async () => {
+    await db.adminSql.begin(async (tx) => {
+      const id = await recordProposal(tx as unknown as typeof db.adminSql, { workspaceId: 'ws-outer', harnessSlug: 'papercusp', cycle: 1, id: 'outer-output', role: 'worker', proposedMd: 'outer' });
+      expect(id).toBe('outer-output');
+    });
+    expect((await readProducerObservations(db.adminSql, { producer: 'gym', workspaceId: 'ws-outer' }))[0]?.sourceCurrent).toBe(true);
+    await db.adminSql`UPDATE harness_shared.gym_proposals SET proposed_md = 'changed' WHERE id = 'outer-output'`;
+    expect((await readProducerObservations(db.adminSql, { producer: 'gym', workspaceId: 'ws-outer' }))[0]).toMatchObject({ sourceCurrent: false, promotionAllowed: false, source: { proposed_md: 'outer' } });
+    expect(await readProducerObservations(db.adminSql, { producer: 'gym', workspaceId: 'ws-unrelated' })).toEqual([]);
+  });
+});

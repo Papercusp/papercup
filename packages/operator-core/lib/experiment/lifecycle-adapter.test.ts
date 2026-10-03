@@ -34,6 +34,32 @@ const baseInput = (verdict: ProducerLifecycleInput['verdict'] = 'accept'): Produ
 });
 
 describe('P-011 common candidate/evidence/decision lifecycle', () => {
+  it('preserves discovery output without inventing promotion evidence for any producer', () => {
+    const adapters = [adaptScoutOutput, adaptGymOutput, adaptCalibrationOutput, adaptTransferOutput, adaptRegretOutput, adaptRedQueenOutput];
+    for (const [index, adapt] of adapters.entries()) {
+      const result = adapt({
+        stage: 'observation', workspaceId: 'ws-1', sourceRef: `${LEARNING_PRODUCERS[index]}:source-1`,
+        recordedAt: '2026-10-03T00:00:00.000Z',
+        source: { status: 'accepted', model_spec: null, budget_spent_usd: null, signal_origin: 'drill' },
+      });
+      expect(result).toMatchObject({
+        producer: LEARNING_PRODUCERS[index], stage: 'observation', contract: null, promotionAllowed: false,
+        source: { status: 'accepted', model_spec: null, budget_spent_usd: null, signal_origin: 'drill' },
+        missing: ['candidate', 'experiment', 'evidence', 'spend', 'decision'],
+      });
+    }
+  });
+
+  it('hashes the actual source consistently and excludes the previous receipt', () => {
+    const input = {
+      stage: 'observation' as const, workspaceId: 'ws-1', sourceRef: 'gym:source-1',
+      recordedAt: '2026-10-03T00:00:00.000Z', source: { status: 'pending', pins: { b: 2, a: 1 } },
+    };
+    const first = adaptGymOutput(input);
+    expect(adaptGymOutput({ ...input, source: { pins: { a: 1, b: 2 }, status: 'pending', learning_lifecycle: first } }).sourceHash).toBe(first.sourceHash);
+    expect(adaptGymOutput({ ...input, source: { ...input.source, status: 'accepted' } }).sourceHash).not.toBe(first.sourceHash);
+  });
+
   it('adapts every producer through the same validated contract', () => {
     const adapters = [adaptScoutOutput, adaptGymOutput, adaptCalibrationOutput, adaptTransferOutput, adaptRegretOutput, adaptRedQueenOutput];
     expect(LEARNING_PRODUCERS).toEqual(['scout', 'gym', 'calibration', 'transfer', 'regret', 'red-queen']);
@@ -88,4 +114,3 @@ describe('P-011 common candidate/evidence/decision lifecycle', () => {
     expect(canRetireLegacyWriter({ parity, remainingLegacyWrites: 0 })).toBe(false);
   });
 });
-

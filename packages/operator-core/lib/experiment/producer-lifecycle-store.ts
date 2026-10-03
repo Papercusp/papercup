@@ -34,6 +34,8 @@ export async function recordProducerObservation(sql: Sql, scope: ProducerWriteSc
     [scope.workspaceId, scope.sourceId],
   );
   if (!rows.length) throw new Error(`producer lifecycle source missing: ${scope.producer}:${scope.sourceId}`);
+  // Agent-review enrollment and REM/SU routes share Scout's store, but are not Scout output.
+  if (scope.producer === 'scout' && rows[0].origin !== 'scout') return;
   const receipt = store.adapt({
     stage: 'observation', workspaceId: scope.workspaceId,
     sourceRef: `${scope.producer}:${scope.sourceId}`, source: rows[0], recordedAt: new Date().toISOString(),
@@ -58,11 +60,18 @@ export async function readProducerObservations(
 ): Promise<ProducerLifecycleObservation[]> {
   const store = stores[query.producer];
   const rows = await sql.unsafe(
-    `SELECT learning_lifecycle FROM harness_shared.${store.table}
+    `SELECT * FROM harness_shared.${store.table}
       WHERE workspace_id = $1 AND learning_lifecycle IS NOT NULL
       ORDER BY learning_lifecycle->>'recordedAt' DESC, ${store.key} LIMIT $2`,
     [query.workspaceId, Math.min(Math.max(query.limit ?? 20, 1), 200)],
   );
-  return rows.map((row) => typeof row.learning_lifecycle === 'string'
-    ? JSON.parse(row.learning_lifecycle) : row.learning_lifecycle);
+  return rows.map((row) => {
+    const receipt = (typeof row.learning_lifecycle === 'string'
+      ? JSON.parse(row.learning_lifecycle) : row.learning_lifecycle) as ProducerLifecycleObservation;
+    const current = store.adapt({
+      stage: 'observation', workspaceId: query.workspaceId, sourceRef: receipt.sourceRef,
+      recordedAt: receipt.recordedAt, source: row,
+    });
+    return { ...receipt, sourceCurrent: current.sourceHash === receipt.sourceHash };
+  });
 }
