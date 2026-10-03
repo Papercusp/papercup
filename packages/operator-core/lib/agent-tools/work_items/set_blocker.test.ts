@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const getWorkItem = vi.fn();
 const mergeWorkItemPayload = vi.fn();
@@ -48,6 +49,33 @@ beforeEach(() => {
 describe('work_items:set_blocker', () => {
   it('opts out of the ambient workspace transaction', () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
+  it('publishes the conditional defaultIfUnanswered requirement for strict human asks', () => {
+    const json = z.toJSONSchema(tool.args as never) as {
+      'x-papercusp-call-constraint'?: string;
+      required?: string[];
+    };
+    const constraint = json['x-papercusp-call-constraint'] ?? '';
+
+    expect(constraint).toContain('strict human owner-capability blocker');
+    expect(constraint).toContain('nonblank defaultIfUnanswered');
+    expect(constraint).toContain('For items:[...], this applies to each entry');
+    expect(constraint).toContain('active human blocker with the same ref');
+    expect(constraint).toContain('Clear-only calls and non-human blockers do not require it');
+    // The omission exception depends on persisted state, so this remains optional
+    // in the static args schema while discovery publishes the conditional contract.
+    expect(json.required ?? []).not.toContain('defaultIfUnanswered');
+    expect(
+      tool.args.safeParse({
+        id: 'WI-1',
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:prod-db',
+        summary: 'Provide the credential.',
+        nextVerb: 'setup:save_key',
+      }).success,
+    ).toBe(true);
   });
 
   it('accepts legacy capability-in-kind calls and persists the canonical human blocker', async () => {

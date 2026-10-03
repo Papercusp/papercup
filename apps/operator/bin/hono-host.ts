@@ -118,9 +118,11 @@ import { isBenignHostError } from './host-benign-errors';
 import { applyServerTimeouts } from './host-request-deadline';
 import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
 import { pinSpawnerSocketForCluster } from '@papercusp/operator-core/lib/fleet/spawner-socket-path';
+import { pinLspDaemonSocketForCluster } from '@papercusp/operator-core/lib/code-intelligence/lsp-daemon-socket';
 import { pinSetupTokenForCluster } from '@papercusp/operator-core/lib/auth-setup-token';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
+import { runLspDaemonServer } from '@papercusp/operator-core/lib/code-intelligence/lsp-daemon-server';
 import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via-sidecar';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
@@ -156,7 +158,7 @@ installFatalDiagnostics();
 // respawn — the all-day :3270 crash-loop that destabilized the substrate
 // primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
 // sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
-const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | null =
+const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | 'lsp' | null =
   process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
     ? 'substrate'
     : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
@@ -165,11 +167,14 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
         ? 'gateway'
         : process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1'
           ? 'embed'
+          : process.env.PAPERCUSP_LSP_DAEMON_MODE === '1'
+            ? 'lsp'
           : process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1'
             ? 'resource-health'
             : null;
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
+if (sidecarMode === 'lsp') runLspDaemonServer();
 if (sidecarMode === 'gateway') {
   runGatewaySidecarMain().catch((e) => {
     console.error('[inference-gateway] fatal:', e);
@@ -818,6 +823,7 @@ const substrateSocketWorkerEnv = sidecarMode ? {} : pinSubstrateSocketForCluster
 // 9.5GB, 0.004 cores each. Pinning makes every worker resolve the PRIMARY's path, so
 // the adoption probe in spawnSpawnerSidecar finds the sibling's sidecar and reuses it.
 const spawnerSocketWorkerEnv = sidecarMode ? {} : pinSpawnerSocketForCluster(clusterWorkers);
+const lspSocketWorkerEnv = sidecarMode ? {} : pinLspDaemonSocketForCluster(clusterWorkers);
 // WI-10001497: mint + PRINT the first-time setup code once, here in the primary,
 // BEFORE forking — then hand the same value to every worker via workerEnv. Two
 // defects, one root: the token was module state (per-PROCESS), so each reusePort
@@ -836,6 +842,7 @@ const clusterHandle = sidecarMode ? null : startCluster({
     PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
     ...substrateSocketWorkerEnv,
     ...spawnerSocketWorkerEnv,
+    ...lspSocketWorkerEnv,
     ...setupTokenWorkerEnv,
   },
   onPrimary: () => {

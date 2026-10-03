@@ -1005,7 +1005,11 @@ function rerunRecipeFor(
       ? [...new Set(evidence.map((row) => row.id!))].sort((a, b) => a - b)
       : selection?.bindingIds !== undefined
         ? [...new Set(selection.bindingIds)].sort((a, b) => a - b)
-        : undefined;
+        // An empty graded population is still an exact selection. Leaving the selector
+        // omitted would let a later binding silently enter this scorecard's rerun.
+        : evidence.length === 0
+          ? []
+          : undefined;
   const currentByKey = new Map((current ?? []).map((row) => [evidenceCurrentInputKey(row), row]));
   const currentForEvidence = (row: SpecEvidenceForAdequacy): EvidenceCurrentInput | undefined => {
     const scopedCurrentKey = evidenceCurrentInputKey({

@@ -883,6 +883,37 @@ describe('WI-1999 remote-holder guard', () => {
     expect(later.released.map((c) => c.issue_id)).toContain('EI-RH2');
   });
 
+  // WI-10005928 (2026-10-03): the mac-VM rig freed a PARKED tower holder's claims through
+  // this fallback at 08:40:37Z. The holder's newer tower writes had not replicated, so the
+  // WI-10005136 sign-of-life check found nothing. Only the node that last wrote the row
+  // judges a never-seen holder. The local-origin control in the SAME sweep proves the
+  // fallback still fires under identical conditions, so the kept row is not vacuous.
+  it('WI-10005928: past the fallback, a never-seen holder on a PEER-WRITTEN (origin=remote) row is KEPT; the local control frees', async () => {
+    await seedItem('F-RH8', 'su-peer-parked-holder', 30, 'in_progress');
+    await seedItem('F-RH8L', 'su-local-forgotten-holder', 30, 'in_progress');
+    const idle = Date.now() - 30 * 60_000;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle} WHERE feature_id = 'F-RH8L'`;
+    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle} WHERE feature_id = 'F-RH8'`;
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    const released = r.released.map((x) => x.feature_id);
+    expect(released).not.toContain('F-RH8');
+    expect((await statusOf('F-RH8')).taken_by).toBe('su-peer-parked-holder');
+    expect(r.released.find((x) => x.feature_id === 'F-RH8L')).toMatchObject({ reason: 'dead' });
+  });
+
+  it('WI-10005928: issue reaper parity — a never-seen assignee on a PEER-WRITTEN issue row is KEPT past the fallback; the local control frees', async () => {
+    await seedIssue('EI-RH3', 'bug', 'su-peer-issue-holder', 30);
+    await seedIssue('EI-RH3L', 'bug', 'su-local-issue-forgotten', 30);
+    const idle = Date.now() - 30 * 60_000;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle} WHERE feature_id = 'EI-RH3L'`;
+    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle} WHERE feature_id = 'EI-RH3'`;
+    const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    const released = r.released.map((c) => c.issue_id);
+    expect(released).not.toContain('EI-RH3');
+    expect(await assigneeOf('EI-RH3')).toBe('su-peer-issue-holder');
+    expect(released).toContain('EI-RH3L');
+  });
+
   it('a never-seen holder with NULL taken_at anchors the fallback on updated_ts (EI-2534 must not re-strand)', async () => {
     await seedItem('F-RH4', 'su-remote-noanchor', 30, 'in_progress');
     await sql`UPDATE harness_shared.harness_features_consolidated

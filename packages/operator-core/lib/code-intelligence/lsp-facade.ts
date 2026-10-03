@@ -49,6 +49,7 @@
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { queryLspDaemon } from './lsp-daemon-client.ts';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
@@ -189,7 +190,7 @@ function applyBudget(input: CodeIntelAnswer, limit: number): CodeIntelAnswer {
  * The single entry point. Returns an answer for EVERY outcome, including the
  * ones that are refusals — see rail 4 in the module header.
  */
-export async function lspFacade(
+export async function lspDaemonFacade(
   op: LspFacadeOp,
   args: LspFacadeArgs = {},
 ): Promise<CodeIntelAnswer> {
@@ -306,6 +307,15 @@ export async function lspFacade(
   }
 
   return applyBudget(await lspQuery(INTENT_BY_OP[op], query), limit);
+}
+
+/** The operator's public entry is transport-only after the common flag gate. */
+export async function lspFacade(op: LspFacadeOp, args: LspFacadeArgs = {}): Promise<CodeIntelAnswer> {
+  const started = Date.now();
+  if (!LSP_FACADE_OPS.includes(op)) return refusal('health', String(op), `unknown lsp op '${op}'. The op set is closed: ${LSP_FACADE_OPS.join(', ')}`, 'unknown', started);
+  const enabled = await getFlag(FLAGS.CODE_INTEL_LSP, 'system').catch(() => false);
+  if (!enabled) return refusal(op, args.file ?? args.name ?? '', `code-intelligence LSP facade is disabled (flag ${FLAGS.CODE_INTEL_LSP}). This is a DISABLED answer, not an empty one — do not read it as "no results".`, 'unknown', started);
+  return queryLspDaemon({ op, args: { ...args, rootPath: args.rootPath ?? process.cwd() }, deadlineAtMs: started + 90_000 });
 }
 
 /**

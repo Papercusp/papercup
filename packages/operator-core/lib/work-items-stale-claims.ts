@@ -495,6 +495,12 @@ export async function reclaimStaleWorkItemClaims(
                    -- abandoned one frees once the horizon lapses.
                    OR ( (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
                           > make_interval(secs => ${unknownFallbackSec})
+                        -- WI-10005928: only the node that last wrote the row judges a
+                        -- never-seen holder. On a peer, sign of life can simply not have
+                        -- replicated yet: the mac-VM rig freed a parked tower holder's claims
+                        -- at 2026-10-03 08:40:37Z because the tower's newer writes had not
+                        -- reached it. The home node still frees an abandoned row.
+                        AND f.origin IS DISTINCT FROM 'remote'
                         -- WI-10005136: claim AGE alone is not death. A live remote holder
                         -- that has held one claim for >24h still claims, edits and closes
                         -- OTHER rows, and those writes federate here; reaping it anyway
@@ -755,6 +761,9 @@ export async function reclaimStaleIssueClaims(
          -- before the long-horizon fallback.
          AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = e.assignee)
                OR ( (now() - e.assigned_at) > make_interval(secs => ${unknownFallbackSec})
+                    -- WI-10005928: same origin rule as the feature leg — a peer never
+                    -- frees a never-seen assignee on a row another node last wrote.
+                    AND e.origin IS DISTINCT FROM 'remote'
                     -- WI-10005136: same federated sign-of-life rule as the feature leg —
                     -- a holder still claiming / editing / closing rows is not dead.
                     AND NOT EXISTS (
