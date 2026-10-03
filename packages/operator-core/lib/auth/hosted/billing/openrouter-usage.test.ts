@@ -58,8 +58,15 @@ describe('OpenRouter hosted usage collector', () => {
   it.each([0, 0.000001, 0.000123, 0.1, 1e-5, 1e3])('converts exact decimal USD %s to integer micros', usd => {
     expect(openRouterUsageRecord(binding, payload(usd)).costMicros).toBe(Math.round(usd * 1_000_000));
   });
-  it.each([null, undefined, '0.001', -1, NaN, Infinity, 0.0000001, 0.00123456, 1e20])(
-    'preserves missing/invalid/finer-than-micro/overflow charge %s as unpriced', cost => {
+  it.each([[0.0000001, 0, '0.1'], [0.00123456, 1234, '1234.56'],
+    [5e-324, 0, '0.' + '0'.repeat(317) + '5']] as const)('preserves exact provider USD %s without request rounding', (cost, micros, exact) => {
+    const r = openRouterUsageRecord(binding, payload(cost));
+    expect(r).toMatchObject({ costSource: 'provider-reported', costMicros: micros, costMicrosExact: exact });
+    expect(statement([r]).lines[0]).toMatchObject({ unpricedUsages: 0, reportedMicros: micros, reportedMicrosExact: exact });
+    expect(statement([r]).settlementEligible).toBe(false);
+  });
+  it.each([null, undefined, '0.001', -1, NaN, Infinity, 1e20])(
+    'preserves missing/invalid/overflow charge %s as unpriced', cost => {
       const body = cost === undefined ? { data: { id: binding.generationId, is_byok: false } } : payload(cost);
       const r = openRouterUsageRecord(binding, body);
       expect(r).toMatchObject({ costSource: 'unpriced', costMicros: null });

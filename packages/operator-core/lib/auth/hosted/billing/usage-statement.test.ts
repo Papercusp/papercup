@@ -17,6 +17,36 @@ function statement(records: readonly HostedUsageRecord[], patch: Partial<Paramet
 }
 
 describe('hosted usage statement projection (collector fixtures, not customer billing)', () => {
+  it('aggregates submicro residue across providers before cent settlement, deduplicating and replacing revisions', () => {
+    const a = receipt({ costMicros: 4999, costMicrosExact: '4999.6' });
+    const b = receipt({ recordId: 'b', usageId: 'b', provider: 'other', costMicros: 5000, costMicrosExact: '5000.6' });
+    const total = statement([a, b, a]);
+    expect(total.consumptionBilled).toEqual({ micros: 10000, wholeCents: 1, roundingMicros: 0,
+      microsExact: '10000.2', roundingMicrosExact: '0.2' });
+    expect(total.history[0]?.revisions[0]?.costMicrosExact).toBeDefined();
+    const correction = receipt({ recordId: 'corrected', revision: 2, observedAtMs: FEB, costMicros: 4999, costMicrosExact: '4999.3' });
+    expect(statement([a, correction, correction, b]).consumptionBilled)
+      .toEqual({ micros: 9999, wholeCents: 0, roundingMicros: 9999, microsExact: '9999.9', roundingMicrosExact: '9999.9' });
+    const foreign = receipt({ organizationId: 'foreign', costMicros: 9000, costMicrosExact: '9000.9' });
+    expect(statement([a, b, foreign])).toEqual(statement([a, b]));
+  });
+  it('carries tiny exact amounts into the forecast rather than a known zero', () => {
+    const r = receipt({ costMicros: 0, costMicrosExact: '0.6' });
+    const period = FEB - JAN; const cutoff = JAN + period / 2;
+    expect(statement([r], { asOfMs: cutoff, source: { complete: true, observedAtMs: cutoff,
+      maximumAgeMs: 0, evidenceRef: 'census:half-month' } }).forecast)
+      .toMatchObject({ basisMicros: 0, basisMicrosExact: '0.6', projectedConsumptionMicros: 2 });
+  });
+  it.each(['00.1', '1e-1', '0.10', '-0.1', 'NaN', '0.' + '0'.repeat(324) + '1', '9007199254740991.1'])(
+    'rejects noncanonical/overflow exact cost %s', costMicrosExact => {
+      expect(() => statement([receipt({ costMicros: 0, costMicrosExact })])).toThrow();
+    });
+  it('refuses integer/exact disagreement and an exact amount on unknown cost', () => {
+    expect(() => statement([receipt({ costMicros: 1, costMicrosExact: '0.1' })])).toThrow('mismatch');
+    expect(() => statement([receipt({ costSource: 'unpriced', costMicros: null, costMicrosExact: '0' })])).toThrow('unknown cost');
+    const a = receipt({ costMicros: 0, costMicrosExact: '0.1' });
+    expect(() => statement([a, { ...a, costMicrosExact: '0.2' }])).toThrow('replay mismatch');
+  });
   const periodMs = FEB - JAN;
   const mid = JAN + periodMs / 2;
   const midWindow = { asOfMs: mid,
