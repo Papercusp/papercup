@@ -563,7 +563,7 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
           reportedIds.push(freshId);
           return mappingConfirmed;
         },
-        emitCompacted: (emittedOwner: string, focus: string, options: { nativeId?: string | null }) => {
+        emitCompacted: (emittedOwner: string, focus: string, options: { nativeId?: string | null } = {}) => {
           order.push('emit');
           emitted.push({ ownerId: emittedOwner, focus, nativeId: options.nativeId ?? null });
           return null;
