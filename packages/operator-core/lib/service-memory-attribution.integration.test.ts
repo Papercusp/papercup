@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { HOST_MALLOC_ARENA_MAX } from '../../../apps/operator/bin/malloc-arena-reexec';
 import { createCdpClient, readProcessMemory, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
@@ -63,6 +63,69 @@ async function readSourceRequest(chunks: AsyncIterable<Buffer>) {
   const parts: Buffer[] = [];
   for await (const chunk of chunks) parts.push(chunk);
   return JSON.parse(Buffer.concat(parts).toString('utf8'));
+}
+
+// Independent of the cohort emitter: derive acceptance from raw PID-bound
+// measurements and command timestamps, never its concurrency/reduction labels.
+// This accepts a private entry comparison, not retained/native or live savings.
+function auditSpawnerResourcePair(report: any) {
+  const requireEvidence = (condition: unknown, reason: string) => {
+    if (!condition) throw Error('P011 spawner acceptance: ' + reason);
+  };
+  const positive = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0;
+  requireEvidence(report.incomplete === false && report.runner.status === 0 && !report.error, 'incomplete run');
+  requireEvidence(report.cohorts.length === 4 &&
+    report.cohorts.map((row: any) => row.mode).join(',') === 'full,standalone,standalone,full', 'order-reversed arms');
+  requireEvidence(report.sources.before.length > 0 &&
+    JSON.stringify(report.sources.before) === JSON.stringify(report.sources.after), 'source drift');
+  const phases = ['ready', 'warm', ...Array.from({ length: 3 }, (_, w) =>
+    ['idle-' + w + '-start', 'idle-' + w + '-end', 'workload-' + w + '-end']).flat(), 'completion-idle'];
+  const allocator = report.cohorts[0].bound.arena;
+  const identities = new Set<string>();
+  for (const [arm, cohort] of report.cohorts.entries()) {
+    requireEvidence(cohort.arm === arm && /^[a-f0-9]{64}$/.test(cohort.bundleSha256), 'artifact identity');
+    const identity = cohort.identity.pid + ':' + cohort.identity.startTicks;
+    requireEvidence(positive(cohort.identity.pid) && /^\d+$/.test(cohort.identity.startTicks) &&
+      !identities.has(identity) && cohort.bound.pid === cohort.identity.pid, 'process identity');
+    identities.add(identity);
+    requireEvidence(allocator === '2' && cohort.bound.arena === allocator, 'allocator mismatch');
+    requireEvidence(cohort.fenceVerified === true && cohort.reaped === true &&
+      cohort.forcedCleanup === false && cohort.socketRemoved === true && cohort.unreaped.length === 0, 'cleanup or capability');
+    requireEvidence(cohort.descendants.length === 13 && cohort.descendants.every((row: any) =>
+      row.ppid === cohort.identity.pid && positive(row.pid) && /^\d+$/.test(row.startTicks)), 'owned command population');
+    requireEvidence(cohort.samples.map((row: any) => row.phase).join(',') === phases.join(','), 'matched phases');
+    let lastAllocation = 0, lastAt = 0;
+    for (const sample of cohort.samples) {
+      requireEvidence(sample.pid === cohort.identity.pid && sample.os.pid === sample.pid &&
+        sample.os.startTicks === cohort.identity.startTicks, 'sample identity');
+      requireEvidence(positive(sample.os.pssBytes), 'PSS required; RSS cannot substitute');
+      requireEvidence(positive(sample.heap.total_allocated_bytes) && sample.heap.total_allocated_bytes >= lastAllocation,
+        'cumulative V8 allocation required');
+      requireEvidence(positive(sample.at) && sample.at > lastAt, 'sample ordering');
+      requireEvidence(sample.hostFacts.sidecarFlags.spawner === true &&
+        sample.hostFacts.backgroundWorkersOverride === 'disabled', 'runtime role mismatch');
+      lastAllocation = sample.heap.total_allocated_bytes; lastAt = sample.at;
+    }
+    requireEvidence(cohort.windows.length === 3, 'matched window population');
+    for (const [w, window] of cohort.windows.entries()) {
+      const outcomes = window.outcomes;
+      requireEvidence(window.window === w && outcomes.length === 4 && outcomes.every((row: any, i: number) =>
+        row.token === 'window-' + w + '-' + i && positive(row.start) && positive(row.end) && row.end - row.start >= 300),
+      'equivalent command outcomes');
+      requireEvidence(Math.max(...outcomes.map((row: any) => row.start)) < Math.min(...outcomes.map((row: any) => row.end)),
+        'actual command concurrency');
+    }
+  }
+  requireEvidence(report.cohorts[0].bundleSha256 === report.cohorts[3].bundleSha256 &&
+    report.cohorts[1].bundleSha256 === report.cohorts[2].bundleSha256, 'within-mode artifact drift');
+  return [[0, 1], [3, 2]].map(([baselineArm, candidateArm]) => {
+    const baseline = report.cohorts[baselineArm].samples.at(-1), candidate = report.cohorts[candidateArm].samples.at(-1);
+    const finalPssReductionBytes = baseline.os.pssBytes - candidate.os.pssBytes;
+    const finalCumulativeV8AllocationReductionBytes = baseline.heap.total_allocated_bytes - candidate.heap.total_allocated_bytes;
+    requireEvidence(finalPssReductionBytes > 0, 'both pairs must reduce PSS');
+    requireEvidence(finalCumulativeV8AllocationReductionBytes > 0, 'both pairs must reduce cumulative V8 allocation');
+    return { baselineArm, candidateArm, finalPssReductionBytes, finalCumulativeV8AllocationReductionBytes };
+  });
 }
 
 // Database/runtime launchers can emit substantial output before the cohort
@@ -375,6 +438,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(result.status, report.error ?? result.stderr).toBe(0);
       expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(4);
       expect(report.sources.before).toEqual(report.sources.after);
+      auditSpawnerResourcePair(report);
       for (const cohort of report.cohorts) {
         expect(cohort.fenceVerified).toBe(true); expect(cohort.reaped).toBe(true);
         expect(cohort.forcedCleanup).toBe(false); expect(cohort.socketRemoved).toBe(true);
@@ -396,6 +460,72 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       throw error;
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 750000);
+
+  describe('P-011 saved spawner acceptance counterexamples', () => {
+    const fixturePath = 'docs/evidence/papercusp-oct1-p011-spawner-safe-boot-pair-r3-2026-10-02.json';
+    const fixtureSha256 = 'a4650f459bd06d407650144d52d3716dce98e31a35cae7c5e7eb042b3a5981e9';
+    const startedAt = new Date().toISOString();
+    let accepted = false;
+    const killed: { id: string; rejection: string }[] = [];
+    const fixture = () => {
+      const bytes = readFileSync(join(root, fixturePath));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(fixtureSha256);
+      return JSON.parse(bytes.toString('utf8'));
+    };
+    const cases: [string, string, (report: any) => void][] = [
+      ['rss-only', 'PSS required', r => { for (const c of r.cohorts) for (const s of c.samples) delete s.os.pssBytes; }],
+      ['allocation-missing', 'cumulative V8 allocation required', r => { delete r.cohorts[1].samples[0].heap.total_allocated_bytes; }],
+      ['allocation-reset', 'cumulative V8 allocation required', r => { r.cohorts[1].samples.at(-1).heap.total_allocated_bytes = 1; }],
+      ['pid-reused', 'sample identity', r => { r.cohorts[1].samples.at(-1).os.startTicks = '1'; }],
+      ['wrong-inspector', 'process identity', r => { r.cohorts[1].bound.pid++; }],
+      ['allocator-changed', 'allocator mismatch', r => { r.cohorts[1].bound.arena = '8'; }],
+      ['workload-omitted', 'equivalent command outcomes', r => { r.cohorts[1].windows[0].outcomes.pop(); }],
+      ['outcome-changed', 'equivalent command outcomes', r => { r.cohorts[1].windows[0].outcomes[0].token = 'different'; }],
+      ['concurrency-label-lies', 'actual command concurrency', r => {
+        const rows = r.cohorts[1].windows[0].outcomes;
+        rows[3].start = rows[0].end + 1; rows[3].end = rows[3].start + 350;
+      }],
+      ['idle-phase-omitted', 'matched phases', r => { r.cohorts[1].samples.splice(2, 1); }],
+      ['source-drift', 'source drift', r => { r.sources.after[0].sha256 = '0'.repeat(64); }],
+      ['artifact-drift', 'within-mode artifact drift', r => { r.cohorts[2].bundleSha256 = '0'.repeat(64); }],
+      ['unreaped-child', 'cleanup or capability', r => { r.cohorts[1].unreaped.push(r.cohorts[1].descendants[0]); }],
+      ['forced-cleanup', 'cleanup or capability', r => { r.cohorts[1].forcedCleanup = true; }],
+      ['pss-only-one-pair', 'both pairs must reduce PSS', r => { r.cohorts[2].samples.at(-1).os.pssBytes = r.cohorts[3].samples.at(-1).os.pssBytes; }],
+      ['allocation-only-one-pair', 'both pairs must reduce cumulative V8 allocation', r => {
+        r.cohorts[2].samples.at(-1).heap.total_allocated_bytes = r.cohorts[3].samples.at(-1).heap.total_allocated_bytes;
+      }],
+    ];
+    it('accepts the exact measured receipt using raw counters and outcomes', () => {
+      const measured = auditSpawnerResourcePair(fixture());
+      expect(measured).toEqual([
+        { baselineArm: 0, candidateArm: 1, finalPssReductionBytes: 419844096, finalCumulativeV8AllocationReductionBytes: 1031421856 },
+        { baselineArm: 3, candidateArm: 2, finalPssReductionBytes: 433133568, finalCumulativeV8AllocationReductionBytes: 1061171864 },
+      ]);
+      accepted = true;
+    });
+    it.each(cases)('rejects %s against the independently derived resource contract', (id, rejection, change) => {
+      const report = fixture(); change(report);
+      expect(() => auditSpawnerResourcePair(report)).toThrow(rejection);
+      killed.push({ id, rejection });
+    });
+    afterAll(() => {
+      const destination = evidenceDestination(process.env.PAPERCUSP_P011_SPAWNER_ORACLE_REPORT);
+      if (!destination) return;
+      writeFileSync(destination, serializeIdentitySafeJson({ schemaVersion: 'p011-spawner-resource-oracle-v1',
+        spec: { id: 'PERF-OCT1-P011-MEMORY', revision: 2,
+          fingerprint: '6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010' },
+        startedAt, endedAt: new Date().toISOString(), incomplete: !accepted || killed.length !== cases.length,
+        accepted, counterexamples: killed, expectedCounterexamples: cases.length,
+        fixture: { path: fixturePath, sha256: fixtureSha256 },
+        oracle: { path: 'packages/operator-core/lib/service-memory-attribution.integration.test.ts',
+          sha256: createHash('sha256').update(readFileSync(__filename)).digest('hex'),
+          independentOf: 'No cohort-writer import or reduction/concurrency headline used; raw OS/V8 counters and command timestamps determine acceptance.' },
+        scope: 'Counterexample acceptance of the exact saved private spawner receipt only; no runtime cohort replay.',
+        limits: ['Cumulative V8 allocation is not retained or native allocation.', 'Unforced counters include transient state; GC events were not recorded.',
+          'Historical named-source scope and full executed graph unknown are preserved.',
+          'Other selected sources, live paired savings, parent fulfillment, independent plan grading and shipment remain open.'] }));
+    });
+  });
 
   it('refuses absent or ambiguous full-key counterfactuals before preparing a runtime', () => {
     const key = '...boundedInbox ? { limit, ambient: includeAmbient, intents: !!args.include_intents } : {}';
