@@ -12,12 +12,17 @@
  "evidenceTimes": {
   "sourceSnapshot": "2026-10-03T08:39:58.564327+00:00",
   "canonicalDependencies": "2026-10-03T08:46:22.401400+00:00",
-  "dispositionReadback": "2026-10-03T08:43:07.339265Z"
+  "dispositionReadback": "2026-10-03T08:43:07.339265Z",
+  "macReopenReadback": "2026-10-03T09:06:55.129Z",
+  "cutoverDuplicateReadback": "2026-10-03T09:12:18.393Z"
  },
  "verifiedDispositionCounts": {
-  "reopened": 8,
+  "reopened": 9,
   "obsoleteMirrorsDropped": 2,
-  "stillBlocked": 162
+  "duplicateFeaturesDropped": 1,
+  "totalDropped": 3,
+  "stillBlocked": 160,
+  "pendingTerminalAuthority": ["WI-1591"]
  },
  "limitations": [
   "Unresolved canonical dependencies are current evidence; an external blocker excerpt may still be stale.",
@@ -3818,20 +3823,28 @@
   },
   {
    "id": "WI-1591",
-   "state": "blocked",
-   "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "state": "dropped",
+   "disposition": "duplicate-subsumed-by-canonical-items",
+   "reason": "Current source P-002 explicitly records that P-005/WI-1594 and P-003/WI-1592 subsumed its cutover and timeout work. Both canonical items are done. D-013 records the duplicate disposition; source P-002 and the feature mirror were separately dropped and read back. The feature terminal authority is proposed; no current runtime or shipment claim.",
    "source": {
     "plan": "local-concurrent-inference-2026-07-02",
     "item": "P-002",
-    "version": 87,
+    "version": 89,
     "planState": "ready",
-    "itemState": "todo",
+    "itemState": "dropped",
     "directDependencies": []
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "completionAuthority": "proposed",
+   "evidenceRefs": [
+    "local-concurrent-inference-2026-07-02#D-013",
+    "WI-1594",
+    "WI-1592",
+    "thread-post:1157103",
+    "thread-post:1157104"
+   ]
   },
   {
    "id": "WI-1597",
@@ -5044,8 +5057,8 @@
   {
    "id": "WI-38602",
    "state": "blocked",
-   "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "disposition": "host-route-block-confirmed-isolated-route-unqualified",
+   "reason": "Current dev:listening_ports reads found one visible node-MainThread listener on each canonical port 3270 and 3274, both PID 1457399. D-008 therefore forbids the host-route launch. D-022/D-023/D-024 explicitly permit a private namespace, disposable pgvector preparation and a durable user-service runtime; those alternative-route prerequisites have not been qualified in this audit. Historical failures do not prove the alternative impossible. Leave parked while that route is qualified; do not stop or reuse the host operator.",
    "source": {
     "plan": "release-build-vm-dev-parity-audit-2026-08-13",
     "item": "P-006",
@@ -5508,9 +5521,9 @@
   },
   {
    "id": "WI-4480",
-   "state": "blocked",
-   "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "state": "open",
+   "disposition": "reopened-satisfied-rig-custody-dependency",
+   "reason": "The historical checkpoint parks only until WI-3985 releases the Mac rig. Current WI-3985 is done/unassigned with committed authority, the exact canonical edge is settled with a passing positive control, and the registered Mac rig resource is unheld. Reopened for the remaining real-GUI positive-controlled shortcut battery; acceptance remains unfinished and requires an exclusive rig lease before mutation.",
    "source": {
     "plan": null,
     "item": null,
@@ -5521,7 +5534,13 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "evidenceRefs": [
+    "WI-3985",
+    "thread-post:1157095",
+    "mac-test-vm:aviweiss@127.0.0.1:2222",
+    "thread-post:1157094"
+   ]
   },
   {
    "id": "WI-4630",
