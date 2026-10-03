@@ -175,9 +175,33 @@
     "evaluatorBuild": "d740fc3802",
     "workItemIds": ["WI-10005907"],
     "verdict": "fail",
-    "wouldBlock": ["falsifiability", "correct-layer", "plan-class-risk-floor", "disclosed-gap"],
-    "passedCriteria": ["traceability", "oracle-independence", "execution-integrity", "freshness"],
-    "qualification": "Data-corruption guard tests passed, but falsifiable metadata does not replace the required successful ledger-backed mutation/counterexample proof. The clause requires live evidence and L4 proof. This diagnostic is not plan shipment acceptance."
+    "wouldBlock": ["correct-layer", "disclosed-gap"],
+    "passedCriteria": ["traceability", "falsifiability", "oracle-independence", "execution-integrity", "freshness", "plan-class-risk-floor"],
+    "qualification": "After ledger-backed mutation evidence, falsifiability and the proof floor pass. The full clause still fails its required live plane and explicit acceptance gaps. This scoped diagnostic is not plan shipment acceptance."
+  },
+  "mutationReceipt": {
+    "mechanism": "Maintained scripts/mutation-probe.sh copy-out overlay",
+    "subject": "auditExactOwners numeric requested-node selection",
+    "change": "nodes.find((x: any) => x.id === owner.id) -> nodes[0]",
+    "guard": "joins numeric object IDs rather than constructor labels or array position",
+    "baselineTestRunId": 20660892,
+    "unmutatedCopyTestRunId": 20660893,
+    "mutantTestRunId": 20660896,
+    "controlResults": "Both controls pass one targeted test with 59 filtered skips.",
+    "mutantResult": "One executed assertion fails: P011 exact owner: exact graph node join; 59 filtered skips.",
+    "verdict": "caught",
+    "nativeExitCode": 0,
+    "mutantParse": "unchecked; failure evidence is the executed Vitest assertion",
+    "treeIntegrity": "Verified byte-identical SHA041965feff77a39f5bf8664cefc14ae2d2532c42ea9b919e80e70f7d2bff059a",
+    "log": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-mutation-r1.log",
+      "bytes": 9721,
+      "sha256": "23d3263b8ac60cd44633763d255d6a6bd54f36dd3e3f1e90a60fff80c2236923"
+    },
+    "childBinding": 23387,
+    "parentBinding": 23388,
+    "bindingCurrentness": "server-measured current",
+    "scope": "Tree-plane exact-ID selection guard only; no new producer, physical resource measurement, live acceptance or shipment."
   },
   "closure": {
     "decision": "D-021",
