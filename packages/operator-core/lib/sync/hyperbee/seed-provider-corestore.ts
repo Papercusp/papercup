@@ -114,6 +114,101 @@ export interface MintedSeedCore {
   readonly projection: SeedProjectionStats;
 }
 
+/** D-166: PRIVATE, authenticated-census input. Never copy binding hashes to the public manifest. */
+export interface SeedUuidIdempotencyDropPlan {
+  readonly schema: 'papercusp-uuid-idempotency-row-drop-plan-v1';
+  readonly reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166';
+  readonly sourceKeyHex: string;
+  readonly sourceLength: number;
+  readonly rows: readonly {
+    readonly table: string;
+    readonly hbKey: string;
+    /** SHA256 of JSON.stringify(original stored value), NOT of the refused token. */
+    readonly valueSha256: string;
+    readonly occurrences: readonly { segment: string; line: number; fieldPath: readonly (string | number)[] }[];
+  }[];
+}
+
+/** Producer evidence only. The final validator must independently check class coverage and source auth. */
+export interface SeedUuidIdempotencyRedactionReport {
+  readonly schema: 'papercusp-uuid-idempotency-redaction-manifest-v1';
+  readonly reviewRef: SeedUuidIdempotencyDropPlan['reviewRef'];
+  readonly replacement: '<redacted:idempotency-key>';
+  readonly authenticationDisposition: 'dropped';
+  readonly ciphertextAuthentication: 'requires-independent-candidate-validation';
+  readonly droppedRows: number;
+  readonly occurrenceCount: number;
+  readonly occurrences: readonly { segment: string; line: number; fieldPath: readonly (string | number)[] }[];
+}
+
+function uuidIdempotencyRowDropper(
+  plan: SeedUuidIdempotencyDropPlan,
+  source: { ownerKeyHex: string; sourceLength: number },
+): { drop: (value: unknown, table: string, hbKey: string) => boolean; finish: () => SeedUuidIdempotencyRedactionReport } {
+  if (plan.schema !== 'papercusp-uuid-idempotency-row-drop-plan-v1'
+      || plan.reviewRef !== 'p2p-public-release-endgame-2026-09-01#D-166'
+      || !/^[0-9a-f]{64}$/.test(plan.sourceKeyHex) || plan.sourceKeyHex !== source.ownerKeyHex
+      || !Number.isSafeInteger(plan.sourceLength) || plan.sourceLength <= 0
+      || plan.sourceLength !== source.sourceLength || !Array.isArray(plan.rows) || plan.rows.length === 0) {
+    throw new Error('[seed:corestore] UUID row-drop plan source/schema binding mismatch');
+  }
+  const rows = new Map<string, { hash: string; occurrences: SeedUuidIdempotencyRedactionReport['occurrences'] }>();
+  const locatorIds = new Set<string>();
+  for (const row of plan.rows) {
+    const key = JSON.stringify([row.table, row.hbKey]);
+    if (typeof row.table !== 'string' || !row.table || typeof row.hbKey !== 'string' || !row.hbKey
+        || !/^[0-9a-f]{64}$/.test(row.valueSha256) || rows.has(key)
+        || !Array.isArray(row.occurrences) || row.occurrences.length === 0) {
+      throw new Error('[seed:corestore] invalid/duplicate UUID row-drop binding');
+    }
+    const occurrences = row.occurrences.map((occurrence) => {
+      if (!/^segment-[0-9]{6}\.(?:blob|log)$/.test(occurrence.segment)
+          || !Number.isSafeInteger(occurrence.line) || occurrence.line <= 0
+          || !Array.isArray(occurrence.fieldPath) || occurrence.fieldPath.length === 0
+          || occurrence.fieldPath.some((part) => typeof part === 'number'
+            ? !Number.isSafeInteger(part) || part < 0
+            : typeof part !== 'string' || !part
+              || /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/i.test(part))) {
+        throw new Error('[seed:corestore] unsafe UUID redaction occurrence locator');
+      }
+      const copied = { segment: occurrence.segment, line: occurrence.line, fieldPath: [...occurrence.fieldPath] };
+      const locatorId = JSON.stringify(copied);
+      if (locatorIds.has(locatorId)) throw new Error('[seed:corestore] duplicate UUID redaction occurrence');
+      locatorIds.add(locatorId);
+      return copied;
+    });
+    rows.set(key, { hash: row.valueSha256, occurrences });
+  }
+  const dropped = new Set<string>();
+  return {
+    drop(value, table, hbKey) {
+      const key = JSON.stringify([table, hbKey]);
+      const row = rows.get(key);
+      if (!row) return false;
+      const encoded = JSON.stringify(value);
+      if (encoded === undefined || createHash('sha256').update(encoded).digest('hex') !== row.hash) {
+        throw new Error('[seed:corestore] UUID row-drop original value binding mismatch');
+      }
+      dropped.add(key);
+      return true;
+    },
+    finish() {
+      if (dropped.size !== rows.size) throw new Error('[seed:corestore] UUID row-drop plan has missing targets');
+      const occurrences = [...rows.values()].flatMap((row) => row.occurrences);
+      return {
+        schema: 'papercusp-uuid-idempotency-redaction-manifest-v1',
+        reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
+        replacement: '<redacted:idempotency-key>',
+        authenticationDisposition: 'dropped',
+        ciphertextAuthentication: 'requires-independent-candidate-validation',
+        droppedRows: dropped.size,
+        occurrenceCount: occurrences.length,
+        occurrences,
+      };
+    },
+  };
+}
+
 /**
  * Public seed content must not carry identity values from private plan metadata or prose.
  * The release cutter supplies the same literal set as the desktop release audit (including
@@ -314,6 +409,8 @@ export interface SeedProjectionStats {
   redactedInPlace: number;
   /** Rows carried unchanged. */
   carried: number;
+  /** D-166 output-only drop accounting; absent unless an exact private plan was applied. */
+  uuidIdempotencyRedaction?: SeedUuidIdempotencyRedactionReport;
 }
 
 /** The per-cut projection report — the numbers the cut log prints so a drop count is never invisible. */
@@ -344,7 +441,9 @@ function logProjectionReport(r: SeedProjectionReport): void {
  */
 export function seedSnapshotValueTransform(
   literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS,
-): { transform: SnapshotValueTransform; stats: SeedProjectionStats } {
+  uuidDrops?: { plan: SeedUuidIdempotencyDropPlan; ownerKeyHex: string; sourceLength: number },
+): { transform: SnapshotValueTransform; stats: SeedProjectionStats; finishUuidRedaction?: () => void } {
+  const dropper = uuidDrops ? uuidIdempotencyRowDropper(uuidDrops.plan, uuidDrops) : undefined;
   const stats: SeedProjectionStats = {
     droppedIdentityKey: 0,
     droppedPrivateIngest: 0,
@@ -353,6 +452,8 @@ export function seedSnapshotValueTransform(
     carried: 0,
   };
   const transform: SnapshotValueTransform = (value, { table, hbKey }) => {
+    // DROP the complete stored row. Never rewrite ciphertext, hbKey, author or original authentication.
+    if (dropper?.drop(value, table, hbKey)) return DROP_SNAPSHOT_ROW;
     if (seedKeyCarriesBuildIdentity(hbKey, literals)) {
       stats.droppedIdentityKey += 1;
       return DROP_SNAPSHOT_ROW;
@@ -385,7 +486,9 @@ export function seedSnapshotValueTransform(
     else stats.carried += 1;
     return redacted;
   };
-  return { transform, stats };
+  return { transform, stats, ...(dropper ? { finishUuidRedaction: () => {
+    stats.uuidIdempotencyRedaction = dropper.finish();
+  } } : {}) };
 }
 
 /**
@@ -417,6 +520,8 @@ export async function mintFilteredSeedContentCore(inp: {
   readonly now?: number;
   /** Release audit literals; omitted direct callers use the current box's runtime set. */
   readonly redactValues?: readonly string[];
+  /** D-166 private source-bound plan; final class census/auth proof is a separate required gate. */
+  readonly uuidIdempotencyDropPlan?: SeedUuidIdempotencyDropPlan;
   /** Forward bounded source-scan progress to the release runner, when supplied. */
   readonly onProgress?: SnapshotFoldProgressCallback;
   /** Forward a cursor-stall diagnostic to the release runner, when supplied. */
@@ -458,7 +563,10 @@ export async function mintFilteredSeedContentCore(inp: {
             `the scan remains live and is not being aborted`,
         );
       };
-      const projection = seedSnapshotValueTransform(inp.redactValues);
+      const boundSourceLength = sourceCore.length;
+      const projection = seedSnapshotValueTransform(inp.redactValues, inp.uuidIdempotencyDropPlan ? {
+        plan: inp.uuidIdempotencyDropPlan, ownerKeyHex: inp.ownerKeyHex, sourceLength: boundSourceLength,
+      } : undefined);
       // P-003: the producer's own seek only scans a short tail window, and the
       // proportional cadence leaves the newest set far behind it. Locate it with the
       // reader's unbounded scan and hand it over; a miss still folds from 0 correctly.
@@ -474,6 +582,10 @@ export async function mintFilteredSeedContentCore(inp: {
         seekReadBudgetMs: inp.seekReadBudgetMs,
         transformValue: projection.transform,
       });
+      if (inp.uuidIdempotencyDropPlan && sourceCore.length !== boundSourceLength) {
+        throw new Error('[seed:corestore] UUID row-drop source head changed during projection');
+      }
+      projection.finishUuidRedaction?.();
       (inp.onProjection ?? logProjectionReport)({
         ...projection.stats,
         rows: produced.rowCount,
@@ -574,6 +686,8 @@ export interface CorestoreCutContext {
    * read-only core so the live source log is never rewritten or made unreachable.
    */
   readonly filtered?: boolean;
+  /** D-166 private plans, one per exact source core; never accepted on an unfiltered copy. */
+  readonly uuidIdempotencyDropPlans?: readonly SeedUuidIdempotencyDropPlan[];
   /** Identity literals supplied by the release audit for the projection scrub. */
   readonly redactValues?: readonly string[];
   /** Optional bounded source-scan progress sink for filtered release cuts. */
@@ -964,8 +1078,16 @@ export function createCorestoreSeedProvider(): SeedProvider {
         onStall,
         filteredScanStallMs,
         onProjection,
+        uuidIdempotencyDropPlans,
       } =
         ctx as unknown as CorestoreCutContext;
+      const uuidPlans = new Map<string, SeedUuidIdempotencyDropPlan>();
+      for (const plan of uuidIdempotencyDropPlans ?? []) {
+        if (!filtered || !coreKeys.includes(plan.sourceKeyHex) || uuidPlans.has(plan.sourceKeyHex)) {
+          throw new Error('[seed:corestore] UUID row-drop plan requires a unique requested filtered source core');
+        }
+        uuidPlans.set(plan.sourceKeyHex, plan);
+      }
       await mkdir(stagingDir, { recursive: true });
 
       const candidateStores = await openSourceStoreCandidates(sourceStoreDirs);
@@ -984,6 +1106,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
           // Minted key → the owner own-log key it was projected from. See
           // `seed-projection-meta.ts` for why the mapping, and not a bare boolean.
           const coreProjectedFrom: Record<string, string> = {};
+          const uuidRedactions: SeedUuidIdempotencyRedactionReport[] = [];
           try {
             for (const ownerKeyHex of coreKeys) {
               const minted = await mintFilteredSeedContentCore({
@@ -995,7 +1118,9 @@ export function createCorestoreSeedProvider(): SeedProvider {
                 onStall,
                 filteredScanStallMs,
                 onProjection,
+                uuidIdempotencyDropPlan: uuidPlans.get(ownerKeyHex),
               });
+              if (minted.projection.uuidIdempotencyRedaction) uuidRedactions.push(minted.projection.uuidIdempotencyRedaction);
               filteredCoreKeys.push(minted.keyHex);
               coreLengths[minted.keyHex] = minted.length;
               coreProjectedFrom[minted.keyHex] = ownerKeyHex;
@@ -1039,6 +1164,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
               coreKeys: filteredCoreKeys,
               coreLengths,
               [SEED_PROJECTED_FROM_META_KEY]: coreProjectedFrom,
+              ...(uuidRedactions.length ? { uuidIdempotencyRedactions: uuidRedactions } : {}),
             },
           };
           return { entry, payload: { path: stagingDir } };

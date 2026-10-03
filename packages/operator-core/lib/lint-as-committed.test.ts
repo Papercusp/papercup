@@ -753,8 +753,8 @@ console.log('CLONE_PREREQUISITES_OK');
     return { root, main, head };
   }
 
-  function run(root: string) {
-    return spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+  function run(root: string, arbitrary = false) {
+    return spawnSync(process.execPath, [scriptPath, 'lint:probe', ...(arbitrary ? ['--any'] : [])], {
       cwd: root, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
     });
   }
@@ -780,6 +780,66 @@ console.log('CLONE_PREREQUISITES_OK');
       expect(result.status, result.stdout + result.stderr).toBe(0);
       expect(result.stdout).not.toContain('main snapshot:');
       expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each(['string', 'map'])('builds a bin-only package and its companion native assets from the pinned tree (%s)', (shape) => {
+    const f = fixture('node build.cjs');
+    try {
+      snapshot(f.root, {
+        'libs/runtime/package.json': JSON.stringify({ name: '@fixture/runtime',
+          bin: shape === 'string' ? './dist/cli.cjs' : { fixture: './dist/cli.cjs' },
+          scripts: { build: 'node build-native.cjs' } }),
+        'libs/runtime/build-native.cjs': `const fs = require('node:fs');
+fs.mkdirSync('dist', { recursive: true });
+for (const name of ['cli.cjs', 'native-client.cjs', 'native-extension.mjs']) fs.writeFileSync('dist/' + name, 'pinned-native');
+`,
+        'probe.cjs': `const assert = require('node:assert/strict');
+const fs = require('node:fs');
+for (const name of ['cli.cjs', 'native-client.cjs', 'native-extension.mjs']) assert.equal(fs.readFileSync('libs/runtime/dist/' + name, 'utf8'), 'pinned-native');
+console.log('PINNED_NATIVE_OK');
+`,
+      }, f.head);
+      writeFileSync(join(f.root, 'libs/runtime/build-native.cjs'), 'throw new Error("shared dirty builder");\n');
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain('PINNED_NATIVE_OK');
+      expect(existsSync(join(f.root, 'libs/runtime/dist/native-client.cjs'))).toBe(false);
+      expect(readFileSync(join(f.root, 'libs/runtime/build-native.cjs'), 'utf8')).toContain('shared dirty builder');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each([0, 7])('prepares declared runtime assets before arbitrary commands and refuses a failing lifecycle (exit %s)', (exitCode) => {
+    const f = fixture('node build.cjs');
+    try {
+      const manifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
+      manifest.scripts.postinstall = 'node setup-vditor-runtime.cjs';
+      snapshot(f.root, {
+        '.gitignore': 'node_modules/\nlibs/runtime/dist/\nlibs/runtime/public/\n',
+        'libs/runtime/package.json': JSON.stringify(manifest),
+        'libs/runtime/setup-vditor-runtime.cjs': `const fs = require('node:fs');
+fs.mkdirSync('public', { recursive: true });
+fs.writeFileSync('public/mirror.js', require('./source.cjs'));
+process.exitCode = ${exitCode};
+`,
+        'probe.cjs': readFileSync(join(f.root, 'probe.cjs'), 'utf8') + `
+assert.equal(readFileSync('libs/runtime/public/mirror.js', 'utf8'), 'pinned-source');
+console.log('PINNED_ASSETS_OK');
+`,
+      }, f.head);
+      mkdirSync(join(f.root, 'libs/runtime/public'), { recursive: true });
+      writeFileSync(join(f.root, 'libs/runtime/public/mirror.js'), 'shared stale assets');
+      writeFileSync(join(f.root, 'libs/runtime/setup-vditor-runtime.cjs'), 'throw new Error("shared dirty setup");\n');
+      const result = run(f.root, true);
+      expect(result.status, result.stdout + result.stderr).toBe(exitCode === 0 ? 0 : 2);
+      expect(result.stdout).toContain('preparing pinned runtime assets: @fixture/runtime');
+      if (exitCode === 0) expect(result.stdout).toContain('PINNED_ASSETS_OK');
+      else {
+        expect(result.stderr).toContain('committed postinstall failed');
+        expect(result.stdout).not.toContain('─── lint:probe');
+        expect(result.stdout).not.toContain('CLONE_PREREQUISITES_OK');
+      }
+      expect(readFileSync(join(f.root, 'libs/runtime/public/mirror.js'), 'utf8')).toBe('shared stale assets');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
 

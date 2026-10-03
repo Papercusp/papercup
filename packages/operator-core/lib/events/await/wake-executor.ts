@@ -3581,6 +3581,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           isDeliveryLadderWakeSource,
           isEscalationSlaRerouteWakeSource,
           MANUAL_WAKE_QUEUE_RELEASE_SOURCE_PREFIX,
+          inboxWakeKey,
         },
         { isOwnerVerifiedRelay, readRelayProvenance },
       ] = await Promise.all([
@@ -3592,14 +3593,34 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         d.payload !== null && typeof d.payload === 'object' && !Array.isArray(d.payload)
           ? (d.payload as Record<string, unknown>)
           : null;
-      const relay = readRelayProvenance(payloadRecord);
+      const recordOf = (value: unknown): Record<string, unknown> | null =>
+        value !== null && typeof value === 'object' && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : null;
+      const ownerVerifiedRelayPayload = (payload: unknown): boolean =>
+        isOwnerVerifiedRelay(readRelayProvenance(recordOf(payload)));
+      // Relay authority is carried only on the addressed coord inbox-wake. The
+      // event pump wraps coalesced rows under `events[]`; require every component
+      // to be an owner-verified inbox relay so one approved message cannot
+      // authorize an unrelated sibling in the same coalesced turn. Ambiguous
+      // legacy/latest-only envelopes stay in the owner-review queue.
+      const ownerVerifiedInboxRelay =
+        d.eventKey === inboxWakeKey(d.subscriberId) &&
+        (payloadRecord?.coalesced === true
+          ? Array.isArray(payloadRecord.events) &&
+            payloadRecord.events.length > 0 &&
+            payloadRecord.events.every((value) => {
+              const component = recordOf(value);
+              return component?.event === d.eventKey && ownerVerifiedRelayPayload(component.payload);
+            })
+          : ownerVerifiedRelayPayload(payloadRecord));
       const bypassManualGate =
         isLoopWakeSource(source) ||
         isOwnerGuiWakeSource(source) ||
         isDeliveryLadderWakeSource(source) ||
         isEscalationSlaRerouteWakeSource(source) ||
         (source ?? '').startsWith(MANUAL_WAKE_QUEUE_RELEASE_SOURCE_PREFIX) ||
-        isOwnerVerifiedRelay(relay);
+        ownerVerifiedInboxRelay;
       if (!bypassManualGate) {
         await (deps.stageManualWakeFn ?? stagePendingWake)({
           ownerId: d.subscriberId,

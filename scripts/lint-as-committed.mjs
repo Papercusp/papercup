@@ -480,8 +480,8 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, wor
   return stats;
 }
 
-/** Runtime export prerequisites belong to the pinned package, never the shared dist. */
-export function prepareWorkspaceExports(workRoot, workspacePaths) {
+/** Runtime prerequisites belong to the pinned package, never the shared dist/assets. */
+export function prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets = false } = {}) {
   for (const packageRoot of workspacePaths) {
     const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
     const targets = new Set();
@@ -498,6 +498,11 @@ export function prepareWorkspaceExports(workRoot, workspacePaths) {
     };
     if (manifest.exports) visit(manifest.exports, typeof manifest.exports === 'string');
     else if (manifest.main) targets.add(manifest.main);
+    // CLI packages can have no exports/main at all. Their committed build also
+    // emits companion assets (for example the OMP native MCP adapter).
+    for (const bin of Object.values(typeof manifest.bin === 'string' ? { bin: manifest.bin } : manifest.bin ?? {})) {
+      if (typeof bin === 'string') targets.add(bin);
+    }
     const concrete = [...targets].filter((target) => !target.includes('*'));
     for (const target of concrete) {
       const rel = relative(packageRoot, join(packageRoot, target));
@@ -506,18 +511,22 @@ export function prepareWorkspaceExports(workRoot, workspacePaths) {
       }
     }
     const missing = () => concrete.filter((target) => !existsSync(join(packageRoot, target)));
-    if (missing().length === 0) continue;
-    if (!manifest.scripts?.build) {
+    const needsBuild = missing().length > 0;
+    const assetLifecycle = prepareAssets && /\bsetup-[a-z0-9-]+-runtime\b/.test(manifest.scripts?.postinstall ?? '');
+    if (!needsBuild && !assetLifecycle) continue;
+    if (needsBuild && !manifest.scripts?.build) {
       throw new Error(`${manifest.name}: missing runtime export(s) ${missing().join(', ')} and no committed build script`);
     }
-    console.log(`  building pinned runtime exports: ${manifest.name} (${relative(workRoot, packageRoot)})`);
-    const build = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
-      cwd: packageRoot,
-      stdio: 'inherit',
-      env: { ...process.env, npm_config_workspaces: undefined },
-    });
-    if (build.error || build.status !== 0) {
-      throw new Error(`${manifest.name}: committed build failed (${build.error?.message ?? `exit ${build.status}, signal ${build.signal}`})`);
+    for (const script of [...(needsBuild ? ['build'] : []), ...(assetLifecycle ? ['postinstall'] : [])]) {
+      console.log(`  ${script === 'build' ? 'building pinned runtime exports' : 'preparing pinned runtime assets'}: ${manifest.name} (${relative(workRoot, packageRoot)})`);
+      const run = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', script], {
+        cwd: packageRoot,
+        stdio: 'inherit',
+        env: { ...process.env, npm_config_workspaces: undefined },
+      });
+      if (run.error || run.status !== 0) {
+        throw new Error(`${manifest.name}: committed ${script} failed (${run.error?.message ?? `exit ${run.status}, signal ${run.signal}`})`);
+      }
     }
     if (missing().length > 0) {
       throw new Error(`${manifest.name}: committed build did not emit runtime export(s): ${missing().join(', ')}`);
@@ -895,7 +904,7 @@ function main() {
         (shadow.fallback ? `, ${shadow.fallback} fell back to the SHARED tree (package absent here)` : ''),
     );
     try {
-      prepareWorkspaceExports(workRoot, workspacePaths);
+      prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets: args.any });
     } catch (err) {
       console.error(`lint-as-committed: workspace runtime prerequisites failed: ${err.message}`);
       process.exitCode = 2;

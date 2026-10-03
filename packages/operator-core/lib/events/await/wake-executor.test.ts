@@ -289,6 +289,10 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // runner's real ~/.claude. No settings ⇒ the resume argv is unchanged.
     readClaudeLaunchSettings: vi.fn(() => null),
     presence: vi.fn(async () => livePresence) as never,
+    // EI-24940177665447430: keep the delivery-time effective-mode read hermetic;
+    // only the dedicated fence cases below override this auto-mode default.
+    resolveWakeModeFn: vi.fn(async () => 'auto') as never,
+    stageManualWakeFn: vi.fn(async () => undefined) as never,
     getSessionLifecycle: vi.fn(async () => null),
     // EI-22449230917085417: keep ordinary wake tests hermetic; the production
     // default reads the live SU-lock table at the delivery boundary.
@@ -367,6 +371,177 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     ...over,
   };
 }
+
+describe('executeWake — delivery-time current wake-mode fence (EI-24940177665447430)', () => {
+  const ownerId = 'su-paused-at-delivery';
+  const inboxKey = `coord:inbox-wake:${ownerId}`;
+  const ownerRelayPayload = (quote: string) => ({
+    messageId: `owner-msg-${quote.length}`,
+    relayProvenance: {
+      tier: 'owner-verified-turn',
+      quote,
+      origin: 'owner',
+    },
+  });
+  const planHandle = { kind: 'plan-run' as const, runId: 92 };
+
+  it('stages an ordinary queued delivery when the recipient is manual before any continuation runs', async () => {
+    const resolveWakeModeFn = vi.fn(async () => 'manual' as const);
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({ resolveWakeModeFn: resolveWakeModeFn as never, stageManualWakeFn: stageManualWakeFn as never, resumePlanRun });
+    const delivery = work({
+      subscriberId: ownerId,
+      eventKey: 'work-item:claimable',
+      payload: { workItemId: 'WI-42' },
+      source: 'su-peer',
+      wakeHandle: planHandle,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'drop',
+      reason: 'effective wake mode is manual at delivery time; queued wake staged for owner review',
+    });
+    expect(resolveWakeModeFn).toHaveBeenCalledWith(ownerId);
+    expect(stageManualWakeFn).toHaveBeenCalledWith({
+      ownerId,
+      summary: delivery.summary,
+      payload: delivery.payload,
+      source: delivery.source,
+      workspaceId: delivery.workspaceId,
+    });
+    expect(resumePlanRun).not.toHaveBeenCalled();
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.write).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit wake-queue release deliverable while manual mode is active', async () => {
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const delivery = work({
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: { value: 'owner-reviewed release' },
+      source: 'coord:wake-queue-release:su-peer',
+      wakeHandle: planHandle,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'plan-run-resume',
+    });
+    expect(stageManualWakeFn).not.toHaveBeenCalled();
+    expect(resumePlanRun).toHaveBeenCalledWith(expect.objectContaining({ runId: planHandle.runId }));
+  });
+
+  it('keeps an owner-verified relay on the recipient inbox-wake deliverable in manual mode', async () => {
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const delivery = work({
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume this agent'),
+      source: 'su-relaying-agent',
+      wakeHandle: planHandle,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'plan-run-resume',
+    });
+    expect(stageManualWakeFn).not.toHaveBeenCalled();
+    expect(resumePlanRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts coalesced owner relays only when every component is an owner-verified inbox wake', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const first = work({
+      id: 93,
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume agent one'),
+      source: 'su-relaying-agent',
+      createdAt: new Date(1_000).toISOString(),
+    });
+    const second = work({
+      id: 94,
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume agent two'),
+      source: 'su-relaying-agent',
+      createdAt: new Date(2_000).toISOString(),
+    });
+    const delivery = { ...coalesceDeliveries([first, second]), wakeHandle: planHandle };
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'plan-run-resume',
+    });
+    expect(stageManualWakeFn).not.toHaveBeenCalled();
+    expect(resumePlanRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a verified relay authorize an unrelated coalesced sibling or another event key', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const ordinary = work({
+      id: 95,
+      subscriberId: ownerId,
+      eventKey: 'work-item:claimable',
+      payload: { workItemId: 'WI-43' },
+      source: 'su-peer',
+      createdAt: new Date(1_000).toISOString(),
+    });
+    const ownerRelay = work({
+      id: 96,
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume this agent'),
+      source: 'su-relaying-agent',
+      createdAt: new Date(2_000).toISOString(),
+    });
+    const mixedDelivery = { ...coalesceDeliveries([ordinary, ownerRelay]), wakeHandle: planHandle };
+
+    await expect(executeWake(mixedDelivery, d)).resolves.toMatchObject({ kind: 'drop' });
+    expect(stageManualWakeFn).toHaveBeenCalledTimes(1);
+    expect(resumePlanRun).not.toHaveBeenCalled();
+
+    const forgedKeyDelivery = work({
+      subscriberId: ownerId,
+      eventKey: 'work-item:claimable',
+      payload: ownerRelayPayload('resume this agent'),
+      source: 'su-relaying-agent',
+      wakeHandle: planHandle,
+    });
+    await expect(executeWake(forgedKeyDelivery, d)).resolves.toMatchObject({ kind: 'drop' });
+    expect(stageManualWakeFn).toHaveBeenCalledTimes(2);
+    expect(resumePlanRun).not.toHaveBeenCalled();
+  });
+});
 
 describe('executeWake — durable fleet release latch (EI-203843)', () => {
   it('drops every wake shape before any injection or resume side effect', async () => {

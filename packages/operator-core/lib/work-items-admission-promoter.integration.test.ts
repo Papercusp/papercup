@@ -2097,6 +2097,72 @@ describe('work-item admission promoter (real Postgres)', () => {
       ]);
     });
 
+    it.each([false, true])('does not admit or report terminal pending rows (scope policy: %s)', async (withPolicy) => {
+      const platformHome = `operator:${WS}`;
+      const old = NOW - 61 * 60_000;
+      h.scopeTerms = withPolicy ? { exact: [HARNESS], likePrefixes: [] } : null;
+      const terminalStates = ['done', 'dropped', 'deprecated', 'passed', 'failed', 'resolved', 'closed'];
+      for (const harness of [HARNESS, platformHome, 'email']) {
+        for (const status of terminalStates) {
+          await seedItem({
+            id: `WI-terminal-${harness}-${status}`,
+            status,
+            harness,
+            createdAtMs: old,
+            vector: null,
+            payload: { retainedTerminalReceipt: status },
+          });
+        }
+      }
+      await seedItem({ id: 'WI-live-home', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-live-platform', harness: platformHome, createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-live-other', harness: 'email', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-live-legacy', createdAtMs: old, vector: null });
+      await db.sql`UPDATE harness_shared.work_items SET status = NULL WHERE feature_id = 'WI-live-legacy'`;
+      const onNewlyAdmitted = vi.fn(async (_rows: readonly { id: string; harness: string }[]) => {});
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: `fail-open-terminal-control-${withPolicy}`,
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+        onNewlyAdmitted,
+      });
+
+      const expectedAdmitted = withPolicy
+        ? ['WI-live-home', 'WI-live-legacy']
+        : ['WI-live-home', 'WI-live-legacy', 'WI-live-other', 'WI-live-platform'];
+      expect(result.autoPromoted).toEqual(expectedAdmitted);
+      expect(onNewlyAdmitted).toHaveBeenCalledOnce();
+      expect(onNewlyAdmitted.mock.calls[0]?.[0].map((row) => row.id).sort()).toEqual(expectedAdmitted);
+      expect(result.heldByScope).toEqual(withPolicy ? { email: 1, [platformHome]: 1 } : {});
+      const [run] = await db.sql<Array<{ misHomed: unknown; held: unknown }>>`
+        SELECT detail->'misHomedByScope' AS "misHomed", detail->'heldByScope' AS held
+          FROM harness_shared.admission_runs WHERE id = ${`fail-open-terminal-control-${withPolicy}`}`;
+      expect(run).toEqual({
+        misHomed: withPolicy ? { [platformHome]: 1 } : {},
+        held: withPolicy ? { email: 1, [platformHome]: 1 } : {},
+      });
+      const terminalRows = await db.sql<Array<{
+        status: string; admission: string; admitted_at: string | null; admitted_by: string | null;
+        updated_ts: string; payload: Record<string, unknown>;
+      }>>`
+        SELECT status, admission, admitted_at, admitted_by, updated_ts, payload
+          FROM harness_shared.work_items WHERE feature_id LIKE 'WI-terminal-%'`;
+      expect(terminalRows).toHaveLength(terminalStates.length * 3);
+      for (const row of terminalRows) {
+        expect(row).toMatchObject({
+          admission: 'pending', admitted_at: null, admitted_by: null,
+          payload: { retainedTerminalReceipt: row.status },
+        });
+        expect(Number(row.updated_ts)).toBe(old);
+        expect(row.payload).not.toHaveProperty('admissionReview');
+        expect(row.payload).not.toHaveProperty('admissionFailOpen');
+      }
+    });
+
     // WI-10004723 (P-003): the work-scope hold must tell a mis-homed platform row apart from another
     // pot's deliberately held work. Measured 2026-10-01: 14 learning-loop alarms sat 6 days in
     // `operator:papercusp-workspace`, reported by every tick as a "deliberate hold".

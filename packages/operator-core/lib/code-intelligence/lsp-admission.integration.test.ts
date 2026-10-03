@@ -30,6 +30,9 @@ import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { lspAdmissionController } from './lsp-admission';
 import { buildLspAdmissionStatePayload } from '../agent-tools/state/lsp-admission';
+import { readCell } from '../cell-read';
+import { registerCell } from '../cell-registry';
+import { LSP_ADMISSION_CELL } from '../cell-registrations';
 
 let server: Server | undefined;
 let socketRoot: string | undefined;
@@ -70,8 +73,14 @@ describe('daemon admission integration', () => {
     await once(server, 'listening');
     const args = { rootPath, file, line1: 1, character: 0 };
     const first = callLspDaemonRpc(socketPath, { workspaceId, op: 'references', args, actorId: 'agent-a' }, 10_000);
+    // Attach failure observation immediately and always release held wire work.
+    const pending: Promise<unknown>[] = [first];
+    void first.catch(() => undefined);
+    try {
     await vi.waitFor(() => expect(calls).toEqual(['references']));
     const queued = callLspDaemonRpc(socketPath, { workspaceId, op: 'references', args, actorId: 'agent-b' }, 10_000);
+    pending.push(queued);
+    void queued.catch(() => undefined);
     const controller = lspAdmissionController(workspaceId);
     await vi.waitFor(() => {
       expect(controller.snapshot()).toMatchObject({ queued: 1, inFlight: 1 });
@@ -88,6 +97,11 @@ describe('daemon admission integration', () => {
       effectiveWindow: current.effectiveWindow, queued: 1, inFlight: 1, pendingPersistence: 0 });
     expect(observed.oldestWaitMs).toBeGreaterThanOrEqual(0);
     expect(observed.oldestWaitMs).toBeLessThanOrEqual(current.oldestWaitMs);
+    registerCell(LSP_ADMISSION_CELL);
+    const cell = await readCell('lsp.admission', { ownerId: 'test-lsp-cell-reader', roles: ['su'] },
+      { workspaceId, harnessSlug: 'papercusp', role: 'su' });
+    expect(cell, JSON.stringify(cell)).toMatchObject({ status: 'value', value: { queued: 1, inFlight: 1 },
+      assessment: { status: 'resolved', code: 'pressure' } });
     const definition = await callLspDaemonRpc(socketPath, { workspaceId, op: 'symbol', args, actorId: 'agent-c' }, 10_000);
     expect(definition.sites).toHaveLength(1);
     expect(calls).toEqual(['references', 'symbol']);
@@ -102,5 +116,9 @@ describe('daemon admission integration', () => {
     const request = admitted.mock.calls[0][0];
     expect(await seam.store!.find('lsp-query', request.idempotencyKey)).toMatchObject({ record: { state: 'completed' } });
     expect(request.metadata).toMatchObject({ actor: 'agent-b', op: 'references', language: 'typescript' });
+    } finally {
+      release();
+      await Promise.allSettled(pending);
+    }
   }, 20_000);
 });

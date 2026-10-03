@@ -116,6 +116,28 @@ describe('hosted usage server collector composition', () => {
     expect(s.append).not.toHaveBeenCalled();
   });
 
+  it('rejects a 1999 receipt for the literal month 0099-12 before persistence', async () => {
+    const s = store();
+    const c = collector({ read: async input => ({ scope: input.scope, month: input.month, complete: true,
+      observedAtMs: T, evidenceRef: 'fixture:wrong-century', records: [receipt({ occurredAtMs: Date.UTC(1999, 11, 15) })] }) });
+    await expect(source(s, [c])({ ...request, month: '0099-12' })).rejects.toThrow('receipt mismatch');
+    expect(s.append).not.toHaveBeenCalled();
+  });
+
+  it('includes the first instant of a month and excludes the first instant of the next', async () => {
+    const s = store();
+    const c = collector({ read: async input => ({ scope: input.scope, month: input.month, complete: true,
+      observedAtMs: input.asOfMs, evidenceRef: 'fixture:boundary', records: [receipt({ occurredAtMs: Date.UTC(2026, 9, 1) })] }) });
+    expect((await source(s, [c])(request)).consumptionBilled.micros).toBe(20_003);
+    expect(s.append).toHaveBeenCalledTimes(1);
+    const next = store();
+    const nextMonth = collector({ read: async input => ({ scope: input.scope, month: input.month, complete: true,
+      observedAtMs: input.asOfMs, evidenceRef: 'fixture:excluded-boundary',
+      records: [receipt({ occurredAtMs: Date.UTC(2026, 10, 1), observedAtMs: input.asOfMs })] }) });
+    await expect(source(next, [nextMonth])({ ...request, asOfMs: Date.UTC(2026, 10, 2) })).rejects.toThrow('receipt mismatch');
+    expect(next.append).not.toHaveBeenCalled();
+  });
+
   it('validates every collector batch before writing an otherwise valid first batch', async () => {
     const s = store(); const invalid = collector({ id: 'invalid-census',
       read: async input => ({ scope: input.scope, month: input.month, complete: true, observedAtMs: T,

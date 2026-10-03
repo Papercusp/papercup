@@ -19,7 +19,7 @@
  */
 import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
-import { readShadowStatement } from './shadow-metering-reader';
+import { readShadowStatement, shadowMonthBounds } from './shadow-metering-reader';
 
 /** A write verb or side-effecting function anywhere in the statement. */
 const WRITE_RE =
@@ -85,6 +85,38 @@ function answer(text: string): unknown[] {
   if (text.includes('price_table_version')) return [{ samples: '12', stale: '0', unpriced: '0', lower_bound: '0' }];
   return text.includes('tool_invocations_identity_attribution') ? TOOL_ROWS : USAGE_ROWS;
 }
+
+describe('shadowMonthBounds preserves literal UTC calendar years', () => {
+  it.each([
+    ['0000-01', '0000-01-01T00:00:00.000Z', '0000-02-01T00:00:00.000Z', 31],
+    ['0000-02', '0000-02-01T00:00:00.000Z', '0000-03-01T00:00:00.000Z', 29],
+    ['0099-12', '0099-12-01T00:00:00.000Z', '0100-01-01T00:00:00.000Z', 31],
+    ['0100-02', '0100-02-01T00:00:00.000Z', '0100-03-01T00:00:00.000Z', 28],
+    ['1900-02', '1900-02-01T00:00:00.000Z', '1900-03-01T00:00:00.000Z', 28],
+    ['2000-02', '2000-02-01T00:00:00.000Z', '2000-03-01T00:00:00.000Z', 29],
+    ['2026-12', '2026-12-01T00:00:00.000Z', '2027-01-01T00:00:00.000Z', 31],
+    ['9999-12', '9999-12-01T00:00:00.000Z', '+010000-01-01T00:00:00.000Z', 31],
+  ])('%s selects the literal year and exclusive next month', (month, start, end, days) => {
+    const bounds = shadowMonthBounds(month);
+    expect(new Date(bounds.startMs).toISOString()).toBe(start);
+    expect(new Date(bounds.endMs).toISOString()).toBe(end);
+    expect(bounds.endMs - bounds.startMs).toBe(days * 86_400_000);
+  });
+
+  it.each(['99-12', '0099-00', '0099-13', '2026-2', ' 2026-02', '2026-02-01'])('rejects invalid month %j', month => {
+    expect(() => shadowMonthBounds(month)).toThrow(/YYYY-MM/);
+  });
+
+  it('uses literal year boundaries in every shadow statement query', async () => {
+    const { sql, calls } = recordingSql(answer);
+    await readShadowStatement(sql, { workspaceId: 'ws-1', month: '0099-12' });
+    expect(calls).toHaveLength(3);
+    for (const call of calls) {
+      const bounds = call.values.filter((value): value is number => typeof value === 'number');
+      expect(bounds.map(value => new Date(value).toISOString())).toEqual(['0099-12-01T00:00:00.000Z', '0100-01-01T00:00:00.000Z']);
+    }
+  });
+});
 
 describe('readShadowStatement issues no writes (AUTO-BAR-R-12)', () => {
   it('detects writes and payment relations (positive controls for the detector)', () => {

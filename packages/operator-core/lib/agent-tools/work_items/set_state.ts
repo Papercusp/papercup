@@ -30,6 +30,7 @@ import {
   normalizePersistedAssumptionDeclaration,
   resolveDeclaredAssumptions,
   ASSUMPTIONS_REQUIRED_MESSAGE,
+  ASSUMPTIONS_SHAPE_HINT,
   TERMINAL_CLOSE_RECOVERY_HINT,
 } from './_assumptions';
 import {
@@ -140,6 +141,18 @@ function nonTerminalAliasSchemaError(input: unknown): string | undefined {
 const aliasAwareUnionError = (issue: { input?: unknown; errors?: unknown }): string | undefined => {
   const aliasError = nonTerminalAliasSchemaError(issue.input);
   if (aliasError) return aliasError;
+
+  const root = typeof issue.input === 'object' && issue.input !== null
+    ? (issue.input as Record<string, unknown>)
+    : undefined;
+  const candidates = Array.isArray(root?.items) ? root.items : [root];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null || !('assumptions' in candidate)) continue;
+    const assumptions = (candidate as Record<string, unknown>).assumptions;
+    if (assumptions !== undefined && !assumptionsArg.safeParse(normalizePersistedAssumptionDeclaration(assumptions)).success) {
+      return `assumptions is malformed. ${ASSUMPTIONS_SHAPE_HINT}`;
+    }
+  }
 
   // A union normally collapses branch-specific validation errors to the unhelpful
   // "Invalid input". Preserve the first actionable branch diagnostic (for example the

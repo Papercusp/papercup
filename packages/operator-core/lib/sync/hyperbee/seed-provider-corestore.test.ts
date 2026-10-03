@@ -17,6 +17,7 @@ import Corestore from 'corestore';
 import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import {
   createCorestoreSeedProvider,
@@ -28,11 +29,103 @@ import {
   SEED_REDACT_IN_PLACE_TABLES,
   seedSnapshotValueTransform,
   valueCarriesSeedIdentity,
+  type SeedUuidIdempotencyDropPlan,
 } from './seed-provider-corestore';
 import { DROP_SNAPSHOT_ROW, produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+describe('D-166 source-bound UUID output row drops', () => {
+  const sourceKeyHex = 'ab'.repeat(32);
+  const value = { ciphertext: 'unchanged-authenticated-envelope', originalSignature: 'original-auth' };
+  const valueHash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+  const plan = (): SeedUuidIdempotencyDropPlan => ({
+    schema: 'papercusp-uuid-idempotency-row-drop-plan-v1',
+    reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
+    sourceKeyHex, sourceLength: 1,
+    rows: [{ table: 'coord-messages', hbKey: 'message-1', valueSha256: valueHash(value),
+      occurrences: [{ segment: 'segment-000104.blob', line: 17, fieldPath: ['body', 'idempotencyKey'] }] }],
+  });
+  const projection = (p = plan()) => seedSnapshotValueTransform([], { plan: p, ownerKeyHex: sourceKeyHex, sourceLength: 1 });
+
+  it('drops only the bound complete row and emits value-free manifest with explicit dropped auth', () => {
+    const p = projection();
+    const clean = { body: 'unrelated content' };
+    expect(p.transform(clean, { table: 'coord-messages', hbKey: 'message-2' })).toBe(clean);
+    expect(p.transform(value, { table: 'coord-messages', hbKey: 'message-1' })).toBe(DROP_SNAPSHOT_ROW);
+    // A duplicate scan visit must not inflate the unique row/occurrence counts.
+    expect(p.transform(value, { table: 'coord-messages', hbKey: 'message-1' })).toBe(DROP_SNAPSHOT_ROW);
+    p.finishUuidRedaction!();
+    expect(p.stats.uuidIdempotencyRedaction).toMatchObject({ droppedRows: 1, occurrenceCount: 1,
+      replacement: '<redacted:idempotency-key>', authenticationDisposition: 'dropped',
+      ciphertextAuthentication: 'requires-independent-candidate-validation' });
+    const report = JSON.stringify(p.stats.uuidIdempotencyRedaction);
+    expect(report).not.toContain(valueHash(value));
+    expect(report).not.toContain(value.ciphertext);
+    expect(report).not.toContain(value.originalSignature);
+    expect(report).not.toContain('message-1');
+    expect(value.originalSignature).toBe('original-auth');
+  });
+
+  it('refuses changed values and missing targets rather than certifying a partial plan', () => {
+    const p = projection();
+    expect(() => p.transform({ ...value, ciphertext: 'changed' },
+      { table: 'coord-messages', hbKey: 'message-1' })).toThrow('original value binding mismatch');
+    expect(() => p.finishUuidRedaction!()).toThrow('missing targets');
+  });
+
+  it('refuses wrong source, wrong head, duplicate rows, duplicate locators and value-bearing locators', () => {
+    const good = plan();
+    for (const bad of [
+      { ...good, sourceKeyHex: 'cd'.repeat(32) },
+      { ...good, sourceLength: 2 },
+      { ...good, rows: [good.rows[0]!, good.rows[0]!] },
+      { ...good, rows: [{ ...good.rows[0]!, occurrences: [good.rows[0]!.occurrences[0]!, good.rows[0]!.occurrences[0]!] }] },
+      { ...good, rows: [{ ...good.rows[0]!, occurrences: [{ segment: '../../value.blob', line: 1, fieldPath: ['idempotencyKey'] }] }] },
+      { ...good, rows: [{ ...good.rows[0]!, occurrences: [{ segment: 'segment-000104.blob', line: 1,
+        fieldPath: ['00000000-0000-4000-8000-000000000000'] }] }] },
+    ]) expect(() => projection(bad)).toThrow();
+  });
+
+  it('refuses plans on unfiltered cuts and plans for an unrequested core', async () => {
+    const provider = createCorestoreSeedProvider();
+    const ctx = { coreKeys: [sourceKeyHex], uuidIdempotencyDropPlans: [plan()] };
+    await expect(provider.cut(ctx as never)).rejects.toThrow('unique requested filtered source core');
+    await expect(provider.cut({ ...ctx, filtered: true, coreKeys: [] } as never))
+      .rejects.toThrow('unique requested filtered source core');
+  });
+
+  for (const priorSnapshot of [false, true]) {
+    it(`mints read-only output without dropped rows/signatures and leaves source intact (${priorSnapshot ? 'prior snapshot' : 'raw ops'})`, async () => {
+      const source = makeStore(tmpDir('seed-d166-source-'));
+      const target = makeStore(tmpDir('seed-d166-target-'));
+      await source.ready(); await target.ready();
+      const own = await openOwnLog(source);
+      const original: PeerLogOp = { type: 'put', table: 'coord-messages', hbKey: 'message-1', value,
+        ts: 1, schema_version: 1, author_pubkey: own.keyHex };
+      await own.append(original);
+      await own.append({ ...original, hbKey: 'message-2', value: { body: 'keep-this' }, ts: 2 });
+      if (priorSnapshot) await produceLogSnapshot(own, { now: 1000, schemaVersion: 1 });
+      const before = own.length;
+      const firstBlock = JSON.stringify(await own.get(0));
+      const minted = await mintFilteredSeedContentCore({ sourceStore: source, stagingStore: target,
+        ownerKeyHex: own.keyHex, redactValues: [], onProjection: () => {},
+        uuidIdempotencyDropPlan: { ...plan(), sourceKeyHex: own.keyHex, sourceLength: before } });
+      expect(own.length).toBe(before);
+      expect(JSON.stringify(await own.get(0))).toBe(firstBlock);
+      expect(minted.projection.uuidIdempotencyRedaction?.droppedRows).toBe(1);
+      const replica = target.get({ key: Buffer.from(minted.keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore;
+      await replica.ready();
+      let output = '';
+      for (let i = 0; i < replica.length; i++) output += JSON.stringify(await replica.get(i, { wait: false }));
+      expect(output).toContain('keep-this');
+      expect(output).not.toContain('message-1');
+      expect(output).not.toContain(value.originalSignature);
+      expect(output).not.toContain(value.ciphertext);
+    });
+  }
+});
 
 afterEach(async () => {
   while (cleanups.length) {
