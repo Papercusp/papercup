@@ -2168,7 +2168,7 @@ async function runRelaunchLeg(
   alert: GoalDrainAlert,
   goal: GoalDrainRowLike,
   relaunchFlag: () => Promise<boolean>,
-): Promise<'ineligible' | 'flag-off' | 'wait' | 'relaunched' | 'capped' | 'failed'> {
+): Promise<'ineligible' | 'flag-off' | 'wait' | 'relaunched' | 'promoted' | 'capped' | 'failed'> {
   const gate = goalDrainRelaunchEligibility(alert, goal);
   if (!gate.eligible) return 'ineligible';
   if (!(await relaunchFlag())) return 'flag-off';
@@ -2177,6 +2177,15 @@ async function runRelaunchLeg(
   if (deadSinceMs === null) return 'ineligible';
   const decision = decideGoalDrainFleetRelaunch(deadSinceMs, nowMs, deps.deadGraceMs);
   if (decision.kind === 'wait') return 'wait';
+  try {
+    if (await deps.promoteDrainLeader(alert, goal)) {
+      return 'promoted';
+    }
+  } catch (e) {
+    console.warn(
+      `[goal-drain-fleet-watchdog] leader succession failed for ${goal.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   const slot = await deps.reserveRelaunchSlot(goal, nowMs);
   if (slot.kind === 'ineligible') return 'ineligible';
   if (slot.kind === 'capped') {
@@ -2209,19 +2218,6 @@ async function runRelaunchLeg(
     );
   }
   return 'relaunched';
-}
-
-/** Start the existing durable dead episode, then promote after its grace has elapsed. */
-async function runLeaderSuccessionLeg(
-  deps: GoalDrainFleetSweepDeps,
-  alert: GoalDrainAlert,
-  goal: GoalDrainRowLike,
-): Promise<boolean> {
-  if (!alert.standing || alert.reason !== 'drain-fleet-dead' || !goal.drainFleet) return false;
-  const nowMs = deps.now();
-  const deadSinceMs = await deps.markDrainDead(goal, nowMs);
-  if (deadSinceMs === null || nowMs - deadSinceMs < deps.deadGraceMs) return false;
-  return deps.promoteDrainLeader(alert, goal);
 }
 
 /**
@@ -2307,21 +2303,7 @@ export async function runGoalDrainFleetSweepOnce(
     );
   }
 
-  const remainingAlerts: GoalDrainAlert[] = [];
   for (const alert of alerts) {
-    const goal = goalByKey.get(fleetKey(alert.workspaceId, alert.goalId));
-    if (!goal) continue;
-    try {
-      if (await runLeaderSuccessionLeg(deps, alert, goal)) continue;
-    } catch (e) {
-      console.warn(
-        `[goal-drain-fleet-watchdog] leader succession failed for ${alert.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
-    remainingAlerts.push(alert);
-  }
-
-  for (const alert of remainingAlerts) {
     try {
       await deps.escalate(alert);
       escalated += 1;

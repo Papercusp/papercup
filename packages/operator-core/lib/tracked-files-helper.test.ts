@@ -26,7 +26,7 @@ import { describe, expect, it } from 'vitest';
 // removed directive.
 // eslint-disable-next-line prettier/prettier
 import { coverageOf, declaredSubmodules, describeUnscanned, listFilesIncludingUntracked, listTrackedFiles, presentOnDisk } from '../../../scripts/lib/tracked-files.mjs';
-import { isLiveCodeAt, stripCommentsAndStrings, stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
+import { firstLiveMatch, isLiveCodeAt, stripCommentsAndStrings, stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 
 describe('tracked-files helper (WI-6730)', () => {
   const scan = listTrackedFiles() as {
@@ -510,7 +510,7 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
       return end === -1 ? rest : rest.slice(0, end);
     });
     if (invocations.length === 0 || invocations.every(indexFree) || !READS.test(masked)) return null;
-    return FILTERED.test(code) ? 'filtered' : 'unfiltered';
+    return firstLiveMatch(text, masked, FILTERED) ? 'filtered' : 'unfiltered';
   };
 
   it('calibration: the detector separates the shapes it exists to judge', () => {
@@ -534,6 +534,7 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
     expect(classify('const docs = `execFileSync("git", ["ls-files"]);`; ' + read)).toBeNull();
     expect(classify(`/* execSync('git ls-files -z') */ ${read}`)).toBeNull();
     expect(classify(`execSync('git ls-files -z'); const docs = 'readFileSync(x)';`)).toBeNull();
+    expect(classify(`execSync('git ls-files -z'); readFileSync(x); const docs = 'presentOnDisk';`)).toBe('unfiltered');
   });
 
   it('WI-10005805: ignores an earlier prose match while retaining a later live shell invocation', () => {

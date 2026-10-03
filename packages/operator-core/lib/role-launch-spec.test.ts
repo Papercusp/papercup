@@ -92,6 +92,7 @@ import {
   SU_EXTRA_MCP_TOOL_NAMES,
   stewardSeedToolNames,
   SuInstancePromptDriftError,
+  reconcilePapercuspSuInstanceOverride,
   verifyPapercuspSuInstanceOverride,
 } from './role-launch-spec';
 
@@ -149,6 +150,138 @@ describe('Papercusp su instance override source guard', () => {
     expect(() =>
       verifyPapercuspSuInstanceOverride({ ...input, workspaceId: 'papercusp-workspace', potSlug: 'other-pot' }),
     ).not.toThrow();
+  });
+});
+
+// WI-10005774: the launch must reconcile a store that is merely BEHIND the canonical source
+// (the Claude-only edit hook cannot see Codex/OMP/sed/git-merge edits) while every case it
+// cannot safely heal still fails closed.
+describe('reconcilePapercuspSuInstanceOverride (launch-time self-heal)', () => {
+  const SOURCE = 'Papercusp su override\nline two → ok.\n';
+  const withSource = async (
+    sourceText: string | null,
+    run: (promptsDirectory: string) => Promise<void>,
+  ): Promise<void> => {
+    const root = mkdtempSync(join(tmpdir(), 'su-instance-reconcile-'));
+    try {
+      if (sourceText !== null) {
+        const sourcePath = join(root, 'pot-instances', 'papercup-pot.su.md');
+        mkdirSync(dirname(sourcePath), { recursive: true });
+        writeFileSync(sourcePath, sourceText);
+      }
+      await run(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const base = { workspaceId: 'papercusp-workspace', potSlug: 'papercusp' };
+
+  it('re-seeds a STALE store from the source, returns the source, and reports the heal', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      const onHeal = vi.fn();
+      const out = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: 'stale text',
+        reseed,
+        onHeal,
+      });
+      expect(out).toBe(SOURCE);
+      expect(reseed).toHaveBeenCalledTimes(1);
+      expect(reseed).toHaveBeenCalledWith(SOURCE);
+      expect(onHeal).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('heals a store that was never seeded (null) the same way', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      await expect(
+        reconcilePapercuspSuInstanceOverride({ ...base, promptsDirectory, storedOverride: null, reseed }),
+      ).resolves.toBe(SOURCE);
+      expect(reseed).toHaveBeenCalledWith(SOURCE);
+    });
+  });
+
+  it('does NOT write when the store already matches the source', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      const onHeal = vi.fn();
+      const out = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: SOURCE,
+        reseed,
+        onHeal,
+      });
+      expect(out).toBe(SOURCE);
+      expect(reseed).not.toHaveBeenCalled();
+      expect(onHeal).not.toHaveBeenCalled();
+    });
+  });
+
+  it('stays FAIL-CLOSED when the re-seed itself fails (reason reseed-failed, store untouched)', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {
+        throw new Error('pg down');
+      });
+      const err = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: 'stale',
+        reseed,
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SuInstancePromptDriftError);
+      expect((err as SuInstancePromptDriftError).reason).toBe('reseed-failed');
+      expect((err as SuInstancePromptDriftError).message).toMatch(/self-heal re-seed FAILED: pg down/);
+    });
+  });
+
+  it('never CLEARS the override from a blank source — fail-closed, no write', async () => {
+    await withSource('  \n', async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      await expect(
+        reconcilePapercuspSuInstanceOverride({ ...base, promptsDirectory, storedOverride: 'stale', reseed }),
+      ).rejects.toBeInstanceOf(SuInstancePromptDriftError);
+      expect(reseed).not.toHaveBeenCalled();
+    });
+  });
+
+  it('stays FAIL-CLOSED with no write when the source is unreadable or the directory is unavailable', async () => {
+    await withSource(null, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      const unreadable = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: 'stale',
+        reseed,
+      }).catch((e: unknown) => e);
+      expect(unreadable).toBeInstanceOf(SuInstancePromptDriftError);
+      expect((unreadable as SuInstancePromptDriftError).reason).toBe('source-unavailable');
+      const noDir = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory: undefined,
+        storedOverride: 'stale',
+        reseed,
+      }).catch((e: unknown) => e);
+      expect(noDir).toBeInstanceOf(SuInstancePromptDriftError);
+      expect(reseed).not.toHaveBeenCalled();
+    });
+  });
+
+  it('leaves another tenant / pot untouched (returns the stored value, no write)', async () => {
+    const reseed = vi.fn(async () => {});
+    await expect(
+      reconcilePapercuspSuInstanceOverride({
+        workspaceId: 'another-workspace',
+        potSlug: 'papercusp',
+        promptsDirectory: undefined,
+        storedOverride: 'whatever',
+        reseed,
+      }),
+    ).resolves.toBe('whatever');
+    expect(reseed).not.toHaveBeenCalled();
   });
 });
 import { resolveProjectDir } from './spawn-config';

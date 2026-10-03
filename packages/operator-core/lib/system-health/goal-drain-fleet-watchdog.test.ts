@@ -838,6 +838,10 @@ describe('runGoalDrainFleetSweepOnce', () => {
   it('uses the dead-episode grace to promote a live member before relaunch or alarm', async () => {
     const deps = {
       ...baseDeps(),
+      readGoals: vi.fn(async () => ({
+        goals: [makeGoal({ drainFleet: 'drain-1', standing: true })],
+        holders: [makeHolder()],
+      })),
       markDrainDead: vi.fn(async () => NOW - GOAL_DRAIN_FLEET_DEAD_GRACE_MS),
       promoteDrainLeader: vi.fn(async () => true),
     };
@@ -846,8 +850,8 @@ describe('runGoalDrainFleetSweepOnce', () => {
       expect.objectContaining({ reason: 'drain-fleet-dead' }),
       expect.objectContaining({ drainFleet: 'drain-1' }),
     );
-    expect(deps.escalate).not.toHaveBeenCalled();
-    expect(deps.emitDrainDead).not.toHaveBeenCalled();
+    expect(deps.escalate).toHaveBeenCalledTimes(1);
+    expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
     expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
   });
 
