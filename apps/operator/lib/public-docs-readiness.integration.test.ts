@@ -1,12 +1,38 @@
-import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync, readdirSync, existsSync, statSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { servePublicDocs } from '@papercusp/operator-core/lib/public-docs';
 
-const root = process.env.PAPERCUSP_PUBLIC_DOCS_ROOT
+const suppliedRoot = process.env.PAPERCUSP_PUBLIC_DOCS_ROOT
   ? resolve(process.env.PAPERCUSP_PUBLIC_DOCS_ROOT)
-  : resolve(import.meta.dirname, '../../papercusp-docs/dist');
+  : undefined;
+let root = suppliedRoot ?? '';
 const origin = process.env.PORTAL_DOCS_BASE_URL?.replace(/\/$/, '');
+
+beforeAll(() => {
+  if (suppliedRoot) return;
+  // A fresh test invocation must exercise this source's actual Astro output.
+  // Build in isolation instead of inheriting an older shared dist directory.
+  // Prerendered ESM resolves external dependencies through parent node_modules.
+  // Keep the unique build under the repository's ignored scratch directory.
+  const scratch = resolve(import.meta.dirname, '../../../.papercusp/scratch');
+  mkdirSync(scratch, { recursive: true });
+  root = mkdtempSync(resolve(scratch, 'public-manual-reader-'));
+  // Astro stages external output under cwd and moves assets with rename().
+  // Run inside the output root so staging shares its filesystem and isolation.
+  execFileSync(process.execPath, [
+    '--input-type=module', '-e',
+    "import { pathToFileURL } from 'node:url'; const { build } = await import(pathToFileURL(process.argv[4]).href); await build({ root: process.argv[1], outDir: process.argv[2], cacheDir: process.argv[3] });",
+    resolve(import.meta.dirname, '../../papercusp-docs'), root, resolve(root, '.astro'),
+    createRequire(import.meta.url).resolve('astro'),
+  ], { cwd: root, timeout: 60_000 });
+}, 65_000);
+
+afterAll(() => {
+  if (!suppliedRoot && root) rmSync(root, { recursive: true, force: true });
+});
 
 async function readPublic(path: string, method = 'GET'): Promise<Response> {
   const request = new Request(`${origin ?? 'https://app.papercusp.com'}${path}`, { method });
