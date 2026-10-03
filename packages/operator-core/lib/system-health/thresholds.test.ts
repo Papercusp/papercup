@@ -714,7 +714,8 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
     expect(infraStatus(infra({ mcpProxy: mcpProxy({ criticalContinuationQueueMaxWaitMs: 61_800 }) }))).toBe('ok');
     const stalled = infra({ mcpProxy: mcpProxy({ criticalContinuationQueueStalls: 1, criticalContinuationQueueMaxWaitMs: 701_000 }) });
     expect(infraStatus(stalled)).toBe('crit');
-    expect(infraSummary(stalled, true)).toContain('MCP PROXY CRITICAL CONTINUATION QUEUE STALLED');
+    expect(infraSummary(stalled, true)).toContain('MCP PROXY CRITICAL CONTINUATION QUEUE WAIT');
+    expect(infraSummary(stalled, true)).toContain('in the last hour');
     expect(infraStatus(infra({ pg: null, mcpProxy: mcpProxy({ criticalContinuationQueueStalls: 1, criticalContinuationQueueMaxWaitMs: 701_000 }) }))).toBe('crit');
   });
   it('a crit MCP-proxy SLO breach OUTRANKS a greyed (null) PG leg — a real failure beats unknown', () => {

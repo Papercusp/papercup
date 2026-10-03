@@ -754,7 +754,7 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
   if (mcpCrit) return `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h (transient-is-normal regression — pages)`;
   if (mcpQueueCrit) {
     const longestSec = Math.round((d.mcpProxy?.criticalContinuationQueueMaxWaitMs ?? 0) / 1000);
-    return `MCP PROXY CRITICAL CONTINUATION QUEUE STALLED: ${mcpQueueStalls} request(s) waited ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m (longest ${longestSec}s/1h) — checkpoint/completion writes are waiting`;
+    return `MCP PROXY CRITICAL CONTINUATION QUEUE WAIT: ${mcpQueueStalls} request(s) exceeded ${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m in the last hour (longest observed ${longestSec}s) — checkpoint/completion write latency incident`;
   }
   if (perfCrit) {
     const reason = d.perf!.reasons[0] ?? 'operator degraded';
