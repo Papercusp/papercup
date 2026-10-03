@@ -54,6 +54,11 @@ let marker: string;
 
 /** Run bundle-host.sh, returning its exit code and combined output. */
 function runBundler(entry: string, extraEnv?: Record<string, string>): { code: number; output: string } {
+  // EI-24917607035361603: bundle-host.sh's restricted-hold gate (WI-10005745) would read the
+  // real org-admin census, which the unit guard refuses, and fail every case closed. Inject an
+  // empty census (nothing held) through the CLI's VITEST-only seam; the gate itself still runs.
+  const census = join(dir, 'restricted-hold-census.json');
+  writeFileSync(census, '[]\n');
   try {
     const output = execFileSync('bash', [SCRIPT, entry, outfile], {
       encoding: 'utf8',
@@ -68,6 +73,7 @@ function runBundler(entry: string, extraEnv?: Record<string, string>): { code: n
         ...process.env,
         PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0',
         PAPERCUSP_MUTATION_PROBE_TMPDIR: dir,
+        PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: census,
         ...extraEnv,
       },
     });
