@@ -825,7 +825,11 @@ function retireIdsSpec() {
         "whenever your view of the carried set may be an excerpt (e.g. a post-compaction carry document) rather " +
         'than the full stored list — call work_items:get first for the complete set, or send `rowsMode:"replace"` ' +
         'with neither `confirmRetire` nor `retireIds` to see the full drop list in a refusal before committing to one.',
-    );
+    )
+    .meta({
+      'x-papercusp-call-constraint':
+        "Requires effective `rowsMode:'replace'`; an `items[]` entry overrides the root setting, and omitted `rowsMode` defaults to `'merge'`.",
+    });
 }
 
 /** EI-9036: join an addendum onto the prior checkpoint text, bounded to CHECKPOINT_CAP.
