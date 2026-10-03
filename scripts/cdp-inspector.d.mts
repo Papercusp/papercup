@@ -25,18 +25,27 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * Missing, unsafe and uncaptured roots stay explicit; no getter or proxy runs.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
  * Optional pgRequestIds bind the existing diagnostic WeakRefs to the SAME
- * preceding snapshot. The reader does not force GC or take a snapshot. A
+ * preceding snapshot. Optional captureSnapshot runs the caller's snapshot
+ * after a bounded selection of metadata and WeakRefs, without dereferencing
+ * targets. The selection survives FIFO eviction without retaining results.
+ * The reader itself does not force GC or take a snapshot. A
  * dereference and remote handle temporarily keep a target alive; all handles
  * are released before return. Collected/evicted/unobserved objects stay gaps.
- * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[]}} options
+ * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[],
+ *   captureSnapshot?: (metadata: any) => Promise<void>}} options
  */
-export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners, pgRequestIds }: {
+export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners, pgRequestIds, captureSnapshot }: {
     expectedPid: number;
     owners: string[];
     pgRequestIds?: string[];
+    captureSnapshot?: (metadata: any) => Promise<void>;
 }): Promise<{
     definition: string;
     queries?: {
+        definition: string;
+        selection?: string | undefined;
+        registryBeforeSnapshot?: any;
+        registryAfterSnapshot?: any;
         status: any;
         matched: any;
         omitted: any;
@@ -45,7 +54,6 @@ export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdp
         omittedRows: any;
         unobservedRequestIds: any;
         records: PgHeapRecord[];
-        definition: string;
     } | undefined;
     pid: number;
     roots: {

@@ -203,7 +203,8 @@ export function resolveConditionObject(
  * ordinary issue claims do not have a lease. A condition link is a narrower singleton
  * coordination surface, though, and a claimed condition owner must not hold that key
  * forever merely because its issue-family row has no stored expiry. Reuse the shared
- * critical-claim progress lease for this read-only fallback. Missing progress and claim
+ * critical-claim progress lease for this read-only fallback, and let newer genuine item
+ * progress extend a legacy stored expiry that predates it. Missing progress and claim
  * anchors remain unmeasured (and therefore fail closed as held) unless the same holder
  * has a pending checkpoint await scoped to this pipeline's outcome keys. A pipeline-scoped
  * key is already a precise condition match; a global outcome key needs an exact runId filter
@@ -217,14 +218,18 @@ export function effectiveConditionLeaseExpiresAt(
 ): string | null {
   if (!row.takenBy) return null;
   let baseExpiry = row.expiresAt;
-  if (!baseExpiry) {
-    const lease = assessCriticalClaimProgressLease({
-      takenAt: row.takenAt,
-      lastProgressAt: row.lastProgressAt,
-      nowMs,
-      leaseMs: CRITICAL_CLAIM_PROGRESS_LEASE_MS,
-    });
-    if (lease.anchorMs !== null) baseExpiry = new Date(lease.anchorMs + lease.leaseMs).toISOString();
+  const progressLease = assessCriticalClaimProgressLease({
+    takenAt: row.takenAt,
+    lastProgressAt: row.lastProgressAt,
+    nowMs,
+    leaseMs: CRITICAL_CLAIM_PROGRESS_LEASE_MS,
+  });
+  if (progressLease.anchorMs !== null) {
+    const progressExpiry = new Date(progressLease.anchorMs + progressLease.leaseMs).toISOString();
+    const storedExpiryMs = baseExpiry ? Date.parse(baseExpiry) : Number.NaN;
+    if (!Number.isFinite(storedExpiryMs) || Date.parse(progressExpiry) > storedExpiryMs) {
+      baseExpiry = progressExpiry;
+    }
   }
 
   // A pending checkpoint await on this pipeline's outcome keys proves the same

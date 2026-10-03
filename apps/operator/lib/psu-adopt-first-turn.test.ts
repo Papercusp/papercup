@@ -53,4 +53,72 @@ describe("EI-23076695727837648: an adopting carry-respawn hands its first turn t
     expect(branch).toMatch(/kickoff = handoffFirstTurnText\(hostHandoff\);/);
     expect(branch).not.toMatch(/\n\s*kickoff = null;/);
   });
+
+  it("records the front-controller outcome before an adopting re-exec can return early", () => {
+    const mainAt = launcherSrc.indexOf("async function main()");
+    const startedAt = launcherSrc.indexOf(
+      '"host-code-adoption-front-controller-started"',
+      mainAt,
+    );
+    const finishedAt = launcherSrc.indexOf(
+      '"host-code-adoption-front-controller-finished"',
+      startedAt,
+    );
+    const handledAt = launcherSrc.indexOf("if (connection.handled)", finishedAt);
+    expect(mainAt).toBeGreaterThanOrEqual(0);
+    expect(startedAt).toBeGreaterThan(mainAt);
+    expect(finishedAt).toBeGreaterThan(startedAt);
+    expect(handledAt).toBeGreaterThan(finishedAt);
+    expect(launcherSrc.slice(startedAt, handledAt)).toMatch(/argsCount: rawArgv\.length/);
+    expect(launcherSrc.slice(finishedAt, handledAt)).toMatch(/handled: connection\.handled === true/);
+    expect(launcherSrc.slice(startedAt, handledAt)).toMatch(/host-code-adoption-front-controller-failed/);
+  });
+
+  it("records whether the parent-pid handoff contained first-turn text", () => {
+    const mainAt = launcherSrc.indexOf("async function main()");
+    const readAt = launcherSrc.indexOf("readHostHandoffForParentPid(process.ppid)", mainAt);
+    const eventAt = launcherSrc.indexOf('"host-code-adoption-handoff-acceptance"', readAt);
+    const launchAt = launcherSrc.indexOf("await launchHostHandoff(hostHandoff)", eventAt);
+    expect(readAt).toBeGreaterThan(mainAt);
+    expect(eventAt).toBeGreaterThan(readAt);
+    expect(launchAt).toBeGreaterThan(eventAt);
+    const stage = launcherSrc.slice(eventAt, launchAt);
+    expect(stage).toMatch(/accepted: Boolean\(hostHandoff\)/);
+    expect(stage).toMatch(/firstTurnPresent:/);
+    expect(stage).toMatch(/firstTurnBytes:/);
+    expect(stage).toMatch(/argsCount:/);
+    expect(stage).not.toMatch(/firstTurnText:\s*firstTurnText/);
+  });
+
+  it("records the final kickoff and managed-pty decision before spawning the adopted child", () => {
+    const kickoffAt = launcherSrc.indexOf("kickoff = handoffFirstTurnText(hostHandoff);");
+    const eventAt = launcherSrc.indexOf('"host-code-adoption-launch-prepared"', kickoffAt);
+    const spawnAt = launcherSrc.indexOf("hostThroughPty({", eventAt);
+    expect(kickoffAt).toBeGreaterThan(0);
+    expect(eventAt).toBeGreaterThan(kickoffAt);
+    expect(spawnAt).toBeGreaterThan(eventAt);
+    const stage = launcherSrc.slice(eventAt, spawnAt);
+    expect(stage).toMatch(/firstTurnPresent:/);
+    expect(stage).toMatch(/kickoffPresent:/);
+    expect(stage).toMatch(/kickoffBytes:/);
+    expect(stage).toMatch(/argsCount:/);
+    expect(stage).toMatch(/managedPtyEnabled/);
+    expect(stage).not.toMatch(/kickoff:\s*kickoff/);
+  });
+
+  it("records child-start proof fields only after the PTY child was spawned", () => {
+    const eventAt = hostSrc.indexOf(
+      "appendHostEvent(ownerId, 'host-code-adoption-child-started'",
+    );
+    const spawnAt = hostSrc.lastIndexOf("child = spawnChild();", eventAt);
+    expect(spawnAt).toBeGreaterThan(0);
+    expect(eventAt).toBeGreaterThan(spawnAt);
+    const endAt = hostSrc.indexOf("\n  }", eventAt);
+    const stage = hostSrc.slice(eventAt, endAt);
+    expect(stage).toMatch(/kickoffPresent:/);
+    expect(stage).toMatch(/kickoffBytes:/);
+    expect(stage).toMatch(/argsCount:/);
+    expect(stage).toMatch(/kickoffFilePresent:/);
+    expect(stage).not.toMatch(/kickoff:\s*kickoff/);
+  });
 });

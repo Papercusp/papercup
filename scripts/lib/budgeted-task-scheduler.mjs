@@ -138,10 +138,10 @@ export const TASK_DEADLINE_REFUSAL_MARKER = "TASK_DEADLINE_REFUSAL";
 /**
  * Format the pre-flight refusal.
  *
- * `knownEstimateMs` is a LOWER BOUND over the tasks whose duration history exists — never a
- * total. `unknownTasks` is reported beside it precisely so the number is not read as one:
- * unknowns can only make the run longer, which is what makes a refusal keyed on the lower
- * bound sound. A run refused here has measured nothing; the marker says so.
+ * `knownEstimateMs` is the history-based wall projection under the configured lane policy,
+ * with sequential shards added together. Unknown tasks contribute zero and are reported
+ * separately. Historical durations are a prognosis, not a guaranteed lower bound on the
+ * next run. A run refused here has measured nothing; the marker says so.
  */
 export function formatTaskDeadlineRefusal({
   remainingMs,
@@ -152,9 +152,9 @@ export function formatTaskDeadlineRefusal({
   return (
     `${TASK_DEADLINE_REFUSAL_MARKER} remainingMs=${Math.round(remainingMs)} ` +
     `knownEstimateMs=${Math.round(knownEstimateMs)} knownTasks=${knownTasks} ` +
-    `unknownTasks=${unknownTasks} remedy=raise-caller-timeout — the work already KNOWN to be ` +
-    `queued exceeds the wall clock this run was launched with, so it would be SIGKILLed ` +
-    `part-way through with no verdict. Refusing before anything runs instead.`
+    `unknownTasks=${unknownTasks} remedy=raise-caller-timeout — the lane-aware historical ` +
+    `wall projection exceeds the remaining launch clock, so a kill part-way through with ` +
+    `no verdict is predicted. Refusing before anything runs instead.`
   );
 }
 
@@ -1337,22 +1337,12 @@ export async function runBudgetedTaskShards(plan, options) {
       : options.deadlineEpochMs;
   const deadlineNotify =
     options?.onAdmissionNotice ?? ((line) => console.error(line));
-  const estimateFor =
-    typeof options?.estimateMs === "function" ? options.estimateMs : () => null;
-  /** Sum only the KNOWN estimates — a lower bound, reported as one. */
-  const knownWork = (tasks) => {
-    let knownEstimateMs = 0;
-    let knownTasks = 0;
-    let unknownTasks = 0;
-    tasks.forEach((task, index) => {
-      const estimate = finiteEstimate(estimateFor(task, index));
-      if (estimate == null) unknownTasks += 1;
-      else {
-        knownEstimateMs += estimate;
-        knownTasks += 1;
-      }
-    });
-    return { knownEstimateMs, knownTasks, unknownTasks };
+  // Reuse the same concurrent-lane projection as admission ETA. Summed task durations
+  // describe serial-equivalent work and can falsely refuse a run that fits in parallel.
+  const projectedKnownWork = (taskPlan) => {
+    const { projectedWallMs, knownTasks, unknownTasks } =
+      estimateBudgetedTaskWallMs(taskPlan, options);
+    return { knownEstimateMs: projectedWallMs, knownTasks, unknownTasks };
   };
 
   if (deadlineEpochMs != null) {
@@ -1371,7 +1361,7 @@ export async function runBudgetedTaskShards(plan, options) {
     // and turns "killed with no verdict" into an attributable refusal. Deliberately NOT
     // re-raised between shards: by then earlier shards hold real results, and throwing them
     // away to report a deadline would trade a measured verdict for a predicted one.
-    const preflight = knownWork(plan.shards.flatMap((shard) => shard.tasks));
+    const preflight = projectedKnownWork(plan);
     if (remainingMs <= 0 || preflight.knownEstimateMs > remainingMs) {
       throw new Error(formatTaskDeadlineRefusal({ remainingMs, ...preflight }));
     }
@@ -1381,7 +1371,7 @@ export async function runBudgetedTaskShards(plan, options) {
   for (const shard of plan.shards) {
     if (deadlineEpochMs != null) {
       const remainingMs = deadlineEpochMs - Date.now();
-      const upcoming = knownWork(shard.tasks);
+      const upcoming = projectedKnownWork({ ...plan, shards: [shard] });
       if (upcoming.knownEstimateMs > remainingMs) {
         deadlineNotify(
           `AFFECTED_TESTS_DEADLINE_SHORTFALL shard=${shard.index} ` +

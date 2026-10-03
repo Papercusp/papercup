@@ -8348,11 +8348,13 @@ export function hostThroughPty(o) {
   }
   if (adoptedCarryRespawn) {
     appendHostEvent(ownerId, 'host-code-adoption-child-started', {
+      mode: 'carry-respawn',
       nativeId: adoptedCarryRespawn.nativeId ?? null,
       agent: env.PAPERCUSP_AGENT ?? null,
       kickoffPresent: typeof kickoff === 'string' && kickoff.length > 0,
       kickoffBytes: typeof kickoff === 'string' ? Buffer.byteLength(kickoff, 'utf8') : 0,
       argsCount: Array.isArray(liveChildArgs) ? liveChildArgs.length : null,
+      kickoffFilePresent: Boolean(kickoffFile),
       childPid: Number.isInteger(child.pid) ? child.pid : null,
     });
   }

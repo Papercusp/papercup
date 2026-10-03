@@ -77,6 +77,7 @@ export function nativeOmpExtensionArgs(backend, env = process.env, platform = pr
   return ["-e", fileURLToPath(nativeMcpExtension)];
 }
 import {
+  appendHostEvent,
   fireSessionCompactedEvent,
   hostThroughPty,
   fleetOscFromEnv,
@@ -11993,7 +11994,26 @@ export function runWrapper(options) {
   // EI-203876: stamp Codex's diagnostic filter after host-handoff env overlay,
   // so a successor cannot inherit a predecessor's missing/stale RUST_LOG.
   applyCodexDiagnosticEnv(env, env.PAPERCUSP_AGENT);
-  if (ownerId && usePtyHost({ env })) {
+  const managedPtyEnabled = Boolean(ownerId && usePtyHost({ env }));
+  if (adoptedCarryRespawn) {
+    const handoffFirstTurn = hostHandoff?.firstTurnText;
+    appendHostEvent(ownerId, "host-code-adoption-launch-prepared", {
+      mode: hostHandoff?.mode ?? null,
+      nativeId: adoptedCarryRespawn.nativeId ?? null,
+      firstTurnPresent:
+        typeof handoffFirstTurn === "string" && handoffFirstTurn.length > 0,
+      firstTurnBytes:
+        typeof handoffFirstTurn === "string"
+          ? Buffer.byteLength(handoffFirstTurn, "utf8")
+          : 0,
+      kickoffPresent: typeof kickoff === "string" && kickoff.length > 0,
+      kickoffBytes:
+        typeof kickoff === "string" ? Buffer.byteLength(kickoff, "utf8") : 0,
+      argsCount: Array.isArray(args) ? args.length : null,
+      managedPtyEnabled,
+    });
+  }
+  if (managedPtyEnabled) {
     try {
       // A restore can immediately carry before its first native turn. Keep its
       // requested model until a turn from this launcher confirms a user change.
@@ -16167,6 +16187,9 @@ async function main() {
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
   const rawArgv = process.argv.slice(2);
+  const hostReexecExitCode = reexecExitCodeFrom(process.env);
+  const isHostAdoptionReexec = hostReexecExitCode != null;
+  const adoptionOwnerId = process.env.PAPERCUSP_SID || null;
   // D-002 rule 4: a psu the workspace host started for a customer runs as the service user, so
   // it admits only the host's allowlist, checked again here in case a host let a flag through.
   // It also never reaches the connection front controller: it is already where it runs.
@@ -16190,9 +16213,37 @@ async function main() {
     const recoveryArgs = parseArgs(rawArgv);
     if (await recoveryFlow(recoveryArgs, { rawArgv })) return;
   }
-  const connection = hostedCustomer
-    ? { handled: false, argv: rawArgv }
-    : await runPsuConnectionFrontController(rawArgv);
+  const frontControllerStartedAt = Date.now();
+  if (isHostAdoptionReexec && adoptionOwnerId) {
+    appendHostEvent(adoptionOwnerId, "host-code-adoption-front-controller-started", {
+      reexecExitCode: hostReexecExitCode,
+      argsCount: rawArgv.length,
+    });
+  }
+  let connection;
+  try {
+    connection = hostedCustomer
+      ? { handled: false, argv: rawArgv }
+      : await runPsuConnectionFrontController(rawArgv);
+  } catch (error) {
+    if (isHostAdoptionReexec && adoptionOwnerId) {
+      appendHostEvent(adoptionOwnerId, "host-code-adoption-front-controller-failed", {
+        reexecExitCode: hostReexecExitCode,
+        elapsedMs: Math.max(0, Date.now() - frontControllerStartedAt),
+        errorName: typeof error?.name === "string" ? error.name : "Error",
+        errorCode: typeof error?.code === "string" ? error.code : null,
+      });
+    }
+    throw error;
+  }
+  if (isHostAdoptionReexec && adoptionOwnerId) {
+    appendHostEvent(adoptionOwnerId, "host-code-adoption-front-controller-finished", {
+      reexecExitCode: hostReexecExitCode,
+      handled: connection.handled === true,
+      argsCount: Array.isArray(connection.argv) ? connection.argv.length : null,
+      elapsedMs: Math.max(0, Date.now() - frontControllerStartedAt),
+    });
+  }
   if (connection.handled) {
     process.exitCode = connection.exitCode ?? 0;
     return;
@@ -16213,10 +16264,32 @@ async function main() {
   // flow. Re-running bootstrap-su here would select or mint another adv row
   // while the handoff's already-minted child belongs to the predecessor row.
   if (args.headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
-  const hostHandoff =
-    reexecExitCodeFrom(process.env) != null
-      ? readHostHandoffForParentPid(process.ppid)
-      : null;
+  const handoffReadStartedAt = Date.now();
+  const hostHandoff = isHostAdoptionReexec
+    ? readHostHandoffForParentPid(process.ppid)
+    : null;
+  if (isHostAdoptionReexec) {
+    const ownerIdForHandoff = hostHandoff?.ownerId || adoptionOwnerId;
+    if (ownerIdForHandoff) {
+      const firstTurnText = hostHandoff?.firstTurnText;
+      appendHostEvent(ownerIdForHandoff, "host-code-adoption-handoff-acceptance", {
+        reexecExitCode: hostReexecExitCode,
+        parentPid: process.ppid,
+        accepted: Boolean(hostHandoff),
+        mode: hostHandoff?.mode ?? null,
+        firstTurnPresent:
+          typeof firstTurnText === "string" && firstTurnText.length > 0,
+        firstTurnBytes:
+          typeof firstTurnText === "string"
+            ? Buffer.byteLength(firstTurnText, "utf8")
+            : 0,
+        argsCount: Array.isArray(hostHandoff?.args)
+          ? hostHandoff.args.length
+          : null,
+        elapsedMs: Math.max(0, Date.now() - handoffReadStartedAt),
+      });
+    }
+  }
   if (hostHandoff) {
     await launchHostHandoff(hostHandoff);
     return;

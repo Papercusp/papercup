@@ -108,6 +108,26 @@ describe('resolveConditionObject', () => {
     expect(got.expiresAt).toBe(new Date(NOW + 28 * 60_000).toISOString());
   });
 
+  it('renews an expired legacy stored lease when newer item progress exists', () => {
+    const takenAt = new Date(NOW - 90 * 60_000).toISOString();
+    const lastProgressAt = new Date(NOW - 2 * 60_000).toISOString();
+    const staleStoredExpiry = new Date(NOW - 25 * 60_000).toISOString();
+    const got = resolveConditionObject(
+      KEY,
+      [row({ takenBy: 'su-abc', takenAt, lastProgressAt, expiresAt: staleStoredExpiry })],
+      NOW,
+    );
+
+    expect(got.claimState).toBe('held');
+    expect(got.expiresAt).toBe(new Date(NOW + 28 * 60_000).toISOString());
+    expect(
+      effectiveConditionLeaseExpiresAt(
+        row({ takenBy: 'su-abc', takenAt, lastProgressAt, expiresAt: new Date(NOW + 60 * 60_000).toISOString() }),
+        NOW,
+      ),
+    ).toBe(new Date(NOW + 60 * 60_000).toISOString());
+  });
+
   it('does not invent a lease for an unclaimed condition row', () => {
     expect(effectiveConditionLeaseExpiresAt(row({ takenBy: null, takenAt: new Date(NOW - 60_000).toISOString() }), NOW)).toBeNull();
   });
