@@ -24,6 +24,21 @@
   "qualificationUpdatedAt": "2026-10-03T02:02:19.196Z",
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
+  "selectedSourceOracleMutation": {
+    "workItem": "WI-10005810",
+    "path": "docs/evidence/papercusp-oct1-p011-oracle-mutation-r1-2026-10-03.json",
+    "bytes": 27793,
+    "sha256": "f61419bb19ecb377a335fb9f7a49152dddfb9cb5ab276a6b72303dad2b53cda3",
+    "binding": 23104,
+    "bindingKind": "counterexample",
+    "baselineTestRuns": [
+      20622425,
+      20622427
+    ],
+    "mutantTestRun": 20622428,
+    "outcome": "Both unmodified controls52PASS; mutant46FAIL6PASS/36filteredSKIP. Exact46corruption assertions fail; six raw/headline positives pass. Shared oracle unchanged.",
+    "scope": "Executable red capability for saved historical inbox/expiry/compiler data guards only. Prior dispositions, spawner fields and ordinary bindings preserved; live acceptance and shipment open."
+  },
   "selectedSourceOracleAcceptance": {
     "workItem": "WI-10005793",
     "path": "docs/evidence/papercusp-oct1-p011-selected-resource-oracles-r2-2026-10-03.json",
