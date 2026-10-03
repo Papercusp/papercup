@@ -954,42 +954,43 @@ describe('injected-member trigger: a new call to an optional Deps member strands
 });
 
 /**
- * WI-10005809. A seam argument that is a const identifier is resolved through its binding
- * (visibleConstBinding -> lexicalDistance). lexicalDistance read its loop-scoped `let` cursor after
- * the loop, so every diff reaching that path threw `ReferenceError: current is not defined`, and the
- * uncaught throw exited 1, the code that means "strands named".
+ * WI-10005809. A const identifier in a condition guarding a seam call is resolved through its
+ * binding (flowPathTokens -> canonicalFlowExpression -> visibleConstBinding). When two same-named
+ * consts are visible (a shadow), the bindings are SORTED by lexicalDistance, and lexicalDistance read
+ * its loop-scoped `let` cursor after the loop: `ReferenceError: current is not defined`. The shadow is
+ * load-bearing — with a single binding the comparator never runs and this test would pass against the
+ * broken code (measured: the pre-fix c7bed9f262 detector throws on this fixture and passes on a
+ * non-shadowed one).
  */
-describe('const-bound seam arguments (WI-10005809)', () => {
-  const CONST_ARG_BEFORE = `
+describe('shadowed const in a seam guard (WI-10005809)', () => {
+  const GUARD_BEFORE = `
     export async function run(input, probe: Probe) {
-      const runner = input.runner;
+      const ready = input.ready;
       for (const spec of input.specs) {
-        const request = { runner, spec };
-        const evidence = await probe(request);
-        if (evidence.ready) break;
+        const ready = spec.ready;
+        if (ready) await probe(spec);
       }
     }
   `;
-  const CONST_ARG_AFTER = `
+  const GUARD_AFTER = `
     export async function run(input, probe: Probe) {
-      const runner = input.runner;
+      const ready = input.ready;
       for (const spec of input.specs) {
-        const request = { runner, spec };
-        const evidence = await probe(request);
+        const ready = spec.ready;
         if (!spec.satisfiesReadiness) continue;
-        if (evidence.ready) break;
+        if (ready) await probe(spec);
       }
     }
   `;
 
-  it('resolves a const-bound argument without throwing and still reports the control-flow change', () => {
-    const rows = changedSeamControlFlow(CONST_ARG_BEFORE, CONST_ARG_AFTER, 'const-arg.ts');
+  it('resolves a shadowed const guard without throwing and still reports the control-flow change', () => {
+    const rows = changedSeamControlFlow(GUARD_BEFORE, GUARD_AFTER, 'guard.ts');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ function: 'run', seam: 'probe()', reason: 'control-flow-changed' });
   });
 
-  it('records the seam call for a const-bound argument whose binding sits in an outer block', () => {
-    expect(() => seamControlFlowRecords(CONST_ARG_AFTER, 'const-arg.ts')).not.toThrow();
+  it('records the guarded seam call when two same-named consts are visible', () => {
+    expect(() => seamControlFlowRecords(GUARD_AFTER, 'guard.ts')).not.toThrow();
   });
 });
 
