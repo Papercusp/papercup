@@ -22,7 +22,9 @@ ownership_symbols = {
     'singleton-create': '_ZN16OrtSingletonData10OrtObjectsC2Ei',
     'singleton-destroy': '_ZN16OrtSingletonData10OrtObjectsD2Ev',
     'session-dispose': '_ZN20InferenceSessionWrap7DisposeERKN4Napi12CallbackInfoE',
-    'session-finalize': '_ZN20InferenceSessionWrapD2Ev',
+    # N-API finalization invokes the deleting destructor (D0). In this retained
+    # binary its base-destructor body is inlined; observing D2 misses cleanup.
+    'session-finalize': '_ZN20InferenceSessionWrapD0Ev',
     'instance-finalize': '_ZZNK4Napi3Env15SetInstanceDataI15OrtInstanceDataXadL_ZNS0_11DefaultFiniIS2_EEvS0_PT_EEEEvS5_ENUlP10napi_env__PvS8_E_4_FUNES7_S8_S8_',
 }
 ownership_sequence = 0
