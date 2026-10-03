@@ -16,7 +16,8 @@
   "macReopenReadback": "2026-10-03T09:06:55.129Z",
   "cutoverDuplicateReadback": "2026-10-03T09:12:18.393Z",
   "fullCohortReadback": "2026-10-03T09:59:41.870Z",
-  "latencyReopenReadback": "2026-10-03T09:57Z"
+  "latencyReopenReadback": "2026-10-03T09:57Z",
+  "memoryMirrorTerminalReadback": "2026-10-03T13:19:44Z"
  },
  "verifiedDispositionCounts": {
   "reopened": 10,
@@ -40,7 +41,8 @@
   "Retained-for-qualification is not a verified justified block.",
   "Rows do not claim implementation completion, acceptance waiver or shipment.",
   "Every remaining root prerequisite and hold still needs evidenced final disposition.",
-  "All five dropped rows have proposed terminal authority in the exact172 readbacks; verified lifecycle disposition is not committed completion. WI-41086 is now done with committed authority; its prior reopening remains counted as an audit action."
+  "All five dropped rows have proposed terminal authority in the exact172 readbacks; verified lifecycle disposition is not committed completion. WI-41086 is now done with committed authority; its prior reopening remains counted as an audit action.",
+  "WI-10002216 was separately read back DROPPED/PROPOSED at 13:19:44Z. The dated 09:59 full-cohort counts and blocked partition above remain historical; no new full-cohort census is asserted. Its source plan's historical owner-directed acceptance waiver is preserved explicitly."
  ],
  "rows": [
   {
@@ -145,7 +147,7 @@
    "id": "WI-10001169",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Exact September30 shipment receipt was recovered from session5c550459 part89: changed=true, newStatus=shipped, forcedPastStamped=false, revision52/currentPlanVersion53 matching current source hash. Its citationDeployment appendix also reports contract/matrix target paths not deployed on29bf7350, so the receipt is internally insufficient to discharge R8 deployed-control proof. Retain pending exact accepted R8 artifact/runtime reconciliation; current gate is not operated by this audit.",
+   "reason": "Exact September30 shipment receipt was recovered from session5c550459 part89: changed=true, newStatus=shipped, forcedPastStamped=false, revision52/currentPlanVersion53 matching current source hash. Its citationDeployment appendix reports contract/matrix target paths not deployed on29bf7350. NEW native01a101de read qualifies current R8 clause16 and deployed bindings17008/17009 (test runs20277739/20277740). The current staging evidence writer reports UNKNOWN/test-run-worktree-not-clean for both receipts, whereas the older release reader had called them current. Retain pending historical artifact/runtime reconciliation; neither a new clean-proof PASS nor a current live-gate condition is asserted.",
    "source": {
     "plan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
     "item": "P-009",
@@ -200,9 +202,9 @@
   },
   {
    "id": "WI-10002216",
-   "state": "blocked",
-   "disposition": "requires-further-qualification",
-   "reason": "Current source P006 explicitly says completed(done), and current row/content agree SHIPPED@249/hashb435f504. However the latest recorded plan revision248 is awaiting-acceptance/hash7b799c0b, and an exact current-hash lookup returns zero with positivecontrol248 passing. The matching ship/acceptance receipt remains unqualified; retain the old adequacy hold until the canonical current-clause and terminal evidence relationship is recovered. Missing revision proof does not establish that shipment never happened.",
+   "state": "dropped",
+   "disposition": "obsolete-terminal-source-mirror-dropped",
+   "reason": "Canonical source P006 is DONE with this exact WI completion annotation and source plan SHIPPED@249/hashb435f504. NEW canonical forced_past and orders:get473 recover the terminal provenance: Avi explicitly directed plans with no real work left to be marked shipped; the disposition names this plan and records the direct status write plus waived acceptance checks. The obsolete blocking R2 clause is RETIRED@11; provider R8 remains active/accepted@7, with historical evidence9871 stale today. Normal claim, evidence comment1157425, lifecycle DROP and fresh terminal readback succeeded. DROPPED/PROPOSED removes the obsolete queue mirror; it does not claim committed feature acceptance, new clean current tests, or a newly verified shipment. Historical source waiver remains disclosed.",
    "source": {
     "plan": "turn-start-memory-two-class-2026-09-21",
     "item": "P-006",
@@ -224,9 +226,11 @@
    "claimHold": true,
    "holdReason": "terminal completion refused by the linked plan-item gate",
    "qualification": {
-    "status": "source-condition-identified-feasibility-not-final",
-    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
-    "acceptanceWaived": false
+    "status": "terminal-mirror-disposition-verified-proposed-authority",
+    "basis": "native01a101de: source249/forced_past, orders473, retired R2@11, provider R8@7, evidence9871, thread-post1157425, terminal readback13:19:44Z",
+    "acceptanceWaived": true,
+    "waiverScope": "Historical source-plan forced_past at 2026-09-24T05:02:45.951735Z; this audit grants no new waiver",
+    "completionAuthority": "proposed"
    }
   },
   {
