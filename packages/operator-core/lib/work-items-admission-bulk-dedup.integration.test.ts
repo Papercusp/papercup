@@ -342,7 +342,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id = 'c'`;
     await db.sql`UPDATE harness_shared.work_items SET payload = '{"_claimHold":true}'::jsonb WHERE feature_id = 'b'`;
     const seen: string[] = [];
-    const llmCall = async (input: Parameters<PromoterLlmCall>[0]) => {
+    const llmCall = async (input: Parameters<BulkOptions['llmCall']>[0]) => {
       const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
       seen.push(...keys);
       return {
