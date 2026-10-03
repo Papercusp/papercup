@@ -26,7 +26,7 @@ import {
   releasesPageUrl,
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
-import { DROPPED, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 
 let tmp: string;
 let fx: Superproject;
@@ -82,6 +82,12 @@ describe('source-preview export — R-1 selection parity with the installer cut'
     expect(files.filter((f) => f.split('/').includes('.git'))).toEqual([]);
   });
 
+  it('retains the exact eligible bytes from both internal documentation roots', () => {
+    for (const [path, body] of Object.entries(INTERNAL_DOC_CONTENTS)) {
+      expect(readFileSync(join(out, path), 'utf8'), path).toBe(body);
+    }
+  });
+
   it('equals the installer selection over the same clean commit, minus node_modules', () => {
     const mono = join(tmp, 'parity-mono');
     rmSync(mono, { recursive: true, force: true });
@@ -92,6 +98,9 @@ describe('source-preview export — R-1 selection parity with the installer cut'
     expect(preview).toEqual(installer);
     // The comparison is only meaningful if the installer side really shipped node_modules.
     expect(installerListing(mono)).toContain('node_modules/leftpad/index.js');
+    for (const path of Object.keys(INTERNAL_DOC_CONTENTS)) expect(installer, path).toContain(path);
+    expect(installer).not.toContain('libs/papercusp/plugins/gitnexus-bridge/index.ts');
+    expect(installer).toContain('libs/papercusp/plugins/markdown-preview/papercusp.json');
   });
 });
 
@@ -136,6 +145,46 @@ describe('source-preview export — R-3 pinned, history-free snapshot', () => {
       expect(readFileSync(join(snap, 'apps/operator/src/index.ts'), 'utf8')).toBe('export const x = 1;\n');
     } finally {
       git(fx.repo, ['checkout', '--', 'apps/operator/src/index.ts']);
+    }
+  }, 120_000);
+
+  it('uses the pinned dependency graph and leaves dirty source, index and branch unchanged (D-007)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'source-preview-pin-'));
+    try {
+      const pinned = makeSuperproject(root);
+      const pinnedLock = JSON.stringify({ lockfileVersion: 3, packages: {
+        'node_modules/pinned-dependency': { version: '1.0.0', license: 'MIT' },
+      } });
+      write(pinned.repo, 'package-lock.json', pinnedLock);
+      git(pinned.repo, ['add', 'package-lock.json']);
+      git(pinned.repo, ['commit', '-q', '-m', 'pin dependency graph']);
+      const ref = git(pinned.repo, ['rev-parse', 'HEAD']);
+      // The installed/working tree deliberately disagrees with the pinned graph.
+      write(pinned.repo, 'package-lock.json', '{"packages":{"node_modules/integration-only":{"version":"2"}}}\n');
+      write(pinned.repo, 'node_modules/integration-only/index.js', 'module.exports = "integration-only";\n');
+      write(pinned.repo, 'apps/operator/src/index.ts', 'export const staged = true;\n');
+      git(pinned.repo, ['add', 'apps/operator/src/index.ts']);
+      const state = () => ({
+        head: git(pinned.repo, ['rev-parse', 'HEAD']),
+        branch: git(pinned.repo, ['symbolic-ref', 'HEAD']),
+        index: git(pinned.repo, ['diff', '--cached', '--binary']),
+        worktree: git(pinned.repo, ['diff', '--binary']),
+      });
+      const before = state();
+      expect(before.index).toContain('staged = true');
+      expect(before.worktree).toContain('integration-only');
+      const target = join(root, 'export');
+      const { manifest: receipt } = await exportSnapshot({ repoRoot: pinned.repo, ref, out: target, env: childEnv() });
+      expect(receipt.source.commit).toBe(ref);
+      expect(receipt.submodules).toEqual([{ path: 'libs/papercusp', sha: pinned.subCommit }]);
+      expect(readFileSync(join(target, 'package-lock.json'), 'utf8')).toBe(pinnedLock);
+      expect(readFileSync(join(target, 'apps/operator/src/index.ts'), 'utf8')).toBe('export const x = 1;\n');
+      expect(existsSync(join(target, 'node_modules'))).toBe(false);
+      expect(readFileSync(join(pinned.repo, 'node_modules/integration-only/index.js'), 'utf8'))
+        .toBe('module.exports = "integration-only";\n');
+      expect(state()).toEqual(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   }, 120_000);
 });

@@ -11,11 +11,11 @@
  * LICENSE file, so the exception path matters as much as the evaluator: an exception must
  * stop applying the moment the package's declared license changes.
  *
- * Every function under test is pure, so each case runs on inline fixtures: no lockfile
- * read, no cargo invocation, no shared-tree mutation. The one real-file case checks the
- * committed exceptions file against the same validator the gate runs first.
+ * Classifiers use inline fixtures; main() controls read temporary lockfile trees and
+ * assert the gate's status and return code. No case mutates the shared checkout or
+ * resolves Cargo dependencies. The committed exceptions file is validated as well.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +31,7 @@ import {
   declaredNpmLicense,
   evaluateExpression,
   globToRegExp,
+  main,
   npmPackageRootOf,
   npmPackagesOf,
   payloadKindOf,
@@ -45,6 +46,66 @@ const COMPONENTS_PATH =
   process.env.LICENSE_COMPONENTS_PATH ?? join(REPO_ROOT, 'scripts', 'installer-components.json');
 
 const tier = (expr: unknown) => evaluateExpression(expr).tier;
+
+describe('main — strict gate results over measured lockfile fixtures', () => {
+  function runGate(license: string | null, argv = ['--strict', '--ecosystem=npm'], missingCargoManifest = false) {
+    const root = mkdtempSync(join(tmpdir(), 'license-gate-main-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3,
+        packages: license === null ? {} : {
+          '': { name: 'fixture' },
+          'node_modules/gate-control': { version: '1.0.0', license },
+        },
+      }));
+      if (missingCargoManifest) writeFileSync(join(root, 'Cargo.lock'), 'version = 3\n');
+      const exitCode = main(argv, root);
+      return { exitCode, output: log.mock.calls.map((args) => args.join(' ')).join('\n') };
+    } finally {
+      log.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('returns 1 and status=fail for a disallowed dependency in strict mode', () => {
+    const result = runGate('GPL-3.0-only');
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain('DENIED gate-control@1.0.0');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=fail');
+  });
+
+  it('returns 0 and status=pass for a measured permissive dependency', () => {
+    const result = runGate('MIT');
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain('ecosystem=npm lockfiles=1 packages=1 permissive=1');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=pass');
+  });
+
+  it('returns 2 and remains undetermined when the root npm graph measures nothing', () => {
+    const result = runGate(null);
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain('UNDETERMINED package-lock.json: parsed 0 packages');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=undetermined');
+    expect(result.output).not.toContain('LICENSE_GATE_RESULT status=pass');
+  });
+
+  it('does not accept a permissive npm result when the Cargo graph is unmeasured', () => {
+    const result = runGate('MIT', ['--strict'], true);
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain('ecosystem=npm lockfiles=1 packages=1 permissive=1');
+    expect(result.output).toContain('UNDETERMINED Cargo.lock: no Cargo.toml beside it');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=undetermined');
+    expect(result.output).not.toContain('LICENSE_GATE_RESULT status=pass');
+  });
+
+  it('preserves a failed verdict even when report-only mode returns 0', () => {
+    const result = runGate('GPL-3.0-only', ['--ecosystem=npm']);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=fail');
+    expect(result.output).not.toContain('LICENSE_GATE_RESULT status=pass');
+  });
+});
 
 describe('evaluateExpression — SPDX semantics', () => {
   it('classifies single ids into the three tiers', () => {
