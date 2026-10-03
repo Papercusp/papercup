@@ -5,19 +5,21 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Stale tool schemas are connection snapshots, not automatically schema-generation bugs"
-description: "How to distinguish a stale direct/ToolSearch wrapper from a live schema defect under the trimmed-only tool surface: list_changed invalidates membership, fresh tools:find reads the current catalog, and tools:invoke is the universal dispatch path."
+description: "How to diagnose and recover from stale MCP tool schemas, including connection snapshots, same-process registry revision notifications, tools:find, and tools:invoke."
 type: Insight
 discovered: 2026-07-27
 tags: ["mcp", "tools-list", "toolsearch", "schema", "trimmed", "tools-find", "tools-invoke", "list-changed", "stale-cache"]
 status: active
 documents:
-  - "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts"
+  - "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts"
   - "packages/operator-core/lib/endpoint-route/routes/transport/tool-allowlist.ts"
   - "packages/operator-core/lib/agent-tools/tools/find.ts"
   - "packages/operator-core/lib/agent-tools/tools/invoke.ts"
   - "packages/operator-core/lib/agent-tools/coordination/tools/send.ts"
   - "libs/generic/tooldef/src/define-tool.ts"
   - "libs/generic/tooldef/src/schema-adapter.ts"
+  - "libs/generic/tooldef/src/tool-projection.ts"
+  - "packages/plugin-loader/src/index.ts"
 plans:
   - "trimmed-only-agent-context-launch-2026-08-27"
 generated:
@@ -31,17 +33,19 @@ EI-18783407644768125 observed a connected client's cached `coord:send` schema ad
 
 `toArgsJsonSchema` derives the advertised schema from the registered Zod schema. The mismatch arose because the client had retained an older `tools/list` snapshot while the dev server hot-reloaded tool definitions in place.
 
-## The invariant: membership can change, schema content does not invalidate
+## Invalidation covers membership and same-process contract revisions
 
-Papercusp declares `tools.listChanged:true`. `tools:find` can add a previously invisible tool to a seeded session's mutable surface and emit `notifications/tools/list_changed`. That notification means **surface membership grew**. It is not emitted merely because the schema or description of an already-visible tool changed.
+Papercusp declares `tools.listChanged:true`. `tools:find` can add a previously invisible tool to a seeded session's mutable surface and emit `notifications/tools/list_changed`. That path still signals **surface membership growth**.
 
-Consequently, a direct wrapper obtained earlier in the same MCP connection may remain stale after a hot reload. A service restart/deploy drops the connection and a fresh session receives the current listing.
+Separately, the MCP host remembers the projected tool-registry revision returned by each session's `tools/list`. After each `tools/call`, it compares that revision with the live registry. A change sends `notifications/tools/list_changed` on the still-open request stream; the remembered revision advances only after the send succeeds. This catches same-process plugin-host refreshes, which unregister and re-register projected tools and advance the contract epoch.
+
+There is no periodic poll. An idle session learns about a registry change on its next tool call. A direct wrapper can remain stale until the signal is sent and the client handles the refreshed listing. This seam covers projected MCP tool contracts; it does not fence serving-build identity, prompt revisions, or database migration frontiers.
 
 ## Trimmed-only launch policy changes the population, not the rule
 
 Every SU and role launch now starts from a growable trimmed seed. Claude is seeded too; it no longer receives the full Papercusp catalog at connection time. Native ToolSearch may defer the seed's schemas, but the long tail is discovered with Papercusp `tools:find` and called with `tools:invoke`.
 
-Client behavior after membership activation differs:
+Client behavior after membership or contract-revision notification differs:
 
 - OMP re-fetches on `list_changed` and can materialize a native wrapper.
 - Codex may materialize a refreshed wrapper, but acceptance must not depend on it.
@@ -66,7 +70,8 @@ A catalog-wide assertion that generated JSON Schema `required` exactly equals ev
 ## Operational rules
 
 - Treat every direct tool wrapper as connection-scoped schema state.
-- Treat `list_changed` as membership invalidation only.
+- Treat `list_changed` as a membership signal and a same-process projected-registry revision signal delivered after a tool call.
+- If a session is idle during a registry change, expect its next `tools/call` to send the refresh notification.
 - Use a fresh session after deploy for schema acceptance.
 - For trimmed long-tail reachability, verify both discovery (`tools:find`) and dispatch (`tools:invoke`).
-- Do not reintroduce a full catalog merely to avoid stale wrappers; it restores the context/frame failure while leaving existing-schema invalidation unsolved.
+- Do not reintroduce a full catalog merely to avoid stale wrappers; it restores the context/frame failure while leaving cross-process revision invalidation unsolved.

@@ -6,7 +6,7 @@
 //   1. the launcher's handoff successor re-derives the trio when absent (heal);
 //   2. the pty-host allowlist is PINNED ⊇ the helper's keys, so the next key the fresh
 //      path adds cannot silently fall out of the handoff again.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   contextTrimmingEnv,
   healContextTrimmingEnv,
@@ -76,7 +76,18 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
     expect(trio.some((k) => preFix.includes(k))).toBe(false);
   });
 
-  it('healContextTrimmingEnv fills ONLY absent keys, keeps explicit values, is idempotent', () => {
+  // WI-10005917: the derived compact list is "" under the full-seed hatch, and a runner that
+  // inherits PAPERCUSP_CLAUDE_FULL_SEED (the :3070 operator did) used to turn this red. Pin
+  // both settings so the contract is measured regardless of the runner's environment.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['off', ''],
+    ['on', '1'],
+  ])('healContextTrimmingEnv fills ONLY absent keys, keeps explicit values, is idempotent (full seed %s)', (_label, fullSeed) => {
+    vi.stubEnv('PAPERCUSP_CLAUDE_FULL_SEED', fullSeed);
     const env: Record<string, string | undefined> = {
       PAPERCUSP_AGENT: 'claude',
       PAPERCUSP_CONTEXT_TIER: 'full',

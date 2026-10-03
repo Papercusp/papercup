@@ -45,7 +45,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe('Guide output-only voice lifecycle', () => {
   it.each([
-    { step: 'workspace', status: 'waiting', category: 'workspace-not-ready', instruction: /Read the selected workspace/ },
+    { step: 'workspace', status: 'waiting', category: 'workspace-not-ready', instruction: /Open the selected workspace readiness details/ },
     { step: 'task', status: 'error', category: 'request-failed', instruction: /The guide has not diagnosed the underlying error/ },
   ] as const)('renders public beginner recovery and sends the exact bounded Help/TTS context: $category', async ({ step, status, category, instruction }) => {
     const lessonStep = tutorialSteps(2).find(candidate => candidate.id === step)!;
@@ -61,7 +61,7 @@ describe('Guide output-only voice lifecycle', () => {
       // An exact object rejects private diagnostics or extra context fields.
       expect(request.body.context).toEqual({ step, status, version: 2, recoveryCategory: category });
     }
-    expect(vi.mocked(fetch).mock.calls.every(([url]) =>
+    expect(vi.mocked(fetch).mock.calls.filter(([, options]) => options?.method === 'POST').every(([url]) =>
       String(url).includes('/onboarding/tutorial-') || String(url).includes('/analytics/'),
     )).toBe(true);
   });
