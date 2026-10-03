@@ -305,7 +305,11 @@ function evidencePlaneOf(raw: string | undefined): AcceptanceEvidencePlane | nul
 export function acceptanceBarBehaviorClass(
   evidencePlane: AcceptanceEvidencePlane,
   requiredTestLayers?: readonly string[],
+  check?: Parameters<typeof isExplicitlyManualCheck>[0],
 ): SpecBehaviorClass {
+  // An explicitly manual review can concern a tree artifact too. Its plane
+  // determines where to inspect it, not whether a mutation test is owed.
+  if ((requiredTestLayers?.length ?? 0) === 0 && isExplicitlyManualCheck(check)) return 'non-automated';
   return evidencePlane === 'tree' || (requiredTestLayers?.length ?? 0) > 0
     ? 'happy-path'
     : 'non-automated';
@@ -803,7 +807,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
         expectedRevision: 0,
         planItemId,
         behavior: acceptanceBarProjectedBehavior(criterion),
-        behaviorClass: acceptanceBarBehaviorClass(evidencePlane, criterion.requiredTestLayers),
+        behaviorClass: acceptanceBarBehaviorClass(evidencePlane, criterion.requiredTestLayers, criterion.check),
         requiredEvidence: [evidencePlane],
         ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
         lifecycleStatus: 'draft',

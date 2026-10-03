@@ -107,6 +107,47 @@ describe('hosted runtime composition', () => {
     warning.mockRestore();
   });
 
+  it('refuses local Anthropic credential production at the hosted request boundary', async () => {
+    const resolveSecret = vi.fn(async (reference: string) => {
+      if (reference === configuration.hostedSessionCookieSecretRef) {
+        return 'hosted-runtime-cookie-secret-that-is-more-than-32-bytes';
+      }
+      if (reference === configuration.workosWebhookSecretRef) return 'whsec_runtime_test';
+      if (reference === configuration.workosApiKeyRef) return 'sk_test_runtime_api_key';
+      if (reference === configuration.workosCookiePasswordRef) return 'workos-cookie-password-over-32-bytes-long';
+      throw new Error(`unexpected credential source read: ${reference}`);
+    });
+    const plane = await createHostedRuntime(configuration, {
+      resolveSecret,
+      runService: serviceRunner(),
+    });
+    const secretReadsAtBoot = resolveSecret.mock.calls.length;
+
+    // D-014 / R-24: these sources belong to the local operator producer. The
+    // hosted customer surface must refuse before selecting, storing or returning
+    // that material, including when a request claims the own-account opt-in.
+    for (const claude of [
+      { kind: 'operator-home-file' },
+      { kind: 'integration-key', name: 'service-owned-subscription-sentinel' },
+    ]) {
+      const response = await plane.app.request('/api/workspace-hosts/customer-host/agent-credentials', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          credentialRef: 'pc-agent-forward://customer-host/default',
+          generation: 1,
+          sources: { claude, codex: { kind: 'operator-home-file' }, omp: { kind: 'absent' } },
+          allowOwnSubscriptionRelay: true,
+        }),
+      });
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain('service-owned-subscription-sentinel');
+    }
+    expect(resolveSecret).toHaveBeenCalledTimes(secretReadsAtBoot);
+    expect((await plane.app.request('/api/health')).status).toBe(200);
+    expect(plane.mounted.some((route) => route.path.includes('agent-credentials'))).toBe(false);
+  });
+
   it('refuses boot before resolving secrets when the service runner does not enter hosted_service', async () => {
     const resolveSecret = vi.fn(async () => 'must-not-resolve');
 

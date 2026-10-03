@@ -26,6 +26,7 @@ import {
 } from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { specClauseContentHash, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
+import { computeAcceptanceBarHash, computeAcceptanceBarSetHash } from './rubrics';
 
 const RUBRIC = 'acceptance-subject-plan';
 const OLD_SET_HASH = 'a'.repeat(64);
@@ -175,6 +176,24 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
   it('fixture sanity: the amendment runs under a different BAR set than the stored clauses', () => {
     expect(template.barSetHash).toMatch(/^[a-f0-9]{64}$/);
     expect(template.barSetHash).not.toBe(OLD_SET_HASH);
+  });
+
+  it('repairs an existing neutral class when its unchanged tree BAR is explicitly manual', async () => {
+    const criteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const manual = { ...criterion, check: { kind: 'instrument' as const, instrumentKey: 'none' } };
+      return { ...manual, barHash: computeAcceptanceBarHash(manual) };
+    });
+    const row = storedClause('R-1', 'P-001', { barHash: criteria[0]!.barHash });
+    const manualTemplate = { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
+    await synchronizeAcceptanceBarRevision(sqlStub([row]) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: manualTemplate, previousTemplateData: manualTemplate, actorId: 'amender',
+    });
+    expect(h.setSpecClause).toHaveBeenCalled();
+    expect(h.setSpecClause.mock.calls.find(([write]) => write.specId === row.spec_id)?.[0]).toMatchObject({
+      behaviorClass: 'non-automated', behavior: row.behavior, requiredTestLayers: [], mutationRequired: false,
+    });
   });
 
   it('keeps every unchanged-bar clause at its revision: no write, no new revision', async () => {

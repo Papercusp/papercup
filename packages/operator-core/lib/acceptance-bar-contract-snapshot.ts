@@ -469,7 +469,7 @@ export function predictAmendedBarProofFloor(
       const plane = (criterion.evidencePlane ?? before?.evidencePlane ?? 'tree') as AcceptanceEvidencePlane;
       const layers = criterion.requiredTestLayers ?? [];
       const clause: ProjectedClauseProofObligation = {
-        behaviorClass: acceptanceBarBehaviorClass(plane, layers),
+        behaviorClass: before?.mutationRequired === true ? 'happy-path' : acceptanceBarBehaviorClass(plane, layers, criterion.check),
         requiredTestLayers: layers,
         mutationRequired: before?.mutationRequired === true,
       };
