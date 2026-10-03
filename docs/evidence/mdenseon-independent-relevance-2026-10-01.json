@@ -1,4 +1,85 @@
 {
+  "snapshotExpansionPreparation": {
+    "status": "guarded additive recovery and source selection verified; collection and expanded vector qualification not performed",
+    "workItem": "WI-10004537",
+    "reuse": "Extended the existing collector and CLI, not a parallel collection system. Explicit --reuse-snapshot-expansion requires exact-call recovery and the same owner, complete contract and target budget. Old source bytes, metadata, order, partitions, seed and frozen census time must survive unchanged. Author prompts must match exactly; judge reuse additionally requires an unchanged corpus and chosen target schedule.",
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "dcfe1691b349040cc7e792cdb9df873794831938be062d8b2e56e67316872922",
+        "bytes": 52825
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "95cab5a33d14d71540d29284bd4b77641ef7bc15e57ac689cbc4ab35eb8fd0e3",
+        "bytes": 60212
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+        "sha256": "d79392ef141785ec92c6647fdda39b44ecb82fd7d572c220b0674b9b82b132c0",
+        "bytes": 3663
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+        "sha256": "48d7cc3960785b8af7c92c4e2e0a17a053f378f357184362c7cf18c0f4568548",
+        "bytes": 4004
+      }
+    ],
+    "verification": {
+      "before": {
+        "testRunId": 20611990,
+        "failed": 1,
+        "reason": "The previous collector refused the expanded snapshot before a new call."
+      },
+      "finalSourceGuardRuns": [20615570, 20615571],
+      "finalSourceGuardPassed": 85,
+      "finalSourceGuardFailed": 0,
+      "finalSourceGuardSkipped": 0,
+      "adjacentCandidateAndManifestRuns": [20614797, 20614796],
+      "adjacentCandidateAndManifestPassed": 164,
+      "scopedCompilerTask": "0murt6bmtgpsqul1xgf",
+      "scopedCompilerExitCode": 0,
+      "scopedCompilerFiles": 4,
+      "scopedCompilerErrors": 0,
+      "scope": "Canonical fake-transport tests cover unchanged-corpus reuse, two expansion steps and reference ancestry, changed author prompts, source/metadata/removal/order/seed/date/owner/contract/budget refusals, donor fingerprints and CLI forwarding. No real model calls are used by these tests. Compiler evidence is four-file scoped, not a universal project claim."
+    },
+    "preparation": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/memory-source-expansion-preparation-v1.json",
+      "sha256": "1ac45afb00cccd410fe39f52cb1b2abf61301dc5ab0553b39999b79e65a06ddc",
+      "bytes": 3473
+    },
+    "snapshot": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/snapshot-v3-memory-source-complete.json",
+      "sha256": "39c0118291f881b07c3be9bcae80d4daf28802d9ef9cb6ac3fad1a799a630d11",
+      "bytes": 1704254
+    },
+    "preparationTask": "0murt4ukq16tihgf1sr",
+    "preparationExitCode": 0,
+    "preparationFinishedAt": "2026-10-03T03:03:56.168Z",
+    "memoryDocuments": 635,
+    "memorySources": 406,
+    "addedMemorySources": 123,
+    "addedCalibrationSources": 29,
+    "addedHeldoutSources": 94,
+    "oldMemoryAuthorSourcePromptsPreserved": 283,
+    "proseDocumentsUnchanged": 515,
+    "proseAuthorSourcePromptsPreserved": 143,
+    "allEligibleMemorySourceRepresentativesSelected": true,
+    "allEligibleMemoryRowsSelected": false,
+    "memorySourceAuthorshipCompleted": false,
+    "newIndependentLabelsFrozen": false,
+    "changedMemoryJudgesReusable": false,
+    "unchangedProseCallsRequireExactPromptAndPinnedAncestry": true,
+    "modelRequests": 0,
+    "embeddingRequests": 0,
+    "liveDatabaseReads": 0,
+    "expandedVectorReuseQualified": false,
+    "fullTimingsReusable": false,
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false,
+    "adoptionAuthorized": false,
+    "scope": "The retained census supplies one deterministic row for each formerly absent memory source. Every old memory row and source-author prompt is preserved and prose is unchanged. Selecting all 406 eligible memory source representatives is NOT authorship, independent label acceptance, full-row coverage, power resolution or full census exhaustion. The 1,972 prose sources outside the old snapshot remain outside this preparation."
+  },
   "formatVersion": 1,
   "workItem": "WI-10004537",
   "plan": "mdenseon-adoption-measurements-2026-10-01",
