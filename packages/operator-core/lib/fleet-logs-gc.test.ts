@@ -3,7 +3,8 @@
  * the never-throws / best-effort contract.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, openSync, closeSync } from 'node:fs';
+import { openWriterPidsMany } from './native-bg-task-ledger';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -190,6 +191,7 @@ describe('runFleetLogsGc', () => {
  * to the directory's own mtime passes every other test here and fails that one.
  */
 const DAY = 24 * 60 * 60 * 1000;
+const noOpenPaths = async () => ({ byPath: new Map<string, string[]>(), complete: true });
 
 /** Recursively force every file AND directory mtime to `ageMs` in the past.
  *  Depth-first so a parent is stamped last — stamping a child would otherwise
@@ -213,18 +215,90 @@ function makeWorkdir(root: string, name: string): string {
 }
 
 describe('runPapercuspWorkdirGc', () => {
-  it('uses a conservative 7-day default, longer than the 3-day fleet-logs bound', () => {
+  it('keeps a genuinely open nested file even when its mtime is old', async () => {
+    const dir = makeWorkdir(sandbox, 'p309-accept.AbC123');
+    ageTree(dir, 30 * DAY);
+    const fd = openSync(join(dir, 'top.txt'), 'r');
+    const proc = join(sandbox, 'proc');
+    mkdirSync(proc);
+    symlinkSync(`/proc/${process.pid}`, join(proc, String(process.pid)));
+    try {
+      const result = await runPapercuspWorkdirGc({
+        root: sandbox, dryRun: false,
+        scanOpenPaths: (paths) => openWriterPidsMany(paths, {
+          procRoot: proc, descendants: true, includeCwd: true, failClosed: true,
+        }),
+      });
+      expect(result.candidates[0]?.skipped).toBe('in-use');
+      expect(existsSync(dir)).toBe(true);
+    } finally { closeSync(fd); }
+  });
+
+  it('keeps protected stores and symlink replacements after the process scan', async () => {
+    const protectedDir = makeWorkdir(sandbox, 'pot-git.AbC123');
+    const dir = makeWorkdir(sandbox, 'p309-accept.AbC123');
+    ageTree(dir, 30 * DAY);
+    ageTree(protectedDir, 30 * DAY);
+    const result = await runPapercuspWorkdirGc({
+      root: sandbox, dryRun: false,
+      scanOpenPaths: async () => {
+        rmSync(dir, { recursive: true });
+        symlinkSync(protectedDir, dir);
+        return noOpenPaths();
+      },
+    });
+    expect(result.removed).toBe(0);
+    expect(result.candidates.find((c) => c.path === dir)?.skipped).toBe('raced');
+    expect(existsSync(join(protectedDir, 'top.txt'))).toBe(true);
+  });
+
+  it('WI-10005720: defaults to dry-run and never claims bytes were actually freed', async () => {
+    const dir = makeWorkdir(sandbox, 'p309-accept.AbC123');
+    ageTree(dir, 30 * DAY);
+    const result = await runPapercuspWorkdirGc({ root: sandbox, scanOpenPaths: noOpenPaths });
+    expect(result.dryRun).toBe(true);
+    expect(result.removed).toBe(0);
+    expect(result.bytesFreed).toBe(0);
+    expect(result.wouldRemove).toBe(1);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('WI-10005720: refuses an aged directory held open by a process', async () => {
+    const dir = makeWorkdir(sandbox, 'p309-accept.AbC123');
+    ageTree(dir, 30 * DAY);
+    const result = await runPapercuspWorkdirGc({
+      root: sandbox, dryRun: false,
+      scanOpenPaths: async () => ({ byPath: new Map([[dir, ['42']]]), complete: true }),
+    });
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('in-use');
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('WI-10005720: refuses deletion when process-use evidence is incomplete', async () => {
+    const dir = makeWorkdir(sandbox, 'p309-accept.AbC123');
+    ageTree(dir, 30 * DAY);
+    const result = await runPapercuspWorkdirGc({
+      root: sandbox, dryRun: false,
+      scanOpenPaths: async () => ({ byPath: new Map(), complete: false }),
+    });
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('process-scan-incomplete');
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('uses a conservative 7-day default, longer than the 3-day fleet-logs bound', async () => {
     expect(PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS).toBe(7 * DAY);
     expect(PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS).toBeGreaterThan(
       FLEET_LOGS_GC_DEFAULT_RETENTION_MS,
     );
   });
 
-  it('removes a stale mktemp-suffixed working directory and reports its bytes', () => {
+  it('removes a stale mktemp-suffixed working directory and reports its bytes', async () => {
     const dir = makeWorkdir(sandbox, 'p309-accept.BZHrUr');
     ageTree(dir, 10 * DAY);
 
-    const result = runPapercuspWorkdirGc({ root: sandbox });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
 
     expect(result.removed).toBe(1);
     expect(existsSync(dir)).toBe(false);
@@ -233,7 +307,7 @@ describe('runPapercuspWorkdirGc', () => {
   });
 
   // ─── THE REGRESSION GUARD ────────────────────────────────────────────────
-  it('a NESTED write keeps the tree alive even though every directory mtime is ancient', () => {
+  it('a NESTED write keeps the tree alive even though every directory mtime is ancient', async () => {
     const dir = makeWorkdir(sandbox, 'byoc-p318-release.lqhrUZ');
     ageTree(dir, 30 * DAY);
 
@@ -247,62 +321,64 @@ describe('runPapercuspWorkdirGc', () => {
     // naive own-mtime sweep would happily delete this tree.
     expect(Date.now() - statSync(dir).mtimeMs).toBeGreaterThan(29 * DAY);
 
-    const result = runPapercuspWorkdirGc({ root: sandbox });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
 
     expect(result.removed).toBe(0);
     expect(existsSync(live)).toBe(true);
     expect(result.candidates[0]?.skipped).toBe('too-new');
   });
 
-  it('ignores directories without a machine-generated mktemp suffix', () => {
+  it('ignores directories without a machine-generated mktemp suffix', async () => {
     const dir = makeWorkdir(sandbox, 'p046-deps-snapshot');
     ageTree(dir, 90 * DAY);
 
-    const result = runPapercuspWorkdirGc({ root: sandbox });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
 
     expect(result.removed).toBe(0);
     expect(result.candidates).toHaveLength(0); // never even considered
     expect(existsSync(dir)).toBe(true);
   });
 
-  it('refuses a protected basename even when it carries a mktemp suffix', () => {
+  it('refuses a protected basename even when it carries a mktemp suffix', async () => {
     const name = `${[...PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES][0]}.AbC123`;
     const dir = makeWorkdir(sandbox, name);
     ageTree(dir, 90 * DAY);
 
-    const result = runPapercuspWorkdirGc({ root: sandbox });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
 
     expect(result.removed).toBe(0);
     expect(result.candidates[0]?.skipped).toBe('protected');
     expect(existsSync(dir)).toBe(true);
   });
 
-  it('dryRun reports exactly what it would free and deletes nothing', () => {
+  it('dryRun reports exactly what it would free and deletes nothing', async () => {
     const dir = makeWorkdir(sandbox, 'p314-accept.2Uix7q');
     ageTree(dir, 10 * DAY);
 
-    const result = runPapercuspWorkdirGc({ root: sandbox, dryRun: true });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: true, scanOpenPaths: noOpenPaths });
 
     expect(result.dryRun).toBe(true);
-    expect(result.removed).toBe(1);
-    expect(result.bytesFreed).toBeGreaterThan(0);
+    expect(result.removed).toBe(0);
+    expect(result.bytesFreed).toBe(0);
+    expect(result.wouldRemove).toBe(1);
+    expect(result.bytesReclaimable).toBeGreaterThan(0);
     expect(existsSync(dir)).toBe(true); // reported, but nothing removed
   });
 
-  it('never follows a symlinked directory', () => {
+  it('never follows a symlinked directory', async () => {
     const real = makeWorkdir(sandbox, 'real-payload');
     ageTree(real, 90 * DAY);
     symlinkSync(real, join(sandbox, 'linked.AbC123'));
 
-    const result = runPapercuspWorkdirGc({ root: sandbox });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
 
     expect(result.removed).toBe(0);
     expect(existsSync(real)).toBe(true);
     expect(existsSync(join(real, 'top.txt'))).toBe(true);
   });
 
-  it('is a no-op on a missing root and never throws', () => {
-    const result = runPapercuspWorkdirGc({ root: join(sandbox, 'does-not-exist') });
+  it('is a no-op on a missing root and never throws', async () => {
+    const result = await runPapercuspWorkdirGc({ root: join(sandbox, 'does-not-exist') });
     expect(result.removed).toBe(0);
     expect(result.candidates).toHaveLength(0);
   });
@@ -334,19 +410,19 @@ function naiveOwnMtimeWouldDelete(dir: string, retentionMs: number): boolean {
 }
 
 describe('runPapercuspWorkdirGc — falsifiability control', () => {
-  it('CALIBRATION: on a genuinely stale tree the naive control agrees with the real sweep', () => {
+  it('CALIBRATION: on a genuinely stale tree the naive control agrees with the real sweep', async () => {
     const dir = makeWorkdir(sandbox, 'calibration-stale.QqWw11');
     ageTree(dir, 30 * DAY);
 
     // The control fires here — so it is not a predicate that never triggers.
     expect(naiveOwnMtimeWouldDelete(dir, 7 * DAY)).toBe(true);
 
-    const result = runPapercuspWorkdirGc({ root: sandbox });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
     expect(result.removed).toBe(1);
     expect(existsSync(dir)).toBe(false);
   });
 
-  it('DIVERGENCE: the naive control would DELETE the live tree the real sweep spares', () => {
+  it('DIVERGENCE: the naive control would DELETE the live tree the real sweep spares', async () => {
     const dir = makeWorkdir(sandbox, 'byoc-p318-release.lqhrUZ');
     ageTree(dir, 30 * DAY);
     const live = join(dir, 'nested', 'deep', 'payload.bin');
@@ -358,7 +434,7 @@ describe('runPapercuspWorkdirGc — falsifiability control', () => {
 
     // … and the real one does not. If this pair ever stops diverging, the
     // recursive scan has been lost and this suite is no longer guarding it.
-    const result = runPapercuspWorkdirGc({ root: sandbox });
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
     expect(result.removed).toBe(0);
     expect(existsSync(live)).toBe(true);
   });

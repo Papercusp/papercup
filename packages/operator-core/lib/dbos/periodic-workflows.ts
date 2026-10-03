@@ -630,7 +630,7 @@ async function fleetLogsGcTick(): Promise<void> {
       // are eligible and the age bound is the RECURSIVE newest mtime, never the
       // directory's own (see fleet-logs-gc.ts for why that distinction is
       // load-bearing rather than pedantic).
-      const workdirs = runPapercuspWorkdirGc();
+      const workdirs = await runPapercuspWorkdirGc({ dryRun: false });
       const skipped = workdirs.candidates.filter((c) => !c.removed);
       console.log(
         `[papercusp-workdir-gc] considered ${workdirs.scanned} mktemp dir(s) → ` +

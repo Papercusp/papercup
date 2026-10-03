@@ -155,7 +155,7 @@ export const NATIVE_BG_SCAN_DEADLINE_MS = 5_000;
 export interface OpenWriterScan {
   /** Path -> pids holding it open (numerically sorted). Absent = no holder seen. */
   byPath: Map<string, string[]>;
-  /** False when the deadline cut the walk short: absence is then unmeasured. */
+  /** False on deadline exhaustion or (in failClosed mode) unreadable evidence. */
   complete: boolean;
 }
 
@@ -176,7 +176,15 @@ export interface OpenWriterScan {
  */
 export async function openWriterPidsMany(
   paths: readonly string[],
-  opts: { procRoot?: string; concurrency?: number; deadlineMs?: number } = {},
+  opts: {
+    procRoot?: string; concurrency?: number; deadlineMs?: number;
+    /** Match descendants of each path, for directory retention. */
+    descendants?: boolean;
+    /** A process using a tree as its working directory also owns it. */
+    includeCwd?: boolean;
+    /** Destructive callers must refuse missing/unreadable process evidence. */
+    failClosed?: boolean;
+  } = {},
 ): Promise<OpenWriterScan> {
   const byPath = new Map<string, string[]>();
   const wanted = new Set(paths);
@@ -186,12 +194,17 @@ export async function openWriterPidsMany(
   try {
     entries = await readdir(procRoot);
   } catch {
-    return { byPath, complete: true };
+    return { byPath, complete: !opts.failClosed };
   }
   const pids = entries.filter((e) => /^\d+$/.test(e));
   const deadline = opts.deadlineMs === undefined ? Infinity : Date.now() + opts.deadlineMs;
   let complete = true;
   let next = 0;
+  const readFailed = (err: unknown): void => {
+    // ENOENT is an exited process/closed fd (or a kernel thread without cwd).
+    // Permission and IO failures do not prove absence of a holder.
+    if (opts.failClosed && (err as NodeJS.ErrnoException)?.code !== 'ENOENT') complete = false;
+  };
   const worker = async (): Promise<void> => {
     while (next < pids.length) {
       if (Date.now() > deadline) {
@@ -200,25 +213,40 @@ export async function openWriterPidsMany(
       }
       const pid = pids[next++];
       const fdDir = join(procRoot, pid, 'fd');
+      const seen = new Set<string>();
+      const record = (rawTarget: string): void => {
+        const target = rawTarget.replace(/ \(deleted\)$/, '');
+        const matching = opts.descendants ? wanted : wanted.has(target) ? [target] : [];
+        for (const path of matching) {
+          if (target !== path && !(opts.descendants && target.startsWith(path + '/'))) continue;
+          if (seen.has(path)) continue;
+          seen.add(path);
+          const holders = byPath.get(path);
+          if (holders) holders.push(pid);
+          else byPath.set(path, [pid]);
+        }
+      };
+      if (opts.includeCwd) {
+        try { record(await readlink(join(procRoot, pid, 'cwd'))); }
+        catch (err) { readFailed(err); }
+      }
       let fds: string[];
       try {
         fds = await readdir(fdDir);
-      } catch {
+      } catch (err) {
+        readFailed(err);
         continue;
       }
-      const seen = new Set<string>();
       for (const fd of fds) {
+        if (Date.now() > deadline) { complete = false; return; }
         let target: string;
         try {
           target = await readlink(join(fdDir, fd));
-        } catch {
+        } catch (err) {
+          readFailed(err);
           continue; // fd closed under us — skip
         }
-        if (!wanted.has(target) || seen.has(target)) continue;
-        seen.add(target);
-        const holders = byPath.get(target);
-        if (holders) holders.push(pid);
-        else byPath.set(target, [pid]);
+        record(target);
       }
     }
   };

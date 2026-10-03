@@ -709,7 +709,13 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
         let currentMember:
           | Pick<
               FleetMemberObservation,
-              'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim' | 'stalled'
+              | 'sessionState'
+              | 'wakeable'
+              | 'claimCount'
+              | 'isRegisteredLeader'
+              | 'hasProgressingClaim'
+              | 'stalled'
+              | 'loopMonitorState'
             >
           | null
           | undefined;

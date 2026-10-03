@@ -41,10 +41,11 @@
  * green-checkpoint.ts): a live, actively-written log's mtime keeps advancing,
  * so a genuinely in-use file is never caught by the age bound.
  */
-import { readdirSync, rmSync, statSync, unlinkSync, type Dirent } from 'node:fs';
+import { readdirSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { workspacesRoot } from './workspace-registry';
+import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 
 /** 3 days: long enough to debug a recent spawn, short enough to keep the
  *  steady-state footprint well clear of the disk-headroom floor. */
@@ -274,6 +275,7 @@ export const PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES: ReadonlySet<string> = new
   'fleet-logs', 'checkpoint-logs', 'session-claude', 'session-mcp', 'session-ports',
   'vendor', 'toolchains', 'runtime', 'tracking', 'turn-provenance', 'wake-spills',
   'scratch', 'tmp', 'su-codex-homes', 'su-omp-homes', 'role-codex-homes',
+  'pot-git', 'bench-harnesses', 'live-fed-gate',
 ]);
 
 export interface PapercuspWorkdirGcOptions {
@@ -281,6 +283,8 @@ export interface PapercuspWorkdirGcOptions {
   root?: string;
   retentionMs?: number;
   dryRun?: boolean;
+  /** Test seam. Missing, partial or failed process evidence always keeps trees. */
+  scanOpenPaths?: (paths: readonly string[]) => Promise<OpenWriterScan>;
   /** Injectable clock for tests. */
   now?: number;
 }
@@ -293,7 +297,7 @@ export interface PapercuspWorkdirGcCandidate {
   ageMs: number;
   removed: boolean;
   /** Why an eligible-looking directory was NOT removed. */
-  skipped?: 'too-new' | 'protected' | 'not-mktemp' | 'scan-capped' | 'raced' | 'error';
+  skipped?: 'too-new' | 'protected' | 'not-mktemp' | 'scan-capped' | 'raced' | 'error' | 'in-use' | 'process-scan-incomplete';
   error?: string;
 }
 
@@ -303,6 +307,8 @@ export interface PapercuspWorkdirGcResult {
   removed: number;
   bytesFreed: number;
   dryRun: boolean;
+  wouldRemove: number;
+  bytesReclaimable: number;
   candidates: PapercuspWorkdirGcCandidate[];
 }
 
@@ -326,17 +332,18 @@ function scanTree(
     // The directory's own mtime still counts — it catches an empty tree whose
     // last activity was creating/removing an entry.
     try {
-      const st = statSync(current);
+      const st = lstatSync(current);
+      if (!st.isDirectory()) return { newestMtimeMs, bytes, entries, capped: true };
       if (st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs;
     } catch {
-      /* vanished — nothing to contribute */
+      return { newestMtimeMs, bytes, entries, capped: true };
     }
 
     let children: Dirent[];
     try {
       children = readdirSync(current, { withFileTypes: true });
     } catch {
-      continue; // unreadable subtree: contributes nothing, never aborts the sweep
+      return { newestMtimeMs, bytes, entries, capped: true }; // cannot prove staleness
     }
 
     for (const child of children) {
@@ -351,11 +358,12 @@ function scanTree(
       }
       if (!child.isFile()) continue; // symlink / socket / fifo — not our bytes
       try {
-        const st = statSync(p);
+        const st = lstatSync(p);
+        if (!st.isFile()) return { newestMtimeMs, bytes, entries, capped: true };
         if (st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs;
         bytes += st.size;
       } catch {
-        /* vanished between readdir and stat — skip */
+        return { newestMtimeMs, bytes, entries, capped: true };
       }
     }
   }
@@ -365,25 +373,31 @@ function scanTree(
 
 /** Sweep one-off mktemp working directories under `root`. Best-effort, never
  *  throws. See the block comment above for why each guard is load-bearing. */
-export function runPapercuspWorkdirGc(
+export async function runPapercuspWorkdirGc(
   opts: PapercuspWorkdirGcOptions = {},
-): PapercuspWorkdirGcResult {
-  const root = opts.root ?? join(homedir(), '.papercusp');
+): Promise<PapercuspWorkdirGcResult> {
+  let root = opts.root ?? join(homedir(), '.papercusp');
   const retentionMs = opts.retentionMs ?? PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS;
-  const dryRun = opts.dryRun === true;
+  const dryRun = opts.dryRun !== false;
   const now = opts.now ?? Date.now();
   const cutoff = now - retentionMs;
 
   let top: Dirent[];
   try {
+    if (!Number.isFinite(now) || !Number.isFinite(retentionMs) || retentionMs < 0) throw new Error('invalid retention clock');
+    if (!lstatSync(root).isDirectory()) throw new Error('not a directory');
+    root = realpathSync(root);
     top = readdirSync(root, { withFileTypes: true });
   } catch {
-    return { root, scanned: 0, removed: 0, bytesFreed: 0, dryRun, candidates: [] };
+    return { root, scanned: 0, removed: 0, bytesFreed: 0, wouldRemove: 0, bytesReclaimable: 0, dryRun, candidates: [] };
   }
 
   const candidates: PapercuspWorkdirGcCandidate[] = [];
+  const identities = new Map<string, ReturnType<typeof lstatSync>>();
   let removed = 0;
   let bytesFreed = 0;
+  let wouldRemove = 0;
+  let bytesReclaimable = 0;
 
   for (const entry of top) {
     if (!entry.isDirectory()) continue; // includes symlinked dirs — never swept
@@ -401,6 +415,8 @@ export function runPapercuspWorkdirGc(
       continue;
     }
 
+    try { identities.set(path, lstatSync(path)); }
+    catch { continue; }
     const scan = scanTree(path, PAPERCUSP_WORKDIR_GC_SCAN_ENTRY_CAP);
     const ageMs = now - scan.newestMtimeMs;
     const record: PapercuspWorkdirGcCandidate = {
@@ -417,6 +433,29 @@ export function runPapercuspWorkdirGc(
       record.skipped = 'too-new';
       continue;
     }
+  }
+
+  const eligible = candidates.filter((c) => !c.skipped);
+  let openPaths: OpenWriterScan = { byPath: new Map(), complete: false };
+  if (eligible.length > 0) {
+    try {
+      openPaths = await (opts.scanOpenPaths ?? ((paths) => openWriterPidsMany(paths, {
+        descendants: true, includeCwd: true, failClosed: true, deadlineMs: NATIVE_BG_SCAN_DEADLINE_MS,
+      })))(eligible.map((c) => c.path));
+    } catch { /* no destructive action without process evidence */ }
+  }
+
+  for (const record of eligible) {
+    const path = record.path;
+    if (openPaths.byPath.get(path)?.length) { record.skipped = 'in-use'; continue; }
+    if (!openPaths.complete) { record.skipped = 'process-scan-incomplete'; continue; }
+    const identity = identities.get(path)!;
+    try {
+      const current = lstatSync(path);
+      if (!current.isDirectory() || current.ino !== identity.ino || current.dev !== identity.dev) {
+        record.skipped = 'raced'; continue;
+      }
+    } catch { record.skipped = 'raced'; continue; }
 
     // Guard 3: re-walk immediately before removal. The first scan may be many
     // seconds old by now, and a live writer can have adopted the tree since.
@@ -428,6 +467,16 @@ export function runPapercuspWorkdirGc(
       continue;
     }
 
+    try {
+      const current = lstatSync(path);
+      if (!current.isDirectory() || current.ino !== identity.ino || current.dev !== identity.dev) {
+        record.skipped = 'raced'; continue;
+      }
+    } catch { record.skipped = 'raced'; continue; }
+
+    wouldRemove++;
+    bytesReclaimable += confirm.bytes;
+
     if (!dryRun) {
       try {
         rmSync(path, { recursive: true, force: true });
@@ -437,12 +486,14 @@ export function runPapercuspWorkdirGc(
         continue;
       }
     }
-    record.removed = true;
-    removed++;
-    bytesFreed += scan.bytes;
+    if (!dryRun) {
+      record.removed = true;
+      removed++;
+      bytesFreed += confirm.bytes;
+    }
   }
 
-  return { root, scanned: candidates.length, removed, bytesFreed, dryRun, candidates };
+  return { root, scanned: candidates.length, removed, bytesFreed, wouldRemove, bytesReclaimable, dryRun, candidates };
 }
 
 // ── `~/.papercusp/launch-context` — the third, unowned accumulation ──────────

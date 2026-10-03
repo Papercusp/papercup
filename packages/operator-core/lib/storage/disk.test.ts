@@ -1,9 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dirSizeBytes, dirSizeBytesAsync, listDiskRootChildren, type DiskWalkBudget } from './disk';
+import { dirSizeBytes, dirSizeBytesAsync, listDiskRootChildren, listDiskRootChildrenAsync, type DiskWalkBudget } from './disk';
+
+describe('bounded disk attribution', () => {
+  it('does not follow sibling or nested symlinks, including cycles', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-'));
+    try {
+      const store = join(root, 'store');
+      mkdirSync(store);
+      writeFileSync(join(store, 'payload'), Buffer.alloc(100));
+      symlinkSync(store, join(root, 'alias'));
+      symlinkSync(root, join(store, 'cycle'));
+      const result = await listDiskRootChildrenAsync({ roots: [root], followSymlinks: false });
+      expect(result.truncated).toBe(false);
+      expect(result.entries.find((e) => e.path === store)?.sizeBytes).toBe(100);
+      expect(result.entries.find((e) => e.path === join(root, 'alias'))?.sizeBytes).toBe(0);
+      const budget: DiskWalkBudget = { deadlineMs: Date.now() + 1000 };
+      await dirSizeBytesAsync(store, 1, budget, false);
+      expect(budget.truncated).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 /**
  * Recurrence guard for EI-6045: the synchronous recursive disk-sizing walk must

@@ -311,6 +311,30 @@ describe('candidateNativeBgRecords', () => {
 });
 
 describe('openWriterPidsMany (WI-10005283)', () => {
+  it('retention mode matches descendants and cwd without matching sibling prefixes', async () => {
+    const proc = fakeProc({ '1': ['/tmp/tree/deep/file'], '2': ['/tmp/tree-other/file'], '3': [] });
+    symlinkSync('/tmp/tree/nested', join(proc, '3', 'cwd'));
+    try {
+      const scan = await openWriterPidsMany(['/tmp/tree'], {
+        procRoot: proc, descendants: true, includeCwd: true, failClosed: true,
+      });
+      expect(scan.complete).toBe(true);
+      expect(scan.byPath.get('/tmp/tree')).toEqual(['1', '3']);
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
+  it('retention mode refuses a missing proc root and expired scan budget', async () => {
+    expect((await openWriterPidsMany(['/tmp/tree'], {
+      procRoot: '/nonexistent-proc-root', failClosed: true,
+    })).complete).toBe(false);
+    const proc = fakeProc({ '1': ['/tmp/tree/file'] });
+    try {
+      expect((await openWriterPidsMany(['/tmp/tree'], {
+        procRoot: proc, failClosed: true, deadlineMs: -1,
+      })).complete).toBe(false);
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
   it('answers every path from ONE pass: all holders per path, sorted, skipping non-pid entries', async () => {
     const proc = fakeProc(
       {

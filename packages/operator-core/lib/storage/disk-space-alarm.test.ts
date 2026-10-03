@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+vi.mock('./disk', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./disk')>(),
+  listDiskRootChildrenAsync: vi.fn(async () => ({ entries: [], truncated: false })),
+}));
 import {
   detectLowSpace,
   detectCriticalWriteHeadroom,
@@ -250,6 +256,44 @@ describe('formatDiskAlarmToast', () => {
 });
 
 describe('runDiskSpaceAlarmOnce', () => {
+  it('does not scan a healthy disk; labels partial and unavailable attribution', async () => {
+    const attributeUsage = vi.fn(async () => ({ entries: [{ path: '/large-store', mtimeMs: 0, sizeBytes: GIB }], truncated: true }));
+    const emitToast = vi.fn(async (_t: { description: string }) => {});
+    await runDiskSpaceAlarmOnce({ sample: async () => [snap()], emitToast, attributeUsage });
+    expect(attributeUsage).not.toHaveBeenCalled();
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ freeBytes: 6 * GIB, freePct: 0.03 })], emitToast, attributeUsage,
+    });
+    expect(emitToast.mock.calls[0]?.[0].description).toContain('partial scan');
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ freeBytes: 6 * GIB, freePct: 0.03 })], emitToast,
+      attributeUsage: async () => { throw new Error('unreadable'); },
+    });
+    expect(emitToast.mock.calls[1]?.[0].description).toContain('attribution unavailable');
+  });
+
+  it('WI-10005720: names a large sibling that fleet-logs retention cannot see', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-alarm-attribution-'));
+    try {
+      mkdirSync(join(root, 'fleet-logs'));
+      const large = join(root, 'pot-git');
+      mkdirSync(large);
+      writeFileSync(join(large, 'payload'), Buffer.alloc(4096));
+      const emitToast = vi.fn(async (_t: { description: string }) => {});
+      const escalate = vi.fn(async (_t: { body: string }) => {});
+      const disk = await vi.importActual<typeof import('./disk')>('./disk');
+      await runDiskSpaceAlarmOnce({
+        sample: async () => [snap({ freeBytes: 0, freePct: 0 })],
+        emitToast, escalate, recentlyEscalated: async () => false,
+        attributeUsage: () => disk.listDiskRootChildrenAsync({ roots: [root], followSymlinks: false }),
+      });
+      expect(emitToast.mock.calls[0]?.[0].description).toContain(large);
+      expect(escalate.mock.calls[0]?.[0].body).toContain(large);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // Every case below injects BOTH escalation deps. A critical-tier breach otherwise
   // falls through to the real notifyAttention (defaultRecentlyEscalated fails OPEN on
   // a missing DB, by design) — i.e. a unit test firing a live push.

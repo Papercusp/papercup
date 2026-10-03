@@ -194,8 +194,9 @@ export function sandboxedBashCommand(command, opts = {}) {
 }
 
 /**
- * Ask the operator for the textual verdict and the session's restriction status.
- * `restricted` is null when it cannot be shown either way.
+ * Ask the operator for the textual verdict, session restriction and integration-tree hold.
+ * Either a held or unknown source state is restricted. Missing fields from an older
+ * operator build are unknown too, so the transition stays fail-closed.
  * @returns {Promise<{ refuse: string | null, restricted: boolean | null, detail: string }>}
  */
 async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
@@ -211,8 +212,18 @@ async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
       return { refuse: null, restricted: null, detail: `HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}` };
     }
     const refuse = body.verdict === 'refuse' ? String(body.reason || body.code || 'disclosure_egress_refused') : null;
-    const restricted = typeof body.restricted === 'boolean' ? body.restricted : null;
-    return { refuse, restricted, detail: restricted === null ? 'the disclosure ledger could not be read' : '' };
+    const sourceHold = body.sourceHold;
+    const sessionRestricted = body.restricted !== false;
+    const restricted = sessionRestricted || sourceHold !== 'clear';
+    const detail =
+      sourceHold === 'held'
+        ? 'the integration tree has an active restricted-source hold'
+        : sourceHold !== 'clear'
+          ? 'the integration-tree hold state could not be confirmed'
+          : body.restricted === null || body.restricted === undefined
+            ? 'the disclosure ledger could not be read'
+            : '';
+    return { refuse, restricted, detail };
   } catch (error) {
     return { refuse: null, restricted: null, detail: error instanceof Error ? error.message : String(error) };
   }
@@ -264,8 +275,8 @@ export async function decideEgress({ toolName, toolInput, cwd, env = process.env
 
   const why =
     restricted === true
-      ? 'this session has read restricted personal data'
-      : `the operator could not confirm this session is unrestricted (${detail}), so it is treated as restricted`;
+      ? detail || 'this session has read restricted personal data'
+      : `the operator could not confirm this session or integration tree is unrestricted (${detail}), so it is treated as restricted`;
   if (toolName === 'Bash' && typeof input.command === 'string') {
     const wrapped = (sandbox ?? ((command) => sandboxedBashCommand(command, { env, cwd: where })))(input.command);
     if (wrapped && invokesUserSystemctl(input.command) && masksUserRuntime(wrapped)) {
