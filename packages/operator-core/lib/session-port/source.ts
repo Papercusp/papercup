@@ -1,6 +1,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import type { SessionBackend } from './types';
 import {
   decompressArchiveBlobBounded,
   sha256Hex,
@@ -16,6 +17,55 @@ export interface StableSource {
   completeBytes: number;
   source: 'live-jsonl' | 'archive-manifest';
   relpath: string | null;
+}
+
+function nativeTranscriptName(backend: 'codex' | 'omp', name: string, sessionId: string): boolean {
+  return backend === 'codex'
+    ? name.startsWith('rollout-') && name.endsWith(`-${sessionId}.jsonl`)
+    : name === `${sessionId}.jsonl` || name.endsWith(`_${sessionId}.jsonl`);
+}
+
+/** Exact native id, inside ONE tracked home. Display resolvers' newest-file
+ * and cross-home fallback semantics are deliberately unsuitable for evidence. */
+export async function findCanonicalNativeLiveJsonl(root: string, backend: 'codex' | 'omp', sessionId: string): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{6,}$/.test(sessionId)) throw new Error('invalid native session identity');
+  const matches: string[] = [];
+  const walk = async (directory: string, remaining: number): Promise<void> => {
+    const stat = await lstat(directory).catch(() => null);
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) return;
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory() && remaining > 0) await walk(path, remaining - 1);
+      else if (entry.isFile() && nativeTranscriptName(backend, entry.name, sessionId)) matches.push(path);
+    }
+  };
+  await walk(root, backend === 'codex' ? 3 : 1);
+  if (matches.length !== 1) throw new Error(`canonical live ${backend} JSONL is ${matches.length ? 'ambiguous' : 'missing'}`);
+  return matches[0]!;
+}
+
+export async function readCanonicalNativeArchive(
+  key: { backend: Exclude<SessionBackend, 'claude'>; sessionId: string },
+  store: SessionArchiveStore,
+  maxBytes = MAX_SESSION_PORT_SOURCE_BYTES,
+): Promise<StableSource> {
+  const stamp = await store.readStamp(key.backend, key.sessionId);
+  if (!stamp) throw new Error(`canonical ${key.backend} archive not found`);
+  const primary = stamp.manifest.filter((entry) =>
+    nativeTranscriptName(key.backend, basename(entry.relpath), key.sessionId) &&
+    (key.backend !== 'codex' || entry.relpath.split(/[/\\]/)[0] === 'sessions'));
+  if (primary.length !== 1) throw new Error(`canonical ${key.backend} archive is ${primary.length ? 'ambiguous' : 'missing'}`);
+  const manifest = primary[0]!;
+  if (manifest.bytes_raw > maxBytes) throw new Error(`archive source ${manifest.bytes_raw} exceeds ${maxBytes} byte cap`);
+  const rows = await store.readFiles(key.backend, key.sessionId);
+  const row = rows.find((candidate) => candidate.relpath === manifest.relpath);
+  if (!row || row.bytes_raw !== manifest.bytes_raw || row.sha256 !== manifest.sha256) throw new Error('canonical native archive manifest/file metadata mismatch');
+  const bytes = await decompressArchiveBlobBounded(row, maxBytes);
+  if (sha256Hex(bytes) !== manifest.sha256) throw new Error('canonical native archive sha mismatch');
+  return { bytes, sha256: manifest.sha256, highWaterBytes: bytes.length, completeBytes: bytes.length,
+    source: 'archive-manifest', relpath: manifest.relpath };
 }
 
 /** Resolve exactly one `<config>/projects/<cwd-key>/<session>.jsonl` without
