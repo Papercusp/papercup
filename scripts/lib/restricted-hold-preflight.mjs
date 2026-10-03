@@ -173,8 +173,22 @@ export function runVitestRootPreflight({ repoRoot, files, env = process.env, tim
   return { verdict: 'admit', setEnv: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST } };
 }
 
-function spawnCensus({ repoRoot, files, env, timeoutMs, spawn }) {
-  const result = spawn(process.execPath, ['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, repoRoot, ...files], {
+/**
+ * The host-bundle door (WI-10005745): bg-host's ExecStartPre bundles the LIVE shared tree and runs
+ * it with the network. apps/operator/bin/bundle-restricted-hold-gate.mjs writes the bundle's exact
+ * inputs (esbuild metafile inputs + verbatim-copied files/dirs) to `inputsFile` and calls this
+ * before it lets the fresh bundle stand. No skip reasons: a bundle is never nested in a test run,
+ * and the release/staging checkouts simply hold nothing, so their census admits on its own.
+ * Same census child and fail-closed table as the router.
+ * @param {{ repoRoot: string, inputsFile: string, env?: NodeJS.ProcessEnv, timeoutMs?: number, spawn?: typeof spawnSync }} opts
+ * @returns {{ verdict: 'admit' } | { verdict: 'refuse', error: string, hint: string }}
+ */
+export function runBundleRestrictedHoldPreflight({ repoRoot, inputsFile, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
+  return spawnCensus({ repoRoot, files: [], env, timeoutMs, spawn, leading: ['--bundle-inputs', inputsFile] });
+}
+
+function spawnCensus({ repoRoot, files, env, timeoutMs, spawn, leading = [] }) {
+  const result = spawn(process.execPath, ['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, ...leading, repoRoot, ...files], {
     cwd: repoRoot,
     env,
     encoding: 'utf8',
@@ -192,4 +206,9 @@ export function formatRestrictedHoldRefusal(refusal) {
 /** The vitest-root door's refusal line (vitest prints it as the globalSetup error). */
 export function formatVitestRestrictedHoldRefusal(refusal) {
   return `VITEST_RESTRICTED_HOLD_REFUSED error=${refusal.error} measured=none ${refusal.hint}`;
+}
+
+/** The host-bundle door's refusal line (bundle-host.sh prints it, then falls back to last-known-good). */
+export function formatBundleRestrictedHoldRefusal(refusal) {
+  return `BUNDLE_RESTRICTED_HOLD_REFUSED error=${refusal.error} published=last-known-good ${refusal.hint}`;
 }

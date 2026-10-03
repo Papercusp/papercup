@@ -126,6 +126,10 @@ export interface ColdBootDrillHostEvent {
    *  carry-respawn-outcome to decide when a `pending` attempt is past the window
    *  in which it could still fire (see isOrphanedPendingRespawn). */
   capMs?: number | null;
+  /** Set by the host on a terminal row that came from a re-armed (re-polled) attempt,
+   *  e.g. `respawn-carry-dropped {reason:'superseded', rearmed:true}`. Not read by the
+   *  outcome derivation; declared so fixtures copied from a real log type-check. */
+  rearmed?: boolean;
 }
 
 export function coldBootDrillLedgerPath(dir: string = PSU_PTY_DIR): string {
