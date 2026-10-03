@@ -43,6 +43,7 @@ function mkDeps(
     | 'renderOwnerDirectives'
     | 'listBlockingAwaits'
     | 'countActionableHeldItems'
+    | 'ownerStewardsActiveGoal'
     | 'readLastDeliveredAt'
     | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
@@ -77,6 +78,9 @@ function mkDeps(
     // WI-10004466: hermetic default — an UNKNOWN count keeps the pre-fix decision, so
     // every existing suppression test is unaffected and no test reaches real PG.
     countActionableHeldItems: vi.fn(async () => null) as never,
+    // WI-10005778: hermetic default — UNKNOWN stewardship keeps the decision above, and no
+    // test reaches real PG.
+    ownerStewardsActiveGoal: vi.fn(async () => null) as never,
     // P-024: hermetic default — "never delivered" keeps the pre-heartbeat ceiling.
     readLastDeliveredAt: vi.fn(async () => null) as never,
     rescheduleSuppressedWake: vi.fn(async () => true) as never,
@@ -723,6 +727,57 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never, countActionableHeldItems: count as never });
       await fireLoopWake(baseInput, deps);
       expect(count).not.toHaveBeenCalled();
+    });
+
+    /** WI-10005778: the await coord:ask-owner auto-arms for its requester. */
+    const ownerQuestionAwait = () => [{
+      eventKey: 'conversation:answered:conv-owner-question',
+      expiresTs: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+      createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      boundTo: { kind: 'conversation-question', ref: 'conv-owner-question' },
+    }];
+
+    it('WI-10005778: a goal holder with an open owner question still gets its stewardship wake', async () => {
+      const stewardship = vi.fn(async () => true);
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+        countActionableHeldItems: vi.fn(async () => 0) as never,
+        ownerStewardsActiveGoal: stewardship as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.wake).toHaveBeenCalledTimes(1);
+      expect(deps.rescheduleSuppressedWake).not.toHaveBeenCalled();
+      expect(stewardship).toHaveBeenCalledWith(expect.objectContaining({ ownerId: baseInput.targetOwnerId }));
+    });
+
+    it('WI-10005778: a non-holder parked on an owner question stays parked (RSR-P-024-A)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+        countActionableHeldItems: vi.fn(async () => 1) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => false) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+      expect(deps.wake).not.toHaveBeenCalled();
+    });
+
+    it('WI-10005778: a failed goal-lease read keeps the suppression decision', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => {
+          throw new Error('goals read timed out');
+        }) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+    });
+
+    it('WI-10005778: the goal lease is read only when an await would suppress', async () => {
+      const stewardship = vi.fn(async () => true);
+      const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never, ownerStewardsActiveGoal: stewardship as never });
+      await fireLoopWake(baseInput, deps);
+      expect(stewardship).not.toHaveBeenCalled();
     });
 
     it('a monitor loop keeps its heartbeat despite an active blocking await', async () => {
@@ -1449,6 +1504,33 @@ describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901
   it('WI-10004466: the non-parking kind set tracks the obligation-reminder binding constant', () => {
     expect(LOOP_NON_PARKING_AWAIT_BINDING_KINDS.has(AGENT_OBLIGATION_REMINDER_BINDING_KIND)).toBe(true);
     expect(LOOP_NON_PARKING_AWAIT_BINDING_KINDS.has('work-item-blocked')).toBe(true);
+  });
+
+  it('WI-10005778: holding an active goal lease lifts suppression and says why', () => {
+    const question = {
+      eventKey: 'conversation:answered:conv-q', createdAt: new Date(now).toISOString(),
+      expiresTs: new Date(now + 2 * 60 * 60_000).toISOString(),
+      boundTo: { kind: 'conversation-question', ref: 'conv-q' },
+    };
+    expect(decideLoopAwaitSuppression({
+      awaits: [question], nowMs: now, actionableHeldItemCount: 0, ownerStewardsActiveGoal: true,
+    })).toEqual({
+      suppress: false,
+      resumeAtMs: null,
+      drivingEventKey: 'conversation:answered:conv-q',
+      overriddenByGoalStewardship: true,
+    });
+  });
+
+  it('WI-10005778: unknown or false goal stewardship keeps the owner-answer park', () => {
+    const question = {
+      eventKey: 'conversation:answered:conv-q', createdAt: new Date(now).toISOString(),
+      expiresTs: new Date(now + 2 * 60 * 60_000).toISOString(),
+      boundTo: { kind: 'conversation-question', ref: 'conv-q' },
+    };
+    for (const ownerStewardsActiveGoal of [false, null, undefined]) {
+      expect(decideLoopAwaitSuppression({ awaits: [question], nowMs: now, ownerStewardsActiveGoal }).suppress).toBe(true);
+    }
   });
 
   it('WI-10004466: more actionable held items than the bound lifts suppression and says why', () => {

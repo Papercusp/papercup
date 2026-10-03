@@ -157,6 +157,10 @@ export interface LoopFireDeps {
    *  otherwise suppress the wake. A failed read returns null, which keeps the
    *  pre-WI-10004466 decision. Injected for tests. */
   countActionableHeldItems?: (input: { ownerId: string; workspaceId: string; sql?: Sql }) => Promise<number | null>;
+  /** WI-10005778: does the owner hold an ACTIVE goal's lease (goals.metadata.agentOwnerId)?
+   *  Read only when an await would otherwise suppress the wake. A failed read returns null,
+   *  which keeps the decision above. Injected for tests. */
+  ownerStewardsActiveGoal?: (input: { ownerId: string; sql?: Sql }) => Promise<boolean | null>;
   /** EI-21350609923930437: re-arm a parked pure loop at the suppression threshold before
    *  withholding its wake. Injected for tests; a failed write fails open and delivers the
    *  wake rather than leaving the claimed row parked forever. */
@@ -270,6 +274,9 @@ export interface LoopAwaitSuppressionDecision {
   /** WI-10004466: present only when an await WOULD have suppressed but the owner holds
    *  more actionable work-items than LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD. */
   overriddenByActionableHeldItems?: number;
+  /** WI-10005778: present only when an await WOULD have suppressed but the owner holds an
+   *  active goal's lease, whose stewardship loop is standing work no single await gates. */
+  overriddenByGoalStewardship?: true;
 }
 
 /** Pure decision: given the owner's currently-active blocking awaits, should THIS
@@ -296,6 +303,9 @@ export function decideLoopAwaitSuppression(input: {
   /** WI-10004466: the owner's actionable held work-items. null/absent = unknown, which
    *  keeps the pre-WI-10004466 decision (an await alone may suppress). */
   actionableHeldItemCount?: number | null;
+  /** WI-10005778: true when the owner holds an active goal's lease. null/absent = unknown,
+   *  which keeps the decision the other inputs produce. */
+  ownerStewardsActiveGoal?: boolean | null;
 }): LoopAwaitSuppressionDecision {
   const maxQuietMs =
     typeof input.maxQuietMs === 'number' && Number.isFinite(input.maxQuietMs) && input.maxQuietMs > 0
@@ -341,6 +351,15 @@ export function decideLoopAwaitSuppression(input: {
   ) {
     return { suppress: false, resumeAtMs: null, drivingEventKey, overriddenByActionableHeldItems: actionable };
   }
+  // WI-10005778: a goal holder's loop is its stewardship cadence (fleet checks, owner
+  // reports it promised by a time), the same kind of standing duty that exempts monitor
+  // loops above. P-024's premise is a session whose ONLY lane is the await; a goal holder's
+  // lane never is, yet it holds few work-items because it outsources builds, so the
+  // actionable count above cannot see that duty. Observed 2026-10-03: coord:ask-owner's
+  // auto-armed conversation-question await held a 900s holder loop to ~1 fire per hour.
+  if (input.ownerStewardsActiveGoal === true) {
+    return { suppress: false, resumeAtMs: null, drivingEventKey, overriddenByGoalStewardship: true };
+  }
   return { suppress: true, resumeAtMs: earliestResumeAtMs, drivingEventKey };
 }
 
@@ -380,6 +399,24 @@ export async function defaultCountActionableHeldItems(input: {
   `;
   const n = rows[0]?.n;
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
+}
+
+/** WI-10005778 default resolver: does the owner hold an ACTIVE goal's lease? The lease is
+ *  goals.metadata.agentOwnerId (the field the goal holder respawner writes). Not scoped by
+ *  workspace: owner ids are globally unique, and a goal may live in a different workspace
+ *  from the holder's loop routine. */
+export async function defaultOwnerStewardsActiveGoal(input: { ownerId: string; sql?: Sql }): Promise<boolean | null> {
+  const db = input.sql ?? getOrgPg().sql;
+  const rows = await db<{ held: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1
+        FROM harness_shared.goals
+       WHERE status = 'active'
+         AND metadata->>'agentOwnerId' = ${input.ownerId}
+    ) AS held
+  `;
+  const held = rows[0]?.held;
+  return typeof held === 'boolean' ? held : null;
 }
 
 /**
@@ -1159,11 +1196,19 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         workspaceId: input.workspaceId,
         sql: input.sql,
       }).catch(() => null);
+      // WI-10005778: a goal holder's stewardship loop is standing work no await gates.
+      // Read lazily (only when the decision would still suppress) and fail-soft.
+      const readStewardship = deps.ownerStewardsActiveGoal ?? defaultOwnerStewardsActiveGoal;
+      const ownerStewardsActiveGoal = await readStewardship({
+        ownerId: input.targetOwnerId,
+        sql: input.sql,
+      }).catch(() => null);
       decision = decideLoopAwaitSuppression({
         awaits: blockingAwaits,
         nowMs,
         lastDeliveredAtMs,
         actionableHeldItemCount,
+        ownerStewardsActiveGoal,
       });
     }
     if (decision.suppress) {
