@@ -1,4 +1,42 @@
 {
+  "observedInboxAcceptance": {
+    "workItem": "WI-10005825",
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-observed-pair-r1-qualification-2026-10-03.json",
+      "bytes": 11068,
+      "sha256": "2366ca36b2038ff2752adc43c4d7ee3e8d075c479c76a030b5f1831984a2b4c7"
+    },
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-observed-pair-r1-2026-10-03.json",
+      "bytes": 174994,
+      "sha256": "a58a80a6b1aa8f54f3f1e81a4b15acd1868866e94f0156d4fc39f0b49ed729a2"
+    },
+    "testRuns": [
+      20635247,
+      20635269,
+      20635291
+    ],
+    "observedPairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "pssGrowthDifferenceBytes": 188961792,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 243861720
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "pssGrowthDifferenceBytes": 46391296,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 223179064
+      }
+    ],
+    "status": "Verified scoped current-source private resource/functionality comparison with eight-client overlap in every window; full parent acceptance remains open.",
+    "scope": "Order-reversed arms, exact raw contents and response outcomes, graceful private cleanup. Cumulative allocation is not retained/native allocation; no production/historical saving or full executed graph claim.",
+    "preservesPriorCensus": {
+      "bytes": 41967,
+      "sha256": "4fc8fc8aef485d484b1c80d98455f7e8bc9c2c19540fccfb3c37600dd1cef109"
+    }
+  },
   "forwardBaseline": {
     "workItem": "WI-10005816",
     "qualification": {
