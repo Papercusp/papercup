@@ -437,3 +437,52 @@ describe('terminal window liveness, end to end through the scan', () => {
     expect(p.scope).toBe('exempt');
   });
 });
+
+// WI-10005782: the foreign display filter used to make an enrolled UNCONFINED task
+// invisible to the reconciler. A wake executor's `claude -p --resume` turn lives
+// in the operator's service cgroup and its argv carries no repo path.
+describe('scanProcesses — identities the foreign pass read but did not list', () => {
+  const REPO = '/srv/ws/papercusp';
+  const SERVICE = `${MGR}/app.slice/papercup-dev-api.service`;
+  const headlessArgv = 'claude --settings x --resume 354371bb -p --dangerously-skip-permissions';
+
+  it('keeps an unlisted process out of the pane but records its pid → identity', () => {
+    const fs = box({
+      cgroups: { [SERVICE]: [810, 811] },
+      cmdlines: { 810: headlessArgv, 811: `node ${REPO}/bin/hono-host.mjs` },
+    });
+    const r = scanProcesses({ fs, foreignSignature: defaultForeignSignature(REPO), selfPid: 999 });
+    // Visibility is unchanged: the repo-less argv is still not displayed …
+    expect(r.processes.map((p) => p.pid)).toEqual([811]);
+    // … but the kernel fact survives for the reconciler.
+    expect(r.unlistedIdentityByPid.get(810)).toBe('linux:BOOTID:1810');
+    // A LISTED process is never duplicated into the unlisted map.
+    expect(r.unlistedIdentityByPid.has(811)).toBe(false);
+  });
+
+  it('records nothing for an owned-slice process or our own pid', () => {
+    const fs = box({
+      cgroups: { [`${OURS}/pc-aaa111.scope`]: [10], [SERVICE]: [999] },
+      cmdlines: { 10: headlessArgv, 999: headlessArgv },
+    });
+    const r = scanProcesses({ fs, foreignSignature: defaultForeignSignature(REPO), selfPid: 999 });
+    expect([...r.unlistedIdentityByPid.keys()]).toEqual([]);
+    expect(r.processes.map((p) => p.pid)).toEqual([10]);
+  });
+
+  it('the async scanner reports the same map as the sync one', async () => {
+    const fs = box({
+      cgroups: { [SERVICE]: [810, 811] },
+      cmdlines: { 810: headlessArgv, 811: `node ${REPO}/bin/hono-host.mjs` },
+    });
+    const opts = { selfPid: 999, foreignSignature: defaultForeignSignature(REPO), cgroupRoot: ROOT };
+    const asyncFs = {
+      readFile: async (path: string) => fs.readFile(path),
+      readDir: async (path: string) => fs.readDir(path),
+      isDir: async (path: string) => fs.isDir(path),
+    };
+    const actual = await scanProcessesAsync({ ...opts, asyncFs });
+    expect(actual.unlistedIdentityByPid.get(810)).toBe('linux:BOOTID:1810');
+    expect(actual.unlistedIdentityByPid).toEqual(scanProcesses({ ...opts, fs }).unlistedIdentityByPid);
+  });
+});

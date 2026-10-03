@@ -401,18 +401,21 @@ export async function defaultCountActionableHeldItems(input: {
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
 }
 
-/** WI-10005778 default resolver: does the owner hold an ACTIVE goal's lease? The lease is
- *  goals.metadata.agentOwnerId (the field the goal holder respawner writes). Not scoped by
- *  workspace: owner ids are globally unique, and a goal may live in a different workspace
- *  from the holder's loop routine. */
+/** WI-10005778 default resolver: does the owner hold an ACTIVE goal's lease? The lease is the
+ *  owner's `goal` mode row in agent_modes (subject = goal id, goal_lease_epoch). NOT
+ *  goals.metadata.agentOwnerId: measured 2026-10-03, that field still named a predecessor
+ *  6h after epoch 18 elected su-9e72a11f. Not scoped by workspace: owner ids are globally
+ *  unique, and a goal may live in a different workspace from the holder's loop routine. */
 export async function defaultOwnerStewardsActiveGoal(input: { ownerId: string; sql?: Sql }): Promise<boolean | null> {
   const db = input.sql ?? getOrgPg().sql;
   const rows = await db<{ held: boolean }[]>`
     SELECT EXISTS (
       SELECT 1
-        FROM harness_shared.goals
-       WHERE status = 'active'
-         AND metadata->>'agentOwnerId' = ${input.ownerId}
+        FROM harness_shared.agent_modes am
+        JOIN harness_shared.goals g ON g.id = am.subject
+       WHERE am.owner_id = ${input.ownerId}
+         AND am.mode = 'goal'
+         AND g.status = 'active'
     ) AS held
   `;
   const held = rows[0]?.held;
