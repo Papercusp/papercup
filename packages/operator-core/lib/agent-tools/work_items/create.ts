@@ -49,6 +49,7 @@ import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
 import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from './drain-flow';
+import { workItemsCreateAbortCompletionReceipt } from './create-abort-completion';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveGoalContext } from '../../modes/goal-context';
@@ -260,6 +261,10 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'work_items:create',
   profile: 'engineer',
+  // WI-10005718: a create that outruns the 60s dispatch budget has ALREADY inserted the
+  // row; the receipt makes dispatch return that late envelope (id + downgrade notices)
+  // instead of a bare `timeout` that invites a duplicate-filing retry.
+  abortCompletionReceipt: workItemsCreateAbortCompletionReceipt,
   description:
     "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue; chunk is retired (rejected). If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
   guidance: {
