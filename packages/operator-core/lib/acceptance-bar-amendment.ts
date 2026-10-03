@@ -511,7 +511,7 @@ export async function synchronizeAcceptanceBarRevision(
           expectedRevision: 0,
           planItemId,
           behavior: acceptanceBarProjectedBehavior(criterion),
-          behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
+          behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers, criterion.check),
           requiredEvidence: [criterion.evidencePlane],
           ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
           lifecycleStatus: 'draft',
@@ -689,9 +689,13 @@ export async function synchronizeAcceptanceBarRevision(
       planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
       behavior: preserveRefinements ? clause.behavior : acceptanceBarProjectedBehavior(criterion),
-      behaviorClass: preserveRefinements
+      // Recompute neutral classes from the effective proof contract, including
+      // approved check/layer changes and old incorrectly automated manual rows.
+      // Authored risk refinements and mutation obligations remain stronger.
+      behaviorClass: preserveRefinements && !['happy-path', 'non-automated'].includes(clause.behavior_class)
         ? clause.behavior_class
-        : acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
+        : clause.mutation_required ? 'happy-path'
+          : acceptanceBarBehaviorClass(criterion.evidencePlane, requiredTestLayers, criterion.check),
       requiredEvidence: preserveRefinements ? clause.required_evidence
         : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
       requiredTestLayers, mutationRequired: clause.mutation_required,
