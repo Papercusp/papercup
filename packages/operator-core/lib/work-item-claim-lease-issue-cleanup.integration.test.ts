@@ -91,6 +91,14 @@ const ROUTINES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.routines (
     id text PRIMARY KEY, target_owner_id text,
     reschedule_interval_sec integer, active boolean NOT NULL DEFAULT true)`;
+// WI-10005928: reclaimStaleIssueClaims' unknown-holder fallback carries WI-10005136's
+// federated sign-of-life subquery over harness_shared.work_items, so this fixture failed
+// with "relation harness_shared.work_items does not exist" (the same stranded-fixture class
+// as the two DDLs above). Minimal projection of exactly the columns that subquery reads.
+const WORK_ITEMS_SIGN_OF_LIFE_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.work_items (
+    workspace_id text NOT NULL, feature_id text NOT NULL, taken_by text, terminal_owner text,
+    taken_at timestamptz, updated_ts bigint, PRIMARY KEY (workspace_id, feature_id))`;
 
 const CLAIM_NEXT_INTENT = 'work-stealing claim (claim_next)';
 
@@ -108,6 +116,7 @@ beforeAll(async () => {
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(ROUTINES_DDL);
+  await sql.unsafe(WORK_ITEMS_SIGN_OF_LIFE_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -116,7 +125,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.engineer_issues, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.routines`;
+  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.engineer_issues, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.routines, harness_shared.work_items`;
   await setLeaseFlag(true);
 });
 afterEach(async () => {
