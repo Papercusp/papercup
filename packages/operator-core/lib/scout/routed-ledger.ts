@@ -41,6 +41,7 @@ import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
 import { trackDetached } from '../detached-imports';
 import type { PortfolioOutcomeCandidate } from './portfolio-frontier';
+import { recordProducerObservation, withProducerLifecycleWrite } from '../experiment/producer-lifecycle-store';
 
 /**
  * Routing-only provenance used by the agent-review lifecycle. It is deliberately
@@ -279,6 +280,7 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   // P-005 (D-009): the origin dimension. Default 'scout' so every existing caller (which
   // passes no origin) lands a Scout-origin row exactly as before.
   const origin = input.origin ?? 'scout';
+  await withProducerLifecycleWrite(sql, async (sql) => {
   await sql`
     INSERT INTO harness_shared.scout_routed_ideas
       (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id, lens, rail,
@@ -315,6 +317,10 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       model_spec = COALESCE(EXCLUDED.model_spec, scout_routed_ideas.model_spec),
       model_config = COALESCE(EXCLUDED.model_config, scout_routed_ideas.model_config)
     WHERE ${!input.preserveExisting}`;
+  if (origin === 'scout') {
+    await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceId: input.ideaId });
+  }
+  });
   // Push the Learning tab's Scout view (learning.scout reads this ledger).
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
   // statically depends on the SSE layer; a missing SSE bus is a no-op.

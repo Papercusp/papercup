@@ -9,6 +9,7 @@
  * JS Date params (agent-insights/db-org-client-rejects-js-date-params).
  */
 import type { Sql } from 'postgres';
+import { recordProducerObservation, withProducerLifecycleWrite } from '../experiment/producer-lifecycle-store';
 import { resolveLearningPotSlug } from '../learning/pot-scope';
 import type { SignalOrigin } from '../harness/improvements/provenance';
 import type { GateTransition } from './gate';
@@ -83,6 +84,7 @@ export async function admitTransferLesson(sql: Sql, q: AdmitLessonInput): Promis
     potSlug: q.potSlug ?? null,
     harnessSlug: q.harnessSlug ?? null,
   });
+  return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = (await sql`
     INSERT INTO harness_shared.transfer_lessons
       (workspace_id, signature, title, lesson_text, source_kind, source_ref, pack_candidate_id, pot_slug)
@@ -90,9 +92,14 @@ export async function admitTransferLesson(sql: Sql, q: AdmitLessonInput): Promis
       ${q.sourceKind ?? 'transcript'}, ${q.sourceRef ?? null}, ${q.packCandidateId ?? null}, ${potSlug})
     ON CONFLICT ON CONSTRAINT transfer_lessons_signature_uniq DO NOTHING
     RETURNING *`) as Row[];
-  if (rows.length > 0) return { admitted: true, lesson: mapLesson(rows[0]) };
+  if (rows.length > 0) {
+    const lesson = mapLesson(rows[0]);
+    await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: lesson.id });
+    return { admitted: true, lesson };
+  }
   const existing = await getLessonBySignature(sql, { workspaceId: q.workspaceId, signature: q.signature });
   return { admitted: false, reason: 'duplicate-signature', lesson: existing };
+  });
 }
 
 export async function getTransferLesson(
@@ -156,6 +163,7 @@ export async function recordTransferOutcome(
     delta: number;
   },
 ): Promise<TransferLesson | null> {
+  return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = (await sql`
     UPDATE harness_shared.transfer_lessons
        SET tier = ${q.transition.tier}, status = ${q.transition.status},
@@ -165,7 +173,9 @@ export async function recordTransferOutcome(
            updated_at = now()
      WHERE workspace_id = ${q.workspaceId} AND id = ${q.id}
      RETURNING *`) as Row[];
+  if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id });
   return rows.length ? mapLesson(rows[0]) : null;
+  });
 }
 
 /** An un-scored test (battery threw): recorded, never silently dropped. */
