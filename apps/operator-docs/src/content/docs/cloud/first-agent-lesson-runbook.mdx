@@ -22,6 +22,7 @@ documents:
   - "apps/operator/lib/onboarding/cloud-tutorial-analytics.ts"
 plans:
   - "cloud-app-live-tutorial-2026-10-01"
+  - "cloud-portal-novice-independence-2026-10-03"
 ---
 
 The Cloud lesson is **Get your first agent running**, version 1 (`first-cloud-agent`). Open the hosted app's Cloud view. **Help → Get your first agent running** starts or replays it. The guide stays beside the real controls; **Show me** navigates to and focuses the current control. You explicitly connect, provision, launch and send the sample task.
@@ -77,3 +78,27 @@ Support should record the visible step/status and the relevant product validatio
 ## Source-to-UI review
 
 Reviewed against `cloud-tutorial-lesson.ts`, the Cloud page/configuration controls, `CloudTutorialCompanion`, `CloudTutorialGuide`, `CloudTutorialSession`, the hosted progress client and `CloudTutorialAssistance`. The existing tutorial pack's Brief/Details format is reused for a hosted-specific entry; the desktop installation tutorial retains its own flow. This documentation describes the current source/UI contract. Hosted artifact and pilot acceptance are separate release checks in plan P-012.
+
+
+## Prepared-workspace beginner lesson (version 2)
+
+Choose the beginner entry in Cloud, select an authorized healthy prepared workspace and review its existing cost. This path does not require provider credentials or machine configuration. When no prepared workspace is available, ask the workspace administrator to prepare one or deliberately choose the advanced bring-your-own-cloud path. The beginner entry never provisions or repairs a workspace for you.
+
+The beginner lesson uses version 2 of the existing first-cloud-agent lesson; the six-step advanced lesson above retains version 1. Saved guide disposition and inspection receipts remain scoped to organization, user, workspace and lesson version. Neither version inherits the other version's completion. After reload, current session and task receipts must be observed again.
+
+1. Review the selected prepared workspace's configuration/cost and wait for its authorized connection to be ready.
+2. Launch a session using the existing recommended interactive defaults; review the selected model and account first.
+3. Explicitly send the supplied meeting notes and ask for an action plan. The agent uses supplied text; the exercise does not authorize tools, files or external actions.
+4. Compare the answer with the notes: verify owners and deadlines and check that missing information is marked unknown. Confirm review only for this session, request and result.
+5. Explicitly request the proposed correction, compare the revision with the original notes and confirm review of that revision.
+6. Write a different goal, provide its context and specify the desired output yourself. The independent-task fields start empty. Submit a read-only task from supplied text, review the correlated answer and describe how you verified it. A canned prompt, unrelated answer or pending/failed request does not complete the exercise.
+
+Teach the work cycle as goal, context, proposal, review, explicit approval when needed, correction and verification. A suggested action is not approval. Pausing, skipping or closing the guide only changes its instructions; use the session stop control to stop an agent, and the workspace Stop control to stop compute, then verify the resulting status. Retained disks may still incur charges, and model usage is billed separately.
+
+Help uses only the public lesson instructions and a bounded recovery category: access required, workspace not ready, request delayed, request failed, control unavailable or unknown. Check the product status/transcript before an explicit retry. Common credential-shaped questions are rejected before the configured AI or speech provider. Keep secrets and private context out of Help and these exercises. Text and real controls remain usable when speech or advisory help fails.
+
+## Version 2 verification and rollback
+
+Use the existing canonical lesson/progress/help/session/Cloud tests and Chromium journey. Required compatibility checks include v1 isolation, tenant/workspace switching, reload/resume, failed and delayed requests, keyboard/focus, axe, reduced motion and speech fallback. Automated fixture results establish behavior; they do not establish novice understanding. Independent acceptance must retain a consenting first-time nontechnical participant's help/coaching record, useful independent-task outcome and explanations of approval, stop controls and cost. Final shipment additionally requires the exact authenticated artifact serving app.papercusp.com; source, staging and browser fixtures alone are insufficient.
+
+The beginner lesson is available by default through its entry. Roll back through the normal green release pipeline to a verified preceding artifact; preserve the version1 progress namespace and advanced lesson. Never repair acceptance by editing stored guide progress or marking tasks successful. Follow-up acceptance is tracked in cloud-portal-novice-independence-2026-10-03; the original tutorial plan remains unchanged.

@@ -21,6 +21,15 @@ const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
 const resolvePlanHarnessSlug = vi.fn();
 
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  listAllProjectedTools: () => [{
+    expose: { mcp: { name: 'acceptance:read' } },
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    capabilities: [], effect: 'read',
+  }],
+}));
+
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
   return {
@@ -87,6 +96,8 @@ import scorecardEmitTool, {
   SCORECARD_TEST_CHECK_TIMEOUT_MS,
 } from './emit';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
+import { continuityProbeRevision } from '../../continuity-probes';
+import { asStructuredObservation } from '../../harness/improvements/observation-types';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
 import type {
   evaluateCriterionCargoChecks,
@@ -382,6 +393,52 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit deterministic criterion checks (P-011)', () => {
+  it.each([
+    { count: 2, failed: 0, accepted: true },
+    { count: 0, failed: 0, accepted: false },
+    { count: 2, failed: 1, accepted: false },
+  ])('persists and reads every ALL child only when populated proof passes: $count/$failed', async ({ count, failed, accepted }) => {
+    const probe = {
+      kind: 'tool' as const, tool: 'acceptance:read', args: {},
+      schemaRevision: continuityProbeRevision('acceptance:read')!,
+    };
+    const all = [
+      { ...probe, expect: { path: '$.count', op: 'eq' as const, value: 2 } },
+      { ...probe, expect: { path: '$.failed', op: 'eq' as const, value: 0 } },
+    ];
+    getRubric.mockResolvedValue({
+      ...CHECKED_RUBRIC,
+      criteria: [CHECKED_RUBRIC.criteria[0], {
+        ...CHECKED_RUBRIC.criteria[1], check: { kind: 'probe', all },
+      }],
+    });
+    const dispatchTool = vi.fn(async () => ({ count, failed }));
+    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { dispatchTool });
+    if (dispatchTool.mock.calls.length !== 2) {
+      throw new Error(`Real ALL probe evaluator was not reached: ${JSON.stringify(result)}`);
+    }
+    expect(result.ok).toBe(accepted);
+    expect(dispatchTool.mock.calls).toEqual([
+      ['acceptance:read', {}], ['acceptance:read', {}],
+    ]);
+    if (!accepted) {
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ checkRefusal: { error: 'probe_contradicted' } });
+      return;
+    }
+    const observation = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+    const expected = {
+      kind: 'probe', verdict: 'pass', status: 'fresh', executed: true,
+      all: [
+        { probe: all[0], observed: 2, verdict: 'pass', executed: true },
+        { probe: all[1], observed: 0, verdict: 'pass', executed: true },
+      ],
+    };
+    expect(observation.checkRuns['det-outcome']).toMatchObject(expected);
+    expect(asStructuredObservation(observation)?.checkRuns?.['det-outcome']).toEqual(observation.checkRuns['det-outcome']);
+    expect(result).toMatchObject({ checkRuns: { 'det-outcome': expected } });
+  });
+
   it('files a five-file card through the real evaluator and request-bound recovery seam', async () => {
     const checkFiles = [
       'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts',

@@ -99,6 +99,14 @@ vi.mock('./interest-auto-arm', async (orig) => ({
   ...await orig<typeof import('./interest-auto-arm')>(),
   reconcileInterestEventAwaits: async () => undefined, retireInterestEventAwaits: async () => undefined,
 }));
+// The canonical claim handler adds an advisory source-citation hint by grepping
+// the live repository. Keep this fresh-PG recovery test independent of that
+// mutable-tree read and its spawner-sidecar process; source-citation behavior is
+// covered by source-citation-claim-port.test.ts with an injected searcher.
+vi.mock('./source-citation-claim-port', () => ({
+  getClaimTimeSourceCitation: vi.fn(async () => null),
+  sourceCitationWarning: vi.fn(() => null),
+}));
 
 const wi = await import('./work-items');
 const { authorizeAdmissionRecovery, requestAdmissionRecovery } = await import('./work-item-admission-recovery');
