@@ -11,6 +11,7 @@ import {
   classifyColdRest429,
   classifyProxyHandlerError,
   effectivePriorityLabel,
+  EFFORT_CLAMPED_HEADER,
   MODEL_DOWNGRADED_HEADER,
   ACCOUNT_HEADER,
   OWNER_HEADER,
@@ -1326,6 +1327,151 @@ test('LAST-RESORT opus→sonnet downgrade when opus is walled pool-wide on every
 
   const s = (await (await ask('/stats')).json()) as { opusToSonnetDowngrades: number };
   assert.equal(s.opusToSonnetDowngrades, 1, '/stats records the last-resort downgrade for observability');
+  resetGovernorRegistry();
+});
+
+// ── WI-10005833: unsupported reasoning-effort clamp ──────────────────────────────────────────────
+/** The upstream 400 for an effort level the model refuses — verbatim shape of the real error. */
+const effort400 = (level: string, supported: string) =>
+  JSON.stringify({
+    type: 'error',
+    error: {
+      type: 'invalid_request_error',
+      message: `This model does not support effort level '${level}'. Supported levels: ${supported}.`,
+    },
+  });
+const sentEffort = (raw: string) => (JSON.parse(raw) as { output_config?: { effort?: string } }).output_config?.effort;
+const effortRequest = (effort: string | null) => ({
+  model: 'claude-opus-5-5',
+  max_tokens: 16,
+  ...(effort ? { output_config: { effort } } : {}),
+  messages: [{ role: 'user', content: 'x' }],
+});
+
+test('unsupported effort 400: retried once at the clamped level, then rewritten before sending (WI-10005833)', async () => {
+  resetGovernorRegistry();
+  const sent: Array<string | undefined> = [];
+  const logs: string[] = [];
+  await boot(
+    (_req, res, raw) => {
+      const effort = sentEffort(raw);
+      sent.push(effort);
+      if (effort === 'xhigh') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(effort400('xhigh', 'high, low, max, medium'));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { log: (_level, msg) => logs.push(msg) },
+  );
+
+  const request = effortRequest('xhigh');
+  const first = await post(request);
+  assert.equal(first.status, 200, `the clamped retry succeeds instead of relaying the 400\nLOGS:\n${logs.join('\n')}`);
+  assert.equal(first.headers.get(EFFORT_CLAMPED_HEADER), 'xhigh->max', 'the substitution is visible to the caller');
+  assert.deepEqual(sent, ['xhigh', 'max'], 'exactly one retry, at the nearest supported level above xhigh');
+  const forwarded = JSON.parse(upstream.last.body) as typeof request & { output_config: { effort: string } };
+  assert.equal(forwarded.output_config.effort, 'max');
+  assert.deepEqual(forwarded.messages, request.messages, 'nothing but the effort was rewritten');
+
+  const second = await post(request);
+  assert.equal(second.status, 200);
+  assert.deepEqual(sent, ['xhigh', 'max', 'max'], 'the learned clamp is applied before sending: no second 400');
+  assert.equal(second.headers.get(EFFORT_CLAMPED_HEADER), 'xhigh->max');
+
+  const s = (await (await ask('/stats')).json()) as {
+    effortClamps: { retries: number; rewrites: number; learned: Array<{ model: string; from: string; to: string }> };
+  };
+  assert.equal(s.effortClamps.retries, 1);
+  assert.equal(s.effortClamps.rewrites, 1);
+  assert.deepEqual(
+    s.effortClamps.learned.map(({ model, from, to }) => ({ model, from, to })),
+    [{ model: 'claude-opus-5-5', from: 'xhigh', to: 'max' }],
+  );
+  resetGovernorRegistry();
+});
+
+test('unsupported effort 400 after the clamped retry is forwarded, never looped on (WI-10005833)', async () => {
+  resetGovernorRegistry();
+  const sent: Array<string | undefined> = [];
+  await boot((_req, res, raw) => {
+    const effort = sentEffort(raw) ?? '';
+    sent.push(effort);
+    res.writeHead(400, { 'content-type': 'application/json' });
+    // A model that (implausibly) refuses every level it is offered.
+    res.end(effort400(effort, effort === 'xhigh' ? 'high, max' : 'low'));
+  });
+  const r = await post(effortRequest('xhigh'));
+  assert.equal(r.status, 400, 'the second refusal reaches the caller');
+  assert.deepEqual(sent, ['xhigh', 'max'], 'at most one clamped retry per request');
+  assert.match(await r.text(), /effort level 'max'/, 'the caller sees the upstream error for the retried level');
+  resetGovernorRegistry();
+});
+
+test.each([
+  {
+    name: 'a 400 that is not about effort',
+    effort: 'xhigh',
+    reply: JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'prompt is too long' } }),
+  },
+  {
+    name: 'an effort 400 for a level the request body does not carry',
+    effort: null,
+    reply: effort400('xhigh', 'high, low, max, medium'),
+  },
+  {
+    name: 'an effort 400 that lists no supported level',
+    effort: 'xhigh',
+    reply: JSON.stringify({
+      type: 'error',
+      error: { type: 'invalid_request_error', message: "This model does not support effort level 'xhigh'." },
+    }),
+  },
+])('$name is forwarded unchanged with no retry (WI-10005833)', async ({ effort, reply }) => {
+  resetGovernorRegistry();
+  let calls = 0;
+  await boot((_req, res) => {
+    calls++;
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(reply);
+  });
+  const r = await post(effortRequest(effort));
+  assert.equal(r.status, 400);
+  assert.equal(calls, 1, 'one upstream call — no clamp retry');
+  assert.equal(r.headers.get(EFFORT_CLAMPED_HEADER), null);
+  assert.equal(await r.text(), reply, 'the upstream body is relayed byte-for-byte');
+  resetGovernorRegistry();
+});
+
+test('an accepted operation policy that pins the effort disables the clamp (WI-10005833)', async () => {
+  resetGovernorRegistry();
+  const sent: Array<string | undefined> = [];
+  upstream = await startUpstream((_req, res, raw) => {
+    sent.push(sentEffort(raw));
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(effort400('xhigh', 'high, low, max, medium'));
+  });
+  gw = createInferenceGateway({
+    pool: createFailoverPool([{ accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} }]),
+    upstreamBase: upstream.base,
+    maxQueueWaitMs: 200,
+    readAcceptedOperationModelPolicy: async () => ({
+      status: 'bound',
+      attestation: null,
+      policy: { mode: 'exact', models: ['claude-opus-5-5:xhigh'], effort: 'xhigh', onUnavailable: 'fail' },
+    }),
+  });
+  port = await gw.listen(0);
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify(effortRequest('xhigh')),
+  });
+  assert.equal(r.status, 400, 'the policy-pinned effort is never substituted');
+  assert.deepEqual(sent, ['xhigh']);
+  assert.equal(r.headers.get(EFFORT_CLAMPED_HEADER), null);
   resetGovernorRegistry();
 });
 
