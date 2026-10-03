@@ -4963,8 +4963,9 @@ async function completeOne(
       `external contents are not hashed. For repo-backed files, if \`filesChanged\` was a scalar/comma-separated ` +
       `string or any entry contains a prose annotation, re-call work_items:complete with an ARRAY of bare ` +
       `repo-relative paths, ` +
-      `for example \`filesChanged: ["path/to/file.ts", "path/to/test.ts"]\`. Otherwise verify the paths on disk ` +
-      `before re-calling. For a workspace-qualified \`.papercusp/apps/<app>/...\` entry with an absolute repair ` +
+      `for example \`filesChanged: ["path/to/file.ts", "path/to/test.ts"]\`. If NO files changed (a ` +
+      `not-a-defect or verification-only close), pass \`filesChanged: []\` — prose is never a path. Otherwise verify ` +
+      `the paths on disk before re-calling. For a workspace-qualified \`.papercusp/apps/<app>/...\` entry with an absolute repair ` +
       `shown above, re-call with an ARRAY containing that absolute filesChanged path instead.`
     : undefined;
 

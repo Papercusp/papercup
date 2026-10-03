@@ -548,7 +548,7 @@ const FilesChangedSchema = z
   .array(z.string().min(1).refine(isPathShapedFilesChangedEntry, { message: FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE }))
   .optional()
   .describe(
-    'Use repo-relative paths for files in managed checkouts. For an out-of-tree deliverable, use its absolute path; work_items:complete records it as outOfRepoArtifact and excludes it from Git blob and settlement checks. External contents are not hashed. Do not use a repo-relative alias for an out-of-tree file because it is indistinguishable from a missing checkout path.',
+    'Use repo-relative paths for files in managed checkouts. For an out-of-tree deliverable, use its absolute path; work_items:complete records it as outOfRepoArtifact and excludes it from Git blob and settlement checks. External contents are not hashed. Do not use a repo-relative alias for an out-of-tree file because it is indistinguishable from a missing checkout path. If NO files changed, pass [].',
   );
 
 /**
