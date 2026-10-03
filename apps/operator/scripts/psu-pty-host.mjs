@@ -8346,6 +8346,16 @@ export function hostThroughPty(o) {
     process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
   }
+  if (adoptedCarryRespawn) {
+    appendHostEvent(ownerId, 'host-code-adoption-child-started', {
+      nativeId: adoptedCarryRespawn.nativeId ?? null,
+      agent: env.PAPERCUSP_AGENT ?? null,
+      kickoffPresent: typeof kickoff === 'string' && kickoff.length > 0,
+      kickoffBytes: typeof kickoff === 'string' ? Buffer.byteLength(kickoff, 'utf8') : 0,
+      argsCount: Array.isArray(liveChildArgs) ? liveChildArgs.length : null,
+      childPid: Number.isInteger(child.pid) ? child.pid : null,
+    });
+  }
   let stopStartupTrace = startCodexStartupProcessTrace({
     agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
   });
@@ -12296,6 +12306,9 @@ export function hostThroughPty(o) {
               launcher: hostCode.launcher ?? null,
               handoffPath,
               nativeId: nativeId ?? null,
+              firstTurnPresent: typeof carryText === 'string' && carryText.length > 0,
+              firstTurnBytes: typeof carryText === 'string' ? Buffer.byteLength(carryText, 'utf8') : 0,
+              handoffArgumentCount: Array.isArray(recycleArgs) ? recycleArgs.length : null,
             });
             // The launcher successor owns the adoption report and the
             // session-compacted event. Do not announce from this predecessor:

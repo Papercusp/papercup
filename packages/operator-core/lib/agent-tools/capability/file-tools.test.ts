@@ -1068,7 +1068,7 @@ describe('capability:write', () => {
 });
 
 describe('capability:edit', () => {
-  it('records server-side attribution for the successful guarded write with its dispatch id', async () => {
+  it('leaves direct capability edits to PostToolUse attribution', async () => {
     editCaptureMocks.useCoordinatedLock = true;
     const f = join(DIR, 'edit-attribution.txt');
     writeFileSync(f, 'old value\n');
@@ -1079,14 +1079,7 @@ describe('capability:edit', () => {
     )) as { content: Array<{ text: string }> };
 
     expect(parse(result).ok).toBe(true);
-    expect(editCaptureMocks.recordEditAttribution).toHaveBeenCalledWith({
-      repoRoot: '/repo',
-      files: ['src/captured.ts'],
-      agentId: 'owner-123',
-      intent: 'capability:edit',
-      workspaceId: 'workspace-1',
-      dispatchCallId: 'dispatch-edit-1',
-    });
+    expect(editCaptureMocks.recordEditAttribution).not.toHaveBeenCalled();
   });
 
   it('records frozen repair hunks for code-mode child edits using the edit dispatch id', async () => {
@@ -1109,6 +1102,14 @@ describe('capability:edit', () => {
     )) as { content: Array<{ text: string }> };
 
     expect(parse(result).ok).toBe(true);
+    expect(editCaptureMocks.recordEditAttribution).toHaveBeenCalledWith({
+      repoRoot: '/repo',
+      files: ['src/captured.ts'],
+      agentId: 'owner-123',
+      intent: 'capability:edit',
+      workspaceId: 'workspace-1',
+      dispatchCallId: 'dispatch-edit-code-mode',
+    });
     expect(dispatchTool).toHaveBeenCalledWith('release:repair-queue', {
       op: 'record-edit',
       path: 'src/captured.ts',
@@ -1139,6 +1140,14 @@ describe('capability:edit', () => {
     )) as { content: Array<{ text: string }> };
 
     expect(parse(result).ok).toBe(true);
+    expect(editCaptureMocks.recordEditAttribution).toHaveBeenCalledWith({
+      repoRoot: '/repo',
+      files: ['src/captured.ts'],
+      agentId: 'owner-123',
+      intent: 'capability:edit',
+      workspaceId: 'workspace-1',
+      dispatchCallId: 'dispatch-edit-indirect',
+    });
     expect(dispatchTool).toHaveBeenCalledWith('release:repair-queue', {
       op: 'record-edit',
       path: 'src/captured.ts',
