@@ -1,4 +1,53 @@
 {
+  "memoryExpansionAdmissionPreparation": {
+    "status": "model-free source, donor ancestry and unchanged-prose prompt audit completed; provider admission remains a separate live prerequisite",
+    "workItem": "WI-10004537",
+    "assessment": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/memory-expansion-admission-v2.json",
+      "sha256": "498ccf1bfef91e6e42a3cf1af6a00ae4675a7d7a5133f9332725c0e46c00d88e",
+      "bytes": 30610
+    },
+    "executionBinding": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/memory-expansion-admission-binding-v1.json",
+      "sha256": "5fdaffe854e6ddddd0cf06019f53eec2c7e01de93b446e7f26ef9701c33c7965",
+      "bytes": 2476
+    },
+    "preparationTask": "0murvotdt1kfebbbmus",
+    "preparationExitCode": 0,
+    "preparationFinishedAt": "2026-10-03T04:14:57.038Z",
+    "retainedReferenceChecks": 1818,
+    "oldMemoryAuthorsExact": 283,
+    "oldProseAuthorsExact": 143,
+    "unchangedProseJudgeCallsExact": 162,
+    "missingMemoryAuthors": 123,
+    "requiredFreshMemoryJudgeCalls": 520,
+    "expandedMemoryQuestionSchedule": 1624,
+    "oldMemoryJudgesReusable": false,
+    "gatewayFlagEnabled": true,
+    "actualTransportLoopback": true,
+    "actualRouteAccountUnpinned": true,
+    "collectorStarted": false,
+    "newIndependentLabelsPresent": false,
+    "modelRequests": 0,
+    "embeddingRequests": 0,
+    "historical429CauseProven": false,
+    "failedPredecessor": {
+      "task": "0murvldbgxw8hamf6uo",
+      "exitCode": 1,
+      "finishedAt": "2026-10-03T04:12:14.832Z",
+      "cause": "Preparation classified absolute historical source paths but missed relative source paths. It refused old judged.ts bytes against the current approved source before generation. The new preparation resolves paths before classifying them; historical pins remain immutable and current source is verified separately."
+    },
+    "poolSnapshot": {
+      "observedAt": "2026-10-03T04:06:54.763Z",
+      "source": "accounts:status and dev:rate_governor_status",
+      "claudeServiceable": 0,
+      "claudeRegistered": 9,
+      "scope": "This is a bounded fresh-reading snapshot, not a permanent capacity conclusion. Seven accounts reported exhausted weekly windows; two reported exhausted short windows despite weekly headroom. No account policy or frozen judge model was changed. Re-read actual provider admission before launching."
+    },
+    "p003Complete": false,
+    "adoptionAuthorized": false,
+    "scope": "This preparation reuses the maintained collector's target selection and parser, verifies completed raw ancestry and every unchanged prose prompt, and derives the missing memory-only schedule. No old collector, label writer, embedding matrix or source-preparation task was replayed. The execution binding distinguishes the pinned base script digest from the deterministically transformed executed program."
+  },
   "expandedVectorPreparation": {
     "status": "canonical additive-vector guards and frozen-runtime document alignment verified; expanded labels and inference still absent",
     "workItem": "WI-10004537",
