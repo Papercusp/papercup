@@ -437,23 +437,17 @@ that's why it is retired for su loops. Each wake's prompt has you **create +
 SELF-ASSIGN** this iteration's `work_items` (`work_items:create { …,
 assign_to:'<your ownerId>' }`) then work them + `set_state`; **`loop:end`** stops
 it — end the loop the moment the goal is done or you are blocked (don't burn empty
-wakes spinning). Arm it as the LAST thing before you end your turn. *(Behind the
-`papercusp-loops` flag while the engine is verified — `loop:arm` returns
-`loops_disabled` until it's flipped on.)* This replaces `/loop` for su/interactive
-loops ONLY — it is **NOT** the autonomous Blender loop, which is a separate
+wakes spinning). Arm it as the LAST thing before you end your turn. This replaces `/loop` for
+su/interactive loops ONLY — it is **NOT** the autonomous Blender loop, which is a separate
 system; never `loop:arm` from an
 autonomous-fleet agent. ⚠ Its mug/cup/kettle half is **RETIRED**: `kettle:declare-wake`
 is deleted and `pot:declare-wake` REFUSES (the `pot/wake` module survives; its verb does not).
 
 **Then CLOSE YOURSELF — `session:end` (WI-6638).** Ending your loop does not end your
 session: the CLI returns to its prompt and sits there, holding a real process and an
-open terminal tab **forever**. Measured 2026-08-03: **52 agent trees from fleets that
-finished days ago — the oldest 14 — holding 14.4 GB**, while the box thrashed at PSI
-memory-full 12.5 against a threshold of 5. No reaper can clear them: an agent's open
-tab is indistinguishable from the owner's, so every layer correctly refuses (su
-sessions are `driveMode:'responsive'`, excluded by the owner-authority ruling
-P-001/D-001, and behind that the window guard spares a live terminal). **Only you can
-end you.** So when your work is genuinely finished and nothing will wake you again —
+open terminal tab **forever** (52 such idle trees once held 14.4 GB). No reaper can
+clear them: an agent's open tab is indistinguishable from the owner's, so every layer
+correctly refuses. **Only you can end you.** So when your work is genuinely finished and nothing will wake you again —
 loop ended, claims completed/released, checkpoint flushed, not parked on an
 `events:await` — call **`session:end { reason }`** as your last act; psu exiting closes
 the tab. It is safe to try: the host REFUSES unless your session was agent-launched

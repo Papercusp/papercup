@@ -8,9 +8,12 @@ import { newTaskId } from '../task-manager/types.ts';
 import { resolveSidecarSpawnPlan } from '../process-supervision/sidecar-spawn-shared.ts';
 import { probeUnixSocketAlive } from '../sidecar-socket/pid-keyed-socket.ts';
 import { LSP_DAEMON_SOCKET_ENV, resolveLspDaemonSocketPath } from './lsp-daemon-socket.ts';
-import type { LspDaemonRequest } from './lsp-daemon-protocol.ts';
+import type { LspDaemonRequest, LspDaemonApplyRequest } from './lsp-daemon-protocol.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 import type { LspAdmissionSnapshot } from './lsp-admission.ts';
+import type { lspRenameWorkspaceEdit } from './lsp-adapter.ts';
+
+type LspRenameResult = Awaited<ReturnType<typeof lspRenameWorkspaceEdit>>;
 
 let starting: Promise<void> | null = null;
 
@@ -69,8 +72,8 @@ async function ensureLspDaemon(): Promise<void> {
 /** One request per socket. A dropped connection cancels its daemon request. */
 async function callLspDaemonFrame<T>(
   socketPath: string,
-  method: 'lsp:query' | 'lsp:admission',
-  params: LspDaemonRequest | { workspaceId: string },
+  method: 'lsp:query' | 'lsp:admission' | 'lsp:rename' | 'lsp:diagnostic-count' | 'lsp:resync',
+  params: LspDaemonRequest | LspDaemonApplyRequest | { workspaceId: string },
   valid: (result: unknown) => result is T,
   timeoutMs: number,
 ): Promise<T> {
@@ -92,7 +95,7 @@ async function callLspDaemonFrame<T>(
     socket.once('connect', () => socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`));
     socket.on('data', (chunk: string) => {
       data += chunk;
-      if (data.length > 8_388_608) { finish(new Error('LSP daemon response exceeded 8 MiB')); return; }
+      if (data.length > 33_554_432) { finish(new Error('LSP daemon response exceeded 32 MiB')); return; }
       const end = data.indexOf('\n');
       if (end < 0) return;
       try {
@@ -125,6 +128,28 @@ export async function readLspDaemonAdmission(workspaceId: string): Promise<LspAd
       Number.isFinite((result as LspAdmissionSnapshot).sampledAtMs) &&
       Array.isArray((result as LspAdmissionSnapshot).classes),
     5_000);
+}
+
+export async function computeLspDaemonRename(request: LspDaemonApplyRequest): Promise<LspRenameResult> {
+  await ensureLspDaemon();
+  return callLspDaemonFrame(resolveLspDaemonSocketPath(), 'lsp:rename', request,
+    (result): result is LspRenameResult => !!result && typeof result === 'object' &&
+      typeof (result as LspRenameResult).ok === 'boolean',
+    Math.max(1, (request.deadlineAtMs ?? Date.now() + 90_000) - Date.now()));
+}
+
+export async function countLspDaemonDiagnostics(request: LspDaemonApplyRequest): Promise<number | null> {
+  await ensureLspDaemon();
+  return callLspDaemonFrame(resolveLspDaemonSocketPath(), 'lsp:diagnostic-count', request,
+    (result): result is number | null => result === null || (Number.isInteger(result) && (result as number) >= 0),
+    Math.max(1, (request.deadlineAtMs ?? Date.now() + 90_000) - Date.now()));
+}
+
+export async function resyncLspDaemonDocument(request: LspDaemonApplyRequest): Promise<boolean> {
+  await ensureLspDaemon();
+  return callLspDaemonFrame(resolveLspDaemonSocketPath(), 'lsp:resync', request,
+    (result): result is boolean => typeof result === 'boolean',
+    Math.max(1, (request.deadlineAtMs ?? Date.now() + 30_000) - Date.now()));
 }
 
 export async function queryLspDaemon(request: LspDaemonRequest): Promise<CodeIntelAnswer> {

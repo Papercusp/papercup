@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
-import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client.ts';
+import { callLspDaemonRpc, computeLspDaemonRename, countLspDaemonDiagnostics, readLspDaemonAdmission, resyncLspDaemonDocument } from './lsp-daemon-client.ts';
 import { runLspDaemonServer } from './lsp-daemon-server.ts';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket.ts';
 import { lspAdmissionController } from './lsp-admission.ts';
@@ -22,6 +22,24 @@ afterEach(async () => {
 });
 
 describe('LSP daemon process boundary', () => {
+  it('routes rename planning, diagnostic reads and resync to the daemon', async () => {
+    process.env[LSP_DAEMON_SOCKET_ENV] = path;
+    const methods: string[] = [];
+    server = runLspDaemonServer(undefined, async (method, request) => {
+      methods.push(method);
+      expect(request).toMatchObject({ workspaceId: 'workspace-a', file: '/fixture/x.ts', rootPath: '/fixture' });
+      if (method === 'lsp:rename') return { ok: true, edit: { changes: {} }, projectRoot: '/fixture', language: 'typescript', completenessProven: false, completenessWarning: 'unproven' };
+      if (method === 'lsp:diagnostic-count') return 2;
+      return true;
+    });
+    await once(server, 'listening');
+    const base = { workspaceId: 'workspace-a', file: '/fixture/x.ts', rootPath: '/fixture' };
+    expect(await computeLspDaemonRename({ ...base, line1: 1, character: 0, newName: 'renamed' })).toMatchObject({ ok: true, projectRoot: '/fixture' });
+    expect(await countLspDaemonDiagnostics(base)).toBe(2);
+    expect(await resyncLspDaemonDocument({ ...base, newText: 'renamed' })).toBe(true);
+    expect(methods).toEqual(['lsp:rename', 'lsp:diagnostic-count', 'lsp:resync']);
+  });
+
   it('reads the daemon-owned admission snapshot through the same socket', async () => {
     process.env[LSP_DAEMON_SOCKET_ENV] = path;
     server = runLspDaemonServer();

@@ -10,6 +10,7 @@ import { lspAdmissionController, runLspAdmission } from './lsp-admission.ts';
 import { lspDaemonFacade } from './lsp-daemon-facade.ts';
 import { languageForFile, resolveProjectRoot, lspRenameWorkspaceEdit, lspDiagnostics, lspResyncDocument } from './lsp-adapter.ts';
 import { isTrustworthyEmpty } from './contracts.ts';
+import { lspDaemonCostKey } from './lsp-daemon-cost-key.ts';
 import { activeWorkspaceId } from '../workspace-registry.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 
@@ -44,7 +45,7 @@ export async function dispatchLspDaemonApply(
   return lspAdmissionController(workspaceId).run({
     workspaceId, requestId, language, projectRoot: project.root, op: method,
     actor: request.actorId, deadlineAtMs: request.deadlineAtMs ?? Date.now() + 90_000,
-    signal, queryKey: file,
+    signal, queryKey: await lspDaemonCostKey(method, request),
   }, task);
 }
 
@@ -67,7 +68,7 @@ export async function dispatchLspDaemonRequest(
     priority: request.priority,
     deadlineAtMs: request.deadlineAtMs ?? Date.now() + 90_000,
     signal,
-    queryKey: request.args.file ?? request.args.name,
+    queryKey: await lspDaemonCostKey(request.op, request.args),
   }, () => lspDaemonFacade(request.op, request.args));
 }
 
@@ -116,6 +117,9 @@ export function runLspDaemonServer(
           continue;
         }
         if (frame.method === 'lsp:rename' || frame.method === 'lsp:diagnostic-count' || frame.method === 'lsp:resync') {
+          if (!frame.params || typeof frame.params !== 'object') {
+            send({ jsonrpc: '2.0', id: frame.id, error: { code: -32602, message: 'LSP apply parameters are required' } }); continue;
+          }
           if (controllers.has(frame.id)) {
             send({ jsonrpc: '2.0', id: frame.id, error: { code: -32600, message: 'Duplicate request id' } }); continue;
           }

@@ -16,6 +16,8 @@ export interface LspAdmissionContext {
   readonly priority?: number;
   readonly deadlineAtMs: number;
   readonly signal?: AbortSignal;
+  /** Caller-facing query label; the cost identity may be hashed and is not display text. */
+  readonly query?: string;
   /** Stable cursor/symbol identity, supplied at the resolved dispatch seam. */
   readonly queryKey?: string;
   /** Evidence-backed cost classification; unknown is never assumed cheap. */
@@ -98,10 +100,11 @@ export class LspAdmissionController {
   readonly #indexHitMaxMs: number;
   readonly #costObservationTtlMs: number;
   readonly #costs = new Map<string, { cost: NonNullable<LspAdmissionContext['symbolCost']>; durationMs: number; observedAtMs: number }>();
-  readonly #settlementFailures = new Map<string, string>();
+  readonly #settlementFailures = new Map<string, { error: string; action: () => Promise<void> }>();
   readonly #lanes = new Map<string, ClassLane>();
   readonly #waiters: Waiter[] = [];
   #probeTimer?: ReturnType<typeof setTimeout>;
+  #settlementTimer?: ReturnType<typeof setTimeout>;
   #sequence = 0;
 
   constructor(options: LspAdmissionOptions) {
@@ -154,11 +157,15 @@ export class LspAdmissionController {
     return context.queryKey ? JSON.stringify([context.language, context.projectRoot, context.op, context.queryKey]) : undefined;
   }
 
-  classify(context: LspAdmissionContext): LspAdmissionContext {
+  #expireCosts(): void {
     const atMs = this.#now();
     for (const [key, observation] of this.#costs) {
       if (atMs - observation.observedAtMs >= this.#costObservationTtlMs) this.#costs.delete(key);
     }
+  }
+
+  classify(context: LspAdmissionContext): LspAdmissionContext {
+    this.#expireCosts();
     const key = this.#costKey(context);
     return { ...context, symbolCost: context.symbolCost ?? (key ? this.#costs.get(key)?.cost : undefined) ?? 'unknown' };
   }
@@ -191,12 +198,35 @@ export class LspAdmissionController {
     try { await action(); this.#settlementFailures.delete(waiter.context.requestId); }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.#settlementFailures.set(waiter.context.requestId, message);
+      this.#settlementFailures.set(waiter.context.requestId, { error: message, action });
+      this.#scheduleSettlementRecovery();
       throw new LspAdmissionError('persistence', `LSP receipt settlement failed: ${message}`);
     }
   }
 
+  #scheduleSettlementRecovery(): void {
+    if (this.#settlementTimer || !this.#settlementFailures.size) return;
+    // Governed receipts permit serialized retries after transport failures. Keep
+    // the exact terminal action until it succeeds, including late cancellations
+    // whose caller has already left; the durable queue remains authoritative.
+    this.#settlementTimer = setTimeout(() => {
+      void Promise.all([...this.#settlementFailures].map(async ([requestId, pending]) => {
+        try {
+          await pending.action();
+          if (this.#settlementFailures.get(requestId) === pending) this.#settlementFailures.delete(requestId);
+        } catch (error) {
+          pending.error = error instanceof Error ? error.message : String(error);
+        }
+      })).finally(() => {
+        this.#settlementTimer = undefined;
+        this.#scheduleSettlementRecovery();
+      });
+    }, 1_000);
+    this.#settlementTimer.unref?.();
+  }
+
   snapshot() {
+    this.#expireCosts();
     const atMs = this.#now();
     const windows = this.#controller.snapshot(atMs);
     const queued = this.#waiters.filter(w => !w.started && !w.abandoned).length;
@@ -205,7 +235,7 @@ export class LspAdmissionController {
       generation: windows.generation, sampledAtMs: atMs,
       assessment: this.#settlementFailures.size ? 'settlement-failed' : queued ? 'pressure' : inFlight ? 'active' : 'idle',
       queued, inFlight,
-      measured: true, settlementFailures: [...this.#settlementFailures].map(([requestId, error]) => ({ requestId, error })),
+      measured: true, settlementFailures: [...this.#settlementFailures].map(([requestId, pending]) => ({ requestId, error: pending.error })),
       costObservations: this.#costs.size,
       classes: windows.classes.map(item => {
         const queued = this.#waiters.filter(waiter => waiter.classKey === item.admissionClass && !waiter.started && !waiter.abandoned);
@@ -252,9 +282,17 @@ export class LspAdmissionController {
         // An ignored cancellation is still running on the wire. Do not release its slot/receipt early.
       };
       const onAbort = () => abandon('cancelled');
-      const timer = setTimeout(() => abandon('deadline'), context.deadlineAtMs - this.#now());
+      let timer: ReturnType<typeof setTimeout>;
+      const scheduleDeadline = () => {
+        const remainingMs = context.deadlineAtMs - this.#now();
+        if (remainingMs <= 0) { abandon('deadline'); return; }
+        // Node truncates delays beyond its signed 32-bit range to 1ms. Chunk
+        // the timer and re-check the absolute deadline instead of expiring early.
+        timer = setTimeout(scheduleDeadline, Math.min(2_147_483_647, Math.max(1, Math.ceil(remainingMs))));
+      };
       waiter.cleanup = () => { clearTimeout(timer); context.signal?.removeEventListener('abort', onAbort); };
       context.signal?.addEventListener('abort', onAbort, { once: true });
+      scheduleDeadline();
       this.#waiters.push(waiter);
       // A synchronous reservation prevents two callers from spending the same class credit.
       this.#drain();
@@ -315,7 +353,7 @@ export class LspAdmissionController {
       .filter(c => c.pauseUntilMs > this.#now() && this.#waiters.some(w => w.classKey === c.admissionClass))
       .map(c => c.pauseUntilMs);
     if (nextProbe.length) {
-      this.#probeTimer = setTimeout(() => this.#drain(), Math.max(1, Math.min(...nextProbe) - this.#now()));
+      this.#probeTimer = setTimeout(() => this.#drain(), Math.min(2_147_483_647, Math.max(1, Math.min(...nextProbe) - this.#now())));
       this.#probeTimer.unref?.();
     }
   }
@@ -386,7 +424,7 @@ export async function runLspAdmission(context: LspAdmissionContext, task: (signa
   try { return await lspAdmissionController(context.workspaceId).run(context, task); }
   catch (error) {
     return {
-      backend: 'lsp-adapter', intent: INTENTS[context.op] ?? 'diagnostics', query: context.queryKey ?? context.op,
+      backend: 'lsp-adapter', intent: INTENTS[context.op] ?? 'diagnostics', query: context.query ?? context.op,
       sites: [], truncation: { truncated: false, totalAvailable: null, continuation: null },
       freshness: { health: 'degraded', indexedAt: null, staleVsDisk: null, indexedCommit: null },
       latencyMs: Date.now() - startedAt,

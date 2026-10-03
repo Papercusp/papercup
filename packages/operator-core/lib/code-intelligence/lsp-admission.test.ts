@@ -100,8 +100,10 @@ describe('LSP class admission', () => {
 
   it('returns an explicit degraded deadline answer rather than a certified empty', async () => {
     const task = vi.fn();
-    const answer = await runLspAdmission(context('expired', { deadlineAtMs: Date.now() - 1 }), task);
+    const answer = await runLspAdmission(context('expired', { deadlineAtMs: Date.now() - 1,
+      query: '/repo/source.ts', queryKey: 'sha256:cost-identity' }), task);
     expect(answer.freshness.health).toBe('degraded'); expect(answer.error).toContain('deadline');
+    expect(answer.query).toBe('/repo/source.ts');
     expect(answer.truncation.totalAvailable).toBeNull(); expect(task).not.toHaveBeenCalled();
   });
 
@@ -167,5 +169,49 @@ describe('LSP class admission', () => {
     const urgent = controller.run(context('urgent', { priority: 5 }), async () => { order.push('urgent'); });
     await flush(); hold.resolve(); await Promise.all([first, batch, urgent]);
     expect(order).toEqual(['batch', 'urgent']);
+  });
+
+  it('honors absolute deadlines beyond the native timer range', async () => {
+    vi.useFakeTimers();
+    const controller = new LspAdmissionController({ enqueue: async () => receipt() });
+    const hold = deferred();
+    const deadlineAtMs = Date.now() + 2_147_483_647 + 100;
+    const first = controller.run(context('long', { deadlineAtMs }), () => hold.promise);
+    const rejected = expect(first).rejects.toMatchObject({ code: 'deadline' });
+    await flush();
+    await vi.advanceTimersByTimeAsync(2_147_483_647);
+    expect(controller.snapshot().classes[0].health).toBeNull();
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+    expect(controller.snapshot().inFlight).toBe(1);
+    hold.resolve(); await flush();
+    expect(controller.snapshot().inFlight).toBe(0);
+  });
+
+  it('expires measured cost metadata during readback even with no new requests', async () => {
+    let now = Date.now();
+    const controller = new LspAdmissionController({ enqueue: async () => receipt(), now: () => now, costObservationTtlMs: 100 });
+    await controller.run(context('cost', { queryKey: 'cursor@revision' }), async () => {});
+    expect(controller.snapshot().costObservations).toBe(1);
+    now += 100;
+    expect(controller.snapshot().costObservations).toBe(0);
+  });
+
+  it('reconciles a failed late cancellation after the receipt store recovers', async () => {
+    vi.useFakeTimers();
+    const saving = deferred<LspAdmissionReceipt>();
+    const controller = new LspAdmissionController({ enqueue: () => saving.promise });
+    const hold = deferred(); const first = controller.run(context('first'), () => hold.promise);
+    const abort = new AbortController();
+    const queued = controller.run(context('queued-recovery', { signal: abort.signal }), async () => {});
+    const rejected = expect(queued).rejects.toMatchObject({ code: 'cancelled' });
+    abort.abort(); await rejected;
+    const cancel = vi.fn().mockRejectedValueOnce(new Error('store unavailable')).mockResolvedValue(undefined);
+    saving.resolve({ ...receipt(), cancel }); await flush();
+    expect(controller.snapshot().assessment).toBe('settlement-failed');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(controller.snapshot().settlementFailures).toEqual([]);
+    hold.resolve(); await first;
   });
 });
