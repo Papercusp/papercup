@@ -1,4 +1,111 @@
 {
+  "nativeLifecycleCapture": {
+    "status": "Bounded retained-runtime lifecycle observation completed; historical heap corruption remains unresolved",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "preparationHistory": "nativeLifecycleTracePreparation is retained as the pre-capture preparation receipt. Its pending-runtime statement is superseded only by this bounded capture.",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-lifecycle-capture-v1",
+      "artifact": "completion.json",
+      "bytes": 22247,
+      "sha256": "37e33cbfa73fc302bbd3c6c50b0b47b99d31b716a764c43595109981eef06e39"
+    },
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-lifecycle-verification-v1",
+      "artifact": "assessment.json",
+      "bytes": 9756,
+      "sha256": "29518bf17a45b9407bfd86d4fc2cfcb75be0a98f1b225fed0e456935a700b829"
+    },
+    "task": "0mus633elxddbmp12g3",
+    "exitCode": 0,
+    "finishedAt": "2026-10-03T09:06:08.621Z",
+    "reuse": "Used the maintained opt-in lifecycle fixture, its canonical evidence reader, the existing governed process bridge and the unchanged retained R6 Node/ORT libraries. No GDB, new allocator interposer, embedding worker, service or admission exception.",
+    "admission": {
+      "receiptId": "RG-03f9faf3-c8b5-480b-ad1c-1b7f8d40b2ec",
+      "exactSerializationVerifiedInEachNativeThread": true,
+      "coreDumpLimitZero": true,
+      "boundedCpuPreconditions": 1,
+      "maximumCudaCells": 2,
+      "stopCondition": "finite cell budget exhausted"
+    },
+    "runtime": {
+      "retainedNodeSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "sourceSha256": "4abceb75ffe45df2457d9982793b883e8a42f3f500c5e8b7693f2d9446fd47c7",
+      "driverSha256": "30c1d62369e6bb0d636d062db1ff908c380beffc7da68dbbaab96f1696e2e385",
+      "sameAllocatorLibrariesAndEnvironmentAsPriorDetectorControls": true,
+      "graphBytes": 130,
+      "embeddingWeightsLoaded": false
+    },
+    "controls": [
+      {
+        "cell": "cpu-lifecycle-precondition",
+        "processId": 3312019,
+        "exitCode": 0,
+        "signal": null,
+        "sessionReleased": true,
+        "workerTerminated": true,
+        "parentSettledMarked": true,
+        "pendingOperations": [],
+        "heapCorruptionMessageObserved": false
+      },
+      {
+        "cell": "cuda-native-lifecycle",
+        "processId": 3314142,
+        "exitCode": 1,
+        "signal": null,
+        "expectedShapeError": true,
+        "sessionReleased": true,
+        "workerTerminated": true,
+        "parentSettledMarked": true,
+        "pendingOperations": [],
+        "heapCorruptionMessageObserved": false
+      },
+      {
+        "cell": "cuda-instrumented-lifecycle",
+        "processId": 3318100,
+        "exitCode": 1,
+        "signal": null,
+        "expectedShapeError": true,
+        "sessionReleased": true,
+        "workerTerminated": true,
+        "parentSettledMarked": true,
+        "pendingOperations": [],
+        "heapCorruptionMessageObserved": false,
+        "actualNativePidSanitizerInjectionObserved": true,
+        "sanitizerApiErrorSummaries": [
+          0
+        ]
+      }
+    ],
+    "verification": {
+      "rawArtifactPinsVerified": 22,
+      "lifecycleResultsRederivedWithMaintainedReader": true,
+      "nativeLibraryInitializationsJoinedToTargetPid": true,
+      "libraryScope": "Both CUDA targets initialize the retained ORT library, binding and CUDA provider; the CPU target initializes the ORT library and binding only. This is not a complete loader-closure claim.",
+      "canonicalTestRunGroup": "24996e63-83c1-4d3a-bf39-f19b450c9e91",
+      "canonicalTestRunIds": [
+        20636334
+      ],
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "testScope": "Retained canonical source-preparation results; those exact source pins remain unchanged. No test matrix was replayed to reconstruct proof.",
+      "scopedCompilerNamedFiles": 2,
+      "scopedCompilerErrors": 0,
+      "historicalAssessmentAndPositiveControlPinsRechecked": 5
+    },
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "limitations": [
+      "These are JavaScript API and awaited lifetime boundaries, not ownership of a native corrupting write, allocation or free.",
+      "The two CUDA shape-error controls exited normally with code 1. Their lack of an abort does not disprove the historical intermittent corruption.",
+      "Debug allocator settings and Compute Sanitizer can change observation; no causal effect of those observers is inferred.",
+      "No large embedding input, full GPU population, old positive pair, debugger batch or clock calibration was replayed."
+    ],
+    "next": "Keep the heap defect open. Inspect the retained native binding and environment-cleanup ownership or prepare a further distinguishing observer/initializer comparison before another native capture. Do not repeat this finite three-cell probe unchanged."
+  },
   "nativeLifecycleTracePreparation": {
     "status": "Opt-in native initializer and teardown lifecycle records qualified in the current CPU test framework; retained-runtime CUDA probe is still pending",
     "workItem": "WI-10005599",
