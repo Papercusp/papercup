@@ -3471,6 +3471,20 @@
       "modelAdoptionAuthorized": false
     }
   },
+  "transportAttemptDiagnosticPreparation": {
+    "status": "transport-detector-repair-verified-historical-cause-open",
+    "assessment": {
+      "path": "docs/evidence/mdenseon-collector-transport-diagnostics-2026-10-03.json",
+      "sha256": "0a01040455e0479ecd8936197159a538cb4db4eff3b1f8f00009d022b920b921",
+      "bytes": 7011
+    },
+    "scope": "Actual SDK HTTP sends and sanitized response metadata are retained through the existing LLM call seam, including failed calls and SDK internal retries. Five conventional suites and scoped typechecking pass. Local current-build preparation; historical 429 cause and final cohort remain open.",
+    "modelRequests": 0,
+    "newCollectorStarted": false,
+    "historicalFailedEndpointProven": false,
+    "historical429Fixed": false,
+    "p003Complete": false
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
