@@ -10,7 +10,16 @@ import { getLearningLoop, listLearningSpendEvents, listLearningSpendReservations
 import { LEARNING_GOVERNOR_BUDGET_FLOOR_USD } from '../learning-governor/core';
 
 let db: OrgTestDb;
-beforeAll(async () => { db = await createOrgTestDb(); }, 240_000);
+beforeAll(async () => {
+  db = await createOrgTestDb();
+  const columns = await db.adminSql`
+    SELECT table_name, column_name FROM information_schema.columns
+     WHERE table_schema = 'harness_shared'
+       AND table_name IN ('learning_spend_reservations', 'learning_spend_events', 'replay_runs')`;
+  const names = new Set(columns.map((row) => `${row.table_name}.${row.column_name}`));
+  for (const column of ['learning_spend_reservations.reserved_usd', 'learning_spend_reservations.settled_at',
+    'learning_spend_events.reservation_id', 'replay_runs.status']) expect(names.has(column)).toBe(true);
+}, 240_000);
 afterAll(async () => { await db?.cleanup(); });
 
 const config = (batteryId: string) => ({ batteryId, variants: [REPLAY_BASELINE_VARIANT],
@@ -37,11 +46,17 @@ describe('governed replay durable spend boundary', () => {
     const out = await runGovernedReplay({ workspaceId, config: config(batteryId) },
       { runner, llmCall: judge, now: () => Date.now() }, glue());
     expect(out.result?.outcomes[0].status).toBe('scored');
-    expect(out.reservation).toMatchObject({ status: 'settled', usedUsd: 0.06, signalOrigin: 'replay' });
+    expect(out.reservation).toMatchObject({ status: 'settled', usedUsd: out.result!.totalCostUsd, signalOrigin: 'replay' });
+    expect(out.reservation!.usedUsd).toBeCloseTo(0.06);
     expect(out.reservation?.settledAt).toEqual(expect.any(Number));
     const events = await listLearningSpendEvents(db.adminSql, { workspaceId });
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ runRef: batteryId, reservationId: out.reservation!.id, costUsd: 0.06 });
+    // The public event projection omits reservation_id; inspect the persisted
+    // join rather than asserting a field its mapper does not publish.
+    expect(events[0]).toMatchObject({ runRef: batteryId, costUsd: out.result!.totalCostUsd });
+    const links = await db.adminSql`SELECT reservation_id FROM harness_shared.learning_spend_events
+      WHERE workspace_id = ${workspaceId} AND run_ref = ${batteryId}`;
+    expect(links).toEqual([{ reservation_id: out.reservation!.id }]);
     expect((await getLearningLoop(db.adminSql, { workspaceId, loopId: REPLAY_LOOP_ID }))?.spentUsd).toBeCloseTo(0.06);
     const cells = await db.adminSql`SELECT status FROM harness_shared.replay_runs WHERE workspace_id = ${workspaceId}`;
     expect(cells).toEqual([{ status: 'scored' }]);
@@ -49,11 +64,14 @@ describe('governed replay durable spend boundary', () => {
 
   it('two overlapping batteries reserve within shared headroom despite identical preflight snapshots', async () => {
     const workspaceId = `ws-replay-${randomUUID()}`;
-    await registerReplayLoop(db.adminSql, { workspaceId, budgetUsd: 1 });
+    // Reserve above the real governor floor; each request fits alone and the
+    // pair exceeds the available dollar. No guessed floor can deadlock the test.
+    await registerReplayLoop(db.adminSql, { workspaceId, budgetUsd: 1 + LEARNING_GOVERNOR_BUDGET_FLOOR_USD });
     let started = 0;
     let bothStarted!: () => void;
+    let didNotStart!: (error: Error) => void;
     let release!: () => void;
-    const ready = new Promise<void>((resolve) => { bothStarted = resolve; });
+    const ready = new Promise<void>((resolve, reject) => { bothStarted = resolve; didNotStart = reject; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const runner: ReplayRunner = async (input) => {
       if (++started === 2) bothStarted();
@@ -63,14 +81,19 @@ describe('governed replay durable spend boundary', () => {
     const pending = Promise.all(['a', 'b'].map((batteryId) => runGovernedReplay(
       { workspaceId, config: { ...config(batteryId), maxSpendUsd: 0.8 } },
       { runner, llmCall: judge, now: () => Date.now() }, glue(),
-    )));
+    ).then((out) => {
+      if (started < 2) didNotStart(new Error(`overlap fixture did not start both batteries: ${JSON.stringify(out.verdict)}`));
+      return out;
+    }, (error) => { didNotStart(error); throw error; })));
+    // Observe early rejections even while waiting for both execution hooks.
+    void pending.catch(() => {});
     try {
       await ready;
       const rows = await listLearningSpendReservations(db.adminSql, { workspaceId, status: 'open' });
       expect(rows).toHaveLength(2);
       expect(rows.map((row) => row.runRef).sort()).toEqual(['a', 'b']);
       const reservedUsd = rows.reduce((sum, row) => sum + row.reservedUsd, 0);
-      expect(reservedUsd).toBeCloseTo(1 - LEARNING_GOVERNOR_BUDGET_FLOOR_USD);
+      expect(reservedUsd).toBeCloseTo(1);
       expect(rows.some((row) => row.reservedUsd < row.requestedUsd)).toBe(true);
       expect(await listLearningSpendEvents(db.adminSql, { workspaceId })).toHaveLength(0);
     } finally { release(); }
