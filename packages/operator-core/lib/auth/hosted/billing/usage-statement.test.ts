@@ -17,6 +17,76 @@ function statement(records: readonly HostedUsageRecord[], patch: Partial<Paramet
 }
 
 describe('hosted usage statement projection (collector fixtures, not customer billing)', () => {
+  const periodMs = FEB - JAN;
+  const mid = JAN + periodMs / 2;
+  const midWindow = { asOfMs: mid,
+    source: { complete: true, observedAtMs: mid, maximumAgeMs: 1000, evidenceRef: 'collector:mid-month' } };
+
+  it('forecasts latest known consumption at the elapsed monthly rate without changing billed totals', () => {
+    const result = statement([receipt({ costMicros: 101 }),
+      receipt({ recordId: 'estimate', usageId: 'estimate', costSource: 'estimate', costMicros: 10 }),
+      receipt({ recordId: 'reported', usageId: 'reported', costSource: 'provider-reported', costMicros: 4 }),
+      receipt({ recordId: 'platform', usageId: 'platform', payer: 'platform', costMicros: 900 }),
+      receipt({ recordId: 'direct', usageId: 'direct', payer: 'customer-direct', costMicros: 800 })], midWindow);
+    expect(result.forecast).toEqual({ method: 'linear-elapsed-utc-month', basisMicros: 115,
+      elapsedMs: periodMs / 2, periodMs, projectedConsumptionMicros: 230, provisional: true, unavailableReason: null });
+    expect(result.consumptionBilled.micros).toBe(101); expect(result.settlementEligible).toBe(false);
+    expect(result.platformBilledMicros).toBe(900); expect(result.customerDirectBilledMicros).toBe(800);
+  });
+
+  it('uses the actual census cutoff and rounds projected micros upward exactly', () => {
+    const cutoff = JAN + periodMs * 2 / 3;
+    const result = statement([receipt({ costMicros: 1 })], { asOfMs: cutoff + 500,
+      source: { ...midWindow.source, observedAtMs: cutoff } });
+    expect(result.forecast).toMatchObject({ basisMicros: 1, elapsedMs: periodMs * 2 / 3, projectedConsumptionMicros: 2 });
+  });
+
+  it('does not extrapolate a closed month or count a corrected/replayed bill twice', () => {
+    const first = receipt({ costMicros: 100 });
+    const corrected = receipt({ recordId: 'corrected', revision: 2, observedAtMs: FEB, costMicros: 40 });
+    const result = statement([first, corrected, corrected]);
+    expect(result.forecast).toMatchObject({ basisMicros: 40, elapsedMs: periodMs, projectedConsumptionMicros: 40,
+      provisional: false, unavailableReason: null });
+    expect(result.consumptionBilled.micros).toBe(40);
+  });
+
+  it('keeps a not-yet-complete period provisional even when the read happens just after month end', () => {
+    const result = statement([receipt({ costMicros: 10 })], { asOfMs: FEB + 100,
+      source: { ...midWindow.source, observedAtMs: FEB - 100 } });
+    expect(result.forecast).toMatchObject({ elapsedMs: periodMs - 100, projectedConsumptionMicros: 11,
+      provisional: true, unavailableReason: null });
+  });
+
+  it.each([
+    ['incomplete-source', { ...midWindow.source, complete: false }],
+    ['source-not-current', { ...midWindow.source, observedAtMs: mid - 1001 }],
+    ['source-not-current', { ...midWindow.source, observedAtMs: mid + 1 }],
+  ] as const)('leaves the forecast unknown for %s', (reason, source) => {
+    expect(statement([receipt()], { asOfMs: mid, source }).forecast)
+      .toMatchObject({ basisMicros: null, projectedConsumptionMicros: null, unavailableReason: reason });
+  });
+
+  it('does not turn unpriced work or a receipt newer than its census into a known forecast', () => {
+    expect(statement([receipt({ costSource: 'unpriced', costMicros: null })], midWindow).forecast)
+      .toMatchObject({ projectedConsumptionMicros: null, unavailableReason: 'unpriced-usage' });
+    expect(statement([receipt({ observedAtMs: mid })], { asOfMs: mid,
+      source: { ...midWindow.source, observedAtMs: mid - 1 } }).forecast)
+      .toMatchObject({ projectedConsumptionMicros: null, unavailableReason: 'receipt-newer-than-census' });
+  });
+
+  it('requires elapsed observation time, while a complete zero-usage mid-month remains zero', () => {
+    expect(statement([], { month: '2026-03' }).forecast.unavailableReason).toBe('window-not-started');
+    expect(statement([], { asOfMs: JAN, source: { ...midWindow.source, observedAtMs: JAN } }).forecast)
+      .toMatchObject({ projectedConsumptionMicros: null, unavailableReason: 'no-elapsed-time' });
+    expect(statement([], midWindow).forecast).toMatchObject({ basisMicros: 0, projectedConsumptionMicros: 0, unavailableReason: null });
+  });
+
+  it('leaves an overflowing forecast unknown without losing the supported billed amount', () => {
+    const result = statement([receipt({ costMicros: Number.MAX_SAFE_INTEGER })], midWindow);
+    expect(result.forecast).toMatchObject({ basisMicros: null, projectedConsumptionMicros: null, unavailableReason: 'amount-overflow' });
+    expect(result.consumptionBilled.micros).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
   it('reconciles distinct input/output/cache, retained compute/storage/IP and egress costs exactly', () => {
     const categories = ['inference-input', 'inference-output', 'cache-read', 'cache-write', 'compute', 'persistent-storage', 'external-ip', 'egress'] as const;
     const result = statement(categories.map((category, i) => receipt({ category, recordId: `r-${i}`, usageId: `u-${i}`, costMicros: i + 1 })));

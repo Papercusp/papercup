@@ -52,6 +52,18 @@ export interface HostedUsageStatementLine {
   readonly billedMicros: number;
 }
 
+export interface HostedUsageForecast {
+  readonly method: 'linear-elapsed-utc-month';
+  /** Latest known consumption costs; estimates/reports remain provisional. */
+  readonly basisMicros: number | null;
+  readonly elapsedMs: number;
+  readonly periodMs: number;
+  readonly projectedConsumptionMicros: number | null;
+  readonly provisional: boolean;
+  readonly unavailableReason: 'window-not-started' | 'incomplete-source' | 'source-not-current'
+    | 'receipt-newer-than-census' | 'unpriced-usage' | 'no-elapsed-time' | 'amount-overflow' | null;
+}
+
 export interface HostedUsageStatement {
   readonly scope: HostedUsageScope;
   readonly month: string;
@@ -64,6 +76,8 @@ export interface HostedUsageStatement {
   readonly consumptionBilled: { readonly micros: number; readonly wholeCents: number; readonly roundingMicros: number };
   readonly platformBilledMicros: number;
   readonly customerDirectBilledMicros: number;
+  /** Display projection only: never funding, a reservation bound or a bill. */
+  readonly forecast: HostedUsageForecast;
   readonly history: readonly {
     readonly customerWorkspaceId: string;
     readonly provider: string;
@@ -195,11 +209,30 @@ export function buildHostedUsageStatement(input: {
   const ordered = [...lines].sort(([a], [b]) => a.localeCompare(b)).map(([, line]) => line);
   const total = (payer: CostPayer) => ordered.filter((line) => line.payer === payer).reduce((value, line) => sum(value, line.billedMicros), 0);
   const micros = total('consumption');
+  const periodMs = endMs - startMs;
+  // Extrapolate from the census cutoff, not time for which no source was read.
+  const elapsedMs = Math.max(0, Math.min(asOfMs, source.observedAtMs, endMs) - startMs);
+  let unavailableReason: HostedUsageForecast['unavailableReason'] = null;
+  for (const reason of ['window-not-started', 'incomplete-source', 'source-not-current', 'receipt-newer-than-census', 'unpriced-usage'] as const) {
+    if (gaps.has(reason)) { unavailableReason = reason; break; }
+  }
+  const basis = ordered.filter(line => line.payer === 'consumption').reduce((value, line) =>
+    value + BigInt(line.billedMicros) + BigInt(line.reportedMicros) + BigInt(line.estimatedMicros), 0n);
+  const safeBasis = basis <= BigInt(Number.MAX_SAFE_INTEGER);
+  if (!unavailableReason && elapsedMs === 0) unavailableReason = 'no-elapsed-time';
+  const projected = unavailableReason ? null :
+    (basis * BigInt(periodMs) + BigInt(elapsedMs) - 1n) / BigInt(elapsedMs);
+  if (!unavailableReason && (!safeBasis || projected! > BigInt(Number.MAX_SAFE_INTEGER))) unavailableReason = 'amount-overflow';
+  const forecast: HostedUsageForecast = {
+    method: 'linear-elapsed-utc-month', basisMicros: unavailableReason || !safeBasis ? null : Number(basis),
+    elapsedMs, periodMs, projectedConsumptionMicros: unavailableReason ? null : Number(projected),
+    provisional: elapsedMs < periodMs || gaps.size > 0 || unavailableReason !== null, unavailableReason,
+  };
   return {
     scope: { controlWorkspaceId: scope.controlWorkspaceId, organizationId: scope.organizationId, customerWorkspaceId: scope.customerWorkspaceId },
     month: input.month, currency: 'USD', asOfMs, sourceRef: source.evidenceRef,
     settlementEligible: gaps.size === 0, gaps: [...gaps].sort(), lines: ordered,
     consumptionBilled: { micros, wholeCents: Number(BigInt(micros) / BigInt(MICROS_PER_CENT)), roundingMicros: Number(BigInt(micros) % BigInt(MICROS_PER_CENT)) },
-    platformBilledMicros: total('platform'), customerDirectBilledMicros: total('customer-direct'), history,
+    platformBilledMicros: total('platform'), customerDirectBilledMicros: total('customer-direct'), forecast, history,
   };
 }
