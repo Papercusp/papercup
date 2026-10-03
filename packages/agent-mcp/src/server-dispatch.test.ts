@@ -65,7 +65,7 @@ function makeTool(over: Partial<ToolDefinition> = {}): ToolDefinition {
   handler = vi.fn(async (value: unknown, ctx: { principal: { workspaceId: string }; tx: unknown }) => ({
     data: { echoed: value, ws: ctx.principal.workspaceId, tx: ctx.tx },
   }));
-  return { name: 'test:echo', description: 'echo', capability: 'test:read', tier: 'low', args: z.object({}), handler, ...over };
+  return { name: 'test:echo', description: 'echo', capability: 'test:read', tier: 'low', args: z.object({}), handler: handler as ToolDefinition['handler'], ...over };
 }
 
 beforeEach(() => {
@@ -118,7 +118,7 @@ describe('MCP capability discovery and prompts', () => {
   ])('prompt discovery and rendering respect $label', async ({ capabilities, allowed }) => {
     vi.mocked(resolveBearer).mockResolvedValue({ ...principalA, capabilities: new Set(capabilities) });
     const render = vi.fn(async () => ({ messages: [] }));
-    const prompt = { name: 'test:prompt', description: 'test', capability: 'test:read', render };
+    const prompt = { name: 'test:prompt', description: 'test', capability: 'test:read', tier: 'low' as const, render };
     vi.mocked(getPromptCatalog).mockReturnValue([prompt]);
     vi.mocked(lookupPrompt).mockReturnValue(prompt);
     expect(await listPrompts('b')).toMatchObject({ ok: true, prompts: allowed ? [{ name: 'test:prompt' }] : [] });
@@ -141,7 +141,7 @@ describe('MCP capability discovery and prompts', () => {
       allowedTools: new Set(['test:echo']),
     });
     const render = vi.fn();
-    const prompt = { name: 'test:prompt', description: 'test', capability: 'test:read', render };
+    const prompt = { name: 'test:prompt', description: 'test', capability: 'test:read', tier: 'low' as const, render };
     vi.mocked(getPromptCatalog).mockReturnValue([prompt]);
     vi.mocked(lookupPrompt).mockReturnValue(prompt);
     expect(await listPrompts('b')).toEqual({ ok: true, prompts: [] });

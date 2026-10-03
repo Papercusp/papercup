@@ -150,7 +150,7 @@ describe('readResource scratch references', () => {
       ...principal(),
       allowedTools: new Set(['tasks:list']),
     });
-    vi.mocked(lookupPrompt).mockReturnValue({ name: 'agent:role', description: 'role', render: vi.fn() });
+    vi.mocked(lookupPrompt).mockReturnValue({ name: 'agent:role', description: 'role', tier: 'low', render: vi.fn() });
 
     expect(await listPrompts('scoped-bearer')).toEqual({ ok: true, prompts: [] });
     expect(await getPrompt({ name: 'agent:role', args: {}, bearer: 'scoped-bearer' }))
