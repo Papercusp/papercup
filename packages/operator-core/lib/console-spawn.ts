@@ -623,16 +623,21 @@ export function buildConsoleOneliner(
 function greetingWithBootDiagnostics(command: string, receiptPath?: string | null): string {
   const greeting = `(eval ${shellEscape(command)})`;
   if (!receiptPath) return greeting;
-  const mirror =
-    `tee >(umask 077; tail -c 16384 >> ${shellEscape(receiptPath)} || cat >/dev/null) >&2; ` +
-    `wait "$!" 2>/dev/null || true`;
-  return [
-    `${greeting} 2> >(${mirror})`,
-    '__papercusp_boot_rc=$?',
+  // Open both consumers in this supervising shell. A process substitution on
+  // the greeting subshell belongs to that subshell, so the parent's $! cannot
+  // wait for it; a nested tail can then append after the failure banner.
+  return '(' + [
+    `exec 3> >(umask 077; tail -c 16384 >> ${shellEscape(receiptPath)} || cat >/dev/null)`,
+    '__papercusp_boot_tail=$!',
+    'exec 4> >(tee /dev/fd/3 >&2)',
     '__papercusp_boot_tee=$!',
+    `${greeting} 2>&4 3>&- 4>&-`,
+    '__papercusp_boot_rc=$?',
+    'exec 4>&- 3>&-',
     'wait "$__papercusp_boot_tee" 2>/dev/null || true',
+    'wait "$__papercusp_boot_tail" 2>/dev/null || true',
     '(exit "$__papercusp_boot_rc")',
-  ].join('; ');
+  ].join('; ') + ')';
 }
 
 function runCommandAndExit(command: string, opts?: { receiptPath?: string | null }): string {
