@@ -190,6 +190,58 @@ function auditSavedInboxPair(report: any) {
     actualConcurrency: 'unmeasured: per-request start/end timestamps absent', productionSavings: 'unmeasured' };
 }
 
+// Client intervals establish requests in flight, not parallel server execution.
+// Derive overlap from raw monotonic timestamps, never Promise.all or a headline.
+function auditInboxOverlap(cohort: any) {
+  const check = (condition: unknown, reason: string) => {
+    if (!condition) throw Error('P011 inbox overlap: ' + reason);
+  };
+  const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  check(cohort.pid === cohort.identity.pid && /^\d+$/.test(cohort.identity.startTicks), 'target identity');
+  check(cohort.windows.length === 3, 'window population');
+  let previousEnd = 0;
+  return cohort.windows.map((window: any, w: number) => {
+    check(window.window === w && finite(window.startedAtMs) && finite(window.endedAtMs) &&
+      window.startedAtMs >= previousEnd && window.endedAtMs > window.startedAtMs, 'window ordering');
+    check(window.requests.length === 8 && new Set(window.requests.map((q: any) => q.variant)).size === 8 &&
+      window.requests.every((q: any) => Number.isInteger(q.variant) && q.variant >= 0 && q.variant < 8), 'variant population');
+    for (const q of window.requests) {
+      check(q.pid === cohort.pid && q.startTicks === cohort.identity.startTicks, 'request identity');
+      check(finite(q.startedAtMs) && finite(q.endedAtMs) && q.endedAtMs > q.startedAtMs &&
+        q.startedAtMs >= window.startedAtMs && q.endedAtMs <= window.endedAtMs, 'request interval');
+    }
+    const overlapStartMs = Math.max(...window.requests.map((q: any) => q.startedAtMs));
+    const overlapEndMs = Math.min(...window.requests.map((q: any) => q.endedAtMs));
+    check(overlapEndMs > overlapStartMs, 'eight requests must actually overlap');
+    previousEnd = window.endedAtMs;
+    return { window: w, requestsInFlight: 8, overlapMs: overlapEndMs - overlapStartMs };
+  });
+}
+
+function auditObservedInboxPair(report: any) {
+  if (report.schemaVersion !== 2 || report.cohorts.length !== 4 ||
+      report.cohorts.map((c: any) => c.mode).join(',') !== 'baseline,shared,shared,baseline' ||
+      report.cohorts.some((c: any, i: number) => c.arm !== i) ||
+      new Set(report.cohorts.map((c: any) => c.pid + ':' + c.identity.startTicks)).size !== 4)
+    throw Error('P011 inbox acceptance: order-reversed independent arms');
+  const overlap = report.cohorts.map(auditInboxOverlap);
+  if (report.cohorts.some((c: any) => c.forcedCleanup !== false))
+    throw Error('P011 inbox acceptance: graceful cleanup required');
+  for (const [a, b] of [[0, 3], [1, 2]]) {
+    if (report.cohorts[a].bundleSha256 !== report.cohorts[b].bundleSha256)
+      throw Error('P011 inbox acceptance: within-mode artifact drift');
+  }
+  // The existing oracle regenerates useful input and verifies PID-bound PSS,
+  // cumulative allocation, cache ownership, complete bodies, outcomes and exit.
+  const pairs = [[0, 1], [3, 2]].map(([baselineArm, candidateArm]) => ({
+    baselineArm, candidateArm,
+    ...auditSavedInboxPair({ ...report, cohorts: [report.cohorts[baselineArm], report.cohorts[candidateArm]] }),
+    actualConcurrency: 'Eight client requests in flight; server execution parallelism unmeasured',
+  }));
+  return { pairs, overlap, allocationDefinition: 'Cumulative V8 allocation, not unique retained or native bytes',
+    productionSavings: 'unmeasured', historicalRecovery: 'unmeasured' };
+}
+
 function auditSavedExpiryPair(report: any) {
   const check = (condition: unknown, reason: string) => {
     if (!condition) throw Error('P011 expiry acceptance: ' + reason);
@@ -849,7 +901,49 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     expect(inboxPairEntries({ cache })).toEqual([]);
   });
 
-  it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT))('compares same-input full inbox keys on independent private HTTP hosts', async () => {
+  describe('P-011 observed inbox overlap guards', () => {
+    const fixture = () => ({ pid: 7, identity: { pid: 7, startTicks: '11' },
+      windows: Array.from({ length: 3 }, (_, window) => ({ window,
+        startedAtMs: window * 100, endedAtMs: window * 100 + 50,
+        requests: Array.from({ length: 8 }, (_, variant) => ({ variant, pid: 7, startTicks: '11',
+          startedAtMs: window * 100 + variant + 1, endedAtMs: window * 100 + variant + 20 })) })) });
+    it('derives eight in-flight requests from intervals without trusting concurrency labels', () => {
+      const raw = { ...fixture(), concurrency: 1, summary: { concurrency: 1000 } };
+      expect(auditInboxOverlap(raw)).toEqual(Array.from({ length: 3 }, (_, window) =>
+        ({ window, requestsInFlight: 8, overlapMs: 12 })));
+    });
+    it.each([
+      ['sequential requests', 'actually overlap', (r: any) => {
+        r.windows[0].requests.forEach((q: any, i: number) => { q.startedAtMs = i * 4; q.endedAtMs = i * 4 + 3; });
+      }],
+      ['wrong PID', 'request identity', (r: any) => { r.windows[0].requests[0].pid++; }],
+      ['reused PID', 'request identity', (r: any) => { r.windows[0].requests[0].startTicks = '12'; }],
+      ['missing variant', 'variant population', (r: any) => { r.windows[0].requests.pop(); }],
+      ['duplicate variant', 'variant population', (r: any) => { r.windows[0].requests[0].variant = 1; }],
+      ['cross-window interval', 'request interval', (r: any) => { r.windows[0].requests[0].endedAtMs = 101; }],
+      ['reversed interval', 'request interval', (r: any) => { r.windows[0].requests[0].endedAtMs = 0; }],
+      ['nonfinite interval', 'request interval', (r: any) => { r.windows[0].requests[0].startedAtMs = NaN; }],
+      ['overlapping windows', 'window ordering', (r: any) => { r.windows[1].startedAtMs = 1; }],
+    ] as const)('rejects %s', (_name, rejection, change) => {
+      const raw = fixture(); change(raw);
+      expect(() => auditInboxOverlap(raw)).toThrow(rejection);
+    });
+  });
+
+  it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_OBSERVED_REPORT))('audits new order-reversed inbox resources from raw rows', () => {
+    const path = evidenceDestination(process.env.PAPERCUSP_P011_INBOX_OBSERVED_REPORT)!;
+    const report = JSON.parse(readFileSync(path, 'utf8'));
+    const observed = auditObservedInboxPair(report);
+    expect(observed.pairs).toHaveLength(2);
+    expect(observed.overlap.flat()).toHaveLength(12);
+    report.summary = { reduction: 1e12, concurrency: 1000, productionSavings: 'passed' };
+    expect(auditObservedInboxPair(report)).toEqual(observed);
+    const corrupt = structuredClone(report);
+    corrupt.cohorts[0].windows[0].requests[0].endedAtMs = corrupt.cohorts[0].windows[0].requests[0].startedAtMs;
+    expect(() => auditObservedInboxPair(corrupt)).toThrow('request interval');
+  });
+
+  it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT))('compares order-reversed full inbox keys with observed HTTP overlap', async () => {
     const destination = evidenceDestination(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT)!;
     const directory = mkdtempSync(join(tmpdir(), 'papercusp-inbox-pair-'));
     const current = join(directory, 'current/hono-host.mjs');
@@ -877,7 +971,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const inboxPairEntries = ${inboxPairEntries.toString()};
       const e = process.env, wait = ms => new Promise(r => setTimeout(r, ms));
       const hash = value => createHash('sha256').update(value).digest('hex');
-      const report = { schemaVersion: 1, plane: 'isolated-current-build-operator-api', incomplete: true,
+      const report = { schemaVersion: 2, plane: 'isolated-current-build-operator-api', incomplete: true,
         workload: { population: 256, bodyCodeUnits: 32768, variants: 8, windows: 3, idleMs: 1000, concurrency: 8 },
         cohorts: [], limitations: [
           'Independent private request-only hosts; no production worker, background or historical recovery claim.',
@@ -915,9 +1009,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         const variants = Array.from({ length: 8 }, (_, i) => ({ directed: true, limit: i + 1,
           include_ambient: Boolean(i & 1), include_intents: Boolean(i & 2), max_body_chars: 1 }));
         report.variants = variants;
-        for (const mode of ['baseline', 'shared']) {
+        for (const [arm, mode] of ['baseline', 'shared', 'shared', 'baseline'].entries()) {
           const entry = mode === 'baseline' ? e.TEST_BASELINE_PATH : e.TEST_CURRENT_PATH;
-          const cohort = { mode, bundleSha256: hash(fs.readFileSync(entry)), samples: [], windows: [], pauses: 0, descendants: [], reaped: false };
+          const cohort = { arm, mode, bundleSha256: hash(fs.readFileSync(entry)), samples: [], windows: [], pauses: 0,
+            descendants: [], reaped: false, forcedCleanup: false };
           report.cohorts.push(cohort); publish();
           let host, client, startup = '', tail = '';
           const seen = new Map();
@@ -982,13 +1077,22 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             for (let window = 0; window < 3; window++) {
               await sample('idle-' + window + '-start'); await wait(1000); await sample('idle-' + window + '-end');
               const started = performance.now();
-              const results = await Promise.all(variants.map(args => call('coord:inbox', args)));
+              const observed = { window, startedAtMs: started, endedAtMs: null, requests: [], outcomes: [] };
+              cohort.windows.push(observed);
+              const results = await Promise.all(variants.map(async (args, variant) => {
+                const interval = { variant, pid: host.pid, startTicks: cohort.identity.startTicks,
+                  startedAtMs: performance.now(), endedAtMs: null };
+                observed.requests.push(interval);
+                try { return await call('coord:inbox', args); }
+                finally { interval.endedAtMs = performance.now(); }
+              }));
+              observed.endedAtMs = performance.now();
               const outcomes = results.map((value, i) => ({ variant: i,
                 entries: value.entries?.map(row => ({ id: row.msg_id, summary: row.summary })),
                 total: value.summary?.total, returned: value.summary?.returned }));
               if (outcomes.some((v, i) => v.total !== 256 || v.returned !== i + 1 || v.entries?.length !== i + 1))
                 throw Error('Concurrent useful response mismatch: ' + JSON.stringify(outcomes));
-              cohort.windows.push({ window, wallMs: performance.now() - started, outcomes });
+              Object.assign(observed, { wallMs: observed.endedAtMs - started, outcomes });
               await sample('workload-' + window + '-end');
             }
             await wait(1000); await sample('completion-idle');
@@ -1002,9 +1106,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             client?.close();
             if (host && host.exitCode === null && host.signalCode === null) {
               const exited = new Promise(r => host.once('exit', r)); host.kill('SIGTERM'); await Promise.race([exited, wait(5000)]);
-              if (host.exitCode === null && host.signalCode === null) { process.kill(-host.pid, 'SIGKILL'); await exited; }
+              if (host.exitCode === null && host.signalCode === null) {
+                cohort.forcedCleanup = true; process.kill(-host.pid, 'SIGKILL'); await exited;
+              }
             }
-            if (host) { try { process.kill(-host.pid, 'SIGKILL'); } catch (err) { if (err.code !== 'ESRCH') throw err; } }
+            if (host) { try { process.kill(-host.pid, 'SIGKILL'); cohort.forcedCleanup = true;
+              } catch (err) { if (err.code !== 'ESRCH') throw err; } }
             cohort.reaped = Boolean(host && (host.exitCode !== null || host.signalCode !== null));
             cohort.descendants = [...seen.values()];
             cohort.unreaped = cohort.descendants.filter(row => { try { return fields(row.pid)[19] === row.startTicks; } catch { return false; } });
@@ -1045,12 +1152,15 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       report.build = build.log; report.runtimeLog = result.log; report.intervention = restored.intervention;
       writeFileSync(destination, serializeIdentitySafeJson(report));
       expect(result.status, report.error ?? result.stderr).toBe(0);
-      expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(2);
+      expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(4);
       expect(report.sources.before).toEqual(report.sources.after);
       const [control, shared] = report.cohorts;
       expect(control.fixture).toEqual(shared.fixture);
       expect(control.windows.map((w: any) => w.outcomes)).toEqual(shared.windows.map((w: any) => w.outcomes));
       for (const cohort of report.cohorts) {
+        expect(cohort.fixture).toEqual(control.fixture);
+        expect(cohort.windows.map((w: any) => w.outcomes)).toEqual(control.windows.map((w: any) => w.outcomes));
+        expect(auditInboxOverlap(cohort)).toHaveLength(3);
         expect(cohort.reaped).toBe(true); expect(cohort.unreaped).toEqual([]); expect(cohort.pauses).toBe(0);
         expect(cohort.windows).toHaveLength(3); expect(cohort.samples).toHaveLength(11);
         expect(cohort.content).toHaveLength(cohort.mode === 'baseline' ? 8 : 1);
@@ -1059,8 +1169,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           expect(sample.cache.enabled).toBe(true); expect(sample.os.startTicks).toBe(cohort.identity.startTicks);
         }
       }
-      // Report observed physical deltas without equating logical strings to
-      // retained heap or requiring nondeterministic allocator noise to be green.
+      // Independently reject a reduction claim unless both order-reversed pairs
+      // preserve useful output and observe lower PSS and cumulative allocation.
+      report.observedAcceptance = auditObservedInboxPair(report);
+      writeFileSync(destination, serializeIdentitySafeJson(report));
       console.log('P011_INBOX_PAIR_SUMMARY ' + JSON.stringify(report.cohorts.map((c: any) => ({ mode: c.mode,
         pssBytes: c.samples.map((s: any) => s.os.pssBytes), heapUsed: c.samples.map((s: any) => s.memory.heapUsed) }))));
     } catch (error) {
