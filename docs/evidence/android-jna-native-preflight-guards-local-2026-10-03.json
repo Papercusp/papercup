@@ -3,7 +3,7 @@
   "kind": "operational-test-evidence",
   "name": "JNA native consumer preflight and scope recurrence guards",
   "framework": "operational",
-  "command": "make test-android-release-provenance",
+  "command": ["make test-android-release-provenance"],
   "workingDirectory": "papercup-rust-mobile",
   "startedAt": "2026-10-03T10:48:47+00:00",
   "finishedAt": "2026-10-03T10:49:43+00:00",
