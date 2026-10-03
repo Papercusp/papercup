@@ -6,6 +6,7 @@ import type { AdvSessionRow } from '../adv-sessions';
 import type { SessionPortRow } from './store';
 import {
   acquireTrackedClaudeSource,
+  acquireTrackedSessionSource,
   deriveSessionPortIdempotencyKey,
   inspectAcquiredSessionPort,
   prepareInspectedSessionPort,
@@ -245,6 +246,86 @@ describe('tracked Claude source acquisition', () => {
 });
 
 describe('session-port preparation service', () => {
+  it.each((['codex', 'omp'] as const).flatMap((backend) =>
+    (['claude', 'codex', 'omp'] as const).map((targetBackend) => ({ backend, targetBackend }))))(
+    'prepares $backend → $targetBackend with source lineage and content-free durable metadata', async ({ backend, targetBackend }) => {
+      const records = backend === 'codex' ? [
+        { type: 'session_meta', payload: { id: row.sessionId } },
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'exact native history' }] } },
+      ] : [
+        { type: 'session', id: row.sessionId },
+        { type: 'message', id: 'native-evidence', parentId: null, message: { role: 'user', content: 'exact native history' } },
+      ];
+      const bytes = Buffer.from(records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+      const inspection = inspectAcquiredSessionPort({ sourceRow: { ...row, agent: backend },
+        stableSource: { ...source(''), bytes }, target: { ...target, backend: targetBackend } });
+      const artifactRoot = mkdtempSync(join(tmpdir(), 'native-port-prepare-'));
+      const createPrepared = vi.fn(async (input: any): Promise<SessionPortRow> => ({ ...input, status: 'prepared',
+        targetAdvSessionId: null, error: null, preparedAt: new Date().toISOString(), pendingAt: null, deliveredAt: null, failedAt: null }));
+      try {
+        const prepared = await prepareInspectedSessionPort({ inspection, expectedSourceHash: inspection.source.sha256,
+          tokenKey: 'server-only-key', artifactRoot, findExisting: async () => null, createPrepared });
+        expect(prepared.port.sourceBackend).toBe(backend);
+        expect(prepared.port.targetBackend).toBe(targetBackend);
+        expect(prepared.summary.source.nativeSessionId).toBe(row.sessionId);
+        expect(JSON.stringify(prepared.port.metadata)).not.toContain('exact native history');
+        expect(prepared.port.metadata.sourceCoordOwnerId).toBe(row.coordOwnerId);
+        const seed = readFileSync(prepared.port.artifactPath, 'utf8');
+        expect(verifySessionPortSeed(seed, prepared.port.renderedHash)).toBe(true);
+        expect(seed).toContain(`source-backend: ${backend}`);
+        expect(seed).toContain(`target-backend: ${targetBackend}`);
+        expect(seed).toContain('exact native history');
+      } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each(['codex', 'omp'] as const)('inspects an exact %s source into the existing portable contract', (backend) => {
+    const nativeId = row.sessionId!;
+    const records = backend === 'codex' ? [
+      { type: 'session_meta', payload: { id: nativeId } },
+      { type: 'response_item', timestamp: '2026-10-03T00:00:00Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'exact evidence' }] } },
+    ] : [
+      { type: 'session', id: nativeId },
+      { type: 'message', id: 'evidence', parentId: null, timestamp: '2026-10-03T00:00:00Z', message: { role: 'user', content: 'exact evidence' } },
+    ];
+    const bytes = Buffer.from(records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: { ...row, agent: backend, ...(backend === 'omp' ? { sessionId: null, ompThreadId: nativeId } : {}) },
+      stableSource: { ...source(''), bytes }, target: { ...target, backend: 'claude' },
+      evidenceSpan: { sessionId: nativeId, turnIndices: [3], contextTurns: 0,
+        evidenceTurns: [{ turnIdx: 3, timestamp: '2026-10-03T00:00:00Z', speaker: 'user', text: 'exact evidence' }] },
+    });
+    expect(inspection.source.backend).toBe(backend);
+    expect(inspection.source.nativeSessionId).toBe(nativeId);
+    expect(inspection.internal.turns).toHaveLength(1);
+    expect(inspection.internal.turns[0]?.blocks[0]).toEqual({ type: 'text', text: 'exact evidence' });
+    expect(inspection.internal.sourceRow.coordOwnerId).toBe(row.coordOwnerId);
+  });
+
+  it.each(['codex', 'omp'] as const)('acquires the exact tracked %s home and falls back only on missing source', async (backend) => {
+    const sourceRow = { ...row, agent: backend, ompThreadId: backend === 'omp' ? row.sessionId : null };
+    const stable = source('native source');
+    const findLive = vi.fn(async () => '/exact/source.jsonl');
+    await expect(acquireTrackedSessionSource(sourceRow, {
+      rootForSource: () => '/tracked/home/sessions', findLive,
+      readLive: async () => stable,
+    })).resolves.toBe(stable);
+    expect(findLive).toHaveBeenCalledWith('/tracked/home/sessions', backend, row.sessionId);
+    const archived = { ...stable, source: 'archive-manifest' as const };
+    const readArchive = vi.fn(async () => archived);
+    await expect(acquireTrackedSessionSource(sourceRow, {
+      findLive: async () => { throw new Error(`canonical live ${backend} JSONL is missing`); },
+      readArchive, archiveStore: () => ({} as never),
+    })).resolves.toBe(archived);
+    expect(readArchive).toHaveBeenCalledWith({ backend, sessionId: row.sessionId }, expect.anything());
+    readArchive.mockClear();
+    await expect(acquireTrackedSessionSource(sourceRow, {
+      findLive: async () => { throw new Error(`canonical live ${backend} JSONL is ambiguous`); },
+      readArchive,
+    })).rejects.toThrow(/ambiguous/);
+    expect(readArchive).not.toHaveBeenCalled();
+  });
+
   it('inspects without exposing internal transcript data and redacts before persistence', async () => {
     const inspection = inspectAcquiredSessionPort({
       sourceRow: row,
