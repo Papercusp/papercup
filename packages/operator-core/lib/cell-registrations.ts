@@ -1927,7 +1927,7 @@ export const LSP_ADMISSION_CELL: CellSpec = {
       'settlement-failed': { meaning: 'At least one durable receipt failed to settle.', safeAction: 'Inspect the named failed receipts and restore durable settlement before asserting the queue drained.' },
       unknown: { meaning: 'Daemon queue state could not be measured.', safeAction: 'Inspect the explicit daemon read failure; do not treat it as an empty queue.' },
     },
-    evidence: ['measurement', 'unknown'],
+    evidence: ['measurement'],
   },
   changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'admission' },
   shape: '{ queued, inFlight, classes[{ classKey, queued, pendingPersistence, oldestWaitMs, desiredWindow, effectiveWindow, health, feedback }], settlementFailures, measured, sampledAtMs, generation }',

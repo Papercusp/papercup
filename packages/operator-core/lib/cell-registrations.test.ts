@@ -28,6 +28,7 @@ import {
   HOST_MEMORY_PRESSURE_CELL,
   MEMORY_CGROUP_ATTRIBUTION_CELL,
   GOAL_PORTFOLIO_THROUGHPUT_CELL,
+  LSP_ADMISSION_CELL,
   BUILTIN_CELLS,
   registerBuiltinCells,
 } from './cell-registrations';
@@ -44,6 +45,27 @@ const OPERATOR_PIPELINE_CELLS = [
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
 ];
+
+describe('LSP admission registration under the D-038 contract', () => {
+  beforeEach(() => __resetCellRegistryForTests());
+
+  it('registers the real built-ins while preserving unknown daemon measurements', () => {
+    expect(validateCellSpec(LSP_ADMISSION_CELL)).toEqual([]);
+    expect(() => registerBuiltinCells()).not.toThrow();
+    expect(getCell('lsp.admission', { ownerId: 'su-anyone', harnessSlug: 'papercusp' })?.unknownHoist).toBe(
+      'unknown',
+    );
+  });
+
+  it('rejects pairing the unknown hoist as measured subject evidence', () => {
+    const assessment = LSP_ADMISSION_CELL.assessment!;
+    const invalid = {
+      ...LSP_ADMISSION_CELL,
+      assessment: { ...assessment, evidence: [...assessment.evidence, LSP_ADMISSION_CELL.unknownHoist!] },
+    };
+    expect(validateCellSpec(invalid).map((rejection) => rejection.rule)).toContain('measured-by-hoist-paired');
+  });
+});
 
 /**
  * P-006. The value of this suite is not "a cell is registered" — it is that the
