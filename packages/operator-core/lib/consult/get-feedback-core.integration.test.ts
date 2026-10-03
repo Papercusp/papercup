@@ -1013,14 +1013,29 @@ describe('getFeedbackCore — routed', () => {
       INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
       VALUES (${WS}, 910001, ${result.conversation_id}, ${baseReq.requesterId}, 'new_fact')
     `;
-    const read = async () => readRoutingHealthRows(sql, WS, new Date(sinceMs).toISOString(), new Date(Date.now() + 10_000).toISOString());
+    const read = async () => {
+      // PG timestamps retain sub-millisecond precision. Use the database's
+      // post-commit cut instead of rounding a just-written post out of a JS cut.
+      const [clock] = await sql<{ as_of: string }[]>`SELECT clock_timestamp()::text AS as_of`;
+      return readRoutingHealthRows(sql, WS, new Date(sinceMs).toISOString(), new Date(Date.now() + 10_000).toISOString(), 5000, clock.as_of);
+    };
     expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(false);
     await sql`
       INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
       VALUES (${WS}, 910002, ${result.conversation_id}, 'agent-a-fork', 'answer')
     `;
+    await sql`UPDATE harness_shared.consult_post_meta SET created_at = clock_timestamp() + interval '1 day' WHERE workspace_id = ${WS} AND post_id = 910002`;
+    expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(false);
+    await sql`UPDATE harness_shared.consult_post_meta SET created_at = clock_timestamp() WHERE workspace_id = ${WS} AND post_id = 910002`;
     const { rows, truncated } = await read();
-    expect(rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(true);
+    const metadata = await sql`
+      SELECT author_id, kind, created_at, clock_timestamp() AS database_now
+        FROM harness_shared.consult_post_meta
+       WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id}
+    `;
+    expect(rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback,
+      JSON.stringify({ metadata, requester: baseReq.requesterId, applicationNow: new Date().toISOString() }),
+    ).toBe(true);
     const health = routingHealthFromRows(rows, { sinceMs, untilMs: Date.now() + 10_000, nowMs: Date.now(), truncatedByLimit: truncated });
     expect(health.requestCohort.totals.outcomes.received).toBe(1);
     expect(health.requestCohort.totals.outcomes.failed).toBe(0);
