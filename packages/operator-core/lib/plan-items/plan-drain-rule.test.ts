@@ -22,6 +22,7 @@ import type { ToolInvocationEvent } from '../events/types';
 
 const RULE_ID = 'plan-drain:terminality-changed';
 const ADD_RULE_ID = 'plan-drain:item-added';
+const CREATE_RULE_ID = 'plan-drain:plan-created';
 const CONTENT_RULE_IDS = {
   'plans:set-content': 'plan-drain:content-rewritten',
   'plans:edit': 'plan-drain:content-edited',
@@ -84,6 +85,15 @@ function contentWriteEvent(
       ok,
       data: { ok, slug: 'p-content', planDrainTransitionChanged },
     },
+    ctx,
+  };
+}
+
+function newPlanEvent(status: string | undefined, ok = true): ToolInvocationEvent {
+  return {
+    tool: 'plans:new',
+    args: { slug: 'p-created', ...(status ? { status } : {}) },
+    result: { ok, data: { ok, slug: 'p-created' } },
     ctx,
   };
 }
@@ -169,6 +179,20 @@ describe('planWhoseDrainStateMayHaveChanged — relevant lifecycle writes', () =
     }
   });
 
+  it('matches successful plans:new writes with a non-draft initial status', () => {
+    expect(planWhoseDrainStateMayHaveChanged(newPlanEvent('ready'))).toEqual({
+      planSlug: 'p-created',
+      harnessSlug: 'papercusp',
+    });
+    expect(planWhoseDrainStateMayHaveChanged(newPlanEvent('active'))).toEqual({
+      planSlug: 'p-created',
+      harnessSlug: 'papercusp',
+    });
+    expect(planWhoseDrainStateMayHaveChanged(newPlanEvent(undefined))).toBeNull();
+    expect(planWhoseDrainStateMayHaveChanged(newPlanEvent('draft'))).toBeNull();
+    expect(planWhoseDrainStateMayHaveChanged(newPlanEvent('ready', false))).toBeNull();
+  });
+
   it('carries no harness when the ctx has none, rather than guessing one', () => {
     // EI-8970: re-reading under the operator-home harness would resolve a
     // DIFFERENT plan row for a plan that lives elsewhere. Absent is honest.
@@ -193,6 +217,10 @@ describe('the rule on the real dispatch path', () => {
     >) {
       expect(reactionRulesFor(tool).map((r) => r.id)).toContain(ruleId);
     }
+  });
+
+  it('registers the creation-time drain reaction on plans:new', () => {
+    expect(reactionRulesFor('plans:new').map((r) => r.id)).toContain(CREATE_RULE_ID);
   });
 
   it('matches the FANNED per-item events and NOT the bulk carrier', () => {
@@ -257,5 +285,13 @@ describe('the rule on the real dispatch path', () => {
       expect(action!.args.plans).toEqual([{ planSlug: 'p-content', harnessSlug: 'papercusp' }]);
       expect(matchReactions(contentWriteEvent(tool, false)).find((a) => a.ruleId === ruleId)).toBeUndefined();
     }
+  });
+
+  it('fires lifecycle reconciliation for a successful non-draft plan creation', () => {
+    const action = matchReactions(newPlanEvent('ready')).find((a) => a.ruleId === CREATE_RULE_ID);
+    expect(action).toBeDefined();
+    expect(action!.fire).toBe(PLAN_DRAIN_TRANSITION_ACTION);
+    expect(action!.args.plans).toEqual([{ planSlug: 'p-created', harnessSlug: 'papercusp' }]);
+    expect(matchReactions(newPlanEvent('draft')).find((a) => a.ruleId === CREATE_RULE_ID)).toBeUndefined();
   });
 });

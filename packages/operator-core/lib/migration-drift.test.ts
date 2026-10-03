@@ -10,9 +10,48 @@ import {
   resolveDeployedSqlDir,
   resolveSqlDir,
   resolveCanonicalStagingSqlDir,
+  digestAppliedMigrationRows,
+  readAppliedMigrationLedgerIdentity,
   migrationReplayTestTimeoutMs,
   type MigrationContentDrift,
 } from './migration-drift';
+
+describe('readAppliedMigrationLedgerIdentity', () => {
+  it('hashes a sorted filename and sha256 frontier, excluding row order', async () => {
+    const first = await readAppliedMigrationLedgerIdentity(async () => [
+      { filename: '002-second.sql', sha256: 'sha-b' },
+      { filename: '001-first.sql', sha256: 'sha-a' },
+    ]);
+    const reordered = await readAppliedMigrationLedgerIdentity(async () => [
+      { filename: '001-first.sql', sha256: 'sha-a' },
+      { filename: '002-second.sql', sha256: 'sha-b' },
+    ]);
+    const changed = digestAppliedMigrationRows([
+      { filename: '001-first.sql', sha256: 'sha-a' },
+      { filename: '002-second.sql', sha256: 'sha-c' },
+    ]);
+
+    expect(first).toMatchObject({ state: 'known', rows: [
+      { filename: '001-first.sql', sha256: 'sha-a' },
+      { filename: '002-second.sql', sha256: 'sha-b' },
+    ] });
+    expect(reordered).toEqual(first);
+    expect(first.state === 'known' ? first.digest : null).not.toBe(changed);
+  });
+
+  it('preserves failed or malformed ledger reads as unknown', async () => {
+    await expect(
+      readAppliedMigrationLedgerIdentity(async () => {
+        throw new Error('database unavailable');
+      }),
+    ).resolves.toEqual({ state: 'unknown', reason: 'query-failed' });
+    await expect(
+      readAppliedMigrationLedgerIdentity(async () => [
+        { filename: '001-first.sql', sha256: undefined as unknown as null },
+      ]),
+    ).resolves.toEqual({ state: 'unknown', reason: 'malformed-ledger' });
+  });
+});
 
 describe('migrationReplayTestTimeoutMs', () => {
   it('keeps the historical floor for small corpora and grows with migration count', () => {

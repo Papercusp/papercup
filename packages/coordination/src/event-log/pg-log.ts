@@ -620,6 +620,12 @@ export class PgCoordLog implements CoordEventLog {
     surface: LineSurface,
     writerKey: string,
     line: CoordEnvelope,
+    hooks?: {
+      /** Prepare a fresh line on the SAME transaction as its append. Replays skip preparation. */
+      prepare?: (tx: import('postgres').TransactionSql) => Promise<CoordEnvelope>;
+      /** A producer's commit-boundary assertion; throwing rolls back the append. */
+      afterAppend?: (tx: import('postgres').TransactionSql) => Promise<void>;
+    },
   ): Promise<AppendLineIfAbsentResult> {
     return withPgContentionRetry(async () => {
       await this.opts.ensureSchema();
@@ -654,17 +660,20 @@ export class PgCoordLog implements CoordEventLog {
             envelope: parseBody(existing[0].body, existing[0]),
           };
         }
+        const prepared = hooks?.prepare ? await hooks.prepare(tx) : line;
+        if (prepared.msg_id !== line.msg_id) throw new Error('append preparation changed replay identity');
         const inserted = await tx<{ id: string | number }[]>`
           INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
-          VALUES (${workspaceId}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null}, ${line.ts}::timestamptz)
+          VALUES (${workspaceId}, ${surface}, ${writerKey}, ${prepared.msg_id}, ${JSON.stringify(prepared)}::text::jsonb, ${prepared.harness_slug ?? null}, ${prepared.ts}::timestamptz)
           RETURNING id
         `;
+        await hooks?.afterAppend?.(tx);
         const raw = inserted[0]?.id;
         const sequence = typeof raw === 'number' ? raw : Number(raw);
         return {
           created: true,
           sequence: Number.isFinite(sequence) ? sequence : null,
-          envelope: line,
+          envelope: prepared,
         };
       });
     }, this.opts.contentionRetry);

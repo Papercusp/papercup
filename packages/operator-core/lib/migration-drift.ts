@@ -36,6 +36,59 @@ function isRunnerMigration(f: string): boolean {
   return true;
 }
 
+export interface AppliedMigrationLedgerRow {
+  filename: string;
+  sha256: string | null;
+}
+
+export type AppliedMigrationLedgerIdentity =
+  | { state: 'known'; rows: AppliedMigrationLedgerRow[]; digest: string }
+  | { state: 'unknown'; reason: 'query-failed' | 'malformed-ledger' };
+
+/** Stable identity for the applied frontier. applied_at is intentionally excluded. */
+export function digestAppliedMigrationRows(rows: readonly AppliedMigrationLedgerRow[]): string {
+  const canonical = rows
+    .map(({ filename, sha256 }) => ({ filename, sha256 }))
+    .sort((a, b) => a.filename.localeCompare(b.filename) || (a.sha256 ?? '').localeCompare(b.sha256 ?? ''));
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
+/**
+ * Read the exact applied migration frontier used by serving-generation. A
+ * failed query is explicit unknown, never an empty applied set.
+ */
+export async function readAppliedMigrationLedgerIdentity(
+  readRows: () => Promise<AppliedMigrationLedgerRow[]> = async () => {
+    const { sql } = getOrgPg();
+    return sql<AppliedMigrationLedgerRow[]>`
+      SELECT filename, sha256 FROM harness_shared.schema_migrations ORDER BY filename
+    `;
+  },
+): Promise<AppliedMigrationLedgerIdentity> {
+  try {
+    const rows: unknown = await readRows();
+    if (
+      !Array.isArray(rows) ||
+      !rows.every(
+        (row) =>
+          row !== null &&
+          typeof row === 'object' &&
+          typeof (row as AppliedMigrationLedgerRow).filename === 'string' &&
+          ((row as AppliedMigrationLedgerRow).sha256 === null ||
+            typeof (row as AppliedMigrationLedgerRow).sha256 === 'string'),
+      )
+    ) {
+      return { state: 'unknown', reason: 'malformed-ledger' };
+    }
+    const canonical = (rows as AppliedMigrationLedgerRow[])
+      .map(({ filename, sha256 }) => ({ filename, sha256 }))
+      .sort((a, b) => a.filename.localeCompare(b.filename) || (a.sha256 ?? '').localeCompare(b.sha256 ?? ''));
+    return { state: 'known', rows: canonical, digest: digestAppliedMigrationRows(canonical) };
+  } catch {
+    return { state: 'unknown', reason: 'query-failed' };
+  }
+}
+
 /**
  * EI-18737837917400418: a packaged/headless deploy (no repo tree above cwd —
  * e.g. a Tauri sidecar or a standalone rig install) has NO path satisfying any
@@ -641,19 +694,10 @@ export async function checkMigrationDrift(
     ? fs.readdirSync(sqlDir).filter(isRunnerMigration).sort()
     : [];
 
-  let applied: string[] = [];
-  let appliedRows: Array<{ filename: string; sha256: string | null }> = [];
-  try {
-    const { sql } = getOrgPg();
-    // `sha256` rides along for the content-drift check — it is recorded on every
-    // apply but was never read back until EI-19365742982915607.
-    appliedRows = await sql<Array<{ filename: string; sha256: string | null }>>`
-      SELECT filename, sha256 FROM harness_shared.schema_migrations ORDER BY filename
-    `;
-    applied = appliedRows.map((r) => r.filename);
-  } catch {
-    // tracker absent / unreachable → report all on-disk as missing (loud, not silent).
-  }
+  const appliedLedger = await readAppliedMigrationLedgerIdentity();
+  // tracker absent / unreachable → report all on-disk as missing (loud, not silent).
+  const appliedRows = appliedLedger.state === 'known' ? appliedLedger.rows : [];
+  const applied = appliedRows.map((r) => r.filename);
 
   const appliedSet = new Set(applied);
   const onDiskSet = new Set(onDisk);

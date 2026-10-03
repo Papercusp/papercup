@@ -1,10 +1,11 @@
 /**
  * plan-drain-rule.ts — P-004 of deterministic-plan-state-derivation-2026-08-31.
  *
- * When a structured item write crosses the terminal boundary/adds an item, or
- * a content writer changes whether the current lifecycle status warrants a
- * drained-plan transition, re-read the plan and move its lifecycle `status` if
- * the graph warrants it.
+ * When a structured item write crosses the terminal boundary/adds an item, a
+ * content writer changes the currently warranted transition, or plans:new
+ * creates a non-draft plan, re-read the plan and move its lifecycle `status`
+ * if the graph warrants it. Creation has no prior graph edge to cross, but its
+ * initial content can already be drained.
  *
  * # Why matching stays cheap and synchronous
  *
@@ -69,10 +70,12 @@ export function planWhoseDrainStateMayHaveChanged(
       e.tool === 'plans:edit' ||
       e.tool === 'plans:set-content-chunk') &&
     r?.planDrainTransitionChanged === true;
+  const initialPlanStatus = typeof e.args?.status === 'string' ? e.args.status : 'draft';
+  const createMayChangeDrain = e.tool === 'plans:new' && initialPlanStatus !== 'draft';
   if (
     r?.ok === true &&
     typeof r.slug === 'string' &&
-    (itemWriteMayChangeDrain || contentWriteMayChangeDrain)
+    (itemWriteMayChangeDrain || contentWriteMayChangeDrain || createMayChangeDrain)
   ) {
     // Thread the triggering call's harness through, exactly as reconcile-rule
     // does (EI-8970): re-reading under the operator-home harness would resolve
@@ -96,6 +99,16 @@ registerReactionRule({
 registerReactionRule({
   id: 'plan-drain:item-added',
   on: 'plans:add-item',
+  when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
+  fire: PLAN_DRAIN_TRANSITION_ACTION,
+  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-drain',
+});
+
+registerReactionRule({
+  id: 'plan-drain:plan-created',
+  on: 'plans:new',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
   args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
