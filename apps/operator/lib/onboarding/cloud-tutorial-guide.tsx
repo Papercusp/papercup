@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { useReducedMotion } from "motion/react";
 import { Button } from "@/app/harness/Button";
 import { LazyDetails } from "@/app/_components/LazyDetails";
@@ -16,8 +16,8 @@ const statusCopy = {
   "missing-target": "The control is not visible yet. Open the indicated app view, then check again.",
   complete: "Your first agent lesson is complete.",
 };
-export function CloudTutorialHelpEntry({ onStart }: { onStart: () => void }) {
-  return <LazyDetails summary="Help"><Button onClick={onStart}>Get your first agent running</Button></LazyDetails>;
+export function CloudTutorialHelpEntry({ onStart, summaryRef }: { onStart: () => void; summaryRef?: Ref<HTMLButtonElement> }) {
+  return <LazyDetails summary="Help" summaryRef={summaryRef}><Button onClick={onStart}>Get your first agent running</Button></LazyDetails>;
 }
 
 /** A nonmodal companion to the real product. It never calls a provision,
@@ -37,8 +37,17 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
   const resumeControl = useRef<HTMLButtonElement | null>(null);
   const showControl = useRef<HTMLButtonElement | null>(null);
   const restartControl = useRef<HTMLButtonElement | null>(null);
+  const entryControl = useRef<HTMLButtonElement | null>(null);
   const previousScope = useRef(state.scope);
   const trigger = useRef<HTMLElement | null>(null);
+  const restoreEntryFocus = () => {
+    const original = trigger.current;
+    if (original?.isConnected && original !== document.body && original !== document.documentElement) {
+      original.focus({ preventScroll: true });
+      if (document.activeElement === original) return;
+    }
+    entryControl.current?.focus({ preventScroll: true });
+  };
   const disposedScope = `${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}`;
   useEffect(() => {
     trigger.current = document.activeElement as HTMLElement | null;
@@ -58,11 +67,14 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
     const destination = pendingControlFocus.current;
     if (!destination) return;
     const control = destination === "resume" ? resumeControl.current : destination === "show" ? showControl.current ?? restartControl.current
-      : destination === "restart" ? restartControl.current : trigger.current;
-    if (!control?.isConnected) return;
+      : destination === "restart" ? restartControl.current : entryControl.current;
+    if (destination !== "entry" && !control?.isConnected) return;
     // Highlight cleanup can restore its previous product focus. Restore the
     // user's guide action after that cleanup, without stealing focus on load.
-    const frame = requestAnimationFrame(() => control.focus({ preventScroll: true }));
+    const frame = requestAnimationFrame(() => {
+      if (destination === "entry") restoreEntryFocus();
+      else control?.focus({ preventScroll: true });
+    });
     pendingControlFocus.current = null;
     return () => cancelAnimationFrame(frame);
   }, [state.disposition, reviewIndex]);
@@ -83,11 +95,11 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
   const action = (name: "pause" | "resume" | "skip" | "exit") => {
     pendingControlFocus.current = name === "pause" ? "resume" : name === "resume" ? "show" : name === "skip" ? "restart" : "entry";
     dispatch({ type: "action", action: name });
-    if (name === "exit" && trigger.current?.isConnected) trigger.current.focus({ preventScroll: true });
+    if (name === "exit") restoreEntryFocus();
   };
-  if (state.disposition === "closed") return <CloudTutorialHelpEntry onStart={replay} />;
+  if (state.disposition === "closed") return <CloudTutorialHelpEntry onStart={replay} summaryRef={entryControl} />;
   return <>
-    <CloudTutorialHelpEntry onStart={replay} />
+    <CloudTutorialHelpEntry onStart={replay} summaryRef={entryControl} />
     <aside role="region" aria-label="First agent guide" data-cloud-tutorial-guide
       style={{ border: "1px solid var(--border)", background: "var(--bg-1)", borderRadius: 8, padding: 20, display: "flex", flexDirection: "column", gap: 12, width: "min(100%, 360px)", alignSelf: "start" }}>
       <h2 id="cloud-tutorial-title">{state.version === 2 ? "Do useful work with your first agent" : "Get your first agent running"}</h2>
