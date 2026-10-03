@@ -31,8 +31,10 @@ const { getMessageByIdMock, getWorkItemMock, resolveMessageRefMock } = vi.hoiste
   });
   return { getMessageByIdMock, getWorkItemMock, resolveMessageRefMock };
 });
-const { getModeSubjectMock } = vi.hoisted(() => ({
+const { getModeSubjectMock, readGoalOwnerReportTruthMock } = vi.hoisted(() => ({
   getModeSubjectMock: vi.fn(async () => null as string | null),
+  // P-005: null = the truth reads were unavailable (fail-open), the pre-P-005 behavior.
+  readGoalOwnerReportTruthMock: vi.fn(async (..._args: unknown[]): Promise<any> => null),
 }));
 
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
@@ -96,6 +98,10 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }))
 // only for a report-shaped message to the human. Keep the handler suite DB-free
 // while asserting that exact selective read and the resulting server stamp.
 vi.mock('../../../modes/store', () => ({ getModeSubject: getModeSubjectMock }));
+// P-005: the report truth gate's DB reads live behind this module; the pure
+// judgement is covered by goal-owner-report.test.ts and the reads by
+// goal-owner-report-truth.test.ts. Here only the send boundary is asserted.
+vi.mock('../../../goal-owner-report-truth', () => ({ readGoalOwnerReportTruth: readGoalOwnerReportTruthMock }));
 // P-006: keep ref-hydrate-resolve's IO graph (work-items + announced-gates
 // store → coord log → flags listener) OUT of this unit graph — this file mocks
 // flags/server partially, so loading the real chain explodes at import. Gate
@@ -2757,6 +2763,58 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
     });
     expect(b.results[0]).toMatchObject({ ok: false, error: 'goal-owner-report-incomplete', missing: ['nextWake'] });
     expect(sendM).not.toHaveBeenCalled();
+  });
+
+  // P-005 (goal-holder-plans-ideation-truthful-reports-2026-10-03) recurrence guard:
+  // a complete report that a readable measurement contradicts never reaches the owner.
+  it('refuses a complete report the measured goal state contradicts, before persistence', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, goalId);
+    const violation = {
+      check: 'cost',
+      kind: 'measured-spend-not-cited',
+      expected: '$3,131.80 (goal-lineage-rollup, measured 2026-10-03T02:00:00Z)',
+      message: "COST does not cite this goal's measured spend $3,131.80.",
+    };
+    readGoalOwnerReportTruthMock.mockResolvedValueOnce({
+      violations: [violation],
+      summary: { cost: 'unread', ownerWalls: 'none-open', corrections: 'no-baseline' },
+      citedRefStates: [],
+    });
+    const b = await body({ to: ['human'], summary: 'Goal owner report', expects: 'none', body: completeBody });
+
+    expect(readGoalOwnerReportTruthMock).toHaveBeenCalledWith('ws1', goalId, expect.objectContaining({ cost: 'unknown (goal-pots rollup unavailable)' }));
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'goal-owner-report-untruthful', goalId, violations: [violation] });
+    expect(b.results[0].message).toContain("COST does not cite this goal's measured spend");
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('stamps the truth summary and cited ref states when every readable check passes', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, goalId);
+    readGoalOwnerReportTruthMock.mockResolvedValueOnce({
+      violations: [],
+      summary: { cost: 'goal-spend-unmeasured', ownerWalls: 'none-open', corrections: 'none-owed' },
+      citedRefStates: [{ ref: 'WI-10005855', state: 'done' }],
+    });
+    const b = await body({ to: ['human'], summary: 'Goal owner report', expects: 'none', body: completeBody });
+
+    expect(b.results[0]).toMatchObject({ ok: true, goalOwnerReport: { status: 'stamped', goalId } });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, any> };
+    expect(opts.extra?.goalOwnerReport).toMatchObject({
+      goalId,
+      citedRefStates: [{ ref: 'WI-10005855', state: 'done' }],
+      truth: { cost: 'goal-spend-unmeasured', ownerWalls: 'none-open', corrections: 'none-owed' },
+    });
+  });
+
+  it('fails open: a truth read that throws still stamps the report without a truth summary', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, goalId);
+    readGoalOwnerReportTruthMock.mockRejectedValueOnce(new Error('pg unavailable'));
+    const b = await body({ to: ['human'], summary: 'Goal owner report', expects: 'none', body: completeBody });
+
+    expect(b.results[0]).toMatchObject({ ok: true, goalOwnerReport: { status: 'stamped', goalId } });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, any> };
+    expect(opts.extra?.goalOwnerReport?.truth).toBeUndefined();
+    expect(opts.extra?.goalOwnerReport?.citedRefStates).toBeUndefined();
   });
 
   it('returns and persists a not-stamped diagnosis for inline report labels, including chunked sends without why', async () => {
