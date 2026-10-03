@@ -83,6 +83,14 @@ vi.mock('./restart-preflight', () => ({
   preflightRestartTarget: vi.fn(),
   prepareStagingSchemaForRestart: vi.fn(),
 }));
+vi.mock('../../harness/routines/restricted-tree-skip', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness/routines/restricted-tree-skip')>();
+  return { ...actual, integrationTreeRoots: vi.fn() };
+});
+vi.mock('../testing/restricted-hold-fence', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../testing/restricted-hold-fence')>();
+  return { ...actual, restrictedTreeHoldRefusal: vi.fn() };
+});
 vi.mock('./desktop-dev-restart', () => ({
   DESKTOP_DEV_RESOURCE: 'desktop-dev-server',
   resolveDesktopDevListener: vi.fn(),
@@ -123,6 +131,8 @@ import { spawn } from 'node:child_process';
 import { probeServiceStart, probeSystemdDaemonReloadNeed } from './systemd-service-probe';
 import { probeHttpReachable } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
+import { integrationTreeRoots } from '../../harness/routines/restricted-tree-skip';
+import { restrictedTreeHoldRefusal } from '../testing/restricted-hold-fence';
 import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
 import {
   preflightRestartTarget,
@@ -151,6 +161,8 @@ const probeM = vi.mocked(probeServiceStart);
 const daemonReloadNeedM = vi.mocked(probeSystemdDaemonReloadNeed);
 const gatewayHealthM = vi.mocked(probeHttpReachable);
 const listeningSocketsM = vi.mocked(listListeningSockets);
+const integrationTreeRootsM = vi.mocked(integrationTreeRoots);
+const restrictedTreeHoldRefusalM = vi.mocked(restrictedTreeHoldRefusal);
 const preflightM = vi.mocked(preflightRestartTarget);
 const stagingSchemaPreparationM = vi.mocked(prepareStagingSchemaForRestart);
 const desktopResolveM = vi.mocked(resolveDesktopDevListener);
@@ -404,6 +416,8 @@ beforeEach(() => {
     ownerHidden: 0,
   } as never);
   gatewayHealthM.mockResolvedValue({ reachable: true, detail: 'HTTP 200' });
+  integrationTreeRootsM.mockReturnValue(['/tree']);
+  restrictedTreeHoldRefusalM.mockResolvedValue(null);
   preflightM.mockResolvedValue(bootVerdict());
   stagingSchemaPreparationM.mockResolvedValue(preparedStagingSchema());
   desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
@@ -833,6 +847,122 @@ describe('dev:restart boot-integrity preflight', () => {
       dry_run: true,
       boot_integrity: { checked: true, would_block: true, tree: '/tree', missing: ['hono', 'postgres'] },
     });
+  });
+});
+
+describe('dev:restart D-012 restricted-hold preflight', () => {
+  const held = {
+    error: 'restricted_write_held',
+    hint: '1 held restricted write in /tree (packages/operator-core/lib/agent-tools/dev/restart.ts).',
+  } as const;
+
+  it('refuses a held staging tree before schema preparation, lock, drain, audit, or restart', async () => {
+    integrationTreeRootsM.mockReturnValue(['/tree']);
+    restrictedTreeHoldRefusalM.mockResolvedValue(held);
+
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'staging',
+        reason: 'x',
+        // D-012 is unconditional; a boot-integrity override cannot bypass it.
+        override_boot_integrity: true,
+      }),
+    );
+
+    expect(integrationTreeRootsM).toHaveBeenCalledWith({}, '/tree/apps/operator');
+    expect(restrictedTreeHoldRefusalM).toHaveBeenCalledWith(['/tree']);
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      reason: 'restricted_write_held',
+      restarted: false,
+      drained: false,
+      restricted_hold: { checked: true, roots: ['/tree'], ...held },
+    });
+    expect(stagingSchemaPreparationM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it.each(['staging', 'gateway', 'bg-host', 'embed-sidecar', 'mcp-proxy', 'mcp-proxy-staging'] as const)(
+    'checks the WorkingDirectory-derived tree for %s',
+    async (target) => {
+      const workingDirectory = target === 'gateway' ? '/tree' : '/tree/apps/operator';
+      preflightM.mockResolvedValue(bootVerdict({ target, requestedRoot: workingDirectory, lockRoot: '/tree' }));
+      integrationTreeRootsM.mockReturnValue(['/tree']);
+      restrictedTreeHoldRefusalM.mockResolvedValue(held);
+
+      const b = body(await call({ confirm: true, authorize: true, target, reason: 'x' }));
+
+      expect(b.reason).toBe('restricted_write_held');
+      expect(integrationTreeRootsM).toHaveBeenCalledWith({}, '/tree/apps/operator');
+      expect(restrictedTreeHoldRefusalM).toHaveBeenCalledWith(['/tree']);
+      expect(guardM).not.toHaveBeenCalled();
+      expect(spawnM).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails closed when a networked target has no measurable WorkingDirectory', async () => {
+    preflightM.mockResolvedValue(
+      bootVerdict({ checked: false, requestedRoot: '', lockRoot: null, reason: 'WorkingDirectory unavailable' }),
+    );
+
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'gateway',
+        reason: 'x',
+        override_boot_integrity: true,
+      }),
+    );
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'restricted_hold_state_unknown',
+      restarted: false,
+      drained: false,
+      restricted_hold: { checked: false, roots: [] },
+    });
+    expect(integrationTreeRootsM).not.toHaveBeenCalled();
+    expect(restrictedTreeHoldRefusalM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+  });
+
+  it('shows a held integration tree in the dry-run preview', async () => {
+    integrationTreeRootsM.mockReturnValue(['/tree']);
+    restrictedTreeHoldRefusalM.mockResolvedValue(held);
+
+    const b = body(await call({ target: 'staging' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      restricted_hold: { checked: true, roots: ['/tree'], would_block: true, ...held },
+    });
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it.each(['dev', 'email-sidecar', 'calendar-sidecar'] as const)(
+    'does not apply the Papercusp integration-tree fence to %s',
+    async (target) => {
+      await call({ confirm: true, authorize: true, target, reason: 'x' }).catch(() => undefined);
+      expect(integrationTreeRootsM).not.toHaveBeenCalled();
+      expect(restrictedTreeHoldRefusalM).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the wrapper-owned desktop development runtime outside the tree fence', async () => {
+    await call({ target: 'desktop-dev' });
+    expect(integrationTreeRootsM).not.toHaveBeenCalled();
+    expect(restrictedTreeHoldRefusalM).not.toHaveBeenCalled();
   });
 });
 

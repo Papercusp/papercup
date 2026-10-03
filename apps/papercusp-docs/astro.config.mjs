@@ -2,6 +2,7 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertPublicManualSource } from './scripts/source-contract.mjs';
 
 const isLintAsCommittedClone = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1';
 const sharedStarlightRoot = dirname(fileURLToPath(import.meta.resolve('@astrojs/starlight')));
@@ -36,6 +37,10 @@ export default defineConfig({
   // (`host-docs-public.ts`) can slug→.html-lookup uniformly.
   build: { format: 'file' },
   integrations: [
+    {
+      name: 'public-manual-source-contract',
+      hooks: { 'astro:build:start': () => { assertPublicManualSource(); } },
+    },
     starlight({
       title: 'Papercusp Docs',
       description: 'Public documentation for the Papercusp platform.',
@@ -53,8 +58,13 @@ export default defineConfig({
         {
           label: 'Sections',
           items: [
+            'quickstart',
             'using-the-app',
+            'accounts-and-billing',
             'workspaces-and-agents',
+            'plans-and-work',
+            'agent-modes-and-fleets',
+            'voice',
             'cloud-workspaces',
             'harness-templates',
             'harness-snapshots',

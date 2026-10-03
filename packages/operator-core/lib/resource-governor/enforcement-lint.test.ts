@@ -348,6 +348,26 @@ describe('resource governor enforcement lint', () => {
     expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
   });
 
+  it('pins the committed-source loader bypass to its one timeout-bounded git read helper', () => {
+    const path = 'scripts/lib/committed-source-loader.mjs';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = `${path}::resource-start-outside-admission`;
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('bypass');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('spawnCensus');
+    expect(source).toMatch(/return execFileSync\('git', \['-C', top, \.\.\.args\]/);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
+    // A second start, or a detached git child, needs a fresh review: both fall out of the pin.
+    const secondStart = source.replace('function audit(record) {', "function audit(record) {\n  execFileSync('ls', []);");
+    const detached = source.replace("stdio: ['ignore', 'pipe', 'pipe'],", "detached: true,\n    stdio: ['ignore', 'pipe', 'pipe'],");
+    for (const mutant of [secondStart, detached]) {
+      expect(mutant).not.toBe(source);
+      expect(scanInventory([[path, mutant]], { migrations: ['P-016'], validateRegistry: true })).toEqual([
+        `${path}:resource-start-outside-admission`,
+      ]);
+    }
+  });
+
   it('can audit a pending migration and applies only centrally registered dispositions', () => {
     const files: Array<[string, string]> = [
       [

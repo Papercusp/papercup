@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, openSync, writeSync, closeSync } from 'nod
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+import { Worker, isMainThread, parentPort, workerData, threadId } from 'node:worker_threads';
 
 const file = fileURLToPath(import.meta.url);
 const graph = Buffer.from('CAMSBmNoZW50YTpwChUKAVgKAVcSAVkaBW11bF8xIgNNdWwSCG11bCB0ZXN0KiMIAwgCEAEiGAAAgD8AAABAAABAQAAAgEAAAKBAAADAQEIBV1oTCgFYEg4KDAgBEggKAggDCgIIAmITCgFZEg4KDAgBEggKAggDCgIIAkIECgAQBw==', 'base64');
@@ -35,17 +35,51 @@ function observedProcessEnvironment() {
   return { serializedAdmissionContext: process.env.PAPERCUSP_ADMISSION_CONTEXT ?? null, allocator, libraries };
 }
 
+let lifecycleSequence = 0;
+function lifecycle(config, operation, boundary, detail = {}) {
+  if (config.lifecycleTrace !== true) return;
+  const emit = row => {
+    const bytes = Buffer.from('PC_NATIVE_LIFECYCLE\t' + JSON.stringify({
+      processId: process.pid, threadId, sequence: ++lifecycleSequence, ...row,
+    }) + '\n');
+    if (writeSync(2, bytes) !== bytes.length) throw new Error('short native lifecycle write');
+  };
+  if (lifecycleSequence === 0) emit({ event: 'start', formatVersion: 1, graphSha256: graphSha,
+    source: fingerprint(file), node: fingerprint(process.execPath), ortEntry: fingerprint(config.ortEntry),
+    configuration: { device: config.device, outcome: config.outcome, release: config.release,
+      parentLogLevel: config.parentLogLevel ?? null, terminal: config.terminal ?? 'settled' },
+    observation: observedProcessEnvironment(), embeddingModelInferencePerformed: false });
+  emit({ event: 'boundary', operation, boundary, ...detail });
+}
+
+function lifecycleSync(config, operation, action) {
+  lifecycle(config, operation, 'before');
+  try {
+    const result = action();
+    lifecycle(config, operation, 'after', operation === 'worker-create' ? { workerThreadId: result.threadId } : {});
+    return result;
+  }
+  catch (error) { lifecycle(config, operation, 'error'); throw error; }
+}
+
+async function lifecycleAsync(config, operation, action) {
+  lifecycle(config, operation, 'before');
+  try { const result = await action(); lifecycle(config, operation, 'after'); return result; }
+  catch (error) { lifecycle(config, operation, 'error'); throw error; }
+}
+
 async function run(config) {
   const { ortEntry, device, outcome, release } = config;
   if (!isAbsolute(ortEntry) || !['cpu', 'cuda'].includes(device)
-    || !['success', 'shape-error'].includes(outcome) || !['dispose', 'environment'].includes(release)) {
+    || !['success', 'shape-error'].includes(outcome) || !['dispose', 'environment'].includes(release)
+    || (config.lifecycleTrace !== undefined && typeof config.lifecycleTrace !== 'boolean')) {
     throw new Error('invalid native teardown control configuration');
   }
-  const require = createRequire(ortEntry), ort = require(ortEntry);
+  const require = createRequire(ortEntry), ort = lifecycleSync(config, 'binding-load', () => require(ortEntry));
   ort.env.logLevel = 'info';
-  const session = await ort.InferenceSession.create(graph, {
+  const session = await lifecycleAsync(config, 'session-create', () => ort.InferenceSession.create(graph, {
     executionProviders: [device], intraOpNumThreads: 1, interOpNumThreads: 1, logSeverityLevel: 1,
-  });
+  }));
   const receipt = { formatVersion: 1, workItem: 'WI-10005599', processId: process.pid,
     scope: '130-byte native Mul fixture; no embedding weights', graph: { bytes: graph.length, sha256: graphSha },
     source: fingerprint(file), node: fingerprint(process.execPath), ortEntry: fingerprint(ortEntry),
@@ -53,8 +87,9 @@ async function run(config) {
     device, outcome, release, embeddingModelInferencePerformed: false, disposed: false };
   try {
     try {
-      const result = await session.run({ X: new ort.Tensor('float32', Float32Array.from([1, 1, 1, 1, 1, 1]),
-        outcome === 'shape-error' ? [2, 3] : [3, 2]) });
+      const result = await lifecycleAsync(config, 'session-run', () => session.run({
+        X: new ort.Tensor('float32', Float32Array.from([1, 1, 1, 1, 1, 1]),
+          outcome === 'shape-error' ? [2, 3] : [3, 2]) }));
       if (outcome !== 'success') throw new Error('shape-error control unexpectedly succeeded');
       if (Array.from(result.Y.data).join(',') !== '1,2,3,4,5,6') throw new Error('native Mul control output mismatch');
       receipt.output = Array.from(result.Y.data);
@@ -63,40 +98,53 @@ async function run(config) {
       receipt.expectedError = String(error);
     }
   } finally {
-    if (release === 'dispose') { await session.release(); receipt.disposed = true; }
+    if (release === 'dispose') {
+      await lifecycleAsync(config, 'session-release', () => session.release()); receipt.disposed = true;
+    }
   }
   return receipt;
 }
 
 async function target(config) {
   // Match the shipped parent's native binding pin before the FILE worker loads.
-  const ort = createRequire(config.ortEntry)(config.ortEntry);
+  if (config.lifecycleTrace !== undefined && typeof config.lifecycleTrace !== 'boolean') {
+    throw new Error('invalid native lifecycle trace configuration');
+  }
+  const ort = lifecycleSync(config, 'binding-load', () => createRequire(config.ortEntry)(config.ortEntry));
   if (config.parentLogLevel !== undefined) {
     if (!['warning', 'info'].includes(config.parentLogLevel)) throw new Error('invalid parent initializer log level');
     ort.env.logLevel = config.parentLogLevel;
     // A separate small CPU session exercises the process-global first
     // initializer; it changes no CUDA provider options in the worker.
-    const initial = await ort.InferenceSession.create(graph, {
+    const initial = await lifecycleAsync(config, 'initializer-create', () => ort.InferenceSession.create(graph, {
       executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1,
-    });
-    await initial.release();
+    }));
+    await lifecycleAsync(config, 'initializer-release', () => initial.release());
   }
   if (config.terminal !== undefined && !['settled', 'uncaught', 'exit-code', 'abort-control'].includes(config.terminal)) {
     throw new Error('invalid native teardown terminal mode');
   }
-  const worker = new Worker(new URL(import.meta.url), { workerData: config, execArgv: [] });
+  const worker = lifecycleSync(config, 'worker-create', () =>
+    new Worker(new URL(import.meta.url), { workerData: config, execArgv: [] }));
   let result;
   try {
-    result = await new Promise((resolve, reject) => {
+    result = await lifecycleAsync(config, 'worker-result', () => new Promise((resolve, reject) => {
       worker.once('message', message => message.error ? reject(new Error(message.error)) : resolve(message));
       worker.once('error', reject);
       worker.once('exit', code => { if (!result) reject(new Error('control worker exited before receipt: ' + code)); });
-    });
+    }));
   } finally {
-    result = result ? { ...result, workerTerminationCode: await worker.terminate() } : undefined;
-    if (!result) await worker.terminate();
+    // Keep the two original awaited branches explicit for the maintained
+    // upstream resource-start disposition; tracing only surrounds that lifetime.
+    lifecycle(config, 'worker-terminate', 'before');
+    try {
+      result = result ? { ...result, workerTerminationCode: await worker.terminate() } : undefined;
+      if (!result) await worker.terminate();
+      lifecycle(config, 'worker-terminate', 'after');
+    } catch (error) { lifecycle(config, 'worker-terminate', 'error'); throw error; }
   }
   process.stdout.write(JSON.stringify(result) + '\n');
+  lifecycle(config, 'process-settled', 'after');
   // Positive debugger-protocol control, confined to this 130-byte fixture.
   if (config.terminal === 'abort-control') process.abort();
   if (['uncaught', 'exit-code'].includes(config.terminal)) {
@@ -211,6 +259,88 @@ export function inspectHostDebuggerCapture(stdout, debuggerTerminal) {
     hostBacktraceCaptured: exit.signal === 'SIGABRT', embeddingModelInferencePerformed: false };
 }
 
+export function inspectNativeLifecycleCapture(stderr, terminal, expected) {
+  const records = stderr.split('\n').filter(line => line.startsWith('PC_NATIVE_LIFECYCLE\t'))
+    .map(line => JSON.parse(line.slice('PC_NATIVE_LIFECYCLE\t'.length)));
+  const samePin = (actual, desired) => actual && desired && actual.path === desired.path
+    && actual.bytes === desired.bytes && actual.sha256 === desired.sha256;
+  if (!Number.isSafeInteger(terminal.processId) || terminal.processId <= 0
+    || terminal.eof !== true || terminal.captureStartedBeforeExec !== true || records.length === 0
+    || !((terminal.signal === null && [0, 1].includes(terminal.exitCode))
+      || (terminal.signal === 'SIGABRT' && terminal.exitCode === null))) {
+    throw new Error('incomplete native lifecycle process evidence');
+  }
+  const threads = new Map();
+  let createdWorker;
+  for (const row of records) {
+    if (row.processId !== terminal.processId || !Number.isSafeInteger(row.threadId) || row.threadId < 0) {
+      throw new Error('foreign native lifecycle thread');
+    }
+    let thread = threads.get(row.threadId);
+    if (row.event === 'start') {
+      if (thread || row.sequence !== 1 || row.formatVersion !== 1 || row.graphSha256 !== graphSha
+        || row.embeddingModelInferencePerformed !== false || !samePin(row.source, expected.source)
+        || !samePin(row.node, expected.node) || !samePin(row.ortEntry, expected.ortEntry)
+        || ['device', 'outcome', 'release', 'parentLogLevel', 'terminal']
+          .some(key => row.configuration?.[key] !== expected.configuration[key])
+        || row.observation?.serializedAdmissionContext !== expected.serializedAdmissionContext) {
+        throw new Error('unbound native lifecycle start');
+      }
+      const operations = row.threadId === 0
+        ? ['binding-load', ...(expected.configuration.parentLogLevel === null ? [] : ['initializer-create', 'initializer-release']),
+          'worker-create', 'worker-result', 'worker-terminate', 'process-settled']
+        : ['binding-load', 'session-create', 'session-run',
+          ...(expected.configuration.release === 'dispose' ? ['session-release'] : []), 'worker-ready'];
+      thread = { threadId: row.threadId, sequence: 1, operations, next: 0,
+        pendingOperation: null, completedOperations: [], failedOperations: [], lastBoundary: null };
+      threads.set(row.threadId, thread);
+      continue;
+    }
+    if (!thread || row.event !== 'boundary' || row.sequence !== thread.sequence + 1
+      || row.operation !== thread.operations[thread.next] || !['before', 'after', 'error'].includes(row.boundary)) {
+      throw new Error('invalid native lifecycle operation order');
+    }
+    const milestone = ['process-settled', 'worker-ready', 'worker-failed'].includes(row.operation);
+    if (milestone ? row.boundary !== 'after' || thread.pendingOperation !== null
+      : row.boundary === 'before' ? thread.pendingOperation !== null : thread.pendingOperation !== row.operation) {
+      throw new Error('unpaired native lifecycle boundary');
+    }
+    thread.sequence = row.sequence;
+    thread.lastBoundary = { operation: row.operation, boundary: row.boundary };
+    if (row.boundary === 'before') thread.pendingOperation = row.operation;
+    else {
+      thread.pendingOperation = null;
+      thread.next++;
+      (row.boundary === 'after' ? thread.completedOperations : thread.failedOperations).push(row.operation);
+      if (row.operation === 'worker-create' && row.boundary === 'after') createdWorker = row.workerThreadId;
+      if (row.boundary === 'error' && !(row.operation === 'session-run' && expected.configuration.outcome === 'shape-error')) {
+        // A fatal exception skips the remaining native operations. The worker
+        // reports its error; the parent still awaits termination in finally.
+        thread.operations = row.threadId === 0
+          ? [...thread.operations.slice(0, thread.next), ...(row.operation === 'worker-result' ? ['worker-terminate'] : [])]
+          : [...thread.operations.slice(0, thread.next), 'worker-failed'];
+      }
+    }
+  }
+  const main = threads.get(0), workers = [...threads.values()].filter(row => row.threadId !== 0);
+  if (!main || workers.length > 1 || (workers.length === 1 && workers[0].threadId !== createdWorker)
+    || (createdWorker !== undefined && (!Number.isSafeInteger(createdWorker) || createdWorker <= 0))
+    || (terminal.signal === null && createdWorker !== undefined && workers.length !== 1)
+    || (terminal.signal === null && [...threads.values()].some(row => row.pendingOperation !== null
+      || row.next !== row.operations.length))) {
+    throw new Error('incomplete native lifecycle thread closure');
+  }
+  const complete = terminal.signal === null && workers.length === 1
+    && main.completedOperations.includes('process-settled') && workers[0].completedOperations.includes('worker-ready');
+  if (terminal.exitCode === 0 && !complete) throw new Error('missing native lifecycle settled process');
+  return { processId: terminal.processId, source: 'native-lifecycle-boundaries', pipeEof: true,
+    exitCode: terminal.exitCode, signal: terminal.signal, completeLifecycleObserved: complete,
+    threads: [...threads.values()].map(({ threadId, completedOperations, failedOperations, pendingOperation, lastBoundary }) =>
+      ({ threadId, completedOperations, failedOperations, pendingOperation, lastBoundary })),
+    embeddingModelInferencePerformed: false, heapCorruptionRootCauseConfirmed: false,
+    scope: 'Observed operation boundaries only; an open operation at SIGABRT does not identify the corrupting write or free.' };
+}
+
 async function debugCapture(root, config, debuggerConfig) {
   if (!isAbsolute(debuggerConfig.binary) || !isAbsolute(debuggerConfig.commands)) {
     throw new Error('native debugger requires absolute binary and command paths');
@@ -245,8 +375,14 @@ async function debugCapture(root, config, debuggerConfig) {
 }
 
 if (!isMainThread) {
-  try { parentPort.postMessage(await run(workerData)); }
-  catch (error) { parentPort.postMessage({ error: String(error) }); }
+  try {
+    const receipt = await run(workerData);
+    lifecycle(workerData, 'worker-ready', 'after');
+    parentPort.postMessage(receipt);
+  } catch (error) {
+    lifecycle(workerData, 'worker-failed', 'after');
+    parentPort.postMessage({ error: String(error) });
+  }
 } else if (process.argv[1] === file) {
   if (process.argv[2] === 'target') await target(JSON.parse(process.argv[3]));
   else if (process.argv[2] === 'allocator-target') await allocatorTarget(JSON.parse(process.argv[3]));

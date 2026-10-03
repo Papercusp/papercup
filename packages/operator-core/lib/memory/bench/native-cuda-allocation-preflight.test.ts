@@ -256,6 +256,95 @@ describe('small native ORT teardown control', () => {
     expect(child.stderr).toContain('invalid native teardown control configuration');
     expect(child.stdout).toBe('');
   });
+
+  it.each([
+    { outcome: 'success', release: 'dispose', parentLogLevel: 'warning', terminal: 'settled' },
+    { outcome: 'shape-error', release: 'environment', parentLogLevel: 'info', terminal: 'exit-code' },
+  ] as const)('binds initializer and teardown boundaries for $outcome/$release', async configuration => {
+    const root = mkdtempSync(join(tmpdir(), 'native-ort-lifecycle-')); roots.push(root);
+    const pin = (path: string) => {
+      const bytes = readFileSync(path);
+      return { path, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    };
+    const config = { ortEntry, device: 'cpu' as const, lifecycleTrace: true, ...configuration };
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root, JSON.stringify(config)],
+      { encoding: 'utf8', timeout: 15000 });
+    expect(child.status, child.stderr).toBe(configuration.terminal === 'settled' ? 0 : 1);
+    const terminal = JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'));
+    const stderr = readFileSync(join(root, 'target.stderr.log'), 'utf8');
+    const expected = { source: pin(controlFixture), node: pin(process.execPath), ortEntry: pin(ortEntry),
+      configuration: { device: 'cpu' as const, ...configuration },
+      serializedAdmissionContext: process.env.PAPERCUSP_ADMISSION_CONTEXT ?? null };
+    const { inspectNativeLifecycleCapture: inspect } = await import('./fixtures/native-ort-teardown-control.mjs');
+    const result = inspect(stderr, terminal, expected);
+    expect(result).toMatchObject({ processId: terminal.processId, pipeEof: true, completeLifecycleObserved: true,
+      embeddingModelInferencePerformed: false, heapCorruptionRootCauseConfirmed: false });
+    const main = result.threads.find(row => row.threadId === 0)!;
+    const worker = result.threads.find(row => row.threadId > 0)!;
+    expect(main.completedOperations).toEqual(['binding-load', 'initializer-create', 'initializer-release',
+      'worker-create', 'worker-result', 'worker-terminate', 'process-settled']);
+    expect(worker.completedOperations).toEqual(['binding-load', 'session-create',
+      ...(configuration.outcome === 'success' ? ['session-run'] : []),
+      ...(configuration.release === 'dispose' ? ['session-release'] : []), 'worker-ready']);
+    expect(worker.failedOperations).toEqual(configuration.outcome === 'shape-error' ? ['session-run'] : []);
+    const prefix = 'PC_NATIVE_LIFECYCLE\t';
+    const rows = stderr.split('\n').filter(line => line.startsWith(prefix)).map(line => JSON.parse(line.slice(prefix.length)));
+    const encode = (values: typeof rows) => values.map(row => prefix + JSON.stringify(row)).join('\n') + '\n';
+    expect(rows.findIndex(row => row.threadId === 0 && row.operation === 'initializer-release' && row.boundary === 'after'))
+      .toBeLessThan(rows.findIndex(row => row.threadId > 0));
+    for (const changed of [
+      rows.map(row => ({ ...row, processId: terminal.processId + 1 })),
+      rows.map(row => row.threadId === worker.threadId ? { ...row, threadId: worker.threadId + 1 } : row),
+      rows.map((row, index) => index === 1 ? { ...row, sequence: row.sequence + 1 } : row),
+      rows.map(row => row.event === 'start' ? { ...row, source: { ...row.source, sha256: 'a'.repeat(64) } } : row),
+      rows.map(row => row.event === 'start' ? { ...row, graphSha256: 'a'.repeat(64) } : row),
+      rows.filter(row => !(row.threadId === 0 && row.operation === 'initializer-release')),
+      rows.filter(row => !(row.threadId > 0 && row.operation === 'worker-ready')),
+      rows.filter(row => row.threadId === 0),
+    ]) expect(() => inspect(encode(changed), terminal, expected)).toThrow(/native lifecycle/);
+    for (const changed of [{ ...terminal, eof: false }, { ...terminal, captureStartedBeforeExec: false },
+      { ...terminal, processId: 0 }, { ...terminal, exitCode: 2 }, { ...terminal, exitCode: null, signal: 'SIGSEGV' }]) {
+      expect(() => inspect(stderr, changed, expected)).toThrow(/native lifecycle/);
+    }
+    expect(() => inspect(stderr, terminal, { ...expected, serializedAdmissionContext: 'foreign' })).toThrow();
+    expect(() => inspect(stderr, terminal, { ...expected, ortEntry: { ...expected.ortEntry, bytes: 0 } })).toThrow();
+    // A reader control uses a prefix of this real trace. It does not assert an
+    // actual abort: it only ensures the last open operation stays explicit.
+    const abortedPrefix = rows.filter(row => !(row.threadId === 0
+      && ((row.operation === 'worker-terminate' && row.boundary === 'after') || row.operation === 'process-settled')));
+    const partial = inspect(encode(abortedPrefix), { ...terminal, exitCode: null, signal: 'SIGABRT' }, expected);
+    expect(partial.completeLifecycleObserved).toBe(false);
+    expect(partial.threads.find(row => row.threadId === 0)?.pendingOperation).toBe('worker-terminate');
+    expect(partial.heapCorruptionRootCauseConfirmed).toBe(false);
+    expect(() => inspect(encode(abortedPrefix), terminal, expected)).toThrow(/closure/);
+  }, 20000);
+
+  it('retains a failed native initializer separately from completed worker termination', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-ort-lifecycle-failure-')); roots.push(root);
+    const entry = join(root, 'failing-ort.cjs');
+    writeFileSync(entry, 'module.exports = {env: {}, InferenceSession: {create: async () => {throw new Error("controlled initializer failure")}}};\n');
+    const config = { ortEntry: entry, device: 'cpu' as const, outcome: 'success' as const,
+      release: 'dispose' as const, lifecycleTrace: true };
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root, JSON.stringify(config)],
+      { encoding: 'utf8', timeout: 15000 });
+    expect(child.status).toBe(1);
+    const pin = (path: string) => {
+      const bytes = readFileSync(path);
+      return { path, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    };
+    const { inspectNativeLifecycleCapture: inspect } = await import('./fixtures/native-ort-teardown-control.mjs');
+    const receipt = inspect(readFileSync(join(root, 'target.stderr.log'), 'utf8'),
+      JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8')), {
+        source: pin(controlFixture), node: pin(process.execPath), ortEntry: pin(entry),
+        configuration: { device: 'cpu', outcome: 'success', release: 'dispose', parentLogLevel: null, terminal: 'settled' },
+        serializedAdmissionContext: process.env.PAPERCUSP_ADMISSION_CONTEXT ?? null,
+      });
+    expect(receipt.completeLifecycleObserved).toBe(false);
+    expect(receipt.threads.find(row => row.threadId > 0)).toMatchObject({ failedOperations: ['session-create'],
+      completedOperations: ['binding-load', 'worker-failed'], pendingOperation: null });
+    expect(receipt.threads.find(row => row.threadId === 0)).toMatchObject({ failedOperations: ['worker-result'],
+      completedOperations: ['binding-load', 'worker-create', 'worker-terminate'], pendingOperation: null });
+  });
 });
 
 describe('corruption-specific native allocator detector control', () => {

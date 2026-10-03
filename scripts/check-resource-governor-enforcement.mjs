@@ -546,6 +546,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
+    path: "scripts/lib/committed-source-loader.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/committed-source-loader.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005764, WI-10005802): the `--import` load hook that makes the restricted-hold census child execute only committed bytes. Its only start is the `git(top, args)` helper: ONE synchronous `execFileSync('git', ['-C', <checkout>, ...])` call site that runs read-only `ls-tree -r HEAD` (once per checkout, cached), `check-ignore -q` (per untracked module) and `cat-file blob` (per module whose bytes differ from HEAD). Each call is bounded by a 60 s timeout and awaited to exit before the module load continues; nothing is detached and nothing is held after exit. It runs only inside the census child that scripts/lib/restricted-hold-preflight.mjs spawnCensus starts (its argv and NODE_OPTIONS name this loader), and that child is the one timeout-bounded census start already dispositioned above. Every door runs that child at most once per process, so the git reads add no residency or queue of their own. Pinned by matchesSource to that one timeout-bounded git start: a second start in this file falls out of the exemption.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
+        /\breturn execFileSync\(/.test(code) && /\btimeout:\s*GIT_TIMEOUT_MS\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "apps/operator/lib/release/cut-seed-cli.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",

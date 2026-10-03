@@ -29,9 +29,11 @@ function verdict(input: {
       ? 'provider.rateLimited'
       : input.resource === 'database'
         ? 'database.waitP95Ms'
-        : input.resource === 'memory'
-          ? 'memory.psiFullPct'
-          : 'cpu.psiSomePct';
+        : input.resource === 'io'
+          ? 'io.psiFullPct'
+          : input.resource === 'memory'
+            ? 'memory.psiFullPct'
+            : 'cpu.psiSomePct';
   return {
     schemaVersion: HEALTH_ANALYSIS_SCHEMA_VERSION,
     scopeId: 'simulation',
@@ -165,6 +167,25 @@ describe('CaplessAdaptiveController', () => {
     expect(lane(decision, 'agent').desiredWindow).toBe(60);
     expect(lane(decision, 'build').desiredWindow).toBe(105);
     expect(lane(decision, 'background').desiredWindow).toBe(110);
+  });
+
+  it('contracts only classes with explicit custom I/O demand when I/O is attributed', () => {
+    const controller = new CaplessAdaptiveController({ initialWindow: 100, contractionCooldownMs: 0 });
+    const decision = controller.step({
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'io' }),
+      classes: [
+        { admissionClass: 'background-read', demand: { custom: { 'resource:io': 9 } } },
+        { admissionClass: 'background-write', demand: { custom: { io: 1 } } },
+        { admissionClass: 'service', demand: { cpuWeight: 1 } },
+      ],
+    });
+    expect(lane(decision, 'background-read').desiredWindow).toBe(55);
+    expect(lane(decision, 'background-write').desiredWindow).toBe(95);
+    expect(lane(decision, 'service').desiredWindow).toBe(100);
+    expect(lane(decision, 'background-read').feedback[0]).toMatchObject({
+      resource: 'io',
+      attributableShare: 0.9,
+    });
   });
 
   it('temporarily pauses the responsible class on severe progress loss while preserving control', () => {

@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ResourceProfile } from '@papercusp/resource-profile';
 import {
+  LiveHealthHistoryWriter,
   LiveHealthMonitor,
   applyHostLiveHealthReadings,
   parseCloseWaitCount,
@@ -14,7 +15,12 @@ import {
   type HostLiveHealthCounters,
   type LiveHealthPaths,
 } from './live-health-monitor';
-import { emptyLiveHealthSignals } from './live-health';
+import {
+  LIVE_HEALTH_SCHEMA_VERSION,
+  emptyLiveHealthObservations,
+  emptyLiveHealthSignals,
+  type LiveHealthSnapshot,
+} from './live-health';
 
 const PATHS: LiveHealthPaths = {
   rootDir: '/tmp/health',
@@ -30,12 +36,38 @@ function counters(overrides: Partial<HostLiveHealthCounters> = {}): HostLiveHeal
     freeMemoryBytes: 250,
     cpuPsi: { some60: 2.5, full60: null },
     memoryPsi: { some60: 3.5, full60: 1.5 },
+    ioPsi: { some60: 0.25, full60: 0.05 },
     scheduler: { runnable: 4, blocked: 1 },
     memoryKernel: { swapUsedBytes: 100, swapInPages: 20, swapOutPages: 40 },
     network: { rxBytes: 2_000, txBytes: 4_000 },
     closeWaitCount: 3,
     diskFreeBytes: 5_000,
     ...overrides,
+  };
+}
+
+function historySnapshot(sequence: number): LiveHealthSnapshot {
+  const sampledAtMs = sequence * 2_000;
+  return {
+    schemaVersion: LIVE_HEALTH_SCHEMA_VERSION,
+    sequence,
+    sampledAtMs,
+    monitorStartedAtMs: 2_000,
+    cadenceMs: 2_000,
+    profile: {
+      platform: 'linux',
+      arch: 'x64',
+      release: 'fixture',
+      effectiveCores: 1,
+      physicalCores: 1,
+      totalMemoryBytes: 1_024,
+      embeddedPg: false,
+      hostRole: 'test',
+      source: '@papercusp/resource-profile',
+    },
+    writers: {},
+    observations: emptyLiveHealthObservations(),
+    signals: emptyLiveHealthSignals(sampledAtMs),
   };
 }
 
@@ -74,17 +106,49 @@ describe('live-health host parsers', () => {
     expect(firstSignals['memory.swapInBytesPerSec'].value).toBeNull();
 
     const secondSignals = emptyLiveHealthSignals(2_000);
-    applyHostLiveHealthReadings(secondSignals, 'monitor:1', counters(), first);
+    applyHostLiveHealthReadings(secondSignals, 'monitor:1', counters({ ioPsi: { some60: 8, full60: 3 } }), first);
     expect(secondSignals['cpu.hostUtilizationPct'].value).toBeCloseTo(50);
     expect(secondSignals['memory.swapInBytesPerSec'].value).toBe(10 * 4_096);
     expect(secondSignals['network.rxBytesPerSec'].value).toBe(1_000);
     expect(secondSignals['memory.hostUsedBytes'].value).toBe(750);
+    expect(secondSignals['io.psiSomePct']).toMatchObject({ state: 'measured', value: 8 });
+    expect(secondSignals['io.psiFullPct']).toMatchObject({ state: 'measured', value: 3 });
+  });
+
+  it('retains complete history within both configured sample and byte caps', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-live-health-history-'));
+    try {
+      const samplePath = join(root, 'samples.jsonl');
+      const sampleWriter = new LiveHealthHistoryWriter(samplePath, { maxSamples: 2, maxBytes: 1_000_000 });
+      for (let sequence = 1; sequence <= 4; sequence += 1) await sampleWriter.append(historySnapshot(sequence));
+      const sampleRows = (await readFile(samplePath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as LiveHealthSnapshot);
+      expect(sampleRows.map((row) => row.sequence)).toEqual([3, 4]);
+
+      const bytePath = join(root, 'bytes.jsonl');
+      const rowBytes = Buffer.byteLength(JSON.stringify(historySnapshot(1)) + '\n');
+      const byteWriter = new LiveHealthHistoryWriter(bytePath, {
+        maxSamples: 20,
+        maxBytes: rowBytes * 2,
+        maxRecordBytes: rowBytes,
+      });
+      for (let sequence = 1; sequence <= 4; sequence += 1) await byteWriter.append(historySnapshot(sequence));
+      const bytes = await readFile(bytePath, 'utf8');
+      const byteRows = bytes.trim().split('\n').map((line) => JSON.parse(line) as LiveHealthSnapshot);
+      expect((await stat(bytePath)).size).toBeLessThanOrEqual(rowBytes * 2);
+      expect(byteRows.map((row) => row.sequence)).toEqual([3, 4]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
 describe('LiveHealthMonitor composition', () => {
   it('writes one versioned snapshot with resource-profile normalization and explicit observations', async () => {
     const writeSnapshot = vi.fn(async () => {});
+    const writeHistory = vi.fn(async () => {});
     const profile = {
       signals: {
         cores: 6,
@@ -103,9 +167,10 @@ describe('LiveHealthMonitor composition', () => {
       collectHost: async () => counters(),
       readFragments: async () => [],
       writeSnapshot,
+      writeHistory,
     });
     const snapshot = await monitor.sampleOnce();
-    expect(snapshot.schemaVersion).toBe('resource-governor-live-health-v1');
+    expect(snapshot.schemaVersion).toBe(LIVE_HEALTH_SCHEMA_VERSION);
     expect(snapshot.profile).toMatchObject({
       effectiveCores: 6,
       physicalCores: 8,
@@ -125,5 +190,6 @@ describe('LiveHealthMonitor composition', () => {
       reason: 'writer-not-observed',
     });
     expect(writeSnapshot).toHaveBeenCalledWith(PATHS.snapshotPath, snapshot);
+    expect(writeHistory).toHaveBeenCalledWith(snapshot);
   });
 });

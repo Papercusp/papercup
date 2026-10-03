@@ -3584,7 +3584,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     harness_slug: any;
     plan_slug: any;
 };
-export function roleBootstrapBody({ role, agent, ownerId, bootstrapIdempotencyKey, workspace, harness, feature, plan, account, model, modelSource, headless, fleet, fleetRole, fleetName, fleetScheme, stack, }?: {
+export function roleBootstrapBody({ role, agent, ownerId, launchedBy, bootstrapIdempotencyKey, workspace, harness, feature, plan, account, model, modelSource, headless, fleet, fleetRole, fleetName, fleetScheme, stack, }?: {
     headless?: boolean | undefined;
 }): {
     stack?: any[] | undefined;
@@ -3597,6 +3597,7 @@ export function roleBootstrapBody({ role, agent, ownerId, bootstrapIdempotencyKe
     model?: any;
     account?: any;
     bootstrap_idempotency_key?: any;
+    launched_by?: any;
     owner_id?: any;
     role: any;
     agent: any;

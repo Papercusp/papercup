@@ -1,4 +1,83 @@
 {
+  "nativeLifecycleTracePreparation": {
+    "status": "Opt-in native initializer and teardown lifecycle records qualified in the current CPU test framework; retained-runtime CUDA probe is still pending",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "reuse": "Extended the maintained native-ort-teardown-control fixture and its existing canonical test file. No new resource starts, allocator interposer, model worker, service or admission exception.",
+    "before": {
+      "bytes": 171318,
+      "sha256": "3fe5240e3d6e9fafa519988dc162cb85d4da05d673734195c4d2108a35c425b1"
+    },
+    "instrumentation": {
+      "optIn": "lifecycleTrace: true",
+      "output": "Synchronous PC_NATIVE_LIFECYCLE records on the existing stderr pipe, with per-thread sequence and same-process identity.",
+      "operations": [
+        "binding-load",
+        "initializer-create",
+        "initializer-release",
+        "worker-create",
+        "worker-result",
+        "worker-terminate",
+        "session-create",
+        "session-run",
+        "session-release",
+        "worker-ready",
+        "worker-failed",
+        "process-settled"
+      ],
+      "binding": "Source, executing Node, ORT entry, graph identity, configuration and exact serialized admission context in each thread start; created-worker identity joins the two streams.",
+      "interpretation": "These are JavaScript API and awaited lifetime boundaries. A last open operation at SIGABRT does not identify a corrupting write, native free, allocator owner or resource-pressure cause.",
+      "disabled": "No lifecycle records are emitted unless explicitly enabled. The original awaited cleanup branches and nested start population remain explicit."
+    },
+    "verification": {
+      "canonicalTestRunGroup": "24996e63-83c1-4d3a-bf39-f19b450c9e91",
+      "canonicalTestRunIds": [
+        20636334
+      ],
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "newCases": "Real CPU success/dispose/first-warning and shape-error/environment/first-info sequences; controlled initializer exception verifies error reporting and awaited worker termination.",
+      "negativeCases": "Reject changed source/ORT/graph/context, foreign process or worker, missing sequence/boundary/initializer/release/worker closure, partial EOF and unsupported terminal.",
+      "abortReaderControl": "A prefix of a real CPU trace with a synthetic terminal validates explicit pending worker-terminate reporting only. This is not an actual abort reproduction.",
+      "scopedCompiler": {
+        "engine": "tsc-service",
+        "namedFiles": 2,
+        "checkedFiles": 2,
+        "errorCount": 0,
+        "incomplete": false,
+        "scope": "Named test and declaration files, not the whole project or live gate."
+      },
+      "resourceAdmissionScanner": "Passed after retaining the existing two explicit awaited worker.terminate branches. The source-conditioned upstream disposition was not widened.",
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 24362,
+          "sha256": "4abceb75ffe45df2457d9982793b883e8a42f3f500c5e8b7693f2d9446fd47c7"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.d.mts",
+          "bytes": 2222,
+          "sha256": "dde14f09ceb452c0b6bed30e91e51b6e7732e2eb86920c95e6ef43e2f7540d43"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 28523,
+          "sha256": "14f05e74c77598549cd9ae4e373f495ef50d3b4c5a143481571407b4d18d2f77"
+        }
+      ],
+      "retainedAssessmentPins": [
+        "1f79e742989c8fa86d0361865deaaae5061da9e261834df2800b034e9062bb67",
+        "3dc04c5ce1b93adb9ecea035bf5325ffa71b00ed4676b270ae4af43a2046a8e4",
+        "7c0db0313803046057c893d3a2f9c8363c35b489a54a9a7803a587a8bc7dc07f"
+      ]
+    },
+    "embeddingModelInferencePerformed": false,
+    "newGpuCapturePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "next": "After qualifying the exact frozen retained Node/ORT/source/context with this new instrumentation, run one immutable governed 130-byte CPU precondition and at most two small CUDA cells, stopping at the first actual abort. Preserve old captures; do not repeat the old debugger batch or large8192 inference without a further distinguishing probe."
+  },
   "nativeHostAllocatorPositiveControl": {
     "status": "Corruption-specific host allocator detector qualified for a bounded tail overwrite; historical ORT corruption root cause remains open",
     "workItem": "WI-10005599",

@@ -25,3 +25,21 @@ export function inspectAllocatorDetectorCapture(stdout: string, stderr: string, 
   detectorTriggered: boolean; requestedBytes: 64;
   embeddingModelInferencePerformed: false; heapCorruptionRootCauseConfirmed: false;
 };
+
+type NativePin = { path: string; bytes: number; sha256: string };
+export function inspectNativeLifecycleCapture(stderr: string, terminal: {
+  processId: number; eof: boolean; captureStartedBeforeExec: boolean;
+  exitCode: number | null; signal: string | null;
+}, expected: {
+  source: NativePin; node: NativePin; ortEntry: NativePin;
+  configuration: { device: 'cpu' | 'cuda'; outcome: 'success' | 'shape-error';
+    release: 'dispose' | 'environment'; parentLogLevel: 'warning' | 'info' | null;
+    terminal: 'settled' | 'uncaught' | 'exit-code' | 'abort-control' };
+  serializedAdmissionContext: string | null;
+}): {
+  processId: number; source: 'native-lifecycle-boundaries'; pipeEof: true;
+  exitCode: number | null; signal: string | null; completeLifecycleObserved: boolean;
+  threads: Array<{ threadId: number; completedOperations: string[]; failedOperations: string[];
+    pendingOperation: string | null; lastBoundary: { operation: string; boundary: string } | null }>;
+  embeddingModelInferencePerformed: false; heapCorruptionRootCauseConfirmed: false; scope: string;
+};

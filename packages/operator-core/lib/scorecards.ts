@@ -24,6 +24,26 @@ import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
+  collectGoalHolderBehaviorMetrics,
+  HOLDER_BEHAVIOR_INSTRUMENT_KEYS,
+  holderBehaviorCriterionForInstrument,
+  rateGoalHolderBehavior,
+  resolveHolderGoalForWindow,
+  type GoalHolderBehaviorMetrics,
+} from './goal-holder-behavior-metrics';
+
+/** Default holder-behavior measurement: resolve the stewarded goal, then read the ledgers. */
+async function defaultHolderMetrics(input: {
+  holderOwnerId: string;
+  windowStart: string;
+  windowEnd: string;
+}): Promise<GoalHolderBehaviorMetrics | null> {
+  const { sql } = getOrgPg();
+  const goal = await resolveHolderGoalForWindow(input, { sql });
+  if (!goal) return null;
+  return collectGoalHolderBehaviorMetrics({ ...input, ...goal }, { sql });
+}
+import {
   OBSERVATION_UNKNOWN_REASONS,
   asStructuredObservation,
   normalizeScorecardRatings,
@@ -307,6 +327,12 @@ export async function resolveScorecardInstrumentSnapshots(
     list?: typeof listScorecardPage;
     rubric?: typeof getRubric;
     now?: () => number;
+    /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
+    holderMetrics?: (input: {
+      holderOwnerId: string;
+      windowStart: string;
+      windowEnd: string;
+    }) => Promise<GoalHolderBehaviorMetrics | null>;
   } = {},
 ): Promise<Record<string, ScorecardInstrumentSnapshot> | undefined> {
   const snapshots: Record<string, ScorecardInstrumentSnapshot> = Object.fromEntries(
@@ -315,7 +341,30 @@ export async function resolveScorecardInstrumentSnapshots(
       value.provenance === 'platform-computed' ? { ...value, provenance: 'self-reported' as const } : { ...value },
     ]),
   );
-  const registered = new Set(['woe.goal-mode-base-scorecard']);
+  const registered = new Set(['woe.goal-mode-base-scorecard', ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS)]);
+  // P-013 (goal-holder-plans-ideation-truthful-reports-2026-10-03): the holder-behavior
+  // criteria are measured once per call from the canonical ledgers, so a grader's claimed
+  // pass is refused (verdictMismatches) when the measurement says fail.
+  let holderRatings: Promise<
+    | { ratings: ReturnType<typeof rateGoalHolderBehavior>; metrics: GoalHolderBehaviorMetrics }
+    | { error: string }
+  > | null = null;
+  const measureHolder = (subject: ObservationSubject) => {
+    holderRatings ??= (async () => {
+      try {
+        const metrics = await (deps.holderMetrics ?? defaultHolderMetrics)({
+          holderOwnerId: subject.ref,
+          windowStart: subject.windowStart as string,
+          windowEnd: subject.windowEnd as string,
+        });
+        if (!metrics) return { error: 'No goal stewarded by this holder in the window.' };
+        return { ratings: rateGoalHolderBehavior(metrics), metrics };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    })();
+    return holderRatings;
+  };
   const keys = new Set(input.rubric.criteria.map((criterion) =>
     criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
   ));
@@ -342,6 +391,41 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    const holderCriterion = holderBehaviorCriterionForInstrument(key);
+    if (holderCriterion) {
+      const measured = await measureHolder(subject);
+      if ('error' in measured) {
+        snapshots[key] = {
+          ...unknown(`Holder-behavior instrument unavailable: ${measured.error}`),
+          evidenceRef: 'goal-holder-behavior-metrics',
+          value: { resolver: key, resolverVersion: 1, reason: measured.error },
+        };
+        continue;
+      }
+      const rating = measured.ratings[holderCriterion];
+      snapshots[key] = {
+        verdict: rating.verdict,
+        measuredAt,
+        provenance: 'platform-computed',
+        window,
+        evidenceRef: 'goal-holder-behavior-metrics',
+        value: {
+          resolver: key,
+          resolverVersion: 1,
+          criterion: holderCriterion,
+          reason: rating.reason,
+          goalId: measured.metrics.window.goalId,
+          metrics: {
+            planAuthorship: measured.metrics.planAuthorship,
+            ideation: measured.metrics.ideation,
+            ownerReports: measured.metrics.ownerReports,
+            loop: measured.metrics.loop,
+            nudges: measured.metrics.nudges,
+          },
+        },
+      };
       continue;
     }
     try {

@@ -2,14 +2,31 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { frontmatterDocuments, parseDocumentsField } from '@papercusp/operator-core/lib/harness/docs/subject-ref';
+import { assertPublicManualSource, PUBLIC_MANUAL_GUIDES } from '../../papercusp-docs/scripts/source-contract.mjs';
+import { mkdtempSync, mkdirSync, cpSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const root = resolve(import.meta.dirname, '../../papercusp-docs');
 const content = resolve(root, 'src/content/docs');
-const pages = ['index', 'using-the-app', 'workspaces-and-agents', 'harness-templates',
-  'harness-snapshots', 'plugins', 'remote-access', 'troubleshooting', 'cloud-workspaces',
-  'quickstart', 'plans-and-work', 'agent-modes-and-fleets', 'accounts-and-billing', 'voice'];
+const pages = PUBLIC_MANUAL_GUIDES;
 
 describe('public user manual source readiness', () => {
+  it('the actual Astro publication guard accepts current source', () => {
+    expect(assertPublicManualSource(root).guides).toBe(pages.length);
+  });
+  it('the actual publication guard rejects deleted guide coverage before building', () => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'public-manual-contract-'));
+    const docs = resolve(fixture, 'apps/papercusp-docs');
+    try {
+      mkdirSync(docs, { recursive: true });
+      cpSync(resolve(root, 'src'), resolve(docs, 'src'), { recursive: true });
+      cpSync(resolve(root, 'astro.config.mjs'), resolve(docs, 'astro.config.mjs'));
+      rmSync(resolve(docs, 'src/content/docs/quickstart.mdx'));
+      expect(() => assertPublicManualSource(docs)).toThrow('missing guide: quickstart');
+      writeFileSync(resolve(docs, 'src/content/docs/quickstart.mdx'), '---\ntitle: Broken\n---\n## Intro\n');
+      expect(() => assertPublicManualSource(docs)).toThrow('untracked guide: quickstart.mdx');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
   it.each(pages)('publishes a substantive maintained guide: %s', (slug) => {
     const text = readFileSync(resolve(content, `${slug}.mdx`), 'utf8');
     expect(text).toMatch(/^---\ntitle: /);

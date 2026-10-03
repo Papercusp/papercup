@@ -270,7 +270,7 @@ describe('the trigger: a seam gained call sites', () => {
     `;
     const after = before.replace('if (input.enabled)', 'if (input.enabled && input.ready)');
     const rows = changedSeamControlFlow(before, after, 'branch-scope.ts');
-    expect(rows.map(({ seam }) => seam)).toEqual(['runner()']);
+    expect(rows.map(({ seam }: { seam: string }) => seam)).toEqual(['runner()']);
   });
 
   it('treats a const-hoisted alias in an equivalent guard as unchanged eligibility', () => {

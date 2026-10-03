@@ -75,7 +75,7 @@ describe('resource-governor live-health out-of-process monitor', () => {
     });
     children.add(child);
     const ready = await waitForReady(child);
-    expect(ready).toContain('resource-governor-live-health-v1');
+    expect(ready).toContain('resource-governor-live-health-v2');
 
     const snapshot = JSON.parse(await readFile(join(root, 'live-health.json'), 'utf8')) as {
       schemaVersion: string;
@@ -85,7 +85,7 @@ describe('resource-governor live-health out-of-process monitor', () => {
       signals: Record<string, { state: string; value: unknown }>;
       observations: Record<string, Record<string, unknown>>;
     };
-    expect(snapshot.schemaVersion).toBe('resource-governor-live-health-v1');
+    expect(snapshot.schemaVersion).toBe('resource-governor-live-health-v2');
     expect(snapshot.sequence).toBe(1);
     expect(snapshot.profile).toMatchObject({ source: '@papercusp/resource-profile' });
     expect(snapshot.profile.effectiveCores).toBeGreaterThan(0);

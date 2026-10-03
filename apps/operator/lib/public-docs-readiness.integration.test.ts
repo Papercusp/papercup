@@ -3,7 +3,9 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { servePublicDocs } from '@papercusp/operator-core/lib/public-docs';
 
-const root = resolve(import.meta.dirname, '../../papercusp-docs/dist');
+const root = process.env.PAPERCUSP_PUBLIC_DOCS_ROOT
+  ? resolve(process.env.PAPERCUSP_PUBLIC_DOCS_ROOT)
+  : resolve(import.meta.dirname, '../../papercusp-docs/dist');
 
 describe('built public manual contract', () => {
   it.each(['quickstart', 'plans-and-work', 'agent-modes-and-fleets', 'accounts-and-billing', 'voice'])(

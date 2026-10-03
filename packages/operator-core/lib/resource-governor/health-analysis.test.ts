@@ -42,6 +42,10 @@ const HEALTHY_VALUES: Partial<Record<LiveHealthSignalKey, number | boolean>> = {
   'cpu.hostUtilizationPct': 35,
   'cpu.processUtilizationPct': 20,
   'cpu.psiSomePct': 0.1,
+  'io.psiSomePct': 0.1,
+  'io.psiFullPct': 0,
+  'io.processReadBytesPerSec': 0,
+  'io.processWriteBytesPerSec': 0,
   'latency.eventLoopP95Ms': 8,
   'memory.hostUsedBytes': 8 * 1024 ** 3,
   'memory.workingSetBytes': 512 * 1024 ** 2,
@@ -95,6 +99,9 @@ describe('resource-governor rolling health analysis', () => {
       DEFAULT_SERVICE_OBJECTIVES.map((objective) => objective.signal),
     );
     for (const signal of NON_CAUSAL_CAPACITY_SIGNALS) expect(objectiveSignals.has(signal)).toBe(false);
+    expect(NON_CAUSAL_CAPACITY_SIGNALS).toEqual(
+      expect.arrayContaining(['io.processReadBytesPerSec', 'io.processWriteBytesPerSec']),
+    );
     expect(new Set(LIVE_HEALTH_SIGNAL_KEYS).size).toBe(LIVE_HEALTH_SIGNAL_KEYS.length);
   });
 
@@ -164,6 +171,8 @@ describe('resource-governor rolling health analysis', () => {
         'memory.hostUsedBytes': 120 * 1024 ** 3,
         'memory.workingSetBytes': 32 * 1024 ** 3,
         'memory.swapUsedBytes': 48 * 1024 ** 3,
+        'io.processReadBytesPerSec': 64 * 1024 ** 2,
+        'io.processWriteBytesPerSec': 32 * 1024 ** 2,
         'queue.oldestAgeMs': 3_600_000,
       }),
     );
@@ -173,6 +182,8 @@ describe('resource-governor rolling health analysis', () => {
         'cpu.hostUtilizationPct',
         'memory.hostUsedBytes',
         'memory.swapUsedBytes',
+        'io.processReadBytesPerSec',
+        'io.processWriteBytesPerSec',
         'queue.oldestAgeMs',
       ]),
     );
@@ -227,6 +238,31 @@ describe('resource-governor rolling health analysis', () => {
       expect.arrayContaining([
         expect.objectContaining({ causeSignal: 'memory.swapInBytesPerSec', resource: 'memory', actionable: true }),
         expect.objectContaining({ causeSignal: 'memory.psiFullPct', resource: 'memory', actionable: true }),
+      ]),
+    );
+  });
+
+  it('attributes full I/O pressure only when service progress degrades', () => {
+    const pressureOnly = primedAnalyzer().evaluate(frame(4, { 'io.psiFullPct': 12 }));
+    expect(pressureOnly).toMatchObject({ state: 'healthy', actionable: false, severity: 'none' });
+
+    const stalled = primedAnalyzer().evaluate(
+      frame(4, {
+        'io.psiFullPct': 12,
+        'progress.heartbeatLagMs': 900,
+        'latency.eventLoopP95Ms': 180,
+      }),
+    );
+    expect(stalled).toMatchObject({ state: 'degraded', actionable: true, severity: 'critical' });
+    expect(stalled.actionableResources).toContain('io');
+    expect(stalled.attributions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          causeSignal: 'io.psiFullPct',
+          outcomeSignal: 'latency.eventLoopP95Ms',
+          resource: 'io',
+          actionable: true,
+        }),
       ]),
     );
   });

@@ -97,6 +97,8 @@ import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } fr
 import { activeWorkspaceId } from '../../workspace-registry';
 import { probeHttpReachable, type HttpProbeResult } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
+import { integrationTreeRoots } from '../../harness/routines/restricted-tree-skip';
+import { restrictedTreeHoldRefusal, type RestrictedHoldRefusal } from '../testing/restricted-hold-fence';
 import {
   acquireGitSyncRestartBarrier,
   GIT_SYNC_RESTART_BARRIER_DRAIN_SEC,
@@ -827,6 +829,63 @@ const COOLDOWN_SEC: Partial<Record<RestartTarget, number>> = {
   'mcp-proxy': GATEWAY_COOLDOWN_SEC,
 };
 
+/**
+ * Targets that restart network-capable processes directly from Papercusp's
+ * integration checkout. `dev` is intentionally absent: its WorkingDirectory
+ * is the green release checkout even though its unit exports the integration
+ * root for other purposes. The app sidecars use their own repositories, and
+ * `desktop-dev` is a wrapper-owned packaged runtime.
+ */
+const INTEGRATION_TREE_RESTART_TARGETS: ReadonlySet<RestartTarget> = new Set([
+  'staging',
+  'gateway',
+  'bg-host',
+  'embed-sidecar',
+  'mcp-proxy',
+  'mcp-proxy-staging',
+]);
+
+type RestartRestrictedHoldCheck = {
+  checked: boolean;
+  roots: string[];
+  refusal: RestrictedHoldRefusal | null;
+};
+
+function restrictedHoldRootsForRestart(target: RestartTarget, workingDirectory: string): string[] | null {
+  if (!INTEGRATION_TREE_RESTART_TARGETS.has(target)) return null;
+  const normalized = workingDirectory.trim();
+  if (!normalized || normalized === '[not set]') return [];
+
+  // Most integration services run with <checkout>/apps/operator as their
+  // WorkingDirectory. The inference gateway runs from <checkout> itself; feed
+  // the same authoritative unit root through the shared helper in either case.
+  const resolved = resolve(normalized);
+  const operatorWorkingDirectory = /(?:^|[\\/])apps[\\/]operator$/.test(resolved)
+    ? resolved
+    : resolve(resolved, 'apps', 'operator');
+  return integrationTreeRoots({}, operatorWorkingDirectory);
+}
+
+async function checkRestrictedHoldBeforeRestart(
+  target: RestartTarget,
+  workingDirectory: string,
+  unit: string,
+): Promise<RestartRestrictedHoldCheck | null> {
+  const roots = restrictedHoldRootsForRestart(target, workingDirectory);
+  if (roots === null) return null;
+  if (roots.length === 0) {
+    return {
+      checked: false,
+      roots,
+      refusal: {
+        error: 'restricted_hold_state_unknown',
+        hint: `could not determine ${unit} WorkingDirectory; a confirmed restart was refused because restricted-write holds could not be checked`,
+      },
+    };
+  }
+  return { checked: true, roots, refusal: await restrictedTreeHoldRefusal(roots) };
+}
+
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
@@ -1464,6 +1523,11 @@ export default defineTool({
       // run is where the decision is actually made, so "this tree cannot boot" belongs HERE,
       // where it costs nothing, not only in the refusal afterwards.
       const bootPreview = await preflightRestartTarget(target);
+      const restrictedHoldPreview = await checkRestrictedHoldBeforeRestart(
+        target,
+        bootPreview.requestedRoot,
+        bootPreview.unit,
+      );
       // WI-2140796: same reasoning again — a quiesced bg-host is worth knowing about
       // BEFORE the confirmed call, not only in its refusal.
       const quiescePreview = isQuiesceSensitiveTarget(target)
@@ -1481,6 +1545,16 @@ export default defineTool({
           ...(bootPreview.missing.length ? { missing: bootPreview.missing } : {}),
           ...(bootPreview.reason ? { reason: bootPreview.reason } : {}),
         },
+        ...(restrictedHoldPreview
+          ? {
+              restricted_hold: {
+                checked: restrictedHoldPreview.checked,
+                roots: restrictedHoldPreview.roots,
+                would_block: restrictedHoldPreview.refusal !== null,
+                ...(restrictedHoldPreview.refusal ?? {}),
+              },
+            }
+          : {}),
         ...(quiescePreview
           ? {
               quiesce: {
@@ -1584,6 +1658,27 @@ export default defineTool({
     // IS the restart must stay restartable via override_boot_integrity. Fails OPEN — an
     // unreadable tree reports checked:false and proceeds, and is NEVER treated as clean.
     const bootIntegrity = target === 'desktop-dev' ? null : await preflightRestartTarget(target);
+    // D-012: this is an execution-boundary fence, not a restart-health override.
+    // It runs before any target-specific preparation, lock, drain, or restart,
+    // and its refusal cannot be overridden by override_boot_integrity.
+    const restrictedHoldCheck = bootIntegrity
+      ? await checkRestrictedHoldBeforeRestart(target, bootIntegrity.requestedRoot, bootIntegrity.unit)
+      : null;
+    if (restrictedHoldCheck?.refusal) {
+      return json({
+        ok: false,
+        target,
+        reason: restrictedHoldCheck.refusal.error,
+        restarted: false,
+        drained: false,
+        restricted_hold: {
+          checked: restrictedHoldCheck.checked,
+          roots: restrictedHoldCheck.roots,
+          ...restrictedHoldCheck.refusal,
+        },
+        note: `Restart REFUSED — NOTHING was done: no lock taken, no drain, ${cfg.unit} left running exactly as it was. ${restrictedHoldCheck.refusal.hint}`,
+      });
+    }
     if (bootIntegrity && !bootIntegrity.ok && args.override_boot_integrity !== true) {
       return json({
         ok: false,
