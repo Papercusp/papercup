@@ -662,10 +662,6 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    // WI-10005640: 24670 -> 24046. items[] entries gained the 4 canonical loop carry fields
-    // (shared $defs ref) while the duplicated item-level append/unchanged prose was condensed.
-    expect(JSON.stringify(json)).toHaveLength(24046);
-
     const hasSchemaField = (value: unknown, field: string): boolean => {
       value = resolveRef(value);
       if (!value || typeof value !== 'object') return false;
@@ -674,6 +670,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       if (properties && typeof properties === 'object' && field in properties) return true;
       return Object.values(record).some((child) => hasSchemaField(child, field));
     };
+    expect(hasSchemaField(json.properties?.checks, 'replaces')).toBe(true);
+    expect(hasSchemaField(json.properties?.items?.items, 'replaces')).toBe(true);
     const hasProbeSchemaRevision = (value: unknown): boolean => {
       value = resolveRef(value);
       if (!value || typeof value !== 'object') return false;
@@ -687,6 +685,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     };
     expect(hasProbeSchemaRevision(json.properties?.checks)).toBe(true);
     expect(hasProbeSchemaRevision(json.properties?.items?.items)).toBe(true);
+    // WI-10005640: 24670 -> 24046 after sharing loop carry fields via $defs; P-025
+    // adds the shared replaces ref exactly once to the checks-row definition.
+    expect(JSON.stringify(json)).toHaveLength(24444);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
