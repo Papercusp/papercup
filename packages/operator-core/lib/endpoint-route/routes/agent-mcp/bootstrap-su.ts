@@ -2434,20 +2434,6 @@ export const bootstrapSu = defineTool({
     // existing PTY incarnation. Consume only after the caller's owner id has
     // passed stable-identity and liveness checks; a minted launch or prepared
     // session-port transfer must not take another launch's carry.
-    if (requestedSid != null && !sessionPortContext) {
-      pendingCarryRespawnOwnerId = sid;
-      try {
-        pendingCarryRespawnForBootstrap = await consumePendingCarryRespawn(sid);
-      } catch (error) {
-        return jsonRes({
-          status: 'error',
-          error: 'pending_carry_respawn_unavailable',
-          detail: error instanceof Error ? error.message : String(error),
-        }, 503);
-      }
-      if (!pendingCarryRespawnForBootstrap) pendingCarryRespawnOwnerId = null;
-    }
-
     const nativeSessionId = backendFeatureGuard(agent, 'forced-native-session-id').supported ? randomUUID() : null;
 
     // launch-path-argv-reconstruction (WI-1343): the exact `psu …` invocation that
@@ -2883,11 +2869,41 @@ export const bootstrapSu = defineTool({
     // agent-launched. Fail-soft: a write hiccup just reverts to the pre-fix inherited
     // default, never blocks the launch (a coordination-quality write, not a
     // correctness gate — unlike the WI-1893 membership stamp above).
+    let wakeModeTools: typeof import('../../../agent-tools/coordination/wake-mode') | null = null;
     try {
-      const { ensureLaunchedWakeAuto } = await import('../../../agent-tools/coordination/wake-mode');
+      wakeModeTools = await import('../../../agent-tools/coordination/wake-mode');
+      const { ensureLaunchedWakeAuto } = wakeModeTools;
       await ensureLaunchedWakeAuto(sid, { fleetRole: fleetPin.fleetRole, launchedByAgent: !!launchedBy });
     } catch {
       /* degrade to the inherited default; non-fatal */
+    }
+    if (requestedSid != null && !sessionPortContext) {
+      if (!wakeModeTools) {
+        return jsonRes({ status: 'error', error: 'wake_mode_unavailable' }, 503);
+      }
+      let wakeMode: 'auto' | 'manual';
+      try {
+        wakeMode = await wakeModeTools.resolveWakeMode(sid);
+      } catch (error) {
+        return jsonRes({
+          status: 'error',
+          error: 'wake_mode_unavailable',
+          detail: error instanceof Error ? error.message : String(error),
+        }, 503);
+      }
+      if (wakeMode !== 'manual') {
+        pendingCarryRespawnOwnerId = sid;
+        try {
+          pendingCarryRespawnForBootstrap = await consumePendingCarryRespawn(sid);
+        } catch (error) {
+          return jsonRes({
+            status: 'error',
+            error: 'pending_carry_respawn_unavailable',
+            detail: error instanceof Error ? error.message : String(error),
+          }, 503);
+        }
+        if (!pendingCarryRespawnForBootstrap) pendingCarryRespawnOwnerId = null;
+      }
     }
 
     // kickoff-prompt-absorption-2026-07-17 P-001: auto-arm a plan-bound fleet

@@ -27,6 +27,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveWakeMode } from '../coordination/wake-mode';
 import { injectIntoHost, selfCompactionAvailability } from '../../events/await/psu-pty-discovery';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
@@ -476,6 +477,37 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    let wakeMode: 'auto' | 'manual';
+    try {
+      wakeMode = await resolveWakeMode(identity.ownerId);
+    } catch {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'wake_mode_unavailable',
+            note: 'The current wake mode could not be read, so no carry-respawn was queued.',
+          }),
+        }],
+        isError: true,
+      };
+    }
+    if (wakeMode === 'manual') {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'wake_mode_manual',
+            note: 'Carry-respawn is paused by the current manual wake mode. The session remains intact.',
+          }),
+        }],
+        isError: true,
+      };
+    }
     // Check caller-authored hints before ANY fallback can seed them into a cold
     // loop carry-note. A later check covers generated/default carry text too.
     const explicitCarryRefusal = frozenCompactionCarryRefusal(

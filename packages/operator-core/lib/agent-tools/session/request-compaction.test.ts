@@ -119,6 +119,11 @@ vi.mock('../../events/await/psu-pty-discovery', () => {
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller' })),
 }));
+const resolveWakeModeMock = vi.hoisted(() => vi.fn());
+vi.mock('../coordination/wake-mode', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/wake-mode')>()),
+  resolveWakeMode: (...args: unknown[]) => resolveWakeModeMock(...args),
+}));
 const getLoopStatus = vi.fn();
 const readActiveLoopFacts = vi.fn();
 const materializeLoop = vi.fn();
@@ -268,6 +273,7 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  resolveWakeModeMock.mockReset().mockResolvedValue('auto');
   await __resetRefusalMarkers(); // P-016 durable marker — isolate each test
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   delete process.env.PAPERCUSP_FLUSH_GATE;
@@ -413,6 +419,28 @@ describe('session:request-compaction — reports what happened to the PREVIOUS r
 });
 
 describe('session:request-compaction — P-018/P-022 carry-respawn actuation', () => {
+  it('refuses before persistence or host injection when the effective mode is manual', async () => {
+    resolveWakeModeMock.mockResolvedValue('manual');
+
+    const out = await call({ focus: 'continue the preserved unit' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'wake_mode_manual' });
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the effective wake mode cannot be read', async () => {
+    resolveWakeModeMock.mockRejectedValueOnce(new Error('read unavailable'));
+
+    const out = await call({ focus: 'continue the preserved unit' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'wake_mode_unavailable' });
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
   it('keeps the transport budget beyond the legacy-host compatibility wait', () => {
     expect(tool.timeoutSec).toBe(600);
   });

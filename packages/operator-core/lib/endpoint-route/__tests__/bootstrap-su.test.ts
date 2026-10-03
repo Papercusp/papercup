@@ -515,6 +515,13 @@ vi.mock('../../session-brief', async (orig) => ({
   restorePendingCarryRespawn: (...args: unknown[]) =>
     restorePendingCarryRespawnMock(...(args as [string, string, PendingCarryRespawnTestSlot])),
 }));
+const resolveWakeModeMock = vi.hoisted(() => vi.fn(async () => 'auto' as const));
+const ensureLaunchedWakeAutoMock = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('../../agent-tools/coordination/wake-mode', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  resolveWakeMode: (...args: unknown[]) => resolveWakeModeMock(...args),
+  ensureLaunchedWakeAuto: (...args: unknown[]) => ensureLaunchedWakeAutoMock(...args),
+}));
 // EI-21442511412659661: bootstrap must consult the shared liveness oracle and
 // treat an absent/rejected read as unknown (therefore blocking). Keep the route
 // suite PG-free while asserting the exact hydrated call shape.
@@ -604,6 +611,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   consumePendingCarryRespawnMock.mockReset().mockResolvedValue(null);
   restorePendingCarryRespawnMock.mockReset().mockResolvedValue(true);
+  resolveWakeModeMock.mockReset().mockResolvedValue('auto');
+  ensureLaunchedWakeAutoMock.mockReset().mockResolvedValue(null);
   resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   claimAgentLaunchMock.mockReset().mockResolvedValue({
@@ -955,6 +964,21 @@ describe('bootstrap-su', () => {
     expect(compiledPrompt.indexOf('PLAYBOOK + CTX BODY')).toBeLessThan(
       compiledPrompt.indexOf(slot.systemPromptAddendum),
     );
+    expect(restorePendingCarryRespawnMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves a pending carry when the effective wake mode is manual', async () => {
+    resolveWakeModeMock.mockResolvedValue('manual');
+
+    const response = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      owner_id: 'su-carry-paused',
+    });
+
+    expect(response.status).toBe(200);
+    expect(resolveWakeModeMock).toHaveBeenCalledWith('su-carry-paused');
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
     expect(restorePendingCarryRespawnMock).not.toHaveBeenCalled();
   });
 
