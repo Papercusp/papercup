@@ -999,7 +999,7 @@ describe('getFeedbackCore — routed', () => {
     expect((stored.routing as RoutingSnapshot).deliveryIntent).toBe(allowDispatch ? 'dispatch' : 'retrieval-only');
   });
 
-  it('reads typed responder receipts after expiry independently of the bounded cascade digest', async () => {
+  it.each(['answer', 'new_fact', 'decline'] as const)('reads typed responder receipts after expiry independently of the bounded cascade digest: %s', async (kind) => {
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
     const result = asOk(await getFeedbackCore(baseReq, deps));
     const sql = deps.getSql();
@@ -1013,16 +1013,16 @@ describe('getFeedbackCore — routed', () => {
     `;
     await sql`
       INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind, created_at)
-      VALUES (${WS}, 910001, ${result.conversation_id}, ${baseReq.requesterId}, 'new_fact', '2026-08-16T00:00:00.123450Z')
+      VALUES (${WS}, ${910000 + convSeq * 2}, ${result.conversation_id}, ${baseReq.requesterId}, 'new_fact', '2026-08-16T00:00:00.123450Z')
     `;
     const read = () => readRoutingHealthRows(sql, WS, new Date(sinceMs).toISOString(), new Date(untilMs).toISOString(), 5000, asOf);
-    expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(false);
+    expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)).toMatchObject({ has_feedback: false, has_decline: false });
     await sql`
       INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind, created_at)
-      VALUES (${WS}, 910002, ${result.conversation_id}, 'agent-a-fork', 'answer', '2026-08-16T00:00:00.123457Z')
+      VALUES (${WS}, ${910001 + convSeq * 2}, ${result.conversation_id}, 'agent-a-fork', ${kind}, '2026-08-16T00:00:00.123457Z')
     `;
-    expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(false);
-    await sql`UPDATE harness_shared.consult_post_meta SET created_at = '2026-08-16T00:00:00.123455Z' WHERE workspace_id = ${WS} AND post_id = 910002`;
+    expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)).toMatchObject({ has_feedback: false, has_decline: false });
+    await sql`UPDATE harness_shared.consult_post_meta SET created_at = '2026-08-16T00:00:00.123455Z' WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id} AND author_id = 'agent-a-fork'`;
     const { rows, truncated } = await read();
     // Prepared timestamptz parameters are serialized through a JS Date by
     // postgres.js. A text parameter preserves the database's microsecond cut.
@@ -1034,12 +1034,16 @@ describe('getFeedbackCore — routed', () => {
     `;
     expect(cuts.inferred_includes).toBe(false);
     expect(cuts.exact_includes).toBe(true);
-    expect(rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback,
+    expect(rows.find((row) => row.conversation_id === result.conversation_id),
       JSON.stringify({ cuts, asOf, selectedRow: rows.find((row) => row.conversation_id === result.conversation_id) }),
-    ).toBe(true);
-    const health = routingHealthFromRows(rows, { sinceMs, untilMs, nowMs: Date.parse(asOf), truncatedByLimit: truncated });
-    expect(health.requestCohort.totals.outcomes.received).toBe(1);
-    expect(health.requestCohort.totals.outcomes.failed).toBe(0);
+    ).toMatchObject({ has_feedback: kind !== 'decline', has_decline: kind === 'decline' });
+    expect(truncated).toBe(false);
+    const receiptRow = rows.find((row) => row.conversation_id === result.conversation_id)!;
+    const receiptHealth = routingHealthFromRows([receiptRow], { sinceMs, untilMs, nowMs: Date.parse(asOf), truncatedByLimit: false });
+    expect(receiptHealth.requestCohort.totals.outcomes[kind === 'decline' ? 'declined' : 'received']).toBe(1);
+    expect(receiptHealth.requestCohort.totals.outcomes.failed).toBe(0);
+    await sql`UPDATE harness_shared.consult_post_meta SET created_at = ${asOf}::text::timestamptz WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id} AND author_id = 'agent-a-fork'`;
+    expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)).toMatchObject({ has_feedback: kind !== 'decline', has_decline: kind === 'decline' });
   });
 
   it('R-2: a DEAD top candidate is selected, not skipped — deadness changes neither rank nor eligibility', async () => {
