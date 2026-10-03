@@ -1,13 +1,14 @@
 import type { ToolResult } from '@papercusp/tooldef';
 import { describe, expect, it } from 'vitest';
 import decline from './decline';
+import getFeedback from './get-feedback';
 import reply from './reply';
 
 function result(payload: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify({ data: payload }) }] };
 }
 
-describe('consult post abort-completion receipts', () => {
+describe('consult verb abort-completion receipts', () => {
   const declineArgs = { conversation_id: 'conv-1', reason: 'This consult is outside my context.' };
   const replyArgs = { conversation_id: 'conv-1', kind: 'new_fact' as const, body: 'The finding is confirmed.' };
   const completedPost = result({ ok: true, post_id: 42 });
@@ -33,6 +34,36 @@ describe('consult post abort-completion receipts', () => {
       failures: ['missing-post-id'],
     });
     expect(decline.abortCompletionReceipt?.({} as never, completedPost, attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-conversation-id'],
+    });
+  });
+
+  it('reports the conversation opened by a late completed get_feedback call', () => {
+    expect(getFeedback.abortCompletionReceipt?.(
+      { question: 'How does the router choose a responder?', allow_dispatch: true },
+      result({ ok: true, verdict: 'routed', conversation_id: 'conv-feedback-1' }),
+      { callId: 'call-feedback-1', toolName: 'consult:get_feedback' },
+    )).toEqual({
+      status: 'recorded',
+      effectRef: 'consult-get-feedback:conv-feedback-1',
+    });
+  });
+
+  it('fails closed when get_feedback completion has no confirmed conversation id', () => {
+    expect(getFeedback.abortCompletionReceipt?.(
+      { question: 'How does the router choose a responder?', allow_dispatch: true },
+      result({ ok: true, verdict: 'served_from_archive' }),
+      { callId: 'call-feedback-2', toolName: 'consult:get_feedback' },
+    )).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-conversation-id'],
+    });
+    expect(getFeedback.abortCompletionReceipt?.(
+      { question: 'How does the router choose a responder?', allow_dispatch: true },
+      result({ error: 'consult_cycle' }),
+      { callId: 'call-feedback-3', toolName: 'consult:get_feedback' },
+    )).toMatchObject({
       status: 'recovery-incomplete',
       failures: ['missing-conversation-id'],
     });

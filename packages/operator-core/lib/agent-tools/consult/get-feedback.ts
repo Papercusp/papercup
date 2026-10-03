@@ -34,6 +34,7 @@ import { hardText, LIMITS } from '../limits';
 // found five hand-maintained copies of this same bound already stale in the tree.
 import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS } from '../../consult/selection-policies';
 import { reconcileInterestEventAwaits } from '../../interest-auto-arm';
+import { consultFeedbackAbortCompletionReceipt } from './abort-completion';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -53,6 +54,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
+  abortCompletionReceipt: consultFeedbackAbortCompletionReceipt,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     question: hardText(LIMITS.ANNOTATION).describe('The new question to route. This tool opens a new consult; to read an existing conversation, use conversations:get { id }. Name concrete files/symbols where relevant — authorship of the code in question is a routing signal.'),

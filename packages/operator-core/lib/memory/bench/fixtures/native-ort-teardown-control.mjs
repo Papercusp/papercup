@@ -111,7 +111,7 @@ async function capture(root, config) {
   const stdout = openSync(join(root, 'target.stdout.log'), 'wx', 0o600);
   const stderr = openSync(join(root, 'target.stderr.log'), 'wx', 0o600);
   const hash = createHash('sha256'); let bytes = 0;
-  const child = spawn(process.execPath, [file, 'target', JSON.stringify(config)], {
+  const child = spawn(process.execPath, [file, config.allocatorControl ? 'allocator-target' : 'target', JSON.stringify(config)], {
     env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', data => { if (writeSync(stdout, data) !== data.length) throw new Error('short control stdout write'); });
@@ -128,6 +128,61 @@ async function capture(root, config) {
   writeFileSync(join(root, 'target-terminal.json'), JSON.stringify(terminal, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   process.stdout.write(JSON.stringify(terminal) + '\n');
   process.exitCode = terminal.exitCode ?? 1;
+}
+
+async function allocatorTarget(config) {
+  const { binding, fault } = config.allocatorControl ?? {};
+  if (process.platform !== 'linux' || !isAbsolute(binding ?? '') || !binding.endsWith('.node')
+    || !['clean', 'tail-overwrite'].includes(fault)) throw new Error('invalid allocator detector control');
+  const native = createRequire(file)(binding);
+  if (typeof native.detect !== 'function') throw new Error('invalid allocator detector binding');
+  writeSync(1, 'PC_NATIVE_ALLOCATOR\t' + JSON.stringify({ event: 'start', processId: process.pid,
+    fault, requestedBytes: 64, mutationBytes: fault === 'clean' ? 0 : 1,
+    binding: fingerprint(binding), source: fingerprint(file), node: fingerprint(process.execPath),
+    observation: observedProcessEnvironment(), embeddingModelInferencePerformed: false }) + '\n');
+  if (native.detect(fault) !== true) throw new Error('allocator detector control did not release');
+  writeSync(1, 'PC_NATIVE_ALLOCATOR\t' + JSON.stringify({ event: 'released', processId: process.pid }) + '\n');
+}
+
+export function inspectAllocatorDetectorCapture(stdout, stderr, terminal, expected) {
+  const records = stdout.split('\n').filter(line => line.startsWith('PC_NATIVE_ALLOCATOR\t'))
+    .map(line => JSON.parse(line.slice('PC_NATIVE_ALLOCATOR\t'.length)));
+  const starts = records.filter(row => row.event === 'start');
+  const releases = records.filter(row => row.event === 'released');
+  const start = starts[0], observation = start?.observation;
+  const samePin = (actual, desired) => actual && desired && actual.path === desired.path
+    && actual.bytes === desired.bytes && actual.sha256 === desired.sha256;
+  const once = marker => stdout.split('\n').filter(line => line === marker).length === 1;
+  if (!['clean', 'tail-overwrite'].includes(expected.fault) || starts.length !== 1
+    || records.length !== (expected.fault === 'clean' ? 2 : 1)
+    || !Number.isSafeInteger(start.processId) || start.processId <= 0 || terminal.processId !== start.processId
+    || terminal.eof !== true || terminal.captureStartedBeforeExec !== true
+    || start.fault !== expected.fault || start.requestedBytes !== 64
+    || start.mutationBytes !== (expected.fault === 'clean' ? 0 : 1)
+    || start.embeddingModelInferencePerformed !== false || !samePin(start.binding, expected.binding)
+    || observation?.serializedAdmissionContext !== expected.serializedAdmissionContext
+    || observation?.allocator?.MALLOC_CHECK_ !== '3'
+    || !observation.allocator.GLIBC_TUNABLES?.split(':').includes('glibc.malloc.check=3')
+    || observation.allocator.LD_PRELOAD !== expected.debugAllocator.path
+    || !observation.libraries?.some(row => samePin(row, expected.debugAllocator))
+    || !once('PC_NATIVE_ALLOCATOR_CORE_LIMIT_ZERO') || !once('PC_NATIVE_ALLOCATOR_BEFORE_FREE')) {
+    throw new Error('incomplete allocator detector process evidence');
+  }
+  const corruptionMessage = /free\(\): invalid pointer|double free or corruption|corrupted double-linked list|malloc\(\): memory corruption/.test(stderr);
+  if (expected.fault === 'tail-overwrite') {
+    if (releases.length !== 0 || terminal.exitCode !== null || terminal.signal !== 'SIGABRT'
+      || !once('PC_NATIVE_ALLOCATOR_TAIL_OVERWRITE') || !corruptionMessage) {
+      throw new Error('unqualified allocator corruption positive control');
+    }
+  } else if (releases.length !== 1 || releases[0].processId !== start.processId
+    || terminal.exitCode !== 0 || terminal.signal !== null || corruptionMessage
+    || stdout.includes('PC_NATIVE_ALLOCATOR_TAIL_OVERWRITE')) {
+    throw new Error('invalid allocator clean control');
+  }
+  return { processId: start.processId, source: 'native-allocator-control', fault: expected.fault,
+    exitCode: terminal.exitCode, signal: terminal.signal, pipeEof: true, debugAllocatorMapped: true,
+    detectorTriggered: expected.fault === 'tail-overwrite', requestedBytes: 64,
+    embeddingModelInferencePerformed: false, heapCorruptionRootCauseConfirmed: false };
 }
 
 export function inspectHostDebuggerCapture(stdout, debuggerTerminal) {
@@ -194,6 +249,7 @@ if (!isMainThread) {
   catch (error) { parentPort.postMessage({ error: String(error) }); }
 } else if (process.argv[1] === file) {
   if (process.argv[2] === 'target') await target(JSON.parse(process.argv[3]));
+  else if (process.argv[2] === 'allocator-target') await allocatorTarget(JSON.parse(process.argv[3]));
   else if (process.argv[2] === 'capture') await capture(process.argv[3], JSON.parse(process.argv[4]));
   else if (process.argv[2] === 'debug-capture') await debugCapture(process.argv[3], JSON.parse(process.argv[4]), JSON.parse(process.argv[5]));
   else throw new Error('expected native teardown control target or capture mode');

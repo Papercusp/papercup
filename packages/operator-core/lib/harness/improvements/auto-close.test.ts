@@ -329,6 +329,28 @@ describe('processAutoClose — flag gate + orchestration', () => {
     expect(out).toEqual(closed.map(({ id: issueId, key: watchdogKey, reason }) => ({ issueId, watchdogKey, reason })));
   });
 
+  it('does not dedupe rows across harness, signal-origin, or lane identity components', async () => {
+    process.env[FLAG_ENV] = '1';
+    const key = 'unresolved-escalation:escalation:shared-watchdog';
+    const closed: string[] = [];
+    const deps: AutoCloseDeps = {
+      listOpen: async () => [
+        mkIssue({ id: 'EI-harness-a', scope: 'harness:alpha', watchdogKey: key }),
+        mkIssue({ id: 'EI-harness-b', scope: 'harness:beta', watchdogKey: key }),
+        mkIssue({ id: 'EI-drill', scope: 'harness:alpha', signalOrigin: 'drill', watchdogKey: key }),
+        mkIssue({ id: 'EI-observation', scope: 'harness:alpha', payload: { watchdogKey: key, lane: 'observation' } }),
+      ],
+      recentRanTickKeys: async () => ({ seenKeys: new Set([key]), ranTickCount: 6 }),
+      inFlightDispatchIds: async () => new Set(),
+      close: async (id) => { closed.push(id); },
+      nowMs: () => NOW,
+    };
+
+    const out = await processAutoClose('ws', {}, deps);
+    expect(closed).toEqual([]);
+    expect(out).toEqual([]);
+  });
+
   it('when the signal disappears, closes only the canonical item after duplicate reconciliation', async () => {
     process.env[FLAG_ENV] = '1';
     const closed: Array<{ id: string; key: string; reason: string }> = [];

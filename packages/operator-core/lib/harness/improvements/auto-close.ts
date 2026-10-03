@@ -213,6 +213,18 @@ interface CanonicalWatchdogIssue {
   createdAtMs: number;
 }
 
+function watchdogIdentityKey(issue: EngineerIssue, watchdogKey: string): string {
+  const payload = issue.payload && typeof issue.payload === 'object'
+    ? issue.payload as Record<string, unknown>
+    : {};
+  return JSON.stringify([
+    issue.scope,
+    watchdogKey,
+    issue.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN,
+    typeof payload.lane === 'string' ? payload.lane : 'improvement',
+  ]);
+}
+
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 export interface AutoCloseDeps {
@@ -290,24 +302,30 @@ function toolFailureRepairFieldsOf(issue: EngineerIssue): {
 }
 
 function selectCanonicalOpenIssues(open: EngineerIssue[]): {
-  canonicalByKey: Map<string, CanonicalWatchdogIssue>;
+  canonicalByIdentity: Map<string, CanonicalWatchdogIssue>;
   duplicates: Array<{ issueId: string; watchdogKey: string; keepId: string }>;
 } {
-  const canonicalByKey = new Map<string, CanonicalWatchdogIssue>();
+  const canonicalByIdentity = new Map<string, CanonicalWatchdogIssue>();
   const duplicates: Array<{ issueId: string; watchdogKey: string; keepId: string }> = [];
 
   for (const issue of open) {
     const watchdogKey = watchdogKeyOfIssue(issue);
     if (!watchdogKey) continue;
+    // Match work_items_watchdog_identity_uq: listOpen is already scoped to one
+    // workspace, while scope distinguishes its harness_slug; signal origin and
+    // lane are the remaining indexed identity components. Grouping by the bare
+    // watchdog key can retire the observation-lane/drill/harness sibling of a
+    // distinct improvement item even though the database accepts both rows.
+    const identityKey = watchdogIdentityKey(issue, watchdogKey);
     const candidate: CanonicalWatchdogIssue = {
       id: issue.id,
       watchdogKey,
       updatedAtMs: issueUpdatedAtMs(issue),
       createdAtMs: issueCreatedAtMs(issue),
     };
-    const existing = canonicalByKey.get(watchdogKey);
+    const existing = canonicalByIdentity.get(identityKey);
     if (!existing) {
-      canonicalByKey.set(watchdogKey, candidate);
+      canonicalByIdentity.set(identityKey, candidate);
       continue;
     }
     const replace =
@@ -318,13 +336,13 @@ function selectCanonicalOpenIssues(open: EngineerIssue[]): {
         && candidate.id > existing.id);
     if (replace) {
       duplicates.push({ issueId: existing.id, watchdogKey, keepId: candidate.id });
-      canonicalByKey.set(watchdogKey, candidate);
+      canonicalByIdentity.set(identityKey, candidate);
     } else {
       duplicates.push({ issueId: candidate.id, watchdogKey, keepId: existing.id });
     }
   }
 
-  return { canonicalByKey, duplicates };
+  return { canonicalByIdentity, duplicates };
 }
 
 /** Default deps: the real PG-backed reads + close. */
@@ -507,7 +525,7 @@ export async function processAutoClose(
   if (keyed.length === 0) return [];
   const out: AutoCloseOutcome[] = [];
 
-  const { canonicalByKey, duplicates } = selectCanonicalOpenIssues(keyed);
+  const { canonicalByIdentity, duplicates } = selectCanonicalOpenIssues(keyed);
   for (const dup of duplicates) {
     try {
       const reason = `duplicate of ${dup.keepId} — canonical open watchdog item retained for \`${dup.watchdogKey}\``;
@@ -518,7 +536,12 @@ export async function processAutoClose(
     }
   }
 
-  const canonical = keyed.filter((i) => canonicalByKey.get(watchdogKeyOfIssue(i))?.id === i.id);
+  const canonical = keyed.filter((i) => {
+    const watchdogKey = watchdogKeyOfIssue(i);
+    if (!watchdogKey) return false;
+    const identityKey = watchdogIdentityKey(i, watchdogKey);
+    return canonicalByIdentity.get(identityKey)?.id === i.id;
+  });
   const inFlight = await d.inFlightDispatchIds(canonical.map((i) => i.id));
 
   // ── P-007: POSITIVE green-run resolution ────────────────────────────────────────────
