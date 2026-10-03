@@ -2,7 +2,8 @@
 import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { CaplessAdaptiveController, type CaplessControllerOptions } from '../resource-governor/controller';
-import type { HealthVerdict } from '../resource-governor/health-analysis';
+import { RollingHealthAnalyzer, type HealthVerdict } from '../resource-governor/health-analysis';
+import type { LiveHealthReading } from '../resource-governor/live-health';
 import type { CodeIntelAnswer, CodeIntelIntent } from './contracts';
 
 export interface LspAdmissionContext {
@@ -33,6 +34,9 @@ export interface LspAdmissionOptions {
   /** Persist pressure waiters before allowing them to execute. A failed write refuses the request. */
   readonly enqueue: (context: LspAdmissionContext, classKey: string) => Promise<LspAdmissionReceipt>;
   readonly agingIntervalMs?: number;
+  /** Cost observation policy, never a productive capacity ceiling. */
+  readonly indexHitMaxMs?: number;
+  readonly costObservationTtlMs?: number;
 }
 
 export class LspAdmissionError extends Error {
@@ -56,11 +60,20 @@ interface Waiter {
   started: boolean;
   abandoned: boolean;
   receipt?: LspAdmissionReceipt;
+  serviceStartedAt?: number;
 }
 
 interface ClassLane {
   inFlight: number;
   readonly served: Map<string, number>;
+  readonly health: RollingHealthAnalyzer;
+  lastVerdict?: HealthVerdict;
+}
+
+function healthyResult(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || !('freshness' in value)) return true;
+  const answer = value as CodeIntelAnswer;
+  return answer.freshness?.health === 'healthy' && !answer.error;
 }
 
 export function lspAdmissionClass(context: LspAdmissionContext): string {
@@ -82,8 +95,13 @@ export class LspAdmissionController {
   readonly #enqueue: LspAdmissionOptions['enqueue'];
   readonly #agingIntervalMs: number;
   readonly #controller: CaplessAdaptiveController;
+  readonly #indexHitMaxMs: number;
+  readonly #costObservationTtlMs: number;
+  readonly #costs = new Map<string, { cost: NonNullable<LspAdmissionContext['symbolCost']>; durationMs: number; observedAtMs: number }>();
+  readonly #settlementFailures = new Map<string, string>();
   readonly #lanes = new Map<string, ClassLane>();
   readonly #waiters: Waiter[] = [];
+  #probeTimer?: ReturnType<typeof setTimeout>;
   #sequence = 0;
 
   constructor(options: LspAdmissionOptions) {
@@ -95,12 +113,23 @@ export class LspAdmissionController {
       throw new Error('agingIntervalMs must be positive');
     }
     this.#controller = new CaplessAdaptiveController(options.controller);
+    this.#indexHitMaxMs = options.indexHitMaxMs ?? 25;
+    this.#costObservationTtlMs = options.costObservationTtlMs ?? 60_000;
+    if (!Number.isFinite(this.#indexHitMaxMs) || this.#indexHitMaxMs < 0 ||
+        !Number.isFinite(this.#costObservationTtlMs) || this.#costObservationTtlMs <= 0) {
+      throw new Error('LSP cost observation policy must be finite and positive');
+    }
   }
 
   #lane(key: string): ClassLane {
     let lane = this.#lanes.get(key);
     if (!lane) {
-      lane = { inFlight: 0, served: new Map() };
+      lane = { inFlight: 0, served: new Map(), health: new RollingHealthAnalyzer({
+        objectives: [{ id: 'lsp-wire-service', signal: 'service.waitP95Ms', resource: 'service',
+          warningRatio: 2, criticalRatio: 5, minimumAbsoluteIncrease: 25,
+          description: 'Measured service time in this method and cost lane compared with its own healthy history.' }],
+        commitHealthyFrames: false,
+      }) };
       this.#lanes.set(key, lane);
       this.#controller.step({ verdict: neutralVerdict(key, this.#now()), classes: [{ admissionClass: key, inFlight: 0 }] });
     }
@@ -109,7 +138,11 @@ export class LspAdmissionController {
 
   /** Only the measured, attributable class is contracted; expiry remains governor-owned. */
   observeHealth(classKey: string, verdict: HealthVerdict): void {
+    // A host/global verdict is not evidence about a particular LSP class.
+    if (verdict.scopeId !== classKey || !Number.isFinite(verdict.evaluatedAtMs) ||
+        verdict.evaluatedAtMs > this.#now() || this.#now() - verdict.evaluatedAtMs > 30_000) return;
     const lane = this.#lane(classKey);
+    lane.lastVerdict = verdict;
     this.#controller.step({ verdict, classes: [{
       admissionClass: classKey, inFlight: Math.max(1, lane.inFlight),
       resourceWeights: Object.fromEntries(verdict.actionableResources.map(resource => [resource, 1])),
@@ -117,11 +150,59 @@ export class LspAdmissionController {
     this.#drain();
   }
 
+  #costKey(context: LspAdmissionContext): string | undefined {
+    return context.queryKey ? JSON.stringify([context.language, context.projectRoot, context.op, context.queryKey]) : undefined;
+  }
+
+  classify(context: LspAdmissionContext): LspAdmissionContext {
+    const atMs = this.#now();
+    for (const [key, observation] of this.#costs) {
+      if (atMs - observation.observedAtMs >= this.#costObservationTtlMs) this.#costs.delete(key);
+    }
+    const key = this.#costKey(context);
+    return { ...context, symbolCost: context.symbolCost ?? (key ? this.#costs.get(key)?.cost : undefined) ?? 'unknown' };
+  }
+
+  #observeService(waiter: Waiter, healthy: boolean, atMs = this.#now()): void {
+    if (waiter.serviceStartedAt === undefined) return;
+    const durationMs = Math.max(0, atMs - waiter.serviceStartedAt);
+    const key = this.#costKey(waiter.context);
+    if (key && healthy) this.#costs.set(key, {
+      cost: durationMs <= this.#indexHitMaxMs ? 'index-hit' : 'scan', durationMs, observedAtMs: atMs,
+    });
+    else if (key) this.#costs.delete(key);
+    const lane = this.#lane(waiter.classKey);
+    const reading: LiveHealthReading = {
+      state: 'measured', value: durationMs, unit: 'milliseconds', writerId: waiter.classKey,
+      observedAtMs: atMs, collectedAtMs: atMs,
+      window: { kind: 'delta', durationMs, startedAtMs: waiter.serviceStartedAt, endedAtMs: atMs },
+      confidence: 1, reason: null, lastMeasuredAtMs: atMs,
+    };
+    const frame = { scopeId: waiter.classKey, atMs, signals: { 'service.waitP95Ms': reading } };
+    const verdict = lane.health.evaluate(frame);
+    // A failed/refused answer never supplies an upward probe or healthy baseline.
+    if (healthy && verdict.state !== 'degraded') lane.health.primeHealthy(frame);
+    this.observeHealth(waiter.classKey, healthy && verdict.state === 'warming'
+      ? neutralVerdict(waiter.classKey, atMs, true)
+      : !healthy && verdict.state !== 'degraded' ? neutralVerdict(waiter.classKey, atMs) : verdict);
+  }
+
+  async #settle(waiter: Waiter, action: () => Promise<void>): Promise<void> {
+    try { await action(); this.#settlementFailures.delete(waiter.context.requestId); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#settlementFailures.set(waiter.context.requestId, message);
+      throw new LspAdmissionError('persistence', `LSP receipt settlement failed: ${message}`);
+    }
+  }
+
   snapshot() {
     const atMs = this.#now();
     const windows = this.#controller.snapshot(atMs);
     return {
       generation: windows.generation, sampledAtMs: atMs,
+      measured: true, settlementFailures: [...this.#settlementFailures].map(([requestId, error]) => ({ requestId, error })),
+      costObservations: this.#costs.size,
       classes: windows.classes.map(item => {
         const queued = this.#waiters.filter(waiter => waiter.classKey === item.admissionClass && !waiter.started && !waiter.abandoned);
         return {
@@ -129,7 +210,7 @@ export class LspAdmissionController {
           effectiveWindow: item.effectiveWindow, inFlight: this.#lanes.get(item.admissionClass)?.inFlight ?? 0,
           queued: queued.length, oldestWaitMs: queued.length ? atMs - Math.min(...queued.map(w => w.enqueuedAt)) : 0,
           pendingPersistence: queued.filter(waiter => !waiter.ready).length,
-          feedback: item.feedback,
+          feedback: item.feedback, health: this.#lanes.get(item.admissionClass)?.lastVerdict ?? null,
         };
       }),
     };
@@ -142,6 +223,7 @@ export class LspAdmissionController {
     }
     if (context.signal?.aborted) return Promise.reject(new LspAdmissionError('cancelled', 'LSP request cancelled before admission'));
     if (context.deadlineAtMs <= this.#now()) return Promise.reject(new LspAdmissionError('deadline', 'LSP request deadline elapsed before admission'));
+    context = this.classify(context);
     const classKey = lspAdmissionClass(context);
     this.#lane(classKey);
     return new Promise<T>((resolve, reject) => {
@@ -159,9 +241,10 @@ export class LspAdmissionController {
         reject(error);
         if (!waiter.started) {
           this.#remove(waiter);
-          if (waiter.receipt) void waiter.receipt.cancel(error.message).catch(() => {});
+          if (waiter.receipt) void this.#settle(waiter, () => waiter.receipt!.cancel(error.message)).catch(() => undefined);
           this.#drain();
         }
+        else this.#observeService(waiter, false);
         // An ignored cancellation is still running on the wire. Do not release its slot/receipt early.
       };
       const onAbort = () => abandon('cancelled');
@@ -175,7 +258,7 @@ export class LspAdmissionController {
       waiter.ready = false;
       void this.#enqueue(context, classKey).then(async receipt => {
         waiter.receipt = receipt;
-        if (waiter.abandoned) { await receipt.cancel('LSP caller abandoned during queue persistence'); return; }
+        if (waiter.abandoned) { await this.#settle(waiter, () => receipt.cancel('LSP caller abandoned during queue persistence')); return; }
         waiter.ready = true;
         this.#drain();
       }).catch(error => {
@@ -193,11 +276,13 @@ export class LspAdmissionController {
   }
 
   #drain(): void {
+    clearTimeout(this.#probeTimer);
+    this.#probeTimer = undefined;
     const atMs = this.#now();
     const windows = this.#controller.snapshot(atMs);
     for (const window of windows.classes) {
       const lane = this.#lane(window.admissionClass);
-      while (lane.inFlight < (window.effectiveWindow ?? window.desiredWindow)) {
+      while (lane.inFlight < (this.#controller.snapshot(this.#now()).classes.find(c => c.admissionClass === window.admissionClass)?.effectiveWindow ?? window.desiredWindow)) {
         const candidates = this.#waiters.filter(w => w.ready && !w.started && !w.abandoned && w.classKey === window.admissionClass);
         // Aging protects batch work. Least-served actor wins ties before arrival order.
         candidates.sort((a, b) => {
@@ -208,7 +293,12 @@ export class LspAdmissionController {
         });
         const waiter = candidates[0];
         if (!waiter) break;
-        if (waiter.context.deadlineAtMs <= atMs) break; // Its deadline callback removes it; never execute it.
+        if (waiter.context.deadlineAtMs <= atMs) {
+          this.#remove(waiter); waiter.cleanup(); waiter.abandoned = true;
+          waiter.reject(new LspAdmissionError('deadline', 'LSP request deadline elapsed in queue'));
+          if (waiter.receipt) void this.#settle(waiter, () => waiter.receipt!.cancel('LSP queue deadline elapsed')).catch(() => undefined);
+          continue;
+        }
         waiter.started = true;
         this.#remove(waiter);
         lane.inFlight++;
@@ -217,27 +307,39 @@ export class LspAdmissionController {
         void this.#execute(waiter, lane);
       }
     }
+    const nextProbe = this.#controller.snapshot(this.#now()).classes
+      .filter(c => c.pauseUntilMs > this.#now() && this.#waiters.some(w => w.classKey === c.admissionClass))
+      .map(c => c.pauseUntilMs);
+    if (nextProbe.length) {
+      this.#probeTimer = setTimeout(() => this.#drain(), Math.max(1, Math.min(...nextProbe) - this.#now()));
+      this.#probeTimer.unref?.();
+    }
   }
 
   async #execute(waiter: Waiter, lane: ClassLane): Promise<void> {
     try {
       await waiter.receipt?.start();
-      if (waiter.abandoned) { await waiter.receipt?.cancel('LSP caller abandoned before execution'); return; }
+      if (waiter.abandoned) { await this.#settle(waiter, async () => { await waiter.receipt?.cancel('LSP caller abandoned before execution'); }); return; }
+      waiter.serviceStartedAt = this.#now();
       const result = await waiter.task(waiter.abort.signal);
-      if (waiter.abandoned) await waiter.receipt?.cancel('LSP caller abandoned during execution');
+      const serviceEndedAt = this.#now();
+      if (waiter.abandoned) await this.#settle(waiter, async () => { await waiter.receipt?.cancel('LSP caller abandoned during execution'); });
       else {
-        await waiter.receipt?.finish();
+        await this.#settle(waiter, async () => { await waiter.receipt?.finish(); });
         waiter.resolve(result);
-        // Successful service is an upward probe, never a permanent fixed concurrency cap.
-        this.#controller.step({ verdict: neutralVerdict(waiter.classKey, this.#now(), true), classes: [{ admissionClass: waiter.classKey, inFlight: lane.inFlight }] });
+        this.#observeService(waiter, healthyResult(result), serviceEndedAt);
       }
     } catch (error) {
-      try { await waiter.receipt?.cancel(`LSP execution failed: ${error instanceof Error ? error.message : String(error)}`); }
+      this.#observeService(waiter, false);
+      try { await this.#settle(waiter, async () => { await waiter.receipt?.cancel(`LSP execution failed: ${error instanceof Error ? error.message : String(error)}`); }); }
       catch (settlementError) { if (!waiter.abandoned) waiter.reject(settlementError); }
       if (!waiter.abandoned) waiter.reject(error);
     } finally {
       waiter.cleanup();
       lane.inFlight--;
+      // Retain service debt only for agents still contending in this busy period.
+      const activeActors = new Set(this.#waiters.filter(w => w.classKey === waiter.classKey).map(w => w.context.actor ?? 'anonymous'));
+      if (lane.inFlight === 0) for (const actor of lane.served.keys()) if (!activeActors.has(actor)) lane.served.delete(actor);
       this.#drain();
     }
   }

@@ -104,4 +104,68 @@ describe('LSP class admission', () => {
     expect(answer.freshness.health).toBe('degraded'); expect(answer.error).toContain('deadline');
     expect(answer.truncation.totalAvailable).toBeNull(); expect(task).not.toHaveBeenCalled();
   });
+
+  it('learns recent query cost from wire service time and expires or invalidates failed observations', async () => {
+    let now = Date.now();
+    const controller = new LspAdmissionController({ enqueue: async () => receipt(), now: () => now,
+      indexHitMaxMs: 25, costObservationTtlMs: 100 });
+    const cheap = context('cheap', { queryKey: 'file:1:4@revision-a' });
+    expect(controller.classify(cheap).symbolCost).toBe('unknown');
+    await controller.run(cheap, async () => { now += 5; });
+    expect(controller.classify(cheap).symbolCost).toBe('index-hit');
+    const scan = context('scan', { queryKey: 'file:20:4@revision-a' });
+    await controller.run(scan, async () => { now += 50; });
+    expect(controller.classify(scan).symbolCost).toBe('scan');
+    expect(controller.classify({ ...cheap, queryKey: 'file:1:4@revision-b' }).symbolCost).toBe('unknown');
+    await controller.run({ ...cheap, requestId: 'refused' }, async () => ({ freshness: { health: 'degraded' }, error: 'loading' }));
+    expect(controller.classify(cheap).symbolCost).toBe('unknown');
+    now += 101;
+    expect(controller.classify(scan).symbolCost).toBe('unknown');
+  });
+
+  it('holds windows on degraded answers and contracts only the measured service class', async () => {
+    let now = Date.now();
+    const controller = new LspAdmissionController({ enqueue: async () => receipt(), now: () => now,
+      controller: { initialWindow: 8, healthySamplesPerIncrease: 100 } });
+    const scan = context('scan', { symbolCost: 'scan' });
+    for (let i = 0; i < 4; i++) await controller.run({ ...scan, requestId: `baseline-${i}` }, async () => { now += 10; });
+    await controller.run(context('definition', { op: 'symbol' }), async () => {});
+    await controller.run({ ...scan, requestId: 'slow' }, async () => { now += 100; });
+    const pressured = controller.snapshot().classes.find(c => c.classKey === lspAdmissionClass(scan))!;
+    expect(pressured.desiredWindow).toBeLessThan(8);
+    expect(pressured.health).toMatchObject({ scopeId: lspAdmissionClass(scan), state: 'degraded', actionable: true });
+    expect(controller.snapshot().classes.find(c => c.classKey !== pressured.classKey)?.desiredWindow).toBe(8);
+    controller.observeHealth(pressured.classKey, { ...pressured.health!, scopeId: 'host-global' });
+    expect(controller.snapshot().classes.find(c => c.classKey === pressured.classKey)?.desiredWindow).toBe(pressured.desiredWindow);
+    const refused = new LspAdmissionController({ enqueue: async () => receipt(), controller: { healthySamplesPerIncrease: 1 } });
+    for (let i = 0; i < 4; i++) await refused.run(context(`refused-${i}`), async () => ({ freshness: { health: 'degraded' }, error: 'not ready' }));
+    expect(refused.snapshot().classes[0].desiredWindow).toBe(1);
+  });
+
+  it('reports failed cancellation of a late durable receipt in readback', async () => {
+    const saving = deferred<LspAdmissionReceipt>();
+    const controller = new LspAdmissionController({ enqueue: () => saving.promise });
+    const hold = deferred(); const first = controller.run(context('first'), () => hold.promise);
+    const abort = new AbortController();
+    const queued = controller.run(context('queued', { signal: abort.signal }), async () => {});
+    const rejected = expect(queued).rejects.toMatchObject({ code: 'cancelled' });
+    abort.abort(); await rejected;
+    saving.resolve({ ...receipt(), cancel: async () => { throw new Error('DB settlement unavailable'); } });
+    await flush();
+    expect(controller.snapshot().settlementFailures).toEqual([{ requestId: 'queued', error: 'DB settlement unavailable' }]);
+    hold.resolve(); await first;
+  });
+
+  it('ages batch work past later urgent arrivals without resetting the other actors debt', async () => {
+    let now = Date.now();
+    const controller = new LspAdmissionController({ enqueue: async () => receipt(), now: () => now,
+      agingIntervalMs: 10, controller: { healthySamplesPerIncrease: 100 } });
+    const hold = deferred(); const first = controller.run(context('first'), () => hold.promise);
+    const order: string[] = [];
+    const batch = controller.run(context('batch', { actor: 'b', priority: 0 }), async () => { order.push('batch'); });
+    now += 100;
+    const urgent = controller.run(context('urgent', { priority: 5 }), async () => { order.push('urgent'); });
+    await flush(); hold.resolve(); await Promise.all([first, batch, urgent]);
+    expect(order).toEqual(['batch', 'urgent']);
+  });
 });
