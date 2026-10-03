@@ -40,6 +40,93 @@ const cleanups: Array<() => void | Promise<void>> = [];
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
 describe('D-166 source-bound UUID output row drops', () => {
+  for (const priorSnapshot of [false, true]) {
+    it(`independently validates UUID and ordinary privacy partitions (${priorSnapshot ? 'prior snapshot' : 'raw ops'})`, async () => {
+      const source = makeStore(tmpDir('uuid-privacy-source-')); await source.ready();
+      const target = makeStore(tmpDir('uuid-privacy-target-')); await target.ready();
+      const own = await openOwnLog(source);
+      const sodium = await loadSodium(); const key = Buffer.alloc(32); sodium.randombytes_buf(key);
+      const row = (table: string, hbKey: string, value: unknown): PeerLogOp => ({
+        type: 'put', table, hbKey, value, author_pubkey: '', ts: 1, schema_version: 1,
+      });
+      const seal = (hbKey: string, value: unknown): PeerLogOp => {
+        const op = row('harness_plans', hbKey, value);
+        const opId = createHash('sha256').update(JSON.stringify([op.table, hbKey, ''])).digest('hex');
+        const nonce = Buffer.alloc(24); sodium.randombytes_buf(nonce);
+        const plain = Buffer.from(JSON.stringify(value)); const cipher = Buffer.alloc(plain.length + 16);
+        sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(cipher, plain,
+          encodeOpAAD({ potId: 'fixture-pot', epoch: 0, opId }), null, nonce, key);
+        return { ...op, epoch: 0, value: { __rekey: Buffer.concat([nonce, cipher]).toString('base64') } };
+      };
+      const literal = 'private-fixture-owner';
+      const token = ['48a1c70f', 'a4cb', '4fa8', '8be7', 'd26eca349d80'].join('-');
+      const ops = [seal('uuid-drop', { idempotencyKey: token }), seal('auth-keep', { safe: 'unchanged' }),
+        seal(literal, { safe: 'private address' }), row('harness_plans', 'private-content', { body: literal }),
+        row('harness_plans', 'external', { source: 'mail', event: 'x', dedupeKey: 'mail:1:x', adapterPayload: { raw: 1 } }),
+        row('hive-members', '42', { github_username: literal }),
+        row('harness_plans', 'email', { contact: 'fixture@example.org' }),
+        row('harness_plans', 'public', { safe: 'public' }),
+        row('harness_plans', 'overlap', { idempotencyKey: token, body: literal })];
+      for (const op of ops) await own.append(op);
+      if (priorSnapshot) await produceLogSnapshot(own, { now: 1000, schemaVersion: 1 });
+      const before = own.length; const first = JSON.stringify(await own.get(0));
+      const dir = tmpDir('uuid-privacy-private-'); chmodSync(dir, 0o700);
+      const exported = await exportSeedUuidIdempotencySource({ sourceStore: source, sourceKeyHex: own.keyHex,
+        sourceLength: before, outputDir: dir, segment: 'segment-000001.blob', redactValues: [literal] });
+      const originalRows = readFileSync(exported.rowsPath, 'utf8').trim().split('\n').map(text => JSON.parse(text));
+      expect(originalRows.filter(r => r.privacyProjection.disposition === 'drop')).toHaveLength(4);
+      const keysPath = join(dir, 'keys.json'); const keys = JSON.stringify({ 'fixture-pot': { 0: key.toString('base64') } });
+      writeFileSync(keysPath, keys, { mode: 0o600 });
+      const configPath = join(dir, 'config.json'); const planPath = join(dir, 'plan.json');
+      writeFileSync(configPath, JSON.stringify({ reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
+        potId: 'fixture-pot', epochKeysPath: keysPath, epochKeysSha256: createHash('sha256').update(keys).digest('hex'),
+        sources: [exported] }), { mode: 0o600 });
+      const formatter = join(import.meta.dirname, '../../../../../papercusp-desktop/bin/lib/print-gitleaks-findings.py');
+      const assembled = spawnSync('python3', [formatter, '--assemble-uuid-row-drops', configPath, planPath],
+        { encoding: 'utf8', timeout: 30_000 });
+      expect(assembled.status, assembled.stderr).toBe(0);
+      const packet = JSON.parse(readFileSync(planPath, 'utf8'));
+      expect(packet.counts).toMatchObject({ originalRows: 9, originalAuthenticated: 3, droppedRows: 2,
+        droppedAuthenticated: 1, privacyDroppedRows: 3, privacyDroppedAuthenticated: 1,
+        privacyRedactedPlaintext: 2, authenticatedOriginalRetained: 1, redactedReattested: 0 });
+      const minted = await mintFilteredSeedContentCore({ sourceStore: source, ownerKeyHex: own.keyHex,
+        stagingStore: target, redactValues: [literal], uuidIdempotencyDropPlan: packet.plans[0], onProjection: vi.fn() });
+      expect(minted.rowCount).toBe(4);
+      const output = await exportSeedUuidIdempotencySource({ sourceStore: target, sourceKeyHex: minted.keyHex,
+        sourceLength: minted.length, outputDir: dir, segment: 'segment-000002.blob', redactValues: [literal] });
+      const outputPath = join(dir, 'output.json'); const manifestPath = join(dir, 'manifest.json');
+      writeFileSync(outputPath, JSON.stringify([{ ...output, sourceKeyHex: own.keyHex }]), { mode: 0o600 });
+      writeFileSync(manifestPath, JSON.stringify({ reports: [minted.projection.uuidIdempotencyRedaction] }), { mode: 0o600 });
+      const validation = spawnSync('python3', ['-c', String.raw`
+import importlib.util,json,sys,pathlib,copy
+s=importlib.util.spec_from_file_location('f',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+base=pathlib.Path(sys.argv[2]);config=base/'config.json';plan=json.loads((base/'plan.json').read_text())
+outputs=json.loads((base/'output.json').read_text());reports=json.loads((base/'manifest.json').read_text())['reports']
+def valid():return m.validate_uuid_idempotency_row_drops(config,plan,outputs,reports,[base/'manifest.json'])
+assert valid()['counts']==plan['counts']
+file=pathlib.Path(outputs[0]['rowsPath']);saved=file.read_bytes();rows=[json.loads(t) for t in saved.decode().splitlines()]
+def refused(fn):
+ try:fn();raise AssertionError('invalid privacy partition passed')
+ except ValueError:pass
+def changed(new):
+ file.write_text(''.join(json.dumps(r)+'\n' for r in new));outputs[0]['rowsSha256']=m._sha256(file);outputs[0]['rowCount']=len(new);valid()
+refused(lambda:changed(rows[:-1]))
+bad=copy.deepcopy(rows);bad[0]['author_pubkey']='changed';refused(lambda:changed(bad))
+bad=copy.deepcopy(rows);next(r for r in bad if r['hbKey']=='email')['value']={'contact':'altered'};refused(lambda:changed(bad))
+originals=[json.loads(t) for t in pathlib.Path(plan['privateSourceBindings']['sources'][0]['rowsPath']).read_text().splitlines()]
+private=next(r for r in originals if r['hbKey']=='private-content');refused(lambda:changed([*rows,private]))
+sealed=next(r for r in originals if r.get('epoch')==0);sealed['privacyProjection']={'disposition':'redact','value':{}}
+refused(lambda:m._uuid_privacy_projection(sealed,True))
+file.write_bytes(saved);outputs[0]['rowsSha256']=m._sha256(file);outputs[0]['rowCount']=len(rows);assert valid()['rawClassHits']==0
+print(json.dumps({'verified':True,'negativeControls':5}))
+`, formatter, dir], { encoding: 'utf8', timeout: 30_000 });
+      expect(validation.status, validation.stderr).toBe(0);
+      expect(JSON.parse(validation.stdout)).toEqual({ verified: true, negativeControls: 5 });
+      expect(assembled.stdout + assembled.stderr + validation.stdout + validation.stderr).not.toContain(token);
+      expect(own.length).toBe(before); expect(JSON.stringify(await own.get(0))).toBe(first);
+    });
+  }
+
   it('assembles an authenticated plan from a real Hypercore export and applies it to a new read-only core', async () => {
     const source = makeStore(tmpDir('uuid-census-crypto-source-')); await source.ready();
     const target = makeStore(tmpDir('uuid-census-crypto-target-')); await target.ready();
