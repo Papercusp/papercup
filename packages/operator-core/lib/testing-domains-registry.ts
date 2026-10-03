@@ -1453,15 +1453,10 @@ defineTestDomain({
     'The adversarial, multi-session, real-seam coordination suite that closes the EI-152/EI-153 escape classes: cross-agent isolation, real-seam integration, multi-session concurrency, and the liveness matrix. Cross-subsystem view; files overlap their home domains by design.',
   tier: 'domain',
   sections: [
-    {
-      id: 'feature-change-reconciliation',
-      label: 'Feature-change reconciliation',
-      description:
-        'Durable aggregate validation for feature-change candidate settlement, terminal-shard coverage, and honest zero-state readiness.',
-      globs: [
-        'scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-aggregate.test.mjs',
-      ],
-    },
+    // No 'feature-change-reconciliation' section (WI-10005450): its only glob named an
+    // untracked file under the gitignored /scratchpad, so it existed only in the shared tree.
+    // Every clean checkout, including the green-checkpoint gate, failed lint:tests with
+    // STALE_GLOB + EMPTY_SECTION. A registry glob must name a tracked, canonical test.
     {
       id: 'wake-liveness',
       label: 'C4 liveness matrix + EI-152',
