@@ -3,7 +3,9 @@
   "kind": "operational-test-evidence",
   "name": "Exported Rust notice metadata provenance regression",
   "framework": "operational",
-  "command": "make test-android-release-provenance",
+  "command": [
+    "make test-android-release-provenance"
+  ],
   "workingDirectory": "papercup-rust-mobile",
   "startedAt": "2026-10-03T05:38:00.589Z",
   "finishedAt": "2026-10-03T05:38:30.642Z",
