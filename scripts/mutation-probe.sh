@@ -614,15 +614,25 @@ fi
 # command without it runs against the untouched original, the mutant always "survives", and the
 # probe reports your guard as weak when it is fine. Refuse rather than emit that false verdict.
 #
+# COPY-OUT UNDER AN EXPLICIT `--relocation overlay`: NOT load-bearing, so not required
+# (EI-24818519111680142). The overlay binds the mutant OVER the subject's own path inside a
+# private mount namespace, so GUARD_SUBJECT resolves to "$FILE" rather than a scratch copy
+# (see the relocation block below) and the substitution is the same no-op it is in-tree. The
+# distinction that makes this safe is DOWNGRADE, not visibility: `--relocation auto` silently
+# falls back to the repo mirror when bwrap cannot bind on this host, and under mirror/flat `{}`
+# is the only thing naming the mutant — so auto KEEPS the requirement. An explicit
+# `--relocation overlay` cannot downgrade; it dies instead, so reaching a guard run at all
+# proves the mutant is at the subject's own path. Do not widen this to `auto`.
+#
 # IN-TREE: the tracked file itself IS the mutant, so the substitution is a no-op and a command
 # that never names the path is perfectly sound. That is the NORMAL shape here — in-tree mode
 # exists precisely for subjects whose path is not overridable (a suite importing it by a fixed
 # path), which is the same reason the test cannot accept a `{}` to begin with. Demanding the
 # marker anyway forced callers to thread a dummy `PROBE_FILE={}` env var that nothing reads.
-if [ "$IN_TREE" -eq 0 ]; then
+if [ "$IN_TREE" -eq 0 ] && [ "$RELOCATION" != "overlay" ]; then
   case "$TEST_CMD" in
     *"{}"*) ;;
-    *) die "--test must contain {} (where the mutated COPY's path is substituted). If your test cannot take a path — e.g. it imports its subject by a fixed path — use --in-tree, where {} is optional." ;;
+    *) die "--test must contain {} (where the mutated COPY's path is substituted) under --relocation ${RELOCATION} — auto can fall back to the repo mirror, where {} is the only thing naming the mutant. If your test cannot take a path — e.g. it imports its subject by a fixed path — pass --relocation overlay, which binds the mutant over the subject's own path so {} is not needed (requires bwrap), or use --in-tree, where {} is optional." ;;
   esac
 fi
 
