@@ -3512,6 +3512,12 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
 describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
   it('retries only transient production failures within the bound', () => {
     expect(shouldRetryCarryOnFreshEpoch({ reason: 'never-settled' })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'carry-mcp-unavailable' })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({
+      reason: 'carry-mcp-unavailable',
+      retryCount: 1,
+      maxRetries: 1,
+    })).toBe(false);
     expect(shouldRetryCarryOnFreshEpoch({ reason: 'no-startup-ready-marker-last-resort-failed' })).toBe(true);
     expect(shouldRetryCarryOnFreshEpoch({
       reason: 'turn-start-unverified',
