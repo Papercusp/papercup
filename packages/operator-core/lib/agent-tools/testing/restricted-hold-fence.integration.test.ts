@@ -6,10 +6,10 @@
  * "refused from execution" are proven to read the same thing.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -48,8 +48,12 @@ let userId: string;
 let root: string;
 
 function put(rel: string, text: string): void {
-  mkdirSync(dirname(join(root, rel)), { recursive: true });
-  writeFileSync(join(root, rel), text);
+  putAt(root, rel, text);
+}
+
+function putAt(repoRoot: string, rel: string, text: string): void {
+  mkdirSync(dirname(join(repoRoot, rel)), { recursive: true });
+  writeFileSync(join(repoRoot, rel), text);
 }
 
 function git(...args: string[]): void {
@@ -91,11 +95,26 @@ beforeAll(async () => {
   userId = user.id;
 
   root = realpathSync(mkdtempSync(join(tmpdir(), 'restricted-hold-fence-int-')));
+  symlinkSync(join(REPO, 'node_modules'), join(root, 'node_modules'), 'dir');
   git('init', '-q');
   git('config', 'user.email', 'fence@example.com');
   git('config', 'user.name', 'fence');
   put('src/base.ts', 'export const base = 1;\n');
   put('tests/base.test.ts', "import { base } from '../src/base';\nexport const value = base;\n");
+  put('package.json', JSON.stringify({ name: 'restricted-hold-node-test-fixture', private: true }));
+  const nodeTestHostPreflight = pathToFileURL(join(REPO, 'scripts/lib/node-test-host-preflight.mjs')).href;
+  put(
+    'test/monorepo-host-preflight.mjs',
+    [
+      "import { runNodeTestHostPreflight } from '" + nodeTestHostPreflight + "';",
+      'await runNodeTestHostPreflight({ repoRoot: process.env.PAPERCUSP_RESTRICTED_HOLD_TEST_ROOT });',
+      '',
+    ].join('\n'),
+  );
+  put(
+    HELD_NODE_TEST,
+    "const { test } = require('node:test');\ntest('fixture test runs after admission', () => {});\n",
+  );
   git('add', '-A');
   git('commit', '-q', '-m', 'base');
 
@@ -117,11 +136,12 @@ beforeAll(async () => {
   await ledger(UNRESTRICTED, 'tests/uses-unattributed.test.ts');
 
   // 3. REAL repo test files, ledgered to the restricted session, for the process-level falsifiers.
-  for (const file of [HELD_REPO_TEST, HELD_STANDALONE_TEST, HELD_NODE_TEST]) {
+  for (const file of [HELD_REPO_TEST, HELD_STANDALONE_TEST]) {
     await sql`
       INSERT INTO harness_shared.edit_attribution_ledger (repo_root, file, agent_id, work_item_id, ts)
       VALUES (${REPO}, ${file}, ${RESTRICTED}, ${null}, now())`;
   }
+  await ledger(RESTRICTED, HELD_NODE_TEST);
 }, 120_000);
 
 afterAll(async () => {
@@ -204,7 +224,7 @@ describe('restricted-write fence on the production census (real Postgres + git)'
   it('a node:test suite refuses a held restricted write in its runner before any test file starts', () => {
     const result = desktopNodeTest();
     const output = joined(result);
-    expect(output).toContain('NODE_TEST_RESTRICTED_HOLD_REFUSED error=restricted_write_held measured=none');
+    expect(output, 'node:test runner output:\n' + output).toContain('NODE_TEST_RESTRICTED_HOLD_REFUSED error=restricted_write_held measured=none');
     expect(output).toContain(`${HELD_NODE_TEST} is itself a held restricted write`);
     expect(result.status).not.toBe(0);
     expect(output).not.toMatch(/^ℹ pass [1-9]/m);
@@ -217,6 +237,7 @@ describe('restricted-write fence on the production census (real Postgres + git)'
        WHERE workspace_id = ${WS} AND agent_owner_id = ${RESTRICTED}`;
     expect(await restrictedHoldRefusal(root, ['tests/planted.test.ts'])).toBeNull();
     expect(await restrictedHoldRefusal(root, ['tests/uses-unattributed.test.ts'])).toBeNull();
+    expect(await restrictedHoldRefusal(root, [HELD_NODE_TEST])).toBeNull();
   });
 
   // Calibration for the router falsifier: the SAME census child, same env, admits once released —
@@ -244,8 +265,8 @@ describe('restricted-write fence on the production census (real Postgres + git)'
 
   it('the node:test suite runs the same file once the disclosure is released', () => {
     const result = desktopNodeTest();
-    expect(joined(result)).toMatch(/^ℹ pass [1-9]/m);
-    expect(joined(result)).toMatch(/^ℹ fail 0$/m);
+    expect(joined(result), 'node:test runner output:\n' + joined(result)).toMatch(/^ℹ pass [1-9]/m);
+    expect(joined(result), 'node:test runner output:\n' + joined(result)).toMatch(/^ℹ fail 0$/m);
     expect(result.status).toBe(0);
   }, 120_000);
 
@@ -309,10 +330,11 @@ function standaloneVitest() {
 function desktopNodeTest() {
   const env: NodeJS.ProcessEnv = { ...routerEnv(), NO_COLOR: '1', FORCE_COLOR: '0' };
   delete env.NODE_TEST_CONTEXT;
+  env.PAPERCUSP_RESTRICTED_HOLD_TEST_ROOT = root;
   return spawnSync(
     process.execPath,
-    ['--test', '--test-global-setup=test/monorepo-host-preflight.mjs', HELD_NODE_TEST.slice('papercusp-desktop/'.length)],
-    { cwd: join(REPO, 'papercusp-desktop'), env, encoding: 'utf8', timeout: 110_000 },
+    ['--test', '--test-global-setup=test/monorepo-host-preflight.mjs', HELD_NODE_TEST],
+    { cwd: root, env, encoding: 'utf8', timeout: 110_000 },
   );
 }
 
