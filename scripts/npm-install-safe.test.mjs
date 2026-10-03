@@ -574,7 +574,7 @@ test("nested exec-under-lock readers do not reacquire the writer mutex", async (
   process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(repoRoot, "locks");
   process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS = "25";
   process.env.PAPERCUSP_FS_MUTEX_RETRY_MS = "1";
-  process.env.PAPERCUSP_INSTALL_MUTEX_HELD = "1";
+  process.env.PAPERCUSP_INSTALL_MUTEX_HELD = repoLockName(repoRoot);
 
   try {
     const calls = [];
@@ -592,7 +592,7 @@ test("nested exec-under-lock readers do not reacquire the writer mutex", async (
     });
 
     assert.equal(calls.length, 1);
-    assert.equal(calls[0][2].env.PAPERCUSP_INSTALL_MUTEX_HELD, "1");
+    assert.equal(calls[0][2].env.PAPERCUSP_INSTALL_MUTEX_HELD, repoLockName(repoRoot));
   } finally {
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value === undefined) delete process.env[key];
