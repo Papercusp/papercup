@@ -32,6 +32,12 @@ export interface ToolLatencyBudget {
   timeoutSec?: number | null;
   /** Only `'write'` tools are judged: a slow read has no commit-unknown failure mode. */
   effect?: string | null;
+  /**
+   * The tool declares an `abortCompletionReceipt` (WI-10005670): a late return is already
+   * reported as recorded, so the commit-unknown hazard this detector exists to find is closed.
+   * Such a tool is NOT judged — flagging it would re-file a mitigated risk.
+   */
+  hasAbortCompletionReceipt?: boolean;
 }
 
 /** One per-tool aggregate row from `harness_shared.tool_invocations` (SQL shapes numbers as text sometimes). */
@@ -57,6 +63,8 @@ export interface ProjectedToolLike {
   expose?: { mcp?: { name?: string | null } | null } | null;
   timeoutSec?: number | null;
   effect?: string | null;
+  /** A resolver function when the tool declares one (see {@link ToolLatencyBudget.hasAbortCompletionReceipt}). */
+  abortCompletionReceipt?: unknown;
 }
 
 /** Effective dispatch budget in seconds, exactly as the dispatcher resolves it. */
@@ -79,15 +87,24 @@ export function toolLatencyBudgetsFromProjected(
   for (const tool of tools) {
     const name = tool.expose?.mcp?.name;
     if (typeof name !== 'string' || name.length === 0) continue;
-    out.set(name, { timeoutSec: tool.timeoutSec ?? null, effect: tool.effect ?? null });
+    out.set(name, {
+      timeoutSec: tool.timeoutSec ?? null,
+      effect: tool.effect ?? null,
+      hasAbortCompletionReceipt: typeof tool.abortCompletionReceipt === 'function',
+    });
   }
   return out;
 }
 
-/** Names of the budgeted tools whose effect is `'write'` — the only population worth aggregating. */
+/** True for a tool this detector judges: a write tool that has NOT already closed the late-return hazard. */
+function isJudged(budget: ToolLatencyBudget | undefined): budget is ToolLatencyBudget {
+  return budget?.effect === 'write' && budget.hasAbortCompletionReceipt !== true;
+}
+
+/** Names of the judged tools (write, no receipt) — the only population worth aggregating in SQL. */
 export function writeToolNames(budgets: ReadonlyMap<string, ToolLatencyBudget>): string[] {
   const names: string[] = [];
-  for (const [name, budget] of budgets) if (budget.effect === 'write') names.push(name);
+  for (const [name, budget] of budgets) if (isJudged(budget)) names.push(name);
   return names.sort();
 }
 
@@ -120,7 +137,7 @@ export function toolLatencyBudgetSignalsFromRows(
 
   for (const row of rows) {
     const budget = budgets.get(row.tool_name);
-    if (!budget || budget.effect !== 'write') continue;
+    if (!isJudged(budget)) continue;
     const n = toNumber(row.n);
     const p95Ms = toNumber(row.p95_ms);
     if (n == null || p95Ms == null || n < minSamples) continue;

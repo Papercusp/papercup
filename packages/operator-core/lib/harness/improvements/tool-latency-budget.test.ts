@@ -90,6 +90,15 @@ describe('what is never judged', () => {
     expect(toolLatencyBudgetSignalsFromRows([row('x:ghost', 59_000)], b)).toEqual([]);
   });
 
+  it('ignores a write tool that already declares an abortCompletionReceipt — the hazard is closed', () => {
+    const b = budgets({
+      'x:receipted': { timeoutSec: null, effect: 'write', hasAbortCompletionReceipt: true },
+      'x:bare': { timeoutSec: null, effect: 'write', hasAbortCompletionReceipt: false },
+    });
+    const keys = toolLatencyBudgetSignalsFromRows([row('x:receipted', 59_000), row('x:bare', 59_000)], b).map((s) => s.key);
+    expect(keys).toEqual(['tool-latency-budget:x:bare']);
+  });
+
   it('ignores thin samples — a p95 of a handful of calls is just the max', () => {
     expect(TOOL_LATENCY_MIN_SAMPLES).toBe(20);
     expect(toolLatencyBudgetSignalsFromRows([row('x:write', 59_000, 19)], b)).toEqual([]);
@@ -144,14 +153,26 @@ describe('registry mapping', () => {
       { expose: { mcp: { name: '' } }, effect: 'write' },
     ]);
     expect([...map.keys()].sort()).toEqual(['plans:list', 'scorecards:emit']);
-    expect(map.get('scorecards:emit')).toEqual({ timeoutSec: 90, effect: 'write' });
-    expect(map.get('plans:list')).toEqual({ timeoutSec: null, effect: 'read' });
+    expect(map.get('scorecards:emit')).toEqual({ timeoutSec: 90, effect: 'write', hasAbortCompletionReceipt: false });
+    expect(map.get('plans:list')).toEqual({ timeoutSec: null, effect: 'read', hasAbortCompletionReceipt: false });
   });
 
-  it('writeToolNames returns only write tools, sorted — the population worth aggregating', () => {
+  it('records whether a tool declares an abortCompletionReceipt (a function, not merely a truthy value)', () => {
+    const map = toolLatencyBudgetsFromProjected([
+      { expose: { mcp: { name: 'has:receipt' } }, effect: 'write', abortCompletionReceipt: () => ({ status: 'recorded' }) },
+      { expose: { mcp: { name: 'no:receipt' } }, effect: 'write' },
+      { expose: { mcp: { name: 'bogus:receipt' } }, effect: 'write', abortCompletionReceipt: true },
+    ]);
+    expect(map.get('has:receipt')!.hasAbortCompletionReceipt).toBe(true);
+    expect(map.get('no:receipt')!.hasAbortCompletionReceipt).toBe(false);
+    expect(map.get('bogus:receipt')!.hasAbortCompletionReceipt).toBe(false);
+  });
+
+  it('writeToolNames returns only judged tools (write, no receipt), sorted — the population worth aggregating', () => {
     const map = toolLatencyBudgetsFromProjected([
       { expose: { mcp: { name: 'z:write' } }, effect: 'write' },
       { expose: { mcp: { name: 'a:write' } }, effect: 'write' },
+      { expose: { mcp: { name: 'r:receipted' } }, effect: 'write', abortCompletionReceipt: () => ({}) },
       { expose: { mcp: { name: 'm:read' } }, effect: 'read' },
       { expose: { mcp: { name: 'u:unset' } } },
     ]);
