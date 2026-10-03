@@ -675,6 +675,65 @@ function requireSingleResource(
   return matches[0];
 }
 
+/**
+ * The RunInstances request for one host: provision, restore and an upgrade's replacement all launch
+ * through this, so they differ only in their idempotency key and the AMI they name.
+ */
+function runInstancesRequest(
+  desired: WorkspaceHostDesiredSpec,
+  settings: AwsWorkspaceHostDesiredProviderSettings,
+  tags: readonly AwsTag[],
+  idempotencyKey: string,
+  imageId: string,
+): AwsRunInstancesInput {
+  return {
+    ClientToken: awsWorkspaceHostClientToken(idempotencyKey),
+    ImageId: imageId,
+    InstanceType: requireString(desired.size, 'desired.size'),
+    MinCount: 1,
+    MaxCount: 1,
+    LaunchTemplate: {
+      LaunchTemplateId: settings.launchTemplateId,
+      ...(settings.launchTemplateVersion ? { Version: settings.launchTemplateVersion } : {}),
+    },
+    NetworkInterfaces: [
+      {
+        DeviceIndex: 0,
+        SubnetId: settings.subnetId,
+        Groups: settings.securityGroupIds,
+        DeleteOnTermination: true,
+        AssociatePublicIpAddress: false,
+      },
+    ],
+    IamInstanceProfile: { Arn: settings.instanceProfileArn },
+    BlockDeviceMappings: [
+      {
+        DeviceName: settings.rootDeviceName,
+        Ebs: {
+          DeleteOnTermination: true,
+          Encrypted: true,
+          KmsKeyId: settings.kmsKeyArn,
+          VolumeSize: settings.rootVolumeGiB,
+          VolumeType: settings.volumeType,
+        },
+      },
+    ],
+    ...(settings.provisioningModel === 'spot' ? { InstanceMarketOptions: AWS_SPOT_MARKET_OPTIONS } : {}),
+    TagSpecifications:
+      settings.provisioningModel === 'spot'
+        ? [
+            { ResourceType: 'instance', Tags: tags },
+            { ResourceType: 'volume', Tags: tags },
+            { ResourceType: 'spot-instances-request', Tags: tags },
+          ]
+        : [
+            { ResourceType: 'instance', Tags: tags },
+            { ResourceType: 'volume', Tags: tags },
+          ],
+    ...(settings.userData ? { UserData: Buffer.from(settings.userData, 'utf8').toString('base64') } : {}),
+  };
+}
+
 function stepInput(step: WorkspaceHostPlanStep): AwsStepInput {
   const candidate = step.input as unknown as AwsStepInput;
   if (!candidate || typeof candidate !== 'object' || !('op' in candidate)) {
@@ -851,16 +910,23 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     ];
   }
 
+  /**
+   * Provision, and restore (which is a provision of a distinct host whose data volume is created
+   * from the source host's snapshot). One description of the host for both, so a restored host is
+   * launched exactly as a provisioned one would be.
+   */
   private planProvision(
-    request: Extract<WorkspaceHostPlanRequest, { action: 'provision' }>,
+    desired: WorkspaceHostDesiredSpec,
+    idempotencyKey: string,
     ctx: WorkspaceHostProviderContext,
+    options: { action: 'provision' | 'restore'; snapshotId?: string },
   ): readonly WorkspaceHostPlanStep[] {
-    const desired = request.desired;
+    const { action } = options;
     const settings = readSettings(desired);
     const tags = stableTags(desired, ctx.workspaceId);
-    const volumeKey = `${request.idempotencyKey}:data-volume`;
-    const instanceKey = `${request.idempotencyKey}:instance`;
-    const attachKey = `${request.idempotencyKey}:attach-data-volume`;
+    const volumeKey = `${idempotencyKey}:data-volume`;
+    const instanceKey = `${idempotencyKey}:instance`;
+    const attachKey = `${idempotencyKey}:attach-data-volume`;
     const volumeRequest: AwsCreateVolumeInput = {
       AvailabilityZone: settings.availabilityZone,
       ClientToken: awsWorkspaceHostClientToken(volumeKey),
@@ -868,57 +934,15 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       KmsKeyId: settings.kmsKeyArn,
       Size: requirePositiveInteger(desired.data.volumeGiB, 'desired.data.volumeGiB'),
       VolumeType: settings.volumeType,
+      ...(options.snapshotId ? { SnapshotId: options.snapshotId } : {}),
       TagSpecifications: [{ ResourceType: 'volume', Tags: tags }],
     };
-    const runRequest: AwsRunInstancesInput = {
-      ClientToken: awsWorkspaceHostClientToken(instanceKey),
-      MinCount: 1,
-      MaxCount: 1,
-      LaunchTemplate: {
-        LaunchTemplateId: settings.launchTemplateId,
-        ...(settings.launchTemplateVersion ? { Version: settings.launchTemplateVersion } : {}),
-      },
-      NetworkInterfaces: [
-        {
-          DeviceIndex: 0,
-          SubnetId: settings.subnetId,
-          Groups: settings.securityGroupIds,
-          DeleteOnTermination: true,
-          AssociatePublicIpAddress: false,
-        },
-      ],
-      IamInstanceProfile: { Arn: settings.instanceProfileArn },
-      BlockDeviceMappings: [
-        {
-          DeviceName: settings.rootDeviceName,
-          Ebs: {
-            DeleteOnTermination: true,
-            Encrypted: true,
-            KmsKeyId: settings.kmsKeyArn,
-            VolumeSize: settings.rootVolumeGiB,
-            VolumeType: settings.volumeType,
-          },
-        },
-      ],
-      ...(settings.provisioningModel === 'spot' ? { InstanceMarketOptions: AWS_SPOT_MARKET_OPTIONS } : {}),
-      TagSpecifications:
-        settings.provisioningModel === 'spot'
-          ? [
-              { ResourceType: 'instance', Tags: tags },
-              { ResourceType: 'volume', Tags: tags },
-              { ResourceType: 'spot-instances-request', Tags: tags },
-            ]
-          : [
-              { ResourceType: 'instance', Tags: tags },
-              { ResourceType: 'volume', Tags: tags },
-            ],
-      ...(settings.userData ? { UserData: Buffer.from(settings.userData, 'utf8').toString('base64') } : {}),
-    };
+    const runRequest = runInstancesRequest(desired, settings, tags, instanceKey, requireAwsAmiId(desired.image.id, 'desired.image.id'));
 
     return [
       {
         id: 'create-data-volume',
-        action: 'provision',
+        action,
         resourceKind: AWS_VOLUME_RESOURCE_KIND,
         dependsOn: [],
         idempotencyKey: volumeKey,
@@ -932,7 +956,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       },
       {
         id: 'run-instance',
-        action: 'provision',
+        action,
         resourceKind: AWS_INSTANCE_RESOURCE_KIND,
         dependsOn: ['create-data-volume'],
         idempotencyKey: instanceKey,
@@ -946,7 +970,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       },
       {
         id: 'attach-data-volume',
-        action: 'provision',
+        action,
         resourceKind: 'attachment',
         dependsOn: ['create-data-volume', 'run-instance'],
         idempotencyKey: attachKey,
@@ -957,9 +981,175 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           hostId: desired.hostId,
         } satisfies AwsStepInput,
       },
-      hostBootstrapStep(ctx, 'provision', desired.hostId, `${request.idempotencyKey}:host-bootstrap`, [
-        'attach-data-volume',
-      ]),
+      hostBootstrapStep(ctx, action, desired.hostId, `${idempotencyKey}:host-bootstrap`, ['attach-data-volume']),
+    ];
+  }
+
+  /**
+   * Restore onto a DISTINCT host (GCP parity: planRestore in gcp-provider.ts). The snapshot is
+   * read fresh and must be completed, owned by this account, and tagged as a managed snapshot of
+   * the exact source host in this workspace: a restore that accepted any snapshot id would let a
+   * caller mount another host's (or another workspace's) data.
+   */
+  private async planRestore(
+    request: Extract<WorkspaceHostPlanRequest, { action: 'restore' }>,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<readonly WorkspaceHostPlanStep[]> {
+    if (request.desired.hostId === request.host.hostId) {
+      throw new Error('AWS restore must create a distinct target host');
+    }
+    if (request.snapshot.target !== AWS_WORKSPACE_HOST_TARGET || request.snapshot.hostId !== request.host.hostId) {
+      throw new Error('AWS restore snapshot must belong to the exact source host');
+    }
+    const snapshotId = requireString(request.snapshot.providerId, 'aws.restore.snapshot.providerId');
+    if (!/^snap-[0-9a-f]+$/.test(snapshotId)) {
+      throw new Error(`aws.restore.snapshot.providerId must be an EBS snapshot id (snap-...), not '${snapshotId}'`);
+    }
+    const observed = await this.client.describeSnapshot(snapshotId);
+    if (observed?.state !== 'completed') {
+      throw new Error(`AWS restore snapshot '${snapshotId}' is not completed (${observed?.state ?? 'absent'})`);
+    }
+    const tags = observed.tags;
+    if (
+      tags[AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed] !== 'true' ||
+      tags[AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId] !== request.host.hostId ||
+      tags[AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId] !== ctx.workspaceId
+    ) {
+      throw new Error(
+        `AWS restore snapshot '${snapshotId}' is not a managed snapshot of host '${request.host.hostId}' in this workspace`,
+      );
+    }
+    const volumeGiB = requirePositiveInteger(request.desired.data.volumeGiB, 'desired.data.volumeGiB');
+    if (observed.volumeSizeGiB !== undefined && volumeGiB < observed.volumeSizeGiB) {
+      throw new Error(
+        `AWS restore data volume (${volumeGiB} GiB) is smaller than snapshot '${snapshotId}' (${observed.volumeSizeGiB} GiB)`,
+      );
+    }
+    return this.planProvision(request.desired, request.idempotencyKey, ctx, { action: 'restore', snapshotId });
+  }
+
+  /**
+   * Replace the instance with one booted from the target AMI, keeping the data volume (GCP parity:
+   * planUpgrade in gcp-provider.ts recreates the boot disk around the retained data disk).
+   *
+   * The original instance is terminated LAST, after its replacement is running with the data
+   * volume attached and the bootstrap pushed. GCP deletes first because its re-insert carries the
+   * data disk and the startup script in ONE call, so a one-step rollback rebuilds the host. On AWS
+   * the data volume is attached after launch and the bootstrap is pushed over SSM, so a host cannot
+   * be rebuilt in one step; keeping the original until the end is what makes a rollback possible.
+   *
+   * Detaching the data volume is the destructive step (the original can no longer serve). A
+   * replacement that cannot launch is therefore stranded-by-failure, and its precomputed rollback
+   * re-attaches the volume to the original and starts it. Because the rollback reinstates the
+   * original instance, the only rollback image it can deliver is the one that instance runs.
+   *
+   * Launch settings come from the host's recorded desired spec (overlaid with the connection's
+   * current launch resources, the same merge provision applies), so the replacement launches
+   * exactly as the original did except for its AMI.
+   */
+  private async planUpgrade(
+    request: Extract<WorkspaceHostPlanRequest, { action: 'upgrade' }>,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<readonly WorkspaceHostPlanStep[]> {
+    const recorded = request.desired;
+    if (!recorded) throw new Error("AWS upgrade requires the host's recorded desired spec");
+    if (recorded.hostId !== request.host.hostId) {
+      throw new Error('AWS upgrade desired spec does not belong to the host being upgraded');
+    }
+    const imageId = requireAwsAmiId(request.image.id, 'aws.upgrade.image.id');
+    if (request.rollbackImage) {
+      const rollbackImageId = requireAwsAmiId(request.rollbackImage.id, 'aws.upgrade.rollbackImage.id');
+      if (rollbackImageId !== recorded.image.id) {
+        throw new Error(
+          `AWS upgrade rolls back by reinstating the running instance, so its rollback image must be the recorded image '${recorded.image.id}', not '${rollbackImageId}'`,
+        );
+      }
+    }
+    const instance = requireSingleResource(request.host.resources, AWS_INSTANCE_RESOURCE_KIND, 'upgrade');
+    const volume = requireSingleResource(request.host.resources, AWS_VOLUME_RESOURCE_KIND, 'upgrade');
+    const desired: WorkspaceHostDesiredSpec = {
+      ...recorded,
+      image: request.image,
+      provider: { ...(recorded.provider ?? {}), ...(ctx.connection.provider ?? {}) },
+    };
+    const settings = readSettings(desired);
+    const tags = stableTags(desired, ctx.workspaceId);
+    const hostId = request.host.hostId;
+    const key = `${request.idempotencyKey}:upgrade:${instance.providerId}`;
+    const runRequest = runInstancesRequest(desired, settings, tags, `${key}:instance`, imageId);
+    return [
+      {
+        id: 'quiesce-runtime-instance',
+        action: 'upgrade',
+        resourceKind: AWS_INSTANCE_RESOURCE_KIND,
+        dependsOn: [],
+        idempotencyKey: `${key}:quiesce`,
+        destructive: false,
+        input: { op: 'stop-instance', instanceId: instance.providerId, hostId } satisfies AwsStepInput,
+      },
+      {
+        id: 'detach-data-volume',
+        action: 'upgrade',
+        resourceKind: 'attachment',
+        dependsOn: ['quiesce-runtime-instance'],
+        idempotencyKey: `${key}:detach-data-volume`,
+        destructive: true,
+        input: {
+          op: 'detach-data-volume',
+          volumeId: volume.providerId,
+          instanceId: instance.providerId,
+          hostId,
+        } satisfies AwsStepInput,
+      },
+      {
+        // The provision step's id, so the replacement takes over the original's registration row.
+        id: 'run-instance',
+        action: 'upgrade',
+        resourceKind: AWS_INSTANCE_RESOURCE_KIND,
+        dependsOn: ['detach-data-volume'],
+        idempotencyKey: `${key}:instance`,
+        destructive: false,
+        input: { op: 'run-instance', request: runRequest, hostId, vpcId: settings.vpcId } satisfies AwsStepInput,
+        rollback: {
+          idempotencyKey: `${key}:reinstate`,
+          input: {
+            op: 'reinstate-instance',
+            instanceId: instance.providerId,
+            volumeId: volume.providerId,
+            device: settings.dataDeviceName,
+            hostId,
+          } satisfies AwsStepInput,
+        },
+      },
+      {
+        id: 'attach-data-volume',
+        action: 'upgrade',
+        resourceKind: 'attachment',
+        dependsOn: ['detach-data-volume', 'run-instance'],
+        idempotencyKey: `${key}:attach-data-volume`,
+        destructive: false,
+        input: {
+          op: 'attach-data-volume',
+          device: settings.dataDeviceName,
+          hostId,
+          replacesInstanceId: instance.providerId,
+        } satisfies AwsStepInput,
+      },
+      hostBootstrapStep(ctx, 'upgrade', hostId, `${key}:host-bootstrap`, ['attach-data-volume'], instance.providerId),
+      {
+        id: 'retire-runtime-instance',
+        action: 'upgrade',
+        resourceKind: AWS_INSTANCE_RESOURCE_KIND,
+        dependsOn: ['start-host-bootstrap'],
+        idempotencyKey: `${key}:retire`,
+        destructive: true,
+        input: {
+          op: 'terminate-instance',
+          instanceId: instance.providerId,
+          hostId,
+          resourceName: instance.providerId,
+        } satisfies AwsStepInput,
+      },
     ];
   }
 
@@ -1143,7 +1333,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       }
       case 'attach-data-volume': {
         const volume = requireKnownResource(request.knownResources, AWS_VOLUME_RESOURCE_KIND, request.step.id);
-        const instance = requireKnownResource(request.knownResources, AWS_INSTANCE_RESOURCE_KIND, request.step.id);
+        const instance = requireStepInstance(request.knownResources, request.step.id, input.replacesInstanceId);
         const result = await this.client.attachVolume({
           InstanceId: instance.providerId,
           VolumeId: volume.providerId,
@@ -1160,7 +1350,10 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         // starts it as a transient unit. `applied` means STARTED — its outcome arrives on the
         // ec2-console-output status channel, which the readiness wait reads.
         const volume = requireKnownResource(request.knownResources, AWS_VOLUME_RESOURCE_KIND, request.step.id);
-        const instance = requireKnownResource(request.knownResources, AWS_INSTANCE_RESOURCE_KIND, request.step.id);
+        const instance = requireStepInstance(request.knownResources, request.step.id, input.replacesInstanceId);
+        // On an upgrade, name the replacement as this step's resource: the controller otherwise
+        // records the step against the instance it seeded at plan time, which is the original.
+        const stepResource = input.replacesInstanceId ? instance : undefined;
         const push = renderAwsHostBootstrapPush({ volumeId: volume.providerId, hostBootstrapScript: input.script });
         if (!(await this.client.waitForSsmOnline(instance.providerId, ctx.signal))) return this.inProgress(request);
         const sent = await this.client.sendShellCommand({
@@ -1170,7 +1363,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           executionTimeoutSec: AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC,
         });
         const invocation = await this.client.waitForCommandInvocation(sent.commandId, instance.providerId, ctx.signal);
-        if (invocation.status === 'Success') return this.applied(request, undefined, sent.requestId);
+        if (invocation.status === 'Success') return this.applied(request, stepResource, sent.requestId);
         if (AWS_COMMAND_FAILED_STATUSES.has(invocation.status)) {
           const detail = (invocation.stderr ?? invocation.stdout ?? '').trim().slice(-300);
           throw new Error(
@@ -1180,6 +1373,55 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           );
         }
         return this.inProgress(request, sent.requestId);
+      }
+      case 'detach-data-volume': {
+        // The original is stopped by the step before this one; EC2 refuses to detach a root
+        // volume, and detaching a mounted data volume from a RUNNING instance risks the data.
+        const current = await this.client.describeInstance(input.instanceId);
+        if (current && current.state !== 'stopped' && current.state !== 'terminated') {
+          throw new Error(
+            `aws_workspace_host_detach_requires_stopped_instance: ${input.instanceId} is '${current.state}'`,
+          );
+        }
+        const before = await this.client.describeVolume(input.volumeId);
+        if (!before || isVolumeAbsent(before)) {
+          throw new Error(`aws_workspace_host_upgrade_data_volume_absent: ${input.volumeId}`);
+        }
+        if (before.state === 'available' && !before.attachedInstanceId) return this.applied(request);
+        if (before.attachedInstanceId && before.attachedInstanceId !== input.instanceId) {
+          throw new Error(
+            `aws_workspace_host_upgrade_data_volume_attached_elsewhere: ${input.volumeId} is attached to ${before.attachedInstanceId}`,
+          );
+        }
+        const result = await this.client.detachVolume({ InstanceId: input.instanceId, VolumeId: input.volumeId });
+        const observed = await this.client.waitForVolumeState(input.volumeId, 'available', ctx.signal);
+        if (!observed || observed.state !== 'available') return this.inProgress(request, result.requestId);
+        return this.applied(request, undefined, result.requestId);
+      }
+      case 'reinstate-instance': {
+        // Upgrade rollback: the replacement never launched, so the data volume goes back onto the
+        // original instance and the original is started again, booting the image it always ran.
+        const volume = await this.client.describeVolume(input.volumeId);
+        if (!volume || isVolumeAbsent(volume)) {
+          throw new Error(`aws_workspace_host_reinstate_data_volume_absent: ${input.volumeId}`);
+        }
+        if (volume.attachedInstanceId !== input.instanceId) {
+          if (volume.attachedInstanceId) {
+            throw new Error(
+              `aws_workspace_host_reinstate_data_volume_attached_elsewhere: ${input.volumeId} is attached to ${volume.attachedInstanceId}`,
+            );
+          }
+          await this.client.attachVolume({ InstanceId: input.instanceId, VolumeId: input.volumeId, Device: input.device });
+          const attached = await this.client.waitForVolumeState(input.volumeId, 'in-use', ctx.signal);
+          if (attached?.attachedInstanceId !== input.instanceId) return this.inProgress(request);
+        }
+        return this.setInstanceState(
+          request,
+          input.instanceId,
+          'running',
+          () => this.client.startInstances([input.instanceId]),
+          ctx.signal,
+        );
       }
       case 'start-instance':
         return this.setInstanceState(
@@ -1385,10 +1627,21 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       }
     } else if (input.op === 'attach-data-volume') {
       const volume = requireKnownResource(request.knownResources, AWS_VOLUME_RESOURCE_KIND, request.step.id);
-      const instance = requireKnownResource(request.knownResources, AWS_INSTANCE_RESOURCE_KIND, request.step.id);
+      const instance = requireStepInstance(request.knownResources, request.step.id, input.replacesInstanceId);
       const found = await this.client.describeVolume(volume.providerId);
       if (found?.state === 'in-use' && found.attachedInstanceId === instance.providerId) {
         return this.unchanged(request);
+      }
+    } else if (input.op === 'detach-data-volume') {
+      const found = await this.client.describeVolume(input.volumeId);
+      if (found?.state === 'available' && !found.attachedInstanceId) return this.unchanged(request);
+    } else if (input.op === 'reinstate-instance') {
+      const [volume, instance] = await Promise.all([
+        this.client.describeVolume(input.volumeId),
+        this.client.describeInstance(input.instanceId),
+      ]);
+      if (volume?.attachedInstanceId === input.instanceId && instance?.state === 'running') {
+        return this.unchanged(request, resource(AWS_INSTANCE_RESOURCE_KIND, input.instanceId));
       }
     } else if (input.op === 'create-snapshot') {
       const found = await this.client.findSnapshotByClientToken(input.request.ClientToken);
