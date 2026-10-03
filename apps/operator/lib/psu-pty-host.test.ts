@@ -3128,6 +3128,41 @@ describe('findNativeTranscriptMarker (fresh row provenance)', () => {
   const scratch = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'kickoff-marker-freshness-'));
   afterAll(() => nodeFs.rmSync(scratch, { recursive: true, force: true }));
 
+  it('proves a managed checksum only as an exact line of the first fresh native user prompt', () => {
+    const codexHome = pathJoin(scratch, 'codex-port-home');
+    const sessions = pathJoin(codexHome, 'sessions');
+    const transcript = pathJoin(sessions, 'rollout-port-native.jsonl');
+    nodeFs.mkdirSync(sessions, { recursive: true });
+    const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${'a'.repeat(64)}]`;
+    const origin = '⟦turn-origin:session-port nonce:0123456789abcdef⟧';
+    const sinceMs = Date.now() - 1_000;
+    const row = (text: string, role = 'user', atMs = Date.now()) => ({
+      type: 'response_item', timestamp: new Date(atMs).toISOString(),
+      payload: { type: 'message', role, content: [{ type: 'input_text', text }] },
+    });
+    const write = (...rows: unknown[]) => nodeFs.writeFileSync(
+      transcript, `${rows.map((value) => JSON.stringify(value)).join('\n')}\n`,
+    );
+    const find = (nativeId = 'port-native', requestedMarker = marker) => findNativeTranscriptMarker({
+      agent: 'codex', env: { CODEX_HOME: codexHome }, marker: requestedMarker,
+      sinceMs, nativeId, home: scratch,
+    });
+    write(row(`${origin}\nported history\n${marker}\n`));
+    expect(find()).toBe(transcript);
+    expect(find('another-native')).toBeNull();
+    write(row(`quoted inline: ${marker}`));
+    expect(find()).toBeNull();
+    write(row('unrelated first task'), row(`${origin}\n${marker}`));
+    expect(find()).toBeNull();
+    write(row(`${origin}\n${marker}`, 'assistant'));
+    expect(find()).toBeNull();
+    write(row(`${origin}\n${marker}`, 'user', sinceMs - 60_000));
+    expect(find()).toBeNull();
+    const malformed = '[PAPERCUSP SESSION PORT CHECKSUM invalid]';
+    write(row(`${origin}\n${malformed}`));
+    expect(find('port-native', malformed)).toBeNull();
+  });
+
   it('rejects an old marker row even when unrelated fresh metadata updates the transcript file', () => {
     const claudeConfig = pathJoin(scratch, 'claude-home');
     const transcript = pathJoin(claudeConfig, 'projects', 'session', 'conversation.jsonl');
