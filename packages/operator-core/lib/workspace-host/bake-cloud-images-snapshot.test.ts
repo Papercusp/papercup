@@ -11,7 +11,7 @@
  * pre-fix control keeps the behavioral assertion falsifiable without mutating the
  * shared checkout.
  */
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -54,7 +54,18 @@ function runFixture(
    * WI-10005761. imageRelease: what the pinned image answers at /opt/papercusp/current (default:
    * the --release-version asked for, or none). clouds: the --clouds list (default gcp).
    */
-  options: { imageRelease?: string; clouds?: string } = {},
+  options: {
+    imageRelease?: string;
+    clouds?: string;
+    /**
+     * WI-10005766. Where the build context lives. Default: the bare temp dir (no git), baked with
+     * --allow-unpinned-context. 'clean' / 'dirty': a git repo whose infra/images/bootc subdirectory
+     * is the context, committed, then (dirty) given one uncommitted edit before the bake starts.
+     */
+    git?: 'clean' | 'dirty';
+    /** Pass --allow-unpinned-context. Default: true outside git, false in a git context. */
+    allowUnpinned?: boolean;
+  } = {},
 ): {
   status: number;
   output: string;
@@ -64,10 +75,23 @@ function runFixture(
   buildArgs: string[];
   podmanCalls: string[];
   inhibitCalls: string[];
+  /** WI-10005766: the bytes the fake build read from its -f Containerfile (null: build never ran). */
+  builtContainerfile: string | null;
+  /** WI-10005766: the context directory the fixture baked from, and its HEAD in git mode. */
+  context: string;
+  contextCommit: string | null;
+  out: string;
 } {
   const dir = mkdtempSync(join(tmpdir(), 'ei-223550-bake-'));
-  const source = join(dir, 'bake-cloud-images.sh');
-  const health = join(dir, 'p307-build-health.sh');
+  // WI-10005766: in git mode the context is a subdirectory of a repo, so the bake's committed-tree
+  // comparison runs through a non-empty show-prefix exactly as it does in the real checkout. Marker
+  // files, TMPDIR, bin and out stay in `dir`, outside the repo, so they never dirty the context.
+  const ctx = options.git ? join(dir, 'repo', 'infra', 'images', 'bootc') : dir;
+  mkdirSync(ctx, { recursive: true });
+  const source = join(ctx, 'bake-cloud-images.sh');
+  const health = join(ctx, 'p307-build-health.sh');
+  const liveContainerfile = join(ctx, 'workspace-host.Containerfile');
+  const builtContainerfilePath = join(dir, 'built-containerfile');
   const bin = join(dir, 'bin');
   const out = join(dir, 'out');
   const mutationMarker = join(dir, 'source-mutated');
@@ -112,6 +136,15 @@ case "$subcommand" in
   build)
     : > "$BAKE_TEST_BUILD_MARKER"
     printf '%s\\n' "$@" > "$BAKE_TEST_BUILD_ARGS"
+    # WI-10005766: an agent edits the LIVE Containerfile while the build runs. Record what the
+    # build's own -f file holds after that edit: the snapshot must not see it.
+    printf 'LIVE EDIT\\n' > "$BAKE_TEST_LIVE_CONTAINERFILE"
+    containerfile=""; previous=""
+    for arg in "$@"; do
+      [ "$previous" = "-f" ] && containerfile="$arg"
+      previous="$arg"
+    done
+    cat "$containerfile" > "$BAKE_TEST_BUILT_CONTAINERFILE"
     sleep 0.15
     mutation_tmp="$(mktemp "$BAKE_TEST_SOURCE.XXXXXX")"
     sed '/^bake_one() {/a if (' "$BAKE_TEST_SOURCE" > "$mutation_tmp"
@@ -283,13 +316,32 @@ exec "$@"
     writeFileSync(join(bin, tool), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
     chmodSync(join(bin, tool), 0o755);
   }
-  writeFileSync(join(dir, 'release-supply-chain.sh'), `#!/usr/bin/env bash
+  writeFileSync(join(ctx, 'release-supply-chain.sh'), `#!/usr/bin/env bash
 set -euo pipefail
 : > "$BAKE_TEST_SUPPLY_CHAIN_MARKER"
 `, { mode: 0o755 });
-  chmodSync(join(dir, 'release-supply-chain.sh'), 0o755);
+  chmodSync(join(ctx, 'release-supply-chain.sh'), 0o755);
+  writeFileSync(liveContainerfile, 'FROM scratch\n# original fixture Containerfile\n');
+
+  let contextCommit: string | null = null;
+  if (options.git) {
+    const repo = join(dir, 'repo');
+    const git = (...args: string[]): string => {
+      const r = spawnSync('git', ['-C', repo, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
+        encoding: 'utf8',
+      });
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+    git('init', '-q');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'fixture context');
+    contextCommit = git('rev-parse', 'HEAD');
+    if (options.git === 'dirty') writeFileSync(join(ctx, 'papercusp-uncommitted.conf'), 'not committed\n');
+  }
 
   const optionalArgs: string[] = [];
+  if (options.allowUnpinned ?? !options.git) optionalArgs.push('--allow-unpinned-context');
   if (release?.root !== undefined) optionalArgs.push('--release-root', release.root);
   if (release?.version !== undefined) optionalArgs.push('--release-version', release.version);
   if (sourceImage !== undefined) optionalArgs.push('--source-image', sourceImage.ref);
@@ -325,6 +377,8 @@ set -euo pipefail
         BAKE_TEST_SOURCE_IMAGE: sourceImage?.ref ?? '',
         BAKE_TEST_SOURCE_EXISTS: sourceImage?.exists === false ? '0' : '1',
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
+        BAKE_TEST_LIVE_CONTAINERFILE: liveContainerfile,
+        BAKE_TEST_BUILT_CONTAINERFILE: builtContainerfilePath,
         BAKE_TEST_RENDER: render,
         // The fake disk holds whatever release the image carries.
         BAKE_TEST_RELEASE_VERSION: options.imageRelease ?? release?.version ?? '',
@@ -358,6 +412,10 @@ set -euo pipefail
     inhibitCalls: existsSync(inhibitCallsPath)
       ? readFileSync(inhibitCallsPath, 'utf8').split(/\r?\n/).filter(Boolean)
       : [],
+    builtContainerfile: existsSync(builtContainerfilePath) ? readFileSync(builtContainerfilePath, 'utf8') : null,
+    context: ctx,
+    contextCommit,
+    out,
   };
 }
 
@@ -760,6 +818,104 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
       'systemd-tmpfiles --create /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf',
     );
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain('expected 755:0:0');
+  });
+});
+
+const CONTEXT_FREEZE_MARKER = '# ── 0. Freeze the BUILD CONTEXT (WI-10005766)';
+
+/** The pre-WI-10005766 shape: the build reads the live checkout. Stub the manifest fields it would set. */
+function withoutContextFreeze(): string {
+  const start = SOURCE.indexOf(CONTEXT_FREEZE_MARKER);
+  const endMarker = 'BUILD_HEALTH="$HERE/p307-build-health.sh"\n';
+  const end = SOURCE.indexOf(endMarker, start);
+  expect(start, 'context freeze marker must be present in the shipped script').toBeGreaterThan(-1);
+  expect(end, 'context freeze block must end by re-pointing BUILD_HEALTH').toBeGreaterThan(start);
+  return (
+    SOURCE.slice(0, start) +
+    `BUILD_CONTEXT_SHA256=${'0'.repeat(64)}; BUILD_CONTEXT_COMMIT=""; BUILD_CONTEXT_PINNED_JSON=false\n` +
+    SOURCE.slice(end + endMarker.length)
+  );
+}
+
+/** Independent re-implementation of the documented build_context_sha256 scheme. */
+function contextSha256(root: string): string {
+  const entries: string[] = [];
+  const walk = (rel: string): void => {
+    for (const name of readdirSync(join(root, rel))) {
+      const relPath = rel === '.' ? `./${name}` : `${rel}/${name}`;
+      const st = lstatSync(join(root, relPath));
+      if (st.isDirectory()) walk(relPath);
+      else if (st.isSymbolicLink()) entries.push(`link ${relPath} -> ${readlinkSync(join(root, relPath))}`);
+      else if (st.isFile()) {
+        const digest = createHash('sha256').update(readFileSync(join(root, relPath))).digest('hex');
+        entries.push(`file ${digest} ${(st.mode & 0o100) !== 0 ? 'x' : '-'} ${relPath}`);
+      }
+    }
+  };
+  walk('.');
+  const sorted = entries
+    .map((line) => ({ line, path: line.replace(/^file [0-9a-f]{64} [x-] |^link /, '').replace(/ -> .*$/, '') }))
+    .sort((a, b) => (Buffer.compare(Buffer.from(a.path), Buffer.from(b.path))))
+    .map((e) => `${e.line}\n`)
+    .join('');
+  return createHash('sha256').update(sorted).digest('hex');
+}
+
+type BuildContextManifest = { buildContext?: { sha256: string; commit: string | null; pinned: boolean } };
+
+describe('bake-cloud-images.sh build-context snapshot (WI-10005766)', () => {
+  it('builds from a frozen snapshot: a live Containerfile edit during the build does not reach it', () => {
+    const result = runFixture(SOURCE);
+    expect(result.status, result.output).toBe(0);
+    expect(result.builtContainerfile).toBe('FROM scratch\n# original fixture Containerfile\n');
+    const snapshot = join(result.out, 'build-context');
+    expect(result.buildArgs).toEqual(expect.arrayContaining(['-f', join(snapshot, 'workspace-host.Containerfile')]));
+    expect(result.buildArgs.at(-1)).toBe(snapshot);
+    // The artifact directory sits inside the fixture's context and must not be copied into itself.
+    expect(existsSync(join(snapshot, 'out'))).toBe(false);
+
+    const manifest = result.manifest as BuildContextManifest;
+    expect(manifest.buildContext).toEqual({ sha256: expect.stringMatching(/^[0-9a-f]{64}$/), commit: null, pinned: false });
+    expect(manifest.buildContext?.sha256).toBe(contextSha256(snapshot));
+    expect(result.output).toContain(`sha256=${manifest.buildContext?.sha256} commit=none pinned=false`);
+    expect(() => parseWorkspaceHostBootcBakeManifest(result.manifest)).not.toThrow();
+  });
+
+  it('falsifiability control: the pre-fix live-context shape builds the mid-bake edit', () => {
+    const result = runFixture(withoutContextFreeze());
+    expect(result.builtContainerfile).toBe('LIVE EDIT\n');
+  });
+
+  it('pins a clean git context to its commit through a subdirectory prefix', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { git: 'clean' });
+    expect(result.status, result.output).toBe(0);
+    expect(result.contextCommit).toMatch(/^[0-9a-f]{40}$/);
+    const manifest = result.manifest as BuildContextManifest;
+    expect(manifest.buildContext?.commit).toBe(result.contextCommit);
+    expect(manifest.buildContext?.pinned).toBe(true);
+    expect(result.builtContainerfile).toBe('FROM scratch\n# original fixture Containerfile\n');
+  });
+
+  it('refuses a context with an uncommitted file before anything is built', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { git: 'dirty' });
+    expect(result.status).toBe(2);
+    expect(result.output).toContain(`does not equal git commit ${result.contextCommit}`);
+    expect(result.output).toContain('--allow-unpinned-context');
+    expect(result.builtContainerfile).toBeNull();
+    expect(result.podmanCalls.some((call) => call.startsWith('build '))).toBe(false);
+    expect(result.files).not.toContain('supply-chain-ran');
+  });
+
+  it('bakes an uncommitted context only when asked, and records it as unpinned', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', {
+      git: 'dirty',
+      allowUnpinned: true,
+    });
+    expect(result.status, result.output).toBe(0);
+    const manifest = result.manifest as BuildContextManifest;
+    expect(manifest.buildContext?.commit).toBe(result.contextCommit);
+    expect(manifest.buildContext?.pinned).toBe(false);
+    expect(existsSync(join(result.out, 'build-context', 'papercusp-uncommitted.conf'))).toBe(true);
   });
 });
 

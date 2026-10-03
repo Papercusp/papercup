@@ -1,8 +1,29 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { isAbsolute, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { assertPublicManualSource } from './scripts/source-contract.mjs';
 
 const isLintAsCommittedClone = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1';
+function normalizeExternalAstroModuleIds() {
+  const projectRoot = fileURLToPath(new URL('./', import.meta.url));
+  return {
+    name: 'papercusp-clone-astro-id-normalizer',
+    enforce: 'pre',
+    resolveId(id) {
+      if (id.startsWith('/@fs/')) return null;
+      const queryIndex = id.indexOf('?');
+      const filename = queryIndex === -1 ? id : id.slice(0, queryIndex);
+      if (!filename.endsWith('.astro') || !isAbsolute(filename)) return null;
+
+      const relativePath = relative(projectRoot, filename);
+      const outsideProjectRoot =
+        relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
+      if (!outsideProjectRoot) return null;
+      return `/@fs${id}`;
+    },
+  };
+}
 
 // Public-facing user manual for Papercusp. Engine: Starlight (on Astro).
 // The internal *engineering* docs are a separate app — apps/operator-docs.
@@ -15,15 +36,16 @@ const isLintAsCommittedClone = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE ===
 export default defineConfig({
   site: 'https://app.papercusp.com',
   base: '/docs',
-  // lint:as-committed links dependencies to the shared install. Keep Vite's realpath resolution
-  // enabled: preserving the clone symlink gives Astro's main component and generated style
-  // requests different IDs, which split the compile-metadata key.
+  // lint:as-committed links dependencies to the shared install. Astro normalizes /@fs IDs to
+  // their real path but treats raw external absolute IDs as app-root-relative. Normalize every
+  // external Astro component and its virtual requests to /@fs so they share one compile key.
   ...(isLintAsCommittedClone
     ? {
         vite: {
           resolve: {
             preserveSymlinks: false,
           },
+          plugins: [normalizeExternalAstroModuleIds()],
         },
       }
     : {}),

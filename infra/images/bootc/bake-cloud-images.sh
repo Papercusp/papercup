@@ -43,6 +43,11 @@
 #                        supply-chain and render gates still run. Mutually exclusive with the
 #                        release-root options because those inputs are already baked into REF.
 #   --insecure-registry  plain-HTTP / self-signed registry (local testing only).
+#   --allow-unpinned-context
+#                        bake from a build context that does not equal a git commit (uncommitted
+#                        or untracked files in infra/images/bootc, or no git checkout at all). The
+#                        snapshot and its content hash are still recorded; only the commit pin is
+#                        waived, and the manifest says so (buildContext.pinned=false).
 #   --dry-run            resolve and PLAN every step, run no build and no bake. Prints the same
 #                        digest-pinned refs the real run would use.
 #
@@ -99,7 +104,7 @@ declare -A CLOUD_SHA=() CLOUD_BYTES=()
 
 REGISTRY=""; KEY=""; PUBKEY=""; TAG=""; CLOUDS="gcp,aws,azure"; OUT="./.bake-out"
 RELEASE_ROOT=""; RELEASE_VERSION=""; SOURCE_IMAGE=""
-INSECURE=0; DRY_RUN=0
+INSECURE=0; DRY_RUN=0; ALLOW_UNPINNED_CONTEXT=0
 BIB_IMG="${BOOTC_IMAGE_BUILDER:-quay.io/centos-bootc/bootc-image-builder:latest}"
 SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
 
@@ -117,8 +122,9 @@ while [ $# -gt 0 ]; do
     --release-version) RELEASE_VERSION="${2:-}"; shift 2;;
     --source-image) SOURCE_IMAGE="${2:-}"; shift 2;;
     --insecure-registry) INSECURE=1; shift;;
+    --allow-unpinned-context) ALLOW_UNPINNED_CONTEXT=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
-    -h|--help) sed -n '1,45p' "$0"; exit 0;;
+    -h|--help) sed -n '1,50p' "$0"; exit 0;;
     *) die "unknown argument '$1'";;
   esac
 done
@@ -219,6 +225,72 @@ esac
 
 mkdir -p "$OUT" || die "cannot create $OUT"
 OUT="$(cd "$OUT" && pwd)" || die "cannot resolve artifact directory"
+
+# ── 0. Freeze the BUILD CONTEXT (WI-10005766) ─────────────────────────────────────────────────
+# The startup snapshot above freezes this SCRIPT only. The image is built from "$HERE": the
+# Containerfile and every file it COPYs, plus release-supply-chain.sh and the build-health helper.
+# HERE is the live shared checkout, which other agents edit and git-sync rewrites during a bake that
+# runs for an hour or more. So an edit landing mid-bake reached the image with nothing recording it,
+# and two bakes launched back to back could differ in OS content. Copy the context ONCE, before
+# anything reads it, point every later step at the copy, and record in bake-manifest.json what was
+# copied: always a content hash, plus the git commit and whether the copy equals that commit's tree.
+# A context that does not equal a commit is refused unless --allow-unpinned-context is passed.
+#
+# The hash covers each file's bytes, its path and its executable bit (the only mode bit git
+# records), and each symlink's target. The same function hashes the committed tree, so "pinned" is
+# a content comparison. It does not read `git status`, which could race a concurrent edit.
+build_context_sha256() { # $1 directory
+  ( cd "$1" || exit 1
+    find . \( -type f -o -type l \) -print0 | LC_ALL=C sort -z |
+      while IFS= read -r -d '' p; do
+        if [ -L "$p" ]; then
+          printf 'link %s -> %s\n' "$p" "$(readlink -- "$p")"
+        else
+          x=-; [ -x "$p" ] && x=x
+          printf 'file %s %s %s\n' "$(sha256sum < "$p" | cut -d' ' -f1)" "$x" "$p"
+        fi
+      done
+  ) | sha256sum | cut -d' ' -f1
+}
+HERE_REAL="$(cd "$HERE" && pwd -P)" || die "cannot resolve build context directory: $HERE"
+OUT_REAL="$(cd "$OUT" && pwd -P)" || die "cannot resolve artifact directory: $OUT"
+[ "$OUT_REAL" != "$HERE_REAL" ] || die "--out must not be the build context directory itself ($HERE_REAL)"
+CONTEXT_EXCLUDE=()
+case "$OUT_REAL" in "$HERE_REAL"/*) CONTEXT_EXCLUDE=(--exclude="./${OUT_REAL#"$HERE_REAL"/}");; esac
+BUILD_CONTEXT="$OUT/build-context"
+{ rm -rf -- "$BUILD_CONTEXT" && mkdir -p -- "$BUILD_CONTEXT"; } \
+  || die "cannot create the build context snapshot directory: $BUILD_CONTEXT"
+tar -C "$HERE_REAL" "${CONTEXT_EXCLUDE[@]}" -cf - . | tar -C "$BUILD_CONTEXT" -xpf - \
+  || die "cannot snapshot build context $HERE_REAL into $BUILD_CONTEXT"
+BUILD_CONTEXT_SHA256="$(build_context_sha256 "$BUILD_CONTEXT")"
+case "$BUILD_CONTEXT_SHA256" in
+  [0-9a-f][0-9a-f]*) [ "${#BUILD_CONTEXT_SHA256}" -eq 64 ] || die "build context hash is malformed";;
+  *) die "cannot hash the build context snapshot";;
+esac
+BUILD_CONTEXT_COMMIT=""; BUILD_CONTEXT_PINNED=0
+if git -C "$HERE_REAL" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  BUILD_CONTEXT_COMMIT="$(GIT_OPTIONAL_LOCKS=0 git -C "$HERE_REAL" rev-parse --verify HEAD 2>/dev/null)" \
+    || BUILD_CONTEXT_COMMIT=""
+  ctx_prefix="$(git -C "$HERE_REAL" rev-parse --show-prefix 2>/dev/null)"
+  if [ -n "$BUILD_CONTEXT_COMMIT" ]; then
+    ctx_tree="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-bake-context-tree.XXXXXX")" \
+      || die "cannot create a scratch directory for the committed build context"
+    if GIT_OPTIONAL_LOCKS=0 git -C "$HERE_REAL" archive --format=tar "$BUILD_CONTEXT_COMMIT:$ctx_prefix" \
+         | tar -C "$ctx_tree" -xpf - &&
+       [ "$(build_context_sha256 "$ctx_tree")" = "$BUILD_CONTEXT_SHA256" ]; then
+      BUILD_CONTEXT_PINNED=1
+    fi
+    rm -rf -- "$ctx_tree"
+  fi
+fi
+if [ "$BUILD_CONTEXT_PINNED" -ne 1 ] && [ "$ALLOW_UNPINNED_CONTEXT" -ne 1 ]; then
+  die "build context $HERE_REAL does not equal git commit ${BUILD_CONTEXT_COMMIT:-<none: not a git checkout>}: it has uncommitted, untracked or ignored files. Commit them, or pass --allow-unpinned-context to bake this exact snapshot anyway (sha256 $BUILD_CONTEXT_SHA256)"
+fi
+BUILD_CONTEXT_PINNED_JSON=false; [ "$BUILD_CONTEXT_PINNED" -eq 1 ] && BUILD_CONTEXT_PINNED_JSON=true
+echo "BAKE_BUILD_CONTEXT=$BUILD_CONTEXT sha256=$BUILD_CONTEXT_SHA256 commit=${BUILD_CONTEXT_COMMIT:-none} pinned=$BUILD_CONTEXT_PINNED_JSON"
+# From here on every step reads the snapshot, never the live checkout.
+HERE="$BUILD_CONTEXT"
+BUILD_HEALTH="$HERE/p307-build-health.sh"
 [ -x "$BUILD_HEALTH" ] || die "build health helper is missing or not executable: $BUILD_HEALTH"
 
 # Run one potentially long-lived rootful container operation while the companion
@@ -693,6 +765,10 @@ fi
   else
     echo "  \"release\": null,"
   fi
+  # WI-10005766: what the image was built from. commit is HEAD at bake start (null outside git);
+  # pinned says whether the snapshot equals that commit's tree.
+  if [ -n "$BUILD_CONTEXT_COMMIT" ]; then ctx_commit_json="\"$BUILD_CONTEXT_COMMIT\""; else ctx_commit_json=null; fi
+  echo "  \"buildContext\": {\"sha256\": \"$BUILD_CONTEXT_SHA256\", \"commit\": $ctx_commit_json, \"pinned\": $BUILD_CONTEXT_PINNED_JSON},"
   printf '  "clouds": ['
   for i in "${!rendered[@]}"; do
     [ "$i" -gt 0 ] && printf ', '

@@ -109,19 +109,41 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
     expect(parent).toEqual({ NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' });
   });
 
-  it('keeps Vite realpath resolution for clone Starlight virtual modules', async () => {
+  it('normalizes external Astro IDs in clone mode so virtual requests share the compile key', async () => {
     const envKey = 'PAPERCUSP_LINT_AS_COMMITTED_CLONE';
     const before = process.env[envKey];
     const configPath = resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs');
     const readConfig = async (tag: string) => (await import(`${configPath}?${tag}`)).default as {
-      vite?: { resolve?: { preserveSymlinks?: boolean; alias?: Array<{ find: string; replacement: string }> } };
+      vite?: {
+        resolve?: { preserveSymlinks?: boolean };
+        plugins?: Array<{
+          name: string;
+          enforce?: string;
+          resolveId?: (id: string) => string | null;
+        }>;
+      };
     };
     try {
       delete process.env[envKey];
-      expect((await readConfig('normal')).vite?.resolve?.preserveSymlinks).toBeUndefined();
+      const normalVite = (await readConfig('normal')).vite;
+      expect(normalVite?.resolve?.preserveSymlinks).toBeUndefined();
+      expect(normalVite?.plugins?.some(({ name }) => name === 'papercusp-clone-astro-id-normalizer')).toBeFalsy();
+
       process.env[envKey] = '1';
-      const cloneVite = (await readConfig('clone')).vite?.resolve;
-      expect(cloneVite?.preserveSymlinks).toBe(false);
+      const cloneVite = (await readConfig('clone')).vite;
+      expect(cloneVite?.resolve?.preserveSymlinks).toBe(false);
+
+      const normalizer = cloneVite?.plugins?.find(({ name }) => name === 'papercusp-clone-astro-id-normalizer');
+      expect(normalizer?.enforce).toBe('pre');
+      const sharedComponent = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/components/Page.astro'));
+      const virtualStyleId = `${sharedComponent}?astro&type=style&index=0&lang.css`;
+      expect(normalizer?.resolveId?.(sharedComponent)).toBe(`/@fs${sharedComponent}`);
+      expect(normalizer?.resolveId?.(virtualStyleId)).toBe(`/@fs${virtualStyleId}`);
+      expect(normalizer?.resolveId?.(`/@fs${virtualStyleId}`)).toBeNull();
+
+      const localComponent = resolve(repoRoot, 'apps/papercusp-docs/src/components/Local.astro');
+      expect(normalizer?.resolveId?.(localComponent)).toBeNull();
+      expect(normalizer?.resolveId?.(`${localComponent}?raw`)).toBeNull();
     } finally {
       if (before === undefined) delete process.env[envKey];
       else process.env[envKey] = before;
