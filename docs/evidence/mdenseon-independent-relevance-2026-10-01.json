@@ -3485,6 +3485,76 @@
     "historical429Fixed": false,
     "p003Complete": false
   },
+  "sourceCollectionTerminalV8": {
+    "status": "completed-cohort-and-new-call-transport-binding-qualified",
+    "collectorTask": "0murpyb62s0szwzaz0m",
+    "collectorExitCode": 0,
+    "collectorFinishedAt": "2026-10-03T01:41:23.195Z",
+    "auditTask": "0murq8y391npdm6ogh9",
+    "auditExitCode": 0,
+    "auditFinishedAt": "2026-10-03T01:43:06.544Z",
+    "audit": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/completed-transport-cohort-audit-v1.json",
+      "sha256": "ddd3295b9305f7932072125a840cba615d90a282c30399577a181a9d3892a6f0",
+      "bytes": 556153
+    },
+    "newCallTransportBinding": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/completed-transport-binding-v2.json",
+      "sha256": "e4af0adce74a071c74a17aed3f4f44bca54afe719df3cbdfeb0506a2dc54d2b9",
+      "bytes": 29369
+    },
+    "labels": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/blind-labels-v8-transport-diagnostics/labels.json",
+      "sha256": "d35e99921e916e38be18ceb8997b71844c20920c972dbd1b1368de19e2290651",
+      "bytes": 104844
+    },
+    "judgments": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/blind-labels-v8-transport-diagnostics/judgments.json",
+      "sha256": "24d4d234973c6e76ed00a2d79c3598c1217967b55cb1d79d5c98e76944e3cf6e",
+      "bytes": 140478
+    },
+    "reusedValidPrefix": true,
+    "newPaidMissingCalls": 42,
+    "newCallsObservedViaLoopback": true,
+    "newCallsObservedUnpinned": true,
+    "newCallsHttp200WithProviderRequestAndServingAccount": 42,
+    "newCallsPromptFingerprintRecomputed": true,
+    "auditModelRequests": 0,
+    "auditReferenceChecks": 1822,
+    "auditReferenceFailures": [],
+    "labelsByteEqual": true,
+    "votesAndConsensusEqual": true,
+    "independentJudgeInvocations": 450,
+    "memory": {
+      "sourcesAuthored": 283,
+      "acceptedQueries": 164,
+      "calibrationQueries": 48,
+      "testQueries": 116,
+      "excludedQueries": 968,
+      "ambiguousQueries": 591,
+      "judgePasses": 2,
+      "callsPerPass": 144,
+      "votesPerPass": 1132
+    },
+    "prose": {
+      "sourcesAuthored": 143,
+      "acceptedQueries": 64,
+      "calibrationQueries": 12,
+      "testQueries": 52,
+      "excludedQueries": 508,
+      "ambiguousQueries": 312,
+      "judgePasses": 2,
+      "callsPerPass": 81,
+      "votesPerPass": 572
+    },
+    "scope": "The maintained collector reconstructed the completed snapshot cohort from immutable raw author/judge/selected-call ancestry with every model request forbidden. The saved labels, prompts, passes, votes and consensus match exactly. Current transport binding applies only to the 42 newly collected missing calls, not the historical V7 failure. Calibration remains separate; full accessible census and retrieval quality still require measurement.",
+    "historicalFailedEndpointProven": false,
+    "historical429Fixed": false,
+    "fullAccessibleCensusExhausted": false,
+    "newQueryEmbeddingMatrixStarted": false,
+    "p003Complete": false,
+    "modelAdoptionAuthorized": false
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
