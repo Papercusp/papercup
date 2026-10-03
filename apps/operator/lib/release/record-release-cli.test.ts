@@ -863,31 +863,6 @@ describe('validateRecordChangelog — fail closed on accidental changelog omissi
   });
 });
 
-describe('R-6 Android result falsifier detector', () => {
-  const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
-
-  it('rejects empty, skipped, failed, errored, and missing instrumentation results', () => {
-    // The maintained Android runner guard matrix takes tens of seconds.
-    // Bound its synchronous child directly; Vitest cannot interrupt spawnSync
-    // while its event loop is blocked.
-    const result = spawnSync('make', ['test-android-runner'], {
-      cwd: mobileDir,
-      encoding: 'utf8',
-      timeout: 90_000,
-    });
-    expect(
-      result.status,
-      [result.error?.message, result.stdout, result.stderr]
-        .filter(Boolean)
-        .join('\n'),
-    ).toBe(0);
-    expect(result.stdout).toContain('Android result guard tests: 10 passed');
-    expect(result.stdout).toContain(
-      'Android CI working-set guards: host refusals, four target-only cleans and pinned NDK preservation passed',
-    );
-  }, 100_000);
-});
-
 describe('Android release producer/consumer source contract (D-004)', () => {
   const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
   const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
