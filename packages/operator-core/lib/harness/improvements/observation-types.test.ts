@@ -20,6 +20,18 @@ import {
 } from './observation-types';
 
 describe('OBSERVATION_KINDS', () => {
+  it('round-trips complete ALL probe records and refuses empty, nested or contradictory aggregates', () => {
+    const probe = { kind: 'tool', tool: 'status:read', args: {}, schemaRevision: 'historical-revision', expect: { path: '$.state', op: 'eq', value: 'green' } };
+    const child = { kind: 'probe', probe, verdict: 'pass', status: 'fresh', executed: true, observed: 'green', measuredAt: '2026-10-03T07:00:00Z' };
+    const group = { kind: 'probe', all: [child, { ...child, verdict: 'fail', status: 'stale', observed: 'red' }], verdict: 'fail', status: 'stale', executed: true, measuredAt: child.measuredAt };
+    expect(asStructuredObservation({ checkRuns: { proof: group } })?.checkRuns?.proof).toEqual(group);
+    for (const bad of [
+      { ...group, all: [] }, { ...group, all: [group] }, { ...group, verdict: 'pass', status: 'fresh' },
+      { ...group, all: [child, { ...child, executed: false }] }, { ...group, probe },
+    ]) expect(asStructuredObservation({ checkRuns: { proof: bad } })?.checkRuns).toBeUndefined();
+    expect(asStructuredObservation({ checkRuns: { proof: { ...group, all: [{ ...child, observed: { private: 'payload' } }], verdict: 'pass', status: 'fresh' } } })?.checkRuns?.proof)
+      .toMatchObject({ all: [expect.not.objectContaining({ observed: expect.anything() })] });
+  });
   it('includes test-failure as a supported machine-readable observation kind', () => {
     expect(OBSERVATION_KINDS).toContain('test-failure');
   });

@@ -455,19 +455,19 @@ Not proven by this workload:
 
 ### B. Plan-target fork/join DAG — PASS 9/9
 
-| Metric     | Callers | Control  | Candidate | Limit    | Result |
-| ---------- | ------- | -------- | --------- | -------- | ------ |
-| warm p50   | 1       | 1693 ms  | 1767 ms   | 2056 ms  | pass   |
-| warm p95   | 1       | 3182 ms  | 2428 ms   | 4027 ms  | pass   |
-| warm p99   | 1       | 5115 ms  | 3923 ms   | 7773 ms  | pass   |
-| cold p95   | 1       | 7829 ms  | 7911 ms   | 14201 ms | pass   |
-| warm p50   | 8       | 9948 ms  | 10121 ms  | 11963 ms | pass   |
-| warm p95   | 8       | 15794 ms | 13752 ms  | 19792 ms | pass   |
-| warm p99   | 8       | 25654 ms | 14768 ms  | 38581 ms | pass   |
-| cold p95   | 8       | 5447 ms  | 9222 ms   | 10032 ms | pass   |
-| throughput | 8       | 0.72/s   | 0.75/s    | 0.58/s   | pass   |
+| Metric     | Callers | Control | Candidate | Limit    | Result |
+| ---------- | ------- | ------- | --------- | -------- | ------ |
+| warm p50   | 1       | 927 ms  | 886 ms    | 1137 ms  | pass   |
+| warm p95   | 1       | 1984 ms | 1517 ms   | 2530 ms  | pass   |
+| warm p99   | 1       | 3342 ms | 3581 ms   | 5113 ms  | pass   |
+| cold p95   | 1       | 6757 ms | 8613 ms   | 12324 ms | pass   |
+| warm p50   | 8       | 4190 ms | 3838 ms   | 5052 ms  | pass   |
+| warm p95   | 8       | 5506 ms | 5075 ms   | 6933 ms  | pass   |
+| warm p99   | 8       | 5822 ms | 6614 ms   | 8834 ms  | pass   |
+| cold p95   | 8       | 5551 ms | 8906 ms   | 10215 ms | pass   |
+| throughput | 8       | 1.84/s  | 1.99/s    | 1.47/s   | pass   |
 
-Evidence: `docs/evidence/p013-workload-b-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-b-snap-2026-10-02.json`.
 
 Not proven by this workload:
 

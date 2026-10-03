@@ -36,9 +36,68 @@ import {
 } from './continuity-probes';
 import { renderCarryNote } from './carry-note';
 import { LIMITS } from './agent-tools/limits';
-import { CRITERION_PROBE_TIMEOUT_MS, evaluateCriterionProbeChecks } from './rubrics-criterion-checks';
+import { CRITERION_PROBE_TIMEOUT_MS, evaluateCriterionProbeChecks, normalizeCriterionProbeChecks, validateCriterionCheckPaths } from './rubrics-criterion-checks';
+import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 
 const LONG_READ_TOOL = `test:${'x'.repeat(167 - 'test:'.length)}`;
+
+describe('criterion ALL probes', () => {
+  const check = (all: unknown[]) => ({ kind: 'probe' as const, all });
+  const evaluate = (all: unknown[], dispatchTool: (name: string, args: Record<string, unknown>) => Promise<unknown>, rating = 'pass') =>
+    evaluateCriterionProbeChecks({ criteria: [{ key: 'proof', check: check(all) }], ratings: { proof: { rating } }, dispatchTool });
+
+  it('keeps the single-probe shape and rejects empty, ambiguous and oversized groups', () => {
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe: readProbe() }).success).toBe(true);
+    for (const value of [check([]), { ...check([readProbe()]), probe: readProbe() }, { kind: 'probe' }, check(Array(9).fill(readProbe()))]) {
+      expect(rubricCriterionCheckSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it('preserves every child and requires both populated evidence and zero failures', async () => {
+    const rows = readProbe({ expect: { path: '$.count', op: 'eq', value: 3 } });
+    const verdict = readProbe({ expect: { path: '$.failed', op: 'eq', value: 0 } });
+    const success = await evaluate([rows, verdict], async () => ({ count: 3, failed: 0 }));
+    expect(success).toMatchObject({ ok: true, checkRuns: { proof: { kind: 'probe', verdict: 'pass', all: [
+      { probe: rows, observed: 3, verdict: 'pass', executed: true },
+      { probe: verdict, observed: 0, verdict: 'pass', executed: true },
+    ] } } });
+    // Zero failures over missing runs must never become a vacuous green.
+    const absent = await evaluate([rows, verdict], async () => ({ count: 0, failed: 0 }));
+    expect(absent).toMatchObject({ ok: false, error: 'probe_contradicted', run: { all: [{ verdict: 'fail' }, { verdict: 'pass' }] } });
+    const honest = await evaluate([rows, verdict], async () => ({ count: 0, failed: 0 }), 'fail');
+    expect(honest).toMatchObject({ ok: true, checkRuns: { proof: { verdict: 'fail', all: [{ observed: 0 }, { observed: 0 }] } } });
+  });
+
+  it('validates every child before dispatch, including a schema-stale or write target', async () => {
+    const dispatch = vi.fn(async () => ({ state: 'green' }));
+    for (const invalid of [readProbe({ schemaRevision: 'old' }), readProbe({ tool: 'status:write' }), { ...readProbe(), args: { wrong: true } }]) {
+      expect(await evaluate([readProbe(), invalid], dispatch)).toMatchObject({ ok: false, error: 'probe_invalid' });
+    }
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('pins each writer live sentinel before persistence and preserves legacy single probes', () => {
+    const legacy = { key: 'single', check: { kind: 'probe' as const, probe: readProbe({ schemaRevision: 'live' }) } };
+    expect(normalizeCriterionProbeChecks([legacy])[0]).toBe(legacy);
+    const all = normalizeCriterionProbeChecks([{ key: 'set', check: check([readProbe({ schemaRevision: 'live' }), readProbe()]) }])[0];
+    expect(all.check.all).toEqual([readProbe(), readProbe()]);
+    expect(validateCriterionCheckPaths([{ key: 'set', check: check([readProbe({ schemaRevision: 'old' })]) }]).ok).toBe(false);
+  });
+
+  it('refuses an unjudgeable child without borrowing its sibling result', async () => {
+    const next = readProbe({ args: { id: 'unreadable' } });
+    const result = await evaluate([readProbe(), next], async (_name, args) => args.id === 'unreadable' ? {} : { state: 'green' });
+    expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
+  });
+
+  it('rejects the shared batch cap across criteria at write time and before execution', async () => {
+    const criteria = [{ key: 'a', check: check(Array(5).fill(readProbe())) }, { key: 'b', check: check(Array(4).fill(readProbe())) }];
+    expect(validateCriterionCheckPaths(criteria).ok).toBe(false);
+    const dispatch = vi.fn(async () => ({ state: 'green' }));
+    expect(await evaluateCriterionProbeChecks({ criteria, ratings: { a: { rating: 'pass' }, b: { rating: 'pass' } }, dispatchTool: dispatch })).toMatchObject({ ok: false, error: 'probe_invalid' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+});
 
 function projected(name: string, effect: 'read' | 'write' = 'read', properties: Record<string, unknown> = {}) {
   return {

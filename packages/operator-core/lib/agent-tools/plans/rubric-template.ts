@@ -18,6 +18,7 @@
  * for side-effect (belt-and-suspenders + discoverability).
  */
 import { z } from 'zod';
+import { CONTINUITY_PROBE_MAX_PER_WAKE } from '../limits';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
@@ -254,13 +255,21 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
       kind: z.literal('probe'),
       probe: z
         .unknown()
+        .optional()
         .describe(
           'an existing typed ContinuityProbe ({ kind:"tool"|"state-cell", schemaRevision, expect, ... }). ' +
             'The rubric template keeps this field dependency-light; the proposal and scorecard write paths ' +
             'validate the live projected-tool/state-cell contract before persisting or executing it.',
         ),
+      all: z.array(z.unknown()).min(1).max(CONTINUITY_PROBE_MAX_PER_WAKE).optional()
+        .describe('ALL of these independently validated read-only probes must pass; mutually exclusive with probe.'),
     })
-    .strict(),
+    .strict()
+    .superRefine((check, ctx) => {
+      if ((check.probe !== undefined) === (check.all !== undefined)) {
+        ctx.addIssue({ code: 'custom', message: 'probe checks require exactly one of probe or non-empty all' });
+      }
+    }),
   z
     .object({
       kind: z.literal('coverage'),
@@ -1151,6 +1160,10 @@ export function isForbiddenMandatoryPassRating(value: string): boolean {
  * scale has a label for evidence that cannot produce a verdict.
  */
 const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
+  const probeCount = d.criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1) : 0), 0);
+  if (probeCount > CONTINUITY_PROBE_MAX_PER_WAKE) {
+    ctx.addIssue({ code: 'custom', path: ['criteria'], message: `rubric declares ${probeCount} probes; execution cap is ${CONTINUITY_PROBE_MAX_PER_WAKE}` });
+  }
   if (rubricKindOf(d) !== 'acceptance') return;
 
   if (!d.ratingScale.some(isUnknownRatingEquivalent)) {

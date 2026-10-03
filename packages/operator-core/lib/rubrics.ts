@@ -61,6 +61,7 @@ import {
 import { isActivationGateRefusalValue } from './agent-tools/plans/plan-activation-gate';
 import {
   assertCriterionCheckPathsResolve,
+  normalizeCriterionProbeChecks,
   subjectPlanAllowsPlannedPaths,
   type CriterionCheckPathValidation,
 } from './rubrics-criterion-checks';
@@ -2103,6 +2104,7 @@ export function normalizeAcceptanceRubricProposal(
   ratingScale: string[];
   compatibility?: RubricCompatibilityAudit;
 } {
+  criteria = normalizeCriterionProbeChecks(criteria);
   if ((kind ?? 'standard') !== 'acceptance') {
     return { criteria, ratingScale: [...ratingScale] };
   }

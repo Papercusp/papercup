@@ -1,4 +1,5 @@
 import { continuityProbeShapeSchema, type ContinuityProbe } from '../../continuity-probes';
+import { CONTINUITY_PROBE_MAX_PER_WAKE } from '../../agent-tools/limits';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 
 /**
@@ -529,7 +530,19 @@ export interface ScorecardTestsCheckRun {
  * unknown/error results refuse the emit rather than becoming an unjudgeable
  * scorecard.
  */
-export interface ScorecardProbeCheckRun {
+export type ScorecardProbeCheckRun = ScorecardSingleProbeCheckRun | ScorecardAllProbeCheckRun;
+
+export interface ScorecardAllProbeCheckRun {
+  kind: 'probe';
+  /** Complete independently executed child records; never a boolean-only attestation. */
+  all: ScorecardSingleProbeCheckRun[];
+  verdict: 'pass' | 'fail';
+  status: 'fresh' | 'stale';
+  executed: true;
+  measuredAt: string;
+}
+
+export interface ScorecardSingleProbeCheckRun {
   kind: 'probe';
   /** The schema-versioned probe that was executed. */
   probe: ContinuityProbe;
@@ -1751,6 +1764,22 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         // live contract changes, so the READ path checks only the durable probe
         // shape (not its current registry revision). A malformed shape is
         // discarded rather than silently surfacing as executable evidence.
+        if (r.all !== undefined) {
+          if (r.probe !== undefined || !Array.isArray(r.all) || r.all.length === 0 || r.all.length > CONTINUITY_PROBE_MAX_PER_WAKE) continue;
+          const all: ScorecardSingleProbeCheckRun[] = [];
+          for (const child of r.all) {
+            // Reuse the historical single-probe reader, forbidding nested groups.
+            if (!child || typeof child !== 'object' || Array.isArray(child) || 'all' in child) break;
+            const normalized = asStructuredObservation({ checkRuns: { child } })?.checkRuns?.child;
+            if (!normalized || normalized.kind !== 'probe' || !('probe' in normalized)) break;
+            all.push(normalized);
+          }
+          if (all.length !== r.all.length) continue;
+          const pass = all.every(child => child.verdict === 'pass');
+          if (r.verdict !== (pass ? 'pass' : 'fail') || r.status !== (pass ? 'fresh' : 'stale')) continue;
+          runs[key] = { kind: 'probe', all, verdict: r.verdict, status: r.status, executed: true, measuredAt: r.measuredAt };
+          continue;
+        }
         const probe = continuityProbeShapeSchema.safeParse(r.probe);
         if (!probe.success) continue;
         // `observed` is intentionally scalar: runContinuityProbeBatch redacts

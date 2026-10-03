@@ -18,14 +18,14 @@ import { getCellUnchecked } from './cell-registry';
 import { withBoundedTimeout } from './bounded-timeout';
 import { mapWithConcurrency } from './gym/concurrency';
 import type { CheckEntry } from './carry-note';
-import { LIMITS } from './agent-tools/limits';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, LIMITS } from './agent-tools/limits';
+export { CONTINUITY_PROBE_MAX_PER_WAKE } from './agent-tools/limits';
 
 export const CONTINUITY_PROBE_MAX_BYTES = 12_000;
 export const CONTINUITY_PROBE_ARGS_MAX_BYTES = 8_000;
 export const CONTINUITY_PROBE_PROJECTION_MAX_BYTES = 2_000;
 export const CONTINUITY_PROBE_RESULT_MAX_BYTES = 16_000;
 export const CONTINUITY_PROBE_BATCH_MAX_BYTES = 24_000;
-export const CONTINUITY_PROBE_MAX_PER_WAKE = 8;
 export const CONTINUITY_PROBE_CONCURRENCY = 4;
 export const CONTINUITY_PROBE_TIMEOUT_MS = 2_500;
 

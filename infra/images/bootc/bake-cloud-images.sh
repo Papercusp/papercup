@@ -272,10 +272,13 @@ if git -C "$HERE_REAL" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   BUILD_CONTEXT_COMMIT="$(GIT_OPTIONAL_LOCKS=0 git -C "$HERE_REAL" rev-parse --verify HEAD 2>/dev/null)" \
     || BUILD_CONTEXT_COMMIT=""
   ctx_prefix="$(git -C "$HERE_REAL" rev-parse --show-prefix 2>/dev/null)"
-  if [ -n "$BUILD_CONTEXT_COMMIT" ]; then
+  # Archive from the TOP LEVEL: run inside a subdirectory, git archive also restricts the output
+  # to that subdirectory WITHIN the tree-ish, so `<commit>:infra/images/bootc/` comes back empty.
+  ctx_top="$(git -C "$HERE_REAL" rev-parse --show-toplevel 2>/dev/null)"
+  if [ -n "$BUILD_CONTEXT_COMMIT" ] && [ -n "$ctx_top" ]; then
     ctx_tree="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-bake-context-tree.XXXXXX")" \
       || die "cannot create a scratch directory for the committed build context"
-    if GIT_OPTIONAL_LOCKS=0 git -C "$HERE_REAL" archive --format=tar "$BUILD_CONTEXT_COMMIT:$ctx_prefix" \
+    if GIT_OPTIONAL_LOCKS=0 git -C "$ctx_top" archive --format=tar "$BUILD_CONTEXT_COMMIT:$ctx_prefix" \
          | tar -C "$ctx_tree" -xpf - &&
        [ "$(build_context_sha256 "$ctx_tree")" = "$BUILD_CONTEXT_SHA256" ]; then
       BUILD_CONTEXT_PINNED=1
