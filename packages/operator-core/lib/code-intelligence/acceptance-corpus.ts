@@ -239,7 +239,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
       },
       {
         path: 'packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts',
-        line1: 352,
+        line1: 353,
         symbolOnLine: 'await managedSpawn',
       },
     ],
