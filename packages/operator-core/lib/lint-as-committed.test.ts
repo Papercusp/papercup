@@ -58,6 +58,7 @@ const {
   planLinkExcludes,
   cloneWorkspaceTarget,
   linkNodeModulesShadow,
+  lintAsCommittedChildEnv,
   owningSubmodule,
   showAtRef,
   summarize,
@@ -70,6 +71,7 @@ const {
     repoRoot: string,
     workRoot: string,
   ) => { entries: number; remapped: number; fallback: number };
+  lintAsCommittedChildEnv: (environment?: Record<string, string | undefined>) => Record<string, string | undefined>;
   owningSubmodule: (path: string, submodulePaths: unknown) => string | null;
   showAtRef: (repoRoot: string, ref: string, path: string) => string | null;
   parseArgs: (argv: string[]) => {
@@ -94,6 +96,43 @@ const {
   };
   isDirectCliInvocation: (entryPath?: string) => boolean;
 };
+
+describe('isolated clone module identity (EI-24824919200711849)', () => {
+  it('marks only the child environment for clone-specific Vite resolution', () => {
+    const parent = { NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' };
+    expect(lintAsCommittedChildEnv(parent)).toEqual({
+      NODE_OPTIONS: '--trace-warnings',
+      npm_config_workspaces: undefined,
+      EXAMPLE: 'kept',
+      PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
+    });
+    expect(parent).toEqual({ NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' });
+  });
+
+  it('enables Vite symlink preservation only in an as-committed clone', async () => {
+    const envKey = 'PAPERCUSP_LINT_AS_COMMITTED_CLONE';
+    const before = process.env[envKey];
+    const configPath = resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs');
+    const readConfig = async (tag: string) => (await import(`${configPath}?${tag}`)).default as {
+      vite?: { resolve?: { preserveSymlinks?: boolean; alias?: Array<{ find: string; replacement: string }> } };
+    };
+    const logicalRoot = resolve(repoRoot, 'node_modules/@astrojs/starlight');
+    const realRoot = realpathSync(logicalRoot);
+
+    try {
+      delete process.env[envKey];
+      expect((await readConfig('normal')).vite?.resolve?.preserveSymlinks).toBeUndefined();
+      process.env[envKey] = '1';
+      const cloneVite = (await readConfig('clone')).vite?.resolve;
+      expect(cloneVite?.preserveSymlinks).toBe(true);
+      expect(cloneVite?.alias?.map(({ find, replacement }) => ({ find, replacement: resolve(replacement) })))
+        .toEqual([{ find: realRoot, replacement: logicalRoot }]);
+    } finally {
+      if (before === undefined) delete process.env[envKey];
+      else process.env[envKey] = before;
+    }
+  });
+});
 
 describe('parseArgs', () => {
   it('collects positional script names and defaults the ref to HEAD', () => {
@@ -384,6 +423,9 @@ describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link
       // a real dependency is linked, never copied or installed
       expect(lstatSync(join(clone, 'node_modules', 'leftpad')).isSymbolicLink()).toBe(true);
       expect(req('leftpad')).toBe('leftpad');
+      expect(req.resolve('leftpad')).toBe(realpathSync(join(shared, 'node_modules', 'leftpad', 'index.js')));
+      expect(req.resolve('@papercusp/foo')).toBe(realpathSync(join(clone, 'libs', 'foo', 'index.js')));
+
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

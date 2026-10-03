@@ -110,6 +110,15 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
+/** Child environment for commands executing against the isolated committed clone. */
+export function lintAsCommittedChildEnv(environment = process.env) {
+  return {
+    ...environment,
+    npm_config_workspaces: undefined,
+    PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
+  };
+}
+
 /* ─────────────────────── extracted-tree lifecycle (WI-10005705) ─────────────────────── */
 
 /**
@@ -925,7 +934,10 @@ function main() {
         cwd: workRoot,
         encoding: 'utf8',
         stdio: 'inherit',
-        env: { ...process.env, npm_config_workspaces: undefined },
+        // Astro reads clone-specific Vite resolution from this marker. Keep Node's own
+        // symlink resolution unchanged: --preserve-symlinks makes Node 25 reject remapped
+        // workspace TypeScript imports under node_modules before lints can execute.
+        env: lintAsCommittedChildEnv(process.env),
       });
 
       if (run.error) {
