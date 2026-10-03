@@ -16,6 +16,7 @@ import {
   occupiesLaunchMemberSeat,
   livePsuFleetMemberIds,
   splitFleetRosterCounts,
+  oldestLiveFleetMember,
   type FederatedSessionFoldRow,
   type FleetFoldPresence,
 } from './fleet-roster';
@@ -186,6 +187,18 @@ describe('filterPresenceToFleet', () => {
 
   it('never leaks another fleet', () => {
     expect(filterPresenceToFleet(rows, 'ui-fleet', true).some((r) => r.ownerId === 'b')).toBe(false);
+  });
+});
+
+describe('oldestLiveFleetMember', () => {
+  it('selects the oldest positively-live su member and ignores unknown or non-member rows', () => {
+    expect(oldestLiveFleetMember([
+      { agentId: 'su-newer', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T10:00:00Z' },
+      { agentId: 'su-oldest', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T09:00:00Z' },
+      { agentId: 'su-excluded', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T08:00:00Z' },
+      { agentId: 'su-unknown', agentRole: 'su', fleetRole: 'member', sessionState: null, startedAt: '2026-10-02T07:00:00Z' },
+      { agentId: 'cup', agentRole: 'cup', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T06:00:00Z' },
+    ], ['su-excluded'])).toBe('su-oldest');
   });
 });
 

@@ -1953,6 +1953,9 @@ describe('hostThroughPty real round-trip', () => {
       const codexHome = join(root, 'codex-home');
       const nativeFile = join(codexHome, 'sessions', '2026', '08', 'rollout.jsonl');
       const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+      const kickoffMarkerEchoTimeoutMs = 4_000;
+      const nativePersistenceTimeoutMs = 3_000;
+      const parentReceiptWaitMs = kickoffMarkerEchoTimeoutMs + nativePersistenceTimeoutMs + 1_000;
       const kickoff = `${marker}\nBEGIN_PROOF_KICKOFF`;
       writeFileSync(proofPath, '', { mode: 0o600 });
       chmodSync(proofPath, 0o600);
@@ -1961,7 +1964,7 @@ describe('hostThroughPty real round-trip', () => {
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
         "let b='',echoed=false;process.stdout.write('62% context left\\n');",
-        "process.stdin.on('data',d=>{b+=d;if(!b.includes('⟧'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({role:'user',text:process.env.KICKOFF_MARKER})+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
+        "process.stdin.on('data',d=>{b+=d;if(!b.includes('⟧'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const row={type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:process.env.KICKOFF_MARKER}]}};fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify(row)+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
         'setTimeout(()=>process.exit(2),5000);',
       ].join('');
       let done;
@@ -1981,7 +1984,7 @@ describe('hostThroughPty real round-trip', () => {
             [KICKOFF_PROOF_TOKEN_ENV]: token,
             // This test checks parent-receipt publication, so give the
             // separate composer-echo gate its own bounded fixture window.
-            PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '4000',
+            PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: String(kickoffMarkerEchoTimeoutMs),
             PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
             PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
@@ -1996,9 +1999,11 @@ describe('hostThroughPty real round-trip', () => {
           io,
           bridgeTty: false,
           kickoff,
+          nativePersistenceTimeoutMs,
           onExit: () => undefined,
         });
-        const deadline = Date.now() + 8_000;
+        // Cover the echo gate, native proof window, and a short scheduling margin.
+        const deadline = Date.now() + parentReceiptWaitMs;
         while (readFileSync(proofPath, 'utf8').length === 0 && Date.now() < deadline) await sleep(10);
         expect(captured()).toContain('KICKOFF_RECEIVED');
         expect(captured()).toContain(`COMPOSER_ECHO:${marker}`);

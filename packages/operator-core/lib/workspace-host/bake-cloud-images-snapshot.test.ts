@@ -34,6 +34,15 @@ const HOST_PREPARE_UNIT_SOURCE = readFileSync(HOST_PREPARE_UNIT, 'utf8');
 const GOOGLE_OSLOGIN_TMPFILES_SOURCE = readFileSync(GOOGLE_OSLOGIN_TMPFILES, 'utf8');
 const IMAGE_BUILD_PROBE_SOURCE = readFileSync(IMAGE_BUILD_PROBE, 'utf8');
 const SNAPSHOT_MARKER = '# EI-22355025813361885 — freeze the entrypoint';
+// WI-10005946: the exact auditor-resolution line image-secret-scan.sh ships, so the fixture's fake
+// supply chain resolves the auditor the way the real scan will.
+const SECRET_SCAN_AUDITOR_LINE = (() => {
+  const line = readFileSync(join(ROOT, 'infra/images/bootc/image-secret-scan.sh'), 'utf8')
+    .split('\n')
+    .find((l) => l.startsWith('AUDITOR='));
+  if (!line) throw new Error('image-secret-scan.sh must define AUDITOR= at the start of a line');
+  return line;
+})();
 
 function withoutSnapshotGuard(): string {
   const start = SOURCE.indexOf(SNAPSHOT_MARKER);
@@ -70,6 +79,13 @@ function runFixture(
      * prebuild skipped); 'fail' is the measured stream9 rocksdb-native GLIBCXX_3.4.30 failure.
      */
     addonProbe?: 'ok' | 'fail' | 'empty' | 'silent' | 'podman-error';
+    /**
+     * WI-10005946. Where the secret scan's release auditor is. 'env' (default): a fixture file
+     * named by PAPERCUSP_RELEASE_AUDITOR. 'source-tree': git mode only, the repo's own
+     * papercusp-desktop/bin/audit-release-bundle.py with the env var empty, so the bake must
+     * resolve it. 'missing': no auditor anywhere and the env var empty.
+     */
+    auditor?: 'env' | 'source-tree' | 'missing';
   } = {},
 ): {
   status: number;
@@ -82,6 +98,8 @@ function runFixture(
   inhibitCalls: string[];
   /** WI-10005766: the bytes the fake build read from its -f Containerfile (null: build never ran). */
   builtContainerfile: string | null;
+  /** WI-10005946: "found|missing <path>" — the auditor the supply chain resolved (null: never ran). */
+  supplyChainAuditor: string | null;
   /** WI-10005766: the context directory the fixture baked from, and its HEAD in git mode. */
   context: string;
   contextCommit: string | null;
@@ -334,12 +352,27 @@ exec "$@"
     writeFileSync(join(bin, tool), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
     chmodSync(join(bin, tool), 0o755);
   }
+  // WI-10005946: the fake supply chain resolves the auditor with the REAL image-secret-scan.sh
+  // line, from the snapshot directory the bake runs it in, and records what that line finds.
   writeFileSync(join(ctx, 'release-supply-chain.sh'), `#!/usr/bin/env bash
 set -euo pipefail
-: > "$BAKE_TEST_SUPPLY_CHAIN_MARKER"
+HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+${SECRET_SCAN_AUDITOR_LINE}
+if [ -f "$AUDITOR" ]; then state=found; else state=missing; fi
+printf '%s %s\\n' "$state" "$AUDITOR" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER"
 `, { mode: 0o755 });
   chmodSync(join(ctx, 'release-supply-chain.sh'), 0o755);
   writeFileSync(liveContainerfile, 'FROM scratch\n# original fixture Containerfile\n');
+
+  const auditorMode = options.auditor ?? 'env';
+  const fixtureAuditor = join(dir, 'fixture-audit-release-bundle.py');
+  if (auditorMode === 'env') writeFileSync(fixtureAuditor, '# fixture auditor\n');
+  if (auditorMode === 'source-tree') {
+    if (!options.git) throw new Error("auditor: 'source-tree' needs a git fixture: the context must sit in a repo");
+    const repoAuditor = join(dir, 'repo', 'papercusp-desktop', 'bin', 'audit-release-bundle.py');
+    mkdirSync(join(repoAuditor, '..'), { recursive: true });
+    writeFileSync(repoAuditor, '# repo auditor\n');
+  }
 
   let contextCommit: string | null = null;
   if (options.git) {
@@ -395,6 +428,7 @@ set -euo pipefail
         BAKE_TEST_SOURCE_IMAGE: sourceImage?.ref ?? '',
         BAKE_TEST_SOURCE_EXISTS: sourceImage?.exists === false ? '0' : '1',
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
+        PAPERCUSP_RELEASE_AUDITOR: auditorMode === 'env' ? fixtureAuditor : '',
         BAKE_TEST_LIVE_CONTAINERFILE: liveContainerfile,
         BAKE_TEST_BUILT_CONTAINERFILE: builtContainerfilePath,
         BAKE_TEST_RENDER: render,
@@ -432,6 +466,7 @@ set -euo pipefail
       ? readFileSync(inhibitCallsPath, 'utf8').split(/\r?\n/).filter(Boolean)
       : [],
     builtContainerfile: existsSync(builtContainerfilePath) ? readFileSync(builtContainerfilePath, 'utf8') : null,
+    supplyChainAuditor: existsSync(supplyChainMarker) ? readFileSync(supplyChainMarker, 'utf8').trim() : null,
     context: ctx,
     contextCommit,
     out,

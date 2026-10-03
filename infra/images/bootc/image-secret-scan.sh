@@ -33,7 +33,11 @@ set -uo pipefail
 
 IMAGE=""; OUTDIR=""; INSECURE=0; MIN_FILES=5000; KEEP_TREE=0
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUDITOR="$HERE/../../../papercusp-desktop/bin/audit-release-bundle.py"
+# PAPERCUSP_RELEASE_AUDITOR (WI-10005946): bake-cloud-images.sh runs this script from a SNAPSHOT
+# of infra/images/bootc under the bake's --out directory, where the repo-relative default below
+# points outside the repository. The bake resolves the auditor from the real source tree and
+# exports it here. --auditor still wins over both.
+AUDITOR="${PAPERCUSP_RELEASE_AUDITOR:-$HERE/../../../papercusp-desktop/bin/audit-release-bundle.py}"
 
 while [ $# -gt 0 ]; do
   case "$1" in

@@ -33,6 +33,42 @@ describe('operatorPinEvidence', () => {
   });
 });
 
+describe('readEffectiveWakeMode (EI-24932483187069496)', () => {
+  it('uses the read-only admin coord verb and sends only the per-agent selector', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, agent: 'su-read-only', mode: 'manual' }),
+    });
+
+    const mode = await realHost.readEffectiveWakeMode('su-read-only', {
+      env: { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170' },
+      fetchImpl,
+    });
+
+    expect(mode).toBe('manual');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('http://127.0.0.1:3170/api/admin/coord/wake-mode');
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent: 'su-read-only' }),
+    });
+  });
+
+  it('fails closed on HTTP, transport, and response-shape errors', async () => {
+    const httpErrorFetch = vi.fn().mockResolvedValue({ ok: false });
+    const transportErrorFetch = vi.fn().mockRejectedValue(new Error('operator unavailable'));
+    const malformedFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, mode: 'paused' }),
+    });
+
+    await expect(realHost.readEffectiveWakeMode('su-read-only', { fetchImpl: httpErrorFetch })).resolves.toBeNull();
+    await expect(realHost.readEffectiveWakeMode('su-read-only', { fetchImpl: transportErrorFetch })).resolves.toBeNull();
+    await expect(realHost.readEffectiveWakeMode('su-read-only', { fetchImpl: malformedFetch })).resolves.toBeNull();
+  });
+});
+
 describe('loop respawn operator environment (EI-24377966944594715)', () => {
   it.each([
     { PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3880' },
@@ -5269,6 +5305,8 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     recycleError = null,
     waitIdle,
     maxProductionAttempts,
+    readWakeMode,
+    waitWakeModeRetry,
   } = {}) {
     const events = [];
     const recycles = [];
@@ -5302,6 +5340,8 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       emitEvent: (kind, extra) => events.push({ kind, ...extra }),
       capMs: 1234,
       ...(maxProductionAttempts === undefined ? {} : { maxProductionAttempts }),
+      readWakeMode,
+      waitWakeModeRetry,
     });
     const settle = async () => {
       // The scheduled retry is fire-and-forget; drain the microtask/timer queue.
@@ -5397,6 +5437,63 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     const drain = async (): Promise<void> => {
       for (let i = 0; i < 8; i += 1) await new Promise<void>((r) => setImmediate(r));
     };
+
+    it('keeps a production carry pending while wake mode is manual, then retries after auto resumes', async () => {
+      let wakeMode: 'auto' | 'manual' = 'manual';
+      let resumeRetry: (() => void) | null = null;
+      const h = makeHarness({
+        readWakeMode: async () => wakeMode,
+        waitWakeModeRetry: () => new Promise<void>((resolve) => {
+          resumeRetry = () => {
+            wakeMode = 'auto';
+            resolve();
+          };
+        }),
+      });
+
+      expect(h.controller.schedule(PROD_A)).toBe('queued');
+      await drain();
+      expect(h.order).toEqual(['acquire', 'release']);
+      expect(h.recycles).toEqual([]);
+      expect(h.controller.pendingCount('carry-respawn')).toBe(1);
+      expect(h.releaseCount()).toBe(1);
+      expect(resumeRetry).toBeTypeOf('function');
+
+      resumeRetry?.();
+      await drain();
+      expect(h.recycles).toHaveLength(1);
+      expect(h.recycles[0].data).toBe(PROD_A.data);
+      expect(h.controller.pendingCount('carry-respawn')).toBe(0);
+    });
+
+    it('fails closed when wake mode becomes unavailable after prompt wait and retains the carry', async () => {
+      let reads = 0;
+      let resumeRetry: (() => void) | null = null;
+      const h = makeHarness({
+        readWakeMode: async () => {
+          reads += 1;
+          return reads === 2 ? null : 'auto';
+        },
+        waitWakeModeRetry: () => new Promise<void>((resolve) => {
+          resumeRetry = resolve;
+        }),
+      });
+
+      expect(h.controller.schedule(PROD_A)).toBe('queued');
+      await drain();
+      expect(reads).toBe(2);
+      expect(h.order).toEqual(['acquire', 'prompt', 'release']);
+      expect(h.recycles).toEqual([]);
+      expect(h.controller.pendingCount('carry-respawn')).toBe(1);
+      expect(h.releaseCount()).toBe(1);
+
+      resumeRetry?.();
+      await drain();
+      expect(reads).toBe(4);
+      expect(h.recycles).toHaveLength(1);
+      expect(h.recycles[0].data).toBe(PROD_A.data);
+      expect(h.controller.pendingCount('carry-respawn')).toBe(0);
+    });
 
     it('schedule() returns superseded, keeps ONE pending entry, and emits no terminal drop', () => {
       const events: RearmEvent[] = [];

@@ -40,6 +40,8 @@ export interface RecordEditAttributionInput {
   goalRef?: string;
   sessionId?: string;
   contributor?: string;
+  /** Dispatcher call id for duplicate-safe server-side edit capture. */
+  dispatchCallId?: string;
 }
 
 /**
@@ -135,11 +137,13 @@ export async function recordEditAttribution(
     await sql`
       INSERT INTO harness_shared.edit_attribution_ledger
         (repo_root, file, agent_id, session_id, contributor, workspace_id,
-         harness_slug, work_item_id, plan_slug, intent, acquired_via)
+         harness_slug, work_item_id, plan_slug, intent, acquired_via, dispatch_call_id)
       SELECT ${input.repoRoot}, f, ${input.agentId}, ${input.sessionId ?? null},
              ${input.contributor ?? null}, ${input.workspaceId ?? null},
-             ${harnessSlug}, ${workItemId}, ${planSlug}, ${intent}, ${acquiredVia}
+             ${harnessSlug}, ${workItemId}, ${planSlug}, ${intent}, ${acquiredVia},
+             ${input.dispatchCallId ?? null}
         FROM unnest(${files}::text[]) AS f
+      ON CONFLICT DO NOTHING
     `;
   } catch (error) {
     // best-effort: edit attribution must NEVER break the lock path — except for the

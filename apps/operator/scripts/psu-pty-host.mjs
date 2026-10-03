@@ -3251,6 +3251,51 @@ export function reportOwnerHumanTurn(now = Date.now()) {
 }
 
 /**
+ * Read the effective per-agent wake mode through the loopback admin coord
+ * read-only verb. A missing route, failed request, or malformed response is
+ * deliberately `null`: carry-rearm must retain its payload unless the server
+ * confirms that automatic wakes are enabled.
+ */
+export async function readEffectiveWakeMode(
+  ownerId,
+  { env = process.env, fetchImpl = globalThis.fetch, timeoutMs = 1500 } = {},
+) {
+  const agent = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!agent || typeof fetchImpl !== 'function') return null;
+  const rawBase = typeof env?.PAPERCUSP_OPERATOR_URL === 'string'
+    ? env.PAPERCUSP_OPERATOR_URL.trim()
+    : '';
+  let url;
+  try {
+    url = new URL('/api/admin/coord/wake-mode', rawBase || 'http://127.0.0.1:3270').toString();
+  } catch {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 1500));
+  if (typeof timeout.unref === 'function') timeout.unref();
+  try {
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // The admin route rejects mode/reason writes on this read-only verb.
+      body: JSON.stringify({ agent }),
+      signal: controller.signal,
+    });
+    if (!response?.ok) return null;
+    const result = await response.json();
+    return result?.ok === true && (result.mode === 'auto' || result.mode === 'manual')
+      ? result.mode
+      : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
  * The mid-keystroke idle gate (P-013). `touch()` on every stdin byte records
  * activity; `waitIdle()` resolves once `idleMs` of quiet has elapsed (or the cap
  * is hit). Pure-ish (uses timers + an injectable clock for tests).
@@ -4005,6 +4050,13 @@ export function makeCarryRearmController({
   // Age may not expire a production continuation. Epoch supersession MUST:
   // an obsolete request must neither suppress wakes nor replace its successor.
   isSuperseded = (_msg) => false,
+  // Production carry-respawns are admitted only when the effective per-owner
+  // wake mode is explicitly `auto`. Null/throws fail closed and leave the carry
+  // pending for a paced re-read; non-carry wake modes keep their own delivery
+  // policy and are not gated here.
+  readWakeMode = async () => 'auto',
+  wakeModeRetryMs = 30_000,
+  waitWakeModeRetry = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 }) {
   const pending = new Set();
   // EI-18681914950138372: a SEPARATE tracking set, covering the carry-respawn's
@@ -4038,8 +4090,19 @@ export function makeCarryRearmController({
    * reported 'duplicate'/'superseded' by the other and never delivered —
    * re-creating the exact drop this item removes, disguised as correct dedupe.
    * Drills still dedupe per drillId, which is already unique.
-   */
+  */
   const rearmModeOf = (msg) => String(msg?.mode || 'carry-respawn');
+  const carryWakeModePauseReason = async (msg) => {
+    if (rearmModeOf(msg) !== 'carry-respawn') return null;
+    let currentMode = null;
+    try {
+      currentMode = await readWakeMode(msg);
+    } catch {
+      // Unreadable mode is not evidence of auto; preserve the pending carry.
+    }
+    if (currentMode === 'auto') return null;
+    return currentMode === 'manual' ? 'wake-mode-manual' : 'wake-mode-unavailable';
+  };
   const keyFor = (msg) => {
     const drillId = String(msg?.drillId || '');
     return drillId || `${NON_DRILL_REARM_KEY}:${rearmModeOf(msg)}`;
@@ -4208,6 +4271,7 @@ export function makeCarryRearmController({
             // the freshest carry document is always the right one to deliver.
             const current = latest.get(key) ?? msg;
             let deferred = false;
+            let wakeModePauseReason = null;
             try {
               // Check BEFORE waiting on the successor's output. Otherwise an
               // obsolete retry can retain pending wake suppression indefinitely.
@@ -4231,23 +4295,35 @@ export function makeCarryRearmController({
                 }
                 deferReason = 'busy-gate-expired';
               }
-              const atPrompt = await waitAtPrompt(capMs, current);
-              if (dropSuperseded(latest.get(key) ?? current)) return;
-              // The owner may have started composing during the prompt wait.
-              if (hasPendingOwnerInput()) {
-                // Re-enter through the composer wait AND a fresh prompt check.
-                // Enter may have started a new owner turn: the prompt proof we
-                // observed before that input is no longer a safe cut boundary.
-                deferReason = 'owner-input-cap';
-                await yieldAfterDefer();
-                continue;
+              // Check immediately before and after the potentially long prompt
+              // wait. A manual flip or a failed read pauses this retry without
+              // consuming the carry or holding the inject mutex.
+              let atPrompt = null;
+              wakeModePauseReason = await carryWakeModePauseReason(current);
+              if (wakeModePauseReason) deferReason = wakeModePauseReason;
+              if (!wakeModePauseReason) {
+                atPrompt = await waitAtPrompt(capMs, current);
+                if (dropSuperseded(latest.get(key) ?? current)) return;
+                // The owner may have started composing during the prompt wait.
+                if (hasPendingOwnerInput()) {
+                  // Re-enter through the composer wait AND a fresh prompt check.
+                  // Enter may have started a new owner turn: the prompt proof we
+                  // observed before that input is no longer a safe cut boundary.
+                  deferReason = 'owner-input-cap';
+                  await yieldAfterDefer();
+                  continue;
+                }
+                if (Number.isFinite(atPrompt?.maxQuietForMs) && atPrompt.maxQuietForMs > observedMaxQuietMs) {
+                  observedMaxQuietMs = atPrompt.maxQuietForMs;
+                }
+                wakeModePauseReason = await carryWakeModePauseReason(latest.get(key) ?? current);
+                if (wakeModePauseReason) deferReason = wakeModePauseReason;
               }
-              deferred = !!atPrompt.deferred;
-              deferReason = 'busy-gate-expired';
-              if (Number.isFinite(atPrompt?.maxQuietForMs) && atPrompt.maxQuietForMs > observedMaxQuietMs) {
-                observedMaxQuietMs = atPrompt.maxQuietForMs;
+              if (!wakeModePauseReason) {
+                deferred = !!atPrompt?.deferred;
+                deferReason = 'busy-gate-expired';
               }
-              if (!deferred) {
+              if (!wakeModePauseReason && !deferred) {
                 // EI-19480099650947832: re-read ONCE MORE at the delivery point.
                 // `current` was read before the wait, and a supersede can land at
                 // ANY await — including the one we just returned from. This is
@@ -4301,6 +4377,19 @@ export function makeCarryRearmController({
               // across the re-poll, or this session's wakes would wedge for the
               // whole (potentially many-window) wait.
               release();
+            }
+            if (wakeModePauseReason) {
+              // Do not spin on an unavailable admin read or stage a carry that
+              // was already accepted. Release first, then re-read at a paced
+              // interval so owner wakes can still acquire the shared mutex.
+              try {
+                await waitWakeModeRetry(wakeModeRetryMs, wakeModePauseReason);
+              } catch {
+                // A test/custom waiter failure must not turn a pause into a
+                // terminal drop; preserve the payload and retain the cadence.
+                await new Promise((resolve) => setTimeout(resolve, wakeModeRetryMs));
+              }
+              continue;
             }
             // Deferred: the agent stayed mid-turn past the cap. Production
             // carries continue to the next window; drills fall out after their

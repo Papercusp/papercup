@@ -115,6 +115,58 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     expect(result.entries[0].agentId).toBe('su-1');
   });
 
+  it('reads the durable leader through the liveness legs even when it has no presence row', async () => {
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    recordedLiveOwnerIdsMock.mockResolvedValue(new Set(['su-leader']));
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      leaderOwnerId: 'su-leader',
+      readPresence: async () => [],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(fetchWakeabilityMock).toHaveBeenCalledWith(['su-leader']);
+    expect(recordedLiveOwnerIdsMock).toHaveBeenCalledWith(['su-leader']);
+    expect(result.leaderEntry).toBeNull();
+    expect(result.leaderLiveness).toEqual({
+      ownerId: 'su-leader',
+      presenceRow: false,
+      recordedLive: true,
+      sessionState: 'recorded',
+      complete: true,
+    });
+  });
+
+  it('keeps a missing leader unknown when the recorded-session leg degrades', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    recordedLiveOwnerIdsMock.mockRejectedValue(new Error('session ledger unavailable'));
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      leaderOwnerId: 'su-leader',
+      readPresence: async () => [],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.degradedLegs).toContain('recorded');
+    expect(result.leaderLiveness).toMatchObject({
+      ownerId: 'su-leader',
+      presenceRow: false,
+      recordedLive: null,
+      complete: false,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fleet-roster:recorded failed'));
+    warn.mockRestore();
+  });
+
   it('enriches a multi-fleet leader without adding it to the queried roster', async () => {
     vi.setSystemTime(new Date('2026-07-10T10:00:10Z'));
     fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());

@@ -39,7 +39,57 @@ import {
   createFilteredSeedProgressReporter,
   withSeedOutput,
   readSeedFindingRedactions,
+  readSeedUuidIdempotencyDropPlans,
 } from "./cut-seed-cli";
+
+describe('D166 private row-drop plan transport', () => {
+  it('checks exact private bytes and the producer contract before returning bindings', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-uuid-plans-'));
+    await chmod(dir, 0o700);
+    const file = join(dir, 'plans.json');
+    const plans = [{ schema: 'papercusp-uuid-idempotency-row-drop-plan-v1',
+      reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166', sourceKeyHex: 'a'.repeat(64),
+      sourceLength: 1, rows: [{ table: 'plans', hbKey: 'row', valueSha256: 'b'.repeat(64),
+        occurrences: [{ segment: 'segment-000001.blob', line: 1, fieldPath: ['idempotencyKey'] }] }] }];
+    const value = { schema: 'papercusp-uuid-idempotency-row-drop-plan-set-v1', reviewRef: plans[0]!.reviewRef,
+      plans, sourceAuthentication: 'original-envelope-aead',
+      sourceSignatureAndCoverage: 'requires-independent-hypercore-export-validation',
+      privateSourceBindings: { configSha256: 'c'.repeat(64) }, counts: { droppedRows: 1 } };
+    const save = async (data: unknown) => {
+      const bytes = JSON.stringify(data); await writeFile(file, bytes, { mode: 0o600 });
+      return createHash('sha256').update(bytes).digest('hex');
+    };
+    try {
+      const hash = await save(value);
+      expect(await readSeedUuidIdempotencyDropPlans(file, hash)).toEqual(plans);
+      await expect(readSeedUuidIdempotencyDropPlans(file, '0'.repeat(64))).rejects.toThrow('input invalid');
+      const duplicate = await save({ ...value, plans: [...plans, ...plans] });
+      await expect(readSeedUuidIdempotencyDropPlans(file, duplicate)).rejects.toThrow('input invalid');
+      const original = await save(value);
+      await chmod(file, 0o644);
+      await expect(readSeedUuidIdempotencyDropPlans(file, original)).rejects.toThrow('input invalid');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses stale-plan reuse or refresh before opening a store or replacing the output', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-uuid-refuse-'));
+    try {
+      const out = join(dir, 'prior-seed'); await mkdir(out);
+      await writeFile(join(out, 'manifest.json'), 'prior bytes');
+      for (const flags of [[], ['--skip-corestore-refresh', '--reuse-corestore', out],
+        ['--skip-corestore-refresh', '--no-corestore']]) {
+        const result = spawnSync(process.execPath, ['--import', 'tsx',
+          fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)), '--out', out,
+          '--uuid-idempotency-drop-plans', join(dir, 'missing.json'),
+          '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64), ...flags],
+        { encoding: 'utf8', timeout: 30_000 });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('fresh cut with --skip-corestore-refresh');
+        expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
+      }
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
 
 describe('exact private finding redaction input', () => {
   async function fixture() {

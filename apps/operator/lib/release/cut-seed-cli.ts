@@ -83,6 +83,9 @@
  *                          — deliberate, flag-gated. Needs an epoch context (--workspace-id or --epoch).
  *   --redact-findings / --redact-finding-digests
  *                          refused: the projection sees sealed content, not plaintext credentials.
+ *   --uuid-idempotency-drop-plans FILE --uuid-idempotency-drop-plans-sha256 HASH
+ *                          D-166 private source-bound whole-row drops. Requires a fresh filtered
+ *                          cut with --skip-corestore-refresh, so source lengths cannot be changed.
  *                          Use an authorized source correction, then cut a fresh corestore.
  *   --json                 print the manifest + size report as JSON
  */
@@ -309,6 +312,39 @@ export async function readSeedFindingRedactions(
     // Parsing and filesystem errors must not echo any private report content.
     throw refused();
   }
+}
+
+/** D-166: transport a private assembler result without logging values or private bindings.
+ * Hash/shape checks are preflight; the provider checks the actual source rows and lengths.
+ * This reader does not establish census completeness, source authentication or candidate GO. */
+export async function readSeedUuidIdempotencyDropPlans(
+  file: string, sha256: string,
+): Promise<NonNullable<CorestoreCutSpec['uuidIdempotencyDropPlans']>> {
+  const refused = () => new Error('UUID row-drop plan input invalid (values omitted)');
+  try {
+    const [info, parent] = await Promise.all([lstat(file), lstat(dirname(file))]);
+    if (!/^[0-9a-f]{64}$/.test(sha256) || !info.isFile() || info.isSymbolicLink() || (info.mode & 0o077)
+        || !parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o077)
+        || await realpath(file) !== resolve(file)) throw refused();
+    const bytes = await readFile(file);
+    if (createHash('sha256').update(bytes).digest('hex') !== sha256) throw refused();
+    const value = JSON.parse(bytes.toString('utf8'));
+    if (value?.schema !== 'papercusp-uuid-idempotency-row-drop-plan-set-v1'
+        || value.reviewRef !== 'p2p-public-release-endgame-2026-09-01#D-166'
+        || !Array.isArray(value.plans) || value.sourceAuthentication !== 'original-envelope-aead'
+        || value.sourceSignatureAndCoverage !== 'requires-independent-hypercore-export-validation'
+        || !value.privateSourceBindings || !value.counts) throw refused();
+    const keys = new Set<string>();
+    for (const plan of value.plans) {
+      if (plan?.schema !== 'papercusp-uuid-idempotency-row-drop-plan-v1'
+          || plan.reviewRef !== value.reviewRef || typeof plan.sourceKeyHex !== 'string'
+          || !/^[0-9a-f]{64}$/.test(plan.sourceKeyHex) || keys.has(plan.sourceKeyHex)
+          || !Number.isSafeInteger(plan.sourceLength) || plan.sourceLength <= 0
+          || !Array.isArray(plan.rows) || !plan.rows.length) throw refused();
+      keys.add(plan.sourceKeyHex);
+    }
+    return value.plans;
+  } catch { throw refused(); }
 }
 
 export interface PickGitEncryptionInput {
@@ -1440,6 +1476,16 @@ async function main(): Promise<void> {
   if ('redact-findings' in args || 'redact-finding-digests' in args) {
     throw new Error('seed finding export redaction is unsupported for sealed content; correct the authorized source and cut a fresh corestore');
   }
+  let uuidIdempotencyDropPlans: CorestoreCutSpec['uuidIdempotencyDropPlans'];
+  if ('uuid-idempotency-drop-plans' in args || 'uuid-idempotency-drop-plans-sha256' in args) {
+    const file = str(args, 'uuid-idempotency-drop-plans');
+    const hash = str(args, 'uuid-idempotency-drop-plans-sha256');
+    if (!file || !hash || args['skip-corestore-refresh'] !== true
+        || 'reuse-corestore' in args || args['no-corestore'] === true) {
+      throw new Error('UUID row-drop plans require an exact private file/hash and a fresh cut with --skip-corestore-refresh');
+    }
+    uuidIdempotencyDropPlans = await readSeedUuidIdempotencyDropPlans(file, hash);
+  }
   const root = resolveWorkspaceRoot();
   const hive = str(args, 'hive') ?? DEFAULT_HIVE;
   const repo = str(args, 'repo') ?? root;
@@ -1688,6 +1734,7 @@ async function main(): Promise<void> {
       // redacts email-shaped values, and leaves the live source log untouched.
       filtered: true,
       redactValues: releaseRedactionValues,
+      ...(uuidIdempotencyDropPlans ? { uuidIdempotencyDropPlans } : {}),
       onProgress: createFilteredSeedProgressReporter(),
     };
   }

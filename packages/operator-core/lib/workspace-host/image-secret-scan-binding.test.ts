@@ -24,7 +24,22 @@ interface Fixture {
   readOnlyDir?: boolean;
 }
 
-function runScan(fixture: Fixture) {
+interface ScanOptions {
+  /**
+   * WI-10005946. How the auditor reaches the script: the --auditor flag (default), the
+   * PAPERCUSP_RELEASE_AUDITOR env var the bake exports, or neither (the repo-relative default).
+   */
+  auditorVia?: 'flag' | 'env' | 'none';
+  /** Value for PAPERCUSP_RELEASE_AUDITOR when it is not the fixture auditor (default: unset). */
+  envAuditor?: string;
+  /**
+   * Run a copy of the script from a directory outside the repository, as the bake's build-context
+   * snapshot does (<out>/build-context/image-secret-scan.sh). Default: the script in place.
+   */
+  fromSnapshotCopy?: boolean;
+}
+
+function runScan(fixture: Fixture, options: ScanOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'image-secret-scan-binding-'));
   tempDirs.push(dir);
   const bin = join(dir, 'bin');
@@ -76,13 +91,26 @@ function runScan(fixture: Fixture) {
     { mode: 0o755 },
   );
 
+  const auditorVia = options.auditorVia ?? 'flag';
+  let script = SCRIPT;
+  if (options.fromSnapshotCopy) {
+    const snapshot = join(dir, 'out-of-tree', 'build-context');
+    mkdirSync(snapshot, { recursive: true });
+    script = join(snapshot, 'image-secret-scan.sh');
+    writeFileSync(script, readFileSync(SCRIPT), { mode: 0o755 });
+  }
+  const args = [script, '--image', IMAGE, '--out', out, '--min-files', '1', '--insecure-registry'];
+  if (auditorVia === 'flag') args.push('--auditor', auditor);
+  const envAuditor = auditorVia === 'env' ? auditor : (options.envAuditor ?? '');
+
   const result = spawnSync(
     'bash',
-    [SCRIPT, '--image', IMAGE, '--out', out, '--auditor', auditor, '--min-files', '1', '--insecure-registry'],
+    args,
     {
       cwd: dir,
       env: {
         ...process.env,
+        PAPERCUSP_RELEASE_AUDITOR: envAuditor,
         PATH: bin + ':' + (process.env.PATH ?? ''),
         PODMAN_CALL_LOG: podmanCallLog,
         FAKE_IMAGE_ID: fixture.imageId,
@@ -134,6 +162,37 @@ describe('image-secret-scan removes the exported tree even when the image ships 
     expect(result.output).toContain('SECRET_SCAN_RESULT=CLEAN');
     expect(result.output).not.toMatch(/cannot remove/);
     expect(result.treeLeftBehind).toBe(false);
+  });
+});
+
+describe('image-secret-scan finds its auditor when run from the bake build-context snapshot (WI-10005946)', () => {
+  const image = { imageId: CONFIG_HEX, manifest: singlePlatformManifest(`sha256:${CONFIG_HEX}`) };
+
+  it('uses PAPERCUSP_RELEASE_AUDITOR from a copy of the script outside the repository', () => {
+    const result = runScan(image, { auditorVia: 'env', fromSnapshotCopy: true });
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain('SECRET_SCAN_RESULT=CLEAN');
+  });
+
+  it('falsifiability control: the same copy without the env var cannot find the auditor', () => {
+    // Measured 2026-10-03 09:58Z, chain4 try 2: "release auditor not found:
+    // <out>/build-context/../../../papercusp-desktop/bin/audit-release-bundle.py".
+    const result = runScan(image, { auditorVia: 'none', fromSnapshotCopy: true });
+    expect(result.status).toBe(2);
+    expect(result.output).toMatch(/release auditor not found: .*build-context\/\.\.\/\.\.\/\.\.\/papercusp-desktop/);
+    expect(result.podmanCalls).toEqual([]);
+  });
+
+  it('lets --auditor override the env var', () => {
+    const result = runScan(image, { auditorVia: 'flag', envAuditor: '/nonexistent/audit-release-bundle.py' });
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain('SECRET_SCAN_RESULT=CLEAN');
+  });
+
+  it('reports the env path when it names a missing auditor', () => {
+    const result = runScan(image, { auditorVia: 'none', envAuditor: '/nonexistent/audit-release-bundle.py' });
+    expect(result.status).toBe(2);
+    expect(result.output).toContain('release auditor not found: /nonexistent/audit-release-bundle.py');
   });
 });
 

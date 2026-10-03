@@ -2736,10 +2736,12 @@ async function buildMcpToolContext(
       effectiveWs === spawn.workspaceId && clampResult.effectiveHarnessSlug === spawn.harnessSlug
         ? spawn
         : { ...spawn, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug };
-    const baseCtx: UnifiedToolContext =
-      effectiveWs === ctxRef.current!.workspaceId && clampResult.effectiveHarnessSlug === ctxRef.current!.harnessSlug
+    const baseCtx: UnifiedToolContext = {
+      ...(effectiveWs === ctxRef.current!.workspaceId && clampResult.effectiveHarnessSlug === ctxRef.current!.harnessSlug
         ? ctxRef.current!
-        : { ...ctxRef.current!, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug };
+        : { ...ctxRef.current!, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug }),
+      indirectDispatch: true,
+    };
     const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, async () =>
       (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
         const materializationCtx = projectionMaterializationContext(

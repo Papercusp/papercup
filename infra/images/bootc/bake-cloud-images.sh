@@ -291,6 +291,21 @@ if [ "$BUILD_CONTEXT_PINNED" -ne 1 ] && [ "$ALLOW_UNPINNED_CONTEXT" -ne 1 ]; the
 fi
 BUILD_CONTEXT_PINNED_JSON=false; [ "$BUILD_CONTEXT_PINNED" -eq 1 ] && BUILD_CONTEXT_PINNED_JSON=true
 echo "BAKE_BUILD_CONTEXT=$BUILD_CONTEXT sha256=$BUILD_CONTEXT_SHA256 commit=${BUILD_CONTEXT_COMMIT:-none} pinned=$BUILD_CONTEXT_PINNED_JSON"
+# The secret scan's release auditor lives OUTSIDE the build context (papercusp-desktop/bin), so
+# image-secret-scan.sh cannot find it relative to the snapshot (WI-10005946: the first bake after
+# the snapshot landed spent its whole build and then refused at the scan). Resolve it from the
+# real source tree now, refuse in seconds if it is missing, and hand it down explicitly. It is not
+# copied: the auditor locates its own repo-relative data files from its real path.
+PAPERCUSP_RELEASE_AUDITOR="${PAPERCUSP_RELEASE_AUDITOR:-$HERE_REAL/../../../papercusp-desktop/bin/audit-release-bundle.py}"
+if [ -f "$PAPERCUSP_RELEASE_AUDITOR" ]; then
+  PAPERCUSP_RELEASE_AUDITOR="$(cd "$(dirname "$PAPERCUSP_RELEASE_AUDITOR")" && pwd -P)/$(basename "$PAPERCUSP_RELEASE_AUDITOR")"
+  echo "BAKE_RELEASE_AUDITOR=$PAPERCUSP_RELEASE_AUDITOR"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY_RUN: WARNING release auditor not found at $PAPERCUSP_RELEASE_AUDITOR — the real run would refuse before building"
+else
+  die "release auditor not found: $PAPERCUSP_RELEASE_AUDITOR. The supply chain's secret scan needs it; set PAPERCUSP_RELEASE_AUDITOR=/path/to/audit-release-bundle.py"
+fi
+export PAPERCUSP_RELEASE_AUDITOR
 # From here on every step reads the snapshot, never the live checkout.
 HERE="$BUILD_CONTEXT"
 BUILD_HEALTH="$HERE/p307-build-health.sh"

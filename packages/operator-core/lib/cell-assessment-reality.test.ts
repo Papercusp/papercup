@@ -1573,7 +1573,7 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
    * shipped: the cell answered its own name backwards, and because the normal steady
    * state is `behind`, the WRONG answer was the standing one.
    */
-  const PAIRS: ReadonlyArray<readonly [string, string, string, string, string]> = [
+  const PAIRS: ReadonlyArray<readonly [string, string, string | (() => string), string | (() => string), string]> = [
     // [cell, decisive field, code when the field is "positive", code when negated, note]
     [
       'git.pipelinePosition',
@@ -1792,6 +1792,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0, evidenced: 10 }),
       'a waived gap must not read as an unwaived one',
     ],
+    [
+      'lsp.admission',
+      'admission.queued',
+      () => lspPayloads.pressure!.assessment,
+      () => lspPayloads.active!.assessment,
+      'a queued query must read as pressure while the same running query alone reads active',
+    ],
     ['governor.health', 'health.state', 'healthy', 'degraded', 'healthy and degraded must not collapse'],
     ['governor.admission', 'admission.state', 'open', 'paused', 'open and paused admission must not collapse'],
     ['governor.queue', 'queue.trend', 'growing', 'draining', 'queue growth direction must not invert'],
@@ -1839,7 +1846,9 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
   });
 
   it.each(PAIRS.map((p) => [p[0], p] as const))('%s — the decisive field actually decides', (_id, pair) => {
-    const [cell, field, positive, negated, note] = pair;
+    const [cell, field, positiveReading, negatedReading, note] = pair;
+    const positive = typeof positiveReading === 'function' ? positiveReading() : positiveReading;
+    const negated = typeof negatedReading === 'function' ? negatedReading() : negatedReading;
     const spec = BUILTIN_CELLS.find((c) => c.cell === cell)!;
 
     expect(

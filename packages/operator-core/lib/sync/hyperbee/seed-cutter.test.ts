@@ -327,8 +327,8 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
     expect(report).toEqual([expect.objectContaining({ droppedRows: 1, occurrenceCount: 1,
       authenticationDisposition: 'dropped', occurrences: [occurrence] })]);
     expect(JSON.stringify(result.manifest)).not.toContain(binding);
-    const core = await createCorestoreSeedProvider().verify({ ...result.manifest.stores[0]!,
-      source: { type: 'resource', path: join(result.outDir, CORESTORE_SUBDIR) } });
+    const core = await createCorestoreSeedProvider().verify(result.manifest.stores[0]!,
+      { path: join(result.outDir, CORESTORE_SUBDIR) });
     expect(core.ok).toBe(true);
   });
 

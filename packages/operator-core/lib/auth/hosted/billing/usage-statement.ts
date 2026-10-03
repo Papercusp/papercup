@@ -78,7 +78,7 @@ const RECORD_KEYS = [
   'costSource', 'costMicros', 'sourceRef',
 ] as const;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
-export const HOSTED_COST_SOURCE_RANK: Readonly<Record<HostedCostSource, number>> = { unpriced: 0, estimate: 1, 'provider-reported': 2, 'provider-billed': 3 };
+export const HOSTED_COST_SOURCE_RANK: Readonly<Record<HostedCostSource, number>> = Object.freeze({ unpriced: 0, estimate: 1, 'provider-reported': 2, 'provider-billed': 3 });
 const SOURCES = HOSTED_COST_SOURCE_RANK;
 
 function id(value: unknown): asserts value is string {
