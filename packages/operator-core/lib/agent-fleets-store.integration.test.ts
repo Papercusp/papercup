@@ -16,10 +16,12 @@
  * store fns take an explicit `sql` so no module mocking is needed.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   claimFleetLaunchSlot,
+  clearFleetLeaderMissingSince,
   createFleetIfAbsent,
   deleteFleet,
   getFleet,
@@ -28,6 +30,9 @@ import {
   listFleetHeadcountTargets,
   recordFleetHeadcountAttempt,
   releaseFleetLaunchSlot,
+  markFleetLeaderMissingSince,
+  promoteFleetLeaderIfMissing,
+  setFleetLeader,
   setFleetHeadcountTarget,
   setFleetControlState,
   setFleetLaunchTransaction,
@@ -38,6 +43,11 @@ import { fleetSlugOfAgent } from './fleet-transition-events';
 
 const WS = 'ws-flguard';
 const WINDOW = 60_000;
+const LEADER_MISSING_MIGRATION = readFileSync(
+  new URL('../../../libs/papercusp/libs/db/sql/1348-fleet-leader-missing-since.sql', import.meta.url),
+  'utf8',
+);
+const LEADER_MISSING_GRACE_MS = 10 * 60_000;
 
 let rootSql: postgres.Sql;
 let db: FreshPgDb;
@@ -60,7 +70,8 @@ beforeAll(async () => {
   // max > 1 (the helper's max=4) keeps the concurrency test genuine.
   // The agent_fleets shape: 417 baseline + the 484 launch-guard columns + the
   // 575 control-state columns (P-009 / H4) + the 964 fleet_type column (D-008 /
-  // P-010). This fixture hand-rolls the table, so it does NOT inherit new
+  // P-010). Migration 1348 is applied below to this pre-migration table. This
+  // fixture hand-rolls the table, so it does NOT inherit other new
   // migrations — a column added to the real table has to be added here too or
   // every store call that names it fails with a bare "column does not exist".
   await rootSql.unsafe(`
@@ -95,6 +106,12 @@ beforeAll(async () => {
       CONSTRAINT agent_fleets_pkey PRIMARY KEY (workspace_id, fleet_slug)
     )
   `);
+  await rootSql.unsafe(
+    `INSERT INTO harness_shared.agent_fleets (workspace_id, fleet_slug, leader_owner_id, created_at, updated_at)
+     VALUES ($1, 'leader-missing-legacy', 'legacy-leader', $2, $2)`,
+    [WS, Date.now()],
+  );
+  await rootSql.unsafe(LEADER_MISSING_MIGRATION);
   // Minimal canonical append-only membership ledger for deleteFleet's teardown
   // test. The production projection trigger/view is not needed here: the test
   // exercises the latest-fact writer directly, which is the source those
@@ -115,6 +132,120 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+describe('leader-missing timestamp and succession (migration 1348)', () => {
+  it('adds a nullable bigint and preserves existing fleets with no absence episode', async () => {
+    const columns = await rootSql.unsafe(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+        WHERE table_schema = 'harness_shared' AND table_name = 'agent_fleets'
+          AND column_name = 'leader_missing_since_ms'`,
+    ) as unknown as Array<{ data_type: string; is_nullable: string }>;
+    expect(columns).toEqual([{ data_type: 'bigint', is_nullable: 'YES' }]);
+    expect((await getFleet(WS, 'leader-missing-legacy', rootSql))?.leaderMissingSinceMs).toBeNull();
+  });
+
+  it('starts once, clears with a matching snapshot, then atomically promotes after the grace', async () => {
+    const { record } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'leader-missing-cas', leaderOwnerId: 'leader-a' },
+      rootSql,
+    );
+    expect(record.leaderMissingSinceMs).toBeNull();
+
+    const firstSeenAt = Math.max(Date.now(), record.updatedAt + 1);
+    const marked = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedUpdatedAtMs: record.updatedAt,
+      observedAtMs: firstSeenAt,
+    }, rootSql);
+    expect(marked?.leaderMissingSinceMs).toBe(firstSeenAt);
+
+    // A later complete absence observation cannot restart the grace clock.
+    const duplicateMark = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedUpdatedAtMs: marked!.updatedAt,
+      observedAtMs: firstSeenAt + 5_000,
+    }, rootSql);
+    expect(duplicateMark).toBeNull();
+    expect((await getFleet(WS, 'leader-missing-cas', rootSql))?.leaderMissingSinceMs).toBe(firstSeenAt);
+
+    const staleClear = await clearFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedLeaderMissingSinceMs: firstSeenAt,
+      expectedUpdatedAtMs: marked!.updatedAt - 1,
+      observedAtMs: marked!.updatedAt + 1,
+    }, rootSql);
+    expect(staleClear).toBeNull();
+    const cleared = await clearFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedLeaderMissingSinceMs: firstSeenAt,
+      expectedUpdatedAtMs: marked!.updatedAt,
+      observedAtMs: marked!.updatedAt + 1,
+    }, rootSql);
+    expect(cleared?.leaderMissingSinceMs).toBeNull();
+
+    const nextFirstSeen = cleared!.updatedAt + 1;
+    const remapped = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedUpdatedAtMs: cleared!.updatedAt,
+      observedAtMs: nextFirstSeen,
+    }, rootSql);
+    expect(remapped?.leaderMissingSinceMs).toBe(nextFirstSeen);
+
+    const promotion = {
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedLeaderMissingSinceMs: nextFirstSeen,
+      replacementLeaderOwnerId: 'successor-b',
+      graceMs: LEADER_MISSING_GRACE_MS,
+    };
+    await expect(promoteFleetLeaderIfMissing({
+      ...promotion,
+      nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS - 1,
+    }, rootSql)).resolves.toBeNull();
+
+    const results = await Promise.all([
+      promoteFleetLeaderIfMissing({ ...promotion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
+      promoteFleetLeaderIfMissing({ ...promotion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(results.find(Boolean)).toMatchObject({
+      leaderOwnerId: 'successor-b',
+      leaderMissingSinceMs: null,
+    });
+    expect(await getFleet(WS, 'leader-missing-cas', rootSql)).toMatchObject({
+      leaderOwnerId: 'successor-b',
+      leaderMissingSinceMs: null,
+    });
+  });
+
+  it('manual leader changes clear a previously observed absence clock', async () => {
+    const { record } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'leader-missing-manual', leaderOwnerId: 'leader-old' },
+      rootSql,
+    );
+    const marked = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-manual',
+      expectedLeaderOwnerId: 'leader-old',
+      expectedUpdatedAtMs: record.updatedAt,
+      observedAtMs: Math.max(Date.now(), record.updatedAt + 1),
+    }, rootSql);
+    expect(marked?.leaderMissingSinceMs).not.toBeNull();
+    const changed = await setFleetLeader(WS, 'leader-missing-manual', 'leader-new', rootSql, 'leader-old');
+    expect(changed).toMatchObject({ leaderOwnerId: 'leader-new', leaderMissingSinceMs: null });
+  });
 });
 
 describe('deleteFleet membership retirement', () => {

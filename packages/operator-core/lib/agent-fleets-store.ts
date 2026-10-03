@@ -231,6 +231,10 @@ export interface AgentFleetRecord {
   /** The CURRENT leader's coord owner-id (D-002). Null when unset (e.g. the
    *  fleet persists but no agent currently leads it). */
   leaderOwnerId: string | null;
+  /** Epoch-ms of the first complete liveness observation that the current
+   *  registered leader is absent. It is independent of updatedAt, which also
+   *  changes for ordinary fleet metadata. */
+  leaderMissingSinceMs: number | null;
   /** The fleet's permanently-bound color-scheme NAME (console-color-schemes).
    *  Null on legacy rows created before the binding existed — resolveFleetScheme
    *  falls back to a deterministic slug hash for those. */
@@ -715,6 +719,7 @@ interface FleetRow {
   description: string | null;
   owner: string | null;
   leader_owner_id: string | null;
+  leader_missing_since_ms?: string | number | null;
   color_scheme: string | null;
   fleet_type: string | null;
   control_state: string | null;
@@ -741,6 +746,7 @@ function rowToRecord(r: FleetRow): AgentFleetRecord {
     description: r.description,
     owner: r.owner,
     leaderOwnerId: r.leader_owner_id,
+    leaderMissingSinceMs: r.leader_missing_since_ms == null ? null : Number(r.leader_missing_since_ms),
     colorScheme: r.color_scheme,
     // Defensive: only the one non-default state is honored; anything else
     // (legacy null, a hand-forged value) reads back 'active'.
@@ -790,7 +796,7 @@ function refreshDirectoryCard(
 // fleet_type is APPENDED (not slotted in beside color_scheme) so the positional
 // $N binds in createFleetIfAbsent's VALUES stay stable — the insert reads in
 // this exact order.
-const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, control_state, control_reason, control_by, control_at, created_at, updated_at, fleet_type, control_resume_gate, control_expires_at, control_no_resume_path`;
+const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, control_state, control_reason, control_by, control_at, created_at, updated_at, fleet_type, control_resume_gate, control_expires_at, control_no_resume_path, leader_missing_since_ms`;
 
 /**
  * Derive a stable fleet_slug from a user-entered fleet NAME. The original name
@@ -933,7 +939,7 @@ export async function createFleetIfAbsent(
     input.colorScheme ?? (await allocateSchemeForWorkspace(input.workspaceId, sql));
   const inserted = (await s.unsafe(
     `INSERT INTO harness_shared.agent_fleets (${COLS})
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL, NULL, NULL, $8, $8, $9, NULL, NULL, false)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL, NULL, NULL, $8, $8, $9, NULL, NULL, false, NULL)
      ON CONFLICT (workspace_id, fleet_slug) DO NOTHING
      RETURNING ${COLS}`,
     [
@@ -978,13 +984,123 @@ export async function setFleetLeader(
   const s = pg(sql);
   const rows = (await s.unsafe(
     `UPDATE harness_shared.agent_fleets
-        SET leader_owner_id = $3, updated_at = $4
+        SET leader_owner_id = $3, leader_missing_since_ms = NULL, updated_at = $4
       WHERE workspace_id = $1 AND fleet_slug = $2
         AND ($5::boolean = false OR leader_owner_id IS NOT DISTINCT FROM $6::text)
       RETURNING ${COLS}`,
     [workspaceId, fleetSlug, leaderOwnerId, Date.now(), expectedLeaderOwnerId !== undefined, expectedLeaderOwnerId ?? null],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
+  return rows[0] ? rowToRecord(rows[0]) : null;
+}
+
+export interface MarkFleetLeaderMissingSinceInput {
+  workspaceId: string;
+  fleetSlug: string;
+  /** Registry value observed before the complete presence read. */
+  expectedLeaderOwnerId: string | null;
+  /** Registry version observed before the complete presence read. */
+  expectedUpdatedAtMs: number;
+  /** Epoch-ms from the first complete observation of this absence episode. */
+  observedAtMs: number;
+}
+
+/**
+ * Start a leader-absence grace period from a complete liveness observation.
+ * The caller must not invoke this for a partial/degraded roster. The expected
+ * leader, unchanged observation version, and empty absence clock are checked
+ * together, so an obsolete roster result cannot start a new absence episode.
+ */
+export async function markFleetLeaderMissingSince(
+  input: MarkFleetLeaderMissingSinceInput,
+  sql?: Sql,
+): Promise<AgentFleetRecord | null> {
+  if (!Number.isSafeInteger(input.expectedUpdatedAtMs) || !Number.isSafeInteger(input.observedAtMs)) {
+    throw new RangeError('fleet leader-missing timestamps must be safe integer epoch milliseconds');
+  }
+  const rows = (await pg(sql).unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET leader_missing_since_ms = $5, updated_at = GREATEST(updated_at, $5)
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND leader_owner_id IS NOT DISTINCT FROM $3::text
+        AND updated_at = $4::bigint
+        AND leader_missing_since_ms IS NULL
+      RETURNING ${COLS}`,
+    [input.workspaceId, input.fleetSlug, input.expectedLeaderOwnerId, input.expectedUpdatedAtMs, input.observedAtMs],
+  )) as unknown as FleetRow[];
+  return rows[0] ? rowToRecord(rows[0]) : null;
+}
+
+export interface ClearFleetLeaderMissingSinceInput {
+  workspaceId: string;
+  fleetSlug: string;
+  expectedLeaderOwnerId: string | null;
+  expectedLeaderMissingSinceMs: number;
+  expectedUpdatedAtMs: number;
+  observedAtMs: number;
+}
+
+/** Clear an absence episode only when the leader, clock, and row version still
+ * match the values seen by the caller's complete liveness read. */
+export async function clearFleetLeaderMissingSince(
+  input: ClearFleetLeaderMissingSinceInput,
+  sql?: Sql,
+): Promise<AgentFleetRecord | null> {
+  if (!Number.isSafeInteger(input.expectedLeaderMissingSinceMs) ||
+      !Number.isSafeInteger(input.expectedUpdatedAtMs) ||
+      !Number.isSafeInteger(input.observedAtMs)) {
+    throw new RangeError('fleet leader-missing timestamps must be safe integer epoch milliseconds');
+  }
+  const rows = (await pg(sql).unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET leader_missing_since_ms = NULL, updated_at = GREATEST(updated_at, $5)
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND leader_owner_id IS NOT DISTINCT FROM $3::text
+        AND leader_missing_since_ms = $4::bigint
+        AND updated_at = $6::bigint
+      RETURNING ${COLS}`,
+    [input.workspaceId, input.fleetSlug, input.expectedLeaderOwnerId,
+      input.expectedLeaderMissingSinceMs, input.observedAtMs, input.expectedUpdatedAtMs],
+  )) as unknown as FleetRow[];
+  return rows[0] ? rowToRecord(rows[0]) : null;
+}
+
+export interface PromoteFleetLeaderIfMissingInput {
+  workspaceId: string;
+  fleetSlug: string;
+  expectedLeaderOwnerId: string | null;
+  expectedLeaderMissingSinceMs: number;
+  replacementLeaderOwnerId: string;
+  nowMs: number;
+  graceMs: number;
+}
+
+/**
+ * Promote a live successor only after the stored first-seen absence clock has
+ * aged past the grace period. Leader identity, first-seen timestamp, and the
+ * grace threshold are a single PostgreSQL compare-and-swap predicate.
+ */
+export async function promoteFleetLeaderIfMissing(
+  input: PromoteFleetLeaderIfMissingInput,
+  sql?: Sql,
+): Promise<AgentFleetRecord | null> {
+  if (!Number.isSafeInteger(input.expectedLeaderMissingSinceMs) ||
+      !Number.isSafeInteger(input.nowMs) ||
+      !Number.isSafeInteger(input.graceMs) || input.graceMs < 0) {
+    throw new RangeError('fleet leader succession requires safe epoch milliseconds and a non-negative grace period');
+  }
+  const rows = (await pg(sql).unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET leader_owner_id = $4, leader_missing_since_ms = NULL, updated_at = $5
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND leader_owner_id IS NOT DISTINCT FROM $3::text
+        AND leader_missing_since_ms = $6::bigint
+        AND leader_missing_since_ms <= $5::bigint - $7::bigint
+      RETURNING ${COLS}`,
+    [input.workspaceId, input.fleetSlug, input.expectedLeaderOwnerId,
+      input.replacementLeaderOwnerId, input.nowMs, input.expectedLeaderMissingSinceMs, input.graceMs],
+  )) as unknown as FleetRow[];
+  if (rows[0]) refreshDirectoryCard(input.workspaceId, input.fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 

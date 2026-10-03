@@ -25,6 +25,9 @@ export function isVitestTestFileArg(arg) {
  * independently testable. The package script supplies --passWithNoTests as a
  * fixed argument; the router does not need that flag after it has verified the
  * requested file set, so it is removed from routed invocations.
+ *
+ * @param {string[]} [argv] launcher arguments (defaults to this process's argv)
+ * @param {string} [repoRoot] repository root the loader and router resolve against
  */
 export function workspaceTestInvocation(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
   // The integration package script uses this same launcher. For explicit files,

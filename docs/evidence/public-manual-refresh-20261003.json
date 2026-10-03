@@ -98,6 +98,7 @@
         "a new guide is searchable through the actual Pagefind dialog"
       ],
       "rawReport": "/tmp/public-manual-new-guides-browser.json"
+      ,"durableExecutionArtifact": "docs/evidence/public-manual-browser-20261003.json"
     },
     {
       "kind": "production-browser-predecessor-suite",
@@ -133,9 +134,9 @@
       "safeNext": "Use the supported independent-auditor dispatcher with an available authorized backend; do not self-audit or bypass account policy"
     },
     {
-      "scope": "production background freshness rollout",
-      "evidence": "The extension passes current-build real-PG tests, but the shared background runtime was not shown to contain it",
-      "safeNext": "Carry the registered source through the already-owned shared pipeline; do not compete with its live gate owner"
+      "scope": "background freshness acceptance evidence",
+      "evidence": "dev:pipeline_position for doc-fs.ts at 2026-10-03T06:00Z measured bg-host build7b95e65226 containing the extension; saved realPG13 tests remain passing",
+      "safeNext": "Bind saved real-PG execution evidence and current runtime containment; do not compete with the live gate owner"
     },
     {
       "scope": "automatic agent repair",

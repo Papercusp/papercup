@@ -402,6 +402,9 @@
     "scripts/gen-borrowable-catalog.mjs",
     // Shared inspector client is imported by memory and transport contract tests.
     "scripts/cdp-inspector.mjs",
-    "scripts/analyze-heap-snapshots.mjs"
+    "scripts/analyze-heap-snapshots.mjs",
+    // WI-10005802: committed-source-loader.test.ts pins that the workspace test launcher
+    // routes explicit files through the router under the committed-source loader.
+    "scripts/workspace-test.mjs"
   ]
 }

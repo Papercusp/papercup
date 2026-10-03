@@ -12588,6 +12588,42 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
     expect(holder).toMatchObject({ held: true, pid: 10, reason: "argv-match" });
   });
 
+  it("ignores an unrelated transport shell whose single argument contains the resume request", () => {
+    const id = "484dad61-fef2-4dd0-86e2-468a8bf41967";
+    const command = `ptool capability:launch-agent --json - <<'JSON'\n${JSON.stringify({ resume: { sessionId: id } })}\nJSON`;
+    const proc = fakeProc({
+      pids: [10, 11],
+      cmdlines: {
+        10: ["bash", "-c", command, ""].join("\0"),
+        11: ["node", "ptool.mjs", "--brief", `Review transcript ${id}`, ""].join("\0"),
+      },
+    });
+    expect(sessionProcessHolder(id, { ...proc, selfPid: 99 })).toMatchObject({
+      held: false,
+      reason: "clean-scan",
+    });
+  });
+
+  it("still detects exact native resume and session-id arguments outside the caller ancestry", () => {
+    const id = "484dad61-fef2-4dd0-86e2-468a8bf41967";
+    for (const argv of [
+      ["claude", "--resume", id],
+      ["claude", `--resume=${id}`],
+      ["claude", "--session-id", id],
+      ["claude", `--session-id=${id}`],
+      ["node", "omp", "-r", id],
+    ]) {
+      expect(sessionProcessHolder(id, {
+        ...fakeProc({ pids: [10], cmdlines: { 10: [...argv, ""].join("\0") } }),
+        selfPid: 99,
+      })).toMatchObject({ held: true, pid: 10, reason: "argv-match" });
+    }
+    expect(sessionProcessHolder(id, {
+      ...fakeProc({ pids: [10], cmdlines: { 10: ["claude", "--resume", `${id}-other`, ""].join("\0") } }),
+      selfPid: 99,
+    })).toMatchObject({ held: false, reason: "clean-scan" });
+  });
+
   it("EXCLUDES the caller's whole ancestor chain, not just its own pid", () => {
     // The trap this guard exists for: psu's own argv carries `--resume <uuid>`,
     // and so does the shell that launched it. pid 12 is the probe, 11 its

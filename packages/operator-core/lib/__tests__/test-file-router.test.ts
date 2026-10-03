@@ -60,7 +60,6 @@ import {
   // is not recognized by tsc).
   // @ts-expect-error
 } from '../../../../scripts/test-files.mjs';
-// @ts-expect-error — same plain-Node .mjs launcher, no declaration file.
 import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 

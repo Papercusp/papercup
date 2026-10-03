@@ -400,40 +400,71 @@ describe('required Environment= vars (WI-39735 / D-012)', () => {
  * (mutate a COPY outside the tree and point the test at it), instead of the tier-3 shape that
  * mutates the shared checkout and races git-sync's sweep.
  *
- * Absent file ⇒ this machine does not deploy this backend, which is a legitimate skip. The skip
- * is announced rather than silent: a guard that quietly always skips is the same "armed and does
- * nothing" failure this plan keeps running into.
+ * An absent file is a valid host-specific outcome, but its worker-resolved path must be visible.
+ * Register only the applicable present/absent branch so an intentionally skipped absence
+ * sentinel cannot look like a skipped live comparison in test:file's aggregate count.
  */
 describe('deployed unit on this machine', () => {
-  const unitPath =
-    process.env.PAPERCUSP_ORNITH_UNIT_PATH ?? join(homedir(), '.config/systemd/user/llama-ornith.service');
-  const present = existsSync(unitPath);
+  const readUnitProbe = () => {
+    const configuredPath = process.env.PAPERCUSP_ORNITH_UNIT_PATH ?? null;
+    const home = homedir();
+    const unitPath = configuredPath ?? join(home, '.config/systemd/user/llama-ornith.service');
+    return {
+      homeEnv: process.env.HOME ?? null,
+      homedir: home,
+      configuredPath,
+      unitPath,
+      present: existsSync(unitPath),
+    };
+  };
+  const unitProbe = readUnitProbe();
+  const { unitPath, present } = unitProbe;
+  const probeDetails =
+    `HOME=${unitProbe.homeEnv ?? '(unset)'}, os.homedir()=${unitProbe.homedir}, ` +
+    `PAPERCUSP_ORNITH_UNIT_PATH=${unitProbe.configuredPath ?? '(unset)'}, ` +
+    `unitPath=${unitProbe.unitPath}, existsSync=${unitProbe.present}`;
 
-  it.runIf(present)('matches the certified catalog entry', () => {
-    const drift = diffCatalogAgainstDeployedUnit(ORNITH, readFileSync(unitPath, 'utf8'));
-    expect(
-      drift,
-      `DEPLOYED UNIT HAS DRIFTED from catalog '${ORNITH.id}' (${unitPath}): ${describeUnitDrift(drift)}. ` +
-        `This entry is status:'${ORNITH.status}' — its certification was earned on the CATALOG's numbers, ` +
-        `so a deployed unit that differs is running an UNCERTIFIED config (D-007). Restore the unit, or ` +
-        `change the catalog and re-run the cert battery; do not relabel one to match the other.`,
-    ).toEqual([]);
+  it('keeps the host-unit path and presence stable from collection through execution', () => {
+    expect(readUnitProbe()).toEqual(unitProbe);
   });
 
-  it.runIf(present)('carries every environment variable the catalog declares it cannot serve without', () => {
-    const issues = checkRequiredEnvironment(ORNITH, readFileSync(unitPath, 'utf8'));
-    expect(
-      issues,
-      `DEPLOYED UNIT IS MISSING REQUIRED ENVIRONMENT (${unitPath}): ${describeEnvIssues(issues)}. ` +
-        `This is the WI-39735 / D-012 failure: the unit will still start, still report active and ` +
-        `still answer /health 200 — while serving from the CPU, at roughly half the load speed and ` +
-        `far worse throughput. Restore the Environment= line(s); do not drop them from the catalog.`,
-    ).toEqual([]);
-  });
+  if (unitProbe.configuredPath !== null) {
+    it('requires an explicit PAPERCUSP_ORNITH_UNIT_PATH override to exist', () => {
+      expect(unitProbe.present, `Configured comparison path does not exist (${probeDetails})`).toBe(true);
+    });
+  }
 
-  it.skipIf(present)('is absent on this machine — nothing deployed to compare', () => {
-    expect(present).toBe(false);
-  });
+  if (present) {
+    it('matches the certified catalog entry', () => {
+      const drift = diffCatalogAgainstDeployedUnit(ORNITH, readFileSync(unitPath, 'utf8'));
+      expect(
+        drift,
+        `DEPLOYED UNIT HAS DRIFTED from catalog '${ORNITH.id}' (${unitPath}): ${describeUnitDrift(drift)}. ` +
+          `This entry is status:'${ORNITH.status}' — its certification was earned on the CATALOG's numbers, ` +
+          `so a deployed unit that differs is running an UNCERTIFIED config (D-007). Restore the unit, or ` +
+          `change the catalog and re-run the cert battery; do not relabel one to match the other.`,
+      ).toEqual([]);
+    });
+
+    it('carries every environment variable the catalog declares it cannot serve without', () => {
+      const issues = checkRequiredEnvironment(ORNITH, readFileSync(unitPath, 'utf8'));
+      expect(
+        issues,
+        `DEPLOYED UNIT IS MISSING REQUIRED ENVIRONMENT (${unitPath}): ${describeEnvIssues(issues)}. ` +
+          `This is the WI-39735 / D-012 failure: the unit will still start, still report active and ` +
+          `still answer /health 200 — while serving from the CPU, at roughly half the load speed and ` +
+          `far worse throughput. Restore the Environment= line(s); do not drop them from the catalog.`,
+      ).toEqual([]);
+    });
+  } else {
+    // Host absence is a legitimate outcome, but its path source must be visible in the result.
+    // Declare only the applicable branch: an intentionally skipped absence sentinel on a host
+    // with a deployed unit looks exactly like the live comparisons were skipped in test:file's
+    // aggregate 43 passed / 1 skipped summary.
+    it(`confirms no deployed unit at the worker-resolved path (${probeDetails})`, () => {
+      expect(present).toBe(false);
+    });
+  }
 });
 
 /**
