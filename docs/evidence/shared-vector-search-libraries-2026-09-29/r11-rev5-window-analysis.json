@@ -11,7 +11,7 @@
   "command": [
     "journalctl --user -u papercusp-bg-host.service --since @1790902409 --until @1790988809 -o short-iso-precise --no-pager; keep [embed-backfill] lines",
     "journalctl --user -u papercup-embed-sidecar.service --since @1790902409 --until @1790988809 -o short-iso-precise --no-pager",
-    "Read dbos.workflow_status rows for name='embedBackfill' in the missing interval; group by status and recovery_attempts, then bound additional sweep attempts by sum(1 + recovery_attempts)",
+    "Read dbos.workflow_status rows for name='embedBackfill' in the missing interval; group by status and recovery_attempts; inspect graceful-shutdown-recovery-credit.ts before inferring attempt counts",
     "Parse starts, exclusions, errorClass, and per-target completion counts as specified in method; compare with the committed baseline",
     "python3 -m json.tool docs/evidence/shared-vector-search-libraries-2026-09-29/r11-rev5-window-analysis.json"
   ],
@@ -20,7 +20,7 @@
   "exitCode": 1,
   "verdict": "inconclusive",
   "acceptance": "not_met",
-  "summary": "The first revision-5 24-hour window cannot be graded in full: its first 3h48m20s and the start-target snapshot are absent. DBOS records bound missing-interval sweep attempts, so the error-rate falsifier fires even if every missing sweep was eligible and error-free, provided this was the qualifying continuous-engine window. That continuity remains unproven; the exact full-window ratio is unknown and no pass is claimed.",
+  "summary": "The first revision-5 24-hour window cannot be graded in full: its first 3h48m20s and the start-target snapshot are absent. Observed eligible sweeps have 112 error-like lines in 205 sweeps versus baseline 74 in 266. DBOS recovery_attempts cannot bound the missing interval because graceful restarts decrement the counter. Continuous-engine coverage and the full-window error rate remain unknown; no pass is claimed.",
   "window": {
     "start": "2026-10-02T00:53:29Z",
     "end": "2026-10-03T00:53:29Z",
@@ -87,20 +87,20 @@
     },
     "zeroScannedTargets": ["harness_brainstorm", "harness_decisions", "datatype_registry", "interest_watches"]
   },
-  "missingIntervalRateBound": {
+  "missingIntervalAttemptAccounting": {
     "intervalStart": "2026-10-02T00:53:29Z",
     "intervalEnd": "2026-10-02T04:41:49Z",
     "source": "Read-only dev:pg_query of dbos.workflow_status where name='embedBackfill' and created_at falls in this interval, measured 2026-10-03T01:22Z",
     "workflowRows": 45,
     "workflowStatus": "All 45 rows have status SUCCESS; 43 have recovery_attempts=1 and 2 have recovery_attempts=2.",
-    "maxAdditionalSweepAttempts": 92,
-    "boundMethod": "Conservatively allow 1+recovery_attempts executions for each workflow row, and one logged sweep per execution. The bg-host source calls runEmbedBackfillOnce once in embedBackfillTick, which calls _runSweepLogged once; repository search found no other bg-host caller. This treats every possible missing attempt as an eligible zero-error sweep, minimizing the rate.",
+    "sumOnePlusRecordedRecoveryAttempts": 92,
+    "counterLimitation": "This is not an execution upper bound. packages/operator-core/lib/dbos/graceful-shutdown-recovery-credit.ts decrements recovery_attempts for in-flight PENDING workflows during a graceful restart; its integration test proves a workflow can execute repeatedly while the retained counter stays at 1. Therefore 1+the retained value can undercount actual executions.",
+    "callerCheck": "The bg-host source calls runEmbedBackfillOnce once in embedBackfillTick, which calls _runSweepLogged once; repository search found no other bg-host caller. This limits sweeps per execution but not the number of credited executions.",
     "observedEligibleSweeps": 205,
     "observedErrorLikeLines": 112,
-    "minimumPossibleRateUnderBound": 0.3771043771043771,
     "baselineRate": 0.2781954887218045,
-    "comparison": "112/(205+92)=0.3771043771 > 74/266=0.2781954887. Therefore the rate falsifier fires if this is the qualifying window, even without the missing journal interval. The exact full-window numerator and denominator remain unknown.",
-    "limitations": "The bound assumes the retained DBOS workflow ledger is complete for this interval and the bg-host made no out-of-band sweep call. The surviving source and 5-minute DBOS schedule support those assumptions; the absent journal cannot verify them directly."
+    "comparison": "The observed segment's 112/205=0.5463414634 exceeds baseline 74/266=0.2781954887. The full-window ratio cannot be bounded by the retained recovery counter; no conclusion that the full-window rate falsifier fires follows from these counts.",
+    "limitations": "The missing journal prevents counting actual attempts, exclusions, and error lines. The DBOS rows establish workflow presence only; recovery credits make their final counters unsuitable as an attempt census."
   },
   "formatStringCheck": {
     "distinctObservedTemplates": ["budget expired with work remaining", "a sweep has held the latch", "periodic sweep skipped", "batch embed FAILED", "sweep embedded NOTHING"],
@@ -112,13 +112,13 @@
     {"id": "full-window-coverage", "passed": false, "evidence": "The first 13,700 seconds of the required window have no retained journal records."},
     {"id": "per-target-progress", "passed": false, "evidence": "Ten targets embedded rows in the observed portion, but there is no start-of-window missing-row snapshot, so the required proof is incomplete."},
     {"id": "pre-extraction-format-strings", "passed": true, "evidence": "Every observed error-like template was found at 9a9473af95."},
-    {"id": "full-window-error-rate", "passed": false, "evidence": "Conditional falsifier: even allowing 92 additional eligible zero-error sweeps, 112/(205+92)=0.3771043771 exceeds baseline 74/266=0.2781954887. Exact full-window counts and qualifying-window continuity remain unavailable."}
+    {"id": "full-window-error-rate", "passed": false, "evidence": "Observed segment 112/205 exceeds baseline 74/266, but missing-interval eligible sweep and error counts are unknown. DBOS recovery credit invalidates a 92-attempt cap, so the full-window falsifier cannot be decided."}
   ],
   "assertionsPassed": 1,
   "assertionsTotal": 4,
   "limitations": [
     "No start-of-window per-target missing-row snapshot is available; aggregate embedding counts cannot prove that each row missing at the start was embedded.",
-    "The absent early-window sweeps prevent an exact full-window ratio, but the conservative DBOS bound places its minimum above baseline if this is the qualifying continuous-engine window.",
+    "The absent early-window sweeps prevent an exact full-window ratio; the DBOS recovery_attempts counter cannot upper-bound attempts because graceful restarts can credit them back.",
     "Longer observed sweep durations accompany more budget-expired and latch-skip lines; this is correlation, not an established cause of the latency change."
   ],
   "recordedAt": "2026-10-03T01:23:48Z"
