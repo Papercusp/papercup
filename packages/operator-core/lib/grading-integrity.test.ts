@@ -1230,6 +1230,57 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  describe('zero-process account admission refusal (EI-24935954591005579)', () => {
+    const refusal = (opened = 0, tasks: unknown[] = []) => ({
+      isError: true,
+      content: [{ text: 'psu: --account auto could not be honored: no allowed claude account is available in the pool. Refusing to fall back to the default system login.' }],
+      data: { launch: { opened, failed: 1, partial: false, tasks } },
+    } as LaunchResult);
+
+    it('reuses the independent, one-retry Codex gateway route when no process started', async () => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([card('EI-no-primary-account')]);
+      d.launch.mockResolvedValueOnce(refusal())
+        .mockResolvedValueOnce(launchResult({ launch: { opened: 1, tasks: [{ taskId: 'codex-audit' }] } }));
+      const providerCanServe = vi.fn(async () => true);
+      const result = await dispatchPendingGradingAudits(
+        { targetIds: ['EI-no-primary-account'], ctx, harness: 'papercusp' }, { ...d, providerCanServe },
+      );
+      expect(d.launch).toHaveBeenCalledTimes(2);
+      expect(d.launch.mock.calls[1]).toEqual([
+        expect.objectContaining({
+          independent: true, agent: 'codex', account: 'auto',
+          members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+          idempotencyKey: expect.stringContaining(':recovery:'),
+        }),
+        auditorCtx,
+      ]);
+      expect(providerCanServe).toHaveBeenCalledWith('codex');
+      expect(result.receipts[0]?.state).toBe('launched');
+      expect(d.release).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { opened: 1, tasks: [], serviceable: true },
+      { opened: 0, tasks: [{ taskId: 'unknown-task' }], serviceable: true },
+      { opened: 0, tasks: [], serviceable: false },
+    ])('does not retry an unknown/partially-started or unavailable fallback: %j', async (fixture) => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([card('EI-not-safe-to-fallback')]);
+      d.launch.mockResolvedValue(refusal(fixture.opened, fixture.tasks));
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await dispatchPendingGradingAudits(
+          { targetIds: ['EI-not-safe-to-fallback'], ctx },
+          { ...d, providerCanServe: async () => fixture.serviceable },
+        );
+        expect(d.launch).toHaveBeenCalledTimes(1);
+        expect(result.receipts[0]?.state).toBe('failed');
+        expect(d.release).toHaveBeenCalledOnce();
+      } finally { warning.mockRestore(); }
+    });
+  });
+
   it('selects a bounded oldest-first backlog when no explicit targets are supplied', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([

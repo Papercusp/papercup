@@ -1607,6 +1607,27 @@ export async function dispatchPendingGradingAudits(
 
         if (result.isError) {
           const reason = result.content?.[0]?.text ?? 'grading auditor launch failed';
+          // EI-24935954591005579: pool admission can refuse BEFORE any task
+          // exists. The task/log terminal recovery above cannot observe that
+          // path, so it kept retrying Claude forever even with a usable Codex
+          // pool. Reuse the one bounded gateway fallback only when the launcher
+          // explicitly proves zero opened processes and no durable tasks.
+          const failedLaunch = result.data?.launch as {
+            opened?: number; failed?: number; tasks?: unknown[]; partial?: boolean;
+          } | undefined;
+          const noPrimaryAccount =
+            /no allowed claude account is available in the pool/i.test(reason);
+          if (noPrimaryAccount && launchBackend === 'claude' &&
+              failedLaunch?.opened === 0 && (failedLaunch.failed ?? 0) > 0 &&
+              failedLaunch.partial === false && Array.isArray(failedLaunch.tasks) &&
+              failedLaunch.tasks.length === 0 &&
+              terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS &&
+              await canServeFallback()) {
+            terminalFallbacks += 1;
+            launchBackend = GRADING_AUDIT_FALLBACK.agent;
+            currentIdempotencyKey = recoveryKeyFor('confirmed-zero-process-pool-refusal', 'task_receipt_not_live');
+            continue;
+          }
           await releaseReservation(
             resolveGradingAuditFailureBackoff({
               code: 'launch_failed',
