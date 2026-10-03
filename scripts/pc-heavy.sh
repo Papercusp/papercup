@@ -760,7 +760,10 @@ _pc_heavy_internal_preempt_run() {
   local _psi_lock_file="$_psi_admission_dir/coordinator.lock"
   local _psi_retry_handle='' _psi_admitted_at='' _psi_child_start_ticks=''
   local _psi_cgroup_path='' _psi_memory_current_mib='' _psi_state='active'
-  local _psi_frozen_since=0
+  # _psi_frozen_since (s) drives the max-freeze expiry; _psi_frozen_since_ms drives the
+  # frozen_total_ms accounting below. A 1 s clock recorded a sub-second scarcity freeze/thaw
+  # as 0 ms (gate run 014f2801, pc-heavy-psi-scarcity-gate.test.ts).
+  local _psi_frozen_since=0 _psi_frozen_since_ms=0
   # EI-21903376339103215: cumulative wall-clock ms this admission has spent SIGSTOPped, and how
   # many freeze episodes contributed to it. Persisted via _psi_write_record so a child that
   # inherits PC_HEAVY_ADMISSION_DIR/PC_HEAVY_ADMISSION_ID can read, after it thaws, how much of
@@ -1181,7 +1184,7 @@ _pc_heavy_internal_preempt_run() {
 
   _psi_tick() {
     [ "${_psi_enabled:-0}" = 1 ] || return 0
-    local _sample='' _lock_fd='' _now='' _low_since='' _expire_frozen=0
+    local _sample='' _lock_fd='' _now='' _now_ms=0 _low_since='' _expire_frozen=0
     _sample="$(_pc_heavy_mem_psi_full_avg10 2>/dev/null)" || {
       if [ "$_psi_last_undetermined" != psi-unreadable ]; then
         _psi_emit undetermined psi-unreadable unavailable 0
@@ -1203,6 +1206,11 @@ _pc_heavy_internal_preempt_run() {
       return 0
     fi
     _now=$(date +%s)
+    # Fork-free millisecond clock for the frozen-time accounting only. EPOCHREALTIME is
+    # "<sec><locale decimal sep><6 digits>", so stripping non-digits yields microseconds.
+    _now_ms="${EPOCHREALTIME:-}"
+    _now_ms="${_now_ms//[!0-9]/}"
+    if [ -n "$_now_ms" ]; then _now_ms=$(( _now_ms / 1000 )); else _now_ms=$(( _now * 1000 )); fi
     if [ "$_sample" -ge "$_psi_high" ]; then
       rm -f "$_psi_recovery_file" 2>/dev/null || true
       # One pressure episode yields ONE root. Re-scanning active records after
@@ -1224,7 +1232,7 @@ _pc_heavy_internal_preempt_run() {
         # suspended until its much later outer watchdog fires.
         # EI-21903376339103215: account the frozen wall-clock time for this episode before the
         # state flips off `frozen` — _psi_frozen_since is only meaningful while state=frozen.
-        _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now - _psi_frozen_since) * 1000 ))
+        _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now_ms > _psi_frozen_since_ms ? _now_ms - _psi_frozen_since_ms : 1) ))
         _psi_frozen_episodes=$(( _psi_frozen_episodes + 1 ))
         _psi_write_record expired || true
         _psi_emit expired memory-psi-high-timeout "$_sample" "$_psi_total_mib"
@@ -1245,7 +1253,7 @@ _pc_heavy_internal_preempt_run() {
           # Same accounting as the expire and recovery paths: capture this
           # episode's frozen duration BEFORE _psi_write_record flips the state,
           # since _psi_frozen_since is only meaningful while state=frozen.
-          _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now - _psi_frozen_since) * 1000 ))
+          _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now_ms > _psi_frozen_since_ms ? _now_ms - _psi_frozen_since_ms : 1) ))
           _psi_frozen_episodes=$(( _psi_frozen_episodes + 1 ))
           _psi_write_record active || true
           rm -f "$_psi_recovery_file" 2>/dev/null || true
@@ -1303,6 +1311,7 @@ _pc_heavy_internal_preempt_run() {
           fi
           if kill -STOP -- "-${_preempt_child_pid:-}" 2>/dev/null; then
             _psi_frozen_since="$_now"
+            _psi_frozen_since_ms="$_now_ms"
             _psi_write_record frozen || true
             _psi_state=frozen
             _psi_emit frozen memory-psi-high "$_sample" "$_psi_total_mib"
@@ -1330,7 +1339,7 @@ _pc_heavy_internal_preempt_run() {
           if kill -CONT -- "-${_preempt_child_pid:-}" 2>/dev/null; then
             # EI-21903376339103215: same accounting as the expire path above — record this
             # episode's frozen duration before _psi_write_record flips state away from `frozen`.
-            _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now - _psi_frozen_since) * 1000 ))
+            _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now_ms > _psi_frozen_since_ms ? _now_ms - _psi_frozen_since_ms : 1) ))
             _psi_frozen_episodes=$(( _psi_frozen_episodes + 1 ))
             _psi_write_record active || true
             rm -f "$_psi_recovery_file" 2>/dev/null || true

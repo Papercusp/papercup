@@ -9,7 +9,7 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import net from 'node:net';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
@@ -725,7 +725,7 @@ describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800
 function rawInject(sock: string, data: string): Promise<void> {
   return new Promise((resolve) => {
     const c = net.connect(sock, () => {
-      c.write(encodeControl({ mode: 'raw', data }));
+      c.write(encodeControl({ mode: 'raw', data, ownerId: basename(sock, '.sock') }));
       c.end();
     });
     c.on('data', () => {});
@@ -737,7 +737,7 @@ function rawInject(sock: string, data: string): Promise<void> {
 function controlInject(sock: string, mode: 'turn' | 'raw' | 'osc' | 'reset' | 'recycle', data: string): Promise<void> {
   return new Promise((resolve) => {
     const c = net.connect(sock, () => {
-      c.write(encodeControl({ mode, data }));
+      c.write(encodeControl({ mode, data, ownerId: basename(sock, '.sock') }));
       c.end();
     });
     c.on('data', () => {});
@@ -1612,13 +1612,18 @@ describe('session-port managed seed + native persistence helpers', () => {
       onExit: () => {},
     });
 
-    const deadline = Date.now() + 5_000;
-    while (!captured().includes('ONBOARDING_READY') && Date.now() < deadline) await sleep(10);
-    expect(captured()).toContain('ONBOARDING_READY');
-    expect((captured().match(/AUTO_CR_1/g) || []).length).toBe(1);
-    expect((captured().match(/AUTO_CR_2/g) || []).length).toBe(1);
-    expect(await done).toBe(0);
-    expect(existsSync(sock)).toBe(false);
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!captured().includes('ONBOARDING_READY') && Date.now() < deadline) await sleep(10);
+      expect(captured()).toContain('ONBOARDING_READY');
+      expect((captured().match(/AUTO_CR_1/g) || []).length).toBe(1);
+      expect((captured().match(/AUTO_CR_2/g) || []).length).toBe(1);
+      expect(await done).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, '\x04');
+      await done.catch(() => undefined);
+    }
   }, 10_000);
 
   it('signals the forkpty process group and retains a direct-child fallback', () => {

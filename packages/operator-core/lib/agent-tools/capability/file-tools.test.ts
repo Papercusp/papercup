@@ -13,7 +13,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import readTool, { capabilityReadSeeAlso, MAX_FILE_BYTES } from './read';
@@ -21,6 +21,35 @@ import writeTool, { emptyWriteWouldDestroy, looksLikeDisplayFormattedRead } from
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
 import { writeScratchReference } from '../../scratch-reference';
+
+const editCaptureMocks = vi.hoisted(() => ({
+  useCoordinatedLock: false,
+  recordEditAttribution: vi.fn(),
+}));
+
+vi.mock('../locks/file-lock-guard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../locks/file-lock-guard')>();
+  const guardFileLock = vi.fn(async (...args: Parameters<typeof actual.guardFileLock>) => {
+    const [ctx, paths, spec, run] = args;
+    if (!editCaptureMocks.useCoordinatedLock) return actual.guardFileLock(ctx, paths, spec, run);
+    return {
+      acquired: true as const,
+      coordinated: true,
+      result: await run({
+        coordinated: true,
+        paths: ['src/captured.ts'],
+        newlyHeld: ['src/captured.ts'],
+        coordinationDomain: '/repo',
+        ownerId: 'owner-123',
+      }),
+    };
+  });
+  return { ...actual, guardFileLock };
+});
+
+vi.mock('../../edit-attribution', () => ({
+  recordEditAttribution: editCaptureMocks.recordEditAttribution,
+}));
 
 const DIR = mkNonRepoTmpDir('cap-file-');
 const baseCtx = {
@@ -36,6 +65,11 @@ const ctx = baseCtx as never;
 function parse(r: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(r.content[0].text);
 }
+
+afterEach(() => {
+  editCaptureMocks.useCoordinatedLock = false;
+  editCaptureMocks.recordEditAttribution.mockReset();
+});
 
 describe('capability:read', () => {
   it('does not append human guidance to machine-oriented read modes', () => {
@@ -1034,6 +1068,87 @@ describe('capability:write', () => {
 });
 
 describe('capability:edit', () => {
+  it('records server-side attribution for the successful guarded write with its dispatch id', async () => {
+    editCaptureMocks.useCoordinatedLock = true;
+    const f = join(DIR, 'edit-attribution.txt');
+    writeFileSync(f, 'old value\n');
+
+    const result = (await editTool.handler!(
+      { file_path: f, old_string: 'old value', new_string: 'new value' },
+      { ...baseCtx, workspaceId: 'workspace-1', dispatchCallId: 'dispatch-edit-1' } as never,
+    )) as { content: Array<{ text: string }> };
+
+    expect(parse(result).ok).toBe(true);
+    expect(editCaptureMocks.recordEditAttribution).toHaveBeenCalledWith({
+      repoRoot: '/repo',
+      files: ['src/captured.ts'],
+      agentId: 'owner-123',
+      intent: 'capability:edit',
+      workspaceId: 'workspace-1',
+      dispatchCallId: 'dispatch-edit-1',
+    });
+  });
+
+  it('records frozen repair hunks for code-mode child edits using the edit dispatch id', async () => {
+    editCaptureMocks.useCoordinatedLock = true;
+    const f = join(DIR, 'edit-code-mode.txt');
+    writeFileSync(f, 'old old\n');
+    const dispatchTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, recorded: true }) }],
+    });
+
+    const result = (await editTool.handler!(
+      { file_path: f, old_string: 'old', new_string: 'new', replace_all: true },
+      {
+        ...baseCtx,
+        workspaceId: 'workspace-1',
+        dispatchCallId: 'dispatch-edit-code-mode',
+        codeMode: true,
+        dispatchTool,
+      } as never,
+    )) as { content: Array<{ text: string }> };
+
+    expect(parse(result).ok).toBe(true);
+    expect(dispatchTool).toHaveBeenCalledWith('release:repair-queue', {
+      op: 'record-edit',
+      path: 'src/captured.ts',
+      hunk: { kind: 'edit', old: 'old', new: 'new', replaceAll: true },
+      toolUseId: 'dispatch-edit-code-mode',
+      editIndex: 0,
+      atMs: expect.any(Number),
+    });
+  });
+
+  it('records frozen repair hunks for indirect dispatch edits as well as code-mode edits', async () => {
+    editCaptureMocks.useCoordinatedLock = true;
+    const f = join(DIR, 'edit-indirect.txt');
+    writeFileSync(f, 'old value\n');
+    const dispatchTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, recorded: true }) }],
+    });
+
+    const result = (await editTool.handler!(
+      { file_path: f, old_string: 'old value', new_string: 'new value' },
+      {
+        ...baseCtx,
+        workspaceId: 'workspace-1',
+        dispatchCallId: 'dispatch-edit-indirect',
+        indirectDispatch: true,
+        dispatchTool,
+      } as never,
+    )) as { content: Array<{ text: string }> };
+
+    expect(parse(result).ok).toBe(true);
+    expect(dispatchTool).toHaveBeenCalledWith('release:repair-queue', {
+      op: 'record-edit',
+      path: 'src/captured.ts',
+      hunk: { kind: 'edit', old: 'old value', new: 'new value' },
+      toolUseId: 'dispatch-edit-indirect',
+      editIndex: 0,
+      atMs: expect.any(Number),
+    });
+  });
+
   it('replaces a unique string', async () => {
     const f = join(DIR, 'e.txt');
     writeFileSync(f, 'const x = 1;\nconst y = 2;\n');
