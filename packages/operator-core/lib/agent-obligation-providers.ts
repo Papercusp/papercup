@@ -16,7 +16,12 @@ import {
   type AgentObligationMeasurementFailure,
 } from './agent-obligations';
 import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief, GoalPotPlacementAuthority } from './goal-launch-settings';
-import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
+import {
+  describeGoalReviewCoverageGap,
+  goalPlanningPortfolioFingerprint,
+  goalReviewCoverageGaps,
+  type GoalPlanningReview,
+} from './goal-planning-review';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import { GOAL_OWNER_REPORT_HEADING_LIST } from './goal-owner-report';
@@ -26,6 +31,8 @@ import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './g
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
 
 export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v6';
+/** v3 (P-009): a no-new-plan review discharges only with a passing coverage map. */
+export const GOAL_PLANNING_OBLIGATION_REVISION = 'goal-planning-needed-v3';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
@@ -65,10 +72,10 @@ export interface GoalPlanningProviderInput extends ProviderBase {
 /** A review selects the next planning action; it never grants launch or ownership authority. */
 export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentObligation {
   const common = {
-    ruleId: 'goal-planning-needed', ruleRevision: 'goal-planning-needed-v2', family: 'planning-needed' as const,
+    ruleId: 'goal-planning-needed', ruleRevision: GOAL_PLANNING_OBLIGATION_REVISION, family: 'planning-needed' as const,
     scope: { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId },
     responsibleOwnerId: input.ownerId,
-    authority: policyAuthority('modes/registry:goal+scout_ticks.goalReview', 'goal-planning-needed-v2'),
+    authority: policyAuthority('modes/registry:goal+scout_ticks.goalReview', GOAL_PLANNING_OBLIGATION_REVISION),
     priority: 'normal' as const, causalRank: 2, sourceGeneration: input.sourceGeneration,
     episode: input.sourceGeneration, applicableDemand: 0, evidence: [] as AgentObligationEvidence[],
     clearsWhen: { id: 'current-evidenced-goal-review', summary: 'A current evidence-backed goal review addresses uncovered needs; actual plan execution remains a separate obligation.', evidenceKind: 'state' as const, sourceRef: 'scout_ticks.detail.goalReview+GoalPortfolioBrief' },
@@ -111,8 +118,22 @@ export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentO
     episode: `review:${fingerprint}:${review.reviewedAt}`, lastSatisfiedAt: review.reviewedAt };
   if (review.disposition === 'existing-plans-sufficient' || review.disposition === 'no-eligible-work') {
     if (review.uncoveredOutcome) return unknown({ code: 'goal-review-conflicting-disposition', detail: 'The no-new-plan disposition also names an uncovered outcome.', retry: 'Resolve the contradictory review evidence before treating planning as satisfied.' });
+    // P-009: a no-new-plan review discharges the nudge only when it shows which
+    // plan covers each recurring need. An unbacked assertion leaves it due.
+    const coverageAction = (summary: string) => ({ kind: 'continue' as const, targetRef: `goal:${input.goalId}`, recoveryRef: 'coord:orient', summary });
+    if (!review.coverage) return defineAgentObligation({ ...measured, title: 'Back the no-new-plan review with a coverage map', status: 'due', applicableDemand: 1,
+      reason: `The current ${review.disposition} review lists no coverage map, so nothing shows which plan covers each recurring need.`,
+      action: coverageAction('Re-record blender:ideate-pass-record goalReview with coverage: each recurring need, its goal work-items (itemRefs) and its planRef. A need spanning 3+ items with no plan means write one (plans:new, then plans:start).'),
+    });
+    const gaps = goalReviewCoverageGaps(review.coverage);
+    if (gaps.length > 0) return defineAgentObligation({ ...measured, title: 'Write a plan for the uncovered need', status: 'due', applicableDemand: gaps.length,
+      reason: gaps.map(describeGoalReviewCoverageGap).join(' '),
+      action: coverageAction('Write and start a plan for each uncovered cluster, staff it, then re-record the review citing it.'),
+    });
+    const planned = review.coverage.filter((entry) => entry.planRef).length;
     return defineAgentObligation({ ...measured, title: 'Current review requires no new plan', status: 'satisfied',
-      reason: review.rationale, changeSignal: { nextDeadlineAt: new Date(reviewedMs + reviewIntervalMs).toISOString(), cancellationRef: `goal:${input.goalId}` },
+      reason: `${review.rationale} Coverage: ${planned} of ${review.coverage.length} mapped needs cite a covering plan.`,
+      changeSignal: { nextDeadlineAt: new Date(reviewedMs + reviewIntervalMs).toISOString(), cancellationRef: `goal:${input.goalId}` },
     });
   }
   const guards = 'Preserve proposal lineage; recheck scope, budget, admission and ownership at mutation time, and use CAS for worklist changes. A review is not a worker claim.';
