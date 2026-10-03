@@ -6,7 +6,8 @@ import { runInNewContext } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
-import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import { types } from 'node:util';
 
 class FakeWebSocket extends EventEmitter {
   static instances: FakeWebSocket[] = [];
@@ -60,6 +61,153 @@ function makeClient(responses: Map<string, unknown>, options: Record<string, unk
     ...options,
   });
 }
+
+describe('P011 exact request weak-target heap-ID reader', () => {
+  const owner = '@papercusp/db-org.acquire-registry';
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  const missingRequestId = '22222222-2222-4222-8222-222222222222';
+  const source = { processInstanceId: '33333333-3333-4333-8333-333333333333',
+    buildSha: 'a'.repeat(40), poolInstanceId: '44444444-4444-4444-8444-444444444444' };
+
+  function fixture(options: { duplicate?: boolean; evict?: boolean; zeroId?: boolean; badId?: boolean; rejectId?: boolean;
+    drift?: string; getter?: boolean } = {}) {
+    const decoded = [{ id: 'raw' }], mapped = [{ id: 'mapped' }], response = { rows: mapped };
+    const row = { source: { ...source }, connectionId: 1, queryId: 2, correlation: { requestId },
+      objectRefs: { decodedResult: new WeakRef(decoded), resolvedRows: new WeakRef(mapped), responseValue: new WeakRef(response) } };
+    const pool = { pgResults: options.duplicate ? [row, row] : [row] };
+    const state = { pools: new Map([['org-app', pool]]) };
+    const slots = new Map([[owner, { value: state }]]);
+    const context = { Symbol, Map, WeakRef, Object, process: { pid: 7, getBuiltinModule: () => ({ types }) },
+      [Symbol.for('@papercusp/module-singleton.slots')]: slots };
+    const ids = new Map<object, string>([[state, '10'], [decoded, '11'], [mapped, '12'], [response, '13']]);
+    const handles = new Map<string, object>();
+    const calls: string[] = [];
+    if (options.getter) Object.defineProperty(row, 'correlation', { get() { calls.push('getter'); return { requestId }; } });
+    return { calls, async evaluate(expression: string, opts?: any) {
+      calls.push('evaluate');
+      const value = runInNewContext(expression, context);
+      if (opts?.returnByValue) {
+        if (options.evict) pool.pgResults = [];
+        if (options.drift === 'requestId') row.correlation.requestId = missingRequestId;
+        else if (options.drift === 'connectionId' || options.drift === 'queryId') row[options.drift]++;
+        else if (options.drift) (row.source as any)[options.drift] = 'drifted';
+        return { result: { value } };
+      }
+      if (value && typeof value === 'object') {
+        const objectId = 'handle-' + handles.size; handles.set(objectId, value);
+        return { result: { objectId } };
+      }
+      return { result: { value } };
+    }, async send(method: string, params: any) {
+      calls.push(method);
+      if (method === 'Runtime.releaseObjectGroup') { handles.clear(); return {}; }
+      if (method !== 'HeapProfiler.getHeapObjectId') throw new Error('Unexpected method');
+      if (options.rejectId) throw new Error('snapshot read failed');
+      return { heapSnapshotObjectId: options.badId ? '9007199254740993' :
+        options.zeroId ? '0' : ids.get(handles.get(params.objectId)!) };
+    } };
+  }
+
+  it('binds exact raw/mapped/envelope targets and reports missing requests, then releases handles', async () => {
+    const client = fixture();
+    const report = await readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId, missingRequestId] });
+    expect(report.roots).toEqual([{ owner, status: 'found', id: 10 }]);
+    expect(report.queries?.records[0]).toMatchObject({ pool: 'org-app', source, connectionId: 1, queryId: 2, requestId,
+      objects: [{ phase: 'decodedResult', status: 'found', id: 11 },
+        { phase: 'resolvedRows', status: 'found', id: 12 }, { phase: 'responseValue', status: 'found', id: 13 }] });
+    expect(report.queries?.unobservedRequestIds).toEqual([missingRequestId]);
+    expect(client.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+    expect(client.calls).not.toContain('HeapProfiler.collectGarbage');
+    expect(client.calls).not.toContain('HeapProfiler.takeHeapSnapshot');
+  });
+
+  it.each(['duplicate', 'evict'] as const)('discloses %s instead of substituting a count/time match', async defect => {
+    const client = fixture({ [defect]: true });
+    const report = await readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId] });
+    expect(report.queries?.records[0].objects.map(o => o.status)).toEqual(Array(3).fill(defect === 'duplicate' ? 'ambiguous' : 'evicted'));
+    expect(client.calls.filter(c => c === 'HeapProfiler.getHeapObjectId')).toHaveLength(1);
+    expect(client.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+  });
+
+  it('keeps uncaptured nodes explicit and releases handles on invalid IDs/protocol failure', async () => {
+    const zero = fixture({ zeroId: true });
+    const report = await readPinnedHeapObjectIds(zero as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId] });
+    expect(report.queries?.records[0].objects.every(o => o.status === 'not-in-snapshot')).toBe(true);
+    for (const client of [fixture({ badId: true }), fixture({ rejectId: true })]) {
+      await expect(readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId] })).rejects.toThrow();
+      expect(client.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+    }
+  });
+
+  it('rejects invalid/duplicate request IDs before any inspector operation', async () => {
+    const client = fixture();
+    for (const pgRequestIds of [[], ['secret'], [requestId, requestId], Array(33).fill(requestId)]) {
+      await expect(readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds })).rejects.toThrow('request UUIDs');
+    }
+    expect(client.calls).toEqual([]);
+  });
+
+  it.each(['processInstanceId', 'buildSha', 'poolInstanceId', 'connectionId', 'queryId', 'requestId'])('rejects %s drift in the exact tuple', async drift => {
+    const client = fixture({ drift });
+    const report = await readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId] });
+    expect(report.queries?.records[0].objects.every(o => o.status === 'evicted')).toBe(true);
+    expect(client.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+  });
+
+  it('does not run an application getter while locating request metadata', async () => {
+    const client = fixture({ getter: true });
+    const report = await readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId] });
+    expect(report.queries?.records).toEqual([]);
+    expect(report.queries?.unobservedRequestIds).toEqual([requestId]);
+    expect(client.calls).not.toContain('getter');
+  });
+
+  it('binds weak targets to exact objects on a real private inspector and releases all handles', async () => {
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
+      globalThis.decoded = [{ kind: 'raw' }];
+      globalThis.mapped = [{ kind: 'mapped' }];
+      globalThis.envelope = { rows: mapped };
+      const row = { source: ${JSON.stringify(source)}, connectionId: 1, queryId: 2,
+        correlation: { requestId: ${JSON.stringify(requestId)} }, objectRefs: {
+          decodedResult: new WeakRef(decoded), resolvedRows: new WeakRef(mapped), responseValue: new WeakRef(envelope) } };
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([[${JSON.stringify(owner)},
+        { value: { pools: new Map([['org-app', { pgResults: [row] }]]) } }]]);
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    const objectGroup = 'p011-exact-object-test';
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      // New isolated precondition test, never a serving-process resource cohort.
+      await client.send('HeapProfiler.enable');
+      await client.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false });
+      const report = await readPinnedHeapObjectIds(client, { expectedPid: child.pid!, owners: [owner], pgRequestIds: [requestId] });
+      const objects = report.queries!.records[0].objects;
+      expect(objects.every(object => object.status === 'found')).toBe(true);
+      expect(new Set(objects.map(object => object.id)).size).toBe(3);
+      for (const object of objects) {
+        const { result } = await client.send('HeapProfiler.getObjectByHeapObjectId', {
+          objectId: String(object.id), objectGroup,
+        });
+        const globalName = object.phase === 'decodedResult' ? 'decoded' : object.phase === 'resolvedRows' ? 'mapped' : 'envelope';
+        const same = await client.send('Runtime.callFunctionOn', { objectId: result.objectId,
+          functionDeclaration: 'function () { return this === globalThis.' + globalName + '; }', returnByValue: true });
+        expect(same.result.value, object.phase).toBe(true);
+      }
+    } finally {
+      if (client) { await client.send('Runtime.releaseObjectGroup', { objectGroup }); client.close(); }
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  }, 30_000);
+});
 
 describe('PID-bound host configuration facts', () => {
   it('opts into direct V8 allocation counters only after validating both the flag and target identity', async () => {
