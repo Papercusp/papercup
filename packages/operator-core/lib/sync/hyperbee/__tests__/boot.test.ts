@@ -538,6 +538,106 @@ describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
       warn.mock.calls.some((args) => String(args[0]).includes("stamped '<none>::mem0-federation-egress=on'")),
     ).toBe(true);
   });
+
+  it('a mid-run flag read that degrades holds the last authoritative value — no binding flip, no memory replay (WI-10005919)', async () => {
+    // WI-10005919: a degraded read used to become an ordinary OFF. One bad read mid-run
+    // cancelled the memory replay and flipped the apply binding; the next good read then
+    // looked like a live OFF→ON edge and replayed every memory op from 0.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(() => warn.mockRestore());
+    const persisted = bindingStore();
+    let readFails = false;
+    const applied: string[] = [];
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi10005919-hold',
+      harnessSlug: 'wi10005919-hold',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => {
+        if (readFails) throw new Error('flag backend timed out after 2000ms');
+        return true;
+      },
+      applyOverride: async (op) => {
+        applied.push(op.table!);
+        return true;
+      },
+    });
+    cleanups.push(() => handle.close());
+
+    await appendWitnessOps(handle);
+    expect(await handle.mergeNow()).toBe(2);
+
+    readFails = true;
+    expect(await handle.mergeNow()).toBe(0);
+    readFails = false;
+    // The behavioural discriminator: a spurious OFF→ON edge would replay memory-1 here.
+    expect(await handle.mergeNow()).toBe(0);
+    expect(applied).toEqual([MEMORY_TABLE, OTHER_TABLE]);
+    expect([...persisted.rows.values()]).toEqual([
+      expect.objectContaining({ binding: '<none>::mem0-federation-egress=on', position: 2 }),
+    ]);
+    expect(
+      warn.mock.calls.some(
+        (args) => String(args[0]).includes('WI-10005919') && String(args[0]).includes('holding ON'),
+      ),
+    ).toBe(true);
+  });
+
+  it('a degraded boot read that no pass consumed is not an OFF state — the first good read starts no replay (WI-10005919)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(() => warn.mockRestore());
+    const persisted = bindingStore();
+    const workspaceRoot = tmpWorkspaceRoot();
+    const first = await bootHarnessSubstrate({
+      workspaceRoot,
+      workspaceId: 'ws-wi10005919-boot',
+      harnessSlug: 'wi10005919-boot',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => true,
+      applyOverride: async () => true,
+    });
+    try {
+      await appendWitnessOps(first);
+      await first.mergeNow();
+    } finally {
+      await first.close();
+    }
+
+    // Only the BOOT read degrades; every pass read is good and ON, as is the progress
+    // persisted by the first boot. Nothing was skipped under OFF, so nothing is owed.
+    let reads = 0;
+    const secondApplied: string[] = [];
+    const second = await bootHarnessSubstrate({
+      workspaceRoot,
+      workspaceId: 'ws-wi10005919-boot',
+      harnessSlug: 'wi10005919-boot',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error('flag backend timed out after 2000ms');
+        return true;
+      },
+      applyOverride: async (op) => {
+        secondApplied.push(op.table!);
+        return true;
+      },
+    });
+    cleanups.push(() => second.close());
+    await second.mergeNow();
+
+    expect(secondApplied).toEqual([]);
+    expect(
+      warn.mock.calls.some(
+        (args) => String(args[0]).includes('WI-10005919') && String(args[0]).includes('boot read degraded'),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)', () => {

@@ -68,6 +68,7 @@ import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target'
 import { repoHeadSha } from '../../harness/docs/git-runner';
 import { resolveCapabilityIntegrationRoot } from './base-dir';
 import { classifyCapabilityBashEffect, commandBase, splitClassifiableShell } from './bash-effect';
+import { readRestrictedSourceHoldState } from '../../personal-vault/git-sync-hold';
 
 export { classifyCapabilityBashEffect } from './bash-effect';
 
@@ -734,7 +735,12 @@ export default defineTool({
     // (above) cannot see a host built at run time; an empty network namespace can.
     // Fail closed: an unreadable ledger (null) also runs offline.
     const { readSessionRestriction } = await import('../../personal-vault/binding-enforcement');
-    const runOffline = (await readSessionRestriction(callerSid || null)) !== false;
+    const sessionRestricted = (await readSessionRestriction(callerSid || null)) !== false;
+    // This runs inside the already-loaded operator bundle, before the only spawn.
+    // A live-tree hold must fence every integration-tree shell, even when this
+    // caller has no personal disclosure; an unknown root/census is fail-closed.
+    const sourceHold = await readRestrictedSourceHoldState(frozenLineageRoot);
+    const runOffline = sessionRestricted || sourceHold !== 'clear';
     const childEnv = {
       ...(desktopEnv ?? {}),
       ...integrationEnv,

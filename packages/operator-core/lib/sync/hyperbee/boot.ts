@@ -128,6 +128,10 @@ import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from
 import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import {
+  readMemoryFederationFlagOnce,
+  type MemoryFederationFlagRead,
+} from './memory-federation-flag-read';
 import { loadRevokedPubkeysCached } from './load-revoked-pubkeys';
 import {
   registerAllHarnessProjections,
@@ -1467,17 +1471,39 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // merge cursor was persisted outside that decision. An OFF-gated memory op
   // therefore advanced the cursor and became indistinguishable from an applied
   // op. Keep the projection and apply-binding on one boot-owned snapshot.
-  const readMemoryFederationFlag = async (): Promise<boolean> => {
-    try {
-      if (opts.memoryFederationFlagOn) {
-        return (await opts.memoryFederationFlagOn()) === true;
-      }
-      return (await getFlag(FLAGS.MEM0_FEDERATION_EGRESS, 'system')) === true;
-    } catch {
-      return false;
-    }
+  //
+  // WI-10005919 — a read can DEGRADE (override store unreachable with nothing cached,
+  // or a throw), and a degraded value is not the owner's setting. It is never allowed
+  // to pass silently as OFF: every degraded read is logged with a running count, a
+  // mid-run degraded read holds the last authoritative value, and a degraded boot
+  // value that no pass consumed is not treated as an OFF state (see mergeOnePass).
+  const readMemoryFederationFlag = () => readMemoryFederationFlagOnce(opts.memoryFederationFlagOn);
+  let memoryFederationDegradedReads = 0;
+  const warnMemoryFederationReadDegraded = (
+    read: MemoryFederationFlagRead,
+    when: 'boot' | 'pass',
+    outcome: string,
+  ): void => {
+    memoryFederationDegradedReads += 1;
+    console.warn(
+      `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] WI-10005919: mem0-federation flag ` +
+        `${when} read degraded (${read.degraded}, ${read.elapsedMs}ms; degraded reads this boot: ` +
+        `${memoryFederationDegradedReads}) — ${outcome}`,
+    );
   };
-  let memoryFederationEnabledForPass = await readMemoryFederationFlag();
+  const bootMemoryFederationRead = await readMemoryFederationFlag();
+  let memoryFederationEnabledForPass = bootMemoryFederationRead.value;
+  // Whether memoryFederationEnabledForPass came from an authoritative read.
+  let memoryFederationFlagAuthoritative = bootMemoryFederationRead.degraded === null;
+  // Whether any merge pass has applied under a snapshot yet.
+  let memoryFederationSnapshotConsumed = false;
+  if (bootMemoryFederationRead.degraded !== null) {
+    warnMemoryFederationReadDegraded(
+      bootMemoryFederationRead,
+      'boot',
+      `provisional ${bootMemoryFederationRead.value ? 'ON' : 'OFF'} until the first pass re-reads`,
+    );
+  }
   const memoryFederationFlagSnapshot = async (): Promise<boolean> => memoryFederationEnabledForPass;
 
   // WI-2142064: one instance for this harness's whole boot lifetime (survives a
@@ -3980,13 +4006,41 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // binding, seeding, or projection apply for this pass. A live OFF→ON edge
       // starts one memory-only replay; OFF cancels an incomplete replay.
       markMergeStage('memory-federation-flag');
-      const memoryFederationEnabledNow = await readMemoryFederationFlag();
+      const memoryFederationRead = await readMemoryFederationFlag();
+      let memoryFederationEnabledNow = memoryFederationRead.value;
+      if (memoryFederationRead.degraded !== null) {
+        if (memoryFederationFlagAuthoritative) {
+          // WI-10005919: hold the last authoritative value. Adopting the degraded OFF
+          // would cancel an in-flight memory replay and flip the apply binding, and the
+          // next good read would then start a full memory-only replay from 0.
+          memoryFederationEnabledNow = memoryFederationEnabledForPass;
+          warnMemoryFederationReadDegraded(
+            memoryFederationRead,
+            'pass',
+            `holding ${memoryFederationEnabledNow ? 'ON' : 'OFF'} (last authoritative value)`,
+          );
+        } else {
+          warnMemoryFederationReadDegraded(
+            memoryFederationRead,
+            'pass',
+            `no authoritative value yet, running this pass ${memoryFederationEnabledNow ? 'ON' : 'OFF'}`,
+          );
+        }
+      }
       if (!memoryFederationEnabledNow) {
         memoryReplayCursor = null;
-      } else if (!memoryFederationEnabledForPass) {
+      } else if (
+        !memoryFederationEnabledForPass &&
+        (memoryFederationFlagAuthoritative || memoryFederationSnapshotConsumed)
+      ) {
+        // A live OFF→ON edge. WI-10005919: a degraded boot value that no pass ever
+        // applied under is not an OFF state, so it owes no replay; the cursor seed
+        // below decides from persisted progress whether memory was missed.
         memoryReplayCursor = createMergeCursor();
       }
       memoryFederationEnabledForPass = memoryFederationEnabledNow;
+      if (memoryFederationRead.degraded === null) memoryFederationFlagAuthoritative = true;
+      memoryFederationSnapshotConsumed = true;
 
       // WI-3852 (F2 of WI-898): a bucket EVICTED from either content-deferral buffer (epoch-
       // key-not-yet-local / member-not-yet-federated) since the last pass has NO recovery path

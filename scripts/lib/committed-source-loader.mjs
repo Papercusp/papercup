@@ -26,8 +26,10 @@
 // Resolution is unchanged (on disk), so a HEAD version importing a path that is gone from disk
 // fails to resolve — fail-closed again, never an unjudged run.
 //
-// Dependency-free (node: builtins only) on purpose: this file and the door that loads it are the
-// trust root, and they run from the live tree like everything else the door starts.
+// Dependency-free (node: builtins only) on purpose. This is defense-in-depth for source identity,
+// not the trust root for network permission: it and the door that loads it run from the live tree.
+// The already-running operator boundary must decide source holds before it spawns integration-tree
+// code; the installed PreToolUse hook applies that same decision to client-native egress.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync } from 'node:fs';

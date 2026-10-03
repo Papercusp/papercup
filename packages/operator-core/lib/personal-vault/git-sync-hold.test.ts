@@ -22,6 +22,7 @@ import {
   ownerHasActiveDisclosure,
   readGitSyncCensusStrict,
   readRestrictedEditHoldings,
+  readRestrictedSourceHoldState,
   readRestrictedWindowHoldings,
   recordRestrictedEditBeforeRelease,
   restrictedHoldingsFromRows,
@@ -134,6 +135,65 @@ describe('readGitSyncCensusStrict', () => {
     await expect(
       readGitSyncCensusStrict({ locks: async () => Promise.reject(new Error('locks down')), restricted: async () => [] }),
     ).rejects.toThrow('locks down');
+  });
+});
+
+describe('readRestrictedSourceHoldState', () => {
+  it('returns unknown when the integration root is not configured', async () => {
+    const readAttributed = vi.fn(async () => []);
+    const readWindow = vi.fn(async () => []);
+    await expect(readRestrictedSourceHoldState(null, { readAttributed, readWindow })).resolves.toBe('unknown');
+    expect(readAttributed).not.toHaveBeenCalled();
+    expect(readWindow).not.toHaveBeenCalled();
+  });
+
+  it('returns clear only after both source-hold censuses complete', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'restricted-source-clear-'));
+    const readAttributed = vi.fn(async () => []);
+    const readWindow = vi.fn(async () => []);
+    try {
+      await expect(readRestrictedSourceHoldState(root, { readAttributed, readWindow })).resolves.toBe('clear');
+      expect(readAttributed).toHaveBeenCalledOnce();
+      expect(readWindow).toHaveBeenCalledWith(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns held when an attributed restricted path is under the integration root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'restricted-source-held-'));
+    const hold = {
+      path: 'src/private.ts',
+      owner: 'su-restricted',
+      intent: RESTRICTED_HOLD_INTENT,
+      coordinationDomain: root,
+    };
+    try {
+      await expect(
+        readRestrictedSourceHoldState(root, {
+          readAttributed: async () => [hold],
+          readWindow: async () => [],
+        }),
+      ).resolves.toBe('held');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns unknown when either source-hold census fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'restricted-source-unknown-'));
+    try {
+      await expect(
+        readRestrictedSourceHoldState(root, {
+          readAttributed: async () => [],
+          readWindow: async () => {
+            throw new Error('dirty-window census unavailable');
+          },
+        }),
+      ).resolves.toBe('unknown');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
