@@ -685,10 +685,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     };
     expect(hasProbeSchemaRevision(json.properties?.checks)).toBe(true);
     expect(hasProbeSchemaRevision(json.properties?.items?.items)).toBe(true);
-    // WI-10005640: 24670 -> 24046 after sharing loop carry fields via $defs; P-025
-    // adds the shared replaces ref. A later call-constraint annotation on retireIdsSpec
-    // adds its published constraint metadata once to the same generated schema.
-    expect(JSON.stringify(json)).toHaveLength(24776);
+    // Keep the published schema under 25 KiB. Exact length also counts constraint
+    // metadata, so metadata-only changes should not break this structural-sharing guard.
+    // The budget still catches the former duplicated-schema expansion (~10 KiB).
+    expect(Buffer.byteLength(JSON.stringify(json), 'utf8')).toBeLessThan(25 * 1024);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
