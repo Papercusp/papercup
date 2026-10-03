@@ -2269,6 +2269,20 @@ export interface AnalyzeRunResult {
   signal?: NodeJS.Signals | null;
 }
 
+/**
+ * Map a child's `close` event to an `AnalyzeRunResult`. Node reports a signal death as
+ * `code=null` + `signal`; the exit code collapses to 1 (a failure the loop already understands) but
+ * the signal MUST ride along — dropping it was the WI-10005680 defect (a vendor SIGSEGV read as
+ * a plain `exited 1`). Pure so a test can pin the mapping without spawning an analyzer.
+ */
+export function analyzeResultFromClose(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  out: { stdout: string; stderr: string; timedOut: boolean },
+): AnalyzeRunResult {
+  return { code: code ?? 1, stdout: out.stdout, stderr: out.stderr, timedOut: out.timedOut, signal };
+}
+
 /** A completed index is healthy only after its graph canary actually passed. */
 export function analyzeTickSucceeded(run: AnalyzeRunResult, canary: CanaryVerdict | null): boolean {
   return !run.timedOut && run.code === 0 && canary?.healthy === true;
@@ -2438,7 +2452,7 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
     child.stdout?.on('data', (d) => (stdout += d.toString()));
     child.stderr?.on('data', (d) => (stderr += d.toString()));
     child.on('error', (e) => finish({ code: 1, stdout, stderr: stderr + String(e), timedOut }));
-    child.on('close', (code, signal) => finish({ code: code ?? 1, stdout, stderr, timedOut, signal }));
+    child.on('close', (code, signal) => finish(analyzeResultFromClose(code, signal, { stdout, stderr, timedOut })));
     });
   })();
 }

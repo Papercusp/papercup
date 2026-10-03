@@ -135,4 +135,62 @@ describe('gitnexus bench arm spawns analyze under the production analyze environ
       expect(calls[1]!.args).not.toContain('--force');
     });
   });
+
+  /**
+   * WI-10005680 — a failed analyze phase must NAME its failure. The vendor 1.6.9 analyzer logs the
+   * LadybugDB ceiling line and then dies with SIGSEGV; the bench used to record only
+   * `exit 139: <last 300 chars of stderr>`, and the line that names the knob routinely sits outside
+   * that tail. Each case drives the real createGitnexusArm with a spy `exec` — no engine is spawned.
+   */
+  describe('createGitnexusArm failure naming (WI-10005680)', () => {
+    const CEILING_LINE = 'Buffer manager exception: Maximum database size of 17179869184 bytes has been reached';
+    const failing = (over: Partial<ExecResult>): NonNullable<ArmDeps['exec']> =>
+      async () => ({ code: 139, stdout: '', stderr: '', wallMs: 1, peakRssKb: 1, ...over });
+    const armWith = (exec: NonNullable<ArmDeps['exec']>) =>
+      createGitnexusArm(
+        { id: 'gitnexus-installed', version: '1.6.9', bin: shim, treeRoot: '/scratch/tree', home },
+        { loadAvg1: () => 0, exec },
+        (async () => ({ sites: [] })) as never,
+        () => null,
+      );
+
+    it('index: exit 139 + the ceiling line -> error leads with [lbug-max-db-size] and still carries `exit 139`', async () => {
+      const r = await armWith(failing({ stderr: `${CEILING_LINE}\nmanual WAL checkpoint failed after retries\n` })).index();
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/^\[lbug-max-db-size\] /);
+      expect(r.error).toContain('exit 139');
+      expect(r.error).toContain('17179869184');
+    });
+
+    it('refresh goes through the same naming as index (the phase that actually crashed in WI-10005581)', async () => {
+      const r = await armWith(failing({ stderr: CEILING_LINE })).refresh();
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/^\[lbug-max-db-size\] /);
+      expect(r.error).toContain('exit 139');
+    });
+
+    it('names the failure even when the vendor line is OUTSIDE the 300-char raw tail (the buried-line defect)', async () => {
+      const stderr = `${CEILING_LINE}\n${'progress line that pushes the vendor message out of the tail\n'.repeat(12)}`;
+      expect(stderr.slice(-300)).not.toContain('Maximum database size');
+      const r = await armWith(failing({ stderr })).index();
+      expect(r.error).toMatch(/^\[lbug-max-db-size\] /);
+    });
+
+    it('an UNRECOGNISED failure is left exactly as before (raw `exit N: tail`) — the classifier does not over-claim', async () => {
+      const r = await armWith(failing({ code: 2, stderr: 'some unrelated parse error' })).index();
+      expect(r.ok).toBe(false);
+      expect(r.error).toBe('exit 2: some unrelated parse error');
+    });
+
+    it('a deadline kill (124) is NOT misread as a native crash', async () => {
+      const r = await armWith(failing({ code: 124, stderr: '' })).index();
+      expect(r.error).toBe('exit 124 (deadline: process group killed): ');
+    });
+
+    it('a successful phase records error null (naming never fabricates a failure)', async () => {
+      const r = await armWith(failing({ code: 0, stderr: CEILING_LINE })).index();
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeNull();
+    });
+  });
 });

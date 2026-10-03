@@ -86,6 +86,7 @@ import {
   type OpenHandleProbe,
   judgeCanary,
   analyzeTickSucceeded,
+  analyzeResultFromClose,
   GITNEXUS_HEALTH_DEFAULT,
   GITNEXUS_FAILURE_ALERT_THRESHOLD,
   decideGitnexusHealthUpdate,
@@ -103,6 +104,7 @@ import {
   readIndexStatsForHealth,
 } from './gitnexus-reindex-action';
 import { SELECTIVE_SOURCE_BLOBS } from '../../code-intelligence/selective-corpus';
+import { classifyAnalyzeFailure } from '../../code-intelligence/gitnexus-analyze-failure';
 
 const taskManager = vi.hoisted(() => ({
   managedSpawn: vi.fn(),
@@ -2748,5 +2750,47 @@ describe('WI-2146015 — a routine-launched analyze is ADOPTED across a bg-host 
     expect(manualSkip).toBeLessThan(residue);
     // ONE finish path for the same-host completion and the adopted one — they cannot diverge.
     expect(src.split('await finishAnalyzeTick(').length - 1).toBe(2);
+  });
+});
+
+/**
+ * WI-10005680 — a vendor SIGSEGV used to reach the alert as a bare `exited 1`: Node reports a signal
+ * death as `close(null, 'SIGSEGV')` and `code ?? 1` erased it. `analyzeResultFromClose` is the one
+ * place that mapping happens (the spawn's `close` handler calls it), so pinning it here pins the
+ * production path without spawning an analyzer.
+ */
+describe('analyzeResultFromClose keeps the terminating signal (WI-10005680)', () => {
+  const out = { stdout: '', stderr: '', timedOut: false };
+
+  it('a signal death (code null) collapses the code to 1 but CARRIES the signal', () => {
+    const r = analyzeResultFromClose(null, 'SIGSEGV', out);
+    expect(r.code).toBe(1);
+    expect(r.signal).toBe('SIGSEGV');
+  });
+
+  it('a signalled run with no vendor text is still classified as a native crash end to end (and exit-code-only is not)', () => {
+    const r = analyzeResultFromClose(null, 'SIGSEGV', out);
+    expect(classifyAnalyzeFailure(r)?.kind).toBe('native-crash');
+    // The control the guard is measured against: the SAME run with the signal erased (the pre-fix
+    // behaviour) is unrecognised, so this test fails if the signal is ever dropped again.
+    expect(classifyAnalyzeFailure({ code: r.code, stdout: r.stdout, stderr: r.stderr })).toBeNull();
+  });
+
+  it('a clean exit keeps code 0 and a null signal, and an ordinary non-zero exit keeps its code', () => {
+    expect(analyzeResultFromClose(0, null, out)).toMatchObject({ code: 0, signal: null });
+    expect(analyzeResultFromClose(2, null, out)).toMatchObject({ code: 2, signal: null });
+  });
+
+  it('the vendor ceiling line wins over the generic crash class when both are present', () => {
+    const r = analyzeResultFromClose(null, 'SIGSEGV', {
+      ...out,
+      stderr: 'Buffer manager exception: Maximum database size of 17179869184 bytes has been reached',
+    });
+    expect(classifyAnalyzeFailure(r)?.kind).toBe('lbug-max-db-size');
+  });
+
+  it('the spawn close handler routes through it (a re-inlined `code ?? 1` would drop the signal again)', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+    expect(src).toContain("child.on('close', (code, signal) => finish(analyzeResultFromClose(code, signal,");
   });
 });
