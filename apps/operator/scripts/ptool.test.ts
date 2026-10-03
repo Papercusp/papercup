@@ -2529,16 +2529,51 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
 
   it('does not acquire a nested reader lease when install:safe already holds one', async () => {
     const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
-    process.env.PAPERCUSP_INSTALL_MUTEX_HELD = '1';
+    process.env.PAPERCUSP_INSTALL_MUTEX_HELD = 'npm-install-0123456789ab';
     const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
-    const loadInstallMutex = vi.fn();
+    const withFsMutexRead = vi.fn();
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { withFsMutexRead },
+      {
+        repoLockName: () => 'npm-install-0123456789ab',
+        installMutexIsHeld: (name: string, env: NodeJS.ProcessEnv) => env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',').includes(name),
+      },
+    ]);
     try {
       await expect(importSdkModuleWithInstallAwareness(
         '@modelcontextprotocol/sdk/client/index.js',
         { doImport, loadInstallMutex },
       )).resolves.toEqual({ Client: 'ok' });
       expect(doImport).toHaveBeenCalledTimes(1);
-      expect(loadInstallMutex).not.toHaveBeenCalled();
+      expect(loadInstallMutex).toHaveBeenCalledTimes(1);
+      expect(withFsMutexRead).not.toHaveBeenCalled();
+    } finally {
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+    }
+  });
+
+  it('takes the SDK repository lease when an inherited marker belongs to another repo', async () => {
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    process.env.PAPERCUSP_INSTALL_MUTEX_HELD = 'npm-install-fedcba987654';
+    const order: string[] = [];
+    const withFsMutexRead = vi.fn(async (_name: string, fn: () => Promise<unknown>) => {
+      order.push('lease');
+      return fn();
+    });
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { withFsMutexRead },
+      {
+        repoLockName: () => 'npm-install-0123456789ab',
+        installMutexIsHeld: (name: string, env: NodeJS.ProcessEnv) => env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',').includes(name),
+      },
+    ]);
+    try {
+      await importSdkModuleWithInstallAwareness('fixture-sdk', {
+        loadInstallMutex,
+        doImport: async () => { order.push('import'); return {}; },
+      });
+      expect(order).toEqual(['lease', 'import']);
     } finally {
       if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
       else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
