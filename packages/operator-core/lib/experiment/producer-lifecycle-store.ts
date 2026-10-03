@@ -36,6 +36,7 @@ export async function recordProducerObservation(sql: Sql, scope: ProducerWriteSc
   const ids = [...new Set(scope.sourceIds ?? (scope.sourceId == null ? [] : [scope.sourceId]))];
   if (!ids.length) return;
   if (scope.evaluation !== undefined && ids.length !== 1) throw new Error('producer evaluation requires one source identity');
+  if (scope.contract !== undefined && ids.length !== 1) throw new Error('producer decision requires one source identity');
   const store = stores[scope.producer];
   const rows = await sql.unsafe(
     `SELECT * FROM harness_shared.${store.table}

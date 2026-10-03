@@ -111,6 +111,8 @@ export interface ProducerLifecycleObservation {
   contract: LearningContract | null;
   promotionAllowed: boolean;
   validation?: ReturnType<typeof validateLearningContract>;
+  /** Immutable evaluated decisions survive subsequent native observations. */
+  decisions?: readonly { contract: LearningContract; sourceHash: string; recordedAt: string }[];
   /** Added on read; an unadapted later source update is visibly stale. */
   sourceCurrent?: boolean;
   /** Missing full-contract sections; no synthetic pins, actors or zero-dollar spend. */
@@ -138,14 +140,24 @@ function adaptProducerObservation(producer: LearningProducer, input: ProducerObs
   const { learning_lifecycle: previousValue, ...fields } = input.source;
   const source = canonical(fields) as Record<string, unknown>;
   const sourceHash = createHash('sha256').update(JSON.stringify(source)).digest('hex');
-  const previous = previousValue && typeof previousValue === 'object'
-    ? previousValue as Partial<ProducerLifecycleObservation> : undefined;
+  const decodedPrevious = typeof previousValue === 'string' ? JSON.parse(previousValue) : previousValue;
+  const previous = decodedPrevious && typeof decodedPrevious === 'object'
+    ? decodedPrevious as Partial<ProducerLifecycleObservation> : undefined;
   const evaluation = input.evaluation === undefined ? previous?.evaluation : input.evaluation;
   const evaluationSourceHash = input.evaluation === undefined ? previous?.evaluationSourceHash : sourceHash;
   const contract = input.contract ?? null;
   const validation = contract ? validateLearningContract(contract) : undefined;
-  const bound = contract?.candidate.potScope.workspaceId === input.workspaceId &&
+  const bound = input.sourceRef === `${producer}:${contract?.candidate.id}` &&
+    contract?.candidate.potScope.workspaceId === input.workspaceId &&
     contract.evidence.some((item) => item.artifactRefs.includes(input.sourceRef));
+  const decisions = [...(previous?.decisions ?? [])];
+  if (contract) {
+    const prior = decisions.find((item) => item.contract.experiment.batteryId === contract.experiment.batteryId);
+    if (prior && JSON.stringify(canonical(prior.contract)) !== JSON.stringify(canonical(contract))) {
+      throw new Error(`producer common decision is immutable: ${contract.experiment.batteryId}`);
+    }
+    if (!prior) decisions.push({ contract, sourceHash, recordedAt: input.recordedAt });
+  }
   return {
     receiptVersion: '1', stage: contract ? 'decision' : 'observation', producer,
     workspaceId: input.workspaceId, sourceRef: input.sourceRef,
@@ -154,6 +166,7 @@ function adaptProducerObservation(producer: LearningProducer, input: ProducerObs
     promotionAllowed: !!(validation?.ok && bound && contract?.decision.verdict === 'accepted' &&
       contract.spend.unsettledUsd === 0 && contract.spend.settledAt),
     ...(validation ? { validation } : {}),
+    ...(decisions.length ? { decisions } : {}),
     missing: contract ? [] : ['candidate', 'experiment', 'evidence', 'spend', 'decision'],
     ...(evaluation === undefined ? {} : { evaluation, evaluationSourceHash, evaluationCurrent: evaluationSourceHash === sourceHash }),
   };

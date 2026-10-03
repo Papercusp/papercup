@@ -93,14 +93,15 @@ describe('six actual producer boundaries', () => {
     expect(rows.find((r) => r.sourceRef === `calibration:${other.id}`)?.source).toMatchObject({ outcome: null, resolution_note: 'undetermined' });
   });
 
-  it('captures transfer admission and scored gate transitions with genuine battery identity', async () => {
+  it('captures transfer admission and refuses scored promotion without a complete common decision', async () => {
     const result = await admitTransferLesson(db.adminSql, { workspaceId: WS, signature: 'transfer-output', lessonText: 'preserve provenance', potSlug: 'papercusp', sourceRef: 'transcript:original' });
     expect(result.admitted).toBe(true);
     if (!result.admitted) throw new Error('fixture admission failed');
     const id = result.lesson.id;
     expect((await observation('transfer')).source).toMatchObject({ tier: 'probationary', source_ref: 'transcript:original' });
     await recordTransferOutcome(db.adminSql, { workspaceId: WS, id, batteryId: 'actual-test-battery', delta: 0.1, transition: applyTransferVerdict(result.lesson, 'passed') });
-    expect((await observation('transfer')).source).toMatchObject({ tier: 'validated', last_battery_id: 'actual-test-battery', test_count: 1 });
+    expect((await observation('transfer')).source).toMatchObject({ tier: 'probationary', status: 'error', pass_count: 0,
+      last_battery_id: 'actual-test-battery', test_count: 1 });
   });
 
   it('captures regret replay/report output from persisted rows, including paid-for carry-forward on re-mine', async () => {

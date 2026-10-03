@@ -48,7 +48,7 @@ function promotionContract(
   const evaluation = q.evaluation;
   const contract = evaluation?.contract;
   const reservation = evaluation?.reservation;
-  if (!evaluation || !contract || !reservation || !validateLearningContract(contract).ok ||
+  if (!evaluation || !contract || !reservation || !Number.isFinite(q.delta) || !validateLearningContract(contract).ok ||
       contract.decision.verdict !== 'accepted' || contract.activation ||
       evaluation.costMeasured !== true || evaluation.budgetExhausted ||
       contract.candidate.id !== lesson.id || contract.candidate.variantHash !== transferLessonArtifactHash(lesson) ||
@@ -59,7 +59,7 @@ function promotionContract(
       q.batteryId !== `transfer:${lesson.id}:t${lesson.testCount + 1}` ||
       contract.experiment.batteryId !== q.batteryId || reservation.runRef !== q.batteryId ||
       reservation.workspaceId !== lesson.workspaceId || reservation.potSlug !== lesson.potSlug ||
-      reservation.status !== 'used' || reservation.settledAt === null ||
+      reservation.status !== 'settled' || reservation.settledAt === null ||
       contract.spend.unsettledUsd !== 0 ||
       contract.spend.settledAt !== new Date(reservation.settledAt).toISOString() ||
       contract.spend.requestedUsd !== reservation.requestedUsd ||
@@ -72,7 +72,8 @@ function promotionContract(
   if (cells.length !== repeats * 2 || cells.some((cell) => cell.status !== 'scored' || !cell.replayed ||
       cell.caseId !== lesson.id || !cell.runId || !Number.isInteger(cell.repeat) || cell.repeat < 0 || cell.repeat >= repeats ||
       ![baselineId, challengerId].includes(cell.variantId) ||
-      ![cell.composite, cell.runUsd, cell.judgeUsd].every((v) => Number.isFinite(v) && v >= 0)) ||
+      ![cell.d1, cell.d2, cell.d3, cell.composite].every((v) => Number.isFinite(v) && v >= 0 && v <= 10) ||
+      ![cell.runUsd, cell.judgeUsd].every((v) => Number.isFinite(v) && v >= 0)) ||
       new Set(cells.map((cell) => `${cell.variantId}:${cell.repeat}`)).size !== repeats * 2) return null;
   const refs = new Set(contract.evidence.flatMap((item) => item.artifactRefs));
   if (!refs.has(`transfer:${lesson.id}`) || !refs.has(`learning-reservation:${reservation.id}`) ||

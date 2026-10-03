@@ -72,6 +72,34 @@ describe('P-011 common candidate/evidence/decision lifecycle', () => {
     }
   });
 
+  it('records a complete bound settled decision and refuses unrelated or unsettled contracts', () => {
+    const fixture = baseInput();
+    const sourceRef = `transfer:${fixture.candidate.id}`;
+    fixture.evidence = fixture.evidence.map((e) => ({ ...e, artifactRefs: [...e.artifactRefs, sourceRef] }));
+    const contract = adaptTransferOutput(fixture).contract;
+    const input = { stage: 'observation' as const, workspaceId: contract.candidate.potScope.workspaceId,
+      sourceRef, source: { status: 'passed' }, recordedAt: '2026-10-03T00:00:00Z', contract };
+    expect(adaptTransferOutput(input)).toMatchObject({ stage: 'decision', contract, promotionAllowed: true, validation: { ok: true } });
+    expect(adaptTransferOutput({ ...input, workspaceId: 'foreign' }).promotionAllowed).toBe(false);
+    expect(adaptTransferOutput({ ...input, sourceRef: 'transfer:unrelated' }).promotionAllowed).toBe(false);
+    expect(adaptTransferOutput({ ...input, contract: { ...contract, spend: { ...contract.spend, settledAt: undefined } } }).promotionAllowed).toBe(false);
+  });
+
+  it('preserves decision history through later observations and refuses rewriting the same battery decision', () => {
+    const fixture = baseInput();
+    const sourceRef = `transfer:${fixture.candidate.id}`;
+    fixture.evidence = fixture.evidence.map((e) => ({ ...e, artifactRefs: [...e.artifactRefs, sourceRef] }));
+    const contract = adaptTransferOutput(fixture).contract;
+    const input = { stage: 'observation' as const, workspaceId: contract.candidate.potScope.workspaceId,
+      sourceRef, source: { status: 'passed' }, recordedAt: '2026-10-03T00:00:00Z', contract };
+    const accepted = adaptTransferOutput(input);
+    const observed = adaptTransferOutput({ ...input, contract: undefined, source: { status: 'error', learning_lifecycle: accepted } });
+    expect(observed).toMatchObject({ contract: null, promotionAllowed: false, decisions: [{ contract }] });
+    expect(adaptTransferOutput({ ...input, contract: undefined, source: { learning_lifecycle: JSON.stringify(observed) } }).decisions).toEqual(observed.decisions);
+    expect(() => adaptTransferOutput({ ...input, source: { learning_lifecycle: observed },
+      contract: { ...contract, decision: { ...contract.decision, reason: 'rewritten' } } })).toThrow('common decision is immutable');
+  });
+
   it('preserves partial evaluation through later writes, marks changed source stale, and never allows promotion', () => {
     const input = { stage: 'observation' as const, workspaceId: 'ws-1', sourceRef: 'transfer:lesson',
       recordedAt: '2026-10-03T00:00:00Z', source: { status: 'passed', last_battery_id: 'actual-battery' } };

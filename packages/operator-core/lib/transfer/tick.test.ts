@@ -73,7 +73,7 @@ class FakeStore implements TransferStorePort {
     transition: { tier: TransferLesson['tier']; status: TransferLesson['status']; passCount: number; failCount: number };
     batteryId: string;
     delta: number;
-  }): Promise<void> {
+  }): Promise<TransferLesson> {
     const row = this.rows.get(q.id)!;
     Object.assign(row, {
       tier: q.transition.tier,
@@ -85,6 +85,7 @@ class FakeStore implements TransferStorePort {
       lastDelta: q.delta,
     });
     this.outcomes.push({ id: q.id, tier: q.transition.tier, status: q.transition.status, delta: q.delta, batteryId: q.batteryId });
+    return { ...row };
   }
 
   async markError(q: { id: string }): Promise<void> {
@@ -317,7 +318,7 @@ describe('runTransferTick — testing leg (the student-transfer gate, D-006)', (
         expect(q.evaluation?.outcomes).toHaveLength(2);
         expect(q.evaluation?.experiment.batteryId).toBe(q.batteryId);
         expect(q.evaluation?.experiment.codeHash).toBeNull();
-        await record(q);
+        return record(q);
       },
     };
     const update = h.memory.update.bind(h.memory);
@@ -335,6 +336,23 @@ describe('runTransferTick — testing leg (the student-transfer gate, D-006)', (
     // Battery cost reported but NOT ledgered here (the governed replay path owns it).
     expect(result.costUsd).toBeCloseTo(0.05);
     expect(h.spends).toEqual([]);
+  });
+
+  it.each(['inconclusive', 'missing'] as const)('never mirrors a native pass when the persisted result is %s', async (kind) => {
+    const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'B1', costUsd: 0.05 });
+    h.deps.store.recordOutcome = async () => kind === 'missing' ? null : { ...h.store.rows.get('L1')!, status: 'error' };
+    const result = await runTransferTick('ws', h.deps, OPTS);
+    expect(result).toMatchObject({ tested: 1, passed: 0, errors: 1 });
+    expect(h.memory.entries.get('M1')!.metadata![MEMORY_TIER_KEY]).toBe('probationary');
+    expect(h.memory.forgotten).toEqual([]);
+  });
+
+  it('mirrors the persisted demotion even when the native proposed verdict passed', async () => {
+    const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'B1', costUsd: 0.05 });
+    h.deps.store.recordOutcome = async () => ({ ...h.store.rows.get('L1')!, status: 'failed', tier: 'probationary' });
+    const result = await runTransferTick('ws', h.deps, OPTS);
+    expect(result).toMatchObject({ passed: 0, failed: 1 });
+    expect(h.memory.entries.get('M1')!.metadata![MEMORY_TIER_KEY]).toBe('probationary');
   });
 
   it('a FAILING lesson stays probationary (demotion target), memory untouched', async () => {
