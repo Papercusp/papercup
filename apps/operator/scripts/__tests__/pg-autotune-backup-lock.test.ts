@@ -11,8 +11,25 @@ const AUTOTUNE = join(ROOT, 'scripts/pg-autotune.ts');
 describe('pg-autotune host-backup exclusion', () => {
   it('refuses --apply before touching PostgreSQL while the host dump owns its lock', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-pg-autotune-lock-'));
+    const bin = join(dir, 'bin');
     const lock = join(dir, 'db-backup.lock');
-    const holder = spawn('flock', ['-x', lock, 'sleep', '3'], { stdio: 'ignore' });
+    const innerRan = join(dir, 'inner-apply-ran');
+    mkdirSync(bin);
+    // If the guard ever acquires the lock, the re-exec it spawns is `npx tsx …`.
+    // This stub stands in for that child, so a bypassed guard can never run a
+    // real PostgreSQL apply from a unit test, and it fails with a distinct
+    // status (97) instead of the real script's no-op `exit 0`.
+    const fakeNpx = join(bin, 'npx');
+    writeFileSync(fakeNpx, '#!/usr/bin/env bash\nprintf ran >"$AUTOTUNE_INNER_RAN"\nexit 97\n');
+    chmodSync(fakeNpx, 0o755);
+    // The holder keeps the lock until `finally` kills its process group. A
+    // fixed short hold (it was `sleep 3`) expired before the guarded re-exec
+    // reached `flock -n` under gate load, so the guard acquired the lock and
+    // the inner apply ran (WI-10005450, CI run 20605217: status 0, 11.9s).
+    const holder = spawn('flock', ['-o', '-x', lock, 'sleep', '300'], {
+      stdio: 'ignore',
+      detached: true,
+    });
     try {
       let held = false;
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -24,20 +41,31 @@ describe('pg-autotune host-backup exclusion', () => {
       }
       expect(held).toBe(true);
 
-      const result = spawnSync('npx', ['tsx', AUTOTUNE, '--apply'], {
+      const result = spawnSync(process.execPath, ['--import', 'tsx', AUTOTUNE, '--apply'], {
         cwd: ROOT,
-        env: { ...process.env, PC_BACKUP_LOCK: lock },
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          PC_BACKUP_LOCK: lock,
+          AUTOTUNE_INNER_RAN: innerRan,
+          PAPERCUSP_PG_AUTOTUNE_BACKUP_LOCK_HELD: '',
+        },
         encoding: 'utf8',
-        timeout: 10_000,
+        timeout: 30_000,
       });
+      expect(existsSync(innerRan), 'the guard acquired the held lock and ran the apply child').toBe(false);
       expect(result.status).toBe(75);
       expect(result.stderr).toContain('PostgreSQL apply deferred: host backup holds');
       expect(result.stdout).not.toContain('writing /etc/postgresql');
     } finally {
-      holder.kill();
+      try {
+        if (holder.pid) process.kill(-holder.pid, 'SIGKILL');
+      } catch {
+        // already exited
+      }
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 45_000);
 
   it('holds the producer lock for the entire apply child', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-pg-autotune-hold-'));

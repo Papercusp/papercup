@@ -11,9 +11,13 @@
  * The host bundler (apps/operator/bin/bundle-restricted-hold-gate.mjs, WI-10005745) uses the
  * same entry in its bundle mode: an exact intersection of held paths with the bundle's inputs.
  *
+ * The shell doors that boot the app from the live tree (papercusp-desktop/bin/tauri-guarded `dev`,
+ * scripts/verify-tauri-headless.sh — WI-10005763) use its tree mode: any held write under a root.
+ *
  * Usage:  node --import tsx restricted-hold-preflight-cli.ts <checkout-root> [test-file ...]
  *         node --import tsx restricted-hold-preflight-cli.ts --bundle-inputs <inputs.json> <checkout-root>
  *         (inputs.json = `{ "files": [abs...], "dirs": [abs...] }`)
+ *         node --import tsx restricted-hold-preflight-cli.ts --tree <checkout-root> [<checkout-root> ...]
  * Output: exactly one stdout line `RESTRICTED_HOLD_PREFLIGHT <json>` where json is
  *         `{ "verdict": "admit" }` or `{ "verdict": "refuse", "error": ..., "hint": ... }`.
  * Exit:   0 admit · 3 refuse · 2 misuse. The router fails CLOSED on anything else (no line, bad
@@ -21,7 +25,13 @@
  */
 import { readFile } from 'node:fs/promises';
 import { RESTRICTED_HOLD_PREFLIGHT_EXIT, RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
-import { restrictedHoldBundleRefusal, restrictedHoldRefusal, type BundleInputs, type RestrictedHoldRefusal } from './restricted-hold-fence';
+import {
+  restrictedHoldBundleRefusal,
+  restrictedHoldRefusal,
+  restrictedTreeHoldRefusal,
+  type BundleInputs,
+  type RestrictedHoldRefusal,
+} from './restricted-hold-fence';
 import type { RestrictedEditHolding } from '../../personal-vault/git-sync-hold';
 
 function emit(payload: Record<string, unknown>, exitCode: number): void {
@@ -87,6 +97,18 @@ async function main(): Promise<void> {
       return;
     }
     refusal = await restrictedHoldBundleRefusal(root, inputs, injected ? { holdings: async () => injected } : {});
+  } else if (args[0] === '--tree') {
+    const roots = args.slice(1);
+    if (roots.length === 0) {
+      misuse('restricted-hold tree preflight needs --tree <checkout-root> [<checkout-root> ...]');
+      return;
+    }
+    const injected = await injectedTestCensus();
+    if (injected === 'invalid') {
+      misuse(`${TEST_CENSUS_ENV} must name a JSON array of restricted holdings ([] = nothing held)`);
+      return;
+    }
+    refusal = await restrictedTreeHoldRefusal(roots, injected ? { holdings: async () => injected } : {});
   } else {
     const [root, ...files] = args;
     if (!root) {
