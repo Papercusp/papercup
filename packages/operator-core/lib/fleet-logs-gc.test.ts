@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, openSync, closeSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { openWriterPidsMany } from './native-bg-task-ledger';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,8 @@ import {
   runPapercuspWorkdirGc,
   PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS,
   PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES,
+  WINDOWS_BUILD_SCRATCH_GC_DEFAULT_RETENTION_MS,
+  runWindowsBuildScratchGc,
   runLaunchContextGc,
   LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS,
 } from './fleet-logs-gc';
@@ -214,6 +217,29 @@ function makeWorkdir(root: string, name: string): string {
   return dir;
 }
 
+function makeWindowsBuildScratch(root: string): {
+  repoRoot: string;
+  container: string;
+  buildRoot: string;
+} {
+  const repoRoot = join(root, 'desktop-source');
+  const container = join(root, 'papercusp-win-cross-source-AbC123');
+  const buildRoot = join(container, 'papercusp-desktop');
+  mkdirSync(repoRoot, { recursive: true });
+  mkdirSync(container);
+  writeFileSync(join(repoRoot, 'seed.txt'), 'seed');
+  execFileSync('git', ['init', '-q', repoRoot], { stdio: 'ignore' });
+  execFileSync('git', ['-C', repoRoot, 'add', 'seed.txt'], { stdio: 'ignore' });
+  execFileSync('git', [
+    '-C', repoRoot, '-c', 'user.name=GC test', '-c', 'user.email=gc-test@example.com',
+    'commit', '-m', 'seed',
+  ], { stdio: 'ignore' });
+  execFileSync('git', ['-C', repoRoot, 'worktree', 'add', '--detach', buildRoot, 'HEAD'], {
+    stdio: 'ignore',
+  });
+  return { repoRoot, container, buildRoot };
+}
+
 describe('runPapercuspWorkdirGc', () => {
   it('keeps a genuinely open nested file even when its mtime is old', async () => {
     const dir = makeWorkdir(sandbox, 'p309-accept.AbC123');
@@ -300,7 +326,7 @@ describe('runPapercuspWorkdirGc', () => {
 
     const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
 
-    expect(result.removed).toBe(1);
+    expect(result.removed, JSON.stringify(result.candidates)).toBe(1);
     expect(existsSync(dir)).toBe(false);
     expect(result.bytesFreed).toBeGreaterThanOrEqual(2048 + 512);
     expect(result.candidates[0]?.removed).toBe(true);
@@ -437,6 +463,128 @@ describe('runPapercuspWorkdirGc — falsifiability control', () => {
     const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
     expect(result.removed).toBe(0);
     expect(existsSync(live)).toBe(true);
+  });
+});
+
+describe('runWindowsBuildScratchGc', () => {
+  it('uses a 48-hour retention window', () => {
+    expect(WINDOWS_BUILD_SCRATCH_GC_DEFAULT_RETENTION_MS).toBe(48 * 60 * 60 * 1000);
+  });
+
+  it('removes a stale producer worktree only after claiming its exact Git lock', async () => {
+    const { repoRoot, container, buildRoot } = makeWindowsBuildScratch(sandbox);
+    ageTree(container, 3 * DAY);
+
+    const result = await runWindowsBuildScratchGc({
+      root: sandbox,
+      repoRoot,
+      dryRun: false,
+      scanOpenPaths: noOpenPaths,
+    });
+
+    expect(result.removed, JSON.stringify(result.candidates)).toBe(1);
+    expect(result.candidates[0]?.removed).toBe(true);
+    expect(existsSync(buildRoot)).toBe(false);
+    expect(existsSync(container)).toBe(false);
+    const remaining = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+    });
+    expect(remaining).not.toContain(buildRoot);
+  });
+
+  it('keeps fresh nested data written during the post-removal process scan', async () => {
+    const { repoRoot, container, buildRoot } = makeWindowsBuildScratch(sandbox);
+    ageTree(container, 3 * DAY);
+    const lateWrite = join(container, 'late-write.txt');
+
+    const result = await runWindowsBuildScratchGc({
+      root: sandbox,
+      repoRoot,
+      dryRun: false,
+      scanOpenPaths: async () => {
+        if (!existsSync(buildRoot) && !existsSync(lateWrite)) writeFileSync(lateWrite, 'new data');
+        return { byPath: new Map(), complete: true };
+      },
+    });
+
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('raced');
+    expect(existsSync(buildRoot)).toBe(false);
+    expect(existsSync(lateWrite)).toBe(true);
+    expect(existsSync(container)).toBe(true);
+  });
+
+  it('keeps the container when the post-removal process scan is incomplete', async () => {
+    const { repoRoot, container, buildRoot } = makeWindowsBuildScratch(sandbox);
+    ageTree(container, 3 * DAY);
+
+    const result = await runWindowsBuildScratchGc({
+      root: sandbox,
+      repoRoot,
+      dryRun: false,
+      scanOpenPaths: async () => existsSync(buildRoot)
+        ? { byPath: new Map(), complete: true }
+        : { byPath: new Map(), complete: false },
+    });
+
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('process-scan-incomplete');
+    expect(existsSync(buildRoot)).toBe(false);
+    expect(existsSync(container)).toBe(true);
+  });
+
+  it('keeps a worktree that had a Git lock before the sweep', async () => {
+    const { repoRoot, container, buildRoot } = makeWindowsBuildScratch(sandbox);
+    execFileSync('git', [
+      '-C', repoRoot, 'worktree', 'lock', '--reason', 'owned-before-gc', buildRoot,
+    ], { stdio: 'ignore' });
+    ageTree(container, 3 * DAY);
+
+    const result = await runWindowsBuildScratchGc({
+      root: sandbox,
+      repoRoot,
+      dryRun: false,
+      scanOpenPaths: noOpenPaths,
+    });
+
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('git-locked');
+    expect(existsSync(buildRoot)).toBe(true);
+  });
+
+  it('keeps a stale-looking container when its recursive tree has a recent write', async () => {
+    const { repoRoot, container, buildRoot } = makeWindowsBuildScratch(sandbox);
+    ageTree(container, 3 * DAY);
+    const activeFile = join(buildRoot, 'seed.txt');
+    const recent = new Date(Date.now() - 60_000);
+    utimesSync(activeFile, recent, recent);
+
+    const result = await runWindowsBuildScratchGc({
+      root: sandbox,
+      repoRoot,
+      dryRun: false,
+      scanOpenPaths: noOpenPaths,
+    });
+
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('too-new');
+    expect(existsSync(activeFile)).toBe(true);
+  });
+
+  it('fails closed when the open-writer scan is incomplete', async () => {
+    const { repoRoot, container, buildRoot } = makeWindowsBuildScratch(sandbox);
+    ageTree(container, 3 * DAY);
+
+    const result = await runWindowsBuildScratchGc({
+      root: sandbox,
+      repoRoot,
+      dryRun: false,
+      scanOpenPaths: async () => ({ byPath: new Map(), complete: false }),
+    });
+
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('process-scan-incomplete');
+    expect(existsSync(buildRoot)).toBe(true);
   });
 });
 

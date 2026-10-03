@@ -322,6 +322,7 @@ export interface PapercuspWorkdirGcResult {
 function scanTree(
   dir: string,
   cap: number,
+  ignoreRootMtime = false,
 ): { newestMtimeMs: number; bytes: number; entries: number; capped: boolean } {
   let newestMtimeMs = 0;
   let bytes = 0;
@@ -333,11 +334,14 @@ function scanTree(
     if (entries >= cap) return { newestMtimeMs, bytes, entries, capped: true };
 
     // The directory's own mtime still counts — it catches an empty tree whose
-    // last activity was creating/removing an entry.
+    // last activity was creating/removing an entry. After this GC removes a
+    // linked worktree, Git updates the producer container's root mtime as a
+    // side effect; that one root timestamp can be ignored while descendants
+    // are still checked and the directory identity is revalidated.
     try {
       const st = lstatSync(current);
       if (!st.isDirectory()) return { newestMtimeMs, bytes, entries, capped: true };
-      if (st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs;
+      if (!(ignoreRootMtime && current === dir) && st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs;
     } catch {
       return { newestMtimeMs, bytes, entries, capped: true };
     }
@@ -886,15 +890,6 @@ export async function runWindowsBuildScratchGc(
       }
     }
 
-    const finalTree = scanTree(record.path, PAPERCUSP_WORKDIR_GC_SCAN_ENTRY_CAP);
-    if (finalTree.capped) {
-      record.skipped = 'scan-capped';
-      continue;
-    }
-    if (finalTree.newestMtimeMs >= cutoff || !sameDirectory(record.path, identity)) {
-      record.skipped = 'raced';
-      continue;
-    }
     let cleanupOpenPaths: OpenWriterScan = { byPath: new Map(), complete: false };
     try {
       cleanupOpenPaths = await scanOpenPaths([record.path]);
@@ -907,6 +902,24 @@ export async function runWindowsBuildScratchGc(
     }
     if (!cleanupOpenPaths.complete) {
       record.skipped = 'process-scan-incomplete';
+      continue;
+    }
+
+    // This is after Git's expected removal and after the last async process
+    // scan. Ignore only the root mtime that Git itself refreshed; every
+    // remaining descendant must still prove old, and the root identity must
+    // still match the directory inspected before removal.
+    const finalTree = scanTree(
+      record.path,
+      PAPERCUSP_WORKDIR_GC_SCAN_ENTRY_CAP,
+      registration !== undefined,
+    );
+    if (finalTree.capped) {
+      record.skipped = 'scan-capped';
+      continue;
+    }
+    if (finalTree.newestMtimeMs >= cutoff || !sameDirectory(record.path, identity)) {
+      record.skipped = 'raced';
       continue;
     }
 
