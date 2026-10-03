@@ -65,7 +65,12 @@ function makePorts(opts: FakeOpts) {
 
 function oracleExecution() {
   return { command: ['fixture-oracle'], cwd: '/scratch/gym', report: '{}', unresolved: ['fixture-runtime'],
-    exitCode: 0, signal: null };
+    exitCode: 0, signal: null,
+    workerSources: { report: '{}', modules: [{ testFile: 'oracle.test.js', state: 'passed', sourceEvidence: {
+      schemaVersion: 'vite-collected-source-evidence-v1', scope: 'repository-worker-vite-original-sources',
+      status: 'stable', reasons: [] as string[], sources: [{ path: 'oracle.test.js',
+        sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }],
+    } }] } };
 }
 
 describe('runGymPipeline', () => {
@@ -303,6 +308,34 @@ describe('runGymPipeline', () => {
     expect(result.deterministicSignals?.regressions).toBeUndefined();
     expect(result.deterministicSignals?.oracle).toMatchObject({ regressionPopulation: 0 });
   });
+
+  it.each(['missing', 'changed', 'unknown', 'wrong-file', 'wrong-scope', 'helper-changed-between-runs'] as const)(
+    'withholds positive claims when collected worker sources are %s', async (mode) => {
+      const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+      let run = 0;
+      ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
+        const execution = oracleExecution();
+        run += 1;
+        if (mode === 'missing') execution.workerSources.modules = [];
+        else if (mode === 'wrong-file') execution.workerSources.modules[0]!.testFile = 'other.test.js';
+        else if (mode === 'wrong-scope') execution.workerSources.modules[0]!.sourceEvidence.scope = 'checkout-at-end';
+        else if (mode === 'helper-changed-between-runs') {
+          const hash = (run === 1 ? 'b' : 'c').repeat(64);
+          execution.workerSources.modules[0]!.sourceEvidence.sources.push({
+            path: 'oracle-helper.js', sha256: hash, currentSha256: hash,
+          });
+        } else execution.workerSources.modules[0]!.sourceEvidence.status = mode;
+        return { results: [{ name: 'task', passed: true }], testPath, pinCommit: pinCommit!,
+          sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
+          implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
+      };
+      const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+        oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+          pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+      expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+      expect(result.deterministicSignals?.regressions).toBeUndefined();
+      expect(result.deterministicSignals?.oracle).toMatchObject({ workerSourcesCurrent: false });
+    });
 
   it('withholds authority from legacy unpinned oracle results even with complete passing coverage', async () => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });

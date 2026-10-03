@@ -230,6 +230,32 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           return impl?.path === spec.task.oracle!.implPath && typeof impl.before === 'string' &&
             /^[a-f0-9]{64}$/.test(impl.before) && impl.before === impl.after;
         });
+        const workerSources = (receipt: GymOracleRun | undefined): Map<string, string> | null => {
+          const measured = receipt?.execution?.workerSources;
+          if (!measured?.report || !Array.isArray(measured.modules) || measured.modules.length !== 1) return null;
+          const module = measured.modules[0];
+          const evidence = module?.sourceEvidence;
+          if (module?.testFile !== spec.task.oracle!.testPath ||
+              evidence?.schemaVersion !== 'vite-collected-source-evidence-v1' ||
+              evidence.scope !== 'repository-worker-vite-original-sources' || evidence.status !== 'stable' ||
+              !Array.isArray(evidence.reasons) || evidence.reasons.length > 0 || !Array.isArray(evidence.sources)) return null;
+          const hashes = new Map<string, string>();
+          for (const source of evidence.sources) {
+            if (!source || typeof source.path !== 'string' || typeof source.sha256 !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(source.sha256) || source.currentSha256 !== source.sha256 || hashes.has(source.path)) return null;
+            hashes.set(source.path, source.sha256);
+          }
+          if (hashes.get(spec.task.oracle!.testPath) !== receipt?.sourceHashes.pinned) return null;
+          // The declared implementation may change between arms. Other imported
+          // sources are part of the fixed oracle/environment, not the candidate.
+          hashes.delete(spec.task.oracle!.implPath);
+          return hashes;
+        };
+        const preWorkerSources = workerSources(preOracle);
+        const postWorkerSources = workerSources(postOracle);
+        const workerSourcesCurrent = preWorkerSources !== null && postWorkerSources !== null &&
+          preWorkerSources.size === postWorkerSources.size &&
+          [...preWorkerSources].every(([path, hash]) => postWorkerSources.get(path) === hash);
         const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
         // A JSON report may exist even when the command is killed or fails after
         // writing it. Retain witnessed failures, but require a successful process
@@ -244,10 +270,10 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
-            sourceCurrent, implementationCurrent, executionCompleted, populationComplete, regressionPopulation },
-          ...(regression === true || (regression === false && executionCompleted && populationComplete && regressionPopulation > 0)
+            sourceCurrent, implementationCurrent, workerSourcesCurrent, executionCompleted, populationComplete, regressionPopulation },
+          ...(regression === true || (regression === false && workerSourcesCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
             ? { regressions: regression } : {}),
-          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || executionCompleted)
+          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent))
             ? { taskPassed } : {}),
         };
       }
