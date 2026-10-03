@@ -71,6 +71,30 @@ const target = {
   launchContextHash: '0'.repeat(64),
 };
 
+describe('isolated answering identity on the maintained session port', () => {
+  it('binds a distinct answer owner into the logical request without carrying source authority', () => {
+    const continuing = inspectAcquiredSessionPort({ sourceRow: row, stableSource: source('evidence'), target });
+    const isolated = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('evidence'), target: { ...target, ownerId: 'su-answer-owner' },
+    });
+    const another = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('evidence'), target: { ...target, ownerId: 'su-other-answer' },
+    });
+    expect(continuing.disclosure.authorityCarried).toBe(true);
+    expect(isolated.disclosure.authorityCarried).toBe(false);
+    expect(isolated.source).toEqual(continuing.source);
+    expect(deriveSessionPortIdempotencyKey(isolated)).not.toBe(deriveSessionPortIdempotencyKey(continuing));
+    expect(deriveSessionPortIdempotencyKey(another)).not.toBe(deriveSessionPortIdempotencyKey(isolated));
+    expect(row.coordOwnerId).toBe('su-source');
+  });
+
+  it.each(['su-source', '', 'not-an-owner', null, 42])('refuses invalid or source-equal isolated owner %s', (ownerId) => {
+    expect(() => inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('evidence'), target: { ...target, ownerId } as never,
+    })).toThrow(/isolated target owner/);
+  });
+});
+
 describe('session-port current-version test fixtures', () => {
   it('derives protocol and transform versions instead of copying the current numbers', () => {
     const fixtureFiles = [

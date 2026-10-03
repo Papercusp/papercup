@@ -14,6 +14,7 @@ function normalizeExternalAstroModuleIds() {
       const queryIndex = id.indexOf('?');
       const pathEnd = queryIndex === -1 ? undefined : queryIndex;
       const query = queryIndex === -1 ? '' : id.slice(queryIndex);
+      const isAstroVirtualRequest = new URLSearchParams(query.slice(1)).has('astro');
       const hasFilesystemPrefix = id.startsWith('/@fs/');
       const filename = hasFilesystemPrefix
         ? id.slice('/@fs'.length, pathEnd)
@@ -43,9 +44,10 @@ function normalizeExternalAstroModuleIds() {
       const outsideProjectRoot =
         relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
       if (!outsideProjectRoot) return null;
-      // Vite passes a resolveId hook's result directly to load. Returning /@fs
-      // would leave that dev-server URL prefix as a literal build filesystem path.
-      return absoluteFilename + query;
+      // Main Astro modules need physical paths so Vite's filesystem loader can read them.
+      // Astro's virtual-module loader strips /@fs before its compile-metadata lookup; without
+      // that marker, it rebases external absolute IDs under config.root and misses the main ID.
+      return `${isAstroVirtualRequest ? '/@fs' : ''}${absoluteFilename}${query}`;
     },
   };
 }
@@ -61,9 +63,8 @@ function normalizeExternalAstroModuleIds() {
 export default defineConfig({
   site: 'https://app.papercusp.com',
   base: '/docs',
-  // lint:as-committed links dependencies to the shared install. Normalize external Astro IDs to
-  // physical absolute paths: relative IDs resolve from their importer, and Vite passes resolveId
-  // results directly to load, where /@fs would be treated as a literal path.
+  // lint:as-committed links dependencies to the shared install. Main external Astro IDs resolve
+  // to physical paths; virtual ?astro IDs retain /@fs so Astro maps them to the same compile key.
   ...(isLintAsCommittedClone
     ? {
         vite: {
