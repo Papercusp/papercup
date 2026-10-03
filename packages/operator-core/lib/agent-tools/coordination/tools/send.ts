@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
+import type { CoordEnvelope } from '@papercusp/coordination';
 import {
   resolveAgentIdentity,
   deriveFleetMembership,
@@ -724,6 +725,7 @@ const expectEffectArg = z
 const reportArg = z
   .object({
     title: z.string().optional(),
+    goalReport: z.object({ schemaVersion: z.literal(1), goalId: z.string(), reportId: z.string(), bodySha256: z.string() }).optional(),
     plans: z.array(
       z.object({
         slug: z.string().optional(),
@@ -870,6 +872,8 @@ export type GoalOwnerReportVerdict =
       };
     }
   | { kind: 'stamped'; stamp: GoalOwnerReportStamp }
+  | { kind: 'reference'; stamp: GoalOwnerReportStamp; body: string; summary: string;
+      persistEnvelope: (envelope: CoordEnvelope) => Promise<CoordEnvelope> }
   | { kind: 'refused'; result: BulkItemResult };
 
 function hasAllGoalOwnerReportLabels(body: SendMsg['body']): boolean {
@@ -893,9 +897,31 @@ function hasAllGoalOwnerReportLabels(body: SendMsg['body']): boolean {
  * threads the verdict to every part, so a report is delivered whole or not at all.
  */
 export async function evaluateGoalOwnerReport(
-  msg: Pick<SendMsg, 'to' | 'body'>,
+  msg: Pick<SendMsg, 'to' | 'body' | 'report'>,
   identity: Pick<AgentIdentity, 'workspaceId' | 'ownerId'>,
 ): Promise<GoalOwnerReportVerdict> {
+  if (msg.report && typeof msg.report === 'object' && 'goalReport' in msg.report) {
+    const block = parseReportBlock(msg.report);
+    if (!block?.goalReport) return { kind: 'refused', result: { ok: false, to: msg.to, error: 'report_invalid', oracle: 'goal-reference-shape' } };
+    if (msg.to.length !== 1 || msg.to[0] !== 'human') return { kind: 'refused', result: { ok: false, to: msg.to, error: 'report_reference_unavailable', oracle: 'owner-recipient' } };
+    try {
+      const { getModeSubject } = await import('../../../modes/store');
+      const goalId = await getModeSubject(identity.workspaceId!, identity.ownerId, 'goal');
+      if (!goalId || !identity.workspaceId || identity.workspaceId === '*') return { kind: 'refused', result: { ok: false, to: msg.to, error: 'goal-owner-report-untruthful', oracle: 'current-goal-subject' } };
+      const { coordSql } = await import('../log');
+      const bridge = await import('../../../goal-owner-report-reference');
+      const sql = coordSql();
+      const context = { workspaceId: identity.workspaceId, goalId, ref: block.goalReport, viewer: { ownerId: identity.ownerId } };
+      const report = await bridge.resolveGoalReportReference(sql, context.workspaceId, goalId, context.ref, context.viewer);
+      await bridge.validateGoalReportReferenceSnapshot(report.goalOwnerReport!, bridge.makeGoalReportReferenceReads(sql, context.workspaceId, goalId), Date.now());
+      const body = bridge.deriveGoalReportNotification(report.goalOwnerReport!);
+      return { kind: 'reference', body, summary: report.title, stamp: stampGoalOwnerReport(goalId, parseGoalOwnerReport(body)),
+        persistEnvelope: (envelope) => bridge.persistGoalReportReference(sql, envelope, context) };
+    } catch (error) {
+      const failure = error as { code?: string; oracle?: string; message?: string };
+      return { kind: 'refused', result: { ok: false, to: msg.to, error: failure.code ?? 'goal-owner-report-untruthful', oracle: failure.oracle ?? 'current-source-read', message: failure.message } };
+    }
+  }
   if (!msg.to.includes('human')) return { kind: 'none' };
   const parsed = parseGoalOwnerReport(msg.body);
   // A complete set of labels in the body that is not parseable as headings is
@@ -1065,6 +1091,15 @@ async function sendOne(
    */
   goalReportPreVerdict?: GoalOwnerReportVerdict,
 ): Promise<BulkItemResult> {
+  // Reference prose is server-derived before cap/chunk/inline truth checks.
+  // A caller's short body cannot substitute for the pinned snapshot.
+  if (msg.report && typeof msg.report === 'object' && 'goalReport' in msg.report) {
+    goalReportPreVerdict = await evaluateGoalOwnerReport(msg, identity);
+    if (goalReportPreVerdict.kind === 'refused') return goalReportPreVerdict.result;
+    if (goalReportPreVerdict.kind === 'reference') {
+      msg = { ...msg, summary: goalReportPreVerdict.summary, body: [{ text: goalReportPreVerdict.body }] };
+    }
+  }
   // EI-21826596284846555: a normal inbox read exposes at most the first
   // 600 characters of one message body (and less on a crowded page). For a
   // load-bearing message, persisting a longer body and warning only after the
@@ -1120,7 +1155,7 @@ async function sendOne(
   const goalReportVerdict = goalReportPreVerdict ?? (await evaluateGoalOwnerReport(msg, identity));
   if (goalReportVerdict.kind === 'refused') return goalReportVerdict.result;
   const goalOwnerReport: GoalOwnerReportStamp | null =
-    goalReportVerdict.kind === 'stamped' ? goalReportVerdict.stamp : null;
+    goalReportVerdict.kind === 'stamped' || goalReportVerdict.kind === 'reference' ? goalReportVerdict.stamp : null;
   const goalOwnerReportWarning: string | null =
     goalReportVerdict.kind === 'warning' ? goalReportVerdict.warning : null;
   const goalOwnerReportDiagnostic =
@@ -1664,6 +1699,7 @@ async function sendOne(
   const env = await withDbCallDeadline(
     sendMessage(identity, {
       to: toSend,
+      ...(goalReportVerdict.kind === 'reference' ? { persistEnvelope: goalReportVerdict.persistEnvelope } : {}),
       ...(idempotencyKey !== undefined && itemIndex !== undefined
         ? { msgId: idempotentCoordMsgId(identity, harnessSlug, idempotencyKey, itemIndex) }
         : {}),
@@ -3157,6 +3193,10 @@ export default defineTool({
       goalReportPreVerdict?: GoalOwnerReportVerdict;
     }> = [];
     for (const original of list) {
+      if (original.report && typeof original.report === 'object' && 'goalReport' in original.report) {
+        expanded.push({ msg: original });
+        continue;
+      }
       const plan = chunkOverCapMessage(original);
       if (plan.kind === 'single') expanded.push({ msg: original });
       else if (plan.kind === 'refused') {
