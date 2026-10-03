@@ -128,6 +128,7 @@ describe('psu-pty regression: bg-host runs the fix, :3070 does not ⇒ not block
         localRuntimeHost: 'box',
         readCgroup: async (pid) => (pid === 5151 ? '0::/user.slice/papercusp-bg-host.service' : null),
         probeHealthSha: async (port) => (port === 3070 ? RELEASE_BUILD : null),
+        probeHealthBundle: async () => null,
         fileMtimeMs: async () => startedAtMs - 60_000,
       },
     );

@@ -99,6 +99,7 @@ import {
   resolveServingRuntimes,
   selectServingRuntimes,
   servingRuntimesLead,
+  type ServingRuntimeBundleState,
   type ServingRuntimeEntry,
 } from './serving-runtimes';
 
@@ -4524,6 +4525,8 @@ export interface PipelinePositionDeps {
   localRuntimeHost?: string;
   /** P-001 (acceptance-runtime-plane): per-port `/api/health` sha for servingRuntimes. */
   probeHealthSha?: (port: number) => Promise<string | null>;
+  /** WI-10005936: a bundling host's `/api/health` report of the bundle it booted. */
+  probeHealthBundle?: (port: number) => Promise<ServingRuntimeBundleState | null>;
   /** P-001: `/proc/<pid>/cgroup`, to join a unit's child process to its runtime-vintage row. */
   readCgroup?: (pid: number) => Promise<string | null>;
   /** P-001: live psu sessions (each loaded psu-pty-host.mjs at its own launch). */
@@ -6642,6 +6645,7 @@ export async function gitPipelinePosition(
     servingRuntimes = await resolveServingRuntimes(selectServingRuntimes(servingPath, runtimes), {
       probeUnitStart: probeUnit,
       probeHealthSha: deps.probeHealthSha,
+      probeHealthBundle: deps.probeHealthBundle,
       vintageRows,
       localHost: deps.localRuntimeHost ?? hostname(),
       readCgroup: deps.readCgroup,

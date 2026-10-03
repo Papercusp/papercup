@@ -6572,6 +6572,8 @@ describe('EI-19447523039740352: a running deploy reaches nextAction through the 
         loadSnapshot: async () => snap(),
         probeUnitStart: async () => ({ pid: 99, startedAtMs: Date.now() - 3 * 60 * 60_000 }),
         fileMtimeMs: async () => Date.now() - 60_000,
+        probeHealthSha: async () => null,
+        probeHealthBundle: async () => null,
         readDeployInFlight: probe,
       },
     );
