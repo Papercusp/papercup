@@ -19,17 +19,16 @@ function normalizeExternalAstroModuleIds() {
         ? id.slice('/@fs'.length, pathEnd)
         : id.slice(0, pathEnd);
       if (!filename.endsWith('.astro')) return null;
-      const absoluteFilename = hasFilesystemPrefix ? resolvePath(filename) : filename;
-      if (!isAbsolute(absoluteFilename)) return null;
+      const absoluteFilename = isAbsolute(filename)
+        ? resolvePath(filename)
+        : resolvePath(projectRoot, filename);
 
       const relativePath = relative(projectRoot, absoluteFilename);
       const outsideProjectRoot =
         relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
       if (!outsideProjectRoot) return null;
-      if (hasFilesystemPrefix) {
-        return absoluteFilename === filename ? null : `/@fs${absoluteFilename}${query}`;
-      }
-      return `/@fs${id}`;
+      if (hasFilesystemPrefix && absoluteFilename === filename) return null;
+      return `/@fs${absoluteFilename}${query}`;
     },
   };
 }

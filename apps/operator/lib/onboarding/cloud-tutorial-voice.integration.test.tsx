@@ -2,7 +2,7 @@
 import { useReducer } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTutorialState, tutorialReducer } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
+import { createTutorialState, tutorialReducer, tutorialSteps } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
 import { CloudTutorialGuide } from './cloud-tutorial-guide';
 import { CloudTutorialAssistance } from './cloud-tutorial-assistance';
 import { setVoiceOutputMuted, updateVoiceConfig } from '@/app/_components/voice/voice-mode';
@@ -44,6 +44,28 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe('Guide output-only voice lifecycle', () => {
+  it.each([
+    { step: 'workspace', status: 'waiting', category: 'workspace-not-ready', instruction: /Read the selected workspace/ },
+    { step: 'task', status: 'error', category: 'request-failed', instruction: /The guide has not diagnosed the underlying error/ },
+  ] as const)('renders public beginner recovery and sends the exact bounded Help/TTS context: $category', async ({ step, status, category, instruction }) => {
+    const lessonStep = tutorialSteps(2).find(candidate => candidate.id === step)!;
+    render(<CloudTutorialAssistance scope={scope} version={2} step={lessonStep} status={status} />);
+    expect(screen.getByText(instruction)).toBeTruthy();
+    await waitFor(() => expect(audio[0]?.play).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Ask about this step' }));
+    await screen.findByText('Use the project permission checks in the connection form.');
+    await waitFor(() => expect(requests.filter(request => request.url.includes('tutorial-speech'))).toHaveLength(2));
+    expect(requests.filter(request => request.url.includes('tutorial-help'))).toHaveLength(1);
+    for (const request of requests) {
+      expect(request.body.expectedScope).toEqual(scope);
+      // An exact object rejects private diagnostics or extra context fields.
+      expect(request.body.context).toEqual({ step, status, version: 2, recoveryCategory: category });
+    }
+    expect(vi.mocked(fetch).mock.calls.every(([url]) =>
+      String(url).includes('/onboarding/tutorial-') || String(url).includes('/analytics/'),
+    )).toBe(true);
+  });
+
   it('plays current guidance and permitted help with selected settings, without capture or progression', async () => {
     const microphone = vi.fn(); Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: microphone } });
     render(<Fixture />);

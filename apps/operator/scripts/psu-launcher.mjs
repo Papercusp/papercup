@@ -1686,11 +1686,10 @@ export function readClaudeLaunchSettings(
   };
 }
 
-export function modelArgsFor(
-  agent,
-  model,
-  { claudeSettings = /** @type {ClaudeLaunchSettings} */ (null) } = {},
-) {
+// No default on claudeSettings: a defaulted destructured property becomes the
+// ONLY member of the inferred options type, so every other key a caller passes
+// turns into an excess-property error in the TS tests (WI-10005900).
+export function modelArgsFor(agent, model, { claudeSettings } = {}) {
   // Low-level argv construction is never itself authorization to choose a
   // model. Fresh visible launchers resolve configured-default explicitly;
   // unattended resume/fleet paths must supply an explicit or inherited model.
@@ -1749,11 +1748,7 @@ export function modelArgsFor(
  */
 export function suWrapperExtraArgs(
   agent,
-  {
-    model,
-    resumeSession,
-    claudeSettings = /** @type {ClaudeLaunchSettings} */ (null),
-  } = {},
+  { model, resumeSession, claudeSettings } = {},
 ) {
   const args = [];
   // claude also gets here model-less: an inherited unsupported effortLevel still
@@ -2149,7 +2144,7 @@ export function roleLaunchArgs(
     allowSubagents,
     model,
     allowNativeLsp,
-    claudeSettings = /** @type {ClaudeLaunchSettings} */ (null),
+    claudeSettings,
   } = {},
 ) {
   if (backend === "claude") {

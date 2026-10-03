@@ -359,9 +359,7 @@ export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {}): a
  * `buildEngineerOmpLaunchCommand` (P-032): omp `--model`/`-r`, claude
  * `--model`/`--resume`, codex `-m`/`resume`.
  */
-export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings, }?: {
-    claudeSettings?: ClaudeLaunchSettings | undefined;
-}): any[];
+export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings }?: {}): any[];
 /**
  * Map psu's repeated `--add-dir <dir>` onto each backend's native flag. claude
  * AND codex both expose `--add-dir` (extra tool-accessible directories); omp has
@@ -477,9 +475,7 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  * @returns {string[]}
  */
 export function ompLspArgs(allowNativeLsp?: boolean): string[];
-export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, }?: {
-    claudeSettings?: ClaudeLaunchSettings | undefined;
-}): {
+export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, }?: {}): {
     bin: string;
     args: any[];
 };
