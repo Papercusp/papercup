@@ -168,6 +168,10 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
   } finally { await client.send('Runtime.releaseObjectGroup', { objectGroup }); }
 }
 
+/** @typedef {{ phase: string, status: string, id?: number }} PgHeapObject */
+/** @typedef {{ pool: unknown, source: { processInstanceId: unknown, buildSha: unknown,
+ *   poolInstanceId: unknown }, connectionId: unknown, queryId: unknown,
+ *   requestId: string, objects: PgHeapObject[] }} PgHeapRecord */
 /** Extend the existing singleton reader, using only its bounded weak registry. */
 async function readPgHeapObjectIds(client, { expectedPid, pgRequestIds, objectGroup }) {
   // One data-property-only reader supplies both metadata and exact targets.
@@ -224,8 +228,10 @@ async function readPgHeapObjectIds(client, { expectedPid, pgRequestIds, objectGr
     [expectedPid, pgRequestIds, identity, phase].map(value => JSON.stringify(value)).join(',') + ')';
   const metadata = (await client.evaluate(expression(null, null), { returnByValue: true })).result.value;
   if (!metadata || !Array.isArray(metadata.records)) throw new Error('Invalid PG diagnostic metadata');
+  /** @type {PgHeapRecord[]} */
   const records = [];
   for (const identity of metadata.records) {
+    /** @type {PgHeapObject[]} */
     const objects = [];
     for (const phase of ['decodedResult', 'resolvedRows', 'responseValue']) {
       const remote = (await client.evaluate(expression(identity, phase), { objectGroup })).result;

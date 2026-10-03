@@ -17,16 +17,6 @@ function normalizeExternalAstroModuleIds() {
       const importerQueryIndex = importer?.indexOf('?') ?? -1;
       const importerQuery = importerQueryIndex === -1 ? '' : importer.slice(importerQueryIndex);
       const importerHasAstroQuery = new URLSearchParams(importerQuery.slice(1)).has('astro');
-      // A relative external component imported by Astro's virtual page module has its
-      // `?astro&type=page` context on the importer, not on the queryless target ID.
-      // Carry that context so Astro resolves the component against the same compile key.
-      const query = queryIndex === -1 && importerHasAstroQuery ? importerQuery : idQuery;
-      const isAstroVirtualRequest = new URLSearchParams(query.slice(1)).has('astro');
-      const hasFilesystemPrefix = id.startsWith('/@fs/');
-      const filename = hasFilesystemPrefix
-        ? id.slice('/@fs'.length, pathEnd)
-        : id.slice(0, pathEnd);
-      if (!filename.endsWith('.astro')) return null;
       const importerId = importer === undefined
         ? null
         : importerQueryIndex === -1
@@ -39,6 +29,28 @@ function normalizeExternalAstroModuleIds() {
         importerFilename.charCodeAt(0) !== 0 && !importerFilename.startsWith('/@id/') &&
         !/^[A-Za-z][A-Za-z\d+.-]*:/.test(importerFilename);
       const absoluteImporter = importerIsPath ? resolvePath(projectRoot, importerFilename) : null;
+      const importerRelativePath = absoluteImporter === null ? '' : relative(projectRoot, absoluteImporter);
+      const importerOutsideProjectRoot = absoluteImporter !== null && (
+        importerRelativePath === '..' || importerRelativePath.startsWith(`..${sep}`) || isAbsolute(importerRelativePath)
+      );
+      // A relative external component imported by Astro's virtual page module has its
+      // `?astro&type=page` context on the importer, not on the queryless target ID.
+      // Carry that context so Astro resolves the component against the same compile key.
+      const query = queryIndex === -1 && importerHasAstroQuery ? importerQuery : idQuery;
+      const isAstroVirtualRequest = new URLSearchParams(query.slice(1)).has('astro');
+      const hasFilesystemPrefix = id.startsWith('/@fs/');
+      const filename = hasFilesystemPrefix
+        ? id.slice('/@fs'.length, pathEnd)
+        : id.slice(0, pathEnd);
+      if (!filename.endsWith('.astro')) {
+        // Vite/Rollup treats a relative import from an external Astro virtual module
+        // as though the `/@fs` importer were under config.root. Resolve against its
+        // physical source path through Vite so extension/package rules stay intact.
+        if (id.startsWith('.') && importerHasAstroQuery && importerFilename?.endsWith('.astro') && importerOutsideProjectRoot && absoluteImporter) {
+          return this.resolve(id, absoluteImporter, { skipSelf: true });
+        }
+        return null;
+      }
       const resolutionBase = !isAbsolute(filename) && absoluteImporter
         ? dirname(absoluteImporter)
         : projectRoot;
@@ -50,9 +62,8 @@ function normalizeExternalAstroModuleIds() {
       const outsideProjectRoot =
         relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
       if (!outsideProjectRoot) return null;
-      // Main Astro modules need physical paths so Vite's filesystem loader can read them.
-      // Astro's virtual-module loader strips /@fs before its compile-metadata lookup; without
-      // that marker, it rebases external absolute IDs under config.root and misses the main ID.
+      // Keep virtual Astro requests under /@fs so Astro uses the same external compile
+      // metadata key for a component's main module and its style/script virtual modules.
       return `${isAstroVirtualRequest ? '/@fs' : ''}${absoluteFilename}${query}`;
     },
   };

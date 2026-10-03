@@ -44,7 +44,7 @@ export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdp
         omittedPools: any;
         omittedRows: any;
         unobservedRequestIds: any;
-        records: any[];
+        records: PgHeapRecord[];
         definition: string;
     } | undefined;
     pid: number;
@@ -253,6 +253,23 @@ export class CdpTransportClosedError extends Error {
     constructor(method: any);
     method: any;
 }
+export type PgHeapObject = {
+    phase: string;
+    status: string;
+    id?: number;
+};
+export type PgHeapRecord = {
+    pool: unknown;
+    source: {
+        processInstanceId: unknown;
+        buildSha: unknown;
+        poolInstanceId: unknown;
+    };
+    connectionId: unknown;
+    queryId: unknown;
+    requestId: string;
+    objects: PgHeapObject[];
+};
 export type FunctionCallTrace = {
     pid: number;
     startedAt: number;

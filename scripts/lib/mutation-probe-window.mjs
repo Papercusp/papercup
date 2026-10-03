@@ -11,9 +11,9 @@
 // THE MARKER. The probe publishes `<admission dir>/original.manifest` — four NUL-terminated
 // fields `<checkout root> <subject> <snapshot> <owner pid>` — BEFORE it mutates anything and
 // removes it only AFTER the verified restore, so the file exists exactly while a mutant may be in
-// the tree. The directory name is `/tmp/papercusp-mutation-probe-<uid>-<sha256(realpath root)>`,
-// mirrored from the literal in `mutation-probe.sh` and pinned to it by
-// `packages/operator-core/lib/mutation-probe-window.test.ts` so the two cannot drift apart.
+// the tree. The directory defaults to `/tmp/papercusp-mutation-probe-<uid>-<sha256(realpath root)>`;
+// tests can set `PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT` to isolate it. The shell writer, overlay
+// reader, and this reader share that base, pinned by `packages/operator-core/lib/mutation-probe-window.test.ts`.
 //
 // This is a DIAGNOSTIC, never a gate: it can only add one line to a failing run's output. It
 // cannot mask or excuse a red, and a missing/unreadable marker reads as "no window", never as an
