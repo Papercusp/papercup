@@ -183,6 +183,8 @@ export interface ReplayBatteryResult {
    *  config carries no baseline variant or no candidates. */
   comparison: Omit<CompareSelectResult, 'scenarioId'> | null;
   totalCostUsd: number;
+  /** False means totalCostUsd is only the known lower bound; do not settle it as complete spend. */
+  costMeasured: boolean;
   rubricHash: string;
   /** True when the spend cap refused at least one cell. */
   budgetExhausted: boolean;
@@ -278,7 +280,18 @@ export async function runReplayBattery(
     { cells, rubric, maxDistillChars },
     {
       subject,
-      llmCall: deps.llmCall,
+      llmCall: async (opts) => {
+        let reply;
+        try {
+          reply = await deps.llmCall(opts);
+        } catch (error) {
+          const cost = (error as { costUsd?: unknown } | null)?.costUsd;
+          if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) spentUsd += cost;
+          throw error;
+        }
+        if (Number.isFinite(reply.costUsd) && reply.costUsd >= 0) spentUsd += reply.costUsd;
+        return reply;
+      },
       now: deps.now,
       ...(deps.sleep ? { sleep: deps.sleep } : {}),
       ...(deps.ratePauseHooks ? { ratePauseHooks: deps.ratePauseHooks } : {}),
@@ -301,7 +314,6 @@ export async function runReplayBattery(
           });
         },
         onScore: ({ runId, score }) => {
-          spentUsd += score.costUsd;
           return deps.store?.recordScore(runId, {
             d1: score.d1,
             d2: score.d2,
@@ -347,7 +359,7 @@ export async function runReplayBattery(
         d2: r.score.d2,
         d3: r.score.d3,
         composite: r.score.composite,
-        judgeUsd: r.score.costUsd,
+        judgeUsd: r.judgeCostUsd,
       };
     }
     return {
@@ -357,7 +369,7 @@ export async function runReplayBattery(
       d2: 0,
       d3: 0,
       composite: 0,
-      judgeUsd: 0,
+      judgeUsd: r.judgeCostUsd,
       ...(r.error !== undefined ? { error: r.error } : {}),
     };
   });
@@ -403,6 +415,9 @@ export async function runReplayBattery(
     perVariant,
     comparison,
     totalCostUsd: outcomes.reduce((s, o) => s + o.runUsd + o.judgeUsd, 0),
+    costMeasured: results.every((r) => r.judgeCostMeasured &&
+      (r.handle != null ? Number.isFinite(r.handle.costUsd) && r.handle.costUsd >= 0
+        : r.error?.includes('replay budget cap reached') === true)),
     rubricHash: rubricHash(rubric),
     budgetExhausted,
   };
