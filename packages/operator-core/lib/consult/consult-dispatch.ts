@@ -1217,10 +1217,8 @@ async function launchAnsweringSession(
     verified: null,
   });
 
-  // A fork mints a NEW identity, so pre-pin it: the consult row has to name its
-  // responder before this session exists. A convert continues the source's own
-  // identity (the port's authority invariant), so there is nothing to pin and
-  // the answering id is already known.
+  // Both the tracked fork and the prepared port bind a new answering identity
+  // before the child can reply; the expert retains its own identity and work.
   const answeringOwnerId = d.mintOwnerId();
   if (!answeringOwnerId) {
     return failed(
@@ -1254,11 +1252,8 @@ async function launchAnsweringSession(
     // the consult's.
     return failed('launch-failed', `launch command could not be composed: ${(e as Error)?.message ?? String(e)}`);
   }
-  // The fork mints a new answering identity, so its launch parent is the
-  // requester. A conversion ports the expert's existing coordination identity;
-  // passing the requester as --launched-by would persist a false identity edge
-  // on that expert's new adv_sessions row. spawnHeadless still records the
-  // requester as the task launcher, which is process-level attribution.
+  // Both operations mint a child answering identity, so the requester is its
+  // launch parent. The expert remains the transcript source only.
   cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;
 
   let envelope: Awaited<ReturnType<typeof buildConsoleEnvelope>>;
@@ -1393,9 +1388,7 @@ async function launchAnsweringSession(
   // The first-turn wait below is bounded from this instant (WI-10004645).
   const kickoffSeenAtMs = d.nowMs();
 
-  // Forks have already stamped before launch. Retry only if that best-effort
-  // write failed; conversions publish their existing identity here. Both paths
-  // still stamp before the bounded verification wait, whose session can post.
+  // Retry a failed pre-spawn stamp before the bounded verification wait.
   if (!answeringOwnerStamped) {
     try {
       await opts.onAnsweringOwner?.(answeringOwnerId);
@@ -1570,8 +1563,9 @@ export function consultDispatchBrief(input: {
       ? `You are a FORK of ${input.sourceOwnerId}'s session: their history is above, and you are a NEW ` +
         `identity running alongside them. They were NOT notified and must not be — you answer from the ` +
         `transcript you inherited.`
-      : `You are ${input.sourceOwnerId}'s session CONVERTED onto another backend: their history was carried ` +
-        `across for you. Answer from it.`;
+      : `You are an isolated answering session using ${input.sourceOwnerId}'s exact transcript: their history ` +
+        `was carried across as evidence. You are a NEW identity; their claims, locks, modes and work stay ` +
+        `with them. They were NOT notified and must not be. Answer from the transcript.`;
   return (
     `🧭 CONSULT — you were launched to answer ONE question, on consult conversation ${input.conversationId}.\n` +
     `${provenance}\n\n` +
