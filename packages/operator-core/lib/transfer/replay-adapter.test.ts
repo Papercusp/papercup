@@ -4,7 +4,7 @@
  * refusal/unscored error paths. Fake governed-replay, zero LLM/PG.
  */
 import { describe, expect, it } from 'vitest';
-import { REPLAY_BASELINE_VARIANT } from '../replay';
+import { REPLAY_BASELINE_VARIANT, runReplayBattery, type ReplayBatteryConfig } from '../replay';
 import type { ReplayTranscript, ReplayTurnRole } from '../replay/types';
 import {
   WITH_LESSON_VARIANT_ID,
@@ -91,7 +91,7 @@ describe('transferReplayPort', () => {
   ];
 
   it('runs one baseline+lesson battery over the historical case and maps composites', async () => {
-    let seenConfig: { batteryId: string; variants: Array<{ variantId: string }>; cases: unknown[] } | null = null;
+    let seenConfig: ReplayBatteryConfig | null = null;
     const port = transferReplayPort({
       workspaceId: 'ws',
       runner: async () => ({ outputText: '', costUsd: 0, inputTokens: 0, outputTokens: 0, replayed: true }),
@@ -124,6 +124,32 @@ describe('transferReplayPort', () => {
       WITH_LESSON_VARIANT_ID,
     ]);
     expect(seenConfig!.cases).toHaveLength(1);
+    expect(seenConfig!.baselineMode).toBe('matched');
+  });
+
+  it('the actual transfer battery runs matched baseline and lesson students, retaining both charges', async () => {
+    const calls: Array<{ systemPrompt: string; contextText: string }> = [];
+    const port = transferReplayPort({
+      workspaceId: 'ws',
+      runner: async (input) => {
+        calls.push(input);
+        return { outputText: 'current student continuation', costUsd: 0.02, inputTokens: 1, outputTokens: 1, replayed: true };
+      },
+      llmCall: async ({ messages }) => {
+        const score = messages[0].content.includes('variant: with lesson') ? 8 : 6;
+        return { text: JSON.stringify({ d1: score, d2: score, d3: score, rationale: 'fixture' }), costUsd: 0.01 } as never;
+      },
+      runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 },
+        result: await runReplayBattery(config, deps) }),
+    });
+    const outcome = await port({ lesson: { ...lesson, title: null },
+      transcript: transcript(['user', 'assistant', 'tool_use', 'assistant']) });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].contextText).toBe(calls[1].contextText);
+    expect(calls[0].systemPrompt).not.toContain(lesson.lessonText);
+    expect(calls[1].systemPrompt).toContain(lesson.lessonText);
+    expect(outcome.withComposite).toBeGreaterThan(outcome.baselineComposite);
+    expect(outcome.costUsd).toBeCloseTo(0.06);
   });
 
   it('throws on a governed refusal (recorded as status error upstream, never silent)', async () => {

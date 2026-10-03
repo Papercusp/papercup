@@ -5,13 +5,12 @@
  * One lesson's test = ONE governed replay battery over the lesson's source
  * historical case:
  *
- *   variants — the zero-cost BASELINE (the original continuation, judge-
- *     scored as the anchor) vs 'with-lesson' (the lesson as a systemOverlay —
+ *   variants — a fresh baseline student vs 'with-lesson' (the lesson as a systemOverlay —
  *     exactly the policy-delta shape lib/replay's types name for transfer
  *     lessons). The fresh student "given the lesson" is the overlay run.
  *   cut — the first acting turn (first non-system/user turn): the student
- *     re-attempts the task from the original ask, with and without the
- *     lesson in its system prompt.
+ *     re-attempts the task from the original ask under the same model, context
+ *     and rubric, with and without the lesson in its system prompt.
  *   verdict — perVariant mean judge composites; gate.ts decides.
  *
  * Routed through runGovernedReplay (FB-06's unattended consumer entrypoint):
@@ -85,9 +84,10 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
     const config: ReplayBatteryConfig = {
       // Deterministic per test round: lesson id + how many tests it has had.
       batteryId: `transfer:${lesson.id}:t${lesson.testCount + 1}`,
-      variants: [REPLAY_BASELINE_VARIANT, withLessonVariant(lesson)],
+      variants: [{ ...REPLAY_BASELINE_VARIANT, label: 'matched baseline' }, withLessonVariant(lesson)],
       cases: [replayCase],
       repeats: 1,
+      baselineMode: 'matched',
       ...(deps.maxSpendUsd !== undefined ? { maxSpendUsd: deps.maxSpendUsd } : {}),
     };
     const { verdict, result } = await run(

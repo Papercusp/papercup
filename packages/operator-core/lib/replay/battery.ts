@@ -118,6 +118,9 @@ export interface ReplayBatteryConfig {
   variants: ReplayVariant[];
   cases: ReplayCase[];
   repeats: number;
+  /** Historical echo is the default. Matched comparisons re-run the baseline
+   * through the same student as challengers, with the same context and rubric. */
+  baselineMode?: 'historical' | 'matched';
   rubric?: BatteryRubric;
   /** Judge-trace budget (default 24_000 chars). */
   maxDistillChars?: number;
@@ -211,7 +214,7 @@ export async function runReplayBattery(
       guard();
       // The historical baseline is the original continuation, echoed at zero
       // cost — the judge scores what actually happened as the anchor.
-      if (cell.variant.variantId === BASELINE_ID && cell.replayCase.kind === 'historical') {
+      if (config.baselineMode !== 'matched' && cell.variant.variantId === BASELINE_ID && cell.replayCase.kind === 'historical') {
         return {
           outputText: continuationTextForCase(cell.replayCase, maxDistillChars) ?? '',
           costUsd: 0,
