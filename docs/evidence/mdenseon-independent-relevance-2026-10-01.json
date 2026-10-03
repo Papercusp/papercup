@@ -3407,6 +3407,70 @@
       "modelAdoptionAuthorized": false
     }
   },
+  "failedV7PrefixAudit": {
+    "workItem": "WI-10004537",
+    "transportWorkItem": "WI-10005738",
+    "status": "preserved-prefix-reconstruction-qualified-no-provider-requests",
+    "assessment": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/failed-v7-prefix-audit-v1.json",
+      "sha256": "bc2679d209cdee916dbfd111fc010fe38f3cbc1b040143d130a06729a8c92ad9",
+      "bytes": 621679
+    },
+    "mechanism": "The maintained collectIndependentCohort exact-call recovery/parser seams reconstruct into a new immutable private audit root. Its injected LLM callback throws at the first missing call before any provider request.",
+    "preservedAggregates": [
+      { "name": "memory-authors.json", "calls": 283, "callOrderAndPromptsEqual": true },
+      { "name": "prose-authors.json", "calls": 143, "callOrderAndPromptsEqual": true },
+      { "name": "memory-judge-1-pass.json", "calls": 144, "votes": 1132, "votesEqual": true },
+      { "name": "memory-judge-2-pass.json", "calls": 144, "votes": 1132, "votesEqual": true },
+      { "name": "prose-judge-1-pass.json", "calls": 81, "votes": 572, "votesEqual": true }
+    ],
+    "partialProseSecondPassCalls": 39,
+    "uniquePreservedJudgeInvocations": 408,
+    "stoppedAt": {
+      "name": "prose-judge-2-256-q192",
+      "model": "claude-sonnet-4-6",
+      "questions": 64,
+      "documents": 64,
+      "refusedTransportCallbacks": 1,
+      "providerRequests": 0,
+      "scope": "Matches the historical missing-call position, not a completed cohort or successful paid continuation.",
+      "auditStartUUIDRetained": false,
+      "missingPromptFingerprintRetained": false
+    },
+    "strictRejectionHistory": {
+      "rejectedDonors": 1,
+      "missingRequiredAmbiguityFields": 62,
+      "inferredDefaults": 0,
+      "failedRawSha256": "61d496a25c66ca4ba57015acc00a21c1736e5795f47d772b5a114f328b947dd6",
+      "interpretation": "The maintained strict parser still rejects the malformed historical donor. An accepted replacement is followed through its hash-pinned selected-call ancestry; no vote is synthesized."
+    },
+    "executionEvidence": {
+      "originalAuditTask": "0murobix6r9v6zf1jnf",
+      "originalAuditExit": 1,
+      "originalAuditFailure": "The private postprocessor incorrectly expected error.issues. The maintained parser deliberately wraps its JSON issue array in Error.message. This occurred after the exact-stop, refusal-count, aggregate and partial-call assertions passed.",
+      "finalizerTask": "0muroioq51r3ez5iag9",
+      "finalizerActualExit": 0,
+      "finalizerMechanism": "Read the pinned failed-audit source, actual failure receipt, unchanged reconstruction and maintained strict Error writer; parse the exact prefixed JSON issue array. Recheck preserved aggregates, partial calls and donor/history/source pins without invoking the collector again.",
+      "collectorInvocationsByFinalizer": 0,
+      "failedAuditSourceSha256": "13d7df32ea769ceb9dc95aa75dea68851a4ce447a6e58f5b7f43155187795451",
+      "interpretation": "The successful finalizer does not relabel the earlier actual task as successful; both receipts and the wrapper correction remain evidence."
+    },
+    "reproduction": {
+      "auditor": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/audit-failed-v7-prefix-v1.mjs",
+      "readonlyFinalizer": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/assess-failed-v7-prefix-v1.mjs",
+      "policy": "Recover by reading and verifying immutable receipts and reconstruction. Do not rerun writers in the existing audit root, invoke the completed-cohort audit against this failed job, replay paid valid calls, or treat this prefix as final labels."
+    },
+    "acceptance": {
+      "finalLabelsPresent": false,
+      "finalJudgmentsPresent": false,
+      "fullCohortAudited": false,
+      "historicalFailedEndpointProven": false,
+      "fullAccessibleCensusExhausted": false,
+      "newEmbeddingMatrixStarted": false,
+      "p003Complete": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
