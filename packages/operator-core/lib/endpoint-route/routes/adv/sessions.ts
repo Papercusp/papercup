@@ -212,7 +212,7 @@ const RESUMABLE_NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  */
 export async function evidenceIncarnationOwnedBy(
   sql: import('postgres').Sql,
-  sourceRow: { coordOwnerId: string | null },
+  sourceRow: { coordOwnerId: string | null; agent?: string | null },
   sessionId: string,
 ): Promise<boolean> {
   if (!sourceRow.coordOwnerId) return false;
@@ -220,6 +220,7 @@ export async function evidenceIncarnationOwnedBy(
     SELECT t.owner
       FROM harness_shared.session_turns t
      WHERE t.session_id = ${sessionId}
+       AND t.source_kind = ${sourceRow.agent ?? 'claude'}
        AND t.owner IS NOT NULL
      ORDER BY t.ingested_at DESC
      LIMIT 1
@@ -280,7 +281,8 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   // for an evidence span in an earlier carry-respawn incarnation, the same row
   // re-pointed at that incarnation's native session (see
   // evidenceIncarnationOwnedBy). Identity, workspace and plan stay the row's.
-  let sourceRow = trackedRow;
+  const sourceNativeId = trackedRow.agent === 'omp' ? trackedRow.ompThreadId ?? trackedRow.sessionId : trackedRow.sessionId;
+  let sourceRow = { ...trackedRow, sessionId: sourceNativeId };
   let evidenceSpan: import('../../../session-port/service').SessionPortEvidenceSpan | undefined;
   if (body.consultEvidenceSpan != null) {
     const raw = body.consultEvidenceSpan;
@@ -297,7 +299,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       return { response: json({ ok: false, error: 'consultEvidenceSpan must name this exact source session, 1–12 valid turn indices, and a context window from 0–8' }, 400) } as const;
     }
     const { sql } = getOrgPg();
-    if (sessionId !== trackedRow.sessionId) {
+    if (sessionId !== sourceNativeId) {
       if (!RESUMABLE_NATIVE_SESSION_ID_RE.test(sessionId) ||
           !(await evidenceIncarnationOwnedBy(sql as unknown as import('postgres').Sql, trackedRow, sessionId))) {
         return {
@@ -309,13 +311,13 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
           }, 400),
         } as const;
       }
-      sourceRow = { ...trackedRow, sessionId };
+      sourceRow = { ...trackedRow, sessionId, ...(trackedRow.agent === 'omp' ? { ompThreadId: sessionId } : {}) };
     }
     const indexed = await sql<Array<{ turn_idx: number; timestamp: string | Date | null; speaker: string; text: string }>>`
       SELECT t.turn_idx, t.ts AS timestamp, t.speaker, t.text
         FROM harness_shared.session_turns t
        WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
-         AND t.source_kind = 'claude'
+         AND t.source_kind = ${sourceRow.agent}
          AND t.session_id = ${sessionId}
          AND t.turn_idx = ANY(${turnIndices as number[]}::int[])
     `;
@@ -367,7 +369,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     home: os.homedir(),
   });
   if (budget.level === 'refuse') throw new Error('target launch prompt already exhausts the selected context window');
-  const stableSource = await service.acquireTrackedClaudeSource(sourceRow);
+  const stableSource = await service.acquireTrackedSessionSource(sourceRow);
   const modelProvider = targetBackend === 'codex'
     ? 'openai'
     : (targetModel?.includes('/') ? targetModel.split('/')[0] : 'omp-configured-provider');

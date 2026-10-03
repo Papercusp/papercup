@@ -30,7 +30,7 @@ vi.mock('../../model-context-budget.mjs', () => ({
 }));
 vi.mock('../../session-port/store', () => ({ assertSessionPortStorageReady: async () => {} }));
 vi.mock('../../session-port/service', () => ({
-  acquireTrackedClaudeSource: async (row: unknown) => {
+  acquireTrackedSessionSource: async (row: unknown) => {
     state.acquiredRow = row;
     return {
       bytes: Buffer.from('fixture'), sha256: 'a'.repeat(64), highWaterBytes: 7,
@@ -126,6 +126,27 @@ async function inspect(body: Record<string, unknown>): Promise<Response> {
 }
 
 describe('session-port evidence-span route (P-007)', () => {
+  it.each(['codex', 'omp'] as const)('selects the exact %s source kind even when another backend has the same native id', async (backend) => {
+    state.sourceRow = { ...(state.sourceRow as Record<string, unknown>), agent: backend,
+      ...(backend === 'omp' ? { sessionId: null, ompThreadId: SESSION } : {}) };
+    await sql`
+      INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      VALUES (${WS}, ${backend}, ${SESSION}, 2, '2026-09-23T08:01:00Z'::timestamptz, 'user', 'native source evidence')
+    `;
+    const response = await inspect({ consultEvidenceSpan: { sessionId: SESSION, turnIndices: [2], contextTurns: 0 } });
+    expect(response.status).toBe(200);
+    expect(state.acquiredRow).toMatchObject({ agent: backend, sessionId: SESSION });
+    expect(state.inspectArgs).toMatchObject({ evidenceSpan: { evidenceTurns: [{ text: 'native source evidence' }] } });
+  });
+
+  it.each(['codex', 'omp'] as const)('refuses %s evidence that exists only under a different source kind', async (backend) => {
+    state.sourceRow = { ...(state.sourceRow as Record<string, unknown>), agent: backend,
+      ...(backend === 'omp' ? { sessionId: null, ompThreadId: SESSION } : {}) };
+    const response = await inspect({ consultEvidenceSpan: { sessionId: SESSION, turnIndices: [2], contextTurns: 0 } });
+    expect(response.status).toBe(409);
+    expect(state.acquiredRow).toBeNull();
+  });
+
   it('resolves turns only from the exact source workspace/session and passes them to inspection', async () => {
     const response = await inspect({});
     expect(response.status).toBe(200);

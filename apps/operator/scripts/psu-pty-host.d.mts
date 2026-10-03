@@ -1144,6 +1144,17 @@ export function listHosts(): any[];
 export function pruneDead(): void;
 export function reportOwnerHumanTurn(now?: number): void;
 /**
+ * Read the effective per-agent wake mode through the loopback admin coord
+ * read-only verb. A missing route, failed request, or malformed response is
+ * deliberately `null`: carry-rearm must retain its payload unless the server
+ * confirms that automatic wakes are enabled.
+ */
+export function readEffectiveWakeMode(ownerId: any, { env, fetchImpl, timeoutMs }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    fetchImpl?: typeof fetch | undefined;
+    timeoutMs?: number | undefined;
+}): Promise<any>;
+/**
  * The mid-keystroke idle gate (P-013). `touch()` on every stdin byte records
  * activity; `waitIdle()` resolves once `idleMs` of quiet has elapsed (or the cap
  * is hit). Pure-ish (uses timers + an injectable clock for tests).
@@ -1529,7 +1540,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, waitWakeModeRetry, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -1550,6 +1561,9 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     onSettlement?: ((_messages: any, _outcome: any) => void) | undefined;
     isStale?: (() => boolean) | undefined;
     isSuperseded?: ((_msg: any) => boolean) | undefined;
+    readWakeMode?: (() => Promise<string>) | undefined;
+    wakeModeRetryMs?: number | undefined;
+    waitWakeModeRetry?: ((delayMs: any) => Promise<any>) | undefined;
 }): {
     /** Live count of accepted first attempts and re-armed retries.
      *  Filter carry-respawn for wake arbitration: the controller also owns

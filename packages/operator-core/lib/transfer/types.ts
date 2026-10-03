@@ -32,7 +32,7 @@
 import type { SignalOrigin } from '../harness/improvements/provenance';
 import type { ReplayTranscript } from '../replay/types';
 import type { ReplayOutcome } from '../replay/battery';
-import type { LearningExperiment } from '../experiment/types';
+import type { LearningContract, LearningExperiment } from '../experiment/types';
 import type { LearningSpendReservation } from '../learning-governor/store';
 
 /** The governor registration id for this loop (migration 244 vocabulary). */
@@ -132,6 +132,9 @@ export interface TransferTestOutcome {
 }
 
 export interface TransferReplayEvidence {
+  /** Complete evaluated contract; absent evidence never authorizes promotion. */
+  contract?: LearningContract;
+  costMeasured?: boolean;
   experiment: Omit<LearningExperiment, 'modelHash' | 'promptHash' | 'codeHash'> & {
     modelHash: string | null;
     promptHash: string | null;
