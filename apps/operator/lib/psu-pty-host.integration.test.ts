@@ -1409,13 +1409,13 @@ describe('session-port managed seed + native persistence helpers', () => {
   it('waits for a Codex Ready footer before sending a resumed launch kickoff', async () => {
     const ownerId = 'su-codex-resume-ready-itest-' + process.pid + '-' + Math.floor(performance.now());
     const sock = socketPathFor(ownerId);
+    const nativeRoot = mkdtempSync(join(tmpdir(), 'psu-resume-ready-'));
     const { captured, io } = fakeIo();
     const childCode = [
       "process.stdin.setEncoding('utf8');let swallowing=true,b='';",
-      "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(!line)continue;process.stdout.write('ECHO:'+line+'\\n');}});",
+      "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);if(String(d).includes('FIXTURE_READY')){swallowing=false;process.stdout.write('\\x1b[23;3H› Ask Codex to do anything   Ready · GPT-5.6-Sol high · Context 100% left\\n');return;}if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(!line)continue;process.stdout.write('ECHO:'+line+'\\n');}});",
       "process.stdout.write('psu: launcher banner\\n');",
-      "setTimeout(()=>{process.stdout.write('\\x1b[6n');setTimeout(()=>process.stdout.write('\\x1b[1;1H│ >_ OpenAI Codex (v0.156.1) │\\n│ model: GPT-5.6-Sol high /model to change │\\n› Ask Codex to do anything   Starting · GPT-5.6-Sol high · Context 100% left\\n'),50);},100);",
-      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3H› Ask Codex to do anything   Ready · GPT-5.6-Sol high · Context 100% left\\n');},1200);",
+      "process.stdout.write('\\x1b[6n\\x1b[1;1H│ >_ OpenAI Codex (v0.156.1) │\\n│ model: GPT-5.6-Sol high /model to change │\\n› Ask Codex to do anything   Starting · GPT-5.6-Sol high · Context 100% left\\n');",
       // The host owns teardown. A fixed child lifetime can end between the
       // kickoff text and submit CR, so readiness must be proved before QUIT.
     ].join('');
@@ -1427,12 +1427,15 @@ describe('session-port managed seed + native persistence helpers', () => {
         cwd: '/tmp',
         env: {
           ...process.env,
+          CODEX_HOME: nativeRoot,
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '3000',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '25',
+          PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '25',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
           TERM: 'xterm-256color',
@@ -1444,6 +1447,10 @@ describe('session-port managed seed + native persistence helpers', () => {
         kickoff: 'RESUME-KICKOFF-AFTER-READY',
         onExit: () => undefined,
       });
+      await vi.waitFor(() => expect(captured()).toContain('Starting'), { timeout: 5_000 });
+      expect(captured()).not.toContain('RESUME-KICKOFF-AFTER-READY');
+      const readyReleasedAt = Date.now();
+      await rawInject(sock, 'FIXTURE_READY\n');
       await vi.waitFor(() => expect(captured()).toContain('ECHO:RESUME-KICKOFF-AFTER-READY'), { timeout: 5_000 });
       expect(captured()).not.toContain('SWALLOWED:');
       const written = await vi.waitFor(() => {
@@ -1460,11 +1467,13 @@ describe('session-port managed seed + native persistence helpers', () => {
         authorizedBy: 'startup-ready-marker',
         promptReady: false,
         startupReady: true,
+        codexFooterAtWrite: 'ready',
       });
-      expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(900);
+      expect(Date.parse(written.ts)).toBeGreaterThanOrEqual(readyReleasedAt);
     } finally {
       if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
       await done?.catch(() => undefined);
+      rmSync(nativeRoot, { recursive: true, force: true });
     }
   }, 8_000);
 
@@ -1601,7 +1610,8 @@ describe('session-port managed seed + native persistence helpers', () => {
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_PSU_HEADLESS: '1',
-        PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '1000',
+        // Exercise the production onboarding contract. Expiry is covered with
+        // an injected clock in the state-machine unit tests.
         PAPERCUSP_FLEET_BG: '',
         PAPERCUSP_FLEET_FG: '',
         PAPERCUSP_FLEET_CURSOR: '',
