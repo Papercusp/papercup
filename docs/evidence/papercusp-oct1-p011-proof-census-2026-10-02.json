@@ -21,7 +21,7 @@
     }
   },
   "recordedAt": "2026-10-02T08:27:23Z",
-  "qualificationUpdatedAt": "2026-10-03T00:21:18Z",
+  "qualificationUpdatedAt": "2026-10-03T02:02:19.196Z",
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
   "spawnerEntryComparison": {
@@ -34,7 +34,47 @@
       "testRunIds": [20595153, 20595154, 20595155, 20595156],
       "scope": "Maintained packaged build and PID/connection reader guards; 59 executed tests pass, one actual-live test disabled. Both packaged controls clean up gracefully. Router HEAD moved and full transitive source provenance remains UNKNOWN.",
       "qualification": "Cached BuildInfo is now advertised by the loaded server through its existing cancellation capability and readiness generation. The baked-SHA control ignores mismatched runtime SHA; unstamped control advertises null. Existing saved standalone live baseline remains unchanged with loaded build UNKNOWN; no present-live or savings claim.",
-      "next": "After a containing staging build is loaded, obtain only necessary fresh PID-bound actual standalone identity evidence through this maintained reader; retain original live timestamp, bindings22985/23004 and every old source disposition."
+      "next": "Scoped loaded-identity child WI-10005751 is now done/committed. The separate new actualLoadedBuildBaseline below verifies its current observation window; retain this saved guard, original baseline timestamps, bindings22985/23004 and every older disposition."
+    },
+    "actualLoadedBuildBaseline": {
+      "workItem": "WI-10005751",
+      "completion": "Authoritative appliedState done, completionAuthority committed, finish.complete true; no repeated close.",
+      "raw": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r1-2026-10-03.json",
+        "bytes": 90678,
+        "sha256": "be2f3fad2fd1a060ab969df894daeb50d38b48278bf8ca4eafc9fd1c45e6aacd",
+        "startedAt": "2026-10-03T02:02:08.232Z",
+        "endedAt": "2026-10-03T02:02:19.196Z"
+      },
+      "qualification": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r1-qualification-2026-10-03.json",
+        "bytes": 4704,
+        "sha256": "cda3fc144953b69d4dac33b7e445f4ab1eedcceb2f9874a9488d6c279f6ff638"
+      },
+      "testRun": 20609442,
+      "outcome": "Maintained test-file router terminal exit0; focused live test1PASS/12filteredSKIP. Saved guard outcomes remain separate.",
+      "ledgerScope": "Local workspace papercusp-workspace, harness_slug NULL; worktreeDirty true, named test path clean at 3eb2684bff, full imported source graph unknown.",
+      "specBinding": null,
+      "bindingDisposition": "Harness-scoped binding refused test_run_not_found/scopeMismatch because real test_run20609442 has harness_slug NULL. No binding was persisted. The next necessary executable acceptance run must set PAPERCUSP_TEST_RUN_HARNESS=papercusp; do not fabricate or relabel the existing ledger row.",
+      "identity": {
+        "mainPid": 3589357,
+        "mainStartTicks": "3924125",
+        "managedRunnerPid": 4025538,
+        "managedRunnerStartTicks": "3980880",
+        "spawnerPid": 4025592,
+        "spawnerStartTicks": "3980889",
+        "expectedMainHealthSha": "9450e8d2e1",
+        "expectedSiblingBakedShaReadFromDisk": "9450e8d2e1",
+        "advertisedSpawnerSha": "9450e8d2e1",
+        "source": "PID-bound loaded server cancellation capability",
+        "serverGeneration": "1ea3a38e-3c81-4fd4-b4fd-6ee52dbcd524",
+        "connectionId": "1ac85333-0564-405a-b2c0-15fbadf372ef",
+        "siblingDiskSha256": "9e709c1d09a0f67ade1ac782b16e54740e3b4572db2d71660f5b162d90a46cc9",
+        "diskIsLoadedProof": false
+      },
+      "coverage": "Nine PID-bound counter samples, three ambient idle/ordinary windows and24 read requests. Exact sibling/configured spawner role verified; loaded advertisement read separately from main health and disk expectation.",
+      "cleanup": "Probe inspector closed; main and spawner identities preserved; report locks and staging shared lease released. No target-module import, profiler, forced GC, restart or native agent.",
+      "scope": "Loaded identity verified only for this window. Historical sibling UNKNOWN stays unchanged. HTTP assignment, allocation ownership, live paired savings, full graph, parent clause fulfillment, independent acceptance and shipment remain open."
     },
     "measurementWorkItem": "WI-10005706",
     "completion": "Saved actual close applied done with committed authority; this census does not repeat completion or tests.",
@@ -251,7 +291,7 @@
       "matchedResult": "Both order-reversed final-safe private pairs show lower PSS and cumulative V8 allocation with identical harmless IPC workload and passing concurrency/cleanup checks; exact differences are recorded above.",
       "guard": "Maintained service-memory-attribution integration comparison plus the saved standalone boot/build/lifecycle/RPC adoption guards and exact sibling/configured-role live baseline guards.",
       "falsifier": "Equivalent final-safe entry comparison loses readiness, workload outcomes, concurrency or cleanup; either pair lacks the claimed PSS/allocation reduction; or a live/production savings claim lacks a matched live counterfactual and loaded-build attribution.",
-      "limits": "Private entry effect is not unique retained/native ownership, historical recovery or production savings. Loaded sibling build, full executed source graph, ambient HTTP assignment, independent acceptance and shipment remain unknown or open."
+      "limits": "Private entry effect is not unique retained/native ownership, historical recovery or production savings. Historical sibling loaded build remains unknown; a separate later actualLoadedBuildBaseline verifies its own advertised loaded identity only. Full executed source graph, ambient HTTP assignment, independent acceptance and shipment remain unknown or open."
     },
     {
       "source": "Full inbox cache keys duplicate identical raw input across display variants",
