@@ -1,4 +1,124 @@
 {
+  "nativeOwnershipCudaObserver": {
+    "status": "Bounded native and instrumented CUDA ownership observations complete; historical heap cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-cuda-v1",
+      "artifact": "completion.json",
+      "bytes": 23511,
+      "sha256": "4467710aa1f5e6e61ecf55e3d8fda1cd51cb643e361e66c64afb96bebfd83d8a"
+    },
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-cuda-preparation-v1",
+      "artifact": "assessment.json",
+      "bytes": 8146,
+      "sha256": "6431a15904abc20ecaad3b2f45e124623f1970bffec14ae7d98d2d8a27a7aa1b"
+    },
+    "task": "0mus8rfin1qz6bk51ta",
+    "jobExitCode": 0,
+    "controls": [
+      {
+        "cell": "cuda-native",
+        "processId": 3539626,
+        "exitCode": 1,
+        "signal": null,
+        "nativeCalls": 6,
+        "allExactCallbacksReturned": true,
+        "actualPidLibraryInitializations": [
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_cuda.so",
+            "sha256": "3ca573cfc14f7b8efa8e4b987851d8958b22228a4a15be1e2609a81cfb641974",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1",
+            "sha256": "92ba8e44d31b80a34f5e805076a044122c3be1fffe0d88ed790de7267b0b2682",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node",
+            "sha256": "a7191fbfe8045d4d5d312e5ecd8f5dd6970e804dd340c98be8a0af8daf7908cc",
+            "records": 1
+          }
+        ],
+        "sanitizer": null
+      },
+      {
+        "cell": "cuda-instrumented",
+        "processId": 3549243,
+        "exitCode": 1,
+        "signal": null,
+        "nativeCalls": 6,
+        "allExactCallbacksReturned": true,
+        "actualPidLibraryInitializations": [
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_cuda.so",
+            "sha256": "3ca573cfc14f7b8efa8e4b987851d8958b22228a4a15be1e2609a81cfb641974",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1",
+            "sha256": "92ba8e44d31b80a34f5e805076a044122c3be1fffe0d88ed790de7267b0b2682",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node",
+            "sha256": "a7191fbfe8045d4d5d312e5ecd8f5dd6970e804dd340c98be8a0af8daf7908cc",
+            "records": 1
+          }
+        ],
+        "sanitizer": {
+          "injectionRecords": [
+            "   3549243:\tcalling init: cache:validation/mdenseon-boundary-WI10004540-20261001/sanitizer-runtime-v1/runtime/cuda_sanitizer_api-linux-x86_64-13.0.85-archive/compute-sanitizer/libsanitizer-collection.so"
+          ],
+          "apiErrorSummaries": [
+            0
+          ],
+          "actualTargetPid": 3549243
+        }
+      }
+    ],
+    "admission": {
+      "receiptId": "RG-b6e81866-dc68-41c2-93d4-c724bc01c21d",
+      "exactSerializationInBothNativeThreadStreamsVerified": true,
+      "coreLimitZero": true,
+      "boundedCudaCells": 2
+    },
+    "observation": "In both observed CUDA targets, native session disposal/deleting destructor and per-env finalizer return before one shared singleton destructor on the main LWP. Both exit1 on the retained shape error; no SIGABRT or heap message.",
+    "verification": {
+      "rawArtifactPinsVerified": 21,
+      "exactMappedSymbolOffsetsVerified": true,
+      "actualNativePidOrtLibraryInitializationVerified": true,
+      "canonicalTestRunIds": [
+        20675379
+      ],
+      "passed": 3,
+      "failed": 0,
+      "excludedByNameFilter": 34,
+      "scopedCompilerNamedFiles": 2,
+      "scopedCompilerErrors": 0,
+      "retainedCpuPreconditionRederivedWithoutReplay": true
+    },
+    "reuse": "Extended existing small fixture, pinned GDB event observer, actual-PID loader checks and governed process bridge; same retained Node/ORT/sanitizer/allocator environment.",
+    "locatorRepresentation": "Public loader records use existing cache:validation roots and runtime-relative paths. Exact machine-local loader lines remain immutable in the private raw capture and assessment.",
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "limitations": [
+      "No actual abort boundary was present; normal cleanup cannot disprove intermittent historical corruption.",
+      "GDB, debug allocator and sanitizer may alter observation; no causal effect inferred.",
+      "No embedding weights, large8192, completed CPU probe or positive detector was replayed."
+    ],
+    "next": "Preserve the finite observations; select a further source-grounded distinguishing heap probe, or advance independent P003 collection after fresh provider admission."
+  },
   "nativeOwnershipCpuObserver": {
     "status": "Exact native ownership observer qualified on two retained-R6 CPU processes; historical heap cause remains open",
     "workItem": "WI-10005599",
