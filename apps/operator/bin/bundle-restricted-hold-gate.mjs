@@ -99,7 +99,9 @@ function metafileInputs(metafile, baseDir) {
     throw new Error(`${metafile} has no esbuild "inputs" map`);
   }
   return Object.keys(meta.inputs)
-    .filter((key) => !key.startsWith('<') && !/^[a-z-]+:/i.test(key))
+    // `<define:…>`/`<stdin>` are virtual, `(disabled):…` is a browser-field stub, `ns:…` a plugin
+    // namespace — none is a file the bundle read from the tree.
+    .filter((key) => !key.startsWith('<') && !key.startsWith('(') && !/^[a-z-]+:/i.test(key))
     .map((key) => (isAbsolute(key) ? key : resolve(baseDir, key)));
 }
 
