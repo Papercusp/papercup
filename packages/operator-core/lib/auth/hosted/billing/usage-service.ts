@@ -6,6 +6,7 @@ import {
   type HostedUsageRecord, type HostedUsageScope, type HostedUsageStatement,
 } from './usage-statement';
 import type { PostgresHostedUsageStore } from './usage-store';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 
 export interface HostedUsageRead {
   readonly scope: HostedUsageScope;
@@ -68,6 +69,7 @@ export function createHostedUsageSource(options: {
     input = Object.freeze({ scope: Object.freeze({ ...input.scope }), month: input.month, asOfMs: input.asOfMs });
     const emptySource = { complete: false, observedAtMs: input.asOfMs, maximumAgeMs: options.maximumAgeMs, evidenceRef: 'hosted-usage:unmeasured-census' };
     buildHostedUsageStatement({ ...input, source: emptySource, records: [] });
+    const { startMs, endMs } = shadowMonthBounds(input.month);
     const snapshots = await Promise.all(collectors.map(async collector => {
       const received = await collector.read(input);
       if (!received || !sameScope(received.scope, input.scope) || received.month !== input.month
@@ -87,6 +89,7 @@ export function createHostedUsageSource(options: {
         validateHostedUsageRecord(record);
         if (!inScope(record, input.scope) || record.provider !== collector.provider
             || !collector.categories.includes(record.category)
+            || record.occurredAtMs < startMs || record.occurredAtMs >= endMs
             || record.observedAtMs > snapshot.observedAtMs) throw new Error('usage collector receipt mismatch');
       }
       buildHostedUsageStatement({ ...input, source: {
@@ -107,8 +110,21 @@ export function createHostedUsageSource(options: {
       id: collector.id, provider: collector.provider, categories: [...collector.categories].sort(),
       evidenceRef: snapshot.evidenceRef, observedAtMs: snapshot.observedAtMs, complete: snapshot.complete,
     })).sort((a, b) => a.id.localeCompare(b.id));
+    const usageKey = (record: HostedUsageRecord) => JSON.stringify([record.customerWorkspaceId, record.provider, record.usageId]);
+    const latest = new Map<string, HostedUsageRecord>();
+    for (const record of records) {
+      const previous = latest.get(usageKey(record));
+      if (!previous || record.revision > previous.revision) latest.set(usageKey(record), record);
+    }
+    const currentReceipts = new Set(snapshots.flatMap(({ snapshot }) => snapshot.records.map(record =>
+      JSON.stringify([usageKey(record), record.revision, record.recordId]))));
+    // A complete-but-empty response cannot erase a previously recorded charge.
+    // A missing provider or an older revision is an unreconciled population,
+    // even when every cost category has a declared collector.
+    const reconciled = [...latest.values()].every(record => currentReceipts.has(
+      JSON.stringify([usageKey(record), record.revision, record.recordId])));
     const complete = collectors.length > 0 && PILOT_COST_CATEGORIES.every(category => categories.has(category))
-      && snapshots.every(({ snapshot }) => snapshot.complete);
+      && snapshots.every(({ snapshot }) => snapshot.complete) && reconciled;
     const observedAtMs = snapshots.reduce((oldest, { snapshot }) => Math.min(oldest, snapshot.observedAtMs), input.asOfMs);
     const evidenceRef = manifest.length === 0 ? emptySource.evidenceRef
       : 'hosted-usage:census:' + createHash('sha256').update(JSON.stringify({ scope: input.scope, month: input.month, manifest })).digest('hex');

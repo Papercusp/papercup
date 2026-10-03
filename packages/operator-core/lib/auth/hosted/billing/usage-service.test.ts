@@ -68,6 +68,25 @@ describe('hosted usage server collector composition', () => {
     expect(statement.consumptionBilled.micros).toBe(0);
   });
 
+  it('does not accept an omitted receipt, unconfigured provider or older correction as a reconciled population', async () => {
+    const empty = collector({ read: async input => ({ scope: input.scope, month: input.month, complete: true,
+      observedAtMs: T, evidenceRef: 'fixture:claims-zero', records: [] }) });
+    const missing = await source(store([receipt()]), [empty])(request);
+    expect(missing.settlementEligible).toBe(false);
+    expect(missing.consumptionBilled.micros).toBe(20_003);
+    const unknown = receipt({ provider: 'unconfigured-provider', recordId: 'unknown-r', usageId: 'unknown-u' });
+    expect((await source(store([unknown]), [collector()])(request)).settlementEligible).toBe(false);
+    const corrected = receipt({ recordId: 'r-2', revision: 2, costMicros: 30_004 });
+    const oldSnapshot = await source(store([corrected]), [collector()])(request);
+    expect(oldSnapshot.settlementEligible).toBe(false);
+    expect(oldSnapshot.consumptionBilled.micros).toBe(30_004);
+    const current = collector({ read: async input => ({ scope: input.scope, month: input.month, complete: true,
+      observedAtMs: T, evidenceRef: 'fixture:corrected-bill', records: [corrected] }) });
+    const reconciled = await source(store([receipt(), corrected]), [current])(request);
+    expect(reconciled.settlementEligible).toBe(true);
+    expect(reconciled.consumptionBilled.micros).toBe(30_004);
+  });
+
   it('keeps partial and stale collection receipts ineligible', async () => {
     for (const change of [{ complete: false }, { observedAtMs: T - 2000 }]) {
       const c = collector({ read: async input => ({ scope: input.scope, month: input.month, complete: true,
@@ -88,6 +107,7 @@ describe('hosted usage server collector composition', () => {
   it.each([
     { organizationId: 'org-b' }, { controlWorkspaceId: 'control-b' }, { customerWorkspaceId: 'customer-b' },
     { provider: 'another-provider' }, { category: 'egress' as const }, { observedAtMs: T + 1 },
+    { occurredAtMs: Date.UTC(2026, 8, 30) },
   ])('rejects a foreign or misclassified receipt before any write: %j', async change => {
     const s = store();
     const c = collector({ categories: ['compute'], read: async input => ({ scope: input.scope, month: input.month, complete: true,
