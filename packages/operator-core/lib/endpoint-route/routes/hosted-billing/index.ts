@@ -17,6 +17,8 @@
  */
 import type { HostedPermission, HostedPrincipal } from '../../../auth/hosted-principal';
 import type { HostedBillingStore } from '../../../auth/hosted/billing/billing-store';
+import type { HostedBillingUsageSource } from '../../../auth/hosted/billing/usage-service';
+import type { HostedUsageStatement } from '../../../auth/hosted/billing/usage-statement';
 import {
   SUBSCRIBED_STATUSES,
   resolveHostedSubscriptionEntitlement,
@@ -34,6 +36,7 @@ export const HOSTED_BILLING_ROUTES = [
   { method: 'POST', path: '/hosted/billing/checkout', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/portal', access: 'authenticated' },
   { method: 'GET', path: '/hosted/billing/receipts', access: 'authenticated' },
+  { method: 'GET', path: '/hosted/billing/usage', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/webhook', access: 'public' },
 ] as const;
 
@@ -100,6 +103,8 @@ export interface HostedBillingRouteDependencies {
   readonly entitlementProvider?: HostedSubscriptionEntitlementProvider;
   /** Absent = receipts are not configured on this host; `/receipts` answers 503. */
   readonly receipts?: HostedBillingReceiptSource;
+  /** A server-owned collector/read composition; the request supplies no billing facts. */
+  readonly usage?: HostedBillingUsageSource;
   readonly clock?: () => Date;
 }
 
@@ -116,6 +121,30 @@ export interface HostedBillingRoute {
 
 function jsonError(code: string, safeMessage: string, status: number): Response {
   return Response.json({ ok: false, error: { code, safeMessage } }, { status });
+}
+
+/** Project only the public usage contract; provider payloads and extra fields never pass through. */
+function usageView(statement: HostedUsageStatement): HostedUsageStatement {
+  return {
+    scope: { controlWorkspaceId: statement.scope.controlWorkspaceId, organizationId: statement.scope.organizationId,
+      customerWorkspaceId: statement.scope.customerWorkspaceId },
+    month: statement.month, currency: statement.currency, asOfMs: statement.asOfMs, sourceRef: statement.sourceRef,
+    settlementEligible: statement.settlementEligible, gaps: [...statement.gaps],
+    lines: statement.lines.map(line => ({
+      customerWorkspaceId: line.customerWorkspaceId, provider: line.provider, category: line.category,
+      payer: line.payer, unit: line.unit, quantity: line.quantity, usages: line.usages,
+      unpricedUsages: line.unpricedUsages, estimatedMicros: line.estimatedMicros,
+      reportedMicros: line.reportedMicros, billedMicros: line.billedMicros,
+    })),
+    consumptionBilled: { micros: statement.consumptionBilled.micros, wholeCents: statement.consumptionBilled.wholeCents,
+      roundingMicros: statement.consumptionBilled.roundingMicros },
+    platformBilledMicros: statement.platformBilledMicros, customerDirectBilledMicros: statement.customerDirectBilledMicros,
+    history: statement.history.map(history => ({ customerWorkspaceId: history.customerWorkspaceId,
+      provider: history.provider, usageId: history.usageId, revisions: history.revisions.map(revision => ({
+        recordId: revision.recordId, revision: revision.revision, sourceRef: revision.sourceRef,
+        costSource: revision.costSource, costMicros: revision.costMicros, observedAtMs: revision.observedAtMs,
+      })) })),
+  };
 }
 
 export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies): readonly HostedBillingRoute[] {
@@ -332,5 +361,39 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
     },
   };
 
-  return [plans, subscription, checkout, portal, receipts, webhook];
+  const usage: HostedBillingRoute = {
+    method: 'GET', path: '/hosted/billing/usage', auth: { capabilities: ['billing:manage'] },
+    async handler(req, ctx) {
+      const organizationId = organizationOf(ctx);
+      if (!organizationId || !ctx.principal) return jsonError('organization_required', 'An active organization is required.', 403);
+      const parameters = new URL(req.url).searchParams;
+      if ([...parameters.keys()].some(key => !['month', 'workspaceId'].includes(key))
+          || parameters.getAll('month').length > 1 || parameters.getAll('workspaceId').length > 1) {
+        return jsonError('invalid_usage_filter', 'Choose one month and an optional workspace.', 400);
+      }
+      const now = clock().getTime();
+      if (!Number.isSafeInteger(now) || now < 0) return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+      const month = parameters.get('month') ?? new Date(now).toISOString().slice(0, 7);
+      const customerWorkspaceId = parameters.get('workspaceId');
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
+          || (customerWorkspaceId !== null && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(customerWorkspaceId))) {
+        return jsonError('invalid_usage_filter', 'Choose a valid month and workspace.', 400);
+      }
+      if (!deps.usage) return jsonError('usage_unavailable', 'Usage is not configured.', 503);
+      const scope = Object.freeze({ controlWorkspaceId: ctx.principal.workspaceId, organizationId, customerWorkspaceId });
+      try {
+        const statement = await deps.usage(Object.freeze({ scope, month, asOfMs: now }));
+        if (statement.scope.controlWorkspaceId !== scope.controlWorkspaceId || statement.scope.organizationId !== organizationId
+            || statement.scope.customerWorkspaceId !== customerWorkspaceId || statement.month !== month || statement.asOfMs !== now
+            || (customerWorkspaceId !== null && [...statement.lines, ...statement.history].some(line => line.customerWorkspaceId !== customerWorkspaceId))) {
+          return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+        }
+        return Response.json({ ok: true, statement: usageView(statement) }, { headers: { 'cache-control': 'no-store' } });
+      } catch {
+        return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+      }
+    },
+  };
+
+  return [plans, subscription, checkout, portal, receipts, usage, webhook];
 }
