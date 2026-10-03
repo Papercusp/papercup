@@ -74,6 +74,9 @@ export function getUnreachableAudienceSelectors(
 
 /** Options for sendMessage / generalised coord append. */
 export interface SendOptions {
+  /** Internal producer seam: validate/prepare and persist one envelope atomically.
+   * The GOAL reference bridge uses the existing PG event log, including its stamp. */
+  persistEnvelope?: (envelope: CoordEnvelope) => Promise<CoordEnvelope>;
   /** Recipient ownerIds. Use ['*'] for broadcast, ['human'] for the human inbox. */
   to: string[];
   /**
@@ -484,7 +487,9 @@ export async function sendMessage(
     // Calls without an explicit msg_id intentionally retain append-only
     // semantics. In particular, appendAck uses this path so repeated acks stay
     // visible, and mailbox re-delivery below remains append-only.
-    if (opts.msgId !== undefined) {
+    if (opts.persistEnvelope) {
+      persistedEnv = await opts.persistEnvelope(env);
+    } else if (opts.msgId !== undefined) {
       const result = await coordLog.appendLineIfAbsent('messages', identity.ownerId, env);
       persistedEnv = result.envelope;
       persistedSequence = result.sequence;
