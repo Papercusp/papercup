@@ -15,18 +15,24 @@
   "dispositionReadback": "2026-10-03T08:43:07.339265Z",
   "macReopenReadback": "2026-10-03T09:06:55.129Z",
   "cutoverDuplicateReadback": "2026-10-03T09:12:18.393Z",
-  "fullCohortReadback": "2026-10-03T09:22:23.436Z"
+  "fullCohortReadback": "2026-10-03T09:59:41.870Z",
+  "latencyReopenReadback": "2026-10-03T09:57Z"
  },
  "verifiedDispositionCounts": {
-  "reopened": 9,
-  "obsoleteMirrorsDropped": 2,
+  "reopened": 10,
+  "currentlyOpenAfterScopedReadback": 9,
+  "completedAfterReopen": 1,
+  "obsoleteMirrorsDropped": 4,
   "duplicateFeaturesDropped": 1,
-  "totalDropped": 3,
-  "stillBlocked": 160,
+  "totalDropped": 5,
+  "stillBlocked": 157,
+  "countBasis": "Exact full 172-row canonical readback at 09:59:41.870Z; 172 returned, 172 unique, no missing rows. Reopened counts audit actions; currentlyOpen/completedAfterReopen distinguish later completion.",
   "pendingTerminalAuthority": [
    "WI-1591",
    "WI-2146529",
-   "WI-341"
+   "WI-341",
+   "WI-5311",
+   "WI-5312"
   ]
  },
  "limitations": [
@@ -34,7 +40,7 @@
   "Retained-for-qualification is not a verified justified block.",
   "Rows do not claim implementation completion, acceptance waiver or shipment.",
   "Every remaining root prerequisite and hold still needs evidenced final disposition.",
-  "All three dropped rows have proposed terminal authority in the 09:22Z exact172 readback; verified lifecycle disposition is not committed completion."
+  "All five dropped rows have proposed terminal authority in the exact172 readbacks; verified lifecycle disposition is not committed completion. WI-41086 is now done with committed authority; its prior reopening remains counted as an audit action."
  ],
  "rows": [
   {
@@ -139,7 +145,7 @@
    "id": "WI-10001169",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Source P-009 is done and source plan revision53 is shipped, while this mirror retains an older deployed-control blocker. Current shipReadiness skips evaluation because already shipped; that is not fresh acceptance proof. Reconcile the canonical shipment/closure receipt before disposing this mirror.",
+   "reason": "Exact September30 shipment receipt was recovered from session5c550459 part89: changed=true, newStatus=shipped, forcedPastStamped=false, revision52/currentPlanVersion53 matching current source hash. Its citationDeployment appendix also reports contract/matrix target paths not deployed on29bf7350, so the receipt is internally insufficient to discharge R8 deployed-control proof. Retain pending exact accepted R8 artifact/runtime reconciliation; current gate is not operated by this audit.",
    "source": {
     "plan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
     "item": "P-009",
@@ -196,7 +202,7 @@
    "id": "WI-10002216",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Source P-006 is done and source plan revision249 is shipped, but the mirror still holds an old AUTO-BAR-R-2-P-006@3 adequacy refusal. Resolve the exact terminal receipt/current clause relationship before dropping the mirror or claiming accepted completion.",
+   "reason": "Current source P006 explicitly says completed(done), and current row/content agree SHIPPED@249/hashb435f504. However the latest recorded plan revision248 is awaiting-acceptance/hash7b799c0b, and an exact current-hash lookup returns zero with positivecontrol248 passing. The matching ship/acceptance receipt remains unqualified; retain the old adequacy hold until the canonical current-clause and terminal evidence relationship is recovered. Missing revision proof does not establish that shipment never happened.",
    "source": {
     "plan": "turn-start-memory-two-class-2026-09-21",
     "item": "P-006",
@@ -5468,9 +5474,10 @@
   },
   {
    "id": "WI-41086",
-   "state": "open",
-   "disposition": "verified-reopened",
-   "reason": "LSP source D009 clears completed historical WI40086 gate; source todo, mirror open and claim hold removed.",
+   "state": "done",
+   "disposition": "verified-reopened-now-completed",
+   "reason": "LSP source D009 cleared completed historical WI40086 gate. Exact172 readback09:54:34Z now reports canonical DONE with COMMITTED authority. This is a lifecycle readback, not a new leader grading of the worker implementation.",
+   "completionAuthority": "committed",
    "source": {
     "plan": "lsp-fleet-scale-all-languages-2026-08-21",
     "item": "P-003",
@@ -5806,15 +5813,16 @@
   },
   {
    "id": "WI-5311",
-   "state": "blocked",
-   "disposition": "requires-further-qualification",
-   "reason": "Source plan version19 is shipped and describes the status-card renderer as built, but indexed P-003 remains todo and its old owner-review block was not reconciled. Qualify the exact closure/renderer requirement evidence before dropping this mirror; shipped status alone does not repair the inconsistent item.",
+   "state": "dropped",
+   "disposition": "verified-obsolete-mirror-dropped",
+   "reason": "Source D006 reconciles fulfilled Phase1 against canonical shipped closure and current producer/renderer/drill-in wiring. Focused canonical40 curation plus11 renderer tests PASS at clean named paths HEADf3320394a0, zero skips. Source P003 DONE@22 verified; its cascade explicitly skipped this gated mirror, so separate DROPPED disposal was verified. Full requirements remain on source; no new Tauri live or shipment claim.",
+   "completionAuthority": "proposed",
    "source": {
     "plan": "deterministic-status-cards-2026-07-17",
     "item": "P-003",
-    "version": 19,
+    "version": 22,
     "planState": "shipped",
-    "itemState": "todo",
+    "itemState": "done",
     "directDependencies": []
    },
    "canonicalUnresolved": [],
@@ -5828,15 +5836,16 @@
   },
   {
    "id": "WI-5312",
-   "state": "blocked",
-   "disposition": "requires-further-qualification",
-   "reason": "Source plan is shipped with P-004 still indexed todo and a historical owner 'go' checkpoint. Qualify the compact-rollup implementation and canonical closure decision before duplicate disposition; do not silently revive a closed plan or infer owner review from source status.",
+   "state": "dropped",
+   "disposition": "verified-obsolete-mirror-dropped",
+   "reason": "Source D006 reconciles fulfilled Phase1 using canonical closure, current count-by-kind bounded rollup builder and shared renderer, and canonical51 focused PASS/zero skips at clean named paths HEADf3320394a0. Source P004 DONE@22 verified; its cascade explicitly skipped this gated mirror, so separate DROPPED disposal was verified. Full rollup requirements remain on source; no new full native UI or shipment claim.",
+   "completionAuthority": "proposed",
    "source": {
     "plan": "deterministic-status-cards-2026-07-17",
     "item": "P-004",
-    "version": 19,
+    "version": 22,
     "planState": "shipped",
-    "itemState": "todo",
+    "itemState": "done",
     "directDependencies": []
    },
    "canonicalUnresolved": [],
@@ -6033,23 +6042,23 @@
   },
   {
    "id": "WI-6711",
-   "state": "blocked",
-   "disposition": "requires-further-qualification",
-   "reason": "Producer WI-2145698 is now done with committed authority. The hold also requires the wake-pump repair actually deployed before reaction-latency leg B; older wake-count leg A is settled. Qualify containment of that specific repair, not just equality with today's later source blob.",
+   "state": "open",
+   "disposition": "verified-reopened",
+   "reason": "Source D013 discharges only the historical fixed-and-deployed condition. Producer2145698 DONE/COMMITTED; actual release d740fc and bg-host reported build d40a956 source both contain the exact aged_retry60-second/one-reserved-slot treatment. Newer whole-file blob inequality does not disprove this specific containment. Obsolete claim hold cleared and source P011 TODO/feature OPEN readback verified. LegB latency remains unmeasured now; preserve settled legA without rerunning it.",
    "source": {
     "plan": "fleet-leadership-continuity-and-actuation-2026-08-01",
     "item": "P-011",
-    "version": 42,
+    "version": 44,
     "planState": "ready",
-    "itemState": "blocked",
+    "itemState": "todo",
     "directDependencies": [
      "P-010"
     ]
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": true,
-   "holdReason": "UNPARK WHEN: WI-2145698 (wake-delivery pump attempts-tier starvation) is fixed and deployed. Then re-measure leg (B) reaction latency ONLY — leg (A), the ~4x wake-count win, is already measured and settled (see WI-6711 checkpoint + plan decision D-012). Parked so no peer burns a claim on an item that cannot progress until that fix lands.",
+   "claimHold": false,
+   "reopenDecision": "fleet-leadership-continuity-and-actuation-2026-08-01#D-013",
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
@@ -6110,7 +6119,7 @@
  ],
  "blockedPartition": {
   "withCanonicalUnresolved": 109,
-  "withoutCanonicalUnresolved": 51,
+  "withoutCanonicalUnresolved": 48,
   "meaning": "Partition of current BLOCKED subset; frozen unresolved-edge population110 also includes already-dropped WI-2146529"
  }
 }
