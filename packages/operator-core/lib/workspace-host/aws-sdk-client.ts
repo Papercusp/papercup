@@ -39,6 +39,7 @@ import {
   DescribeSpotInstanceRequestsCommand,
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
+  DetachVolumeCommand,
   EC2Client,
   GetConsoleOutputCommand,
   RebootInstancesCommand,
@@ -53,6 +54,7 @@ import {
   waitUntilVolumeAvailable,
   waitUntilVolumeDeleted,
   waitUntilVolumeInUse,
+  type _InstanceType,
   type Image,
   type Instance,
   type InstanceTypeInfo,
@@ -132,6 +134,7 @@ import type {
   AwsSecurityGroupIngressObservation,
   AwsShellCommandInput,
   AwsCommandInvocationObservation,
+  AwsSnapshotDescription,
   AwsSnapshotObservation,
   AwsTag,
   AwsVolumeObservation,
@@ -976,6 +979,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
           KmsKeyId: input.KmsKeyId,
           Size: input.Size,
           VolumeType: input.VolumeType as Volume['VolumeType'],
+          ...(input.SnapshotId ? { SnapshotId: input.SnapshotId } : {}),
           TagSpecifications: [
             {
               ResourceType: 'volume',
@@ -1047,6 +1051,8 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       this.ec2.send(
         new RunInstancesCommand({
           ClientToken: input.ClientToken,
+          ImageId: input.ImageId,
+          InstanceType: input.InstanceType as _InstanceType,
           MinCount: input.MinCount,
           MaxCount: input.MaxCount,
           LaunchTemplate: { ...input.LaunchTemplate },
@@ -1323,6 +1329,22 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     return { requestId: result.$metadata.requestId };
   }
 
+  async detachVolume(input: { InstanceId: string; VolumeId: string }): Promise<AwsProviderMutationResult> {
+    await this.assertMutationAccount();
+    try {
+      const result = await this.ec2.send(
+        new DetachVolumeCommand({ InstanceId: input.InstanceId, VolumeId: input.VolumeId }),
+      );
+      return { requestId: result.$metadata.requestId };
+    } catch (error) {
+      // Already detached is the desired end state; the provider re-reads the volume to confirm.
+      if (isNotFound(error, ['IncorrectState']) || /is in the 'available' state/i.test(String((error as Error)?.message))) {
+        return {};
+      }
+      throw sanitizeError(error, 'detach-volume', this.redactor);
+    }
+  }
+
   async startInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
     const result = await this.call('start-instances', () =>
@@ -1563,6 +1585,23 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     const observed = result.Snapshots?.[0] ? this.snapshotObservation(result.Snapshots[0]) : undefined;
     if (!observed) throw new Error(`aws_workspace_host_snapshot_absent: ${snapshotId}`);
     return observed;
+  }
+
+  async describeSnapshot(snapshotId: string): Promise<AwsSnapshotDescription | undefined> {
+    try {
+      const result = await this.ec2.send(new DescribeSnapshotsCommand({ SnapshotIds: [snapshotId], OwnerIds: ['self'] }));
+      const snapshot = result.Snapshots?.[0];
+      const observed = snapshot ? this.snapshotObservation(snapshot) : undefined;
+      if (!snapshot || !observed) return undefined;
+      return {
+        ...observed,
+        tags: tagMap(snapshot.Tags),
+        ...(typeof snapshot.VolumeSize === 'number' ? { volumeSizeGiB: snapshot.VolumeSize } : {}),
+      };
+    } catch (error) {
+      if (isNotFound(error, ['InvalidSnapshot.NotFound'])) return undefined;
+      throw sanitizeError(error, 'describe-snapshot', this.redactor);
+    }
   }
 
   // --- preflight (shares credentials, clients and error discipline) ---
