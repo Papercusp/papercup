@@ -117,6 +117,120 @@ function auditBaseline(r: any) {
     definition: 'Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled.' };
 }
 
+// Join the CDP singleton IDs to the native graph from the SAME captured input.
+// Direct parents are incoming edges, not dominators; neither parent nor class
+// retained sizes may be summed to infer physical/native ownership.
+const exactOwners = [
+  '@papercusp/memory:host', '@papercusp/memory.local-embedder-worker',
+  '@papercusp/operator-core.harnessCoreCaches', '@papercusp/operator-core.operatorCache',
+  '@papercusp/operator-core.snapshot-fold-slots', '@papercusp/lexicon:host',
+  '@papercusp/operator-core.repoCitationTrackingCache',
+  '@papercusp/operator-core.agentsAcrossWorkspaceCache',
+  '@papercusp/operator-core.midTurnMemoryAdmission',
+];
+
+function auditExactOwners(r: any) {
+  const requireOwner = (value: unknown, reason: string) => {
+    if (!value) throw Error('P011 exact owner: ' + reason);
+  };
+  const natural = (x: unknown) => Number.isSafeInteger(x) && Number(x) >= 0;
+  const id = (x: unknown) => natural(x) && Number(x) > 0;
+  const snapshot = r.heapSnapshot, graph = r.heapRetainers, binding = r.heapOwnerBinding;
+  requireOwner(r.schemaVersion === 1 && r.mode === 'retainers' &&
+    r.plane === 'isolated-current-build-operator-api' && r.incomplete === false &&
+    r.runner?.status === 0 && r.runner.signal === null && !r.error, 'complete private run');
+  requireOwner(id(r.pid) && [snapshot?.pid, graph?.pid, binding?.pid, r.inspector?.pid]
+    .every(pid => pid === r.pid), 'PID correspondence');
+  requireOwner(/^[a-f0-9]{7,40}$/.test(r.buildSha) && sha(r.bundleHash), 'recorded artifact identity');
+  requireOwner(Array.isArray(r.samples) && r.samples.length > 1, 'process samples');
+  let processIdentity = '';
+  for (const sample of r.samples) {
+    const rows = sample.processes?.filter((row: any) => row.pid === r.pid);
+    requireOwner(sample.pid === r.pid && rows?.length === 1, 'unique sampled main');
+    const row = rows[0];
+    requireOwner(/^\d+$/.test(row.startTicks) && sha(row.executableSha256) &&
+      positive(row.pssBytes) && positive(row.rssBytes) && row.pssBytes <= row.rssBytes, 'raw process identity');
+    if (!processIdentity) processIdentity = identity(row);
+    requireOwner(identity(row) === processIdentity, 'process reuse');
+  }
+  requireOwner(sha(snapshot.sha256) && id(snapshot.bytes) &&
+    graph.native?.inputSha256 === snapshot.sha256 && graph.native.inputBytes === snapshot.bytes,
+  'snapshot input correspondence');
+  requireOwner(sha(graph.native.executableSha256) &&
+    graph.native.executableSha256 === r.nativeAdapterPreflight?.sha256 &&
+    r.nativeAdapterPreflight.version === 'papercusp-heap-retainers 0.1.0' &&
+    graph.native.status === 0 && graph.native.signal === null &&
+    graph.native.errorCode === null && graph.native.stderrBytes === 0 &&
+    graph.upstreamRevision === '05edd8131a77790ab0e7bce2eedf5770d6bb83ae', 'native execution receipt');
+  const census = snapshot.census;
+  requireOwner(id(census?.nodeCount) && id(census.totalSelfSizeBytes) &&
+    natural(graph.rootIndex) && graph.rootIndex < census.nodeCount, 'snapshot census bounds');
+  const roots = binding.roots, nodes = graph.requestedNodes, limits = graph.limits;
+  requireOwner(Array.isArray(roots) && roots.length === exactOwners.length &&
+    new Set(roots.map((x: any) => x.owner)).size === exactOwners.length &&
+    exactOwners.every(owner => roots.some((x: any) => x.owner === owner)), 'exact owner population');
+  requireOwner(roots.every((x: any) => x.status === 'found' && id(x.id)) &&
+    new Set(roots.map((x: any) => x.id)).size === roots.length, 'unique captured owner IDs');
+  requireOwner(Array.isArray(nodes) && nodes.length === roots.length &&
+    new Set(nodes.map((x: any) => x.id)).size === roots.length &&
+    Array.isArray(limits?.objectIds) && limits.objectIds.length === roots.length &&
+    roots.every((x: any, i: number) => limits.objectIds[i] === x.id), 'requested ID population');
+  requireOwner(limits.retainerDepth === 1 && id(limits.maxRetainers) && limits.maxRetainers <= 100,
+    'bounded direct parents');
+  const nodeIndexes = new Set<number>();
+  const validNode = (n: any) => n && id(n.id) && natural(n.index) && n.index < census.nodeCount &&
+    natural(n.selfSizeBytes) && natural(n.retainedSizeBytes) &&
+    n.retainedSizeBytes >= n.selfSizeBytes && n.retainedSizeBytes <= census.totalSelfSizeBytes;
+  const owners = roots.map((owner: any) => {
+    const requested = nodes.find((x: any) => x.id === owner.id), n = requested?.node;
+    requireOwner(requested?.status === 'found' && n?.id === owner.id && validNode(n) &&
+      !nodeIndexes.has(n.index), 'exact graph node join');
+    nodeIndexes.add(n.index);
+    requireOwner(Array.isArray(n.retainers) && natural(n.retainerCount) &&
+      n.retainerCount >= n.retainers.length && n.retainers.length <= limits.maxRetainers &&
+      typeof n.retainersTruncated === 'boolean' &&
+      n.retainersTruncated === (n.retainerCount > n.retainers.length), 'retainer coverage');
+    requireOwner(new Set(n.retainers.map((p: any) => p.index)).size === n.retainers.length &&
+      n.retainers.every((p: any) => validNode(p) && p.index !== n.index &&
+        p.index !== graph.rootIndex && p.retainsIndex === n.index &&
+        ['Context', 'Property', 'Internal', 'Hidden', 'Element'].includes(p.edgeType)), 'essential incoming edges');
+    return { owner: owner.owner, id: n.id, index: n.index, selfSizeBytes: n.selfSizeBytes,
+      dominatorRetainedV8Bytes: n.retainedSizeBytes, observedDirectParentIndexes: n.retainers.map((p: any) => p.index),
+      directParentsNotChecked: n.retainerCount - n.retainers.length };
+  });
+  requireOwner(r.hostReaped === true && r.snapshotRemoved === true &&
+    r.postSnapshotRowsPreserved === true &&
+    r.profilerOperations?.includes('v8.writeHeapSnapshot (forced GC/synchronous pause)') &&
+    r.profilerOperations.includes('HeapProfiler.enable (object IDs)') &&
+    r.profilerOperations.includes('HeapProfiler.disable (object IDs)'), 'qualified intervention and cleanup');
+  return { processIdentity, recordedBuildSha: r.buildSha, snapshotSha256: snapshot.sha256, owners,
+    scope: 'Historical private snapshot; no new runtime measurement.',
+    definition: 'Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.',
+    nativePhysicalOwnership: 'unknown', productionSavings: 'unmeasured', loadedBuildIdentity: 'unknown' };
+}
+
+function ownerFixture(): any {
+  const process = { pid: 7, startTicks: '10', executableSha256: 'a'.repeat(64), pssBytes: 100, rssBytes: 200 };
+  const roots = exactOwners.map((owner, i) => ({ owner, status: 'found', id: 10 + i }));
+  return { schemaVersion: 1, mode: 'retainers', plane: 'isolated-current-build-operator-api',
+    incomplete: false, runner: { status: 0, signal: null }, pid: 7, buildSha: '12345678', bundleHash: 'b'.repeat(64),
+    inspector: { pid: 7 }, samples: [0, 1].map(() => ({ pid: 7, processes: [structuredClone(process)] })),
+    heapSnapshot: { pid: 7, bytes: 1000, sha256: 'c'.repeat(64), census: { nodeCount: 32, totalSelfSizeBytes: 1024 } },
+    heapOwnerBinding: { pid: 7, roots },
+    nativeAdapterPreflight: { sha256: 'd'.repeat(64), version: 'papercusp-heap-retainers 0.1.0' },
+    heapRetainers: { pid: 7, rootIndex: 0, upstreamRevision: '05edd8131a77790ab0e7bce2eedf5770d6bb83ae',
+      native: { executableSha256: 'd'.repeat(64), inputSha256: 'c'.repeat(64), inputBytes: 1000,
+        status: 0, signal: null, errorCode: null, stderrBytes: 0 },
+      limits: { objectIds: roots.map(x => x.id), retainerDepth: 1, maxRetainers: 32 },
+      requestedNodes: roots.map((x, i) => ({ id: x.id, status: 'found', node: {
+        id: x.id, index: i + 1, selfSizeBytes: 8, retainedSizeBytes: 16, retainerCount: 1,
+        retainersTruncated: false, retainers: [{ id: 99, index: 20, selfSizeBytes: 64,
+          retainedSizeBytes: 400, retainsIndex: i + 1, edgeType: 'Context' }] } })) },
+    hostReaped: true, snapshotRemoved: true, postSnapshotRowsPreserved: true,
+    profilerOperations: ['v8.writeHeapSnapshot (forced GC/synchronous pause)',
+      'HeapProfiler.enable (object IDs)', 'HeapProfiler.disable (object IDs)'] };
+}
+
 // A tracked, deterministic fixture independently constructed from the reader contract.
 function fixture(sibling = false): any {
   const main = { pid: 7, startTicks: '10', parentPid: 1, executableSha256: 'a'.repeat(64),
@@ -210,5 +324,85 @@ describe('independent P011 baseline raw evidence', () => {
     writeFileSync(resolve(root, destination), serializeIdentitySafeJson({ schemaVersion: 'p011-baseline-independent-v1',
       proofs, independentOf: 'No emitter import or headline totals; raw OS/V8 rows, HTTP records and identity fences.',
       physicalSavings: 'unmeasured', allocationOwner: 'unknown', requestAssignment: 'unknown' }));
+  });
+});
+
+describe('P011 independent exact singleton retained-owner evidence', () => {
+  it('joins numeric object IDs rather than constructor labels or array position', () => {
+    const r = ownerFixture(), before = auditExactOwners(r);
+    r.heapRetainers.requestedNodes.reverse();
+    expect(auditExactOwners(r)).toEqual(before);
+    expect(before.owners).toHaveLength(9);
+    expect(before.nativePhysicalOwnership).toBe('unknown');
+    expect(before.loadedBuildIdentity).toBe('unknown');
+  });
+  const corruptions: Array<[string, (r: any) => void]> = [
+    ['foreign plane', r => { r.plane = 'live-current-build-operator-api'; }],
+    ['binding PID', r => { r.heapOwnerBinding.pid++; }],
+    ['snapshot PID', r => { r.heapSnapshot.pid++; }],
+    ['graph PID', r => { r.heapRetainers.pid++; }],
+    ['process reuse', r => { r.samples[1].processes[0].startTicks = '11'; }],
+    ['duplicate sampled PID', r => { r.samples[0].processes.push(r.samples[0].processes[0]); }],
+    ['RSS without PSS', r => { delete r.samples[0].processes[0].pssBytes; }],
+    ['snapshot hash', r => { r.heapRetainers.native.inputSha256 = 'e'.repeat(64); }],
+    ['snapshot bytes', r => { r.heapRetainers.native.inputBytes++; }],
+    ['adapter bytes', r => { r.nativeAdapterPreflight.sha256 = 'e'.repeat(64); }],
+    ['native failure', r => { r.heapRetainers.native.status = 1; }],
+    ['unknown upstream', r => { r.heapRetainers.upstreamRevision = 'unknown'; }],
+    ['missing owner', r => { r.heapOwnerBinding.roots.pop(); }],
+    ['duplicate owner name', r => { r.heapOwnerBinding.roots[1].owner = r.heapOwnerBinding.roots[0].owner; }],
+    ['missing captured ID', r => { r.heapOwnerBinding.roots[0].status = 'not-in-snapshot'; }],
+    ['duplicate captured ID', r => { r.heapOwnerBinding.roots[1].id = r.heapOwnerBinding.roots[0].id; }],
+    ['wrong requested IDs', r => { r.heapRetainers.limits.objectIds[0]++; }],
+    ['missing requested node', r => { r.heapRetainers.requestedNodes.pop(); }],
+    ['duplicate requested node', r => { r.heapRetainers.requestedNodes[1] = r.heapRetainers.requestedNodes[0]; }],
+    ['constructor-only join', r => { r.heapRetainers.requestedNodes[0].node.id++; }],
+    ['duplicate graph index', r => { r.heapRetainers.requestedNodes[1].node.index = 1; }],
+    ['out-of-range index', r => { r.heapRetainers.requestedNodes[0].node.index = 32; }],
+    ['unsafe bytes', r => { r.heapRetainers.requestedNodes[0].node.retainedSizeBytes = Number.MAX_SAFE_INTEGER + 1; }],
+    ['retained below self', r => { r.heapRetainers.requestedNodes[0].node.retainedSizeBytes = 1; }],
+    ['retained above snapshot', r => { r.heapRetainers.requestedNodes[0].node.retainedSizeBytes = 2048; }],
+    ['wrong incoming target', r => { r.heapRetainers.requestedNodes[0].node.retainers[0].retainsIndex++; }],
+    ['weak edge', r => { r.heapRetainers.requestedNodes[0].node.retainers[0].edgeType = 'Weak'; }],
+    ['root parent', r => { r.heapRetainers.requestedNodes[0].node.retainers[0].index = 0; }],
+    ['duplicate incoming parent', r => { const n = r.heapRetainers.requestedNodes[0].node; n.retainers.push(n.retainers[0]); n.retainerCount++; }],
+    ['hidden truncated parents', r => { r.heapRetainers.requestedNodes[0].node.retainerCount++; }],
+    ['snapshot left behind', r => { r.snapshotRemoved = false; }],
+    ['useful rows changed', r => { r.postSnapshotRowsPreserved = false; }],
+    ['profiler intervention omitted', r => { r.profilerOperations = []; }],
+  ];
+  it.each(corruptions)('rejects corrupted %s evidence', (_name, corrupt) => {
+    const r = ownerFixture(); corrupt(r);
+    expect(() => auditExactOwners(r)).toThrow('P011 exact owner:');
+  });
+  it('does not sum shared parents or trust retained/native total headlines', () => {
+    const r = ownerFixture(), before = auditExactOwners(r);
+    r.nativeBytes = 999999; r.heapRetainers.retainedSizeBytes = 999999;
+    r.heapRetainers.groups = [{ class: 'Object', retainedSizeBytes: 999999 }];
+    expect(auditExactOwners(r)).toEqual(before);
+    expect(before).not.toHaveProperty('totalRetainedBytes');
+    expect(before.owners.every(x => x.observedDirectParentIndexes[0] === 20)).toBe(true);
+  });
+  it('preserves an explicitly bounded incomplete direct-parent census', () => {
+    const r = ownerFixture(), n = r.heapRetainers.requestedNodes[0].node;
+    n.retainerCount = 2; n.retainersTruncated = true;
+    expect(auditExactOwners(r).owners[0].directParentsNotChecked).toBe(1);
+  });
+  it('audits the tracked historical exact-owner artifact without replaying its producer', () => {
+    const path = 'docs/evidence/papercusp-oct1-p011-exact-owner-retainers-r1-2026-10-02.json';
+    const bytes = readFileSync(resolve(root, path));
+    expect(digest(bytes)).toBe('283cd13234d20676fc29a85bf883c21b607f099da449c404ca3c1ece7f4bd235');
+    const result = auditExactOwners(JSON.parse(bytes.toString()));
+    expect(result.owners.map(x => x.owner)).toEqual(exactOwners);
+    expect(result.owners.find(x => x.owner.endsWith('.operatorCache'))?.dominatorRetainedV8Bytes).toBe(1328);
+    const destination = process.env.PAPERCUSP_P011_OWNER_ORACLE_REPORT;
+    if (destination) writeFileSync(resolve(root, destination), serializeIdentitySafeJson({
+      schemaVersion: 'p011-exact-owner-independent-v1',
+      proof: { path, sha256: digest(bytes), bytes: bytes.length, result },
+      independentOf: 'No producer import, constructor-label join or class/parent aggregate retained total.',
+      limitations: ['Saved private snapshot forced GC and pause; no new live acceptance.',
+        'Exact singleton IDs identify graph nodes, not historical PostgreSQL initiating calls.',
+        'Dominator-owned V8 bytes do not establish native physical allocation or production savings.'],
+    }));
   });
 });
