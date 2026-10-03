@@ -59,7 +59,7 @@ const ann = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-import catalog from './catalog';
+import catalog, { fieldsMatchQuery } from './catalog';
 import { familyKeyPrefix, EVENT_CATALOG } from '../../events/await/catalog';
 import { HARD_CAP, promptWeight } from '../tool-guidance-budget';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
@@ -287,6 +287,42 @@ describe('events:catalog — live_awaiters', () => {
     const canonical = await call({ q: 'deploy', announced: false, installed: false, liveAwaiters: false });
     const alias = await call({ query: 'deploy', announced: false, installed: false, liveAwaiters: false });
     expect(alias.families).toEqual(canonical.families);
+  });
+
+  // WI-10005981: q used to be ONE contiguous substring, so "resource released" missed
+  // the `resource-released` family and two agents filed "no release event exists".
+  describe('multi-word q (WI-10005981)', () => {
+    const off = { announced: false, installed: false, liveAwaiters: false } as const;
+    // CONTROL: the pre-fix predicate, kept so this block proves it discriminates.
+    const oldSubstringOnly = (values: readonly unknown[], q: string) =>
+      values.some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
+    const releasedRow = EVENT_CATALOG.find((e) => e.family === 'resource-released');
+    const releasedFields = [releasedRow?.family, releasedRow?.keyTemplate, releasedRow?.describe, releasedRow?.emitter];
+
+    it('finds the family when every word appears, even split across fields', async () => {
+      for (const q of ['resource released', 'Resource  Released', 'resource lock released']) {
+        const out = await call({ q, ...off });
+        expect(out.families.map((f: { family: string }) => f.family)).toContain('resource-released');
+        expect(out.query_miss).toBeUndefined();
+      }
+    });
+
+    it('still requires EVERY word, and labels a zero result as a search miss, not absence', async () => {
+      const out = await call({ q: 'resource released zzz-no-such-word', ...off });
+      expect(out.count).toBe(0);
+      expect(out.query_miss).toMatch(/NOT proof the event does not exist/);
+    });
+
+    it('fieldsMatchQuery: verbatim, all-words and missing-word cases; the old predicate fails the multi-word case', () => {
+      expect(releasedRow).toBeDefined();
+      expect(fieldsMatchQuery(releasedFields, 'resource-released')).toBe(true);
+      expect(fieldsMatchQuery(releasedFields, 'resource released')).toBe(true);
+      expect(fieldsMatchQuery(releasedFields, 'resource granted')).toBe(false);
+      expect(fieldsMatchQuery([null, 42, undefined], 'resource')).toBe(false);
+      // Calibration: the control agrees on a verbatim query, then misses the multi-word one.
+      expect(oldSubstringOnly(releasedFields, 'resource-released')).toBe(true);
+      expect(oldSubstringOnly(releasedFields, 'resource released')).toBe(false);
+    });
   });
 
   it('matches a concrete key against its templated family row', async () => {
