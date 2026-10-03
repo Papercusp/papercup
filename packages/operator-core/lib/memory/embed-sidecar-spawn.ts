@@ -72,6 +72,27 @@ export const EMBED_SIDECAR_REEXEC_ENTRIES: readonly string[] = ['serve.mjs', 'ho
  */
 export const EMBED_SIDECAR_DEFAULT_IDLE_EXIT_MS = 5 * 60_000;
 
+/** WI-10005932: override for how long a spawned child may take to print its READY line. */
+export const EMBED_SIDECAR_STARTUP_TIMEOUT_ENV = 'PAPERCUSP_EMBED_SIDECAR_STARTUP_TIMEOUT_MS';
+
+/**
+ * WI-10005932: default READY deadline for a spawned sidecar. It was 10 s. On a
+ * 4-vCPU host with three packaged Servers cold-booting at once (P-532d), the
+ * re-exec'd bundle needed about 10 s just to reach READY. The parent then killed
+ * a healthy child four times in a row, each respawn repeating the same startup
+ * cost, and stopped one attempt short of the circuit breaker. The deadline only
+ * has to catch a wedged child, so it is set well above contended startup.
+ */
+export const EMBED_SIDECAR_DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
+
+/** WI-10005932: READY deadline for a spawned child; a positive integer env override wins. */
+export function embedSidecarStartupTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[EMBED_SIDECAR_STARTUP_TIMEOUT_ENV]?.trim();
+  if (!raw) return EMBED_SIDECAR_DEFAULT_STARTUP_TIMEOUT_MS;
+  const ms = Number(raw);
+  return Number.isInteger(ms) && ms > 0 ? ms : EMBED_SIDECAR_DEFAULT_STARTUP_TIMEOUT_MS;
+}
+
 // ESM (type:module) — derive the module dir from import.meta (EI-1612 shape).
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -513,6 +534,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
   });
 
   const fixedPort = embedSidecarFixedPort();
+  const startupTimeoutMs = embedSidecarStartupTimeoutMs();
   return new Promise<void>((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -549,8 +571,8 @@ export async function spawnEmbedSidecar(): Promise<void> {
         sidecarProcess.kill();
         sidecarProcess = null;
       }
-      reject(new Error('Embed sidecar startup timeout'));
-    }, 10000);
+      reject(new Error(`Embed sidecar startup timeout (${startupTimeoutMs} ms)`));
+    }, startupTimeoutMs);
 
     // Listen for ready handshake
     let stdoutBuffer = '';
@@ -770,7 +792,9 @@ export async function ensureEmbedSidecar(
     registerEmbedSidecarShutdownHooks();
     return childUrl() ?? (fixed !== null ? loopbackUrl(fixed) : null);
   } catch (err) {
-    console.warn('[embed-sidecar] ensure failed (no sidecar → pure in-process engine):', err instanceof Error ? err.message : err);
+    // WI-10005932: no consumer loads the model in-process on null; the
+    // sidecar embedder retries within its own budget (WI-4021).
+    console.warn('[embed-sidecar] ensure failed (no sidecar this attempt; callers retry):', err instanceof Error ? err.message : err);
     return null;
   }
 }
