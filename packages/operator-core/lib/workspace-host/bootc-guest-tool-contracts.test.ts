@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES } from '@papercusp/deployment-driver';
+
 import { AWS_AMI_REQUIRED_GUEST_TOOLS } from './aws-ami-release';
 import { AZURE_COMPUTE_GALLERY_REQUIRED_GUEST_TOOLS } from './azure-compute-gallery-release';
 import { GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS } from './gcp-image-family';
@@ -94,6 +96,71 @@ describe('bootc guest-tool contracts (WI-10005618)', () => {
     expect(containerfile).toMatch(
       /^COPY papercusp-google-guest-agent-gce-only\.conf \/usr\/lib\/systemd\/system\/google-guest-agent\.service\.d\/papercusp-gce-only\.conf$/m,
     );
+  });
+});
+
+/**
+ * The Ubuntu host model installs WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES at boot; the bootc model
+ * must carry an RPM for every one of them in the image instead. WI-10005779: `git` was missing
+ * from BOTH lists (stock Ubuntu ships it), so the bootc image booted without it and the content
+ * bootstrap died with `spawn git ENOENT`. A new apt name with no row here fails the first test.
+ */
+const APT_TO_BOOTC_RPM: Readonly<Record<string, string>> = {
+  acl: 'acl',
+  bubblewrap: 'bubblewrap',
+  'ca-certificates': 'ca-certificates',
+  curl: 'curl',
+  git: 'git-core',
+  jq: 'jq',
+  minisign: 'minisign',
+  'openssh-server': 'openssh-server',
+  sudo: 'sudo',
+  // Behavioural substitutions (RPM-EQUIVALENCE.md §G), not renames.
+  ufw: 'nftables',
+  'unattended-upgrades': 'dnf-automatic',
+  // Native SONAME providers, re-derived per RPM-EQUIVALENCE.md §D.
+  libasound2t64: 'alsa-lib',
+  libatomic1: 'libatomic',
+  'libgcc-s1': 'libgcc',
+  'liblz4-1': 'lz4-libs',
+  libssl3: 'openssl-libs',
+  'libstdc++6': 'libstdc++',
+  libzstd1: 'libzstd',
+  zlib1g: 'zlib',
+};
+
+describe('bootc image carries the apt host contract (WI-10005779)', () => {
+  // Strip the inline `# ...` backtick comments so a package named only inside a comment does
+  // not count, and so a package line with a trailing comment still matches.
+  const executable = readFileSync(CONTAINERFILE, 'utf8').replace(/`#[^`]*`/g, '');
+
+  it('every apt contract package has a bootc RPM row, and no row is stale', () => {
+    const apt = [...WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES] as string[];
+    for (const pkg of apt) expect(APT_TO_BOOTC_RPM, `no bootc RPM row for apt package ${pkg}`).toHaveProperty(pkg);
+    for (const pkg of Object.keys(APT_TO_BOOTC_RPM)) expect(apt, `stale row ${pkg}`).toContain(pkg);
+  });
+
+  it('the bootc image installs the RPM for every apt contract package', () => {
+    for (const [apt, rpm] of Object.entries(APT_TO_BOOTC_RPM)) {
+      expect(installedByName(executable, rpm), `${apt} -> ${rpm} is not installed by workspace-host.Containerfile`).toBe(true);
+    }
+  });
+
+  it('the content bootstrap clones with git, so both host models must provide git', () => {
+    const installer = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'cupboard', 'offline-content-bundle-install-io.ts'),
+      'utf8',
+    );
+    // Positive control: the installer really spawns git. If it stops, drop git from both lists.
+    expect(installer).toMatch(/spawn\('git', \['clone'/);
+    expect(WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES as readonly string[]).toContain('git');
+    expect(installedByName(executable, 'git-core')).toBe(true);
+    // The build fails on a missing package rather than shipping an image without it.
+    expect(executable).toMatch(/rpm -q [^\n]*\bgit-core\b/);
+  });
+
+  it('a package named only inside a comment does not count as installed', () => {
+    expect(installedByName('         `# git-core is great` \\\n'.replace(/`#[^`]*`/g, ''), 'git-core')).toBe(false);
   });
 });
 

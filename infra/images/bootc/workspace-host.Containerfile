@@ -144,6 +144,10 @@ RUN set -eux; \
          ca-certificates \
          curl \
          dracut \
+         `# git <- the release's content bootstrap shallow-clones the first-party bundle with` \
+         `# git (offline-content-bundle-install-io.ts gitCloneShallow). Stock Ubuntu ships git,` \
+         `# so the apt contract never had to name it; Stream 9 bootc does not (WI-10005779).` \
+         git-core \
          google-compute-engine-oslogin \
          google-guest-agent \
          jq \
@@ -225,7 +229,7 @@ RUN set -eux; \
               /usr/share/rpm/rpmdb.sqlite-wal \
     && install -m 0644 /tmp/papercusp-rpmdb.sqlite /usr/share/rpm/rpmdb.sqlite \
     && rm -f /tmp/papercusp-rpmdb.sqlite \
-    && rpm -q minisign dnf-automatic alsa-lib libatomic \
+    && rpm -q minisign dnf-automatic alsa-lib libatomic git-core \
               google-compute-engine google-compute-engine-oslogin google-guest-agent \
               amazon-ssm-agent
 

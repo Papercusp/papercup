@@ -12,7 +12,7 @@
  *   - closeHarnessStore on an uncached key is a no-op (no throw).
  */
 
-import { afterEach, afterAll, describe, expect, it } from 'vitest';
+import { afterEach, afterAll, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
 import { channel } from 'node:diagnostics_channel';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -53,6 +53,43 @@ function tmpRoot(prefix = 'mb-cstore-'): string {
 }
 
 describe('getHarnessStore — per-(workspaceRoot, harnessSlug) cache (A5)', () => {
+  it('distinguishes a pending native ready from a completed open', async () => {
+    const root = tmpRoot();
+    const opts = { workspaceRoot: root, harnessSlug: 'delayed-ready' };
+    const events: CorestoreOpenObservation[] = [];
+    let entered!: () => void;
+    const nativeEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const pause = new Promise<void>((resolve) => { release = resolve; });
+    const diagnostic = channel(CORESTORE_OPEN_CHANNEL);
+    const listener = (message: unknown) => {
+      const event = message as CorestoreOpenObservation;
+      if (event.workspaceRoot === root) events.push(event);
+    };
+    diagnostic.subscribe(listener);
+    const originalReady = Corestore.prototype.ready;
+    const ready = vi.spyOn(Corestore.prototype, 'ready').mockImplementation(async function (this: Corestore) {
+      entered();
+      await pause;
+      return originalReady.call(this);
+    });
+    const opening = getHarnessStore(opts);
+    // Register cleanup before awaiting native work, as in the A003 fixture.
+    cleanups.push(async () => {
+      release();
+      await opening;
+      await closeHarnessStore(opts);
+      ready.mockRestore();
+      diagnostic.unsubscribe(listener);
+    });
+    await nativeEntered;
+    expect(events.at(-1)).toMatchObject({ stage: 'native-ready', outcome: 'started' });
+    expect(events.some((event) => event.outcome === 'succeeded')).toBe(false);
+    release();
+    await opening;
+    expect(events.at(-1)).toMatchObject({ stage: 'ready', outcome: 'succeeded' });
+  });
+
   it('reports real open stages in order and the actual failed lock stage', async () => {
     const root = tmpRoot();
     const events: CorestoreOpenObservation[] = [];

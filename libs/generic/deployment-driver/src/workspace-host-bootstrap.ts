@@ -227,6 +227,10 @@ export const WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES = [
   "bubblewrap",
   "ca-certificates",
   "curl",
+  // The release's content bootstrap shallow-clones the first-party bundle with git
+  // (offline-content-bundle-install-io.ts gitCloneShallow). Stock Ubuntu images ship git, so
+  // this was never named, and the bootc image (Stream 9) booted without it (WI-10005779).
+  "git",
   "jq",
   "minisign",
   "openssh-server",
