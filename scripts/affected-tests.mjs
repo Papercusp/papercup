@@ -5749,7 +5749,7 @@ async function armTestPassReuse(taskList) {
       srcDir: join(ROOT, "libs/test-config/src"),
     });
   } catch (err) {
-    console.log(
+    outSync(
       `TEST_PASS_REUSE_TEST_CONFIG_CLOSURE state=unavailable reason=${String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 120)}`,
     );
   }
@@ -5763,12 +5763,12 @@ async function armTestPassReuse(taskList) {
       repoRoot: ROOT,
       // WI-10004941: untracked configs tsconfck cannot parse are skipped (sound); say so.
       onUntrackedParseFailures: (failures) =>
-        console.log(
+        outSync(
           `TEST_PASS_REUSE_TSCONFIG_CLOSURE skippedUntracked=${failures.length} first=${String(failures[0]).replace(/\s+/g, "_").slice(0, 160)}`,
         ),
     });
   } catch (err) {
-    console.log(
+    outSync(
       `TEST_PASS_REUSE_TSCONFIG_CLOSURE state=unavailable reason=${String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 120)}`,
     );
   }
