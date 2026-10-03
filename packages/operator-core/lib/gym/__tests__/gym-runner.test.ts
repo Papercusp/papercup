@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import { runGymPipeline } from '../gym-runner';
 import type { GymRunnerPorts, GymRunSpec } from '../gym-runner';
 
@@ -63,6 +64,62 @@ function makePorts(opts: FakeOpts) {
 }
 
 describe('runGymPipeline', () => {
+  it('keeps the original task and variant when the caller mutates them during an awaited clone', async () => {
+    const spec = makeSpec({
+      task: { ...makeSpec().task, oracle: {
+        testPath: 'original.test.ts', implPath: 'original.ts',
+        pinCommit: 'a'.repeat(40), sourceRef: 'WI-ORIGINAL',
+      } },
+      variant: { id: 'challenger', overlay: { promptOverrides: { worker: 'original overlay' } } },
+    });
+    const original = structuredClone(spec);
+    const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+    const filed: Parameters<GymRunnerPorts['fileFeature']>[0][] = [];
+    const oracles: Parameters<NonNullable<GymRunnerPorts['runOracle']>>[0][] = [];
+    ports.cloneSubstrate = async () => {
+      await Promise.resolve();
+      spec.task.id = 'replacement';
+      spec.task.spec = 'replacement spec';
+      spec.task.intent = 'replacement intent';
+      spec.task.oracle!.testPath = 'replacement.test.ts';
+      spec.task.oracle!.pinCommit = 'b'.repeat(40);
+      spec.variant.id = 'replacement';
+      spec.variant.overlay.promptOverrides.worker = 'replacement overlay';
+      spec.harnessCommit = 'c'.repeat(40);
+    };
+    ports.fileFeature = async (input) => { filed.push(input); };
+    ports.runOracle = async (input) => {
+      oracles.push(input);
+      return { results: [{ name: 'original assertion', passed: true }],
+        testPath: input.testPath, pinCommit: input.pinCommit!,
+        sourceHashes: { pinned: 'd'.repeat(64), before: 'd'.repeat(64), after: 'd'.repeat(64) } };
+    };
+    const result = await runGymPipeline(spec, ports);
+    expect(filed).toEqual([expect.objectContaining({ spec: original.task.spec, intent: original.task.intent })]);
+    expect(oracles).toHaveLength(2);
+    expect(oracles.every((v) => v.testPath === original.task.oracle!.testPath && v.pinCommit === original.task.oracle!.pinCommit)).toBe(true);
+    expect(result.runKey).toMatchObject({ taskId: original.task.id, variantId: original.variant.id });
+    expect(result.deterministicSignals?.executionInput).toEqual({
+      task: original.task, variant: original.variant, harnessCommit: original.harnessCommit,
+      taskHash: createHash('sha256').update(JSON.stringify(original.task)).digest('hex'),
+      variantHash: createHash('sha256').update(JSON.stringify(original.variant)).digest('hex'),
+    });
+  });
+
+  it('retains input provenance without inferring task success or code identity from it', async () => {
+    const spec = makeSpec();
+    const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+    const result = await runGymPipeline(spec, ports);
+    expect(result.deterministicSignals?.executionInput).toMatchObject({
+      task: spec.task, variant: spec.variant, harnessCommit: spec.harnessCommit,
+    });
+    expect(result.deterministicSignals).not.toHaveProperty('taskPassed');
+    expect(result.deterministicSignals).not.toHaveProperty('regressions');
+    expect(result.deterministicSignals).not.toHaveProperty('codeHash');
+    spec.task.spec = 'changed after return';
+    expect(result.deterministicSignals?.executionInput).toMatchObject({ task: { spec: 'Add a /health endpoint' } });
+  });
+
   it('runs the full setup sequence then polls to a terminal outcome', async () => {
     const { ports, calls } = makePorts({
       poll: [{ workflowStatus: 'PENDING', featureStatus: 'in_progress' }, { workflowStatus: 'SUCCESS', featureStatus: 'passed' }],

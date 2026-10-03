@@ -12,6 +12,7 @@
  * (for the transcript) AFTER the run, then calls teardown.
  */
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { gymRunIdentity, type GymRunIdentity, type GymRunKey } from './run-identity';
 import { planVariantOverlay, type VariantOverlay } from './variant-overlay';
 import { classifyGymRun, type GymRunOutcome } from './pipeline-status';
@@ -106,6 +107,17 @@ export interface GymRunResult {
 }
 
 export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): Promise<GymRunResult> {
+  // The caller may mutate its spec while effects are awaited. Identity, filed
+  // work and both oracle measurements must describe the same original task.
+  spec = structuredClone(spec);
+  const executionInput = {
+    task: structuredClone(spec.task),
+    variant: structuredClone(spec.variant),
+    // Requested harness pin, not proof of the runtime code actually loaded.
+    harnessCommit: spec.harnessCommit,
+    taskHash: createHash('sha256').update(JSON.stringify(spec.task)).digest('hex'),
+    variantHash: createHash('sha256').update(JSON.stringify(spec.variant)).digest('hex'),
+  };
   const runKey: GymRunKey = { taskId: spec.task.id, variantId: spec.variant.id, cycle: spec.cycle, repeat: spec.repeat };
   const identity = gymRunIdentity(runKey);
   const clonePath = join(spec.scratchRoot, identity.cloneDirName);
@@ -184,7 +196,7 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
     });
     if (cls.terminal) {
       const postOracle = await measureOracle();
-      let deterministicSignals: Record<string, unknown> | undefined;
+      let deterministicSignals: Record<string, unknown> = { executionInput };
       if (spec.task.oracle) {
         const pre = preOracle?.results ?? [];
         const post = postOracle?.results ?? [];
@@ -202,6 +214,7 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
         const regression = sourceCurrent ? regressionsFromTests(pre, post) : undefined;
         const regressionPopulation = pre.filter((t) => t.executed !== false && t.passed).length;
         deterministicSignals = {
+          executionInput,
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
@@ -221,7 +234,7 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
         outcome: cls.outcome,
         terminal: true,
         elapsedMs,
-        ...(deterministicSignals ? { deterministicSignals } : {}),
+        deterministicSignals,
       };
     }
     await ports.sleep(spec.pollIntervalMs);
