@@ -146,6 +146,40 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
     get prompt() { return sentPrompt; } };
 }
 
+test('beginner entry selects a prepared workspace by keyboard with no provisioning or credentials and passes axe', async ({ page }) => {
+  const fixture = await setupJourney(page, true);
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  const entry = page.getByRole('region', { name: 'Beginner workspace entry' });
+  await expect(entry).toContainText('existing model and account defaults');
+  await expect(entry).toContainText('interactive mode');
+  const choose = entry.getByRole('button', { name: 'Use prepared workspace My workspace' });
+  await choose.focus(); await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/host=host-tutorial/);
+  await expect(page).toHaveURL(/step=operate/);
+  await expect(page.getByRole('textbox', { name: 'Connection label' })).toHaveCount(0);
+  expect(fixture.writes).toEqual([]);
+  const result = await new AxeBuilder({ page }).include('[aria-label="Beginner workspace entry"]')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+  await test.info().attach('prepared-entry-axe', { body: JSON.stringify(result), contentType: 'application/json' });
+  expect(result.violations).toEqual([]);
+  expect(fixture.browserErrors).toEqual([]);
+});
+
+test('beginner entry explains no prepared workspace and navigates to advanced BYOC without a mutation', async ({ page }) => {
+  const fixture = await setupJourney(page, false);
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  const entry = page.getByRole('region', { name: 'Beginner workspace entry' });
+  await expect(entry).toContainText('Ask your administrator to prepare one');
+  await expect(entry.getByRole('button', { name: /Use prepared workspace/ })).toHaveCount(0);
+  await entry.getByRole('button', { name: 'Advanced: connect my own cloud' }).click();
+  await expect(page).toHaveURL(/tutorial=advanced/);
+  await expect(page.getByRole('textbox', { name: 'Connection label' })).toBeVisible();
+  expect(fixture.writes).toEqual([]);
+  expect(fixture.browserErrors).toEqual([]);
+});
+
 test('lesson help chat text passes axe when its empty state is in the viewport', async ({ page }) => {
   const fixture = await setupJourney(page, false);
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
