@@ -1642,6 +1642,75 @@ export async function hasLiveExactAwaitForSubscriberKey(
   return rows.length > 0;
 }
 
+/**
+ * Standing-watch registration identity for `watch:create`'s dedupe gate (WI-10005697).
+ *
+ * A STANDING watch is the one registration nothing ever consumes — a standing fire
+ * matches without setting `fired_at` — so re-running the drained-lane member contract's
+ * own `watch:create { pattern:'work-item:claimable', wake:true, once:false }` step added
+ * a PERMANENT duplicate row on every wake. One owner was measured holding SEVEN identical
+ * never-expiring rows (EI-23788231724653530). Only PREDICATE watches had a dedupe
+ * (`findMatchingActivePredicateWatch`); this is the pattern-watch counterpart, and it is
+ * deliberately shaped the same way: an IDENTICAL live registration is JOINED rather than
+ * duplicated.
+ *
+ * Identity is every field that changes how the watch BEHAVES — key, payload filter, wake
+ * floor, urgency — so two registrations that would wake the subscriber identically
+ * collapse, while any behavioural difference still earns its own row. `note` is annotation
+ * and is deliberately excluded. `payload_filter` is compared as jsonb, which Postgres
+ * normalizes on parse, so key ORDER and duplicate keys cannot split an otherwise identical
+ * filter.
+ *
+ * ⚠ Key comparison is EXACT, not `normalizeEventKey`. That helper is a fuzzy NEAR-MISS
+ * normalizer (`trim().toLowerCase().replace(/[-_:.]/g,'')`) while `registerAwait` stores
+ * the key verbatim, so normalizing here would compare a separator-stripped probe against a
+ * raw column and never match the very keys this exists for (`work-item:claimable` has both
+ * a `-` and a `:`).
+ *
+ * Scope is narrow on purpose — standing, deadline-free, plain (non-composed, no producer
+ * certificate) wake rows, i.e. exactly the shape that accumulates forever because nothing
+ * retires it. A one-shot await is consumed by its fire; a deadline-bearing, composed, or
+ * certificate-bearing row carries per-registration state. Those still insert.
+ *
+ * NOT atomic against a concurrent identical registration: this is a read, and
+ * `registerAwait` opens its own transaction. Two registrations racing inside that window
+ * still produce two rows — the same residual race `findMatchingActivePredicateWatch` has.
+ * The defect being fixed is sequential re-registration across wakes, which this closes
+ * completely.
+ */
+export async function findMatchingActiveStandingWatch(input: {
+  subscriberId: string;
+  eventKey: string;
+  payloadFilter?: unknown | null;
+  minSleepSec?: number | null;
+  urgency?: boolean;
+}): Promise<AwaitRow | null> {
+  const ws = eventsWs();
+  const payloadFilter = input.payloadFilter == null ? null : JSON.stringify(input.payloadFilter);
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${input.subscriberId}
+       AND event_key = ${input.eventKey}
+       AND policy = 'wake'
+       AND once = false
+       AND root_id IS NULL
+       AND expires_ts IS NULL
+       AND producer_health IS NULL
+       AND fired_at IS NULL
+       AND cancelled_at IS NULL
+       AND superseded_at IS NULL
+       AND payload_filter IS NOT DISTINCT FROM ${payloadFilter}::text::jsonb
+       AND min_sleep_sec IS NOT DISTINCT FROM ${input.minSleepSec ?? null}
+       AND coalesce(urgency, false) = ${input.urgency ?? false}
+     ORDER BY created_at ASC
+     LIMIT 1
+  `,
+  );
+  return rows.length > 0 ? mapAwait(rows[0]) : null;
+}
+
 /** Active awaits matching an event key — peek without firing (sources may use
  *  this to decide whether anyone is waiting at all).
  *
