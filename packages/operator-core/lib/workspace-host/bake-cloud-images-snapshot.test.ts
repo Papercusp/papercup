@@ -65,6 +65,11 @@ function runFixture(
     git?: 'clean' | 'dirty';
     /** Pass --allow-unpinned-context. Default: true outside git, false in a git context. */
     allowUnpinned?: boolean;
+    /**
+     * WI-10005910. What step 3d's native-addon probe answers. Default 'ok' (11 loaded, 1 foreign
+     * prebuild skipped); 'fail' is the measured stream9 rocksdb-native GLIBCXX_3.4.30 failure.
+     */
+    addonProbe?: 'ok' | 'fail' | 'empty' | 'silent' | 'podman-error';
   } = {},
 ): {
   status: number;
@@ -182,6 +187,19 @@ case "$subcommand" in
           silent) ;;
           dangling) printf 'PAPERCUSP_IMAGE_RELEASE_INVALID=dangling:releases/gone\\n' ;;
           *) printf 'PAPERCUSP_IMAGE_RELEASE=%s\\n' "$BAKE_TEST_IMAGE_RELEASE" ;;
+        esac
+        exit 0 ;;
+      esac
+    done
+    # WI-10005910: step 3d dlopens every native addon with the release's own node.
+    for arg in "$@"; do
+      case "$arg" in *PAPERCUSP_ADDON_PROBE*)
+        case "$BAKE_TEST_ADDON_PROBE" in
+          fail) printf 'PAPERCUSP_ADDON_FAIL node_modules/rocksdb-native/prebuilds/linux-x64/rocksdb-native.node :: version GLIBCXX_3.4.30 not found\\nPAPERCUSP_ADDON_PROBE ok=10 fail=1 skipped=0\\n' ;;
+          empty) printf 'PAPERCUSP_ADDON_PROBE ok=0 fail=0 skipped=0\\n' ;;
+          silent) ;;
+          podman-error) printf 'Error: executable file not found in $PATH\\n' >&2; exit 127 ;;
+          *) printf 'PAPERCUSP_ADDON_SKIP node_modules/x/prebuilds/darwin-arm64/x.node\\nPAPERCUSP_ADDON_PROBE ok=11 fail=0 skipped=1\\n' ;;
         esac
         exit 0 ;;
       esac
@@ -383,6 +401,7 @@ set -euo pipefail
         // The fake disk holds whatever release the image carries.
         BAKE_TEST_RELEASE_VERSION: options.imageRelease ?? release?.version ?? '',
         BAKE_TEST_IMAGE_RELEASE: options.imageRelease ?? release?.version ?? '',
+        BAKE_TEST_ADDON_PROBE: options.addonProbe ?? 'ok',
         BAKE_TEST_DISK_METADATA: diskMetadata,
         RELEASE_STORAGE_DRIVER: 'overlay',
         UDISKS2_INHIBIT_BIN: join(bin, 'udisks2-inhibit'),
@@ -616,6 +635,78 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
 
   // WI-10005761: a bootc release is image CONTENT, so the manifest records the release read back
   // out of the pinned image (never restated from the flag) and release consumers refuse a mismatch.
+  describe('loads every native addon the release ships before rendering (WI-10005910)', () => {
+    const withRelease = (addonProbe: 'ok' | 'fail' | 'empty' | 'silent' | 'podman-error') => {
+      const releaseRoot = mkdtempSync(join(tmpdir(), 'wi10005910-release-root-'));
+      try {
+        return runFixture(SOURCE, 'raw', { root: releaseRoot, version: '0.0.21-p318r62b' }, undefined, false, 'pass', {
+          addonProbe,
+        });
+      } finally {
+        rmSync(releaseRoot, { recursive: true, force: true });
+      }
+    };
+    const rendered = (calls: string[]) => calls.some((call) => call.startsWith('run --rm --privileged'));
+
+    it('runs the probe with the release node, offline, in the pinned image, and records the count', () => {
+      const result = withRelease('ok');
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain('BAKE_NATIVE_ADDONS=ok:11 skipped:1');
+      expect(result.output).toContain('PAPERCUSP_ADDON_SKIP node_modules/x/prebuilds/darwin-arm64/x.node');
+      const probe = result.podmanCalls.find((call) => call.includes('PAPERCUSP_ADDON_PROBE'));
+      expect(probe, result.podmanCalls.join('\n')).toBeDefined();
+      expect(probe).toContain('--entrypoint /opt/papercusp/releases/0.0.21-p318r62b/bin/node');
+      expect(probe).toContain('--network=none');
+      expect(probe).toContain('--pull=never');
+      expect(probe).toMatch(/@sha256:/);
+      expect(rendered(result.podmanCalls)).toBe(true);
+    });
+
+    it.each([
+      ['an addon that does not load (the stream9 GLIBCXX_3.4.30 case)', 'fail', '1 native addon(s) in release 0.0.21-p318r62b do not load'],
+      ['a probe that loaded no addon', 'empty', 'loaded no addon'],
+      ['a probe with no verdict', 'silent', 'gave no verdict'],
+      ['a probe that could not run', 'podman-error', 'could not run'],
+    ] as const)('fails the bake before rendering on %s', (_name, addonProbe, message) => {
+      const result = withRelease(addonProbe);
+      expect(result.status).toBe(1);
+      expect(result.output).toContain(message);
+      expect(result.output).not.toContain('BAKE_NATIVE_ADDONS=');
+      expect(result.manifest).toBeNull();
+      expect(rendered(result.podmanCalls)).toBe(false);
+    });
+
+    it('surfaces the failing addon and its loader error in the bake log', () => {
+      const result = withRelease('fail');
+      expect(result.output).toContain('PAPERCUSP_ADDON_FAIL node_modules/rocksdb-native/prebuilds/linux-x64/rocksdb-native.node');
+      expect(result.output).toContain('GLIBCXX_3.4.30');
+    });
+
+    it('falsifiability control: without the fail branch the same unloadable release renders', () => {
+      const failBranch = 'if [ "$addon_fail" -gt 0 ]; then';
+      expect(SOURCE).toContain(failBranch);
+      const mutant = SOURCE.replace(failBranch, 'if false; then');
+      expect(mutant).not.toBe(SOURCE);
+      const releaseRoot = mkdtempSync(join(tmpdir(), 'wi10005910-mutant-root-'));
+      try {
+        const result = runFixture(mutant, 'raw', { root: releaseRoot, version: '0.0.21-p318r62b' }, undefined, false, 'pass', {
+          addonProbe: 'fail',
+        });
+        expect(result.status, result.output).toBe(0);
+        expect(rendered(result.podmanCalls)).toBe(true);
+      } finally {
+        rmSync(releaseRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('does not run the probe on an OS-only bake, which carries no release to load', () => {
+      const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { addonProbe: 'fail' });
+      expect(result.status, result.output).toBe(0);
+      expect(result.podmanCalls.some((call) => call.includes('PAPERCUSP_ADDON_PROBE'))).toBe(false);
+      expect(result.output).not.toContain('BAKE_NATIVE_ADDONS=');
+    });
+  });
+
   describe('records the release the image carries (WI-10005761)', () => {
     it('records the built release and checks it on the disk', () => {
       const releaseRoot = mkdtempSync(join(tmpdir(), 'wi10005761-release-root-'));
