@@ -684,23 +684,43 @@ export async function readPendingOutcomeCandidates(opts: {
 }
 
 /**
- * Last-routed instant per lens (ms epoch), workspace-scoped, origin='scout' by
+ * Last successful ideator attempt or routed instant per lens (ms epoch), workspace-scoped, origin='scout' by
  * default (D-009 lens-learning isolation) and deliberately NOT harness-filtered
  * (EI-10520: the scout corpus is ONE per-workspace bucket under '@singleton').
  * Feeds the WI-5041 lens-rotation order: a budget-capped ideator roster runs
  * the STALEST lenses first, so even a 2-ideator roster spans the whole lens set
  * across cycles instead of pinning the first two — the multi-lens-routing v2
- * release bar (>=4 distinct lenses / 7d). A lens absent from the result has
- * never routed (treat as most stale).
+ * release bar (>=4 distinct lenses / 7d). EI-24926443593885283: routing alone
+ * cannot advance rotation when critics reject every idea. Reuse the existing
+ * tick's ideator slots so a successful zero-output attempt still takes its turn.
+ * Historical routes remain a fallback; failed slots and non-Scout ticks cannot
+ * make the production Scout roster look exercised.
  */
 export async function readLensRecency(opts: ScoutLedgerOpts = {}): Promise<Record<string, number>> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<Array<{ lens: string; last_routed_at: string | number }>>`
-    SELECT lens, max(routed_at) AS last_routed_at
-      FROM harness_shared.scout_routed_ideas
-     WHERE workspace_id = ${ws}
-       ${originClause(sql, opts.origin)}
+    WITH lens_visits AS (
+      SELECT lens, routed_at AS visited_at
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${ws}
+         ${originClause(sql, opts.origin)}
+      UNION ALL
+      SELECT slot->>'lens' AS lens,
+             (extract(epoch FROM t.tick_at) * 1000)::bigint AS visited_at
+        FROM harness_shared.scout_ticks t
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(t.detail->'ideators') = 'array'
+               THEN t.detail->'ideators' ELSE '[]'::jsonb END
+        ) slot
+       WHERE t.workspace_id = ${ws}
+         AND ${opts.origin ?? 'scout'} = 'scout'
+         AND t.origin = 'scout' AND t.status = 'ran'
+         AND jsonb_typeof(slot->'lens') = 'string'
+         AND slot->>'error' IS NULL
+    )
+    SELECT lens, max(visited_at) AS last_routed_at
+      FROM lens_visits
      GROUP BY lens`;
   const out: Record<string, number> = {};
   for (const r of rows) if (r.lens) out[r.lens] = Number(r.last_routed_at) || 0;
