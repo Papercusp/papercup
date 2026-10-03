@@ -342,7 +342,8 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       transportDiagnostics.push(diagnostic);
       // Synchronous output survives callers that throw before writing a
       // successful-call receipt. No credentials, text, bodies or arbitrary headers.
-      writeSync(1, `[llm-transport] ${JSON.stringify({ ...diagnostic, promptSha256 })}\n`);
+      writeSync(1, `[llm-transport] ${JSON.stringify({ ...diagnostic, promptSha256,
+        model, ownerId: opts.ownerId ?? null })}\n`);
     },
     ownerId: opts.ownerId,
     // Usage attribution: the priority label already names the caller ('gym',

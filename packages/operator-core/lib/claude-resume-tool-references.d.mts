@@ -32,10 +32,27 @@ export function analyzeClaudeResumeTranscriptFile(
 ): ClaudeResumeTranscriptAnalysis | null;
 export function __resetClaudeResumeTranscriptCacheForTests(): void;
 export function appendClaudeToolReferencesToSeed(seed: string | null | undefined, references: readonly string[]): string;
+export interface NeutralizeToolReferencesOptions {
+  /** Leave Papercusp MCP references in place (a resume restores those via the launch seed). */
+  nativeOnly?: boolean;
+}
 export function neutralizeClaudeToolReferences(
   jsonl: string,
+  options?: NeutralizeToolReferencesOptions,
 ): { text: string; rewritten: number; toolNames: string[] };
 export function neutralizeForkSeedToolReferences(
   projectsDir: string | null | undefined,
   sessionId: string | null | undefined,
+  options?: NeutralizeToolReferencesOptions,
 ): { files: number; rewritten: number; toolNames: string[] };
+export function neutralizeToolReferencesInFile(
+  file: string | null | undefined,
+  options?: NeutralizeToolReferencesOptions,
+): { rewritten: number; toolNames: string[] };
+export function neutralizeResumeNativeToolReferences(
+  projectsDir: string | null | undefined,
+  sessionId: string | null | undefined,
+): { files: number; rewritten: number; toolNames: string[] };
+export function neutralizeResumeNativeToolReferencesInFile(
+  file: string | null | undefined,
+): { rewritten: number; toolNames: string[] };

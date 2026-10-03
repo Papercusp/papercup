@@ -173,6 +173,7 @@ import {
   appendClaudeToolReferencesToSeed,
   CLAUDE_TOOL_REFERENCE_POISON_TURNS,
   isMissingClaudeToolReferenceError,
+  neutralizeResumeNativeToolReferences,
 } from '../../claude-resume-tool-references.mjs';
 import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
@@ -4473,6 +4474,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           }
         } catch (e) {
           console.warn(`[wake-executor] claude rematerialize check failed: ${(e as Error)?.message ?? e}`);
+        }
+        // EI-24890753013901545: the resumed headless process has its own tool surface, so
+        // a NATIVE deferred tool the earlier process loaded (ExitPlanMode,
+        // WaitForMcpServers…) can be absent and the provider 400s the first replayed
+        // request — the seed below restores only Papercusp MCP names. This process holds
+        // no live session (we are about to spawn the resume), so drop the native
+        // references from the transcript first; they only pre-load a schema.
+        try {
+          const dropped = neutralizeResumeNativeToolReferences(join(cfgDir, 'projects'), sid);
+          if (dropped.rewritten > 0) {
+            console.log(
+              `[wake-executor] dropped ${dropped.rewritten} native deferred tool reference(s) (${dropped.toolNames.join(', ')}) from claude/${sid} before resume`,
+            );
+          }
+        } catch (e) {
+          console.warn(`[wake-executor] native tool-reference neutralize failed: ${(e as Error)?.message ?? e}`);
         }
         const analysis = await refreshClaudeResumeTranscript(owner, sid);
         const inheritedToolSeed = process.env.PAPERCUSP_TOOLS;

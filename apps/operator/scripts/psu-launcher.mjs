@@ -111,6 +111,7 @@ import {
   analyzeClaudeResumeTranscript,
   appendClaudeToolReferencesToSeed,
   neutralizeForkSeedToolReferences,
+  neutralizeResumeNativeToolReferencesInFile,
 } from "../../../packages/operator-core/lib/claude-resume-tool-references.mjs";
 import {
   RECOVERY_CAPABILITY_DIAGNOSTIC,
@@ -4157,25 +4158,37 @@ export function sessionTranscriptFile(session, { home = homedir() } = {}) {
  * call tools:find. Unknown/removed tool names are harmlessly ignored by the
  * server's allowlist filter and remain eligible for the poison detector.
  */
-export function addClaudeResumeToolReferencesToEnv(session, env, { home = homedir() } = {}) {
-  if (session?.agent !== "claude" || typeof env?.PAPERCUSP_TOOLS !== "string" || !env.PAPERCUSP_TOOLS.trim()) {
-    return { transcriptPath: null, restored: 0, toolReferences: [] };
-  }
+export function addClaudeResumeToolReferencesToEnv(
+  session,
+  env,
+  { home = homedir(), neutralizeNative = false } = {},
+) {
+  const nothing = { rewritten: 0, toolNames: [] };
+  if (session?.agent !== "claude") return { transcriptPath: null, restored: 0, toolReferences: [] };
+  const hasSeed = typeof env?.PAPERCUSP_TOOLS === "string" && env.PAPERCUSP_TOOLS.trim().length > 0;
+  if (!hasSeed && !neutralizeNative) return { transcriptPath: null, restored: 0, toolReferences: [] };
   const transcriptPath = sessionTranscriptFile(session, { home });
   if (!transcriptPath) return { transcriptPath: null, restored: 0, toolReferences: [] };
+  // EI-24890753013901545: a NATIVE deferred tool (ExitPlanMode, WaitForMcpServers…)
+  // the earlier process loaded is absent from this resumed process, and the
+  // provider 400s the replay. The seed below can only restore Papercusp MCP names,
+  // so drop the native references from the transcript before it opens. Opt-in: a
+  // FORK's transcriptPath is the SOURCE session's, which must never be rewritten.
+  const nativeNeutralized = neutralizeNative ? neutralizeResumeNativeToolReferencesInFile(transcriptPath) : nothing;
+  if (!hasSeed) return { transcriptPath, restored: 0, toolReferences: [], nativeNeutralized };
   let analysis;
   try {
     analysis = analyzeClaudeResumeTranscript(readFileSync(transcriptPath, "utf8"));
   } catch {
-    return { transcriptPath, restored: 0, toolReferences: [] };
+    return { transcriptPath, restored: 0, toolReferences: [], nativeNeutralized };
   }
   if (analysis.toolReferences.length === 0) {
-    return { transcriptPath, restored: 0, toolReferences: [] };
+    return { transcriptPath, restored: 0, toolReferences: [], nativeNeutralized };
   }
   const before = new Set(env.PAPERCUSP_TOOLS.split(",").map((name) => name.trim().toLowerCase()).filter(Boolean));
   env.PAPERCUSP_TOOLS = appendClaudeToolReferencesToSeed(env.PAPERCUSP_TOOLS, analysis.toolReferences);
   const restored = analysis.toolReferences.filter((name) => !before.has(name.toLowerCase())).length;
-  return { transcriptPath, restored, toolReferences: analysis.toolReferences };
+  return { transcriptPath, restored, toolReferences: analysis.toolReferences, nativeNeutralized };
 }
 
 /** Read block size, not a search limit: one Codex turn can write megabytes
@@ -13006,7 +13019,12 @@ async function launchResume(
     // agent-session marker arms the hook-level scheduler guard (bash gate / omp
     // coord-hook) for the brain only — never the owner's own sessions (D-003).
     const env = buildResumeEnv(session, { fork, brain, accountEnv, ownerId });
-    const restoredClaudeToolRefs = addClaudeResumeToolReferencesToEnv(session, env);
+    const restoredClaudeToolRefs = addClaudeResumeToolReferencesToEnv(session, env, { neutralizeNative: !fork });
+    if (restoredClaudeToolRefs.nativeNeutralized?.rewritten > 0) {
+      console.error(
+        `psu: dropped ${restoredClaudeToolRefs.nativeNeutralized.rewritten} native deferred tool reference(s) (${restoredClaudeToolRefs.nativeNeutralized.toolNames.join(", ")}) so this Claude resume does not 400 on replay.`,
+      );
+    }
     if (restoredClaudeToolRefs.restored > 0) {
       console.error(
         `psu: restored ${restoredClaudeToolRefs.restored} deferred Papercusp tool reference(s) for this Claude resume.`,

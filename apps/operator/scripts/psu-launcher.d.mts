@@ -1076,12 +1076,22 @@ export function sessionTranscriptFile(session: any, { home }?: {
  * call tools:find. Unknown/removed tool names are harmlessly ignored by the
  * server's allowlist filter and remain eligible for the poison detector.
  */
-export function addClaudeResumeToolReferencesToEnv(session: any, env: any, { home }?: {
+export function addClaudeResumeToolReferencesToEnv(session: any, env: any, { home, neutralizeNative }?: {
     home?: string | undefined;
+    neutralizeNative?: boolean | undefined;
 }): {
+    transcriptPath: null;
+    restored: number;
+    toolReferences: never[];
+    nativeNeutralized?: undefined;
+} | {
     transcriptPath: any;
     restored: number;
     toolReferences: string[];
+    nativeNeutralized: {
+        rewritten: number;
+        toolNames: string[];
+    };
 };
 /**
  * The model that was LAST ACTIVE in a session, read from its own transcript

@@ -8,7 +8,7 @@
  * path. Keep this plain ESM so both launch surfaces use the same name and
  * transcript rules.
  */
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const PAPERCUSP_MCP_TOOL_PREFIX = /^mcp__papercusp(?:-su|_su)__/i;
@@ -225,11 +225,18 @@ export function __resetClaudeResumeTranscriptCacheForTests() {
  * - anywhere else in message content, a reference becomes a text marker.
  * The source session's own transcript is never touched.
  */
-export function neutralizeClaudeToolReferences(jsonl) {
+export function neutralizeClaudeToolReferences(jsonl, options = {}) {
   let rewritten = 0;
   const names = new Set();
+  // Default: every reference (the fork seed). `nativeOnly` leaves Papercusp MCP
+  // references in place — a RESUME restores those into the launch seed instead.
+  const nativeOnly = options?.nativeOnly === true;
   const isReference = (value) =>
-    value && typeof value === 'object' && value.type === 'tool_reference' && typeof value.tool_name === 'string';
+    value &&
+    typeof value === 'object' &&
+    value.type === 'tool_reference' &&
+    typeof value.tool_name === 'string' &&
+    (!nativeOnly || !PAPERCUSP_MCP_TOOL_PREFIX.test(value.tool_name));
   const visit = (value, key) => {
     if (Array.isArray(value)) {
       let changed = false;
@@ -280,7 +287,7 @@ export function neutralizeClaudeToolReferences(jsonl) {
  * under a fork's own `projects/` dir (one per encoded-cwd subdir). Unreadable
  * entries are skipped: the fork still gets the first-turn poison gate.
  */
-export function neutralizeForkSeedToolReferences(projectsDir, sessionId) {
+export function neutralizeForkSeedToolReferences(projectsDir, sessionId, options = {}) {
   const result = { files: 0, rewritten: 0, toolNames: [] };
   if (!projectsDir || !sessionId) return result;
   let entries;
@@ -292,22 +299,59 @@ export function neutralizeForkSeedToolReferences(projectsDir, sessionId) {
   const names = new Set();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const file = join(projectsDir, entry.name, `${sessionId}.jsonl`);
-    let text;
-    try {
-      text = readFileSync(file, 'utf8');
-    } catch {
-      continue;
-    }
-    const out = neutralizeClaudeToolReferences(text);
+    const out = neutralizeToolReferencesInFile(join(projectsDir, entry.name, `${sessionId}.jsonl`), options);
     if (out.rewritten === 0) continue;
-    writeFileSync(file, out.text);
     result.files += 1;
     result.rewritten += out.rewritten;
     for (const name of out.toolNames) names.add(name);
   }
   result.toolNames = [...names];
   return result;
+}
+
+/**
+ * Rewrite ONE transcript file in place (temp file + rename, so a reader never
+ * sees a half-written session). Unreadable/unparseable input is left alone.
+ */
+export function neutralizeToolReferencesInFile(file, options = {}) {
+  const none = { rewritten: 0, toolNames: [] };
+  if (!file) return none;
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return none;
+  }
+  const out = neutralizeClaudeToolReferences(text, options);
+  if (out.rewritten === 0) return none;
+  const tmp = `${file}.neutralize-${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, out.text);
+    renameSync(tmp, file);
+  } catch {
+    return none;
+  }
+  return { rewritten: out.rewritten, toolNames: out.toolNames };
+}
+
+/**
+ * Same-session RESUME (WI-10005612 only covered forks): the resumed CLI process
+ * has its own tool surface, so a NATIVE deferred tool the earlier process loaded
+ * through ToolSearch (measured: `ExitPlanMode`, `WaitForMcpServers`,
+ * `EndConversation`) can be absent from it, and the provider then 400s the very
+ * first replayed request — "Tool reference '<name>' not found in available
+ * tools" — and the loop pauses (EI-24890753013901545). A reference only
+ * pre-loads a schema, so drop the native ones before the process opens the
+ * transcript. Papercusp MCP references stay: the launch seed restores those.
+ * Call only while NO process holds the session (a resume spawn, not a live one).
+ */
+export function neutralizeResumeNativeToolReferences(projectsDir, sessionId) {
+  return neutralizeForkSeedToolReferences(projectsDir, sessionId, { nativeOnly: true });
+}
+
+/** File-level form of {@link neutralizeResumeNativeToolReferences}. */
+export function neutralizeResumeNativeToolReferencesInFile(file) {
+  return neutralizeToolReferencesInFile(file, { nativeOnly: true });
 }
 
 /** Append client-mangled names without changing the existing seed or order. */
