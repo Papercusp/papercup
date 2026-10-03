@@ -793,7 +793,7 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
         const actual = measured.get('su-vanished-holder');
         if (!actual) throw new Error('unknown-holder control lost its oracle calibration');
         return new Map([...measured, ['su-vanished-holder', {
-          ...actual, sessionState: 'ended' as const, signalMissing: false,
+          ...actual, sessionState: 'ended' as const, signalMissing: undefined,
         }]]);
       },
     } : {});
