@@ -602,6 +602,8 @@ export interface BootcTrustBuild {
   trustReport: ArtifactTrustReport;
   bake: ReturnType<typeof parseWorkspaceHostBootcBakeManifest>;
   sourceRevision: string;
+  /** WI-10005711: the base the image was built FROM, read from its signed manifest (null if unrecorded). */
+  baseImage: { reference: string; sha256: string } | null;
   excluded: { unfixed: number; genericKernelCpe: number; staleBaseObject: number; vendorPending: number };
   /** D-029: the stale base-object findings' ids, reported beside the verdict, never dropped. */
   staleBaseObjectIds: string[];
@@ -655,6 +657,7 @@ export async function buildBootcTrustReport(
   }
   const sbom = parseSyftSbomFacts(sbomDoc);
   if (sbom.manifestDigest !== digest) fail(`syft SBOM describes ${sbom.manifestDigest}, not ${digest}`);
+  const baseImage = signedBaseImage(sbomDoc, digest);
   const sbomSha256 = digestOf(sbomBytes);
 
   // D-027: vendor-updates.json exists only when the bake had RPM-owned findings to ask about; its
@@ -730,6 +733,7 @@ export async function buildBootcTrustReport(
     trustReport,
     bake,
     sourceRevision,
+    baseImage,
     excluded: {
       unfixed: narrowed.excludedUnfixed,
       genericKernelCpe: narrowed.excludedGenericKernelCpe,
@@ -814,6 +818,20 @@ export async function buildBootcImageArtifact(
   );
   const baseImage = requiredRecord(loaded.input.baseImage, "baseImage");
   const architecture = requiredString(baseImage.architecture, "baseImage.architecture");
+  // WI-10005711: the base digest is a fact of the signed image, never a hand-copied input.
+  if (baseImage.sha256 !== undefined) {
+    fail(
+      `baseImage.sha256 must not be supplied: the release reads the base digest from the signed image manifest's ${OCI_BASE_DIGEST_ANNOTATION}`,
+    );
+  }
+  const signedBase =
+    trust.baseImage ??
+    fail(
+      `the signed image manifest records no ${OCI_BASE_NAME_ANNOTATION}/${OCI_BASE_DIGEST_ANNOTATION}, so the release cannot attest the base it was built from`,
+    );
+  if (signedBase.reference !== WORKSPACE_HOST_BOOTC_BASE_IMAGE) {
+    fail(`the image was built FROM '${signedBase.reference}', but the attested bootc base is '${WORKSPACE_HOST_BOOTC_BASE_IMAGE}'`);
+  }
   const source = requiredRecord(manifest.source, "publication manifest source");
 
   const buildManifest = buildWorkspaceHostBuildManifest({
@@ -829,8 +847,8 @@ export async function buildBootcImageArtifact(
     baseImage: {
       reference: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
       architecture,
-      // The tag-pinned base's digest at bake time, read by the operator from the build store.
-      sha256: requiredHex(baseImage.sha256, "baseImage.sha256"),
+      // The per-platform manifest digest buildah resolved the FROM tag to, bound to the signed image.
+      sha256: signedBase.sha256,
     },
     builder: {
       strategy: "shared",
