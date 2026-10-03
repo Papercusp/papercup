@@ -1,5 +1,6 @@
 /** Common receipts live on the existing producer rows, atomically with their writes. */
 import type { Sql } from 'postgres';
+import type { LearningContract } from './types';
 import {
   adaptScoutOutput, adaptGymOutput, adaptCalibrationOutput, adaptTransferOutput,
   adaptRegretOutput, adaptRedQueenOutput, type LearningProducer, type ProducerLifecycleObservation,
@@ -23,6 +24,7 @@ export interface ProducerWriteScope {
   sourceIds?: readonly string[];
   /** Single-output evaluation captured by the producer that executed it. */
   evaluation?: unknown;
+  contract?: LearningContract;
 }
 
 /**
@@ -49,6 +51,7 @@ export async function recordProducerObservation(sql: Sql, scope: ProducerWriteSc
     stage: 'observation', workspaceId: scope.workspaceId,
     sourceRef: `${scope.producer}:${String(source[store.key])}`, source, recordedAt,
     ...(scope.evaluation === undefined ? {} : { evaluation: scope.evaluation }),
+    ...(scope.contract === undefined ? {} : { contract: scope.contract }),
   }));
   await sql.unsafe(
     `UPDATE harness_shared.${store.table} AS source SET learning_lifecycle = receipt.payload::jsonb
@@ -84,7 +87,8 @@ export async function readProducerObservations(
       stage: 'observation', workspaceId: query.workspaceId, sourceRef: receipt.sourceRef,
       recordedAt: receipt.recordedAt, source: row,
     });
-    return { ...receipt, sourceCurrent: current.sourceHash === receipt.sourceHash,
+    const sourceCurrent = current.sourceHash === receipt.sourceHash;
+    return { ...receipt, sourceCurrent, promotionAllowed: receipt.promotionAllowed && sourceCurrent,
       ...(receipt.evaluation === undefined ? {} : { evaluationCurrent: receipt.evaluationSourceHash === current.sourceHash }) };
   });
 }

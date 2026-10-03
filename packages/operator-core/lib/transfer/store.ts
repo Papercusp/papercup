@@ -9,6 +9,8 @@
  * JS Date params (agent-insights/db-org-client-rejects-js-date-params).
  */
 import type { Sql } from 'postgres';
+import { createHash } from 'node:crypto';
+import { validateLearningContract, type LearningContract } from '../experiment/types';
 import { recordProducerObservation, withProducerLifecycleWrite } from '../experiment/producer-lifecycle-store';
 import { resolveLearningPotSlug } from '../learning/pot-scope';
 import type { SignalOrigin } from '../harness/improvements/provenance';
@@ -27,6 +29,62 @@ const strOrNull = (v: unknown): string | null => (v === null || v === undefined 
 const numOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 const iso = (v: unknown): string => new Date(v as string | Date).toISOString();
 const isoOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : iso(v));
+
+/** Identity of the complete immutable lesson artifact, excluding lifecycle counters. */
+export function transferLessonArtifactHash(lesson: TransferLesson): string {
+  return createHash('sha256').update(JSON.stringify({
+    id: lesson.id, signature: lesson.signature, title: lesson.title, lessonText: lesson.lessonText,
+    sourceKind: lesson.sourceKind, sourceRef: lesson.sourceRef, signalOrigin: lesson.signalOrigin,
+    potSlug: lesson.potSlug, workspaceId: lesson.workspaceId,
+  })).digest('hex');
+}
+
+/** A scored native verdict is insufficient: bind the common decision to the
+ * locked lesson, actual replay cells, execution pins and settled reservation. */
+function promotionContract(
+  lesson: TransferLesson,
+  q: { batteryId: string; delta: number; transition: GateTransition; evaluation?: TransferReplayEvidence },
+): LearningContract | null {
+  const evaluation = q.evaluation;
+  const contract = evaluation?.contract;
+  const reservation = evaluation?.reservation;
+  if (!evaluation || !contract || !reservation || !validateLearningContract(contract).ok ||
+      contract.decision.verdict !== 'accepted' || contract.activation ||
+      evaluation.costMeasured !== true || evaluation.budgetExhausted ||
+      contract.candidate.id !== lesson.id || contract.candidate.variantHash !== transferLessonArtifactHash(lesson) ||
+      contract.candidate.potScope.workspaceId !== lesson.workspaceId || !lesson.potSlug ||
+      contract.candidate.potScope.potId !== lesson.potSlug ||
+      q.transition.status !== 'passed' || q.transition.passCount !== lesson.passCount + 1 ||
+      q.transition.failCount !== lesson.failCount ||
+      q.batteryId !== `transfer:${lesson.id}:t${lesson.testCount + 1}` ||
+      contract.experiment.batteryId !== q.batteryId || reservation.runRef !== q.batteryId ||
+      reservation.workspaceId !== lesson.workspaceId || reservation.potSlug !== lesson.potSlug ||
+      reservation.status !== 'used' || reservation.settledAt === null ||
+      contract.spend.unsettledUsd !== 0 ||
+      contract.spend.settledAt !== new Date(reservation.settledAt).toISOString() ||
+      contract.spend.requestedUsd !== reservation.requestedUsd ||
+      contract.spend.reservedUsd !== reservation.reservedUsd || contract.spend.usedUsd !== reservation.usedUsd) return null;
+  for (const pin of ['batteryId', 'testId', 'baselineId', 'challengerId', 'taskHash', 'modelHash', 'promptHash', 'rubricHash', 'codeHash', 'repeats'] as const) {
+    if (contract.experiment[pin] !== evaluation.experiment[pin]) return null;
+  }
+  const { baselineId, challengerId, repeats } = contract.experiment;
+  const cells = evaluation.outcomes;
+  if (cells.length !== repeats * 2 || cells.some((cell) => cell.status !== 'scored' || !cell.replayed ||
+      cell.caseId !== lesson.id || !cell.runId || !Number.isInteger(cell.repeat) || cell.repeat < 0 || cell.repeat >= repeats ||
+      ![baselineId, challengerId].includes(cell.variantId) ||
+      ![cell.composite, cell.runUsd, cell.judgeUsd].every((v) => Number.isFinite(v) && v >= 0)) ||
+      new Set(cells.map((cell) => `${cell.variantId}:${cell.repeat}`)).size !== repeats * 2) return null;
+  const refs = new Set(contract.evidence.flatMap((item) => item.artifactRefs));
+  if (!refs.has(`transfer:${lesson.id}`) || !refs.has(`learning-reservation:${reservation.id}`) ||
+      cells.some((cell) => !refs.has(`replay-run:${cell.runId}`)) ||
+      contract.decision.evidenceIds.length !== contract.evidence.length ||
+      contract.evidence.some((item) => !contract.decision.evidenceIds.includes(item.id))) return null;
+  const mean = (id: string) => cells.filter((cell) => cell.variantId === id).reduce((sum, cell) => sum + cell.composite, 0) / repeats;
+  const delta = mean(challengerId) - mean(baselineId);
+  const cost = cells.reduce((sum, cell) => sum + cell.runUsd + cell.judgeUsd, 0);
+  if (delta <= 0 || Math.abs(delta - q.delta) > 1e-9 || Math.abs(cost - reservation.usedUsd) > 1e-9) return null;
+  return contract;
+}
 
 function mapLesson(r: Row): TransferLesson {
   return {
@@ -166,17 +224,27 @@ export async function recordTransferOutcome(
   },
 ): Promise<TransferLesson | null> {
   return withProducerLifecycleWrite(sql, async (sql) => {
+  const current = (await sql`SELECT * FROM harness_shared.transfer_lessons
+    WHERE workspace_id = ${q.workspaceId} AND id = ${q.id} FOR UPDATE`) as Row[];
+  if (!current.length) return null;
+  const lesson = mapLesson(current[0]);
+  const contract = q.transition.tier === 'validated' ? promotionContract(lesson, q) : null;
+  const transition = q.transition.tier === 'validated' && !contract
+    ? { ...q.transition, tier: lesson.tier, status: 'error' as const,
+        passCount: lesson.passCount, failCount: lesson.failCount }
+    : q.transition;
   const rows = (await sql`
     UPDATE harness_shared.transfer_lessons
-       SET tier = ${q.transition.tier}, status = ${q.transition.status},
-           pass_count = ${q.transition.passCount}, fail_count = ${q.transition.failCount},
+       SET tier = ${transition.tier}, status = ${transition.status},
+           pass_count = ${transition.passCount}, fail_count = ${transition.failCount},
            test_count = test_count + 1, last_tested_at = now(),
            last_battery_id = ${q.batteryId}, last_delta = ${q.delta},
            updated_at = now()
      WHERE workspace_id = ${q.workspaceId} AND id = ${q.id}
      RETURNING *`) as Row[];
   if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id,
-    ...(q.evaluation === undefined ? {} : { evaluation: q.evaluation }) });
+    ...(q.evaluation === undefined ? {} : { evaluation: q.evaluation }),
+    ...(contract ? { contract } : {}) });
   return rows.length ? mapLesson(rows[0]) : null;
   });
 }
