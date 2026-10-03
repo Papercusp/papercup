@@ -244,6 +244,20 @@ export interface ResolveSessionStatesOpts {
   listPresenceFn?: typeof listPresence;
 }
 
+/** WI-10005725: true only when `host` (a `findLiveHost` result) names a live psu
+ *  host under a CONCRETE pid that differs from the recorded one, i.e. positive
+ *  evidence that the dead recorded pid belongs to a predecessor incarnation. */
+function liveHostSupersedesRecordedPid(
+  host: unknown,
+  recordedPid: number | null | undefined,
+): boolean {
+  if (host == null || typeof host !== 'object') return false;
+  const hostPid = (host as { pid?: unknown }).pid;
+  return (
+    typeof hostPid === 'number' && Number.isInteger(hostPid) && hostPid > 0 && hostPid !== recordedPid
+  );
+}
+
 /** PURE: one subject's verdict from already-fetched signals — the single place
  *  the legs meet deriveSessionState. Exported for the parity test (P-001). */
 export function deriveVerdict(
@@ -306,7 +320,26 @@ export function deriveVerdict(
   // EPERM — returns `null`, which leaves `recorded` untouched. The generosity
   // the goal-holder predicate depends on is preserved for genuine ambiguity;
   // only a KNOWN-dead process loses it.
-  const pidConfirmedDead = probePidFn({ host: subject.host, pid: subject.pid }) === false;
+  //
+  // WI-10005725: `subject.pid` is the RECORDED liveness pid (the supervisor
+  // beat's launcher pid, carried on the presence row), not necessarily the
+  // CURRENT incarnation's. A session relaunched under a REUSED ownerId
+  // (fleet:respawn-member, a goal-holder respawn, a successor launch) keeps the
+  // predecessor's pid until its own beat lands, and a beat that never lands
+  // leaves it there. That ESRCH describes the predecessor, yet it outranks
+  // `liveTurn` in deriveSessionState, so a working successor read `ended`
+  // (measured: a respawned fleet leader at lastActiveSecAgo 6). A dead recorded
+  // pid therefore ends the session only when no identity-verified psu host for
+  // this owner is alive under a DIFFERENT concrete pid. `findLiveHost` already
+  // checks owner identity, socket, pid-alive and the psu-host cmdline, so such
+  // a host is positive evidence of a current incarnation. A witness with no
+  // concrete pid, or the same pid, is not: the probe stays authoritative and
+  // EI-21572355077403526's killed-holder trap stays closed. The host lookup
+  // runs only on this rare dead-pid path.
+  const recordedPidDead = probePidFn({ host: subject.host, pid: subject.pid }) === false;
+  const pidConfirmedDead =
+    recordedPidDead &&
+    !liveHostSupersedesRecordedPid(psuHost?.findHostFn(subject.ownerId), subject.pid);
   const recordedLiveOnly =
     !w.wakeable &&
     !w.liveTurn &&

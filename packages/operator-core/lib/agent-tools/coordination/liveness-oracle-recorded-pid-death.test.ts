@@ -189,3 +189,73 @@ describe('EI-21572355077403526 — the goal-holder consequence that actually bro
     expect(holderCountsAsAlive(verdict as never)).toBe(false);
   });
 });
+
+describe('WI-10005725 — a dead RECORDED pid must not end a live successor incarnation', () => {
+  /**
+   * A session relaunched under a REUSED ownerId keeps its predecessor's pid on
+   * the presence row until its own supervisor beat lands. The probe then
+   * reports ESRCH for the PREDECESSOR while the successor is mid-turn, and the
+   * ESRCH outranked `liveTurn`: a working successor read `ended`, and the goal
+   * respawner replaced it. The only thing allowed to override the ESRCH is an
+   * identity-verified live psu host under a DIFFERENT concrete pid.
+   */
+  const successor: LivenessSubject = {
+    ...killedHolder,
+    ownerId: 'su-test-relaunched-successor',
+    agentRole: 'su',
+  };
+  const LIVE_TURN: WakeabilitySignals = { wakeable: true, liveTurn: true };
+
+  const verdictWithHost = async (host: unknown) => {
+    const out = await resolveSessionStates([successor], {
+      nowMs: NOW,
+      fetchWakeabilityFn: async () => new Map([[successor.ownerId, LIVE_TURN]]),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => false, // the RECORDED (predecessor) pid is gone
+      findHostFn: () => host,
+    });
+    const v = out.get(successor.ownerId);
+    if (!v) throw new Error('oracle omitted the subject — totality contract broken');
+    return v;
+  };
+
+  it('CONTROL: with no live host, a dead recorded pid still ends a mid-turn session', async () => {
+    // Keeps the WI-3898 / EI-21572355077403526 precedence: without positive
+    // evidence of a current incarnation, ESRCH beats a fresh turn.
+    expect((await verdictWithHost(null)).sessionState).toBe('ended');
+  });
+
+  it('a verified live host under a DIFFERENT pid supersedes the stale recorded pid', async () => {
+    const v = await verdictWithHost({ ownerId: successor.ownerId, pid: successor.pid! + 1 });
+    expect(v.sessionState).toBe('live');
+  });
+
+  it('a host witness carrying the SAME pid does not override the ESRCH', async () => {
+    const v = await verdictWithHost({ ownerId: successor.ownerId, pid: successor.pid });
+    expect(v.sessionState).toBe('ended');
+  });
+
+  it('a host witness without a concrete pid does not override the ESRCH', async () => {
+    expect((await verdictWithHost({ live: true })).sessionState).toBe('ended');
+    expect((await verdictWithHost({ pid: 'not-a-pid' })).sessionState).toBe('ended');
+  });
+
+  it('the goal-holder consequence: a superseded stale pid keeps the successor `held`', async () => {
+    const out = await resolveSessionStates([successor], {
+      nowMs: NOW,
+      fetchWakeabilityFn: async () => new Map([[successor.ownerId, LIVE_TURN]]),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => false,
+      findHostFn: () => ({ ownerId: successor.ownerId, pid: successor.pid! + 1 }),
+    });
+    const holders = resolveGoalHoldersFromRows(
+      'goal-wi-10005725',
+      'papercusp-workspace',
+      [{ goalId: 'goal-wi-10005725', workspaceId: 'papercusp-workspace', ownerId: successor.ownerId, setAtMs: NOW - 60_000 }],
+      out as never,
+    );
+    expect(holders.liveness).toBe('held');
+  });
+});
