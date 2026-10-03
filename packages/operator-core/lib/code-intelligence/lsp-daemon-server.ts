@@ -8,6 +8,7 @@ import { resolveLspDaemonSocketPath, reapOrphanedLspDaemonSockets } from './lsp-
 import { resolveLspDaemonDispatchContext, type LspDaemonRequest } from './lsp-daemon-protocol.ts';
 import { runLspAdmission } from './lsp-admission.ts';
 import { lspDaemonFacade } from './lsp-facade.ts';
+import { activeWorkspaceId } from '../workspace-registry.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 
 interface RpcRequest { jsonrpc: '2.0'; id: string; method: 'lsp:query' | 'lsp:cancel'; params: LspDaemonRequest | { requestId: string } }
@@ -22,7 +23,7 @@ export async function dispatchLspDaemonRequest(
   // incomplete request never reaches admission or an adapter child.
   if (!context) return lspDaemonFacade(request.op, request.args);
   return runLspAdmission({
-    workspaceId: request.args.rootPath,
+    workspaceId: request.workspaceId ?? activeWorkspaceId(),
     requestId,
     language: context.language,
     projectRoot: context.projectRoot,
@@ -89,7 +90,14 @@ export function runLspDaemonServer(
   process.once('SIGTERM', cleanup);
   process.once('SIGINT', cleanup);
   let ownsSocket = false;
-  process.once('exit', () => { if (ownsSocket && existsSync(socketPath)) { try { unlinkSync(socketPath); } catch { /* stale socket reaped next start */ } } });
+  const unlinkOwnedSocket = () => { if (ownsSocket && existsSync(socketPath)) { try { unlinkSync(socketPath); } catch { /* stale socket reaped next start */ } } };
+  process.once('exit', unlinkOwnedSocket);
+  server.once('close', () => {
+    process.off('SIGTERM', cleanup);
+    process.off('SIGINT', cleanup);
+    process.off('exit', unlinkOwnedSocket);
+    unlinkOwnedSocket();
+  });
   void listenUnixSocketExclusive(server, socketPath).then((state) => {
     if (state === 'in-use') process.exitCode = SIDECAR_EXIT_SOCKET_IN_USE;
     else { ownsSocket = true; process.stdout.write(`PAPERCUSP_LSP_DAEMON_READY ${randomUUID()}\n`); }

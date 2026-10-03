@@ -37,7 +37,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 import {
   LSP_FACADE_OPS,
   MAX_SITES_PER_ANSWER,
-  lspFacade,
+  lspDaemonFacade as lspFacade,
   lspFacadeOpSpec,
   lspHealth,
   type LspFacadeOp,

@@ -131,7 +131,7 @@ export default defineTool({
       language: args.language,
       newName: args.newName,
       limit: args.limit,
-    });
+    }, { workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId, actorId: ctx.ownerId });
     return { data: answer };
   },
 });

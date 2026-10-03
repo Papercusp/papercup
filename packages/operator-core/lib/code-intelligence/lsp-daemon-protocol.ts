@@ -14,6 +14,8 @@ import type { LspFacadeArgs, LspFacadeOp } from './lsp-facade.ts';
 export interface LspDaemonRequest {
   op: LspFacadeOp;
   args: LspFacadeArgs;
+  /** Durable queue partition, resolved from the caller's workspace context. */
+  workspaceId?: string;
   actorId?: string;
   priority?: number;
   /** Absolute epoch milliseconds. The daemon must enforce this, not the caller. */
