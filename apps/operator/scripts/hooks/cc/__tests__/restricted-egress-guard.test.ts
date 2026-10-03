@@ -67,7 +67,7 @@ describe('decideEgress', () => {
   });
 
   it('allows every tool unchanged when the operator says the session is unrestricted', async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, verdict: 'allow', restricted: false }));
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, verdict: 'allow', restricted: false, sourceHold: 'clear' }));
     for (const [toolName, toolInput] of [
       ['Bash', { command: 'ls' }],
       ['WebFetch', { url: 'https://example.com', prompt: 'x' }],
@@ -79,7 +79,7 @@ describe('decideEgress', () => {
 
   // WI-10005589 / D-012: the network layer, not name matching.
   describe('a restricted session', () => {
-    const restricted = () => vi.fn(async () => jsonResponse({ ok: true, verdict: 'allow', restricted: true }));
+    const restricted = () => vi.fn(async () => jsonResponse({ ok: true, verdict: 'allow', restricted: true, sourceHold: 'clear' }));
     const RUNTIME_HOOK = `${process.env.HOME}/.papercusp/hooks/cc/x.sh`;
 
     it('has Bash rewritten to run with no network — even a host built at run time', async () => {
@@ -95,6 +95,25 @@ describe('decideEgress', () => {
         decision: 'rewrite',
         updatedInput: { command: `SANDBOX[${command}]`, description: 'd', run_in_background: true },
       });
+    });
+
+    it.each(['held', 'unknown'] as const)('treats a %s integration-tree hold as globally restricted', async (sourceHold) => {
+      const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, verdict: 'allow', restricted: false, sourceHold }));
+      await expect(
+        decideEgress({
+          toolName: 'Bash',
+          toolInput: { command: 'ls -la' },
+          env: ENV,
+          fetchImpl,
+          sandbox: (command) => `SANDBOX[${command}]`,
+        }),
+      ).resolves.toMatchObject({ decision: 'rewrite', updatedInput: { command: 'SANDBOX[ls -la]' } });
+      await expect(
+        decideEgress({ toolName: 'WebFetch', toolInput: { url: 'https://example.com' }, env: ENV, fetchImpl }),
+      ).resolves.toMatchObject({ decision: 'deny' });
+      await expect(
+        decideEgress({ toolName: 'mcp__slack__post_message', toolInput: {}, env: ENV, fetchImpl }),
+      ).resolves.toMatchObject({ decision: 'deny' });
     });
 
     it('denies user-systemd probes when bwrap masks the host runtime directory', async () => {
@@ -250,7 +269,16 @@ describe('sandboxedBashCommand', () => {
       const probe = `python3 -c "import socket; s=socket.create_connection(('127.0.0.1', ${port}), 2); print('CONNECTED')"`;
       const run = (command: string) => spawnAsync('/bin/bash', ['-c', command]);
       expect((await run(probe)).stdout).toContain('CONNECTED');
-      const inside = await run(sandboxedBashCommand(probe, { cwd: process.cwd() })!);
+      const decision = await decideEgress({
+        toolName: 'Bash',
+        toolInput: { command: probe },
+        env: ENV,
+        fetchImpl: vi.fn(async () => jsonResponse({ ok: true, verdict: 'allow', restricted: false, sourceHold: 'held' })),
+        sandbox: (command) => sandboxedBashCommand(command, { cwd: process.cwd() }),
+      });
+      expect(decision.decision).toBe('rewrite');
+      if (decision.decision !== 'rewrite') throw new Error('source-held Bash was not isolated');
+      const inside = await run(decision.updatedInput.command as string);
       expect(inside.stdout).not.toContain('CONNECTED');
       expect(inside.code).not.toBe(0);
       // An ordinary command still works and its exit status passes through.
