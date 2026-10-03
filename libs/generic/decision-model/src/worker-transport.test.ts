@@ -14,7 +14,8 @@
 import { performance } from 'node:perf_hooks';
 import { Worker } from 'node:worker_threads';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { describeNoWorkerReply, describeWorkerTimeout } from './worker-transport.js';
+import { createServer } from 'node:net';
+import { describeConn, describeNoWorkerReply, describeWorkerTimeout, type ConnTiming } from './worker-transport.js';
 import {
   createDecisionClient,
   createJevProvider,
@@ -192,7 +193,8 @@ describe('worker transport vs a blocked calling thread', () => {
     // The worker's own deadline fired while this thread was blocked; its reply was
     // waiting on the port, so the ledger carries the worker's timing, not a guess.
     expect(out).toMatchObject({
-      detail: expect.stringMatching(/^worker deadline at \d+ms: phase=sent, queued=\d+ms$/),
+      // A fresh transport opens a new socket; an IP literal needs no lookup.
+      detail: expect.stringMatching(/^worker deadline at \d+ms: phase=sent, queued=\d+ms, conn=new connect=\d+ms$/),
     });
     // Measured from when the worker took the call (an unwarmed worker starts a little
     // after the deadline was set), so it is at most the budget, never the blocked time.
@@ -246,6 +248,95 @@ describe('worker transport vs a blocked calling thread', () => {
     const after = await serverStats();
     expect(after.requests - before.requests).toBe(3);
     expect(after.connections - before.connections).toBe(1);
+  });
+});
+
+/** Send to the local server by host NAME, so a new socket needs a lookup. */
+function toHost(inner: FetchLike, host: string, delayMs: number, port = new URL(baseUrl).port): FetchLike {
+  return (_url, init) => inner(`http://${host}:${port}/v1/decide?delay=${delayMs}`, init);
+}
+
+/** A port with nothing listening on it. */
+async function closedPort(): Promise<string> {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address() as { port: number };
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return String(port);
+}
+
+function detailOf(out: unknown): string {
+  return (out as { detail?: string }).detail ?? '';
+}
+
+describe('worker transport connection timing (EI-24748208098755918)', () => {
+  const base: ConnTiming = {
+    socket: 'new',
+    secure: true,
+    dns: 'resolver',
+    lookupMs: null,
+    connectMs: null,
+    tlsMs: null,
+    attempts: [],
+  };
+
+  it('names the connection leg a timeout stalled in', () => {
+    expect(describeConn(undefined)).toBe('');
+    expect(describeConn({ ...base, socket: 'reused', dns: null })).toBe(', conn=reused');
+    expect(describeConn({ ...base, socket: 'none', dns: null })).toBe(', conn=none');
+    // A lookup that never answered: every later leg is pending.
+    expect(describeConn(base)).toBe(', conn=new dns=resolver lookup=pending connect=pending tls=pending');
+    // An address that did not answer within the attempt timeout, then a v6 address with no route.
+    expect(
+      describeConn({
+        ...base,
+        dns: 'cache',
+        lookupMs: 0.4,
+        attempts: ['104.18.25.46!timeout', '2606:4700::6812:182e!ENETUNREACH', '104.18.24.46'],
+      }),
+    ).toBe(
+      ', conn=new dns=cache lookup=0ms connect=pending tls=pending attempts=104.18.25.46!timeout,2606:4700::6812:182e!ENETUNREACH,104.18.24.46',
+    );
+    // Connected over plain http with one clean attempt: the address list adds nothing.
+    expect(
+      describeConn({ ...base, secure: false, dns: 'stale', lookupMs: 1.2, connectMs: 3.4, attempts: ['127.0.0.1'] }),
+    ).toBe(', conn=new dns=stale lookup=1ms connect=3ms');
+    expect(
+      describeWorkerTimeout({ transportMs: 753.2, phase: 'started', queuedMs: 45, conn: { ...base, lookupMs: 612, connectMs: 640 } }),
+    ).toBe('worker deadline at 753ms: phase=started, queued=45ms, conn=new dns=resolver lookup=612ms connect=640ms tls=pending');
+    expect(describeNoWorkerReply({ progress: 'started', atMs: 0, queuedMs: 0, conn: base })).toBe(
+      'caller deadline, no worker reply: phase=started at 0ms, queued=0ms, conn=new dns=resolver lookup=pending connect=pending tls=pending',
+    );
+  });
+
+  it('a reused pooled socket says so', async () => {
+    const transport = newTransport();
+    expect(await client(toServer(transport.fetch, 0)).decide(request)).toMatchObject({ kind: 'answered' });
+    const out = await client(toServer(transport.fetch, SLOW_MS)).decide(request);
+    expect(out).toMatchObject({ kind: 'inconclusive', reason: 'timeout' });
+    expect(detailOf(out)).toMatch(/^worker deadline at \d+ms: phase=sent, queued=\d+ms, conn=reused$/);
+  });
+
+  it('looks a host name up once, then serves the next new connection from the worker DNS cache', async () => {
+    const transport = newTransport();
+    const slow = client(toHost(transport.fetch, 'localhost', SLOW_MS));
+    // Each timed-out call destroys its socket, so every call below opens a new one.
+    const first = await slow.decide(request);
+    expect(first).toMatchObject({ kind: 'inconclusive', reason: 'timeout' });
+    expect(detailOf(first)).toMatch(/phase=sent, queued=\d+ms, conn=new dns=resolver lookup=\d+ms connect=\d+ms( attempts=\S+)?$/);
+    const second = await slow.decide(request);
+    expect(detailOf(second)).toMatch(/phase=sent, queued=\d+ms, conn=new dns=cache lookup=\d+ms connect=\d+ms( attempts=\S+)?$/);
+  });
+
+  it('a connect error drops the cached address, so the next connection looks the host up again', async () => {
+    const transport = newTransport();
+    const slow = client(toHost(transport.fetch, 'localhost', SLOW_MS));
+    expect(detailOf(await slow.decide(request))).toContain('dns=resolver');
+    expect(detailOf(await slow.decide(request))).toContain('dns=cache');
+    // Same host name, nothing listening: the connect fails on every address.
+    const refused = await client(toHost(transport.fetch, 'localhost', 0, await closedPort())).decide(request);
+    expect(refused).toMatchObject({ kind: 'inconclusive' });
+    expect(detailOf(await slow.decide(request))).toContain('dns=resolver');
   });
 });
 

@@ -45,10 +45,100 @@ export const WORKER_TRANSPORT_MAX_FAILURES = 3;
 const WORKER_SOURCE = String.raw`
 'use strict';
 const { parentPort, workerData } = require('node:worker_threads');
+const dns = require('node:dns');
 const http = require('node:http');
 const https = require('node:https');
 
 const idleMs = workerData.keepAliveIdleMs;
+
+// Resolved addresses per host (EI-24748208098755918). A new connection otherwise looks
+// its host up with getaddrinfo, which runs on the process-wide libuv threadpool (shared
+// with the calling thread's file I/O) and then on the system resolver; either can hold
+// the lookup for hundreds of ms while this worker sits idle. A cached answer uses
+// neither. An entry is served as is while fresh; once stale it is still served while one
+// background lookup refreshes it; past the stale limit the call looks it up again. A
+// connect error drops the host's entries.
+const DNS_FRESH_MS = 60000;
+const DNS_STALE_MS = 600000;
+const dnsCache = new Map();
+
+function dnsKey(hostname, options) {
+  return hostname + '|' + (options.family || 0) + '|' + (options.hints || 0);
+}
+
+function resolveInto(key, hostname, options, done) {
+  dns.lookup(hostname, { family: options.family || 0, hints: options.hints || 0, all: true }, (err, addresses) => {
+    const found = !err && Array.isArray(addresses) && addresses.length > 0;
+    if (found) {
+      dnsCache.set(key, { addresses, at: Date.now(), refreshing: false });
+    } else {
+      const entry = dnsCache.get(key);
+      if (entry) entry.refreshing = false;
+    }
+    if (!done) return;
+    if (found) done(null, addresses);
+    else done(err || Object.assign(new Error('no address for ' + hostname), { code: 'ENOTFOUND' }));
+  });
+}
+
+function answerLookup(addresses, options, callback) {
+  if (options.all) callback(null, addresses.map((a) => ({ address: a.address, family: a.family })));
+  else callback(null, addresses[0].address, addresses[0].family);
+}
+
+// A lookup() for net.connect that answers from dnsCache and records into conn how it did.
+function cachedLookup(conn, started) {
+  return function lookup(hostname, options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    } else if (typeof options === 'number') {
+      options = { family: options };
+    } else {
+      options = options || {};
+    }
+    const key = dnsKey(hostname, options);
+    const entry = dnsCache.get(key);
+    const age = entry ? Date.now() - entry.at : Infinity;
+    if (entry && age < DNS_STALE_MS) {
+      conn.dns = age < DNS_FRESH_MS ? 'cache' : 'stale';
+      if (age >= DNS_FRESH_MS && !entry.refreshing) {
+        entry.refreshing = true;
+        resolveInto(key, hostname, options, null);
+      }
+      const addresses = entry.addresses;
+      // Answer on a later turn, as dns.lookup does, so the socket's listeners are attached first.
+      setImmediate(() => {
+        conn.lookupMs = performance.now() - started;
+        answerLookup(addresses, options, callback);
+      });
+      return;
+    }
+    conn.dns = 'resolver';
+    resolveInto(key, hostname, options, (err, addresses) => {
+      conn.lookupMs = performance.now() - started;
+      if (err) callback(err);
+      else answerLookup(addresses, options, callback);
+    });
+  };
+}
+
+function forgetHost(hostname) {
+  for (const key of [...dnsCache.keys()]) {
+    if (key.startsWith(hostname + '|')) dnsCache.delete(key);
+  }
+}
+
+// An attempt is recorded as its address; a failed one gains '!' and its code.
+function markAttempt(conn, ip, outcome) {
+  for (let i = conn.attempts.length - 1; i >= 0; i -= 1) {
+    if (conn.attempts[i] === ip) {
+      conn.attempts[i] = ip + '!' + outcome;
+      return;
+    }
+  }
+  conn.attempts.push(ip + '!' + outcome);
+}
 // keepAlive keeps the socket between calls; timeout is the idle limit of a pooled
 // socket (the agent destroys a free socket when it fires). A server Keep-Alive hint
 // can only shorten it.
@@ -98,14 +188,29 @@ parentPort.on('message', (call) => {
   let done = false;
   let timer = null;
   let phase = 'started';
+  // How this call's connection was made, so a timeout names the leg it stalled in
+  // (EI-24748208098755918). Times are ms since the worker took the call; null = not reached.
+  const conn = { socket: 'none', secure: false, dns: null, lookupMs: null, connectMs: null, tlsMs: null, attempts: [] };
+  function connSnapshot() {
+    return {
+      socket: conn.socket,
+      secure: conn.secure,
+      dns: conn.dns,
+      lookupMs: conn.lookupMs,
+      connectMs: conn.connectMs,
+      tlsMs: conn.tlsMs,
+      attempts: conn.attempts.slice(0, 6),
+    };
+  }
 
   // Tell the calling side how far the request got, so a deadline that passes on the
-  // calling side before this worker replies still knows where the call was.
+  // calling side before this worker replies still knows where the call was. Called
+  // again within a phase as each connection leg completes.
   function progress(next) {
     if (done) return;
     phase = next;
     try {
-      port.postMessage({ progress: next, atMs: performance.now() - started, queuedMs });
+      port.postMessage({ progress: next, atMs: performance.now() - started, queuedMs, conn: connSnapshot() });
     } catch {
       // The calling side already closed the port: nobody is waiting.
     }
@@ -118,6 +223,7 @@ parentPort.on('message', (call) => {
     message.transportMs = performance.now() - started;
     message.phase = phase;
     message.queuedMs = queuedMs;
+    message.conn = connSnapshot();
     try {
       port.postMessage(message);
     } catch {
@@ -161,9 +267,17 @@ parentPort.on('message', (call) => {
   }
   headers['content-length'] = String(body.length);
 
+  conn.secure = url.protocol === 'https:';
   const req = lib.request(
     url,
-    { method: call.method, headers, agent: agents[url.protocol], signal: controller.signal },
+    {
+      method: call.method,
+      headers,
+      agent: agents[url.protocol],
+      signal: controller.signal,
+      // Used only when the agent opens a new socket for a host name (not an IP literal).
+      lookup: cachedLookup(conn, started),
+    },
     (res) => {
       progress('headers');
       const chunks = [];
@@ -182,7 +296,32 @@ parentPort.on('message', (call) => {
       });
     },
   );
-  req.on('error', (err) => reply({ ok: false, error: errorFields(err) }));
+  req.on('socket', (socket) => {
+    conn.socket = req.reusedSocket ? 'reused' : 'new';
+    if (req.reusedSocket) {
+      progress(phase);
+      return;
+    }
+    socket.once('lookup', () => progress(phase));
+    socket.on('connectionAttempt', (ip) => conn.attempts.push(ip));
+    socket.on('connectionAttemptFailed', (ip, _port, _family, err) => markAttempt(conn, ip, (err && err.code) || 'failed'));
+    socket.on('connectionAttemptTimeout', (ip) => markAttempt(conn, ip, 'timeout'));
+    socket.once('connect', () => {
+      conn.connectMs = performance.now() - started;
+      progress(phase);
+    });
+    socket.once('secureConnect', () => {
+      conn.tlsMs = performance.now() - started;
+      progress(phase);
+    });
+  });
+  req.on('error', (err) => {
+    // A new connection that failed to connect: the cached address may be the cause. Not
+    // after a reply or a caller close (done): that error is our own abort of a call that
+    // ran out of time, which says nothing about the address.
+    if (!done && conn.socket === 'new' && conn.connectMs === null) forgetHost(url.hostname);
+    reply({ ok: false, error: errorFields(err) });
+  });
   req.on('finish', () => progress('sent'));
   req.end(body);
 });
@@ -202,30 +341,76 @@ type WorkerReply = (
   phase: WorkerPhase;
   /** Time the call waited for the worker to take it, ms; null if not measurable. */
   queuedMs: number | null;
+  /** How the call's connection was made (absent from a pre-EI-24748208098755918 worker). */
+  conn?: ConnTiming;
 };
 
 type WorkerPhase = 'started' | 'sent' | 'headers';
 
-/** Posted by the worker each time a call reaches a new phase, before its final reply. */
+/**
+ * How the worker made a call's connection, so a timeout in phase=started names the
+ * leg it stalled in (EI-24748208098755918). Times are ms since the worker took the
+ * call; null = that leg had not completed.
+ */
+export interface ConnTiming {
+  /** 'reused' = an idle pooled socket; 'new' = this call opened one; 'none' = no socket yet. */
+  socket: 'none' | 'new' | 'reused';
+  /** https: a new socket also needs a TLS handshake. */
+  secure: boolean;
+  /** Where a new socket's address came from; null = no lookup ran (reused socket or an IP literal). */
+  dns: 'cache' | 'stale' | 'resolver' | null;
+  lookupMs: number | null;
+  connectMs: number | null;
+  tlsMs: number | null;
+  /** Addresses tried, in order; a failed one is `<address>!<code>`, a timed-out one `<address>!timeout`. */
+  attempts: string[];
+}
+
+/** Posted by the worker each time a call reaches a new phase or connection leg, before its final reply. */
 interface WorkerProgress {
   progress: WorkerPhase;
   atMs: number;
   queuedMs: number | null;
+  conn?: ConnTiming;
 }
 
 function ms(value: number | null): string {
   return value === null ? 'unknown' : `${Math.round(value)}ms`;
 }
 
+function leg(value: number | null): string {
+  return value === null ? 'pending' : `${Math.round(value)}ms`;
+}
+
+/** The connection part of a timeout detail: empty when the worker sent none. */
+export function describeConn(conn: ConnTiming | undefined): string {
+  if (!conn) return '';
+  if (conn.socket !== 'new') return `, conn=${conn.socket}`;
+  const parts = ['new'];
+  if (conn.dns) parts.push(`dns=${conn.dns}`, `lookup=${leg(conn.lookupMs)}`);
+  parts.push(`connect=${leg(conn.connectMs)}`);
+  if (conn.secure) parts.push(`tls=${leg(conn.tlsMs)}`);
+  // The address list matters when connecting stalled or an address failed.
+  if (conn.attempts.length > 0 && (conn.connectMs === null || conn.attempts.some((a) => a.includes('!')))) {
+    parts.push(`attempts=${conn.attempts.join(',')}`);
+  }
+  return `, conn=${parts.join(' ')}`;
+}
+
 /** The ledger detail for a call the worker itself stopped at the deadline. */
-export function describeWorkerTimeout(reply: { transportMs: number; phase: WorkerPhase; queuedMs: number | null }): string {
-  return `worker deadline at ${ms(reply.transportMs)}: phase=${reply.phase}, queued=${ms(reply.queuedMs)}`;
+export function describeWorkerTimeout(reply: {
+  transportMs: number;
+  phase: WorkerPhase;
+  queuedMs: number | null;
+  conn?: ConnTiming;
+}): string {
+  return `worker deadline at ${ms(reply.transportMs)}: phase=${reply.phase}, queued=${ms(reply.queuedMs)}${describeConn(reply.conn)}`;
 }
 
 /** The ledger detail for a call whose deadline passed on the calling side before the worker replied. */
 export function describeNoWorkerReply(last: WorkerProgress | null): string {
   return last
-    ? `caller deadline, no worker reply: phase=${last.progress} at ${ms(last.atMs)}, queued=${ms(last.queuedMs)}`
+    ? `caller deadline, no worker reply: phase=${last.progress} at ${ms(last.atMs)}, queued=${ms(last.queuedMs)}${describeConn(last.conn)}`
     : 'caller deadline, no worker reply: phase=none (the worker had not started the call)';
 }
 
