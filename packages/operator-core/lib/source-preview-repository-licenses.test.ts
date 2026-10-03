@@ -4,7 +4,6 @@ import { auditPublicRepositoryLicenses } from '../../../scripts/source-preview.m
 
 const text = 'reviewed license fixture\n';
 const sha256 = createHash('sha256').update(text).digest('hex');
-const blob = createHash('sha1').update(`blob ${Buffer.byteLength(text)}\0${text}`).digest('hex');
 const head = 'a'.repeat(40);
 const repo = (name: string, branch = 'staging') => ({ full_name: `Papercusp/${name}`, private: false, default_branch: branch, license: { spdx_id: 'Apache-2.0' } });
 
@@ -13,7 +12,7 @@ function fixture(options: { secondPage?: boolean; missing?: string; body?: strin
   const actualText = options.body ?? text;
   const actualBlob = createHash('sha1').update(`blob ${Buffer.byteLength(actualText)}\0${actualText}`).digest('hex');
   let starts = 0;
-  const api = async (endpoint: string) => {
+  const api = async (endpoint: string): Promise<{ headers: Record<string, string>; body: unknown }> => {
     calls.push(endpoint);
     if (endpoint.startsWith('orgs/')) {
       if (endpoint.includes('page=1')) starts += 1;
