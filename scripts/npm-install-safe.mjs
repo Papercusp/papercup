@@ -71,7 +71,8 @@ import {
   withFsMutexRead,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
-import { installLockNameForRoot } from "./lib/install-lock-name.mjs";
+import { envWithInstallMutex, installLockNameForRoot, installMutexIsHeld } from "./lib/install-lock-name.mjs";
+export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 import {
   findIncompleteWorkspacePackagesWithRetry,
   findInvalidWorkspacePackageVersionsWithRetry,
@@ -877,11 +878,8 @@ export function runCommandUnderInstallMutex({
   }
   const [command, ...args] = commandArgs;
   const lockName = repoLockName(repoRoot);
-  const mutexAlreadyHeld = env.PAPERCUSP_INSTALL_MUTEX_HELD === "1";
-  const childEnv = {
-    ...env,
-    ...(mutexAlreadyHeld ? {} : { PAPERCUSP_INSTALL_MUTEX_HELD: "1" }),
-  };
+  const mutexAlreadyHeld = installMutexIsHeld(lockName, env);
+  const childEnv = envWithInstallMutex(lockName, env);
 
   const executeReader = async () => {
     // Reader diagnostics belong on stderr: callers such as ptool expose the
@@ -899,7 +897,7 @@ export function runCommandUnderInstallMutex({
   };
 
   // A command launched by an install-safe reader inherits this marker. Its
-  // nested reader is already inside the install boundary and must not install
+  // nested reader for THIS repository is already inside the install boundary and must not install
   // another reader marker beneath the writer it is waiting on: that is a
   // self-deadlock when the outer command still owns the writer lock.
   if (mutexAlreadyHeld) return executeReader();

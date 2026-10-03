@@ -26,3 +26,23 @@ export function installLockNameForRoot(repoRoot) {
   const digest = createHash("sha1").update(real).digest("hex").slice(0, 12);
   return `npm-install-${digest}`;
 }
+
+/** Scoped reader ancestry; the old boolean marker proves no repository identity. */
+function heldInstallMutexNames(env) {
+  return String(env.PAPERCUSP_INSTALL_MUTEX_HELD ?? "")
+    .split(",")
+    .filter((name) => /^npm-install-[a-f0-9]{12}$/.test(name));
+}
+
+/** @param {string} lockName @param {NodeJS.ProcessEnv} [env] */
+export function installMutexIsHeld(lockName, env = process.env) {
+  return heldInstallMutexNames(env).includes(lockName);
+}
+
+/** Preserve ancestor leases when a child acquires a different repository lock. */
+export function envWithInstallMutex(lockName, env = process.env) {
+  return {
+    ...env,
+    PAPERCUSP_INSTALL_MUTEX_HELD: [...new Set([...heldInstallMutexNames(env), lockName])].join(","),
+  };
+}

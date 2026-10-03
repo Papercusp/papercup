@@ -39,6 +39,7 @@ import { RUNTIME_CONTENT_PROBES, declaredVersionRange, findIncompleteWorkspacePa
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
 import { normalizeNpmArgs, packageLocalRepairTargets, parseCliArgs, removePackageLocalRepairLockEntries, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 type RuntimeProbeFailure = { specifier: string; detail: string };
 
@@ -932,7 +933,7 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
       args: ['bin/bundle-host.sh', 'entry.ts'],
       options: { cwd: root },
     });
-    expect(calls[0].options.env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe('1');
+    expect(calls[0].options.env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',')).toContain(repoLockName(root));
   });
 
   it('routes guarded-reader diagnostics to stderr so stdout stays JSON-safe', async () => {
@@ -950,6 +951,55 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
 
     expect(stdout).not.toHaveBeenCalled();
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining('NPM_INSTALL_SAFE guarding reader: node -e'));
+  });
+
+  it.each(['scoped', 'legacy'])('waits for another repo writer with an inherited %s reader marker', async (marker) => {
+    silenceConsole();
+    const first = fixture({ packages: {}, extracted: {} });
+    const second = fixture({ packages: {}, extracted: {} });
+    let inherited: NodeJS.ProcessEnv = {};
+    await runCommandUnderInstallMutex({
+      repoRoot: first,
+      commandArgs: ['first-reader'],
+      env: {},
+      runCommand: (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        inherited = options.env;
+        return { status: 0 };
+      },
+    });
+    if (marker === 'legacy') inherited = { ...inherited, PAPERCUSP_INSTALL_MUTEX_HELD: '1' };
+
+    let releaseWriter = () => {};
+    let writerEntered = () => {};
+    const writerReady = new Promise<void>((resolve) => { writerEntered = resolve; });
+    const writer = withFsMutex(repoLockName(second), async () => {
+      writerEntered();
+      await new Promise<void>((resolve) => { releaseWriter = resolve; });
+    }, { retryMs: 5 });
+    await writerReady;
+    let readerRan = false;
+    const reader = runCommandUnderInstallMutex({
+      repoRoot: second,
+      commandArgs: ['second-reader'],
+      env: inherited,
+      runCommand: (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        readerRan = true;
+        const names = options.env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',');
+        expect(names).toContain(repoLockName(second));
+        if (marker === 'scoped') expect(names).toContain(repoLockName(first));
+        else expect(names).not.toContain('1');
+        return { status: 0 };
+      },
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(readerRan).toBe(false);
+    } finally {
+      releaseWriter();
+      await writer;
+      await expect(reader).resolves.toBe(0);
+    }
+    expect(readerRan).toBe(true);
   });
 
   it('keys the mutex by the selected root realpath, including symlink aliases', () => {

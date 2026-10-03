@@ -2944,10 +2944,6 @@ export async function importSdkModuleWithInstallAwareness(
       ]),
   } = {},
 ) {
-  if (process.env.PAPERCUSP_INSTALL_MUTEX_HELD === '1') {
-    return doImport(specifier);
-  }
-
   let modules;
   try {
     modules = await loadInstallMutex();
@@ -2957,8 +2953,11 @@ export async function importSdkModuleWithInstallAwareness(
     return doImport(specifier);
   }
 
-  const [{ withFsMutexRead }, { repoLockName }] = modules;
+  const [{ withFsMutexRead }, { repoLockName, installMutexIsHeld }] = modules;
   const lockName = repoLockName();
+  if (installMutexIsHeld?.(lockName, process.env)) {
+    return doImport(specifier);
+  }
   return withFsMutexRead(lockName, () => doImport(specifier), {
     timeoutMs: SDK_IMPORT_MUTEX_TIMEOUT_MS,
     onWaiting: ({ owner, elapsedMs }) => {
