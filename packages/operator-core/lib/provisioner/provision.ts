@@ -451,7 +451,8 @@ export async function ensureLocalBackendRunning(
       drift: [],
       envIssues: [],
       binary: null,
-      summary: `unit audit could not run: ${err instanceof Error ? err.message : String(err)}`,
+      model: null,
+      summary: `unit audit could not run:${err instanceof Error ? err.message : String(err)}`,
     };
   }
   try {

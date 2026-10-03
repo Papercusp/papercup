@@ -63,7 +63,8 @@
         "steward routing receives the exact canonical sourceFile",
         "verification establishes a fresh baseline"
       ],
-      "rawLog": "/tmp/public-manual-pg-tests.log"
+      "rawLog": "/tmp/public-manual-pg-tests.log",
+      "durableExecutionArtifact": "docs/evidence/public-manual-pg-runtime-20261003.json"
     },
     {
       "kind": "build",
@@ -97,8 +98,8 @@
         "all five new guides are readable at mobile viewport width without overflow",
         "a new guide is searchable through the actual Pagefind dialog"
       ],
-      "rawReport": "/tmp/public-manual-new-guides-browser.json"
-      ,"durableExecutionArtifact": "docs/evidence/public-manual-browser-20261003.json"
+      "rawReport": "/tmp/public-manual-new-guides-browser.json",
+      "durableExecutionArtifact": "docs/evidence/public-manual-browser-20261003.json"
     },
     {
       "kind": "production-browser-predecessor-suite",

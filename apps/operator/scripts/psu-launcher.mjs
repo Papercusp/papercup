@@ -12497,8 +12497,10 @@ const readProcCmdlineText = (pid) =>
  * BACKEND-NEUTRAL by construction, and used by two of them: the caller supplies
  * whichever id its resume actually puts on the command line — claude's
  * `--resume <session_id>` or omp's `-r <omp_thread_id>` (resumeArgsFor). It asks
- * only "is this string in a live argv", so nothing here knows or cares which
- * backend it is serving.
+ * only "is this an exact identity argument in a live argv", so nothing here
+ * knows or cares which backend it is serving. Embedded request/prompt text is
+ * not an identity argument: a remote ptool caller is outside this launcher's
+ * ancestor chain, but its shell command can still contain the resume JSON.
  * `{ held, pid, cmdline, reason }` — fail-CLOSED: `held` is false ONLY on a
  * complete, successful scan that found nothing.
  *
@@ -12548,6 +12550,19 @@ export function sessionProcessHolder(
       continue;
     }
     if (!cmdline || !cmdline.includes(id)) continue;
+    // /proc preserves argv boundaries with NULs. Never split a shell's single
+    // `-c` argument into words: doing so turns incidental request text into a
+    // fictitious writer. The whitespace form supports injected text readers.
+    const argv = cmdline.includes("\0")
+      ? cmdline.split("\0")
+      : cmdline.trim().split(/\s+/);
+    const namesSession = argv.some((arg) =>
+      arg === id ||
+      arg === `--resume=${id}` ||
+      arg === `--session-id=${id}` ||
+      arg === `-r=${id}`,
+    );
+    if (!namesSession) continue;
     return {
       held: true,
       pid,
