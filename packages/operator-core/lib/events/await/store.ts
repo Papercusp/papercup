@@ -796,6 +796,18 @@ export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number>
 
 export type AwaitCancellationSource = 'operator';
 
+/**
+ * Why a SYSTEM (non-operator) cancellation happened, stamped into cancel_reason so
+ * a reminder plane's delivery is measurable (P-010, goal-holder-plans-ideation-
+ * truthful-reports-2026-10-03). Never 'operator': that value is the user-cancel
+ * marker that suppresses a later auto-arm and is set only via `source`.
+ */
+export type AwaitCancelReason =
+  | 'obligation-discharged'
+  | 'obligation-superseded'
+  | 'obligation-delivered'
+  | 'obligation-unevaluated-expired';
+
 /** A user cancellation marker that suppresses a later auto-arm re-registration. */
 export interface OperatorCancelledAwait {
   id: number;
@@ -830,6 +842,8 @@ export async function cancelAwaitDetailed(input: {
   subscriberId: string;
   source?: AwaitCancellationSource;
   confirmStanding?: boolean;
+  /** Stamped into cancel_reason for a system cancel; ignored when source is 'operator'. */
+  reason?: AwaitCancelReason;
 }): Promise<CancelAwaitResult> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -876,7 +890,7 @@ export async function cancelAwaitDetailed(input: {
 
     const rows = await tx`
       UPDATE harness_shared.event_awaits
-         SET cancelled_at = now(), cancel_reason = ${input.source === 'operator' ? 'operator' : null}
+         SET cancelled_at = now(), cancel_reason = ${input.source === 'operator' ? 'operator' : (input.reason ?? null)}
        WHERE workspace_id = ${ws} AND id = ${input.awaitId}
          AND subscriber_id = ${input.subscriberId}
          AND policy <> 'announce'
@@ -921,6 +935,7 @@ export async function cancelAwait(input: {
   subscriberId: string;
   source?: AwaitCancellationSource;
   confirmStanding?: boolean;
+  reason?: AwaitCancelReason;
 }): Promise<boolean> {
   return (await cancelAwaitDetailed(input)).cancelled;
 }
