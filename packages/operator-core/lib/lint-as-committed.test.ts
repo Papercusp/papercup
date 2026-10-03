@@ -42,7 +42,7 @@ import {
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -137,27 +137,33 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       expect(normalizer?.enforce).toBe('pre');
       const sharedComponent = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/components/Page.astro'));
       const virtualStyleId = `${sharedComponent}?astro&type=style&index=0&lang.css`;
-      expect(normalizer?.resolveId?.(sharedComponent)).toBe(sharedComponent);
-      expect(normalizer?.resolveId?.(virtualStyleId)).toBe(virtualStyleId);
-      expect(normalizer?.resolveId?.('/@fs' + virtualStyleId)).toBe(virtualStyleId);
+      const mainComponentId = normalizer?.resolveId?.(sharedComponent);
+      expect(mainComponentId).toBe(sharedComponent);
+      const astroUtilsPath = resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-utils/index.js');
+      const { normalizeFilename } = await import(astroUtilsPath);
+      const cloneAppRoot = resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs');
+      const cloneRootUrl = pathToFileURL(`${cloneAppRoot}/`);
+      const normalizedVirtualStyleId = normalizer?.resolveId?.(virtualStyleId);
+      expect(normalizedVirtualStyleId).toBe(`/@fs${virtualStyleId}`);
+      expect(normalizer?.resolveId?.(`/@fs${virtualStyleId}`)).toBe(`/@fs${virtualStyleId}`);
+      expect(normalizeFilename(normalizedVirtualStyleId?.split('?', 1)[0] ?? '', cloneRootUrl)).toBe(mainComponentId);
 
       const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
       const sharedCommon = realpathSync(resolve(dirname(sharedRoute), '../common.astro'));
-      expect(normalizer?.resolveId?.('../common.astro', `${sharedRoute}?astro&type=page`)).toBe(sharedCommon);
+      expect(normalizer?.resolveId?.('../common.astro', `${sharedRoute}?astro&type=page`)).toBe(`/@fs${sharedCommon}?astro&type=page`);
       const relativeSharedRoute = relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute);
       expect(relativeSharedRoute).toContain('../');
-      expect(normalizer?.resolveId?.('../common.astro', `${relativeSharedRoute}?astro&type=page`)).toBe(sharedCommon);
-      const cloneAppRoot = resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs');
+      expect(normalizer?.resolveId?.('../common.astro', `${relativeSharedRoute}?astro&type=page`)).toBe(`/@fs${sharedCommon}?astro&type=page`);
       const virtualRouteQuery = '?astro&type=page';
       const noncanonicalFilesystemRoute = `/@fs/${relative(cloneAppRoot, sharedRoute)}${virtualRouteQuery}`;
       expect(noncanonicalFilesystemRoute).toContain('/../');
-      expect(normalizer?.resolveId?.(noncanonicalFilesystemRoute)).toBe(`${sharedRoute}${virtualRouteQuery}`);
+      expect(normalizer?.resolveId?.(noncanonicalFilesystemRoute)).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
 
       const relativeTraversalRoute = `${relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute)}${virtualRouteQuery}`;
       expect(relativeTraversalRoute).toContain('../');
       const normalizedTraversalRoute = normalizer?.resolveId?.(relativeTraversalRoute);
-      expect(normalizedTraversalRoute).toBe(sharedRoute + virtualRouteQuery);
-      expect(normalizer?.resolveId?.(normalizedTraversalRoute ?? '')).toBe(sharedRoute + virtualRouteQuery);
+      expect(normalizedTraversalRoute).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
+      expect(normalizer?.resolveId?.(normalizedTraversalRoute ?? '')).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
 
       const localComponent = resolve(repoRoot, 'apps/papercusp-docs/src/components/Local.astro');
       expect(normalizer?.resolveId?.(localComponent)).toBeNull();
