@@ -1125,21 +1125,142 @@ export async function diagnoseFleetScopeLeaderLiveness(args: {
   /** Reuse the workspace roster snapshot already read during member reconciliation. */
   fleetAssignmentRows?: FleetAssignmentRow[];
 }): Promise<boolean | null> {
+  const snapshot = await readFleetLeaderRosterSnapshot(args.scope);
+  if (!snapshot) return null;
+  const { fleet, roster } = snapshot;
+  if (!fleet.leaderOwnerId) {
+    return rosterHasCompleteLeaderLiveness(roster) ? false : null;
+  }
+  const reading = roster.leaderLiveness;
+  if (!reading?.complete) return null;
+  return isPositivelyLiveLeader(reading) ? true : false;
+}
+
+export const FLEET_LEADER_MISSING_GRACE_MS = 10 * 60 * 1000;
+
+type FleetLeaderRosterSnapshot = {
+  fleet: import('../agent-fleets-store').AgentFleetRecord;
+  roster: import('../fleet/fleet-roster').ListFleetRosterResult;
+};
+
+/**
+ * Read the registry version first, then gather the complete liveness snapshot.
+ * The version is deliberately captured before the bounded multi-leg roster read:
+ * every subsequent clock mutation or promotion must lose if the registry changed
+ * while that snapshot was being assembled.
+ */
+async function readFleetLeaderRosterSnapshot(
+  scope: FleetScopeContext,
+): Promise<FleetLeaderRosterSnapshot | null> {
   try {
-    const ws = resolveClaimSpecWorkspace(args.scope.workspaceId);
+    const ws = resolveClaimSpecWorkspace(scope.workspaceId);
     if (!ws) return null;
     const { getFleet } = await import('../agent-fleets-store');
-    const fleet = await getFleet(ws, args.scope.fleetSlug);
-    const leaderOwnerId = fleet?.leaderOwnerId ?? null;
-    if (!leaderOwnerId) return false;
-    const { listFleetAssignments, groupByAgent } = await import('../fleet/assignments');
-    const rows =
-      args.fleetAssignmentRows ??
-      (await listFleetAssignments({ workspaceId: ws, agent: leaderOwnerId }));
-    const leader = groupByAgent(rows).find((agent) => agent.agentId === leaderOwnerId);
-    return Boolean(leader?.present && leader.alive);
+    const fleet = await getFleet(ws, scope.fleetSlug);
+    if (!fleet) return null;
+    const { listFleetRosterDiagnosed } = await import('../fleet/fleet-roster');
+    const roster = await listFleetRosterDiagnosed({
+      fleetSlug: scope.fleetSlug,
+      workspaceId: ws,
+      ...(fleet.leaderOwnerId ? { leaderOwnerId: fleet.leaderOwnerId } : {}),
+    });
+    return { fleet, roster };
   } catch {
     return null;
+  }
+}
+
+function rosterHasCompleteLeaderLiveness(
+  roster: import('../fleet/fleet-roster').ListFleetRosterResult,
+): boolean {
+  return !roster.degradedLegs.some((leg) =>
+    leg === 'presence' || leg === 'wakeability' || leg === 'recorded');
+}
+
+function isPositivelyLiveLeader(
+  reading: NonNullable<import('../fleet/fleet-roster').ListFleetRosterResult['leaderLiveness']>,
+): boolean {
+  return reading.recordedLive === true ||
+    reading.sessionState === 'live' ||
+    reading.sessionState === 'recorded';
+}
+
+/**
+ * Reconcile a member pull against the durable leader vacancy. Complete,
+ * positive absence starts a persisted grace clock; only after ten minutes may
+ * the oldest positively-live su member take leadership through the shared CAS.
+ * Unknown/degraded liveness remains unknown and never mutates the clock.
+ */
+export async function reconcileFleetScopeLeaderSuccession(args: {
+  scope: FleetScopeContext;
+  identity: AgentIdentity;
+  nowMs?: number;
+}): Promise<'live' | 'unavailable' | null> {
+  const snapshot = await readFleetLeaderRosterSnapshot(args.scope);
+  if (!snapshot) return null;
+  const { fleet, roster } = snapshot;
+  const nowMs = args.nowMs ?? Date.now();
+  const complete = rosterHasCompleteLeaderLiveness(roster) &&
+    (fleet.leaderOwnerId == null || roster.leaderLiveness?.complete === true);
+  if (!complete) return null;
+
+  const leaderIsLive = fleet.leaderOwnerId != null &&
+    roster.leaderLiveness != null &&
+    isPositivelyLiveLeader(roster.leaderLiveness);
+  const store = await import('../agent-fleets-store');
+
+  if (leaderIsLive) {
+    if (fleet.leaderMissingSinceMs == null) return 'live';
+    const cleared = await store.clearFleetLeaderMissingSince({
+      workspaceId: fleet.workspaceId,
+      fleetSlug: fleet.fleetSlug,
+      expectedLeaderOwnerId: fleet.leaderOwnerId,
+      expectedLeaderMissingSinceMs: fleet.leaderMissingSinceMs,
+      expectedUpdatedAtMs: fleet.updatedAt,
+      observedAtMs: nowMs,
+    }).catch(() => null);
+    return cleared ? 'live' : null;
+  }
+
+  if (fleet.leaderMissingSinceMs == null) {
+    const marked = await store.markFleetLeaderMissingSince({
+      workspaceId: fleet.workspaceId,
+      fleetSlug: fleet.fleetSlug,
+      expectedLeaderOwnerId: fleet.leaderOwnerId,
+      expectedUpdatedAtMs: fleet.updatedAt,
+      observedAtMs: nowMs,
+    }).catch(() => null);
+    return marked ? 'unavailable' : null;
+  }
+
+  if (nowMs - fleet.leaderMissingSinceMs < FLEET_LEADER_MISSING_GRACE_MS) {
+    return 'unavailable';
+  }
+
+  const { oldestLiveFleetMember } = await import('../fleet/fleet-roster');
+  const replacementLeaderOwnerId = oldestLiveFleetMember(roster.entries);
+  if (!replacementLeaderOwnerId) return 'unavailable';
+
+  try {
+    const { takeFleetLeadership } = await import('../agent-tools/fleet_registry/take-leadership-core');
+    const promoted = await takeFleetLeadership(
+      fleet.workspaceId,
+      fleet,
+      args.identity,
+      replacementLeaderOwnerId,
+      {
+        succession: {
+          expectedLeaderOwnerId: fleet.leaderOwnerId,
+          expectedLeaderMissingSinceMs: fleet.leaderMissingSinceMs,
+          expectedUpdatedAtMs: fleet.updatedAt,
+          nowMs,
+          graceMs: FLEET_LEADER_MISSING_GRACE_MS,
+        },
+      },
+    );
+    return promoted.leader === replacementLeaderOwnerId ? 'live' : null;
+  } catch {
+    return 'unavailable';
   }
 }
 
