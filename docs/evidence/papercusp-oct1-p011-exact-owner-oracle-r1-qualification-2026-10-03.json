@@ -56,6 +56,34 @@
     "skipReason": "Fresh main/sibling baseline requires PAPERCUSP_P011_BASELINE_ORACLE_INPUTS; explicitly not exercised in this saved run.",
     "newReplay": false
   },
+  "finalSourceValidation": {
+    "reason": "Necessary validation after the three type annotations; bind-from-test-run source refuses a measured file modified after the original run. This run is not recovery replay and starts no runtime/snapshot producer.",
+    "testRunId": 20659110,
+    "status": "pass",
+    "harnessSlug": "papercusp",
+    "source": "local",
+    "commitSha": "93b6b63aa3c6aa66b3efb197b5901adef24c82c3",
+    "startedAt": "2026-10-03T07:50:22.649Z",
+    "finishedAt": "2026-10-03T07:50:22.702Z",
+    "passed": 59,
+    "skipped": 1,
+    "testFileRouterDirty": false,
+    "ledgerWorktreeDirty": true,
+    "provenanceScope": "Named test file clean; ledger reports broader worktree dirty. Full import graph unknown.",
+    "sourceSha256": "041965feff77a39f5bf8664cefc14ae2d2532c42ea9b919e80e70f7d2bff059a",
+    "log": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r2.log",
+      "bytes": 4700,
+      "sha256": "80bfb64d6c54a8460a182126ad3a28a07b768772421db07811eb146827ff4e8c",
+      "terminal": "Native exec exit 0; TEST_FILE_RESULT status=passed"
+    },
+    "report": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r2.json",
+      "bytes": 4400,
+      "sha256": "4619229f67ef51755aac60e059f42c0dd4b201e751a189927b826c5905595388",
+      "byteIdenticalToSavedCanonicalReport": true
+    }
+  },
   "logs": {
     "test": {
       "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r1.log",
@@ -90,7 +118,7 @@
       "byteIdentical": true,
       "priorSourceReconstructedAndHashMatched": true
     },
-    "scope": "Saved functional run used the tested source. Current source has identical emitted JavaScript under the named transform; no fresh suite or whole import-graph claim."
+      "scope": "Original saved run used the tested source. Current source has identical emitted JavaScript under the named transform and a separate final-source validation run; whole import graph remains unknown."
   },
   "independentOracle": {
     "reuse": "Extended maintained service-memory-baseline-evidence.integration.test.ts; no producer/analyzer import or new runtime.",
