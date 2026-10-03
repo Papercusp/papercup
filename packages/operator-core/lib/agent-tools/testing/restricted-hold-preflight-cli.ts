@@ -22,6 +22,7 @@
 import { readFile } from 'node:fs/promises';
 import { RESTRICTED_HOLD_PREFLIGHT_EXIT, RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import { restrictedHoldBundleRefusal, restrictedHoldRefusal, type BundleInputs, type RestrictedHoldRefusal } from './restricted-hold-fence';
+import type { RestrictedEditHolding } from '../../personal-vault/git-sync-hold';
 
 function emit(payload: Record<string, unknown>, exitCode: number): void {
   // The census opens a Postgres pool that would keep the event loop alive; exit explicitly, but
@@ -35,6 +36,27 @@ function misuse(hint: string): void {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+/**
+ * TEST-ONLY census seam for the bundle mode (EI-24917607035361603): unit tests drive
+ * bundle-host.sh end to end, and its gate would otherwise open the real org-admin Postgres,
+ * which the unit guard refuses, so every bundler test failed closed. Honored only when BOTH
+ * VITEST (set by vitest and inherited by everything a test spawns) and this variable are set;
+ * a systemd/CLI bundle never has VITEST, so the live gate always reads the real census.
+ * A file that is not a JSON array refuses (fail-closed), never admits.
+ */
+const TEST_CENSUS_ENV = 'PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE';
+
+async function injectedTestCensus(): Promise<RestrictedEditHolding[] | 'invalid' | null> {
+  const file = process.env[TEST_CENSUS_ENV];
+  if (!process.env.VITEST || !file) return null;
+  try {
+    const parsed: unknown = JSON.parse(await readFile(file, 'utf8'));
+    return Array.isArray(parsed) ? (parsed as RestrictedEditHolding[]) : 'invalid';
+  } catch {
+    return 'invalid';
+  }
 }
 
 async function readBundleInputs(path: string): Promise<BundleInputs | null> {
@@ -59,7 +81,12 @@ async function main(): Promise<void> {
       misuse(`restricted-hold bundle preflight could not read ${inputsPath} as { files: string[], dirs: string[] }`);
       return;
     }
-    refusal = await restrictedHoldBundleRefusal(root, inputs);
+    const injected = await injectedTestCensus();
+    if (injected === 'invalid') {
+      misuse(`${TEST_CENSUS_ENV} must name a JSON array of restricted holdings ([] = nothing held)`);
+      return;
+    }
+    refusal = await restrictedHoldBundleRefusal(root, inputs, injected ? { holdings: async () => injected } : {});
   } else {
     const [root, ...files] = args;
     if (!root) {

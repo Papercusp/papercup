@@ -150,6 +150,13 @@ bundle_host_workers() {
   BUNDLE_HOST_WORKER_FAILED_SOURCE=""
   BUNDLE_HOST_WORKER_FAILED_OUTPUT=""
   mkdir -p "$out_dir" || return 1
+  # EI-24917607035361603: never rely on the caller having created the gate's meta dir. A
+  # git-sync sweep can commit a caller that sets the variable without its mkdir (candidate
+  # 75e965a93682 did), and the first append below then failed the whole worker step.
+  if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ] && ! mkdir -p "$BUNDLE_HOST_GATE_META_DIR"; then
+    echo "FATAL: cannot create the restricted-hold gate meta dir $BUNDLE_HOST_GATE_META_DIR" >&2
+    return 1
+  fi
   for source in "${sources[@]}"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
     BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
@@ -159,7 +166,10 @@ bundle_host_workers() {
     cp "$source" "$tmp" && mv -f "$tmp" "$out_dir/$output" || return 1
     # WI-10005745: bundle-host.sh's restricted-hold gate needs every input it published.
     if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ]; then
-      printf '%s\n' "$source" >> "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt" || return 1
+      printf '%s\n' "$source" >> "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt" || {
+        echo "FATAL: cannot record $source in $BUNDLE_HOST_GATE_META_DIR/copied-sources.txt for the restricted-hold gate" >&2
+        return 1
+      }
     fi
     index=$((index + 1))
   done
