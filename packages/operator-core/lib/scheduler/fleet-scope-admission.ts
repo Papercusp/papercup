@@ -29,6 +29,7 @@ import { reviewableMiss } from './reviewable-miss';
 import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
 import { boundedPgReadTxn, PG_READ_QUERY_CALL_OVERHEAD_MS } from '../pg-read-query';
 import { interpretFleetClaimability } from '../fleet/lane-health';
+import { isLeaderPresentSessionState } from '../fleet/leader-presence';
 import {
   mintLegacyFleetScopeDowngradeAdmission,
   readFleetScopeDowngradeMarker,
@@ -1180,8 +1181,10 @@ function rosterHasCompleteLeaderLiveness(
 function isPositivelyLiveLeader(
   reading: NonNullable<import('../fleet/fleet-roster').ListFleetRosterResult['leaderLiveness']>,
 ): boolean {
+  // EI-24962274233684871: a parked/draining leader holds its seat — never a
+  // succession trigger. Shared predicate with fleet:status.
   return reading.recordedLive === true ||
-    reading.sessionState === 'live' ||
+    isLeaderPresentSessionState(reading.sessionState) ||
     reading.sessionState === 'recorded';
 }
 
