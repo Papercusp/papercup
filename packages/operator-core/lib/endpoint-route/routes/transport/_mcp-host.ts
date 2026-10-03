@@ -50,6 +50,7 @@ import {
   lookupByMcpName,
   resolveMcpName,
   listMcpProjections,
+  projectedToolRegistryRevision,
   applyToolManifest,
   papercuspGateBypass,
   sanitizeToolSchema,
@@ -177,6 +178,8 @@ import {
   filterListingsByAllowlist,
   getSessionSurface,
   activateSessionTools,
+  rememberSessionToolRegistryRevision,
+  sessionToolRegistryRevisionChanged,
 } from './tool-allowlist';
 import { validIdempotencyKey, lookupStoredMcpResult, storeMcpResult, type StoredMcpResult } from './_mcp-result-replay';
 import {
@@ -3145,13 +3148,14 @@ async function identityAdmittedListings(
 }
 
 /**
- * P-012 / D-040(c): after a tools/call, re-announce the listing if an attach
- * changed what the identity kernel admits. Awaited before the call returns so
- * `list_changed` rides the still-open request stream, as activateTools' does;
- * throttled per session, so almost every call returns straight away.
+ * After a tools/call, re-announce the listing if either the governed identity
+ * surface or the projected tool contract changed since this MCP session's last
+ * tools/list. Awaited before the call returns so `list_changed` rides the still-
+ * open request stream, as activateTools' does.
  */
-function withIdentitySurfaceRecheck<Req, Res>(
+function withMcpSessionSurfaceRecheck<Req, Res>(
   handler: (req: Req, extra: unknown) => Promise<Res>,
+  readRegistryRevision: () => string = projectedToolRegistryRevision,
 ): (req: Req, extra: unknown) => Promise<Res> {
   return async (req, extra) => {
     const result = await handler(req, extra);
@@ -3160,16 +3164,39 @@ function withIdentitySurfaceRecheck<Req, Res>(
       extra as { sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void> } | undefined
     )?.sendNotification;
     if (sessionKey && sendNotification) {
+      const currentRegistryRevision = readRegistryRevision();
+      const registryChanged = sessionToolRegistryRevisionChanged(sessionKey, currentRegistryRevision);
+      let listChangedSent = false;
+      const notifyListChanged = async () => {
+        if (listChangedSent) return;
+        await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
+        listChangedSent = true;
+      };
+      try {
+        if (registryChanged) await notifyListChanged();
+      } catch (err) {
+        console.warn(`[mcp-host] tool registry revision recheck failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       try {
         const { recheckListedIdentitySurface } = await import('../../../capability-envelope/identity-tool-surface');
-        await recheckListedIdentitySurface(sessionKey, () =>
-          sendNotification({ method: 'notifications/tools/list_changed', params: {} }));
+        await recheckListedIdentitySurface(sessionKey, notifyListChanged);
       } catch (err) {
         console.warn(`[mcp-host] identity surface recheck failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (registryChanged && listChangedSent) {
+        rememberSessionToolRegistryRevision(sessionKey, currentRegistryRevision);
       }
     }
     return result;
   };
+}
+
+/** The real call wrapper with a controllable revision source for focused tests. */
+export function __withMcpSessionSurfaceRecheckForTests<Req, Res>(
+  handler: (req: Req, extra: unknown) => Promise<Res>,
+  readRegistryRevision: () => string,
+): (req: Req, extra: unknown) => Promise<Res> {
+  return withMcpSessionSurfaceRecheck(handler, readRegistryRevision);
 }
 
 /**
@@ -3229,88 +3256,91 @@ export function registerMcpHost(server: McpServer): void {
       );
     }
     const filtered = vis.listings;
+    const listedRegistryRevision =
+      filtered.map(listingRegistryRevision).find((revision) => revision !== 'unknown') ??
+      projectedToolRegistryRevision();
     // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
     // consumers (Ollama) can parse the surface. This is THE tools/list
     // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
     // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
-    return {
-      tools: await Promise.all(
-        filtered.map(async (t) => {
-          const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
-          const out: Record<string, unknown> = { ...t };
-          // MCP clients use the standard annotation to decide whether a
-          // failed connection can safely replay a call. Keep the listing
-          // spread above so registry metadata in `_meta` survives while
-          // adding the effect-derived hint to the standard field.
-          const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
-          const registryRevision = listingRegistryRevision(t);
-          const listingVariant = projected && tt.inputSchema === projected.inputSchema ? 'full' : 'derived';
-          if (projected?.effect) {
-            const existingAnnotations =
-              out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
-                ? (out.annotations as Record<string, unknown>)
-                : {};
-            out.annotations = {
-              ...existingAnnotations,
-              readOnlyHint: projected.effect === 'read',
-            };
-          }
-          if (tt.inputSchema) {
-            // Registry write-positional tools advertise a single `row` string
-            // (token-efficient-agent-io P-008) so the model emits a positional
-            // row; every other tool advertises its real args schema. Applied
-            // before sanitize so the swapped schema is objectified too.
-            const advertised =
-              typeof tt.name === 'string'
-                ? advertisedArgsSchema(tt.name, tt.inputSchema as Record<string, unknown>)
-                : (tt.inputSchema as Record<string, unknown>);
-            // Publish small entity vocabularies as enums (P-004b). The listing
-            // carries only the CONVERTED schema, so the entity-ref sites are
-            // read back off the tool's live args schema by name; a listing with
-            // no resolvable def (a plugin/pinned entry) simply gets no overlay.
-            // Entity-ref markers are WeakMap-keyed on the RAW Zod args-schema object
-            // identity (entity-ref.ts), so this needs the raw `ToolDefinition.args`
-            // from the legacy tool registry — `ProjectedTool` (lookupByMcpName) only
-            // carries the already-converted JSON `inputSchema`, a different object
-            // that was never entityRef()-marked, so it can never match here.
-            const def = typeof tt.name === 'string' ? lookupToolDefinitionByName(tt.name) : null;
-            const hasLiveEntityOverlay = Boolean(def?.args && hasEntityRefSchema(def.args));
-            if (hasLiveEntityOverlay) {
-              // Enum fragments can change while the process stays live, so this
-              // deliberately remains uncached. It is a small minority of the
-              // catalog; caching the static majority removes the reconnect-time
-              // deep-clone/GC burst without serving a stale vocabulary.
-              await applyEntityRefEnums(def!.args, advertised);
-              out.inputSchema = sanitizeToolSchema(advertised);
-            } else {
-              out.inputSchema = sanitizeToolSchemaCached(
-                `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
-                advertised,
-              );
-            }
-          }
-          // outputSchema (P-010) gets the same boolean-subschema objectification,
-          // but with position:'output' (EI-22064217935223876): unlike inputSchema,
-          // outputSchema is read back by the MCP client SDK to validate the tool's
-          // REAL return value, so it must NOT force `type: 'object'` onto a
-          // z.unknown()/z.any() result field whose actual value is a string, number,
-          // array, or boolean — see tool-schema-sanitize.ts's `SanitizePosition` doc.
-          if (tt.outputSchema) {
-            out.outputSchema = sanitizeToolSchemaCached(
-              `${registryRevision}:${tt.name ?? '(anonymous)'}:output`,
-              tt.outputSchema,
-              'output',
+    const tools = await Promise.all(
+      filtered.map(async (t) => {
+        const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
+        const out: Record<string, unknown> = { ...t };
+        // MCP clients use the standard annotation to decide whether a
+        // failed connection can safely replay a call. Keep the listing
+        // spread above so registry metadata in `_meta` survives while
+        // adding the effect-derived hint to the standard field.
+        const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
+        const registryRevision = listingRegistryRevision(t);
+        const listingVariant = projected && tt.inputSchema === projected.inputSchema ? 'full' : 'derived';
+        if (projected?.effect) {
+          const existingAnnotations =
+            out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
+              ? (out.annotations as Record<string, unknown>)
+              : {};
+          out.annotations = {
+            ...existingAnnotations,
+            readOnlyHint: projected.effect === 'read',
+          };
+        }
+        if (tt.inputSchema) {
+          // Registry write-positional tools advertise a single `row` string
+          // (token-efficient-agent-io P-008) so the model emits a positional
+          // row; every other tool advertises its real args schema. Applied
+          // before sanitize so the swapped schema is objectified too.
+          const advertised =
+            typeof tt.name === 'string'
+              ? advertisedArgsSchema(tt.name, tt.inputSchema as Record<string, unknown>)
+              : (tt.inputSchema as Record<string, unknown>);
+          // Publish small entity vocabularies as enums (P-004b). The listing
+          // carries only the CONVERTED schema, so the entity-ref sites are
+          // read back off the tool's live args schema by name; a listing with
+          // no resolvable def (a plugin/pinned entry) simply gets no overlay.
+          // Entity-ref markers are WeakMap-keyed on the RAW Zod args-schema object
+          // identity (entity-ref.ts), so this needs the raw `ToolDefinition.args`
+          // from the legacy tool registry — `ProjectedTool` (lookupByMcpName) only
+          // carries the already-converted JSON `inputSchema`, a different object
+          // that was never entityRef()-marked, so it can never match here.
+          const def = typeof tt.name === 'string' ? lookupToolDefinitionByName(tt.name) : null;
+          const hasLiveEntityOverlay = Boolean(def?.args && hasEntityRefSchema(def.args));
+          if (hasLiveEntityOverlay) {
+            // Enum fragments can change while the process stays live, so this
+            // deliberately remains uncached. It is a small minority of the
+            // catalog; caching the static majority removes the reconnect-time
+            // deep-clone/GC burst without serving a stale vocabulary.
+            await applyEntityRefEnums(def!.args, advertised);
+            out.inputSchema = sanitizeToolSchema(advertised);
+          } else {
+            out.inputSchema = sanitizeToolSchemaCached(
+              `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
+              advertised,
             );
           }
-          return out;
-        }),
-      ),
-    };
+        }
+        // outputSchema (P-010) gets the same boolean-subschema objectification,
+        // but with position:'output' (EI-22064217935223876): unlike inputSchema,
+        // outputSchema is read back by the MCP client SDK to validate the tool's
+        // REAL return value, so it must NOT force `type: 'object'` onto a
+        // z.unknown()/z.any() result field whose actual value is a string, number,
+        // array, or boolean — see tool-schema-sanitize.ts's `SanitizePosition` doc.
+        if (tt.outputSchema) {
+          out.outputSchema = sanitizeToolSchemaCached(
+            `${registryRevision}:${tt.name ?? '(anonymous)'}:output`,
+            tt.outputSchema,
+            'output',
+          );
+        }
+        return out;
+      }),
+    );
+    rememberSessionToolRegistryRevision(mcpSessionKey(extra), listedRegistryRevision);
+    return { tools };
   });
 
   server.server.setRequestHandler(
     sdk.CallToolRequestSchema,
-    withIdentitySurfaceRecheck(withFuzzyToolName(
+    withMcpSessionSurfaceRecheck(withFuzzyToolName(
     async (
       req: {
         params: {
