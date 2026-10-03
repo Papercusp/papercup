@@ -7,10 +7,19 @@ import { stubSyncQueries } from './_sync-stub';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
 import AxeBuilder from '@axe-core/playwright';
 import { writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // The same maintained browser fixture can be paused for a real Orca/keyboard
 // review on an isolated desktop. Normal automated runs do not pause.
-test.use({ launchOptions: { args: process.env.PAPERCUSP_TUTORIAL_ORCA_REVIEW === '1' ? ['--force-renderer-accessibility'] : [] } });
+// Preserve Chromium's network-service events across a failed cold first load.
+// The default capture mode omits sensitive values. Each worker owns its log.
+const chromiumNetLog = join(tmpdir(), `papercusp-cloud-tutorial-netlog-${process.pid}.json`);
+console.info(`CHROMIUM_NETLOG ${chromiumNetLog}`);
+test.use({ launchOptions: { args: [
+  `--log-net-log=${chromiumNetLog}`,
+  ...(process.env.PAPERCUSP_TUTORIAL_ORCA_REVIEW === '1' ? ['--force-renderer-accessibility'] : []),
+] } });
 
 const scope = { tenantId: 'tutorial-tenant', userId: 'tutorial-user', workspaceId: 'tutorial-customer' };
 const connection = {
@@ -42,6 +51,11 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
   const browserErrors: string[] = [];
   const assistance: Array<{ path: string; body: Record<string, unknown> }> = [];
   page.on('pageerror', error => browserErrors.push(error.message));
+  page.on('requestfailed', request => {
+    if (request.resourceType() === 'script') {
+      browserErrors.push(`Script request failed: ${request.failure()?.errorText ?? 'unknown'} ${new URL(request.url()).pathname}`);
+    }
+  });
   await page.addInitScript(() => {
     window.__PAPERCUSP_HOSTED_BROWSER__ = {
       version: 1, controlPlaneWorkspaceId: 'tutorial-control', restEndpoint: '/api/hosted/browser', sseEndpoint: '/api/hosted/browser/sse',
