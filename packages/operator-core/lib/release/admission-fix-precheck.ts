@@ -26,7 +26,8 @@
  * `scripts/test-files.mjs` per file), guarded by the gate's initial run-lock probe.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, type WriteStream } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
@@ -297,17 +298,55 @@ export interface CheckpointTreeRunnerOptions {
   /** Injectable for tests: is a gate run holding the checkpoint tree right now? */
   runLockHeld?: (root: string) => { held: boolean; pid?: number; elapsedSec: number | null };
   /** Injectable for tests: run one child and capture its exit + output. */
-  exec?: (argv: readonly string[], opts: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv }) => Promise<ExecResult>;
+  exec?: (argv: readonly string[], opts: ExecOptions) => Promise<ExecResult>;
   log?: (line: string) => void;
+  /**
+   * Directory for the durable per-pre-check log (WI-10006014). Default
+   * `~/.papercusp/checkpoint-logs`, beside the gate's own run logs.
+   */
+  logDir?: string;
+}
+
+export interface ExecOptions {
+  cwd: string;
+  /** Hard wall-clock ceiling — a runaway backstop, not a progress budget. */
+  timeoutMs: number;
+  /**
+   * Kill when the child emits NO output for this long (WI-10006014). A progressing setup
+   * keeps logging (one line per materialized tree, growth-only copy progress), so this is
+   * what detects a stall; the wall-clock ceiling only bounds a runaway.
+   */
+  idleTimeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+  /** Append the child's full stdout+stderr here, so a failure is attributable after the fact. */
+  logFile?: string;
 }
 
 export interface ExecResult {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
+  /** True when the kill came from the idle watchdog rather than the wall-clock ceiling. */
+  idleTimedOut?: boolean;
+  /** Head + REAL tail of the output (the middle is elided past the capture cap). */
   output: string;
   durationMs: number;
 }
+
+/**
+ * Setup budget shared by the runner AND the queue's pre-check deadline
+ * (repair-queue.ts admissionPrecheckDeadline), so the two can never disagree.
+ * WI-10006014: the setup used to get a 20-min WALL-CLOCK budget that killed a cold
+ * dependency materialization under load while it was still progressing. Stall detection
+ * is now the idle watchdog; this ceiling is only the runaway backstop.
+ */
+export const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 40 * 60_000;
+/** No setup output for this long = stalled (the gate's own setup watchdog is 30 min idle). */
+export const ADMISSION_PRECHECK_SETUP_IDLE_MS = 15 * 60_000;
+export const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
+/** Output kept in memory: the first HEAD bytes plus the LAST TAIL bytes. */
+export const EXEC_OUTPUT_HEAD_CHARS = 32_000;
+export const EXEC_OUTPUT_TAIL_CHARS = 224_000;
 
 /**
  * How long after the direct child EXITS we keep waiting for its stdio to close. A grandchild
@@ -346,33 +385,57 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
-    const chunks: string[] = [];
-    let size = 0;
+    // WI-10006014: keep the HEAD and the REAL TAIL. The old capture stopped appending at
+    // 256 KB, so a failure detail citing `output.slice(-600)` quoted the end of the first
+    // 256 KB — possibly long before the point of death — instead of the actual last lines.
+    const capture = createHeadTailCapture(EXEC_OUTPUT_HEAD_CHARS, EXEC_OUTPUT_TAIL_CHARS);
+    const logStream = opts.logFile ? openExecLog(opts.logFile, argv, opts.cwd) : null;
+    let timedOut = false;
+    let idleTimedOut = false;
+    let settled = false;
+    let graceTimer: NodeJS.Timeout | null = null;
+    let idleTimer: NodeJS.Timeout | null = null;
+    const kill = () => {
+      signalGroup(child, 'SIGTERM');
+      setTimeout(() => signalGroup(child, 'SIGKILL'), 5_000).unref();
+    };
+    const armIdle = () => {
+      if (!opts.idleTimeoutMs || settled) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        idleTimedOut = true;
+        kill();
+      }, opts.idleTimeoutMs);
+    };
     const collect = (buf: Buffer) => {
-      if (size > 256_000) return;
       const s = buf.toString('utf8');
-      size += s.length;
-      chunks.push(s);
+      capture.push(s);
+      logStream?.write(s);
+      armIdle();
     };
     child.stdout?.on('data', collect);
     child.stderr?.on('data', collect);
-    let timedOut = false;
-    let settled = false;
-    let graceTimer: NodeJS.Timeout | null = null;
-    const finish = (r: Omit<ExecResult, 'durationMs' | 'timedOut'>) => {
+    const finish = (r: Omit<ExecResult, 'durationMs' | 'timedOut' | 'idleTimedOut'>) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (graceTimer) clearTimeout(graceTimer);
-      resolve({ ...r, timedOut, durationMs: Date.now() - startedAt });
+      if (idleTimer) clearTimeout(idleTimer);
+      const durationMs = Date.now() - startedAt;
+      logStream?.end(
+        `\n[admission-precheck-exec] exit=${r.exitCode ?? 'null'} signal=${r.signal ?? 'none'} ` +
+          `timedOut=${timedOut} idleTimedOut=${idleTimedOut} durationMs=${durationMs} at ${new Date().toISOString()}\n`,
+      );
+      resolve({ ...r, timedOut, ...(idleTimedOut ? { idleTimedOut } : {}), durationMs });
     };
     const timer = setTimeout(() => {
       timedOut = true;
-      signalGroup(child, 'SIGTERM');
-      setTimeout(() => signalGroup(child, 'SIGKILL'), 5_000).unref();
+      kill();
     }, opts.timeoutMs);
+    armIdle();
     child.on('error', (err) => {
-      finish({ exitCode: null, signal: null, output: `${chunks.join('')}\n${err.message}` });
+      finish({ exitCode: null, signal: null, output: `${capture.text()}\n${err.message}` });
     });
     child.on('exit', (code, signal) => {
       // The direct child is gone. Normally 'close' follows at once; if a grandchild still holds
@@ -381,14 +444,64 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
         signalGroup(child, 'SIGKILL');
         child.stdout?.destroy();
         child.stderr?.destroy();
-        finish({ exitCode: code, signal, output: chunks.join('') });
+        finish({ exitCode: code, signal, output: capture.text() });
       }, EXEC_STDIO_CLOSE_GRACE_MS);
       graceTimer.unref();
     });
     child.on('close', (code, signal) => {
-      finish({ exitCode: code, signal, output: chunks.join('') });
+      finish({ exitCode: code, signal, output: capture.text() });
     });
   });
+
+/**
+ * Bounded output capture that keeps the first `headChars` and the LAST `tailChars`,
+ * eliding the middle with an explicit marker (WI-10006014). Exported for tests.
+ */
+export function createHeadTailCapture(headChars: number, tailChars: number): { push(s: string): void; text(): string } {
+  let head = '';
+  let tail = '';
+  let elided = 0;
+  return {
+    push(s: string) {
+      if (head.length < headChars) {
+        const take = s.slice(0, headChars - head.length);
+        head += take;
+        s = s.slice(take.length);
+        if (!s) return;
+      }
+      tail += s;
+      if (tail.length > tailChars * 2) {
+        const drop = tail.length - tailChars;
+        elided += drop;
+        tail = tail.slice(drop);
+      }
+    },
+    text() {
+      let t = tail;
+      let dropped = elided;
+      if (t.length > tailChars) {
+        dropped += t.length - tailChars;
+        t = t.slice(t.length - tailChars);
+      }
+      return dropped > 0 ? `${head}\n…[${dropped} chars elided — full output in the pre-check log]…\n${t}` : head + t;
+    },
+  };
+}
+
+/** Open (append) the durable exec log, writing a header naming the command. Never throws. */
+function openExecLog(file: string, argv: readonly string[], cwd: string): WriteStream | null {
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    const stream = createWriteStream(file, { flags: 'a' });
+    stream.on('error', () => {
+      // A log write failure must never fail or hang the measurement it describes.
+    });
+    stream.write(`\n[admission-precheck-exec] ${new Date().toISOString()} cwd=${cwd} argv=${JSON.stringify(argv)}\n`);
+    return stream;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Router exit codes that MEASURED NOTHING. The contract lives in
@@ -477,10 +590,17 @@ export function admissionPrecheckSetupEnv(): NodeJS.ProcessEnv {
 export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunnerOptions): FixPrecheckRunner {
   const exec = opts.exec ?? defaultExec;
   const runLockHeld = opts.runLockHeld ?? ((root: string) => isCheckpointRunLockHeldCheap(root));
-  const perFileTimeoutMs = opts.perFileTimeoutMs ?? 10 * 60_000;
-  const setupTimeoutMs = opts.setupTimeoutMs ?? 20 * 60_000;
+  const perFileTimeoutMs = opts.perFileTimeoutMs ?? ADMISSION_PRECHECK_PER_FILE_BUDGET_MS;
+  const setupTimeoutMs = opts.setupTimeoutMs ?? ADMISSION_PRECHECK_SETUP_BUDGET_MS;
   const log = opts.log ?? (() => {});
+  const logDir = opts.logDir ?? path.join(os.homedir(), '.papercusp', 'checkpoint-logs');
   return async ({ commit, files, onProgress }) => {
+    // WI-10006014: one durable log per pre-check (setup + every file), named in every
+    // runner-failed detail, so a failure is attributable after the in-memory output is gone.
+    const logFile = path.join(
+      logDir,
+      `admission-precheck-${commit.slice(0, 12)}-${new Date().toISOString().replace(/[:.]/g, '-')}.log`,
+    );
     const held = runLockHeld(opts.integrationRoot);
     if (held.held) {
       return {
@@ -524,14 +644,25 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         '--node-modules-copy',
         'copy',
       ],
-      { cwd: opts.integrationRoot, timeoutMs: setupTimeoutMs, env: admissionPrecheckSetupEnv() },
+      {
+        cwd: opts.integrationRoot,
+        timeoutMs: setupTimeoutMs,
+        idleTimeoutMs: ADMISSION_PRECHECK_SETUP_IDLE_MS,
+        env: admissionPrecheckSetupEnv(),
+        logFile,
+      },
     );
     if (setup.exitCode !== 0) {
       const infra = dependencyGenerationInfraCode(setup.exitCode, setup.output);
+      const timeoutNote = setup.idleTimedOut
+        ? ` (stalled: no output for ${Math.round(ADMISSION_PRECHECK_SETUP_IDLE_MS / 60_000)} min)`
+        : setup.timedOut
+          ? ` (timed out at the ${Math.round(setupTimeoutMs / 60_000)}-min ceiling after ${Math.round(setup.durationMs / 1000)}s)`
+          : '';
       return {
         ran: false,
         reason: 'runner-failed',
-        detail: `${infra ? `infra=${infra} ` : ''}setup-release-checkout exited ${setup.exitCode ?? setup.signal} for ${commit.slice(0, 12)}${setup.timedOut ? ' (timed out)' : ''}: ${setup.output.slice(-600)}`,
+        detail: `${infra ? `infra=${infra} ` : ''}setup-release-checkout exited ${setup.exitCode ?? setup.signal} for ${commit.slice(0, 12)}${timeoutNote}; log=${logFile}: ${setup.output.slice(-600)}`,
       };
     }
     const results: FixPrecheckFileResult[] = [];
@@ -561,6 +692,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         cwd: precheckRoot,
         timeoutMs: perFileTimeoutMs,
         env: { PAPERCUSP_ADMISSION_PRECHECK: '1', PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}` },
+        logFile,
       });
       const c = classifyTestFileRun(r);
       results.push({ path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs });

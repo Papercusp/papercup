@@ -48,6 +48,8 @@ import { realAdmissionGit } from '../../release/repair-head-admission';
 import { runAdmissionJob } from '../../release/admission-offthread';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
+  ADMISSION_PRECHECK_PER_FILE_BUDGET_MS,
+  ADMISSION_PRECHECK_SETUP_BUDGET_MS,
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
   precheckPopulation,
@@ -569,8 +571,8 @@ function precheckRecordOf(
   };
 }
 
-const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 20 * 60_000;
-const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
+// Setup and per-file budgets are imported from the runner (admission-fix-precheck.ts) so
+// this deadline can never drift from the budgets the runner actually enforces (WI-10006014).
 const ADMISSION_PRECHECK_SETTLEMENT_BUDGET_MS = 60_000;
 
 function sameAdmissionPrecheck(

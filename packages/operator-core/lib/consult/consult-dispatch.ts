@@ -41,6 +41,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Sql } from 'postgres';
+import { evidenceIncarnationOwnedBy } from '../session-port/source';
 import {
   buildAgentLaunchCommand,
   injectLaunchedByArg,
@@ -280,6 +281,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /** Test seam for the saved per-review model, read again on every cascade leg. */
   readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
   resolveResumeTarget: typeof resolveResumeTarget;
+  /** Reuse the port route's exact backend/owner guard for an older incarnation. */
+  checkEvidenceIncarnationOwnedBy: (target: ResumeTarget, sessionId: string) => Promise<boolean>;
   checkResumeTranscript: (
     target: ResumeTarget,
   ) => Promise<{ available: boolean; detail: string; transcriptPath?: string }>;
@@ -822,7 +825,7 @@ function childExitFailure(exit: SpawnChildExit): string | null {
 
 /** The operation a rank implies against this source, or the reason there is none. */
 export function planDispatchOperation(
-  source: { agent: string | null; live: boolean; tracked?: boolean },
+  source: { agent: string | null; live: boolean; tracked?: boolean; historical?: boolean },
   rank: Pick<AllowedExpertModel, 'agent'>,
 ): { operation: DispatchOperation } | { operation: null; reason: DispatchSkipReason; detail: string } {
   const sourceAgent = (source.agent ?? '').toLowerCase();
@@ -845,7 +848,7 @@ export function planDispatchOperation(
   }
   // Tracked Claude forks already preserve the live expert. Every other pair
   // uses the maintained port with a preparation-bound independent answer owner.
-  return { operation: sourceAgent === 'claude' && rank.agent === 'claude' ? 'fork' : 'convert' };
+  return { operation: sourceAgent === 'claude' && rank.agent === 'claude' && !source.historical ? 'fork' : 'convert' };
 }
 
 /**
@@ -902,6 +905,11 @@ export async function dispatchConsultResponder(
 ): Promise<ConsultDispatchResult> {
   const d: ConsultDispatchDeps = {
     resolveResumeTarget,
+    checkEvidenceIncarnationOwnedBy: async (target, sessionId) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      return evidenceIncarnationOwnedBy(getOrgPg().sql as unknown as Sql,
+        { coordOwnerId: target.ownerId, agent: target.agent }, sessionId);
+    },
     checkResumeTranscript: defaultCheckResumeTranscript,
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
     buildAgentLaunchCommand,
@@ -983,6 +991,20 @@ async function walkConsultDispatch(
     const source = await resolveDispatchSource(opts, d);
     if ('refusal' in source) return give(source.refusal);
     const { target, evidenceSource } = source;
+    const exactTracked = isExactTrackedResumeTarget(target);
+    const boundNativeId = target.agent === 'omp'
+      ? target.binding?.ompThreadId ?? target.binding?.sessionId : target.binding?.sessionId;
+    // The port route already reads older evidence incarnations under their
+    // tracked row. Use that seam instead of treating a rotated id as raw native
+    // or silently forking the row's newer transcript. Both checks run again at
+    // inspection, so an ownership change between resolution and spawn refuses.
+    const historical = !exactTracked && evidenceSource !== null &&
+      target.binding?.coordOwnerId === target.ownerId && Boolean(boundNativeId) &&
+      target.sessionId === evidenceSource.sessionId &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(evidenceSource.sessionId) &&
+      Number.isSafeInteger(target.advSessionId) && target.advSessionId > 0 &&
+      await d.checkEvidenceIncarnationOwnedBy(target, evidenceSource.sessionId);
+    const launchTarget = historical ? { ...target, resumeId: String(target.advSessionId) } : target;
 
     let transcript: { available: boolean; detail: string; transcriptPath?: string };
     try {
@@ -1089,7 +1111,8 @@ async function walkConsultDispatch(
         {
           agent: target.agent,
           live: target.live,
-          tracked: isExactTrackedResumeTarget(target),
+          tracked: exactTracked || historical,
+          historical,
         },
         rank,
       );
@@ -1160,7 +1183,7 @@ async function walkConsultDispatch(
       const attempt = await launchAnsweringSession({
         ...opts,
         ...(evidenceSource ? { evidenceSource } : {}),
-      }, ctx, d, target, rank, operation);
+      }, ctx, d, launchTarget, rank, operation);
       attempts.push(attempt.record);
       // WI-10004645: every fork rank replays the SAME source history, and a
       // "Tool reference … not found" first reply comes from a reference in that

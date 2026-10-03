@@ -24,6 +24,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import setPlanStatusTool from '../set-plan-status';
+import addItemTool from '../add-item';
 import setStatusTool from '../set-status';
 import { getPlanItemStatuses } from '../../../plan-audits';
 import { getRubric, proposeRubric } from '../../../rubrics';
@@ -195,11 +196,23 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
   });
 
   it('can supersede after a child reopens between the preflight gate and the locked parent write', async () => {
-    const withDoneChild = planBody('draft').replace(
-      '## Background',
-      '- **P-001** `done` child work reopened during terminal transition.\n\n## Background',
-    );
-    await seedPlan(admin, WS, HARNESS, SLUG, withDoneChild);
+    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
+    const added = (await runWithWorkspace(WS, () => addItemTool.handler(
+      {
+        harness: HARNESS,
+        slug: SLUG,
+        phase: 'Phase 1 — Work',
+        text: 'Child work reopened during terminal transition.',
+        importance: 'normal',
+      } as never,
+      makeCtx(),
+    ))) as { data: { results: Array<{ ok: boolean; itemId?: string }> } };
+    expect(added.data.results[0]).toMatchObject({ ok: true, itemId: 'P-001' });
+    const closed = (await runWithWorkspace(WS, () => setStatusTool.handler(
+      { harness: HARNESS, slug: SLUG, item: 'P-001', status: 'done' } as never,
+      makeCtx(),
+    ))) as { data: { results: Array<{ ok: boolean }> } };
+    expect(closed.data.results[0]?.ok).toBe(true);
     expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
       .toMatchObject([{ itemId: 'P-001', status: 'done' }]);
 
@@ -219,15 +232,19 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
     });
 
     const terminalWrite = runSetPlanStatus('superseded');
-    await expect(gateRead).resolves.toMatchObject({ satisfied: true });
+    try {
+      await expect(gateRead).resolves.toMatchObject({ satisfied: true });
 
-    const childWrite = (await runWithWorkspace(WS, () => setStatusTool.handler(
-      { harness: HARNESS, slug: SLUG, item: 'P-001', status: 'todo' } as never,
-      makeCtx(),
-    ))) as { data: { results: Array<{ ok: boolean }> } };
-    expect(childWrite.data.results[0]?.ok).toBe(true);
-
-    resumeGate();
+      const childWrite = (await runWithWorkspace(WS, () => setStatusTool.handler(
+        { harness: HARNESS, slug: SLUG, item: 'P-001', status: 'todo' } as never,
+        makeCtx(),
+      ))) as { data: { results: Array<{ ok: boolean }> } };
+      expect(childWrite.data.results[0]?.ok).toBe(true);
+      expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
+        .toMatchObject([{ itemId: 'P-001', status: 'todo' }]);
+    } finally {
+      resumeGate();
+    }
     const { data, isError } = await terminalWrite;
     expect(isError, JSON.stringify(data)).toBe(false);
     expect(data).toMatchObject({ ok: true, changed: true, newStatus: 'superseded' });
@@ -238,6 +255,8 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
     `;
     expect(rows[0]?.content).toContain('status: superseded');
     expect(rows[0]?.content).toContain('- **P-001** `todo`');
+    expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
+      .toMatchObject([{ itemId: 'P-001', status: 'todo' }]);
   });
 
   // ── P1-2: the terminal-NOOP path ────────────────────────────────────────

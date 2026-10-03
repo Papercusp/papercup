@@ -621,6 +621,8 @@ export class PgCoordLog implements CoordEventLog {
     writerKey: string,
     line: CoordEnvelope,
     hooks?: {
+      /** Producers validating several sources can require one coherent snapshot. */
+      transactionOptions?: 'isolation level repeatable read';
       /** Prepare a fresh line on the SAME transaction as its append. Replays skip preparation. */
       prepare?: (tx: import('postgres').TransactionSql) => Promise<CoordEnvelope>;
       /** A producer's commit-boundary assertion; throwing rolls back the append. */
@@ -640,7 +642,7 @@ export class PgCoordLog implements CoordEventLog {
       // even caller-provided NULs become the six printable characters
       // `\u0000` before the value crosses the driver boundary.
       const lockKey = JSON.stringify([workspaceId, surface, line.msg_id]);
-      return sql.begin(async (tx) => {
+      return sql.begin(hooks?.transactionOptions ?? '', async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
         const existing = await tx<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
           SELECT id, body, ts, msg_id

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ADMISSION_PRECHECK_SETUP_BUDGET_MS,
+  ADMISSION_PRECHECK_SETUP_IDLE_MS,
   admissionPrecheckSetupEnv,
   classifyTestFileRun,
   createCheckpointTreeFixPrecheckRunner,
@@ -13,6 +15,7 @@ import {
   resolveCanonicalIntegrationRoot,
   ROUTER_EXIT_NOT_MEASURED,
   ROUTER_EXIT_TEMPFAIL,
+  type ExecOptions,
   type ExecResult,
   type FixPrecheckRunResult,
 } from './admission-fix-precheck';
@@ -325,6 +328,54 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     const out = await runner({ commit: C, files: ['lib/red.test.ts'] });
     expect(out).toMatchObject({ ran: false, reason: 'runner-failed' });
     expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  // WI-10006014: the setup died on a 20-min WALL-CLOCK budget while still progressing, and the
+  // failure left nothing on disk to attribute it with.
+  it('gives setup an idle watchdog + the shared ceiling, logs durably, and names a stall and the log in the detail', async () => {
+    const seen: ExecOptions[] = [];
+    const exec = vi.fn(async (_argv: readonly string[], opts: ExecOptions) => {
+      seen.push(opts);
+      return { exitCode: null, signal: 'SIGTERM', timedOut: true, idleTimedOut: true, output: 'last-setup-line', durationMs: 5 } as ExecResult;
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({
+      ...base,
+      exec,
+      logDir: '/var/log/precheck',
+      runLockHeld: () => ({ held: false, elapsedSec: null }),
+    });
+    const out = await runner({ commit: C, files: ['lib/red.test.ts'] });
+    expect(seen[0]).toMatchObject({
+      timeoutMs: ADMISSION_PRECHECK_SETUP_BUDGET_MS,
+      idleTimeoutMs: ADMISSION_PRECHECK_SETUP_IDLE_MS,
+    });
+    expect(seen[0].logFile).toMatch(new RegExp(`^/var/log/precheck/admission-precheck-${C.slice(0, 12)}-.*\\.log$`));
+    expect(ADMISSION_PRECHECK_SETUP_IDLE_MS).toBeLessThan(ADMISSION_PRECHECK_SETUP_BUDGET_MS);
+    expect(out).toMatchObject({ ran: false, reason: 'runner-failed' });
+    const detail = (out as { detail: string }).detail;
+    expect(detail).toContain('(stalled: no output for 15 min)');
+    expect(detail).toContain(`log=${seen[0].logFile}`);
+    expect(detail).toContain('last-setup-line');
+  });
+
+  it('a wall-clock ceiling hit is reported as such, distinct from a stall', async () => {
+    const exec = vi.fn(async () => ({ exitCode: null, signal: 'SIGTERM', timedOut: true, output: 'x', durationMs: 2_400_000 }) as ExecResult);
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, logDir: '/tmp/l', runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const out = await runner({ commit: C, files: ['lib/red.test.ts'] });
+    expect((out as { detail: string }).detail).toMatch(/\(timed out at the 40-min ceiling after 2400s\)/);
+  });
+
+  it('every per-file run appends to the same durable log as setup', async () => {
+    const logFiles: Array<string | undefined> = [];
+    const exec = vi.fn(async (_argv: readonly string[], opts: ExecOptions) => {
+      logFiles.push(opts.logFile);
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult;
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, logDir: '/tmp/l', runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'] });
+    expect(logFiles).toHaveLength(3);
+    expect(new Set(logFiles).size).toBe(1);
+    expect(logFiles[0]).toMatch(/^\/tmp\/l\/admission-precheck-/);
   });
 });
 

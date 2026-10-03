@@ -929,6 +929,34 @@ describe('WI-1999 remote-holder guard', () => {
     expect(r.released.map((x) => x.feature_id)).toContain('F-RH9');
   });
 
+  it('WI-10005935: a NULL fed_ts plus recent updated_ts on a sibling row is NOT a sign of life', async () => {
+    const idle = Date.now() - 30 * 60_000;
+    const holder = 'su-remote-bookkept-null-fed-ts';
+    await seedItem('F-RH10', holder, 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'F-RH10'`;
+
+    // A sibling claim is old too; its recent bookkeeping timestamp must not make
+    // this never-seen holder look active when the content clock is absent.
+    await seedTaskItem('WI-RH10B', holder, 30, 'wip');
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'WI-RH10B'`;
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${Date.now()}, fed_ts = NULL
+               WHERE feature_id = 'WI-RH10B'`;
+
+    const [sibling] = await sql<{ fed_ts: string | null; updated_ts: string | number }[]>`
+      SELECT fed_ts::text AS fed_ts, updated_ts
+        FROM harness_shared.work_items WHERE feature_id = 'WI-RH10B'`;
+    expect(sibling?.fed_ts).toBeNull();
+    expect(Number(sibling?.updated_ts)).toBeGreaterThan(idle);
+
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).toContain('F-RH10');
+  });
+
   it('a never-seen holder with NULL taken_at anchors the fallback on fed_ts (EI-2534 must not re-strand)', async () => {
     await seedItem('F-RH4', 'su-remote-noanchor', 30, 'in_progress');
     await sql`UPDATE harness_shared.harness_features_consolidated

@@ -22,6 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from './work-items';
 import { admittedWhereSql, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
+import { harnessPreference, resolveIssuePhysicalSlug } from './work-items-physical-row';
 import { resolveWorkItemPot } from './pot-membership';
 import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import { neutralizeToolCallTags, sanitizePersistedText } from './text-safety';
@@ -2630,6 +2631,13 @@ export async function getIssue(
   id: string,
   opts: WorkItemReadOptions = {},
   client?: ReturnType<typeof getOrgPg>['sql'],
+  /**
+   * WI-10006010: when the same id exists under more than one harness_slug, PREFER the row in
+   * this harness. A preference, never a filter (EI-19393623437103599: callers pass harness
+   * loosely, so filtering would turn a rare wrong row into a broad silent null). The order
+   * matches `resolveIssuePhysicalSlug`, so the row a caller reads is the row its write pins.
+   */
+  preferHarness?: string | null,
 ): Promise<EngineerIssue | null> {
   const ambient = issuesScopeWorkspace();
   const sql = client ?? getOrgPg().sql;
@@ -2637,10 +2645,14 @@ export async function getIssue(
     opts.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS,
     opts.payloadProjection,
   );
+  const want = harnessPreference(preferHarness);
+  const bare = want?.startsWith('harness:') ? want.slice('harness:'.length) : want;
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(columns)} FROM harness_shared.engineer_issues
      WHERE issue_id = ${id}
-     ORDER BY (workspace_id = ${ambient}) DESC, updated_at DESC NULLS LAST
+     ORDER BY (workspace_id = ${ambient}) DESC,
+              ${want ? sql`(base_harness_slug IN (${want}, ${bare}, ${`harness:${bare}`})) DESC,` : sql``}
+              updated_at DESC NULLS LAST, base_harness_slug ASC
      LIMIT 1`;
   return rows[0] ? toIssue(rows[0]) : null;
 }
@@ -3431,6 +3443,13 @@ export async function setIssueState(
     secondTerminalCloseHandledByUnified?: boolean;
     /** Legacy terminal spelling supplied by the unified writer; commit with status. */
     terminalReason?: string | null;
+    /**
+     * WI-10006010: the physical `harness_slug` of the ONE row this write may touch, already
+     * pinned by the caller (the unified writer pins it once and shares it with the origin
+     * heals). Omitted: pinned here to the row `getIssue` would read. Every statement below is
+     * scoped to it, so a sibling row sharing this feature_id is never written.
+     */
+    harnessSlug?: string | null;
   } = {},
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
@@ -3528,6 +3547,15 @@ export async function setIssueState(
   let terminalWriteSucceeded = false;
   let terminalWriteWasAttested = false;
   const rows = await boundedOrgTxn(async (tx) => {
+    // WI-10006010: physical identity is (workspace_id, harness_slug, feature_id). Pin ONE row
+    // and scope every statement below to it; keyed on feature_id alone, a close of one row
+    // rewrote every slug twin (3 done/committed twins flipped to dropped on 2026-10-03).
+    const slug = opts.harnessSlug !== undefined
+      ? opts.harnessSlug
+      : await resolveIssuePhysicalSlug(tx, ws, id);
+    const onBaseRow = () => (slug ? tx`AND harness_slug = ${slug}` : tx``);
+    const onAliasedRow = () => (slug ? tx`AND wi.harness_slug = ${slug}` : tx``);
+    const onViewRow = () => (slug ? tx`AND base_harness_slug = ${slug}` : tx``);
     // Lock the canonical row before any state or completion side effect. A
     // reassignment then waits and observes this write, or wins first and makes
     // the old worker's effect predicate fail.
@@ -3549,6 +3577,7 @@ export async function setIssueState(
          WHERE workspace_id = ${ws} AND feature_id = ${id}
            AND item_kind IN ('bug', 'change', 'task')
            AND origin <> 'remote'
+           ${onBaseRow()}
         FOR UPDATE`;
     const priorRow = prior[0];
     if (!priorRow) return [] as IssueRowDb[];
@@ -3576,7 +3605,7 @@ export async function setIssueState(
     const currentEffect = operationClaims && opts.acceptedProgramAttempt
       ? tx`EXISTS (
           SELECT 1 FROM harness_shared.work_items AS wi
-           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id}
+           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id} ${onAliasedRow()}
              AND ${operationClaims.programRootEffectWhereSql(tx, opts.acceptedProgramAttempt, {
                payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug',
                status: 'wi.status', updated: 'wi.updated_ts',
@@ -3585,7 +3614,7 @@ export async function setIssueState(
       : operationClaims && operationEffectRead
       ? tx`EXISTS (
           SELECT 1 FROM harness_shared.work_items AS wi
-           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id}
+           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id} ${onAliasedRow()}
              AND ${operationClaims.operationWorkerEffectWhereSql(tx, operationEffectRead, {
                payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug', holder: 'wi.taken_by',
              })}
@@ -3646,13 +3675,15 @@ export async function setIssueState(
                  updated_ts = (extract(epoch FROM now()) * 1000)::bigint
            WHERE workspace_id = ${ws} AND feature_id = ${id}
              AND item_kind IN ('bug', 'change', 'task')
-             AND origin <> 'remote'`;
+             AND origin <> 'remote'
+             ${onBaseRow()}`;
         if (!upgrade) {
           terminalWriteWasAttested = true;
           return await tx<IssueRowDb[]>`
             SELECT ${tx.unsafe(ISSUE_COLS)}
               FROM harness_shared.engineer_issues
              WHERE workspace_id = ${ws} AND issue_id = ${id} AND origin <> 'remote'
+               ${onViewRow()}
              ORDER BY updated_at DESC NULLS LAST`;
         }
       }
@@ -3757,6 +3788,7 @@ export async function setIssueState(
          WHERE workspace_id = ${ws} AND feature_id = ${id}
            AND item_kind IN ('bug', 'change', 'task')
            AND origin <> 'remote'
+           ${onBaseRow()}
            AND ${currentEffect}
         RETURNING feature_id`;
       if (updated.length === 0) return [] as IssueRowDb[];
@@ -3768,6 +3800,7 @@ export async function setIssueState(
         SELECT ${tx.unsafe(ISSUE_COLS)}
           FROM harness_shared.engineer_issues
          WHERE workspace_id = ${ws} AND issue_id = ${id} AND origin <> 'remote'
+           ${onViewRow()}
          ORDER BY updated_at DESC NULLS LAST`;
     }
     if (state === 'needs-human') {
@@ -3780,12 +3813,14 @@ export async function setIssueState(
            SET state = ${state}, assignee = NULL, assigned_at = NULL, last_progress_at = NULL,
                origin = 'local', updated_at = now()
          WHERE workspace_id = ${ws} AND issue_id = ${id}
+           ${onViewRow()}
            AND ${currentEffect}
         RETURNING ${tx.unsafe(ISSUE_COLS)}`;
     }
     return await tx<IssueRowDb[]>`
       UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
        WHERE workspace_id = ${ws} AND issue_id = ${id}
+         ${onViewRow()}
          AND ${currentEffect}
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
   });

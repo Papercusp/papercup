@@ -60,6 +60,8 @@ import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../../session-port/types';
+import { evidenceIncarnationOwnedBy } from '../../../session-port/source';
+export { evidenceIncarnationOwnedBy } from '../../../session-port/source';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import {
   classifySessionPortFailure,
@@ -196,38 +198,6 @@ function json(body: unknown, status = 200): Response {
 
 /** A claude/codex native session uuid — the only shape `/adv/sessions/resumable?sessionId=` resolves. */
 const RESUMABLE_NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * WI-10003198: the transcript a session port reads, when the consult's evidence
- * names an EARLIER incarnation of the tracked source rather than its row's
- * current native session.
- *
- * A carry-respawn rewrites its owner's adv_sessions row in place (same row id,
- * new session_id), so every earlier incarnation has no row of its own — and the
- * router routinely picks exactly those, because they hold the matched turns.
- * The port used to refuse them outright ("must name this exact source
- * session"). An earlier incarnation belongs to the row when session_turns
- * records the row's coord owner as that session's latest owner — the same
- * bridge resolveResumeTarget uses — and then the port reads THAT transcript.
- * Anything else is still refused.
- */
-export async function evidenceIncarnationOwnedBy(
-  sql: import('postgres').Sql,
-  sourceRow: { coordOwnerId: string | null; agent?: string | null },
-  sessionId: string,
-): Promise<boolean> {
-  if (!sourceRow.coordOwnerId) return false;
-  const [latest] = await sql<Array<{ owner: string }>>`
-    SELECT t.owner
-      FROM harness_shared.session_turns t
-     WHERE t.session_id = ${sessionId}
-       AND t.source_kind = ${sourceRow.agent ?? 'claude'}
-       AND t.owner IS NOT NULL
-     ORDER BY t.ingested_at DESC
-     LIMIT 1
-  `;
-  return latest?.owner === sourceRow.coordOwnerId;
-}
 
 function sessionPortProtocolError(version: unknown, transformVersion: unknown): Response | null {
   if (version === SESSION_PORT_PROTOCOL_VERSION && transformVersion === SESSION_PORT_TRANSFORM_VERSION) return null;

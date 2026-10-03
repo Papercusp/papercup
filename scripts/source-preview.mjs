@@ -300,10 +300,10 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
         licenseTexts[sha256] = bytes.toString('utf8');
         row.licenses.push({ path: file.path, gitBlob: blob, sha256, license, url: `https://github.com/${row.repo}/blob/${row.head}/${file.path}` });
         if (!license) row.errors.push(`unreviewed license text: ${file.path}`);
-        if (libraries.has(row.repo.toLowerCase()) && license !== 'Apache-2.0' && license !== 'MIT') {
+        if (license && libraries.has(row.repo.toLowerCase()) && license !== 'Apache-2.0' && license !== 'MIT') {
           row.errors.push(`D-003 requires a permissive library license: ${file.path}`);
         }
-        if ((row.repo.toLowerCase() === PUBLIC_REPO.toLowerCase() || ['goals', 'cupboard-actions', 'blueprints', 'sidestage', 'scout-runtime', 'recipes', 'plans', 'scout-chat', 'drawer-stack', 'cart-drawer', 'data-fetch'].includes(row.repo.split('/')[1].toLowerCase())) && license !== 'ELv2') {
+        if (license && (row.repo.toLowerCase() === PUBLIC_REPO.toLowerCase() || ['goals', 'cupboard-actions', 'blueprints', 'sidestage', 'scout-runtime', 'recipes', 'plans', 'scout-chat', 'drawer-stack', 'cart-drawer', 'data-fetch'].includes(row.repo.split('/')[1].toLowerCase())) && license !== 'ELv2') {
           row.errors.push(`D-011/D-023 require ELv2: ${file.path}`);
         }
       }

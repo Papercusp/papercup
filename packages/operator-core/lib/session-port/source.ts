@@ -1,6 +1,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import type { Sql } from 'postgres';
 import type { SessionBackend } from './types';
 import {
   decompressArchiveBlobBounded,
@@ -9,6 +10,27 @@ import {
 } from '../session-archive';
 
 export const MAX_SESSION_PORT_SOURCE_BYTES = 64 * 1024 * 1024;
+
+/** Carry-respawn rotates the tracked row's native id. The latest indexed
+ * owner of the exact, backend-pinned evidence incarnation is the shared guard
+ * used by both the dispatcher and the session-port inspection route. */
+export async function evidenceIncarnationOwnedBy(
+  sql: Sql,
+  sourceRow: { coordOwnerId: string | null; agent?: string | null },
+  sessionId: string,
+): Promise<boolean> {
+  if (!sourceRow.coordOwnerId) return false;
+  const [latest] = await sql<Array<{ owner: string }>>`
+    SELECT t.owner
+      FROM harness_shared.session_turns t
+     WHERE t.session_id = ${sessionId}
+       AND t.source_kind = ${sourceRow.agent ?? 'claude'}
+       AND t.owner IS NOT NULL
+     ORDER BY t.ingested_at DESC
+     LIMIT 1
+  `;
+  return latest?.owner === sourceRow.coordOwnerId;
+}
 
 export interface StableSource {
   bytes: Buffer;

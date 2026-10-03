@@ -87,6 +87,7 @@ import {
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
 } from './work-items-admission';
+import { resolveIssuePhysicalSlug } from './work-items-physical-row';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind, type DatatypeNature } from './datatype-registry-store';
 import {
@@ -1716,7 +1717,8 @@ export async function getWorkItem(
   // `getFeatureWorkItemOnly` 12 lines below already states the correct rule (F-B3: "a
   // bare WI/F id is unique only within a (workspace, harness), not globally") — the two
   // halves of one id space disagreed, and the issue half was the one being trusted.
-  const issue = await getIssue(id, opts, client);
+  // WI-10006010: `harness` is a PREFERENCE among same-id slug twins, never a filter.
+  const issue = await getIssue(id, opts, client, harness);
   if (issue) return issueToWorkItem(issue);
   return getFeatureWorkItemOnly(id, harness, opts, client);
 }
@@ -3551,13 +3553,19 @@ export async function attachCompletionEvidenceToSettledItem(
  * Returns true iff a row was actually healed (false: not remote, not this caller's row, or
  * the id doesn't resolve to an issue-family row in the base table).
  */
-export async function selfHealAuthorOriginIfStranded(id: string, callerOwnerId: string): Promise<boolean> {
+export async function selfHealAuthorOriginIfStranded(
+  id: string,
+  callerOwnerId: string,
+  /** WI-10006010: the pinned physical row; omitted, every same-id twin is eligible. */
+  harnessSlug?: string | null,
+): Promise<boolean> {
   if (!id || !callerOwnerId) return false;
   const { sql } = getOrgPg();
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items
        SET origin = 'local'
      WHERE feature_id = ${id}
+       ${harnessSlug ? sql`AND harness_slug = ${harnessSlug}` : sql``}
        AND origin = 'remote'
        AND payload #>> '{_ei,created_by}' = ${callerOwnerId}
     RETURNING feature_id`;
@@ -4033,6 +4041,15 @@ export async function setWorkItemState(
   // must continue to report the truthful, unclaimed terminal state.
   const priorAssignee = wi.assignee;
   if (wi.family === 'issue') {
+    // WI-10006010: pin the ONE physical row (workspace_id, harness_slug, feature_id) this write
+    // may touch — the same row `wi` was read from — and scope every origin heal AND the state
+    // write to it. Keyed on feature_id alone, closing one slug twin rewrote all of them.
+    const issueSlug = await resolveIssuePhysicalSlug(
+      getOrgPg().sql,
+      await resolveIssueWorkspace(id, activeWorkspaceId()),
+      id,
+      opts.harness,
+    );
     // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
     // creation (an unresolved federation/replay-provenance defect, still under investigation —
     // see the work-item's own body). Trusting `origin` ALONE here strands the true author: they
@@ -4050,7 +4067,7 @@ export async function setWorkItemState(
     // never a row genuinely owned by a different peer) — this un-blocks the trigger for the
     // write that follows.
     if (wi.origin === 'remote' && opts.by && wi.createdBy && opts.by === wi.createdBy) {
-      const healed = await selfHealAuthorOriginIfStranded(id, opts.by);
+      const healed = await selfHealAuthorOriginIfStranded(id, opts.by, issueSlug);
       if (healed) wi.origin = 'local';
     }
     // EI-22189521072988065: a THIRD stranding, sibling to the two below — the caller
@@ -4066,6 +4083,7 @@ export async function setWorkItemState(
         origin: wi.origin,
         wasAlreadySettled: isSettledWorkItemState(wi.state),
         terminalOwner: wi.terminalOwner,
+        harnessSlug: issueSlug,
       });
       if (healed) wi.origin = 'local';
     }
@@ -4081,6 +4099,7 @@ export async function setWorkItemState(
       const orphan = await healOrphanedRemoteOriginIfAuthorEnded(id, {
         isCompletingTransition,
         by: opts.by ?? null,
+        harnessSlug: issueSlug,
       });
       if (orphan.healed) wi.origin = 'local';
     }
@@ -4089,7 +4108,7 @@ export async function setWorkItemState(
     // rule the claim gate applies (issueOwnAuthorWhereSql). Without this a system-filed row
     // (createdBy="system:*", matching none of the caller-identity hatches above) whose origin
     // flipped could be claimed but never closed. The UPDATE's WHERE clause is the identity check.
-    if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(activeWorkspaceId(), id))) {
+    if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(activeWorkspaceId(), id, issueSlug))) {
       wi.origin = 'local';
     }
     if (wi.origin === 'remote') {
@@ -4117,6 +4136,7 @@ export async function setWorkItemState(
       // second time; direct setIssueState callers omit the bit and stay guarded.
       secondTerminalCloseHandledByUnified: isSecondTerminalClose,
       terminalReason: requestedTerminalReason,
+      harnessSlug: issueSlug,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {

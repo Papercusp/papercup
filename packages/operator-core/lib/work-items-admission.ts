@@ -566,13 +566,19 @@ export async function isOwnNodeAuthoredRemoteRow(workspaceId: string, id: string
  * the identity check — a row whose author key this workspace never wrote locally is untouched.
  * Returns true iff a row was healed.
  */
-export async function selfHealOwnNodeOriginIfStranded(workspaceId: string, id: string): Promise<boolean> {
+export async function selfHealOwnNodeOriginIfStranded(
+  workspaceId: string,
+  id: string,
+  /** WI-10006010: the pinned physical row; omitted, every same-id twin is eligible. */
+  harnessSlug?: string | null,
+): Promise<boolean> {
   if (!workspaceId || !id) return false;
   const { sql } = getOrgPg();
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items wi
        SET origin = 'local'
      WHERE wi.workspace_id = ${workspaceId} AND wi.feature_id = ${id}
+       ${harnessSlug ? sql`AND wi.harness_slug = ${harnessSlug}` : sql``}
        AND wi.origin = 'remote' AND ${issueOwnAuthorWhereSql(sql, workspaceId)}
     RETURNING wi.feature_id`;
   return rows.length > 0;

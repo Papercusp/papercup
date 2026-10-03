@@ -196,7 +196,14 @@ export async function persistGoalReportReference(sql: Sql, envelope: CoordEnvelo
   const log = new PgCoordLog({ getSql: () => sql, workspaceId: context.workspaceId, ensureSchema: async () => {} });
   const msgId = goalReportDeliveryId(context.workspaceId, context.ref);
   const result = await log.appendLineIfAbsent('messages', envelope.from, { ...envelope, msg_id: msgId }, {
+    transactionOptions: 'isolation level repeatable read',
     prepare: async (tx) => {
+      // The preflight subject can change before persistence. Check the actual
+      // sender's subject again on this transaction and hold it through commit.
+      const modes = await tx`SELECT subject FROM harness_shared.agent_modes
+        WHERE workspace_id = ${context.workspaceId} AND owner_id = ${context.viewer.ownerId ?? envelope.from}
+          AND axis_key = 'goal' AND mode = 'goal' FOR SHARE`;
+      if (modes.length !== 1 || modes[0].subject !== context.goalId) refuse('current-goal-subject');
       const report = await resolveGoalReportReference(tx, context.workspaceId, context.goalId, context.ref, context.viewer);
       const snapshot = report.goalOwnerReport!;
       await validateGoalReportReferenceSnapshot(snapshot,

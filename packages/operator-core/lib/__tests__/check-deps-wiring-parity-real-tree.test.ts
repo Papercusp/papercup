@@ -80,6 +80,22 @@ describe('lint:deps-wiring-parity over the real tree (blocking wiring)', () => {
     }
   });
 
+  it('keeps the disposable phase-I drill exempt from managed roster readers', () => {
+    const { stdout, exitCode } = runGuard([
+      '--fail', '--json',
+      '--files=packages/operator-core/lib/harness/git-sync/run-git-sync.ts,' +
+        'packages/operator-core/lib/harness/git-sync/git-sync-action.ts,' +
+        'packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts',
+    ]);
+    const report = JSON.parse(stdout);
+    const drill = report.findings.find((finding: { file: string; interface: string }) =>
+      finding.file.endsWith('/physical-drill-phase-i.ts') && finding.interface === 'RunGitSyncOpts');
+    // Calibrate on the real omission: a scan that missed the drill cannot prove its exemption.
+    expect(drill?.missing).toContain('loadMigrationFenceRoster');
+    expect(report.newFindings, stdout).toEqual([]);
+    expect(exitCode, stdout).toBe(0);
+  });
+
   /**
    * The concatenated-key regression (WI-10002020). FAIL_BASELINE records ONE ROW PER
    * SEAM, but a finding carries the whole SET of seams a site omits. While the match

@@ -1696,7 +1696,9 @@ async function sendOne(
   // on the envelope. Deliberately NOT re-caught/reshaped here: that would
   // diverge from the one established, tested shape every other sendMessage
   // failure (e.g. a PG lock-timeout) already reports through.
-  const env = await withDbCallDeadline(
+  let env: Awaited<ReturnType<typeof sendMessage>>;
+  try {
+    env = await withDbCallDeadline(
     sendMessage(identity, {
       to: toSend,
       ...(goalReportVerdict.kind === 'reference' ? { persistEnvelope: goalReportVerdict.persistEnvelope } : {}),
@@ -1723,7 +1725,17 @@ async function sendOne(
       ...(Object.keys(extra).length ? { extra } : {}),
     }),
     { ms: COORD_SEND_DB_DEADLINE_MS, label: 'coord:send.sendMessage' },
-  );
+    );
+  } catch (error) {
+    // The transaction can invalidate a successful preflight. Keep the failed
+    // oracle visible on reference refusals, just as on preflight refusals.
+    if (goalReportVerdict.kind === 'reference') {
+      const failure = error as { code?: string; oracle?: string; message?: string };
+      return { ok: false, to: msg.to, error: failure.code ?? 'goal-owner-report-untruthful',
+        oracle: failure.oracle ?? 'delivery-transaction', message: failure.message };
+    }
+    throw error;
+  }
 
   // EI-6874 (zero-recipient audience send is a refusal-class event, not a silent
   // ok): a LIVE-audience selector (@fleet:/@fleet-leader:/@topic:/@plan:/@object:/

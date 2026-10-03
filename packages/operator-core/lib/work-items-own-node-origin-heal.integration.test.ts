@@ -94,4 +94,23 @@ describe('selfHealOwnNodeOriginIfStranded', () => {
     expect(await selfHealOwnNodeOriginIfStranded(WS, 'EI-stranded')).toBe(false);
     expect(await originOf(WS, 'EI-stranded')).toBe('remote');
   });
+
+  // WI-10006010: the heal keyed on feature_id alone flipped origin on EVERY slug twin. With a
+  // pinned harness_slug only that physical row is healed; the twin keeps origin='remote'.
+  it('heals only the pinned physical row when the id has a slug twin', async () => {
+    await seed(WS, 'EI-local', 'local', OWN);
+    await seed(WS, 'EI-twin', 'remote', OWN);
+    await db.sql`INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, origin, author_pubkey)
+                 VALUES (${WS}, 'operator:ws-own-node', 'EI-twin', 'remote', ${OWN})`;
+
+    expect(await selfHealOwnNodeOriginIfStranded(WS, 'EI-twin', 'operator:ws-own-node')).toBe(true);
+
+    const rows = await db.sql<Array<{ harness_slug: string; origin: string | null }>>`
+      SELECT harness_slug, origin FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-twin' ORDER BY harness_slug`;
+    expect(rows).toEqual([
+      { harness_slug: 'operator:ws-own-node', origin: 'local' },
+      { harness_slug: 'papercusp', origin: 'remote' },
+    ]);
+  });
 });

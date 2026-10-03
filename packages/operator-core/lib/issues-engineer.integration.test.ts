@@ -1679,3 +1679,79 @@ describe('listIssues watchdogCloseRoutes selects closing routes in SQL, not a re
     expect(rows).toHaveLength(2);
   });
 });
+
+// WI-10006010: physical identity is (workspace_id, harness_slug, feature_id). The same id
+// legitimately exists under two slugs (a re-homed row and the stale copy a federation peer
+// re-sent). Keyed on feature_id alone, closing one rewrote both: measured 2026-10-03, three
+// sibling rows other agents had closed done/committed flipped to dropped.
+describe('setIssueState pins exactly one physical row among slug twins (WI-10006010)', () => {
+  const TWIN_SLUG = 'operator:wi10006010-twin';
+
+  async function seedTwin(): Promise<{ id: string; ws: string; slug: string }> {
+    const created = await issues.createIssue({ title: `twin-${Date.now()}`, createdBy: 'agA' });
+    const [row] = await db.sql<Array<{ workspace_id: string; harness_slug: string }>>`
+      SELECT workspace_id, harness_slug FROM harness_shared.work_items WHERE feature_id = ${created.id}`;
+    const cols = await db.sql<Array<{ column_name: string }>>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'harness_shared' AND table_name = 'work_items'
+         AND is_generated = 'NEVER' AND column_name <> 'harness_slug'
+       ORDER BY ordinal_position`;
+    const list = cols.map((c) => `"${c.column_name}"`).join(', ');
+    await db.sql.unsafe(
+      `INSERT INTO harness_shared.work_items (harness_slug, ${list})
+       SELECT $1, ${list} FROM harness_shared.work_items
+        WHERE workspace_id = $2 AND harness_slug = $3 AND feature_id = $4`,
+      [TWIN_SLUG, row!.workspace_id, row!.harness_slug, created.id],
+    );
+    return { id: created.id, ws: row!.workspace_id, slug: row!.harness_slug };
+  }
+
+  async function snapshot(ws: string, slug: string, id: string): Promise<unknown> {
+    const [r] = await db.sql<Array<{ row: unknown }>>`
+      SELECT to_jsonb(w) - '_search' AS row FROM harness_shared.work_items w
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${id}`;
+    return r?.row;
+  }
+
+  async function statusOf(ws: string, slug: string, id: string): Promise<string | undefined> {
+    const [r] = await db.sql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.work_items
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${id}`;
+    return r?.status;
+  }
+
+  it('a close pinned to one slug leaves the twin byte-identical', async () => {
+    const { id, ws, slug } = await seedTwin();
+    const before = await snapshot(ws, slug, id);
+    expect(before).toBeDefined();
+
+    const closed = await issues.setIssueState(id, 'resolved', 'agA', 'wi10006010', { harnessSlug: TWIN_SLUG });
+
+    expect(closed).not.toBeNull();
+    expect(await statusOf(ws, TWIN_SLUG, id)).not.toBe(await statusOf(ws, slug, id));
+    expect(await snapshot(ws, slug, id)).toEqual(before);
+  });
+
+  it('an unpinned close writes only the most recently updated row', async () => {
+    const { id, ws, slug } = await seedTwin();
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
+                  WHERE workspace_id = ${ws} AND harness_slug = ${TWIN_SLUG} AND feature_id = ${id}`;
+    const before = await snapshot(ws, slug, id);
+
+    await issues.setIssueState(id, 'resolved', 'agA', 'wi10006010');
+
+    expect(await statusOf(ws, TWIN_SLUG, id)).not.toBe(await statusOf(ws, slug, id));
+    expect(await snapshot(ws, slug, id)).toEqual(before);
+  });
+
+  it('getIssue prefers the named slug and otherwise agrees with the row the write pins', async () => {
+    const { id, ws, slug } = await seedTwin();
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
+                  WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${id}`;
+    await db.sql`UPDATE harness_shared.work_items SET title = 'twin copy'
+                  WHERE workspace_id = ${ws} AND harness_slug = ${TWIN_SLUG} AND feature_id = ${id}`;
+
+    expect((await issues.getIssue(id, {}, undefined, TWIN_SLUG))?.title).toBe('twin copy');
+    expect((await issues.getIssue(id))?.title).not.toBe('twin copy');
+  });
+});

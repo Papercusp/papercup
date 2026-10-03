@@ -138,6 +138,7 @@ function makeFakes(
       ...(opts.source ?? {}),
     }),
     checkResumeTranscript: async () => ({ available: true, detail: 'fixture transcript' }),
+    checkEvidenceIncarnationOwnedBy: async () => false,
     // REAL composer + REAL injector: see the file header.
     buildAgentLaunchCommand,
     injectLaunchedByArg,
@@ -250,6 +251,53 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
 });
 
 describe('dispatchConsultResponder — the fork leg', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('ports authenticated earlier %s evidence through the tracked row without substituting its current transcript', async (sourceAgent) => {
+    const historicalId = 'd4bbbcd2-b811-4c0e-ae78-8755f763186d';
+    for (const targetAgent of ['claude', 'codex', 'omp'] as const) {
+      const source = {
+        agent: sourceAgent, sessionId: historicalId, live: true,
+        binding: { coordOwnerId: 'su-expert', sessionId: 'current-native', startedAt: '2026-09-22T00:00:00Z' },
+      };
+      const before = structuredClone(source);
+      const { deps, calls } = makeFakes({
+        loadRanks: async () => [{ rank: 1, agent: targetAgent, model: targetAgent === 'codex' ? 'sol' : 'opus' }],
+        checkEvidenceIncarnationOwnedBy: async (target: { ownerId: string }, id: string) =>
+          target.ownerId === 'su-expert' && id === historicalId,
+      }, { source });
+      const result = await dispatchConsultResponder({ ...OPTS,
+        evidence: [{ session_id: historicalId, turn_idx: 1, sim: 0.8 }],
+      }, CTX, deps);
+      expect(result).toMatchObject({ dispatched: true, operation: 'convert', answeringOwnerId: 'su-answer-1' });
+      expect(calls.spawn).toHaveLength(1);
+      expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--resume=7');
+      expect(calls.spawn[0]!.envelope.greetingCmd).not.toContain('--fork');
+      expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--owner-id=su-answer-1');
+      expect(calls.spawn[0]!.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBe(JSON.stringify({
+        sessionId: historicalId, turnIndices: [1], contextTurns: 2,
+      }));
+      expect(source).toEqual(before);
+    }
+  });
+
+  it.each(['foreign-owner', 'unavailable-proof', 'proof-error', 'untracked-row'] as const)('refuses historical evidence with %s before launch', async (control) => {
+    const historicalId = 'd4bbbcd2-b811-4c0e-ae78-8755f763186d';
+    const { deps, calls } = makeFakes({
+      checkEvidenceIncarnationOwnedBy: async () => {
+        if (control === 'proof-error') throw new Error('ownership read failed');
+        return control !== 'unavailable-proof';
+      },
+    }, { source: { sessionId: historicalId,
+      advSessionId: control === 'untracked-row' ? 0 : 7,
+      binding: { coordOwnerId: control === 'foreign-owner' ? 'su-foreign' : 'su-expert',
+        sessionId: 'current-native', startedAt: '2026-09-22T00:00:00Z' },
+    } });
+    const result = await dispatchConsultResponder({ ...OPTS,
+      evidence: [{ session_id: historicalId, turn_idx: 1, sim: 0.8 }],
+    }, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it.each(['sess-1', 'different-thread'])('requires the exact tracked OMP thread-only binding (%s)', async (threadId) => {
     const { deps, calls } = makeFakes({
       loadRanks: async () => [{ rank: 1, agent: 'omp', model: 'opus' }],

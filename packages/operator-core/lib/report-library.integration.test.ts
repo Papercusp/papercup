@@ -170,6 +170,39 @@ describe('report_library store (real PG)', () => {
     for (const reply of [...replies, replay]) expect(reply).toEqual(replies[0]);
   });
 
+  it('REPORT-REFERENCE-ADMISSION-P002: a subject change after preflight refuses on the write transaction', async () => {
+    const f = await deliveryFixture();
+    await resolveGoalReportReference(db.adminSql, f.workspaceId, f.snapshot.goalId, f.ref, f.context.viewer);
+    await db.adminSql`UPDATE harness_shared.agent_modes SET subject = 'different-goal'
+      WHERE workspace_id = ${f.workspaceId} AND owner_id = 'agent-1' AND mode = 'goal'`;
+    await expect(persistGoalReportReference(db.adminSql, f.envelope, f.context)).rejects.toMatchObject({
+      code: 'goal-owner-report-untruthful', oracle: 'current-goal-subject',
+    });
+    expect(await f.persisted()).toEqual([]);
+    await db.adminSql`UPDATE harness_shared.agent_modes SET subject = ${f.snapshot.goalId}
+      WHERE workspace_id = ${f.workspaceId} AND owner_id = 'agent-1' AND mode = 'goal'`;
+    await persistGoalReportReference(db.adminSql, f.envelope, f.context);
+    expect(await f.persisted()).toHaveLength(1);
+  });
+
+  it('REPORT-REFERENCE-ATOMIC-P002: all validation reads share one repeatable-read transaction', async () => {
+    const f = await deliveryFixture();
+    const log = new (await import('@papercusp/coordination/event-log')).PgCoordLog({
+      getSql: () => db.adminSql, workspaceId: f.workspaceId, ensureSchema: async () => {},
+    });
+    await log.appendLineIfAbsent('messages', f.envelope.from, f.envelope, {
+      transactionOptions: 'isolation level repeatable read',
+      prepare: async (tx) => {
+        const [first] = await tx`SELECT budget_cents FROM harness_shared.goals WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
+        await db.adminSql`UPDATE harness_shared.goals SET budget_cents = 2000 WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
+        const [second] = await tx`SELECT budget_cents FROM harness_shared.goals WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
+        expect(first.budget_cents).toBe(1000);
+        expect(second.budget_cents).toBe(first.budget_cents);
+        return f.envelope;
+      },
+    });
+  });
+
   it.each(['hash', 'wrong-goal', 'workspace', 'visibility', 'retired', 'superseded', 'stale-source', 'future', 'missing-action'])(
     'REPORT-REFERENCE-ADMISSION-P002: %s negative persists neither notification nor cadence', async (fault) => {
       const f = await deliveryFixture();

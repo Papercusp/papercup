@@ -843,7 +843,7 @@ const DRILL_VS_PRODUCTION =
  * (`requireHiveEffectAuthority`) gates a submodule-origin push. Production (`git-sync-action.ts`)
  * also wires `loadRoster` (commit attribution from fleet presence), `loadMigrationFenceRoster`
  * (attribution for paths fenced after a managed child repo's migration refusal), and `refreshLiveLockHoldings`
- * (re-read peers' live file locks before staging). Neither concern exists in the fixture: no peer
+ * (re-read peers' live file locks before staging). None of these concerns exists in the fixture: no peer
  * holds a lock on a temp clone, no fleet roster attributes its commits, and no managed migration
  * reservation owns its disposable child repositories, so wiring the real
  * readers would query the operator DB for state that cannot apply. Omitting them is correct.
