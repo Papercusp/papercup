@@ -186,5 +186,8 @@ export async function runGovernedReplay(
     await settle('failed', (e as { costUsd?: unknown } | null)?.costUsd);
     throw e;
   }
-  return { verdict, result, reservation: await settle('used', result.totalCostUsd) };
+  // An errored provider call may have charged an unknown amount. Keep the
+  // durable reservation open rather than certifying the known lower bound.
+  return { verdict, result, reservation: result.costMeasured === false
+    ? reservation : await settle('used', result.totalCostUsd) };
 }

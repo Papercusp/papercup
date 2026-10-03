@@ -191,6 +191,18 @@ describe('runGovernedReplay', () => {
     expect(out).toMatchObject({ reservation: { status: 'settled', usedUsd: 0 } });
   });
 
+  it('an unknown judge charge retains its open reservation and the measured execution lower bound', async () => {
+    const { glue, settle } = reservationGlue();
+    const out = await runGovernedReplay(
+      { workspaceId: 'ws', config: baseConfig },
+      { runner, llmCall: async () => { throw new Error('unknown provider charge'); }, store: noopStore, now: () => 0 },
+      glue,
+    );
+    expect(out.result).toMatchObject({ totalCostUsd: 0.02, costMeasured: false });
+    expect(out.reservation).toMatchObject({ status: 'open' });
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   it('a failed battery with unknown charge retains its open reservation', async () => {
     const { glue, settle } = reservationGlue();
     const failure = new Error('setup failed after the reservation');
