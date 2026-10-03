@@ -76,6 +76,13 @@ describe('restrictedHoldPreflightSkipReason', () => {
       expect(restrictedHoldPreflightSkipReason({ [RESTRICTED_HOLD_PREFLIGHT_ENV]: marker })).toBe('admitted-upstream');
     }
   });
+
+  it('skips inside the green-checkpoint gate only when BOTH gate markers are set', () => {
+    expect(restrictedHoldPreflightSkipReason({ GREEN_CHECKPOINT: '1', PC_HEAVY_RELEASE_GATE: '1' })).toBe('release-gate');
+    // GREEN_CHECKPOINT=1 alone is exported by hand to reproduce the gate's skip-set: not the gate.
+    expect(restrictedHoldPreflightSkipReason({ GREEN_CHECKPOINT: '1' })).toBeNull();
+    expect(restrictedHoldPreflightSkipReason({ PC_HEAVY_RELEASE_GATE: '1' })).toBeNull();
+  });
 });
 
 // WI-10005724: the vitest ROOT door (libs/test-config host-preflight globalSetup).
@@ -94,6 +101,16 @@ describe('vitestRootPreflightSkipReason', () => {
     );
     expect(vitestRootPreflightSkipReason({ GITHUB_ACTIONS: 'true' })).toBe('github-actions');
     expect(vitestRootPreflightSkipReason({ [RESTRICTED_HOLD_PREFLIGHT_ENV]: '1', CI: 'true' })).toBeNull();
+  });
+
+  // The gate runs committed code in an isolated checkout, and D-011 keeps held restricted writes out
+  // of commits; a census there would fence nothing while making every gate vitest process depend on
+  // Postgres (fail closed) and pay a census spawn.
+  it('skips inside the green-checkpoint gate only when BOTH gate markers are set', () => {
+    expect(vitestRootPreflightSkipReason({ VITEST: 'true', GREEN_CHECKPOINT: '1', PC_HEAVY_RELEASE_GATE: '1' })).toBe('release-gate');
+    expect(vitestRootPreflightSkipReason({ VITEST: 'true', GREEN_CHECKPOINT: '1' })).toBeNull();
+    expect(vitestRootPreflightSkipReason({ VITEST: 'true', PC_HEAVY_RELEASE_GATE: '1' })).toBeNull();
+    expect(vitestRootPreflightSkipReason({ GREEN_CHECKPOINT: 'true', PC_HEAVY_RELEASE_GATE: 'true' })).toBeNull();
   });
 });
 

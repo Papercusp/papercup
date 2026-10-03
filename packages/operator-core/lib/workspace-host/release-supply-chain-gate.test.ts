@@ -385,6 +385,27 @@ describe('release supply-chain vendor-pending classification (D-027, WI-10005719
     expect(check).toContain(`@${DIGEST}`);
   });
 
+  it('keeps a finding actionable when only SOME of its paths are RPM-owned (D-028)', () => {
+    // One Go module found in an RPM-owned binary AND in a binary no RPM installs: the vendor can
+    // only fix the first copy, so the finding must stay in the gate.
+    const partlyOwned = {
+      artifact: {
+        name: 'stdlib',
+        type: 'go-module',
+        version: 'go1.26.5',
+        locations: [{ path: '/usr/bin/skopeo' }, { path: '/opt/papercusp/bin/connector' }],
+      },
+      vulnerability: { id: 'GO-2026-0005', namespace: 'govulndb:language:go', severity: 'High', fix: { state: 'fixed', versions: ['1.26.6'] } },
+    };
+    const result = runGate([goInRpmBinary, partlyOwned], { sbom: vendorSbom, vendorCheckOutput: NOTHING_NEWER });
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('GRYPE_VENDOR_PENDING=1   (of 1 RPM-owned');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
+    const pending = readOut(result, 'vendor-pending.json') as Array<{ id: string }>;
+    expect(pending.map((p) => p.id)).toEqual(['GO-2026-0001']);
+  });
+
   it('passes an image whose only fixed findings are vendor-pending', () => {
     const result = runGate([goInRpmBinary, installedRpmFinding], { sbom: vendorSbom, vendorCheckOutput: NOTHING_NEWER });
 
