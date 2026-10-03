@@ -232,6 +232,31 @@ export function runTreeRestrictedHoldPreflight({ roots, env = process.env, timeo
 }
 
 /**
+ * The node:test RUNNER door (WI-10005765): `node --test` suites (papercusp-desktop's shell suites,
+ * libs/papercusp's cli + orchestrator) never pass the raw router or the vitest-root door, yet they
+ * run live-tree code, some of it spawning real scripts. Called once from a `--test-global-setup`
+ * module, which node runs in the RUNNER process (an `--import` preload runs only in the test-file
+ * children). The census is the router's: the test files' import closure plus their spawn reach.
+ * Skips like a tree door; on admit the marker reaches every test child, so nested doors skip.
+ * @returns {{ verdict: 'admit', setEnv: Record<string, string> }
+ *   | { verdict: 'skipped', reason: string }
+ *   | { verdict: 'refuse', error: string, hint: string }}
+ */
+export function runNodeTestRunnerPreflight({ repoRoot, files, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
+  const skip = treeDoorPreflightSkipReason(env);
+  if (skip) return { verdict: 'skipped', reason: skip };
+  if (!repoRoot) return unknownState('node:test preflight was given no checkout root');
+  const result = spawnCensus({ repoRoot, files: files.map((file) => resolve(file)), env, timeoutMs, spawn });
+  if (result.verdict !== 'admit') return result;
+  return { verdict: 'admit', setEnv: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER } };
+}
+
+/** The node:test runner door's refusal line (node prints it as the global-setup error, exit 7). */
+export function formatNodeTestRestrictedHoldRefusal(refusal) {
+  return `NODE_TEST_RESTRICTED_HOLD_REFUSED error=${refusal.error} measured=none ${refusal.hint}`;
+}
+
+/**
  * The committed-source loader (WI-10005764). The census's own ~5,600-module closure lives in the
  * shared tree it judges, so it must not run a held restricted write before it can refuse one: the
  * loader makes every ES module of a checkout execute its committed (HEAD) bytes, and refuses new

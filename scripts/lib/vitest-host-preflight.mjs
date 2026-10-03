@@ -10,6 +10,7 @@
 // session holding an active personal disclosure wrote, from a process that has the network.
 // testing:run and the raw router already apply it; this is the door for `npx vitest` and the
 // per-workspace vitest runs `npm run test:affected` starts.
+import { fileURLToPath } from 'node:url';
 import {
   formatVitestRestrictedHoldRefusal,
   runVitestRootPreflight,
@@ -25,4 +26,19 @@ export function hostPreflight({ root, files, env }) {
   const result = runVitestRootPreflight({ repoRoot: root, files, env });
   if (result.verdict === 'refuse') return { verdict: 'refuse', message: formatVitestRestrictedHoldRefusal(result) };
   return result;
+}
+
+/**
+ * A vitest globalSetup for the standalone packages that cannot import @papercusp/test-config
+ * (scripts/check-vitest-config-enrollment.mjs PLAIN_CONFIG_EXEMPTIONS, WI-10005765). Each such
+ * config walks up to this file and lists it in `globalSetup` only when it exists, so a standalone
+ * clone runs none. Same semantics as test-config's runHostPreflight: refuse throws before any test
+ * runs; admit sets the marker in vitest's main-process env.
+ * @param {{ vitest: { state: { getPaths(): string[] } } }} project
+ */
+export async function setup(project) {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const result = hostPreflight({ root, files: project.vitest.state.getPaths(), env: process.env });
+  if (result.verdict === 'refuse') throw new Error(result.message);
+  if (result.verdict === 'admit') Object.assign(process.env, result.setEnv ?? {});
 }

@@ -80,6 +80,19 @@ export declare function runTreeRestrictedHoldPreflight(opts: {
 
 export declare function formatTreeRestrictedHoldRefusal(door: string, refusal: { error: string; hint: string }): string;
 
+export declare function runNodeTestRunnerPreflight(opts: {
+  repoRoot: string;
+  files: string[];
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  spawn?: typeof spawnSync;
+}):
+  | { verdict: 'admit'; setEnv: Record<'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT', 'admitted-by-test-router'> }
+  | { verdict: 'skipped'; reason: TreeDoorPreflightSkipReason }
+  | RestrictedHoldPreflightRefusal;
+
+export declare function formatNodeTestRestrictedHoldRefusal(refusal: { error: string; hint: string }): string;
+
 /** Absolute path of scripts/lib/committed-source-loader.mjs; every census spawn loads it before tsx. */
 export declare const COMMITTED_SOURCE_LOADER: string;
 
