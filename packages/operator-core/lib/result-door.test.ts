@@ -1638,34 +1638,26 @@ describe('applyResultDoor', () => {
       },
     );
 
-    // EI-19361771982678588 — this case USED to assert `toBe(result)` (byte
-    // identity). That was stronger than its own stated intent: what must not
-    // happen is a false-positive SPILL, and no spill is still written here.
-    // But returning the body untouched also meant a result that was
-    // tier-trimmed and THEN landed under the door said NOTHING about being
-    // partial — every truncation disclosure in this file is downstream of the
-    // fits-the-budget early return. So the harder a tool trimmed itself, the
-    // likelier it was to go silent: the warning fired only when the
-    // already-trimmed body still overflowed. Measured on the facts:list case
-    // that motivated this, the margin was 245 chars out of ~6,000.
-    it('a projected result that fits the door writes NO spill, but still DISCLOSES that it is partial', () => {
+    // EI-19361771982678588: a partial source now takes the typed incomplete
+    // route even when its emitted body fits the per-result byte budget.
+    it('an under-budget upstream projection returns an incomplete envelope and keeps the emitted body inspectable', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small already-projected result' }],
         _meta: { payloadProjection },
       };
       const doored = applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
 
-      // The original intent, unchanged: fitting the budget must never spill.
-      expect(() => readdirSync(join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'coord:orient', RUN_ID))).toThrow();
-
-      // The body itself is preserved verbatim — only a disclosure is appended.
-      expect((doored.content[0] as { text: string }).text).toBe('small already-projected result');
-      const note = (doored.content.at(-1) as { text: string }).text;
-      expect(note).toContain('PARTIAL RESULT');
-      expect(note).toContain('omittedCount=39');
-      expect(note).toContain('ABSENCE HERE IS NOT EVIDENCE');
-      expect(note).toContain("payloadTier:'full'");
-      expect(note).toContain('coord:orient');
+      expect(doored.content).toHaveLength(1);
+      expect(envelope).toMatchObject({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+        content: [{ kind: 'reference', uri: expect.stringContaining('papercusp://scratch/ws-1/coord:orient/') }],
+      });
+      expect(envelope.incomplete.note).toContain('lossy upstream projection');
+      expect(envelope.incomplete.note).toContain("payloadTier:'full'");
+      expect(readSpill('ws-1', 'coord:orient', RUN_ID)).toContain('small already-projected result');
     });
 
     it('an UNtruncated small result keeps the identity fast-path (no note, no copy)', () => {
@@ -1679,6 +1671,53 @@ describe('applyResultDoor', () => {
         _meta: { payloadProjection: { ...payloadProjection, truncated: false as unknown as true } },
       };
       expect(applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+
+    it.each([
+      [
+        'array row',
+        JSON.stringify({ rows: [{ id: 'row-1', _partial: true, title: 'visible row' }] }),
+        '_partial',
+      ],
+      [
+        'keyed map',
+        JSON.stringify({ ratings: { criterionA: { rating: 'pass' }, _partial: true } }),
+        '_partial',
+      ],
+      [
+        'clipped string',
+        JSON.stringify({ evidence: 'evidence prefix…[TRUNCATED +17 chars — re-read with payloadTier:full]' }),
+        'textTruncated',
+      ],
+    ] as const)('returns an incomplete envelope for an under-budget %s marker', (_shape, text, marker) => {
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(BUDGET_CHARS);
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope).toMatchObject({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+        content: [{ kind: 'reference', uri: expect.stringContaining('papercusp://scratch/ws-1/plans:get/') }],
+      });
+      expect(envelope.incomplete.note).toContain('paging this reference cannot recover');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        innerTruncationMarkers: [marker],
+      });
+      const spill = JSON.parse(readSpill('ws-1', 'plans:get', RUN_ID)) as {
+        content: Array<{ type: string; text: string }>;
+      };
+      expect(spill.content[0].text).toBe(text);
+    });
+
+    it('does not treat an escaped partial-marker example inside a JSON string as a real marker', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({ note: 'Example syntax: "_partial": true' }) }],
+      };
+      expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
     });
   });
 
@@ -1741,7 +1780,7 @@ describe('applyResultDoor', () => {
         spilledItems: 1,
         recoverable: false,
       });
-      expect(envelope.incomplete.note).toContain('TOOL ITSELF already truncated');
+      expect(envelope.incomplete.note).toContain('upstream partial marker(s)');
       expect(envelope.incomplete.note).toContain('textTruncated');
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         upstreamProjected: false,
@@ -1860,6 +1899,47 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain('Re-call build:typecheck');
     });
 
+    it('code:run summaryNotice.truncated marks its JSON spill partial and recommends smaller returns', () => {
+      const text = JSON.stringify({
+        summary: 'S'.repeat(3_500),
+        summaryNotice: { truncated: true, originalChars: 9_296, returnedChars: 3_500 },
+        padding: 'P'.repeat(BUDGET_CHARS * 3),
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const pointer = boundedBody(doored)._projection.next;
+      const spill = readSpill('ws-1', 'code:run', RUN_ID);
+
+      expect(pointer).toContain('source is already partial');
+      expect(pointer).toContain('summaryNotice.truncated');
+      expect(pointer).toContain('smaller return');
+      expect(pointer).toContain('bounded slices');
+      expect(spill).toContain('summaryNotice.truncated');
+      expect(spill).toContain('smaller return');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        innerTruncationMarkers: ['summaryNotice.truncated'],
+      });
+    });
+
+    it('summaryNotice.truncated:false is not treated as a partial-result marker', () => {
+      const text = JSON.stringify({
+        summary: 'S'.repeat(3_500),
+        summaryNotice: { truncated: false, originalChars: 3_500, returnedChars: 3_500 },
+        padding: 'P'.repeat(BUDGET_CHARS * 3),
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+
+      expect(boundedBody(doored)._projection.next).not.toContain('source is already partial');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        innerTruncationMarkers: [],
+      });
+    });
+
     it('a *_truncated:false field is NOT mistaken for a truncation marker', () => {
       const text = withMarker('{"entries":[{"id":"m1","body_truncated":false}]}\n', BUDGET_CHARS * 3);
       const doored = applyResultDoor(
@@ -1897,11 +1977,17 @@ describe('applyResultDoor', () => {
       expect(pointer).not.toContain('TOOL ITSELF already truncated');
     });
 
-    it('a marker present but under the door budget is untouched (no false-positive spill)', () => {
+    it('a true truncation marker under the door budget returns an incomplete envelope', () => {
       const result = {
         content: [{ type: 'text' as const, text: '{"entries":[{"id":"m1","body_truncated":true}]}' }],
       };
-      expect(applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+      const doored = applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+      expect(envelope.incomplete.note).toContain('body_truncated');
     });
   });
 });

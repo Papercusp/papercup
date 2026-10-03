@@ -247,15 +247,72 @@ export function resetResultDoorAggregatesForTests(): void {
 const INNER_TRUNCATION_MARKER_REGEX =
   /(?:"((?:\w+_truncated|\w+Truncated))"|(?<![\w"])((?:\w+_truncated|\w+Truncated)))\s*:\s*true\b/g;
 const INNER_TRUNCATION_TEXT_REGEX = /(?:…|\.\.\.)\[TRUNCATED[^\]]*\]/g;
+const INNER_PARTIAL_FLAG_CANDIDATE_REGEX = /(?<!\\)"_partial"\s*:\s*true\b/;
+const SUMMARY_NOTICE_JSON_CANDIDATE_REGEX = /(?<!\\)"summaryNotice"\s*:\s*\{/;
+const SUMMARY_NOTICE_TEXT_MARKER_REGEX = /^\s*summaryNotice\s*:\s*\{\s*truncated\s*:\s*true\b/m;
 
-/** Distinct `*_truncated: true` / `*Truncated: true` marker names found in
- *  `text` (capped — this feeds advisory wording, not an audit). Empty when
- *  none are present. */
-function detectInnerTruncationMarkers(text: string): string[] {
+function hasPartialFlag(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasPartialFlag);
+  if (value === null || typeof value !== 'object') return false;
+  const object = value as Record<string, unknown>;
+  return object._partial === true || Object.values(object).some(hasPartialFlag);
+}
+
+/** _partial can mark a row or a keyed map. Parse JSON after a cheap candidate
+ *  check so examples embedded in escaped string values do not become markers. */
+function hasStructuredPartialFlag(text: string): boolean {
+  if (!INNER_PARTIAL_FLAG_CANDIDATE_REGEX.test(text)) return false;
+  const jsonSlice = findJsonPrefixSlice(text);
+  try {
+    const value = JSON.parse(jsonSlice ? text.slice(jsonSlice.start, jsonSlice.end) : text);
+    return hasPartialFlag(value);
+  } catch {
+    return false;
+  }
+}
+
+function hasTruncatedSummaryNotice(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasTruncatedSummaryNotice);
+  if (value === null || typeof value !== 'object') return false;
+  const object = value as Record<string, unknown>;
+  const notice = object.summaryNotice;
+  if (notice !== null && typeof notice === 'object' && !Array.isArray(notice)) {
+    if ((notice as Record<string, unknown>).truncated === true) return true;
+  }
+  return Object.values(object).some(hasTruncatedSummaryNotice);
+}
+
+/** code:run marks its already-bounded return with `summaryNotice.truncated`.
+ *  Parse JSON so an example inside a string is not treated as live metadata;
+ *  accept the dedicated bare-text marker form used by diagnostic renderings. */
+function hasStructuredSummaryNoticeTruncation(text: string): boolean {
+  if (SUMMARY_NOTICE_TEXT_MARKER_REGEX.test(text)) return true;
+  if (!SUMMARY_NOTICE_JSON_CANDIDATE_REGEX.test(text)) return false;
+  const jsonSlice = findJsonPrefixSlice(text);
+  try {
+    const value = JSON.parse(jsonSlice ? text.slice(jsonSlice.start, jsonSlice.end) : text);
+    return hasTruncatedSummaryNotice(value);
+  } catch {
+    return false;
+  }
+}
+
+function innerTruncationRecoveryInstruction(toolName: string, markers: readonly string[]): string {
+  if (toolName === 'code:run' && markers.includes('summaryNotice.truncated')) {
+    return 'Re-run code:run with a smaller return, splitting the script output into bounded slices.';
+  }
+  return `Re-call ${toolName} with a wider per-field limit.`;
+}
+
+/** Distinct truncation and partial marker names found in text (capped — this
+ *  feeds advisory wording, not an audit). Empty when none are present. */
+function detectInnerTruncationMarkers(text: string | readonly string[]): string[] {
+  const textItems = typeof text === 'string' ? [text] : [...text];
+  const sourceText = textItems.join('\n\n');
   const found = new Set<string>();
   INNER_TRUNCATION_MARKER_REGEX.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(text))) {
+  while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(sourceText))) {
     found.add(m[1] ?? m[2]);
     if (found.size >= 5) break;
   }
@@ -264,7 +321,9 @@ function detectInnerTruncationMarkers(text: string): string[] {
   // named marker for that shape so a hard reference spill cannot promise bytes
   // that the upstream shaper never serialized.
   INNER_TRUNCATION_TEXT_REGEX.lastIndex = 0;
-  if (INNER_TRUNCATION_TEXT_REGEX.test(text)) found.add('textTruncated');
+  if (INNER_TRUNCATION_TEXT_REGEX.test(sourceText)) found.add('textTruncated');
+  if (textItems.some(hasStructuredPartialFlag)) found.add('_partial');
+  if (textItems.some(hasStructuredSummaryNoticeTruncation)) found.add('summaryNotice.truncated');
   return [...found];
 }
 
@@ -699,7 +758,8 @@ export function detectResultEvidence(content: readonly unknown[]): Array<{
 type SpillReason =
   | 'aggregate-output-budget-exceeded'
   | 'non-text-result-budget-exceeded'
-  | 'explicit-full-request-overflow';
+  | 'explicit-full-request-overflow'
+  | 'under-budget-partial-result';
 
 /**
  * The one actionable fact each spill reason implies, stated where the MODEL
@@ -719,7 +779,7 @@ type SpillReason =
  */
 function spillRecoveryNote(
   reason: SpillReason,
-  input: { upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] } = {},
+  input: { toolName: string; upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] },
 ): string {
   const recoverable =
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ';
@@ -735,8 +795,15 @@ function spillRecoveryNote(
   if (innerTruncationMarkers.length > 0) {
     return (
       'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
-      `However, the TOOL ITSELF already truncated field(s) before this spill (${innerTruncationMarkers.join(', ')}); ` +
-      'paging this reference cannot recover those omitted fields. Re-call the tool with a wider per-field limit.'
+      `However, the emitted result already carries upstream partial marker(s) (${innerTruncationMarkers.join(', ')}); ` +
+      `paging this reference cannot recover the omitted fields, rows, or text. ${innerTruncationRecoveryInstruction(input.toolName, innerTruncationMarkers)}`
+    );
+  }
+  if (reason === 'under-budget-partial-result') {
+    return (
+      'The emitted result was already marked partial before it reached this result door. ' +
+      "The reference preserves what the tool emitted for inspection; re-call the tool with payloadTier:'full' " +
+      '(or narrower arguments) for the missing detail.'
     );
   }
   if (reason === 'aggregate-output-budget-exceeded') {
@@ -805,9 +872,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   )?.payloadProjection;
   const innerTruncationMarkers = upstreamProjection
     ? []
-    : detectInnerTruncationMarkers(
-        input.result.content.filter(isTextItem).map((item) => item.text).join('\n\n'),
-      );
+    : detectInnerTruncationMarkers(input.result.content.filter(isTextItem).map((item) => item.text));
   const sourceWasPartial = Boolean(upstreamProjection?.truncated) || innerTruncationMarkers.length > 0;
   const payload = JSON.stringify({
     content: input.result.content,
@@ -883,6 +948,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
             spilledItems: input.result.content.length,
             recoverable: !sourceWasPartial,
             note: spillRecoveryNote(input.reason, {
+              toolName: input.opts.toolName,
               upstreamProjection: Boolean(upstreamProjection?.truncated),
               innerTruncationMarkers,
               aggregateMode: input.aggregate?.mode,
@@ -1077,36 +1143,23 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     }
 
     if (sourceBytes <= budgetChars) {
-      // EI-19361771982678588: FITTING THE DOOR IS NOT BEING COMPLETE. This
-      // early return is the fast path for an ordinary small result — but a
-      // result that was tier-trimmed upstream and THEN landed under the door
-      // budget took this path too, and every truncation disclosure below is
-      // downstream of here. So the more aggressively a tool trimmed its own
-      // payload, the more likely it was to say nothing about it: the warning
-      // fired only when the *already-trimmed* body still overflowed. The
-      // facts:list case that motivated this cleared the door by 245 chars out
-      // of ~6,000 — a slightly tighter trim would have gone silent.
-      //
-      // Nothing to spill (the omitted rows were never serialized), so this
-      // discloses in-band and returns; the identity fast-path is preserved for
-      // the overwhelmingly common untruncated case.
-      if (!upstreamProjection?.truncated) return result;
-      const fastPathNotices: string[] = [];
-      if (upstreamProjection?.truncated) {
-        fastPathNotices.push(
-          `\n[⚠ PARTIAL RESULT — this fit the per-result door, but it is NOT the tool's full ` +
-            `output: it was tier-projected upstream (payloadProjection: tier=${upstreamProjection.tier} ` +
-            `forced=${upstreamProjection.forced} omittedCount=${upstreamProjection.omittedCount}, ` +
-            `${upstreamProjection.returnedChars} of ${upstreamProjection.originalChars} chars). Those ` +
-            `${upstreamProjection.omittedCount} field(s)/row(s) were never serialized, so nothing ` +
-            `downstream can recover them and their ABSENCE HERE IS NOT EVIDENCE THEY DO NOT EXIST. ` +
-            `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args) for the missing detail.]`,
-        );
-      }
-      return {
-        ...result,
-        content: [...items, ...fastPathNotices.map((text) => ({ type: 'text' as const, text }))],
-      } as T;
+      // Fitting the door does not make an upstream-projected value complete.
+      // Row/map partial sentinels and clipped-string markers can be the only
+      // disclosure; route them through the typed incomplete envelope so a
+      // downstream caller cannot infer success from a short body.
+      const innerTruncationMarkers = detectInnerTruncationMarkers(
+        items.filter(isTextItem).map((item) => item.text),
+      );
+      if (!upstreamProjection?.truncated && innerTruncationMarkers.length === 0) return result;
+      return spillResultAsReferenceEnvelope({
+        result,
+        opts,
+        reason: 'under-budget-partial-result',
+        sourceBytes,
+        nonTextBytes: nonTextChars,
+        doorTokens,
+        aggregate,
+      });
     }
 
     const textItems = items.filter(isTextItem);
@@ -1201,7 +1254,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // when upstreamProjection didn't already explain the shortfall, since that
     // case is more severe (the WHOLE result is a partial projection) and takes
     // priority over a field-level marker.
-    const innerTruncationMarkers = upstreamProjection ? [] : detectInnerTruncationMarkers(fullText);
+    const innerTruncationMarkers = upstreamProjection
+      ? []
+      : detectInnerTruncationMarkers(textItems.map((item) => item.text));
     const header = upstreamProjection
       ? `# result-door spill — an ALREADY-PROJECTED (partial) tool result\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
@@ -1221,8 +1276,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `# detected marker(s): ${innerTruncationMarkers.join(', ')} — these mark field(s) the tool cut\n` +
           `# short BEFORE this door ever ran. This file holds everything the tool DID emit, but the\n` +
           `# marked field(s) are themselves incomplete and were never fully serialized — paging this\n` +
-          `# file will NOT recover them. Re-call ${opts.toolName} with a wider per-field limit/budget\n` +
-          `# argument for the missing detail.\n\n`
+          `# file will NOT recover them. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers)}\n\n`
         : // EI-18762253154342502: never claim "FULL" unconditionally — no marker firing
           // proves nothing was cut upstream, only that no DETECTED marker was found (a
           // tool can truncate a field with a plain ellipsis and no `_truncated` flag,
@@ -1345,7 +1399,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       : `the tool marked ${innerTruncationMarkers.join(', ')}`;
     const partialJsonReRead = upstreamJsonProjection
       ? `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args).`
-      : `Re-call ${opts.toolName} with a wider per-field limit.`;
+      : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers);
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -1452,7 +1506,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   : innerTruncationMarkers.length > 0
                     ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
                       `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
-                      `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
+                      `recover those fields. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers)}`
                     : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
                       `every field in full.`) +
               buildProjectionHint(textItems, opts.toolName, bodyShape),
