@@ -234,9 +234,21 @@ export async function isHoldOpenExpired(
   sql: Db,
   holder: string,
   heldOpenAt: string | null,
-  opts: { graceMs?: number; parkedGraceMs?: number; holdOpenGraceMs?: number } = {},
+  opts: {
+    graceMs?: number;
+    parkedGraceMs?: number;
+    holdOpenGraceMs?: number;
+    /** The held row's `origin`. 'remote' (last written by a federation peer) is never judged here. */
+    origin?: string | null;
+  } = {},
 ): Promise<boolean> {
   if (!holder.trim()) return false;
+  // WI-10005916 — the same rule as reclaimStaleHoldOpens (WI-10005173): this node's presence
+  // knows only this node's agents, so the holder of a PEER-WRITTEN row cannot be judged dead
+  // here. Report the hold as live (it stays enforced); the node that wrote the row judges its
+  // own holder, and that node's lift federates here. Otherwise a non-holder's terminal
+  // transition on this node would lift a live peer lease and federate the revocation back.
+  if (opts.origin === 'remote') return false;
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
   const parkedGraceSec = Math.max(
     graceSec,

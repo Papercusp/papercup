@@ -3251,6 +3251,8 @@ async function isStaleHoldOpenAndCleared(
   id: string,
   heldOpen: { by: string; reason: string | null; at: string | null },
   harness?: string,
+  /** The row's `origin` — a peer-written ('remote') row's holder is never judged here (WI-10005916). */
+  origin?: string | null,
 ): Promise<boolean> {
   try {
     const [{ isHoldOpenExpired }, { readCoordLivenessConfig }] = await Promise.all([
@@ -3263,6 +3265,7 @@ async function isStaleHoldOpenAndCleared(
       graceMs: cfg.reclaimGraceMs,
       parkedGraceMs: cfg.reclaimParkedGraceMs,
       holdOpenGraceMs: cfg.holdOpenGraceMs,
+      origin,
     });
     if (!expired) return false;
     // Lift it for real — not just "ignore it this once". Leaving the stamp in place would keep
@@ -3922,7 +3925,7 @@ export async function setWorkItemState(
     // leader force-clear. Enforcing here (not only in the sweep) means the guard still holds
     // when the sweep is wedged or has not ticked — which is exactly the failure this fixes.
     // Only reached on the rare refusal path, so the extra round-trip costs nothing hot.
-    !(await isStaleHoldOpenAndCleared(id, heldOpen, wi.harness ?? undefined))
+    !(await isStaleHoldOpenAndCleared(id, heldOpen, wi.harness ?? undefined, wi.origin))
   ) {
     // WI-4530: name the REAL verbs. This message used to say "or { force: true }", which is
     // true for work_items:set_state but NOT for work_items:complete (it has no `force` arg) —

@@ -1812,6 +1812,40 @@ describe('P-006 held-open guard — non-holder terminal transitions refuse', () 
     expect(done?.state).toBe('done'); // work-item-status-full-unify: issue `resolved`→unified `done`
   });
 
+  it('WI-10005916: a dead-looking hold on a PEER-WRITTEN (origin=remote) row still refuses a non-holder close', async () => {
+    // The inline liveness check reads these (liveHolderFragment / parkedHolderFragment) and
+    // FAILS CLOSED when they are missing, which would make the local control below vacuous.
+    // Same minimal projections as work-items-hold-open.integration.test.ts.
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
+      owner_id text PRIMARY KEY, heartbeat_at timestamptz)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
+      spawn_id text PRIMARY KEY, session_owner text, run_id text, status text NOT NULL,
+      heartbeat_at timestamptz, finished_at timestamptz, cancelled_at timestamptz)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.routines (
+      id text PRIMARY KEY, workspace_id text NOT NULL, name text NOT NULL,
+      active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text,
+      updated_at timestamptz NOT NULL DEFAULT now(), metadata jsonb NOT NULL DEFAULT '{}'::jsonb)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
+      id BIGSERIAL PRIMARY KEY, owner_id text NOT NULL, kind text NOT NULL, summary text,
+      created_at timestamptz NOT NULL DEFAULT now())`);
+    // Same invisible holder, same past-grace hold age on both rows; only `origin` differs.
+    const local = await heldBug('su-peer-ghost', 'blocked');
+    const remote = await heldBug('su-peer-ghost', 'blocked');
+    const stale = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+    await db.sql`UPDATE harness_shared.work_items
+                    SET payload = jsonb_set(payload, '{held_open_at}', to_jsonb(${stale}::text))
+                  WHERE feature_id IN (${local.id}, ${remote.id})`;
+    await db.sql`UPDATE harness_shared.work_items SET origin = 'remote' WHERE feature_id = ${remote.id}`;
+    // Control: on a LOCAL row the inline liveness check lifts the dead hold and lets the close through.
+    const closed = await wi.setWorkItemState(local.id, 'resolved', { by: 'agX', completionRef: 'dead hold lifted' });
+    expect(closed?.state).toBe('done');
+    // A peer's holder is never judged from this node's presence, so the hold stays enforced.
+    await expect(
+      wi.setWorkItemState(remote.id, 'resolved', { by: 'agX', completionRef: 'looks stale' }),
+    ).rejects.toThrow(/HELD OPEN by su-peer-ghost/);
+    expect((await wi.getWorkItem(remote.id, 'papercup'))?.state).toBe('open');
+  });
+
   it('force:true overrides the hold (leader/reaper escape hatch)', async () => {
     const bug = await heldBug('leader-1');
     const done = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agX', completionRef: 'forced', force: true });

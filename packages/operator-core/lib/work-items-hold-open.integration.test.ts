@@ -353,6 +353,15 @@ describe('WI-4531 — isHoldOpenExpired (the inline chokepoint test)', () => {
   // terminal transition even when the 60s sweep is wedged or has not ticked yet.
   const old = () => new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
 
+  it('WI-10005916: is FALSE for a PEER-WRITTEN (origin=remote) row — this node cannot judge a peer holder', async () => {
+    // A peer agent is never in this node's presence, so without the origin rule it reads dead.
+    expect(await isHoldOpenExpired(sql, 'su-ghost', old(), { origin: 'remote' })).toBe(false);
+    // Control: the same invisible holder at the same age on a LOCAL row IS expired, so the
+    // origin rule (not the fixture) is what keeps the remote hold enforced.
+    expect(await isHoldOpenExpired(sql, 'su-ghost', old(), { origin: 'local' })).toBe(true);
+    expect(await isHoldOpenExpired(sql, 'su-ghost', old(), { origin: null })).toBe(true);
+  });
+
   it('is TRUE for a holder with no liveness signal at all, past grace', async () => {
     expect(await isHoldOpenExpired(sql, 'su-ghost', old())).toBe(true);
   });
