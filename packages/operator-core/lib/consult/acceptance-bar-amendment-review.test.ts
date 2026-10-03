@@ -15,6 +15,7 @@ import {
   launchFreshAmendmentReviewer,
   openAcceptanceBarAmendmentReview,
   routeAcceptanceBarAmendmentReview,
+  selectFreshReviewerModelForAccountSteer,
   type AmendmentReviewerScreen,
 } from './acceptance-bar-amendment-review';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
@@ -391,6 +392,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       resolveScreen: vi.fn(async () => ({ check: lineageScreen('su-implementer') })),
       launch: vi.fn().mockResolvedValue(launched),
       assertAllowed: vi.fn(async () => {}),
+      resolveSteeredModel: vi.fn(async () => undefined),
       ...overrides,
     };
   }
@@ -456,6 +458,22 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(d.assertAllowed).toHaveBeenCalledWith('ws', reviewerModel);
   });
 
+  it('launches a Codex judge selected from the account steer without an explicit reviewerModel', async () => {
+    const d = deps({ resolveSteeredModel: vi.fn(async () => ({ agent: 'codex', model: 'sol' })) });
+    const steered = await launchFreshAmendmentReviewer(input, d as never);
+    expect(d.resolveSteeredModel).toHaveBeenCalledWith('ws');
+    expect(d.launch.mock.calls[0]![0]).toMatchObject({
+      account: 'auto',
+      members: [{ role: 'judge', agent: 'codex', model: 'sol' }],
+    });
+    const baseline = await launchFreshAmendmentReviewer(input, deps() as never);
+    expect(steered.state).toBe('launched');
+    expect(baseline.state).toBe('launched');
+    if (steered.state === 'launched' && baseline.state === 'launched') {
+      expect(steered.idempotencyKey).not.toBe(baseline.idempotencyKey);
+    }
+  });
+
   it('refuses to launch when the launcher itself fails the check-approver screen', async () => {
     const screen: AmendmentReviewerScreen = async (ownerId) =>
       ownerId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR
@@ -504,5 +522,36 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(brief).not.toContain('rubrics:amend');
     expect(brief).toContain(JSON.stringify(approval));
     expect(brief).toContain(ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR);
+  });
+});
+
+describe('selectFreshReviewerModelForAccountSteer', () => {
+  const ranks = [
+    { rank: 1, agent: 'claude', model: 'fable' },
+    { rank: 2, agent: 'codex', model: 'sol' },
+  ] as const;
+  const accounts = [
+    { id: 'claude-1', provider: 'claude', available: true },
+    { id: 'codex-1', provider: 'codex', available: true },
+  ];
+
+  it('chooses the first expert model whose provider has an allowed account', () => {
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: ['codex-1'], excludeAccounts: [], accounts, ranks,
+    })).toEqual({ agent: 'codex', model: 'sol' });
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: ['claude-1'], accounts, ranks,
+    })).toEqual({ agent: 'codex', model: 'sol' });
+  });
+
+  it('preserves the default route without restrictions and refuses an unavailable allowed pool', () => {
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [], accounts, ranks,
+    })).toBeUndefined();
+    expect(() => selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: ['codex-1'], excludeAccounts: [],
+      accounts: accounts.map((account) => ({ ...account, available: account.id !== 'codex-1' })),
+      ranks,
+    })).toThrow('no expert model has an available account permitted by the workspace account steer');
   });
 });

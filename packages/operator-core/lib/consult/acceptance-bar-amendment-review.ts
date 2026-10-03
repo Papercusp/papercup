@@ -38,7 +38,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { AcceptanceBarAmendmentPreview, AcceptanceBarApproverEligibilityCheck } from '../rubrics';
 import type { RouteResult } from './relevance-router';
 import type { ConsultReviewerModel } from './get-feedback-core';
-import { resolveExpertModelAllowlist } from './expert-model-allowlist';
+import { resolveExpertModelAllowlist, type AllowedExpertModel } from './expert-model-allowlist';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 
 /** One candidate's verdict from the check-approver screen. */
@@ -291,6 +291,56 @@ export interface FreshAmendmentReviewerInput extends AmendmentReviewBriefInput {
   reviewerModel?: ConsultReviewerModel;
 }
 
+/** Keep the fresh reviewer's backend inside the owner's current account steer.
+ * A constrained pool can contain only Codex accounts while the launch default
+ * is Claude; `account:'auto'` alone cannot change the backend. */
+export function selectFreshReviewerModelForAccountSteer(args: {
+  forcedAccounts: readonly string[];
+  excludeAccounts: readonly string[];
+  accounts: readonly { id: string; provider?: string; available: boolean }[];
+  ranks: readonly AllowedExpertModel[];
+}): ConsultReviewerModel | undefined {
+  if (args.forcedAccounts.length === 0 && args.excludeAccounts.length === 0) return undefined;
+  const forced = new Set(args.forcedAccounts);
+  const excluded = new Set(args.excludeAccounts);
+  const providers = new Set(args.accounts
+    .filter((account) => account.available
+      && (forced.size === 0 || forced.has(account.id))
+      && !excluded.has(account.id))
+    .map((account) => account.provider ?? 'claude'));
+  const rank = args.ranks.find((candidate) => providers.has(candidate.agent));
+  if (!rank) {
+    throw new Error('no expert model has an available account permitted by the workspace account steer');
+  }
+  return { agent: rank.agent, model: rank.model };
+}
+
+async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Promise<ConsultReviewerModel | undefined> {
+  const [{ getAccountOverride }, { loadAccountPool }, { accountProvider, isAvailable },
+    { readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings }] = await Promise.all([
+    import('../deployment/account-session-override'),
+    import('../deployment/account-pool-store'),
+    import('../deployment/account-pool'),
+    import('./expert-routing-settings'),
+  ]);
+  const override = await getAccountOverride(workspaceId);
+  if (override.forcedAccounts.length === 0 && override.excludeAccounts.length === 0) return undefined;
+  const [pool, settings] = await Promise.all([
+    loadAccountPool(workspaceId),
+    readConsultExpertRoutingSettings(workspaceId),
+  ]);
+  const ranks = await resolveExpertModelAllowlist(workspaceId, bindConsultExpertRoutingSettings(settings));
+  return selectFreshReviewerModelForAccountSteer({
+    ...override,
+    accounts: pool.accounts.map((account) => ({
+      id: account.id,
+      provider: accountProvider(account),
+      available: isAvailable(account, Date.now()),
+    })),
+    ranks,
+  });
+}
+
 /** The work-item whose thread carries the preview post, with its harness. */
 async function resolvePreviewPostWorkItem(args: {
   workspaceId: string;
@@ -350,6 +400,7 @@ export async function launchFreshAmendmentReviewer(
     resolveScreen?: (args: { rubricId: string; applierId: string }) => Promise<{ check: AmendmentReviewerScreen }>;
     launch?: LaunchHandler;
     assertAllowed?: typeof assertReviewerModelAllowed;
+    resolveSteeredModel?: typeof resolveFreshReviewerModelForAccountSteer;
   } = {},
 ): Promise<FreshAmendmentReviewerResult> {
   const previewPostRef = input.previewPostRef.trim();
@@ -365,6 +416,7 @@ export async function launchFreshAmendmentReviewer(
   }
   const rubricId = input.rubricRef.trim().replace(/^plan:/i, '').trim();
   if (input.reviewerModel) await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
+  const reviewerModel = input.reviewerModel ?? await (deps.resolveSteeredModel ?? resolveFreshReviewerModelForAccountSteer)(input.workspaceId);
   const resolveScreen =
     deps.resolveScreen ?? (async (args) => (await import('../rubrics')).resolveAcceptanceBarApproverScreen(args));
   const screen = await resolveScreen({ rubricId, applierId: input.applierId });
@@ -377,7 +429,7 @@ export async function launchFreshAmendmentReviewer(
   }
   const identity = createHash('sha256')
     .update([input.workspaceId, rubricId, previewPostRef, JSON.stringify(input.preview.approval),
-      ...(input.reviewerModel ? [JSON.stringify(input.reviewerModel)] : [])].join('\0'))
+      ...(reviewerModel ? [JSON.stringify(reviewerModel)] : [])].join('\0'))
     .digest('hex');
   const idempotencyKey = `acceptance-bar-amendment-review:${identity.slice(0, 32)}`;
   const label = `bar-amendment-review:${identity.slice(0, 12)}`;
@@ -396,9 +448,9 @@ export async function launchFreshAmendmentReviewer(
       count: 1,
       // role:'judge' is harness-scoped; launch-agent refuses it without one
       // (EI-23414612968722239), so it rides only with a resolved harness.
-      ...(answerOn.harness || input.reviewerModel ? { members: [{
+      ...(answerOn.harness || reviewerModel ? { members: [{
         ...(answerOn.harness ? { role: 'judge' } : {}),
-        ...(input.reviewerModel ?? {}),
+        ...(reviewerModel ?? {}),
       }] } : {}),
       label,
       idempotencyKey,
