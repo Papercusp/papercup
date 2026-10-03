@@ -446,6 +446,39 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     ).toBe(false);
   });
 
+  it('clears the no-loop-turn failure only with a strictly later per-fire completion proof', () => {
+    const lastFiredAt = '2026-10-03T05:00:00.000Z';
+    const failure = {
+      lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn',
+      lastFiredAt,
+    };
+    expect(classifyLoopNextWake(loop(failure)).reason).toBe('last-fire-no-loop-turn');
+    expect(
+      classifyLoopNextWake(
+        loop({
+          ...failure,
+          lastFailedFireLoopTurnCompletedAt: lastFiredAt,
+        }),
+      ).reason,
+    ).toBe('last-fire-no-loop-turn');
+    expect(
+      classifyLoopNextWake(
+        loop({
+          ...failure,
+          lastFailedFireLoopTurnCompletedAt: '2026-10-03T04:59:59.999Z',
+        }),
+      ).reason,
+    ).toBe('last-fire-no-loop-turn');
+    expect(
+      classifyLoopNextWake(
+        loop({
+          ...failure,
+          lastFailedFireLoopTurnCompletedAt: '2026-10-03T05:00:00.001Z',
+        }),
+      ),
+    ).toEqual({ guaranteed: true, reason: null });
+  });
+
   // P-013 / RSR-P-013-C (review-system-rework-reduction-2026-09-23), EI-24023838400909760:
   // a cold loop re-armed and was told rewakeGuaranteed:true while its previous fire had
   // parked "no injectable psu host"; the next fire parked identically and the session went
