@@ -67,8 +67,10 @@ export interface ServingRuntimeSpec {
   codeSource: ServingRuntimeCodeSource;
   /** systemd --user unit, when the runtime is a single long-lived service. */
   unit: string | null;
-  /** Loopback port whose `/api/health` reports the build sha, when there is one. */
+  /** Loopback port whose health route reports the build sha, when there is one. */
   healthPort: number | null;
+  /** Health route on `healthPort`; omitted ⇒ `/api/health` (the operator/bg-host contract). */
+  healthPath?: string;
   /** Literal runtime-vintage unit label, when the runtime reports under a fixed one. */
   vintageUnit: string | null;
   /** Aliases a human or an agent writes for this runtime (used to recognise citations). */
@@ -134,7 +136,12 @@ export const SERVING_RUNTIMES: Readonly<Record<ServingRuntimeId, ServingRuntimeS
     releasePipelineApplies: false,
     codeSource: 'canonical-tree',
     unit: RESTART_TARGET_UNITS['embed-sidecar'],
-    healthPort: null,
+    // WI-10005944: the same bundle-host.sh builds this unit's bundle, including the
+    // fallback to a last-known-good bundle when the rebuild fails, so start-after-mtime
+    // is false here exactly as it was for bg-host (WI-10005936). Its /healthz reports the
+    // source sha baked into the bundle and `bundleStale` when it booted the fallback.
+    healthPort: 3384,
+    healthPath: '/healthz',
     vintageUnit: null,
     aliases: ['embed-sidecar', 'embed sidecar', ':3384', '3384'],
     activation:
@@ -641,9 +648,9 @@ export function servingRuntimesMentioned(text: string): ServingRuntimeId[] {
 
 export interface ServingRuntimeProbeDeps {
   probeUnitStart: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
-  probeHealthSha?: (port: number) => Promise<string | null>;
+  probeHealthSha?: (port: number, path?: string) => Promise<string | null>;
   /** A bundling host's own report of the bundle it booted (WI-10005936); null when unreadable. */
-  probeHealthBundle?: (port: number) => Promise<ServingRuntimeBundleState | null>;
+  probeHealthBundle?: (port: number, path?: string) => Promise<ServingRuntimeBundleState | null>;
   vintageRows: ReadonlyArray<RuntimeVintageRow>;
   localHost: string;
   /** Read `/proc/<pid>/cgroup`; null when unreadable. */
@@ -655,10 +662,11 @@ export interface ServingRuntimeProbeDeps {
 }
 
 const HEALTH_TIMEOUT_MS = 1_000;
+const DEFAULT_HEALTH_PATH = '/api/health';
 
-export async function realProbeHealthSha(port: number): Promise<string | null> {
+export async function realProbeHealthSha(port: number, path = DEFAULT_HEALTH_PATH): Promise<string | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
     if (!res.ok) return null;
     const body = (await res.json()) as { sha?: unknown } | null;
     return typeof body?.sha === 'string' && body.sha.trim() ? body.sha.trim() : null;
@@ -682,9 +690,9 @@ export function parseHealthBundleState(body: unknown): ServingRuntimeBundleState
   return { stale: true, servingBuiltAtMs: Number.isFinite(builtAtMs) ? builtAtMs : null };
 }
 
-export async function realProbeHealthBundle(port: number): Promise<ServingRuntimeBundleState | null> {
+export async function realProbeHealthBundle(port: number, path = DEFAULT_HEALTH_PATH): Promise<ServingRuntimeBundleState | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
     if (!res.ok) return null;
     return parseHealthBundleState(await res.json());
   } catch {
@@ -768,13 +776,14 @@ export async function probeServingRuntime(
     probe.startedAtMs = started?.startedAtMs ?? null;
   }
   if (spec.healthPort !== null) {
-    const sha = await (deps.probeHealthSha ?? realProbeHealthSha)(spec.healthPort).catch(() => null);
+    const healthPath = spec.healthPath ?? DEFAULT_HEALTH_PATH;
+    const sha = await (deps.probeHealthSha ?? realProbeHealthSha)(spec.healthPort, healthPath).catch(() => null);
     if (sha) {
       probe.buildSha = sha;
       probe.buildShaSource = 'health';
     }
     if (spec.codeSource === 'canonical-tree') {
-      probe.bundle = await (deps.probeHealthBundle ?? realProbeHealthBundle)(spec.healthPort).catch(() => null);
+      probe.bundle = await (deps.probeHealthBundle ?? realProbeHealthBundle)(spec.healthPort, healthPath).catch(() => null);
     }
   }
   if (!probe.buildSha && spec.unit && (probe.pid !== null || probe.startedAtMs !== null)) {

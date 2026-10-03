@@ -246,6 +246,37 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
       expect(bundlePorts).toEqual([3271]);
       expect(evaluateServingRuntime(bg)).toMatchObject({ containsChange: false, method: 'bundle-mtime' });
     });
+
+    // WI-10005944: the embed sidecar is built by the same bundle-host.sh (same fallback),
+    // so it must read its own /healthz on :3384, not fall back to start-after-mtime.
+    it('probes the embed sidecar on :3384/healthz and judges a stale fallback bundle by its mtime', async () => {
+      const calls: string[] = [];
+      const deps = {
+        probeUnitStart: async () => ({ pid: 8, startedAtMs: START }),
+        probeHealthSha: async (port: number, path?: string) => {
+          calls.push(`sha ${port}${path}`);
+          return 'e'.repeat(40);
+        },
+        probeHealthBundle: async (port: number, path?: string) => {
+          calls.push(`bundle ${port}${path}`);
+          return { stale: true, servingBuiltAtMs: BUILT };
+        },
+        vintageRows: [],
+        localHost: 'box',
+        fileMtimeMs: EDIT,
+        // The fallback bundle's baked sha predates the edit.
+        blobContainsAt: async () => ({ contains: false, unknown: null }),
+      };
+      const embed = await probeServingRuntime({ runtime: 'embed-sidecar', role: 'owner' }, deps);
+      expect(calls).toEqual(['sha 3384/healthz', 'bundle 3384/healthz']);
+      expect(embed).toMatchObject({ buildSha: 'e'.repeat(40), buildShaSource: 'health', bundle: { stale: true } });
+      // Started after the edit, but the bundle it booted was built before it: not live.
+      expect(evaluateServingRuntime(embed)).toMatchObject({ containsChange: false, method: 'bundle-mtime' });
+
+      calls.length = 0;
+      await probeServingRuntime({ runtime: 'bg-host', role: 'owner' }, deps);
+      expect(calls).toEqual(['sha 3271/api/health', 'bundle 3271/api/health']);
+    });
   });
 
   it('canonical-tree host that is not running is unknown, not false', () => {
