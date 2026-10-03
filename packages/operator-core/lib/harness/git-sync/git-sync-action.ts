@@ -215,6 +215,7 @@ import {
 import { deriveGenesisBaselineSha } from './genesis-baseline';
 import { appendPipelineEvent } from './pipeline-events';
 import { DEFAULT_CONTENT_DETECTORS } from '../../content-lint/registry';
+import { contentSnapshotHash, detectorResultHash } from './content-guard';
 import { checkDirtyMigrationReservations } from '../../migration-reservation';
 import {
   runGitSync,
@@ -1474,7 +1475,17 @@ async function writeGitSyncContentEscalation(
   needsHuman: boolean,
 ): Promise<void> {
   const { sql } = getOrgPg();
-  const files = contentErrors.map((c) => ({ scope: c.scope, file: c.file, detector: c.detectorKey, error: c.error }));
+  const files = contentErrors.map((c) => ({
+    scope: c.scope,
+    file: c.file,
+    detector: c.detectorKey,
+    error: c.error,
+    // The detector scans dirty working-tree bytes, which may differ from HEAD.
+    // Preserve the exact snapshot and verdict identity so the human escalation
+    // remains reproducible after another edit or commit changes the file.
+    ...(c.contentHash ? { contentHash: c.contentHash } : {}),
+    ...(c.detectorResultHash ? { detectorResultHash: c.detectorResultHash } : {}),
+  }));
   const list = contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`).join(', ');
   const body = JSON.stringify({
     kind: CONTENT_ERROR_KIND,
@@ -1947,7 +1958,14 @@ async function revalidateContentErrors(
         const inScope = await detector.matches(contentError.file, { repoPath: repo });
         if (!inScope) return null;
         const error = await detector.detect(contentError.file, text, { repoPath: repo });
-        return error ? { ...contentError, error } : null;
+        return error
+          ? {
+              ...contentError,
+              error,
+              contentHash: contentSnapshotHash(text),
+              detectorResultHash: detectorResultHash(contentError.detectorKey, error),
+            }
+          : null;
       } catch {
         // The guard itself is fail-open during the commit path, but dispatch
         // revalidation fails closed so a detector failure cannot erase a real
