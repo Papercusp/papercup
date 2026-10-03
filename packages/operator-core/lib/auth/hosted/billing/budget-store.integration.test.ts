@@ -92,9 +92,9 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
       launches.push(grant.reservationId); return 'provider-operation';
     })));
     expect(launches).toEqual([r.reservationId]);
-    expect(outcomes.filter(o => o.execution === 'completed')).toHaveLength(1);
+    expect(outcomes.filter(o => o.execution === 'dispatched')).toHaveLength(1);
     expect(outcomes.filter(o => o.execution === 'not-started' && o.reservation.outcome === 'duplicate')).toHaveLength(11);
-    expect(outcomes.find(o => o.execution === 'completed')?.value).toBe('provider-operation');
+    expect(outcomes.find(o => o.execution === 'dispatched')?.value).toBe('provider-operation');
   });
 
   it('keeps the launch fence and full hold after a provider starts but its response is lost', async () => {
@@ -115,7 +115,7 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     await store().observe(observation(r, { costMicros: 0 }));
     expect((await store().executeOnce(r, async () => { launches++; })).execution).toBe('not-started');
     // A separately admitted operation may use the released funding.
-    expect((await store().executeOnce(request(s), async () => { launches++; })).execution).toBe('completed');
+    expect((await store().executeOnce(request(s), async () => { launches++; })).execution).toBe('dispatched');
     expect(launches).toBe(1);
   });
 
@@ -137,7 +137,7 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     const crashing: HostedServiceContextRunner = fn => service(async sql => { await fn(sql); throw new Error('commit failed'); });
     await expect(store(readContext, crashing).executeOnce(r, execute)).rejects.toThrow('commit failed');
     expect(launches).toBe(0); expect(await rows(s)).toHaveLength(0);
-    expect((await store().executeOnce(r, execute)).execution).toBe('completed');
+    expect((await store().executeOnce(r, execute)).execution).toBe('dispatched');
     expect(launches).toBe(1);
   });
 
@@ -154,7 +154,23 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
         providerLimitRef: original.providerLimitRef });
       return grant.reservationId;
     });
-    expect(result.execution).toBe('completed'); expect(result.value).toBe(original.reservationId);
+    expect(result.execution).toBe('dispatched'); expect(result.value).toBe(original.reservationId);
+  });
+
+  it('retains exposure and refuses redispatch after an actual streaming cancellation', async () => {
+    const s = await tenant(); const r = request(s); let cancellations = 0; let launches = 0;
+    const first = await store().executeOnce(r, async () => {
+      launches++;
+      return new ReadableStream<string>({ start(controller) { controller.enqueue('partial output'); },
+        cancel() { cancellations++; } });
+    });
+    expect(first.execution).toBe('dispatched');
+    const reader = first.value!.getReader(); expect((await reader.read()).value).toBe('partial output');
+    await reader.cancel(); expect(cancellations).toBe(1);
+    await store().observe(observation(r, { costSource: 'provider-reported', costMicros: 0, providerFinal: false }));
+    expect((await store().executeOnce(r, async () => { launches++; })).execution).toBe('not-started');
+    expect((await store().reserve(request(s, { maximumCostMicros: 1 }))).outcome).toBe('refused');
+    expect(launches).toBe(1);
   });
 
   it('serializes parallel work across separate store instances at the exact organization cap', async () => {

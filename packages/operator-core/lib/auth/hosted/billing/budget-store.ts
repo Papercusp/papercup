@@ -176,12 +176,14 @@ export class PostgresHostedBudgetStore {
       maximumCostMicros: r.maximumCostMicros, providerLimitRef: r.providerLimitRef,
       policyId: r.policyId, policyRevision: r.policyRevision, evidenceRef: r.evidenceRef });
     const value = await execute(grant);
-    return { execution: 'completed' as const, reservation, value };
+    // A returned operation/stream handle is dispatched, not finally billed.
+    return { execution: 'dispatched' as const, reservation, value };
   }
 
   /** A duplicate is a saved receipt, NOT permission to start the provider again.
-   * The execution owner must separately fence launch/resume; this store only
-   * reserves exposure. Lost/crashed responses keep their original hold. */
+   * Use executeOnce for first launch; a direct reserve call only reserves
+   * exposure. Resumption requires provider reconciliation, never a duplicate
+   * receipt. Lost/crashed responses keep their original hold. */
   async reserve(input: HostedBudgetRequest) {
     if (Object.keys(input).some(k => !['scope', 'reservationId', 'month', 'budgetKey', 'maximumCostMicros', 'providerLimitRef', 'asOfMs'].includes(k))
         || !identifier(input.reservationId) || !identifier(input.budgetKey) || !identifier(input.providerLimitRef)
