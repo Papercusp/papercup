@@ -405,6 +405,9 @@
     "scripts/analyze-heap-snapshots.mjs",
     // WI-10005802: committed-source-loader.test.ts pins that the workspace test launcher
     // routes explicit files through the router under the committed-source loader.
-    "scripts/workspace-test.mjs"
+    "scripts/workspace-test.mjs",
+    // WI-10005888: apps/operator/lib/public-docs-readiness.test.ts imports the public
+    // manual's source contract.
+    "apps/papercusp-docs/scripts/source-contract.mjs"
   ]
 }

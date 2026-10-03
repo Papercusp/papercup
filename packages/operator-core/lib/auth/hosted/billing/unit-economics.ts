@@ -5,7 +5,7 @@ import { MICROS_PER_CENT } from '../../../cupboard/money-journal';
 
 export const PILOT_COST_CATEGORIES = [
   'compute', 'persistent-storage', 'external-ip', 'egress',
-  'inference-input', 'inference-output', 'cache-read', 'cache-write',
+  'inference-input', 'inference-output', 'cache-read', 'cache-write', 'inference-fees',
   'support', 'platform-overhead',
 ] as const;
 export type PilotCostCategory = (typeof PILOT_COST_CATEGORIES)[number];
@@ -28,6 +28,8 @@ export interface PilotCostLine {
     readonly unit: string;
     readonly unitsPerRate: number;
     readonly microsPerRate: number;
+    readonly minimumBillableUnits?: number;
+    readonly billingIncrementUnits?: number;
     readonly kind: 'provider-billed' | 'measured-labor' | 'catalog' | 'estimate';
   }) | null;
 }
@@ -77,7 +79,7 @@ export interface PilotEconomics {
 const MAX = BigInt(Number.MAX_SAFE_INTEGER);
 const CENT = BigInt(MICROS_PER_CENT);
 const BPS = 10_000n;
-const inferenceCategories = new Set<PilotCostCategory>(['inference-input', 'inference-output', 'cache-read', 'cache-write']);
+const inferenceCategories = new Set<PilotCostCategory>(['inference-input', 'inference-output', 'cache-read', 'cache-write', 'inference-fees']);
 
 function integer(value: number, name: string, minimum = 0): bigint {
   if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`invalid ${name}`);
@@ -180,9 +182,13 @@ export function calculatePilotEconomics(sheet: PilotPriceSheet): PilotEconomics 
       if (line.rate.unit !== line.unit) throw new Error(`unit mismatch ${line.id}`);
       const units = integer(line.rate.unitsPerRate, `${line.id} rate units`, 1);
       const rate = integer(line.rate.microsPerRate, `${line.id} rate`);
+      const minimum = integer(line.rate.minimumBillableUnits ?? 0, `${line.id} minimum billable units`);
+      const increment = integer(line.rate.billingIncrementUnits ?? 1, `${line.id} billing increment`, 1);
       if (!['provider-billed', 'measured-labor', 'catalog', 'estimate'].includes(line.rate.kind)) throw new Error('invalid rate kind');
       checkProvenance(line.rate, `${line.id}:rate`);
-      amount = ceil(quantity * rate, units);
+      const billable = quantity === 0n ? 0n : ceil(quantity < minimum ? minimum : quantity, increment) * increment;
+      safe(billable, `${line.id} billable quantity`);
+      amount = ceil(billable * rate, units);
       if (quantity > 0n && (line.rate.kind === 'catalog' || line.rate.kind === 'estimate')) {
         reasons.push(`estimated-cost:${line.id}`);
         provisional = true;

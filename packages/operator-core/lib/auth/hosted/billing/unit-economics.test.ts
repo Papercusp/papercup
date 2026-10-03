@@ -107,6 +107,23 @@ describe('pilot unit economics (synthetic arithmetic fixtures, not customer meas
     expect(result.platform.paymentFeeMicros! + result.consumption.paymentFeeMicros!).toBe(310_000);
   });
 
+  it.each([[0, 0], [30, 1200], [60, 1200], [61, 1220]])('applies a 60-second minimum with subsequent seconds: %s seconds', (quantity, expected) => {
+    const base = replace(sheet(), 'compute', { quantity, unit: 'seconds', rate: {
+      ...provenance, kind: 'catalog', unit: 'seconds', microsPerRate: 72_000, unitsPerRate: 3600,
+      minimumBillableUnits: 60, billingIncrementUnits: 1,
+    } });
+    expect(calculatePilotEconomics(base).consumption.costMicros).toBe(expected);
+  });
+
+  it('applies whole-block billing without treating bytes as GiB', () => {
+    const base = replace(sheet(), 'egress', { quantity: 1025, unit: 'bytes', rate: {
+      ...provenance, kind: 'provider-billed', unit: 'bytes', microsPerRate: 1, unitsPerRate: 1024,
+      billingIncrementUnits: 1024,
+    } });
+    expect(calculatePilotEconomics(base).consumption.costMicros).toBe(2);
+    expect(() => calculatePilotEconomics(replace(base, 'egress', { rate: { ...base.lines.find((row) => row.category === 'egress')!.rate!, billingIncrementUnits: 0 } }))).toThrow('billing increment');
+  });
+
   it.each(['catalog', 'estimate'] as const)('%s prices remain provisional even with observed usage', (kind) => {
     const base = sheet();
     const result = calculatePilotEconomics(replace(base, 'compute', { quantity: 1, rate: { ...base.lines[0].rate!, kind } }));
@@ -134,6 +151,12 @@ describe('pilot unit economics (synthetic arithmetic fixtures, not customer meas
     expect(result.state).toBe('incomplete');
     expect(result.reasons).toContain('missing-cost:external-ip');
     expect(result.platform.marginBps).toBeNull();
+  });
+  it('requires provider credit/BYOK fees in addition to token costs', () => {
+    const result = calculatePilotEconomics(sheet({ lines: sheet().lines.filter((row) => row.category !== 'inference-fees') }));
+    expect(result.state).toBe('incomplete');
+    expect(result.reasons).toContain('missing-cost:inference-fees');
+    expect(result.quoteAllowed).toBe(false);
   });
   it('permits observed zero exposure without inventing a rate', () => {
     expect(calculatePilotEconomics(replace(sheet(), 'external-ip', { quantity: 0, rate: null })).state).toBe('measured');

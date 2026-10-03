@@ -41,6 +41,7 @@ import type { Sql } from 'postgres';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { DISPATCH_RECORDS_MAX } from './consult-dispatch';
 import { reviewConsultKind } from './consult-expiry-core';
+import { CONSULT_RECONCILIATION_DISPOSITIONS, type ConsultReconciliationDisposition } from './consult-verbs-core';
 import {
   ACCEPTANCE_GRADING_POLICY,
   CONSULT_DEFAULT_POLICY,
@@ -59,6 +60,7 @@ const CONSULT_OPEN_MARGIN = '2 days';
 /** One consult_state row, as the reader selects it. */
 export interface RoutingHealthConsultRow {
   conversation_id: string;
+  requester_id?: string | null;
   created_at?: string | Date | null;
   expires_at?: string | Date | null;
   outcome?: unknown;
@@ -119,12 +121,23 @@ export interface RequestDeliveryHealth {
   retrievalOnly: number;
   legacyIntentUnknown: number;
   outcomes: { received: number; declined: number; pending: number; unavailable: number; failed: number; unmeasured: number };
+  followThrough: {
+    applicable: number; notApplicable: number; applicabilityUnknown: number;
+    recorded: Record<ConsultReconciliationDisposition, number>;
+    unknown: number; invalid: number;
+    recordedWithFeedback: number; recordedWithoutFeedback: number;
+  };
 }
 
 function emptyRequestCounts(): RequestDeliveryHealth {
   return {
     requests: 0, dispatchRequested: 0, retrievalOnly: 0, legacyIntentUnknown: 0,
     outcomes: { received: 0, declined: 0, pending: 0, unavailable: 0, failed: 0, unmeasured: 0 },
+    followThrough: {
+      applicable: 0, notApplicable: 0, applicabilityUnknown: 0,
+      recorded: { confirmed: 0, rescoped: 0, reversed: 0, moot: 0 },
+      unknown: 0, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
+    },
   };
 }
 
@@ -153,6 +166,28 @@ function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof Requ
         (row.state === 'expired' || (Number.isFinite(expiresMs) && nowMs >= expiresMs)))) return 'failed';
   // Missing recorder/expiry evidence is not proof of a delivery failure.
   return 'unmeasured';
+}
+
+function recordFollowThrough(row: RoutingHealthConsultRow, counts: RequestDeliveryHealth, nowMs: number) {
+  const follow = counts.followThrough;
+  if (row.latency_contract === 'hard-blocked') { follow.notApplicable += 1; return; }
+  if (row.latency_contract !== 'proceed') { follow.applicabilityUnknown += 1; return; }
+  follow.applicable += 1;
+  const raw = jsonObject(row.outcome).reconciliation;
+  if (raw == null) { follow.unknown += 1; return; }
+  const reconciliation = jsonObject(raw);
+  const disposition = reconciliation.disposition as ConsultReconciliationDisposition;
+  const atMs = toMs(reconciliation.at);
+  if (!row.requester_id || reconciliation.by !== row.requester_id ||
+      !CONSULT_RECONCILIATION_DISPOSITIONS.includes(disposition) ||
+      typeof reconciliation.note !== 'string' || !reconciliation.note.trim() ||
+      !Number.isFinite(atMs) || atMs > nowMs) {
+    follow.invalid += 1;
+    return;
+  }
+  follow.recorded[disposition] += 1;
+  if (requestOutcome(row, nowMs) === 'received') follow.recordedWithFeedback += 1;
+  else follow.recordedWithoutFeedback += 1;
 }
 
 /** The selection policy a consult ran under. Null `routing.policy` is the default. */
@@ -303,6 +338,7 @@ export function routingHealthFromRows(
       const requests = requestPolicies.get(policy) ?? emptyRequestCounts();
       requestPolicies.set(policy, requests);
       requests.requests += 1;
+      recordFollowThrough(row, requests, nowMs);
       const intent = jsonObject(row.routing).deliveryIntent;
       if (intent === 'retrieval-only') requests.retrievalOnly += 1;
       else if (intent !== 'dispatch') requests.legacyIntentUnknown += 1;
@@ -396,6 +432,12 @@ export function routingHealthFromRows(
     for (const key of Object.keys(counts.outcomes) as Array<keyof RequestDeliveryHealth['outcomes']>) {
       requestTotals.outcomes[key] += counts.outcomes[key];
     }
+    for (const key of ['applicable', 'notApplicable', 'applicabilityUnknown', 'unknown', 'invalid', 'recordedWithFeedback', 'recordedWithoutFeedback'] as const) {
+      requestTotals.followThrough[key] += counts.followThrough[key];
+    }
+    for (const disposition of CONSULT_RECONCILIATION_DISPOSITIONS) {
+      requestTotals.followThrough.recorded[disposition] += counts.followThrough.recorded[disposition];
+    }
   }
   for (const p of policies) {
     for (const key of [
@@ -448,7 +490,7 @@ export async function readRoutingHealthRows(
   asOfIso = new Date().toISOString(),
 ): Promise<{ rows: RoutingHealthConsultRow[]; truncated: boolean }> {
   const rows = await sql<RoutingHealthConsultRow[]>`
-    SELECT cs.conversation_id, cs.created_at, cs.expires_at, cs.outcome, cs.routing, cs.state,
+    SELECT cs.conversation_id, cs.requester_id, cs.created_at, cs.expires_at, cs.outcome, cs.routing, cs.state,
            cs.latency_contract, cs.closed_at, cs.cascade_digest, cs.dispatch_attempts,
            EXISTS (SELECT 1 FROM harness_shared.consult_post_meta pm
                     WHERE pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id

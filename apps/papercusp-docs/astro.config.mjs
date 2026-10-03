@@ -1,12 +1,8 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { assertPublicManualSource } from './scripts/source-contract.mjs';
 
 const isLintAsCommittedClone = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1';
-const sharedStarlightRoot = dirname(fileURLToPath(import.meta.resolve('@astrojs/starlight')));
-const cloneStarlightRoot = fileURLToPath(new URL('../../node_modules/@astrojs/starlight/', import.meta.url));
 
 // Public-facing user manual for Papercusp. Engine: Starlight (on Astro).
 // The internal *engineering* docs are a separate app — apps/operator-docs.
@@ -19,15 +15,14 @@ const cloneStarlightRoot = fileURLToPath(new URL('../../node_modules/@astrojs/st
 export default defineConfig({
   site: 'https://app.papercusp.com',
   base: '/docs',
-  // lint:as-committed links dependencies to the shared install. With preserveSymlinks enabled,
-  // Vite keeps Starlight's clone-local symlink path, so alias that spelling to the shared realpath.
-  // Astro strips Vite's /@fs prefix from virtual requests so they share the main module's metadata key.
+  // lint:as-committed links dependencies to the shared install. Keep Vite's realpath resolution
+  // enabled: preserving the clone symlink gives Astro's main component and generated style
+  // requests different IDs, which split the compile-metadata key.
   ...(isLintAsCommittedClone
     ? {
         vite: {
           resolve: {
-            preserveSymlinks: true,
-            alias: [{ find: cloneStarlightRoot, replacement: `/@fs${sharedStarlightRoot}` }],
+            preserveSymlinks: false,
           },
         },
       }

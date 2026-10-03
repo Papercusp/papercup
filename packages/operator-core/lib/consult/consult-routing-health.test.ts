@@ -192,6 +192,11 @@ describe('routingHealthFromRows request cohort', () => {
     expect(counts).toEqual({
       requests: 9, dispatchRequested: 7, retrievalOnly: 1, legacyIntentUnknown: 1,
       outcomes: { received: 2, declined: 1, pending: 1, unavailable: 1, failed: 1, unmeasured: 1 },
+      followThrough: {
+        applicable: 9, notApplicable: 0, applicabilityUnknown: 0,
+        recorded: { confirmed: 0, rescoped: 0, reversed: 0, moot: 0 },
+        unknown: 9, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
+      },
     });
     expect(counts.dispatchRequested + counts.retrievalOnly + counts.legacyIntentUnknown).toBe(counts.requests);
     expect(Object.values(counts.outcomes).reduce((sum, value) => sum + value, 0)).toBe(counts.dispatchRequested);
@@ -206,6 +211,30 @@ describe('routingHealthFromRows request cohort', () => {
     ], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW, truncatedByLimit: true });
     expect(result.requestCohort.totals.outcomes).toMatchObject({ received: 1, unmeasured: 1 });
     expect(result.bounded.truncatedByLimit).toBe(true);
+  });
+
+  it('reports only requester-authored dispositions and keeps missing reconciliation unknown', () => {
+    const make = (id: string, partial: Partial<RoutingHealthConsultRow> = {}) => row({
+      conversation_id: id, requester_id: 'requester', created_at: iso(T0), ...partial,
+    });
+    const reconciliation = (disposition: string, by = 'requester') => ({
+      disposition, by, at: iso(T0 + H), note: 'Checked the advice against the source.',
+    });
+    const population = [
+      ...['confirmed', 'rescoped', 'reversed', 'moot'].map((disposition) => make(disposition, {
+        has_feedback: disposition !== 'moot', outcome: { reconciliation: reconciliation(disposition) },
+      })),
+      make('silence', { has_feedback: true }),
+      make('provider-impression', { outcome: { reconciliation: reconciliation('confirmed', 'reviewer') } }),
+      make('hard-blocked', { latency_contract: 'hard-blocked' }),
+      make('legacy-applicability', { latency_contract: null }),
+    ];
+    const follow = routingHealthFromRows(population, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW }).requestCohort.totals.followThrough;
+    expect(follow).toEqual({
+      applicable: 6, notApplicable: 1, applicabilityUnknown: 1,
+      recorded: { confirmed: 1, rescoped: 1, reversed: 1, moot: 1 },
+      unknown: 1, invalid: 1, recordedWithFeedback: 3, recordedWithoutFeedback: 1,
+    });
   });
 });
 

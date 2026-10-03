@@ -166,6 +166,7 @@ import {
   markFrozenRepairVerificationRed,
   parseFrozenRepairSelectiveCoverage,
   recordFrozenRepairSupersededRed,
+  recordFrozenRepairLegMeasurement,
   selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
   buildFrozenRepairStatusIdentity,
@@ -5962,7 +5963,7 @@ export interface FrozenRepairQueueReconcileResult {
  * The returned queue is what the caller must continue with; its snapshot is stale by definition.
  */
 async function commitFrozenRepairQueueTransition(
-  deps: CheckpointDeps,
+  deps: Pick<CheckpointDeps, "transitionFrozenRepairQueue" | "writeFrozenRepairQueue" | "log">,
   snapshot: FrozenCandidateRepairQueue,
   transition: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   label: string,
@@ -15138,7 +15139,10 @@ export function repairTickGateIds(queue: {
  */
 export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   result: T,
-  deps: Pick<CheckpointDeps, "runRepairTickLegs" | "log">,
+  deps: Pick<
+    CheckpointDeps,
+    "runRepairTickLegs" | "log" | "transitionFrozenRepairQueue" | "writeFrozenRepairQueue"
+  >,
 ): Promise<T> {
   if (result.reason !== "repair-in-progress") return result;
   // A stale-candidate auto-refire recurses runGreenCheckpoint IN-PROCESS, so a bubbled-up

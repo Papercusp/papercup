@@ -140,6 +140,17 @@ import {
   formatCapacityUntil,
   type GoalHolderLaunchCapacityVerdict,
 } from '../goals/holder-launch-capacity';
+import {
+  fileUnplannedClusterNudge,
+  overdueUnplannedClusters,
+  readUnplannedGoalClusters,
+  type UnplannedClusterAlert,
+  type UnplannedClusterRead,
+} from '../goals/unplanned-clusters';
+import {
+  GOAL_OWNER_REPORT_MAX_SILENCE_MS,
+  GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,
+} from './goal-owner-report-watchdog';
 
 /**
  * P-001: `holderCountsAsAlive` moved to `../goals/holder`, which is now the ONE
@@ -509,6 +520,16 @@ export interface GoalLivenessSweepDeps {
   /** How long a live holder may place nothing before the goal is reportable. */
   portfolioIdleAfterMs: number;
   /**
+   * The UNPLANNED-CLUSTER leg's measurement (goal-holder-plans-ideation-truthful-reports
+   * P-002): per HELD goal, its open unplanned goal-stamped items clustered by shared
+   * link / topic / cited path / title prefix, keyed `workspaceId:goalId`. Absent from the
+   * map ⇒ `not-measured` ⇒ silent, like every other leg.
+   */
+  readUnplannedClusters: (goals: readonly GoalRowLike[]) => Promise<Map<string, UnplannedClusterRead>>;
+  /** Files the holder-assigned, goal-stamped nudge for one overdue cluster; null when a
+   *  nudge for that cluster anchor already exists. */
+  fileUnplannedCluster: (alert: UnplannedClusterAlert) => Promise<string | null>;
+  /**
    * P-020: the goal-activation primitive, dispatched for a `became-ready` goal
    * that opted in via `launch_settings.autoStart` (D-006 — every trigger leg
    * converges on the ONE primitive; this leg never spawns by hand). Bound over
@@ -791,6 +812,35 @@ function makeReadPortfolioThroughput(
     }
     return out;
   };
+}
+
+/** The default cluster measurement — one read per HELD goal; a per-goal failure is that
+ *  goal's silence, never a dead sweep. */
+function makeReadUnplannedClusters(sql: Sql): GoalLivenessSweepDeps['readUnplannedClusters'] {
+  return async (goals) => {
+    const out = new Map<string, UnplannedClusterRead>();
+    for (const g of goals) {
+      try {
+        out.set(
+          goalReadinessKey(g),
+          await readUnplannedGoalClusters(sql, { workspaceId: g.workspaceId, goalId: g.goalId }),
+        );
+      } catch (e) {
+        console.warn(
+          `[goal-liveness-watchdog] unplanned-cluster read failed for ${goalReadinessKey(g)} (non-fatal): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
+    return out;
+  };
+}
+
+/** One reporting cycle for a goal — the owner-report cadence floor the GOAL contract
+ *  already holds the holder to (standing goals report hourly, others every 4h). */
+export function goalReportCycleMs(g: Pick<GoalRowLike, 'standing'>): number {
+  return g.standing ? GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS : GOAL_OWNER_REPORT_MAX_SILENCE_MS;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -1244,6 +1294,8 @@ function sweepDeps(
     readPortfolioThroughput: makeReadPortfolioThroughput(sql, GOAL_PORTFOLIO_IDLE_AFTER_MS),
     escalatePortfolioIdle: defaultEscalatePortfolioIdle,
     portfolioIdleAfterMs: GOAL_PORTFOLIO_IDLE_AFTER_MS,
+    readUnplannedClusters: makeReadUnplannedClusters(sql),
+    fileUnplannedCluster: fileUnplannedClusterNudge,
     startGoal: (input) => startGoalById(sql, input),
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
