@@ -282,6 +282,23 @@ async function findAgentReviewLedgerCollision(ideaId: string): Promise<AgentRevi
 
 const WORK_ITEM_ID_PREFIX = /^(?:WI|EI|F|PR)-/i;
 
+/**
+ * EI-24742538368325488: `agent-review:<work-item-id>` is the ledger PK of a review
+ * round ONLY when enrollment found the bare work-item id already occupied by a
+ * historical routed row ({@link findAgentReviewLedgerCollision}); otherwise the
+ * round is keyed by the BARE id. Peers are told to grade with the prefixed form,
+ * which therefore misses for every review that never collided. This returns the
+ * bare work-item id behind such a key so the resolver can fall back to it AFTER
+ * the exact (prefixed) lookup misses — an exact match always wins, so the rows
+ * that really are keyed `agent-review:<id>` are never re-pointed. Null when the
+ * key carries no `agent-review:` prefix or the remainder is not work-item-shaped.
+ */
+export function bareIdBehindAgentReviewKey(key: string): string | null {
+  const match = /^agent-review:(.+)$/i.exec(key);
+  const bare = match?.[1]?.trim();
+  return bare && WORK_ITEM_ID_PREFIX.test(bare) ? bare : null;
+}
+
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
@@ -289,16 +306,20 @@ function unique(values: readonly string[]): string[] {
 /**
  * The exact key forms considered by the two resolver paths. Keeping this pure
  * makes the diagnostic stable and keeps the probe from inventing a lookup that
- * the ledger resolver never attempted.
+ * the ledger resolver never attempted. An `agent-review:<id>` key also lists the
+ * bare-id forms because {@link runGradeIdea} retries with them after the exact
+ * lookup misses (EI-24742538368325488).
  */
 export function gradeIdeaResolutionAttempts(args: GradeIdeaArgs): GradeIdeaResolutionDiagnostic['attempted'] {
   const key = args.ideaId ?? args.routedRef;
   if (!key) {
     return { ideaId: [], routedRef: [] };
   }
+  const bare = bareIdBehindAgentReviewKey(key);
+  const forms = bare ? [key, bare] : [key];
   return {
-    ideaId: [key],
-    routedRef: unique([key, `wi:${key}`, `gym:${key}`]),
+    ideaId: forms,
+    routedRef: unique(forms.flatMap((k) => [k, `wi:${k}`, `gym:${k}`])),
   };
 }
 
@@ -306,7 +327,7 @@ export function gradeIdeaResolutionAttempts(args: GradeIdeaArgs): GradeIdeaResol
 export function candidateWorkItemId(args: GradeIdeaArgs): string | null {
   const key = args.ideaId ?? args.routedRef;
   if (!key || /^(?:plan|gym):/i.test(key)) return null;
-  const candidate = key.replace(/^wi:/i, '');
+  const candidate = bareIdBehindAgentReviewKey(key) ?? key.replace(/^wi:/i, '');
   return WORK_ITEM_ID_PREFIX.test(candidate) ? candidate : null;
 }
 
@@ -629,10 +650,31 @@ export async function runGradeIdea(
   // idea_id — resolveIdeaIdFromKey handles both (direct idea_id OR routed_ref
   // match), so a natural `{ ideaId: 'EI-15375' }` lands instead of silently
   // no-op'ing. An unresolvable key returns null → the LOUD not-found below.
-  const ideaId =
+  let ideaId =
     args.ideaId != null
       ? await deps.resolveIdeaIdFromKey(args.ideaId)
       : await deps.resolveIdeaIdFromRef(args.routedRef as string);
+  // EI-24742538368325488: an `agent-review:<id>` key that matched no ledger row is
+  // the common case (enrollment only prefixes the PK when the bare id was already
+  // occupied), so retry with the bare work-item id — through the SAME collision
+  // guard a directly-passed bare id gets. The exact lookup above ran first, so a
+  // row genuinely keyed `agent-review:<id>` is never re-pointed.
+  const bareReviewId = ideaId == null && args.ideaId != null ? bareIdBehindAgentReviewKey(args.ideaId) : null;
+  if (bareReviewId != null) {
+    const collision = await deps.findAgentReviewLedgerCollision(bareReviewId);
+    if (collision) {
+      return {
+        applied: false,
+        reason: 'agent-review-ledger-id-required',
+        gradedBy,
+        ideaId: collision.ledgerIdeaId,
+        idea: null,
+        ledgerIdeaId: collision.ledgerIdeaId,
+        gradeWith: { ideaId: collision.ledgerIdeaId },
+      };
+    }
+    ideaId = await deps.resolveIdeaIdFromKey(bareReviewId);
+  }
   if (ideaId == null) {
     const miss = await diagnoseResolutionMiss(args, deps);
     return { applied: false, ...miss, gradedBy, ideaId: null, idea: null };
