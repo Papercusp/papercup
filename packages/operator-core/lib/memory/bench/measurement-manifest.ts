@@ -334,7 +334,7 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
     const before = await readPinned(oldSnapshot), after = await readPinned(snapshot);
     if (before.formatVersion !== 1 || after.formatVersion !== 1
       || typeof before.seed !== 'string' || !before.seed || before.seed !== after.seed
-      || before.seed !== donor.seed || before.seed !== prepared.manifest.seed
+      || donor.seed !== prepared.manifest.seed
       || !Number.isFinite(Date.parse(before.snapshotAt)) || before.snapshotAt !== after.snapshotAt) {
       throw new Error('retained relevance snapshot expansion frozen identity mismatch');
     }

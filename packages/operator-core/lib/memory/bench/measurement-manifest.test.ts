@@ -422,7 +422,9 @@ function retainedPreparedFixture() {
 describe('incremental relevance vector reuse', () => {
   function expandSnapshot(f: ReturnType<typeof retainedPreparedFixture>) {
     const original = JSON.parse(fs.readFileSync(f.donor.inputs.snapshot.path, 'utf8'));
-    const identity = { formatVersion: 1, seed: f.p.manifest.seed, snapshotAt: '2026-01-01T00:00:00.000Z' };
+    // Population splitting and randomized measurement ordering use DIFFERENT
+    // seeds in the real frozen cohort. Never mirror them in this fixture.
+    const identity = { formatVersion: 1, seed: 'source-population-seed', snapshotAt: '2026-01-01T00:00:00.000Z' };
     // Fixture donor snapshot must carry an actual frozen population identity.
     const prior = { ...original, ...identity };
     f.donor.inputs.snapshot = f.pin('identified-donor-snapshot', prior);
@@ -522,7 +524,7 @@ describe('incremental relevance vector reuse', () => {
     await expect(embedIncrementalRelevanceQueries(retained, retained.queryTexts, noCalls)).rejects.toThrow('missing-index identity');
     expect(noCalls).not.toHaveBeenCalled();
   });
-  it.each(['opt-in', 'text', 'metadata', 'removed', 'order', 'seed', 'date', 'format', 'invalid-option'])
+  it.each(['opt-in', 'text', 'metadata', 'removed', 'order', 'seed', 'measurement-seed', 'date', 'format', 'invalid-option'])
     ('refuses expanded snapshot %s before vector embedding', async (failure) => {
       const f = retainedPreparedFixture(), { expanded, setSnapshot } = expandSnapshot(f);
       if (failure === 'opt-in') delete f.p.cell.parameters.reuseSnapshotExpansion;
@@ -532,6 +534,7 @@ describe('incremental relevance vector reuse', () => {
       if (failure === 'removed') expanded.suites.memory.entries.pop();
       if (failure === 'order') expanded.suites.memory.entries.reverse();
       if (failure === 'seed') expanded.seed += ' changed';
+      if (failure === 'measurement-seed') f.p.manifest.seed += ' changed';
       if (failure === 'date') expanded.snapshotAt = '2026-01-02T00:00:00.000Z';
       if (failure === 'format') expanded.formatVersion = 2;
       setSnapshot();
