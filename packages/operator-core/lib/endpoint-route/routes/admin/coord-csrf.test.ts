@@ -15,7 +15,13 @@ import { describe, expect, it, vi } from 'vitest';
 // (proxy-host-extras.ts:33). This CSRF test never queries it — a unit test must not open a live
 // pool [EI-19311807188719573].
 vi.mock('@papercusp/db-org', async (importOriginal) => {
-  const sql = Object.assign(async () => [], { unsafe: async () => [] });
+  const sql = Object.assign(async () => [], {
+    unsafe: async () => [],
+    // In-process tool dispatch queues telemetry for a debounced transaction.
+    // Keep this mock complete enough for that background flush so it does not
+    // emit a console warning into whichever later assertion happens to run.
+    begin: async (run: (tx: unknown) => Promise<unknown>) => run(sql),
+  });
   return {
     ...(await importOriginal<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql }),
