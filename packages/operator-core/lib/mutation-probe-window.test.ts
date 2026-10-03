@@ -300,6 +300,7 @@ describe('bundle-host.sh runs the build gate around esbuild (WI-10005321)', () =
 
 describe('the marker contract is pinned to scripts/mutation-probe.sh (EI-18750303030034478)', () => {
   const script = readFileSync(join(REPO, 'scripts/mutation-probe.sh'), 'utf8');
+  const overlay = readFileSync(join(REPO, 'scripts/testing-run-probe-overlay.sh'), 'utf8');
 
   it('mirrors the admission-directory literal the script hard-codes', () => {
     expect(script).toContain('ADMISSION_KEY="$(printf \'%s\' "$ADMISSION_ROOT" | sha256sum | cut -d\' \' -f1)"');
@@ -310,6 +311,12 @@ describe('the marker contract is pinned to scripts/mutation-probe.sh (EI-1875030
 
   it('mirrors the four-field NUL-terminated manifest the script publishes', () => {
     expect(script).toContain('printf \'%s\\0%s\\0%s\\0%s\\0\' "$ADMISSION_ROOT" "$FILE" "$BASE" "$$" >"$PROBE_MANIFEST"');
+  });
+
+  it('uses the same admission-root override as the shell writer and marker reader', () => {
+    expect(overlay).toContain('ADMISSION_BASE="${PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT:-/tmp}"');
+    expect(overlay).toContain('directory="$ADMISSION_BASE/papercusp-mutation-probe-$(id -u)-$key"');
+    expect(overlay).toContain('manifest="$directory/original.manifest"');
   });
 
   it('derives the same directory name as the shell does for the same root (sha256sum is the oracle)', () => {
