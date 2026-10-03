@@ -460,15 +460,20 @@ type FactSafetySlot = 'dead-end' | 'wall' | 'guard-rail';
  * prefixes and tool-call neutralization. Shared by schema preflight and the
  * handler so a caller cannot pass validation and then discover a different
  * length contract at the write boundary. */
-function normalizeFactInput(key: string, body: string, slot?: FactSafetySlot): { key: string; body: string } {
+function normalizeFactInput(
+  key: string,
+  body: string,
+  slot?: FactSafetySlot,
+): { key: string; body: string; authoredBody: string } {
   const safeBody = neutralizeToolCallTags(body);
-  return slot === 'dead-end'
+  const normalized = slot === 'dead-end'
     ? normalizeDeadEndSlot(key, safeBody)
     : slot === 'wall'
       ? normalizeWallSlot(key, safeBody)
       : slot === 'guard-rail'
         ? normalizeGuardRailSlot(key, safeBody)
         : { key, body: safeBody };
+  return { ...normalized, authoredBody: safeBody };
 }
 
 /** The actionable pre-write refusal shared by args validation and the handler's
@@ -1017,7 +1022,8 @@ export default defineTool({
           ...(args.recheck.exec ? { exec: args.recheck.exec } : {}),
         }
       : null;
-    const slotted = normalizeFactInput(args.key, args.body, args.slot);
+    const normalizedInput = normalizeFactInput(args.key, args.body, args.slot);
+    const slotted = { key: normalizedInput.key, body: normalizedInput.body };
     // frozen-candidate-carry-and-launch-fail-closed P-002: a standing fact is
     // injected verbatim into every future orient, so persisting a positive
     // instruction to recut the judged candidate from a moving source is already
@@ -1093,7 +1099,11 @@ export default defineTool({
     // structurally invisible to it. Absence is the claim most worth expiring —
     // it is read as "already checked" and suppresses the next check — so it gets
     // its own advisory on the same fail-soft write-boundary channel.
-    const absenceWarning = factAbsenceHint(slotted.body);
+    // Scan the neutralized caller-authored text. Safety-slot prefixes are
+    // serialized storage boilerplate, not claims the author made; in
+    // particular, "do not repeat" must not turn nearby positive result prose
+    // into an absence warning. Persist the normalized slot body unchanged.
+    const absenceWarning = factAbsenceHint(normalizedInput.authoredBody);
     // EI-18685042986450096 (owner-flagged): the old behavior wrote the
     // clipped body UNCONDITIONALLY and only disclosed the loss AFTER the write
     // (truncationField below) — silently dropping the OPERATIVE clause 3x,
