@@ -1752,6 +1752,50 @@ exec /bin/cp "$@"
     expect(afterDebris.stderr).not.toContain('node_modules.deploy-old.1592326');
   });
 
+  it('ignores whole-directory swap siblings (<dir>.tmp.<pid> / <dir>.old.<pid>) in both manifests (WI-10005953)', () => {
+    // build-desktop-sidecar.sh stages the sidecar as `sidecar.tmp.$$` and swaps the
+    // previous one to `sidecar.old.$$`. Each sibling carries its own node_modules and
+    // package-lock.json; counting them tore gate run 132bbb67's generation (exit 75).
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+
+    const sidecarTmp = join(integration, 'packages/a/sidecar.tmp.2054494');
+    const sidecarOld = join(integration, 'packages/a/sidecar.old.2054494');
+    for (const dir of [sidecarTmp, sidecarOld]) {
+      mkdirSync(join(dir, 'node_modules/staged-package'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules/staged-package/index.js'), 'staged\n');
+      writeFileSync(
+        join(dir, 'package-lock.json'),
+        '{"name":"sidecar-staging","lockfileVersion":3,"packages":{}}\n',
+      );
+    }
+
+    const afterSwap = publish(integration);
+    expect(afterSwap.status, afterSwap.stderr).toBe(0);
+    expect(afterSwap.stdout).toContain('reused=true');
+    expect(publishedIdentity(afterSwap.stdout)).toBe(
+      publishedIdentity(first.stdout),
+    );
+    expect(afterSwap.stderr).not.toContain('sidecar.tmp.2054494');
+    expect(afterSwap.stderr).not.toContain('sidecar.old.2054494');
+
+    // Calibration: the same tree under a non-scratch name IS a dependency input,
+    // so the assertions above cannot pass because the walk ignores packages/a.
+    mkdirSync(join(integration, 'packages/a/sidecar/node_modules/staged-package'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(integration, 'packages/a/sidecar/node_modules/staged-package/index.js'),
+      'staged\n',
+    );
+    const afterReal = publish(integration);
+    expect(afterReal.status, afterReal.stderr).toBe(0);
+    expect(publishedIdentity(afterReal.stdout)).not.toBe(
+      publishedIdentity(first.stdout),
+    );
+  });
+
   it('reclaims a same-host dead writer before publishing', () => {
     const integration = makeIntegration();
     const generationRoot = join(

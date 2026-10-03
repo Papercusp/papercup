@@ -140,7 +140,8 @@ dependency_generation_input_manifest() {
     done < <(
       find . \
         \( -type d \( -name .papercusp -o -name .git -o -name node_modules \
-          -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \) -prune \) -o \
+          -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
+          -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \) -prune \) -o \
         \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \
           -o \( -name '*.patch' -a -path '*/patches/*' \) \) -print \) \
         | LC_ALL=C sort
@@ -330,7 +331,12 @@ dependency_generation_configure_workspace_dirs() {
 }
 
 # Product dependency trees only. Coordination worktrees and Git metadata are
-# runtime infrastructure, never dependency-generation inputs.
+# runtime infrastructure, never dependency-generation inputs. Neither are
+# swap-by-rename scratch siblings: node_modules.deploy-{tmp,old}.* (WI-2144371)
+# and any whole DIRECTORY staged as <dir>.tmp.<pid> / <dir>.old.<pid>, e.g.
+# build-desktop-sidecar.sh's sidecar.tmp.$$ (WI-10005953). Such a sibling carries
+# its own node_modules and package-lock.json, so a concurrent build used to add a
+# transient tree mid-snapshot and tear the gate's generation (exit 75).
 dependency_generation_enumerate_node_modules() {
   local root="$1" dir
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
@@ -340,9 +346,12 @@ dependency_generation_enumerate_node_modules() {
     done
     return 0
   fi
-  find "$root" \
+  # -mindepth 1: the name patterns below must never prune the starting root
+  # itself, whatever its basename (a caller may pass a generated scratch root).
+  find "$root" -mindepth 1 \
     \( -type d \( -name .papercusp -o -name .git \
-      -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \) -prune \) -o \
+      -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
+      -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \) -prune \) -o \
     \( -type d -name node_modules -prune -print \)
 }
 
