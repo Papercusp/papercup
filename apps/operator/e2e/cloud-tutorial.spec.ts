@@ -452,7 +452,7 @@ test('reload resumes saved pause, AI outage leaves controls operable, and Help r
   await expect(guide.getByRole('heading', { name: 'Connect Google Cloud' })).toBeVisible();
   await guide.getByRole('button', { name: 'Close guide' }).click();
   await expect(guide).toHaveCount(0); await expect(page.locator('.react-joyride__overlay')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Help', exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Get your first agent running', exact: true })).toBeFocused();
   expect(fixture.writes).toEqual([]);
   expect(fixture.assistance.filter(row => row.path.endsWith('tutorial-help'))).toHaveLength(1);
 });
