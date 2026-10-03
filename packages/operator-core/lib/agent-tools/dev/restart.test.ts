@@ -2402,14 +2402,24 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
     mockResolvedTyped(gatewayHealthM, { reachable: false, detail: 'ConnectionRefused' });
     mockImplementationTyped(guardM, runGuard(fenceOk(32)));
 
-    const b = body(
-      await call({
+    // WI-10005747: `ready:false` now means the whole 20s readiness budget was SPENT polling the
+    // listener + /healthz (it used to mean "the first single-shot look missed"), so drive the
+    // budget with fake timers instead of waiting it out in real time.
+    vi.useFakeTimers();
+    let b: ReturnType<typeof body>;
+    try {
+      const pending = call({
         confirm: true,
         authorize: true,
         target: 'gateway',
         reason: 'exercise the not-ready response',
-      }),
-    );
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      b = body(await pending);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(gatewayHealthM.mock.calls.length).toBeGreaterThan(1);
 
     expect(b).toMatchObject({
       ok: false,
