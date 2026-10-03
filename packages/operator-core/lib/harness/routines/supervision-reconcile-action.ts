@@ -323,4 +323,6 @@ registerSystemAction(
     fileMissing: fileSystemdDropInInstallEi,
     resolveMissing: resolveSystemdDropInInstallEi,
   }),
+  // WI-10005745: checkDropIns runs node <module repo root>/scripts/check-systemd-dropins-installed.mjs.
+  { executesIntegrationTreeCode: true },
 );
