@@ -17,6 +17,7 @@ import {
 import {
   completionBlobHistoryContains,
   completionHeadBlobMap as completionHeadBlobMapWithSidecar,
+  completionWorkingTreeBlobSha,
   createCompletionBlobHistoryReader,
   createCompletionHistorySearchMemo,
   type HeadBlobResolution,
@@ -32,6 +33,22 @@ const completionHeadBlobMap: typeof completionHeadBlobMapWithSidecar = (
   paths,
   opts = {},
 ) => completionHeadBlobMapWithSidecar(repoRoot, headSha, paths, { ...opts, gitBinary: 'git' });
+
+const completionBlobHistoryContainsLocalGit: typeof completionBlobHistoryContains = (
+  repoRoot,
+  fromHeadSha,
+  toCommitSha,
+  path,
+  blobSha,
+  opts = {},
+) => completionBlobHistoryContains(
+  repoRoot,
+  fromHeadSha,
+  toCommitSha,
+  path,
+  blobSha,
+  { ...opts, gitBinary: 'git' },
+);
 
 const SHA = 'a'.repeat(40);
 const TEMP_ROOTS: string[] = [];
@@ -305,7 +322,7 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
         emittedSha,
         completionHeadBlobMap,
         undefined,
-        completionBlobHistoryContains,
+        completionBlobHistoryContainsLocalGit,
       ),
     ).toEqual([
       { path: 'dirty.ts', reason: 'content-mismatch' },
@@ -318,16 +335,22 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     const settlement = await reconcileProposedCompletionsAtCommit(
       emittedSha,
       { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
-      { sql: settlementSql({ updateHits: [true], manifest: historyManifest }), emit: settlementEmitMock() },
+      {
+        sql: settlementSql({ updateHits: [true], manifest: historyManifest }),
+        lookup: completionHeadBlobMap,
+        workingTreeLookup: completionWorkingTreeBlobSha,
+        historyLookup: completionBlobHistoryContainsLocalGit,
+        emit: settlementEmitMock(),
+      },
     );
     expect(settlement).toMatchObject({ inspected: 1, upgraded: [], residual: 3, unreadable: [], stranded: ['WI-42476'] });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('became unsettleable by waiting'));
     warn.mockRestore();
     expect(
-      await completionBlobHistoryContains(root, closeHeadSha, emittedSha, 'ignored.ts', ignoredSha),
+      await completionBlobHistoryContainsLocalGit(root, closeHeadSha, emittedSha, 'ignored.ts', ignoredSha),
     ).toBe(false);
     expect(
-      await completionBlobHistoryContains(root, '0'.repeat(40), emittedSha, 'superseded.ts', supersededSha),
+      await completionBlobHistoryContainsLocalGit(root, '0'.repeat(40), emittedSha, 'superseded.ts', supersededSha),
     ).toBeUndefined();
   });
 
@@ -377,7 +400,7 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     const emittedSha = git('rev-parse', 'HEAD');
 
     expect(
-      await completionBlobHistoryContains(
+      await completionBlobHistoryContainsLocalGit(
         root,
         closeHeadSha,
         emittedSha,
@@ -527,8 +550,8 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
       const verdicts: unknown[] = [];
       const exact: unknown[] = [];
       for (const path of ask) {
-        verdicts.push(await reader.contains(root, closeHeadSha, toSha, path, blobs.get(path)!));
-        exact.push(await completionBlobHistoryContains(root, closeHeadSha, toSha, path, blobs.get(path)!));
+        verdicts.push(await reader.contains(root, closeHeadSha, toSha, path, blobs.get(path)!, { gitBinary: 'git' }));
+        exact.push(await completionBlobHistoryContainsLocalGit(root, closeHeadSha, toSha, path, blobs.get(path)!));
       }
       return { verdicts, exact, reads: reader.historyReads(), ancestry: reader.ancestryReads() };
     };
@@ -1218,7 +1241,9 @@ describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
       }
       if (query.includes('UPDATE harness_shared.work_items')) {
         expect(values).toContain('papercusp');
-        expect(values).toContain(portalRoot);
+        const updatedPayload = values[0] as Record<string, unknown>;
+        const updatedEvidence = updatedPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+        expect((updatedEvidence.settlementManifest as { repositoryRoot: string }).repositoryRoot).toBe(portalRoot);
         return [{ feature_id: 'WI-CROSS-HIVE', authority: 'committed' }];
       }
       throw new Error(`unexpected SQL: ${query}`);
@@ -1291,8 +1316,8 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
           || values[9] !== evidence.settlementManifest.evidenceHash
         ) return [];
         payload = values[0] as Record<string, unknown>;
-        if (values[1] === 0) authority = 'committed';
-        return [{ feature_id: 'WI-FIXTURE', authority: values[1] === 0 ? 'committed' : 'proposed' }];
+        if (values[1] === true) authority = 'committed';
+        return [{ feature_id: 'WI-FIXTURE', authority: values[1] === true ? 'committed' : 'proposed' }];
       }
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
@@ -1304,19 +1329,30 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
       repositoryRoot: root,
     };
 
-    const partial = await reconcileProposedCompletionsAtCommit(partialSha, scope, { sql, emit });
+    const localGitDeps = {
+      lookup: completionHeadBlobMap,
+      workingTreeLookup: completionWorkingTreeBlobSha,
+      historyLookup: completionBlobHistoryContainsLocalGit,
+      emit,
+    };
+    const partial = await reconcileProposedCompletionsAtCommit(partialSha, scope, { sql, ...localGitDeps });
     expect(partial).toMatchObject({ upgraded: [], residual: 1 });
     expect((payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as {
       settlementManifest: { residualPaths: unknown };
-    }).settlementManifest.residualPaths).toEqual([{ path: 'b.ts', reason: 'missing-from-commit' }]);
+    }).settlementManifest.residualPaths).toEqual([{
+      path: 'b.ts',
+      repositoryRoot: root,
+      headSha: manifest.headSha,
+      reason: 'missing-from-commit',
+    }]);
     expect(isCompletionSettled(authority, true)).toBe(false);
     expect(emit).not.toHaveBeenCalled();
 
     git('add', 'b.ts');
     git('commit', '-q', '-m', 'complete');
     const completeSha = git('rev-parse', 'HEAD');
-    const complete = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, emit });
-    const replay = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, emit });
+    const complete = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, ...localGitDeps });
+    const replay = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, ...localGitDeps });
 
     expect(complete).toMatchObject({ upgraded: ['WI-FIXTURE'], residual: 0 });
     expect(replay).toMatchObject({ inspected: 0, upgraded: [], residual: 0 });
@@ -1374,10 +1410,14 @@ describe('WI-10005285 — one exact-tree read per settlement pass', () => {
         }));
       }
       if (query.includes('UPDATE harness_shared.work_items')) {
-        // values: [payload, residualPaths.length, updated_ts, feature_id, ...]
+        // values: [payload, canCommit, updated_ts, feature_id, ...]
         const id = String(values[3]);
-        updates.push({ id, residual: Number(values[1]) });
-        return [{ feature_id: id, authority: values[1] === 0 ? 'committed' : 'proposed' }];
+        const updatedPayload = values[0] as Record<string, unknown>;
+        const updatedEvidence = updatedPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+        const residualPaths = (updatedEvidence.settlementManifest as { residualPaths?: unknown[] }).residualPaths ?? [];
+        const canCommit = values[1] === true;
+        updates.push({ id, residual: residualPaths.length });
+        return [{ feature_id: id, authority: canCommit ? 'committed' : 'proposed' }];
       }
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
@@ -1671,7 +1711,12 @@ describe('WI-10004711 — superseded-before-commit verdict and the one-time clos
     // schema, or every stranded row would turn into an `unreadable` one on that pass.
     const persisted = first.writes[0]![TERMINAL_COMPLETION_EVIDENCE_KEY]!.settlementManifest;
     expect((persisted as { residualPaths: unknown }).residualPaths)
-      .toEqual([{ path: 'a.ts', reason: 'superseded-before-commit' }]);
+      .toEqual([{
+        path: 'a.ts',
+        repositoryRoot: manifest.repositoryRoot,
+        headSha: manifest.headSha,
+        reason: 'superseded-before-commit',
+      }]);
     const replay = strandedSql(persisted);
     const pass2 = await reconcileProposedCompletionsAtCommit(SHA, scope, strandedDeps(replay.sql, notify));
     expect(pass2).toMatchObject({ inspected: 1, unreadable: [], stranded: [] });
