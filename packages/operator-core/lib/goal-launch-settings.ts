@@ -49,14 +49,12 @@
  * reporting success. A ceiling that IS read and IS exceeded refuses, hard.
  *
  * THE BUDGET IS A THIRD CEILING (goal-mode-design-intent-hardening-2026-08-16
- * P-006, flag GOAL_BUDGET_LAUNCH_GATE). `goals.budget_cents` binds against the
- * PLATFORM spend snapshot (`goals.metadata.spentCents`, written only by the
- * goal-spend-rollup tick — D-003) and refuses further launches once spent ≥
- * budget, with a per-goal-deduped owner escalation. It lives in this resolver
- * for the same D-001 reason the agent ceilings do: every launch door already
- * honors `refusal`, so the budget binds everywhere with no per-door obligation.
- * It follows the same fail-open rule — a budget that cannot be read, or that
- * has no platform snapshot yet, is reported degraded, never guessed at.
+ * P-006, flag GOAL_BUDGET_LAUNCH_GATE). `goals.budget_cents` binds against
+ * goal-attributed priced usage in its declared window (D-011). A fresh
+ * platform snapshot may supply that figure; absent or stale snapshots trigger
+ * a live rollup. An unmeasured rollup refuses launch and per-turn inference,
+ * with a per-goal-deduped owner escalation for launch refusal. It lives in
+ * this resolver because every launch door already honors `refusal`.
  */
 import { z } from 'zod';
 import type { Sql } from 'postgres';
@@ -3222,12 +3220,16 @@ type BudgetUnmeasurableCause =
   | 'unpriced-lineage-samples'
   | 'unattributed-goal-samples'
   | 'no-lineage-samples'
+  | 'interactive-usage-stale'
+  | 'interactive-usage-unavailable'
   | 'measurement-failed';
 
 const UNMEASURABLE_SCOPE: Record<BudgetUnmeasurableCause, string> = {
   'unpriced-lineage-samples': REFUSAL_SCOPES.BUDGET_UNMEASURABLE,
   'unattributed-goal-samples': REFUSAL_SCOPES.BUDGET_UNATTRIBUTED,
   'no-lineage-samples': REFUSAL_SCOPES.BUDGET_NO_SAMPLES,
+  'interactive-usage-stale': REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
+  'interactive-usage-unavailable': REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
   'measurement-failed': REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
 };
 
@@ -3264,6 +3266,11 @@ function budgetUnmeasurableRefusal(args: {
           ? `the launch-time measurement found no goal-attributed, pot, or session usage samples in its budget ` +
             `window. An empty stream is unmeasured, not a priced zero; refusing rather than admitting without ` +
             `a figure that can be checked against the ceiling; `
+          : isInteractiveUsageUnmeasuredReason(args.cause)
+            ? `the goal's interactive usage stream is ${args.cause === 'interactive-usage-stale' ? 'stale' : 'unavailable'}` +
+              `${args.detail ? ` (${args.detail})` : ''}, so its priced spend cannot be verified against the ceiling. ` +
+              `Refusing rather than treating an unmeasured total as budget headroom; repair the usage ingestion ` +
+              `or freshness read before retrying; `
         : `the platform snapshot carries no spend figure, so the gate measured at launch, and that measurement ` +
           `failed (${args.detail ?? 'unknown error'}). With no figure there is no headroom to judge. Refusing ` +
           `rather than admitting: a ceiling that fails open whenever its read fails never binds. Retry once the ` +
@@ -3310,11 +3317,9 @@ function budgetExceededRefusal(args: {
 }
 
 /**
- * D-011 clause 3 at launch time. When the snapshot carries no figure and no
- * unpriced-sample reason, measure with the rollup's OWN function instead of
- * admitting on the absence: a null snapshot is either no snapshot at all (the
- * rollup has not ticked for this goal yet) or an empty authoritative stream, and
- * neither is evidence that nothing was spent.
+ * D-011 clause 3 at launch time. An absent or stale snapshot is re-measured
+ * with the rollup's OWN function; neither an absent figure nor stale ingestion
+ * is evidence that nothing was spent.
  *
  * Dynamic import for the reason REFUSAL_SCOPES documents: a static import of
  * `./goals/spend-rollup` would close a runtime cycle through `@papercusp/agent-mcp`.
@@ -3343,8 +3348,7 @@ export type GoalInferenceAdmissionDecision =
       allowed: true;
       goalId: string | null;
       reason:
-        | 'no-goal' | 'no-budget' | 'budget-gate-disabled' | 'under-budget'
-        | 'interactive-usage-stale' | 'interactive-usage-unavailable';
+        | 'no-goal' | 'no-budget' | 'budget-gate-disabled' | 'under-budget';
     }
   | {
       allowed: false;
@@ -3400,7 +3404,7 @@ export function evaluateGoalInferenceBudget(args: {
     return {
       allowed: false,
       goalId: args.goalId,
-      status: cause === 'measurement-failed' ? 503 : 403,
+      status: cause === 'measurement-failed' || isInteractiveUsageUnmeasuredReason(cause) ? 503 : 403,
       code: 'goal_budget_unmeasurable',
       message: `${refusal.message} Model inference requests are refused before provider dispatch.`,
       budgetCents: args.budgetCents!,
@@ -3413,7 +3417,7 @@ export function evaluateGoalInferenceBudget(args: {
   const rollup = args.rollup;
   if (!rollup) return refuseUnmeasured('measurement-failed', 'the live spend rollup returned no result');
   if (isInteractiveUsageUnmeasuredReason(rollup.unmeasuredReason)) {
-    return { allowed: true, goalId: args.goalId, reason: rollup.unmeasuredReason };
+    return refuseUnmeasured(rollup.unmeasuredReason, rollup.interactiveUsageFreshness.reason);
   }
   if (rollup.spentCents != null) {
     if (rollup.spentCents >= args.budgetCents) {
@@ -3738,16 +3742,15 @@ export async function resolveGoalLaunchForGoal(args: {
   let goalBrief = rawGoalBrief;
   if (settingsError) degradedReasons.push(`launch settings not applied: ${settingsError}`);
 
-  // P-006 (D-001/D-003): goals.budget_cents is a BINDING ceiling over the
-  // platform spend snapshot, checked FIRST — an exhausted budget refuses the
+  // P-006 (D-001/D-011): goals.budget_cents is a BINDING ceiling over the
+  // goal-attributed spend stream, checked FIRST — an exhausted budget refuses the
   // launch regardless of agent headroom, and a formed refusal skips the
   // headcount read entirely. The snapshot is authoritative only when its
   // provenance marker identifies one of the platform writers; a legacy or
   // otherwise unmarked value is reported degraded and fails OPEN rather than
-  // refusing launches on a population the gate cannot verify. Same fail-open
-  // stance as the agent ceilings (see the module header): a truth this gate
-  // cannot read is reported degraded, never silently enforced and never
-  // silently skipped. `>=` and not `>`: the budget is a ceiling, so a goal
+  // refusing launches on a population the gate cannot verify. Measured budget
+  // spend and unmeasured live rollups are binding; the fail-open rule for agent
+  // headcount does not apply to an unmeasured budget. `>=` and not `>`: a goal
   // that has REACHED it is out of budget — an off-by-one here admits one launch
   // past every budget in the workspace.
   let refusal: GoalLaunchRefusal | null = null;
@@ -3804,10 +3807,13 @@ export async function resolveGoalLaunchForGoal(args: {
             detail: live.error,
           });
         } else if (isInteractiveUsageUnmeasuredReason(live.rollup.unmeasuredReason)) {
-          degradedReasons.push(
-            `budget ceiling not enforced — goal ${goalId} has ${live.rollup.unmeasuredReason}; ` +
-              'spend is unmeasured and admitted as headroom at launch',
-          );
+          refusal = budgetUnmeasurableRefusal({
+            goalId,
+            budgetCents: budget.budgetCents,
+            count,
+            cause: live.rollup.unmeasuredReason,
+            detail: live.rollup.interactiveUsageFreshness.reason,
+          });
         } else if (live.rollup.spentCents != null) {
           if (live.rollup.spentCents >= budget.budgetCents) {
             refusal = budgetExceededRefusal({
