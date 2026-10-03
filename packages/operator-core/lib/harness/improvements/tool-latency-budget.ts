@@ -5,9 +5,9 @@
  * slow tail, finish AFTER the abort fires. The write has committed, but the caller receives a
  * bare `timeout` ("handler returned but signal had aborted") and cannot tell — the
  * commit-unknown failure that WI-10005670 (abort-completion receipts) and WI-10005718
- * (`work_items:create` landing unassigned) both traced to. A receipt makes the outcome
- * recoverable; THIS detector finds the next tool sliding toward that cliff BEFORE its timeouts
- * pile up, by comparing each write tool's measured p95 with its own budget.
+ * (`work_items:create` landing unassigned) both traced to. An idempotent-completion contract or
+ * receipt closes that ambiguity; THIS detector finds the next unsafe write sliding toward the
+ * cliff BEFORE timeouts pile up, by comparing its measured p95 with its own budget.
  *
  * The budget is the dispatcher's own: `exec.timeoutSec = exec.tool.timeoutSec ?? 60`
  * (libs/generic/tooldef/src/dispatch-stack.ts). The default is mirrored here as
@@ -30,7 +30,7 @@ export const TOOL_LATENCY_MIN_SAMPLES = 20;
 export interface ToolLatencyBudget {
   /** Declared `timeoutSec`; null/undefined/non-positive = the dispatcher default applies. */
   timeoutSec?: number | null;
-  /** Only `'write'` tools are judged: a slow read has no commit-unknown failure mode. */
+  /** Only ambiguous `'write'` completions are judged: a slow read has no commit-unknown risk. */
   effect?: string | null;
   /** A completed idempotent mutation is returned as success past its deadline by dispatch. */
   idempotent?: boolean;

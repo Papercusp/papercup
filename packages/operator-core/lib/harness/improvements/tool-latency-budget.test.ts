@@ -94,9 +94,21 @@ describe('what is never judged', () => {
     const b = budgets({
       'x:receipted': { timeoutSec: null, effect: 'write', hasAbortCompletionReceipt: true },
       'x:bare': { timeoutSec: null, effect: 'write', hasAbortCompletionReceipt: false },
+      'x:idempotent': { timeoutSec: null, effect: 'write', idempotent: true },
     });
-    const keys = toolLatencyBudgetSignalsFromRows([row('x:receipted', 59_000), row('x:bare', 59_000)], b).map((s) => s.key);
+    const keys = toolLatencyBudgetSignalsFromRows([
+      row('x:receipted', 59_000),
+      row('x:bare', 59_000),
+      row('x:idempotent', 59_000),
+    ], b).map((s) => s.key);
     expect(keys).toEqual(['tool-latency-budget:x:bare']);
+  });
+
+  it('does not flag plans:set-plan-status at the measured p95 because idempotent completion is safe', () => {
+    const b = budgets({
+      'plans:set-plan-status': { timeoutSec: 90, effect: 'write', idempotent: true },
+    });
+    expect(toolLatencyBudgetSignalsFromRows([row('plans:set-plan-status', 76_202, 78)], b)).toEqual([]);
   });
 
   it('ignores thin samples — a p95 of a handful of calls is just the max', () => {
@@ -168,11 +180,26 @@ describe('registry mapping', () => {
     expect(map.get('bogus:receipt')!.hasAbortCompletionReceipt).toBe(false);
   });
 
-  it('writeToolNames returns only judged tools (write, no receipt), sorted — the population worth aggregating', () => {
+  it('records idempotent completion so the watchdog matches the dispatch late-return contract', () => {
+    const map = toolLatencyBudgetsFromProjected([
+      { expose: { mcp: { name: 'plans:set-plan-status' } }, timeoutSec: 90, effect: 'write', idempotent: true },
+      { expose: { mcp: { name: 'x:unsafe' } }, timeoutSec: 90, effect: 'write', idempotent: false },
+    ]);
+    expect(map.get('plans:set-plan-status')).toEqual({
+      timeoutSec: 90,
+      effect: 'write',
+      idempotent: true,
+      hasAbortCompletionReceipt: false,
+    });
+    expect(map.get('x:unsafe')!.idempotent).toBeUndefined();
+  });
+
+  it('writeToolNames returns only writes without safe late-completion recovery, sorted', () => {
     const map = toolLatencyBudgetsFromProjected([
       { expose: { mcp: { name: 'z:write' } }, effect: 'write' },
       { expose: { mcp: { name: 'a:write' } }, effect: 'write' },
       { expose: { mcp: { name: 'r:receipted' } }, effect: 'write', abortCompletionReceipt: () => ({}) },
+      { expose: { mcp: { name: 'i:idempotent' } }, effect: 'write', idempotent: true },
       { expose: { mcp: { name: 'm:read' } }, effect: 'read' },
       { expose: { mcp: { name: 'u:unset' } } },
     ]);
