@@ -1189,7 +1189,7 @@ async function reconcileProposedCompletionsCore(
             terminalOwner: row.terminal_owner ?? null,
             strandedPaths: currentRootResiduals
               .filter((entry) => entry.reason === 'superseded-before-commit')
-              .map((entry) => `${entry.repositoryRoot}:${entry.path}`),
+              .map((entry) => entry.path),
             commitSha,
             generation: parsed.data.generation,
           });
