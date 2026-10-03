@@ -984,6 +984,65 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(out).not.toContain('external-change-preserved');
   });
 
+  /**
+   * WI-10005682 — the THIRD arm of the `{}` asymmetry pinned by "accepts a --test with no {}
+   * placeholder, which copy-out mode must still refuse".
+   *
+   * Copy-out demands `{}` because `auto` may fall back to the repo mirror, where `{}` is the
+   * only thing naming the mutant. An EXPLICIT `--relocation overlay` has no such fallback: it
+   * binds the mutant over the subject's OWN path and hard-dies rather than silently
+   * downgrading, so the subject's real path already names the mutant and `{}` is the same no-op
+   * it is in-tree. Demanding it anyway forced a fixed-path suite to thread a dummy `{}` that
+   * nothing reads — the very friction the in-tree relaxation exists to remove.
+   *
+   * Deliberately split in two: the refusal is a PARSE-time check reached long before bwrap is
+   * attempted, so the "does not fire" half is provable on EVERY host; only the verdict half
+   * needs a working overlay.
+   */
+  it('does NOT demand {} under an EXPLICIT --relocation overlay, while auto and mirror still do', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    // No {} anywhere: the guard names the subject's own real path — the shape a suite that
+    // imports its subject by a FIXED path is stuck with.
+    const fixedPathGuard = `node -e "if (require('${s}') !== 1) process.exit(1)"`;
+    const base = [
+      '--file', s,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', fixedPathGuard,
+    ];
+
+    // Non-vacuousness, for BOTH fallback-capable relocations: the SAME command is still
+    // refused, so this is a mode-specific relaxation and not a removed check.
+    for (const reloc of ['auto', 'mirror']) {
+      const refused = runProbeIO([...base, '--relocation', reloc]);
+      expect(refused.code).toBe(2);
+      expect(refused.out).toMatch(/--test must contain \{\}/);
+    }
+
+    // Explicit overlay: the {}-refusal does not fire. Asserted on the MESSAGE rather than the
+    // exit code so it still holds on a host without bwrap — there overlay dies for THAT reason
+    // instead, a different refusal which must never be conflated with this one.
+    const overlay = runProbeIO([...base, '--relocation', 'overlay']);
+    expect(overlay.out).not.toMatch(/--test must contain \{\}/);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('SCORES a fixed-path {}-less test under the explicit overlay', () => {
+    // The behavioural half: not merely "not refused" but actually reaching a real verdict. The
+    // overlay binds the mutant over the subject's own path, so a fixed-path guard the mirror
+    // could never reach fails on the mutant and is scored CAUGHT.
+    const { subject: s } = makeSiblingRouteRepo();
+    const { code, out } = runProbeIO([
+      '--file', s,
+      '--relocation', 'overlay',
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', `node -e "if (require('${s}') !== 1) process.exit(1)"`,
+    ]);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(code).toBe(0);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
   it('refuses --relocation under --in-tree, and an unknown relocation value', () => {
     const inTree = runProbeIO([
       '--file', subject, '--in-tree', '--accept-sweep-race', '--relocation', 'overlay',
