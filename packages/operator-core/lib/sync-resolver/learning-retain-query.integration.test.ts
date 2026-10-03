@@ -3,9 +3,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { composeCompanionSummary } from '@papercusp/facets';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import {
   normalizeRetainFeedArgs,
+  readRetainExtras,
   readRetainFeed,
   readRetainSummaryAggregateRows,
   retainFeedSummarySelection,
@@ -140,5 +142,61 @@ describe('learning.retainFeed + summary — real Postgres P-007 contract', () =>
     expect(cursor).toBeNull();
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.slice().sort()).toEqual(expected.sort());
+  });
+});
+
+describe('learning.retain banked plans — migrated Postgres schema', () => {
+  let orgDb: OrgTestDb;
+
+  beforeAll(async () => {
+    orgDb = await createOrgTestDb();
+  }, 60_000);
+
+  afterAll(async () => {
+    await orgDb?.cleanup();
+  }, 300_000);
+
+  it('counts typed creation timestamps within seven days and preserves workspace/member scope', async () => {
+    // The transaction freezes now() so the exact seven-day boundary is deterministic.
+    await orgDb.adminSql.begin(async (tx) => {
+      const rows = [
+        ['recent', 'retain-banked', 'alpha', 'not a timestamp', '-1 hour'],
+        ['inside', 'retain-banked', 'alpha', '1900-01-01', '-7 days +1 microsecond'],
+        ['boundary', 'retain-banked', 'alpha', '2099-01-01', '-7 days'],
+        ['outside', 'retain-banked', 'alpha', '2099-01-01', '-7 days -1 microsecond'],
+        ['old', 'retain-banked', 'alpha', '2099-01-01', '-8 days'],
+        ['other-member', 'retain-banked', 'beta', '1900-01-01', '-1 hour'],
+        ['other-workspace', 'retain-other', 'alpha', '1900-01-01', '-1 hour'],
+      ];
+      for (const [slug, workspace, harness, legacyCreated, age] of rows) {
+        await tx`
+          INSERT INTO harness_shared.harness_plans
+            (workspace_id, harness_slug, plan_slug, content, content_hash, title,
+             status, created, updated, owner, created_at)
+          VALUES (${workspace}, ${harness}, ${slug}, '', md5(${slug}), ${slug},
+                  'draft', ${legacyCreated}, ${legacyCreated}, 'retain-test',
+                  now() + ${age}::interval)`;
+      }
+
+      const columns = await tx`
+        SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = 'harness_shared' AND table_name = 'harness_plans'
+           AND column_name IN ('created', 'created_at')`;
+      expect(columns).toEqual(expect.arrayContaining([
+        { column_name: 'created', data_type: 'text' },
+        { column_name: 'created_at', data_type: 'timestamp with time zone' },
+      ]));
+
+      const read = (workspace: string, memberSlugs?: string[]) =>
+        readRetainExtras(tx as unknown as Sql, workspace,
+          { readLensWeights: async () => ({}) }, { memberSlugs });
+      expect((await read('retain-banked')).banked.plansDrafted7d).toBe(3);
+      expect((await read('retain-banked', ['alpha'])).banked.plansDrafted7d).toBe(2);
+      expect((await read('retain-banked', ['beta'])).banked.plansDrafted7d).toBe(1);
+      expect((await read('retain-banked', ['alpha', 'beta'])).banked.plansDrafted7d).toBe(3);
+      expect((await read('retain-banked', [])).banked.plansDrafted7d).toBe(0);
+      expect((await read('retain-banked', ['missing'])).banked.plansDrafted7d).toBe(0);
+      expect((await read('retain-other', ['alpha'])).banked.plansDrafted7d).toBe(1);
+    });
   });
 });
