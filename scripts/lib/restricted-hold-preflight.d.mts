@@ -51,3 +51,13 @@ export declare function runRestrictedHoldPreflight(opts: {
 }): RestrictedHoldPreflightResult;
 
 export declare function formatRestrictedHoldRefusal(refusal: { error: string; hint: string }): string;
+
+export declare function runBundleRestrictedHoldPreflight(opts: {
+  repoRoot: string;
+  inputsFile: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  spawn?: typeof spawnSync;
+}): { verdict: 'admit' } | RestrictedHoldPreflightRefusal;
+
+export declare function formatBundleRestrictedHoldRefusal(refusal: { error: string; hint: string }): string;

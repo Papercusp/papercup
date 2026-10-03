@@ -1,0 +1,228 @@
+/**
+ * WI-10005745 — the host bundle's restricted-hold gate (D-012 residue of WI-10005724).
+ *
+ * bg-host's ExecStartPre (bin/bundle-host.sh) bundles the LIVE shared tree and runs it with the
+ * network. The gate (bin/bundle-restricted-hold-gate.mjs) snapshots the last-known-good artifacts
+ * before the build and restores them unless ONE census over the build's exact inputs admits.
+ * The census itself is restricted-hold-fence.ts (`restrictedHoldBundleRefusal`, unit-tested in
+ * operator-core and driven from real Postgres in restricted-hold-fence.integration.test.ts); here
+ * it is injected so every gate verdict path is exercised without a database.
+ */
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  GATE_EXIT,
+  collectBundleInputs,
+  restoreArtifacts,
+  runGate,
+  snapshotArtifacts,
+  type GatePreflight,
+} from '../bin/bundle-restricted-hold-gate.mjs';
+
+let work: string;
+let outdir: string;
+let snapshotDir: string;
+let baseDir: string;
+
+function put(path: string, text: string): void {
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, text);
+}
+
+/** What the build does to an artifact: write a tmp file, then rename it over the old one. */
+function publish(name: string, text: string): void {
+  put(join(outdir, `${name}.tmp`), text);
+  renameSync(join(outdir, `${name}.tmp`), join(outdir, name));
+}
+
+beforeEach(() => {
+  work = mkdtempSync(join(tmpdir(), 'bundle-gate-'));
+  outdir = join(work, 'dist-host');
+  snapshotDir = join(outdir, '.restricted-lkg.test');
+  baseDir = join(work, 'apps', 'operator');
+  put(join(outdir, 'hono-host.mjs'), 'old host');
+  put(join(outdir, 'blueprints', 'base', 'blueprint.yaml'), 'old blueprint');
+  put(join(baseDir, 'bin', 'hono-host.ts'), 'entry');
+  put(join(work, 'packages', 'core', 'lib', 'used.ts'), 'used');
+  put(join(work, 'libs', 'blueprints', 'base', 'blueprint.yaml'), 'source blueprint');
+});
+
+afterEach(() => {
+  rmSync(work, { recursive: true, force: true });
+});
+
+function rebuild(): void {
+  publish('hono-host.mjs', 'new host');
+  rmSync(join(outdir, 'blueprints'), { recursive: true });
+  put(join(outdir, 'blueprints', 'base', 'blueprint.yaml'), 'new blueprint');
+  put(join(outdir, 'sql', '001.sql'), 'created by this build');
+}
+
+function writeMetafile(name: string, inputs: string[]): string {
+  const path = join(work, 'meta', name);
+  put(path, JSON.stringify({ inputs: Object.fromEntries(inputs.map((key) => [key, { bytes: 1, imports: [] }])) }));
+  return path;
+}
+
+describe('snapshot + restore', () => {
+  it('restores replaced files and dirs and removes artifacts the build created', () => {
+    const entries = snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs', 'blueprints', 'sql'] });
+    expect(entries).toEqual([
+      { name: 'hono-host.mjs', existed: true },
+      { name: 'blueprints', existed: true },
+      { name: 'sql', existed: false },
+    ]);
+    rebuild();
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('new host');
+
+    restoreArtifacts({ outdir, snapshotDir });
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
+    expect(readFileSync(join(outdir, 'blueprints', 'base', 'blueprint.yaml'), 'utf8')).toBe('old blueprint');
+    expect(existsSync(join(outdir, 'sql'))).toBe(false);
+  });
+});
+
+describe('collectBundleInputs', () => {
+  it('resolves metafile inputs against esbuild cwd and drops virtual / disabled / namespaced keys', () => {
+    const main = writeMetafile('hono-host.mjs.meta.json', [
+      'bin/hono-host.ts',
+      '../../packages/core/lib/used.ts',
+      '<define:process.env.X>',
+      '(disabled):fs',
+      'ns:virtual-module',
+    ]);
+    const inputs = collectBundleInputs({ baseDir, metafiles: [main] });
+    expect(inputs.files).toEqual([join(work, 'apps/operator/bin/hono-host.ts'), join(work, 'packages/core/lib/used.ts')].sort());
+    expect(inputs.dirs).toEqual([]);
+  });
+
+  it('adds every *.meta.json of a metafile dir, list-file entries, and classifies paths as files or dirs', () => {
+    writeMetafile('worker.mjs.meta.json', ['../../packages/core/lib/used.ts']);
+    put(join(work, 'meta', 'copied-sources.txt'), `${join(work, 'packages/core/lib/copied.mjs')}\n\n`);
+    put(join(work, 'meta', 'notes.json'), JSON.stringify({ inputs: { 'never-read.ts': {} } }));
+    const inputs = collectBundleInputs({
+      baseDir,
+      metafileDirs: [join(work, 'meta'), join(work, 'absent-dir')],
+      listFiles: [join(work, 'meta', 'copied-sources.txt')],
+      paths: ['../../libs/blueprints', '../../packages/core/lib/runner.mjs'],
+    });
+    expect(inputs.files).toEqual(
+      [
+        join(work, 'packages/core/lib/used.ts'),
+        join(work, 'packages/core/lib/copied.mjs'),
+        join(work, 'packages/core/lib/runner.mjs'),
+      ].sort(),
+    );
+    expect(inputs.dirs).toEqual([join(work, 'libs/blueprints')]);
+  });
+
+  it('throws on a named metafile that does not exist (its artifact has unknown inputs)', () => {
+    expect(() => collectBundleInputs({ baseDir, metafiles: [join(work, 'meta', 'missing.meta.json')] })).toThrow(/ENOENT/);
+  });
+});
+
+describe('runGate', () => {
+  function gate(preflight: GatePreflight, metafiles: string[]) {
+    const lines: string[] = [];
+    const code = runGate({ root: work, baseDir, outdir, snapshotDir, metafiles, preflight, log: (line) => lines.push(line) });
+    return { code, lines };
+  }
+
+  it('admits: keeps the fresh bundle, discards the snapshot, and hands the census the exact inputs', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs', 'blueprints', 'sql'] });
+    rebuild();
+    const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts', '../../packages/core/lib/used.ts']);
+    let seen: unknown;
+    const { code, lines } = gate(({ repoRoot, inputsFile }) => {
+      expect(repoRoot).toBe(work);
+      seen = JSON.parse(readFileSync(inputsFile, 'utf8'));
+      return { verdict: 'admit' };
+    }, [main]);
+    expect(code).toBe(GATE_EXIT.admit);
+    expect(seen).toEqual({ files: [join(work, 'apps/operator/bin/hono-host.ts'), join(work, 'packages/core/lib/used.ts')].sort(), dirs: [] });
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('new host');
+    expect(existsSync(snapshotDir)).toBe(false);
+    expect(lines.join('\n')).toMatch(/2 bundle inputs checked/);
+  });
+
+  it('refuses: restores every last-known-good artifact and prints the greppable refusal line', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs', 'blueprints', 'sql'] });
+    rebuild();
+    const main = writeMetafile('hono-host.mjs.meta.json', ['../../packages/core/lib/used.ts']);
+    const { code, lines } = gate(
+      () => ({ verdict: 'refuse', error: 'restricted_write_held', hint: 'packages/core/lib/used.ts is a bundle input and a held restricted write' }),
+      [main],
+    );
+    expect(code).toBe(GATE_EXIT.refuse);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
+    expect(readFileSync(join(outdir, 'blueprints', 'base', 'blueprint.yaml'), 'utf8')).toBe('old blueprint');
+    expect(existsSync(join(outdir, 'sql'))).toBe(false);
+    expect(existsSync(snapshotDir)).toBe(false);
+    expect(lines[0]).toMatch(/^BUNDLE_RESTRICTED_HOLD_REFUSED error=restricted_write_held published=last-known-good /);
+  });
+
+  it('fails closed: inputs it cannot establish restore the snapshot without consulting the census', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    publish('hono-host.mjs', 'new host');
+    let consulted = false;
+    const { code, lines } = gate(() => {
+      consulted = true;
+      return { verdict: 'admit' };
+    }, [join(work, 'meta', 'missing.meta.json')]);
+    expect(code).toBe(GATE_EXIT.refuse);
+    expect(consulted).toBe(false);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
+    expect(lines[0]).toMatch(/error=restricted_hold_state_unknown/);
+  });
+});
+
+describe('bundle-host.sh wiring', () => {
+  const script = readFileSync(fileURLToPath(new URL('../bin/bundle-host.sh', import.meta.url)), 'utf8');
+  const common = readFileSync(fileURLToPath(new URL('../bin/bundle-host-common.sh', import.meta.url)), 'utf8');
+  const at = (needle: string, last = false): number => {
+    const index = last ? script.lastIndexOf(needle) : script.indexOf(needle);
+    expect(index, `bundle-host.sh lost ${needle}`).toBeGreaterThan(-1);
+    return index;
+  };
+
+  it('snapshots before esbuild, gates after the last publish and before the freshness stamp', () => {
+    const order = [
+      at('"$GATE_HELPER" snapshot'),
+      at('npx --yes esbuild@0.25.0 "$ENTRY"'),
+      at('cp -f "$METAFILE" "$BUNDLE_HOST_GATE_META_DIR/${OUTFILE##*/}.meta.json"'),
+      at('mv -f "$TMPFILE" "$OUTFILE"'),
+      at('GATE_PENDING=1'),
+      at('bundle_host_workers "$REPO_ROOT"'),
+      at('bundle_host_spawner "$REPO_ROOT"'),
+      // The LAST occurrence is the normal-path gate; the first is inside the EXIT trap handler.
+      at('if [[ "$GATE_PENDING" == "1" ]] && ! restricted_hold_gate; then', true),
+      at('"$FRESHNESS_HELPER" stamp'),
+    ];
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it('gates every later exit from the EXIT trap, including the worker/spawner stale-start exits', () => {
+    expect(script).toMatch(/^trap bundle_host_on_exit EXIT$/m);
+    const onExit = script.slice(at('bundle_host_on_exit() {'), at('trap bundle_host_on_exit EXIT'));
+    expect(onExit).toContain('if [[ "$GATE_PENDING" == "1" ]] && ! restricted_hold_gate; then');
+    expect(onExit).toContain('rm -rf "$GATE_SNAPSHOT_DIR" "$BUNDLE_HOST_GATE_META_DIR"');
+    // The stale-start exits sit AFTER the gate was armed, so the trap is what gates them.
+    expect(at('GATE_PENDING=1')).toBeLessThan(script.lastIndexOf('availability over freshness'));
+  });
+
+  it('snapshots every artifact the build replaces', () => {
+    const snapshotLoop = script.slice(at('for gate_artifact in'), at('mkdir -p "$BUNDLE_HOST_GATE_META_DIR"'));
+    for (const artifact of ['"${OUTFILE##*/}"', 'spawner-sidecar.mjs', '"${HOST_WORKER_OUTPUTS[@]}"', '"${HOST_RUNTIME_SIBLING_OUTPUTS[@]}"', 'blueprints', 'sql']) {
+      expect(snapshotLoop).toContain(artifact);
+    }
+  });
+
+  it('records worker inputs only when bundle-host.sh asks (the packaged sidecar build is unchanged)', () => {
+    expect(common).toContain('meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")');
+    expect(common).toContain('"${meta_args[@]}"; then');
+    expect(common).toContain('>> "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt"');
+  });
+});
