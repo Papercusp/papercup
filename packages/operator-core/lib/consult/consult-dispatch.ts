@@ -855,12 +855,15 @@ export function planDispatchOperation(
  * launcher rejects a raw native source after spawn, so compare the pin with the
  * persisted binding before any rank is launched.
  */
-function isExactTrackedResumeTarget(target: Pick<ResumeTarget, 'ownerId' | 'sessionId' | 'binding'>): boolean {
+function isExactTrackedResumeTarget(target: Pick<ResumeTarget, 'ownerId' | 'sessionId' | 'ompThreadId' | 'agent' | 'binding'>): boolean {
+  const nativeId = target.sessionId ?? (target.agent === 'omp' ? target.ompThreadId : null);
+  const boundNativeId = target.agent === 'omp'
+    ? target.binding?.ompThreadId ?? target.binding?.sessionId : target.binding?.sessionId;
   return Boolean(
     target.ownerId &&
-      target.sessionId &&
+      nativeId &&
       target.binding?.coordOwnerId === target.ownerId &&
-      target.binding.sessionId === target.sessionId,
+      boundNativeId === nativeId,
   );
 }
 
