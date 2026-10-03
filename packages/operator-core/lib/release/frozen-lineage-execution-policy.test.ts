@@ -602,6 +602,14 @@ describe('frozen lineage carry policy', () => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
 
+  it.each([
+    'Blob compare b72f26b6 vs staging: test file DIFF only for apps/operator-vite/dist-atomic-writes.test.ts.',
+    'Test-file blobs at repairHead b72f26b6 differ from the working tree only for apps/operator-vite/dist-atomic-writes.test.ts.',
+    'On the judged lineage, only these red test files have since been edited: apps/operator-vite/dist-atomic-writes.test.ts.',
+  ])('allows descriptive checkpoint forensics without selecting a moving candidate: %s', (text) => {
+    expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
+  });
+
   it('allows a descriptive green-pin distance measurement without treating pin as an instruction', () => {
     const text =
       'READING: the green pin lacks my fix ONLY because it IS the frozen lineage, 88 commits behind staging';
