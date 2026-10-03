@@ -167,7 +167,10 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
     ...overrides,
   };
   return async (ctx: SystemActionCtx): Promise<void> => {
-    if (!(await deps.enabled())) return;
+    if (!(await deps.enabled())) {
+      deps.log('skip: feature flag is off');
+      return;
+    }
     // Every skip says why. A bare `return` here made "a run is executing" and
     // "the backstop is wedged" byte-identical for 37 days.
     const running = await deps.runningRun(ctx.workspaceId);

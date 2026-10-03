@@ -9,6 +9,7 @@ import { getSystemActionEntry } from './system-actions';
 import type { SystemActionCtx } from './system-actions';
 import { TARGET_ROLE_SPEND } from '../../automation/routine-classification';
 import { BESPOKE_ACTIVE_SEEDS } from './bespoke-active-seeds-check';
+import { queueForRoutine, ROUTINES_HEAVY_QUEUE, ROUTINES_QUEUE } from '../../dbos/routines-queue-classification';
 import {
   BULK_DEDUP_SCHEDULED_ROUTINE_NAME,
   DEFAULT_DRIVER_MAX_STAGES,
@@ -45,6 +46,13 @@ function deps(overrides: Partial<BulkDedupDriverDeps> = {}): BulkDedupDriverDeps
 }
 
 describe('work-item admission bulk-dedup driver', () => {
+  it('isolates the scheduled bulk stage on the heavy lane while admission housekeeping stays shared', () => {
+    expect(queueForRoutine(enqueued.targetRole, 'papercusp')).toBe(ROUTINES_HEAVY_QUEUE);
+    for (const action of ['work-item-admission-fail-open', 'work-item-admission-promoter', 'work-item-admission-bulk-dedup-census']) {
+      expect(queueForRoutine(`system:${action}`, 'papercusp')).toBe(ROUTINES_QUEUE);
+    }
+  });
+
   it('is a registered STANDING action with an llm spend class and a bespoke seed row', () => {
     expect(getSystemActionEntry(WORK_ITEM_ADMISSION_BULK_DEDUP_DRIVER)).toMatchObject({ scheduling: 'standing' });
     expect(TARGET_ROLE_SPEND[`system:${WORK_ITEM_ADMISSION_BULK_DEDUP_DRIVER}`]).toMatchObject({ spend: 'llm' });

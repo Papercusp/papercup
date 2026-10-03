@@ -35,11 +35,17 @@ import { countConsecutiveNeverBeat } from '../../attention/bulk-run-store';
 const ctx = { installSlug: 'papercusp', workspaceId: 'ws-1', triggerConfig: {}, payloadTemplate: null };
 
 describe('inbox bulk resolver durable action', () => {
-  it('skips when the feature flag is off', async () => {
+  it('skips when the feature flag is off and states the reason', async () => {
     const readAttention = vi.fn();
-    const action = makeInboxBulkResolveAction({ enabled: async () => false, readAttention });
+    const runningRun = vi.fn();
+    const launch = vi.fn();
+    const log = vi.fn();
+    const action = makeInboxBulkResolveAction({ enabled: async () => false, readAttention, runningRun, launch, log });
     await action(ctx);
     expect(readAttention).not.toHaveBeenCalled();
+    expect(runningRun).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('skip: feature flag is off');
   });
 
   it('skips an empty action-bearing attention feed, and says so', async () => {
