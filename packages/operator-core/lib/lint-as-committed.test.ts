@@ -725,3 +725,73 @@ console.log('CLONE_PREREQUISITES_OK');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
 });
+
+// WI-10005705: extracted ~1.4 GB trees outlived their runs (--keep, process.exit inside the
+// try, signal kills) and refilled the root disk. These pin the lifecycle that removes them.
+describe('extracted-tree lifecycle (WI-10005705)', () => {
+  type Verdict = { remove: boolean; reason: string };
+  type Marker = { pid?: number; keep?: boolean; createdAtMs?: number } | null;
+  const { classifyWorkRoot, sweepStaleWorkRoots, WORK_ROOT_PREFIX, OWNER_MARKER, KEEP_TTL_MS, MAX_AGE_MS } = mod as {
+    classifyWorkRoot: (a: { inUse: boolean; marker: Marker; ownerAlive: boolean; ageMs: number }) => Verdict;
+    sweepStaleWorkRoots: (o: {
+      root: string;
+      nowMs: number;
+      cwds: string[] | null;
+      isAlive: (pid: number) => boolean;
+    }) => { removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] };
+    WORK_ROOT_PREFIX: string;
+    OWNER_MARKER: string;
+    KEEP_TTL_MS: number;
+    MAX_AGE_MS: number;
+  };
+  const H = 3600_000;
+
+  it('classifies each tree by liveness, keep flag and age', () => {
+    const c = (inUse: boolean, marker: Marker, ownerAlive: boolean, ageMs: number) => classifyWorkRoot({ inUse, marker, ownerAlive, ageMs });
+    expect(c(true, null, false, MAX_AGE_MS * 10)).toEqual({ remove: false, reason: 'in-use' });
+    expect(c(false, { pid: 1, keep: false }, false, 60_000)).toEqual({ remove: true, reason: 'owner-dead' });
+    expect(c(false, { pid: 1, keep: false }, true, 60_000)).toEqual({ remove: false, reason: 'owner-alive' });
+    expect(c(false, { pid: 1, keep: false }, true, MAX_AGE_MS + 1)).toEqual({ remove: true, reason: 'max-age' });
+    expect(c(false, { pid: 1, keep: true }, false, KEEP_TTL_MS - 1)).toEqual({ remove: false, reason: 'keep-young' });
+    expect(c(false, { pid: 1, keep: true }, false, KEEP_TTL_MS + 1)).toEqual({ remove: true, reason: 'keep-expired' });
+    expect(c(false, null, false, KEEP_TTL_MS - 1)).toEqual({ remove: false, reason: 'unmarked-young' });
+    expect(c(false, null, false, KEEP_TTL_MS + 1)).toEqual({ remove: true, reason: 'unmarked-expired' });
+    expect(c(false, null, false, Number.NaN)).toEqual({ remove: false, reason: 'age-unknown' });
+  });
+
+  it('sweeps only stale trees under the root, never one a live process is inside', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-sweep-'));
+    try {
+      const now = Date.now();
+      const tree = (name: string, marker: Marker) => {
+        const p = join(root, `${WORK_ROOT_PREFIX}${name}`);
+        mkdirSync(join(p, '.git'), { recursive: true });
+        if (marker) writeFileSync(join(p, OWNER_MARKER), JSON.stringify(marker));
+        return p;
+      };
+      tree('dead-owner', { pid: 101, keep: false, createdAtMs: now - 60_000 });
+      tree('live-owner', { pid: 202, keep: false, createdAtMs: now - 60_000 });
+      tree('keep-old', { pid: 101, keep: true, createdAtMs: now - KEEP_TTL_MS - H });
+      tree('keep-fresh', { pid: 101, keep: true, createdAtMs: now - H });
+      const busy = tree('keep-old-busy', { pid: 101, keep: true, createdAtMs: now - MAX_AGE_MS - H });
+      mkdirSync(join(root, 'unrelated-dir'));
+      const isAlive = (pid: number) => pid === 202;
+
+      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'packages', 'x')], isAlive });
+      const names = (rows: { name: string }[]) => rows.map((r) => r.name.slice(WORK_ROOT_PREFIX.length)).sort();
+      expect(names(res.removed)).toEqual(['dead-owner', 'keep-old']);
+      expect(names(res.kept)).toEqual(['keep-fresh', 'keep-old-busy', 'live-owner']);
+      expect(existsSync(join(root, `${WORK_ROOT_PREFIX}dead-owner`))).toBe(false);
+      expect(existsSync(busy)).toBe(true);
+      expect(existsSync(join(root, 'unrelated-dir'))).toBe(true);
+
+      // Without /proc a tree's idleness is unprovable: only a dead non-keep owner goes.
+      tree('dead-owner-2', { pid: 101, keep: false, createdAtMs: now - 60_000 });
+      const blind = sweepStaleWorkRoots({ root, nowMs: now + MAX_AGE_MS * 2, cwds: null, isAlive });
+      expect(names(blind.removed)).toEqual(['dead-owner-2']);
+      expect(existsSync(busy)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
