@@ -143,15 +143,19 @@ export interface TransferReplayEvidence {
   reservation: LearningSpendReservation | null;
   outcomes: readonly ReplayOutcome[];
   budgetExhausted: boolean;
+  judgeExecutions?: readonly (import('@papercusp/testing-shell/llm').LlmExecutionReceipt | null)[];
   invocations: readonly {
     variantId: string;
     systemPromptHash: string;
     contextHash: string;
     model: string | null;
     codeHash: string | null;
+    loadedCode?: Readonly<Record<string, string | null>>;
+    unresolved?: readonly string[];
   }[];
   /** Measured modules, kept separately from a complete execution-code pin. */
-  loadedCode: { adapter: string | null; battery: string | null };
+  loadedCode: { adapter: string | null; battery: string | null;
+    evaluator?: Readonly<Record<string, string | null>> | null };
 }
 
 /**
