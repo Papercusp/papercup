@@ -23,6 +23,7 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createHash } from 'node:crypto';
 // STATIC value import, deliberately not `createRequire(import.meta.url)(…)`.
 // The packed desktop sidecar is a single esbuild bundle with NO node_modules
 // tree beside it (build-desktop-sidecar.sh: "serve.mjs has every inlinable
@@ -436,6 +437,7 @@ async function recordMcpAuthFailureTelemetry(
   reason: string,
   projected: ReturnType<typeof lookupByMcpName>,
   callStartedAt: number,
+  nativeSessionFailure?: NativeSessionAuthFailureMetadata,
 ): Promise<void> {
   const ctx = mcpAuthFailureContext(extra);
   if (!ctx) return;
@@ -451,7 +453,13 @@ async function recordMcpAuthFailureTelemetry(
       errorCode: 'mcp_auth_failed',
       errorMessage: reason,
       // Auth failed before input validation; do not persist untrusted args.
-      metadataJson: { mcpAuthFailure: { reason, contextVerified: false } },
+      metadataJson: {
+        mcpAuthFailure: {
+          reason,
+          contextVerified: false,
+          ...(nativeSessionFailure ? { nativeSession: nativeSessionFailure } : {}),
+        },
+      },
     });
   } catch (error) {
     // Telemetry is best-effort and must never change the auth rejection seen by
@@ -1485,10 +1493,16 @@ async function applyScopedSuperuserTransportClamp(
  *   - `failed` — URL claimed a spawn ctx but verification failed.
  *               Caller MUST reject (do NOT fall through to bearer).
  */
+type NativeSessionAuthFailureMetadata = {
+  carrier: 'header:x-papercusp-native-session' | 'query:native_session';
+  valueFingerprint: string;
+  candidateAdvSessionId: number | null;
+};
+
 export type TrySpawnContextResult =
   | { kind: 'none' }
   | { kind: 'ok'; ctx: BuiltSpawnContext }
-  | { kind: 'failed'; reason: string };
+  | { kind: 'failed'; reason: string; nativeSessionFailure?: NativeSessionAuthFailureMetadata };
 
 // In-process, per-request authority carrier for authenticated connection
 // transports. Never read a client-supplied `_meta` field as a verified context.
@@ -1595,15 +1609,35 @@ export async function tryBuildSpawnContext(
     // Claude carries its session id in the URL; Codex supplies it dynamically in
     // this header. No native id means a legacy/non-CLI caller and retains the
     // established identity path.
-    const nativeSessionId =
-      (headers.get('x-papercusp-native-session') ?? '').trim() ||
-      (url.searchParams.get('native_session') ?? '').trim();
+    const nativeSessionHeader = (headers.get('x-papercusp-native-session') ?? '').trim();
+    const nativeSessionQuery = (url.searchParams.get('native_session') ?? '').trim();
+    const nativeSessionId = nativeSessionHeader || nativeSessionQuery;
+    const nativeSessionCarrier: NativeSessionAuthFailureMetadata['carrier'] | null = nativeSessionHeader
+      ? 'header:x-papercusp-native-session'
+      : nativeSessionQuery
+        ? 'query:native_session'
+        : null;
+    const nativeSessionFailure = (candidateAdvSessionId: number | null): NativeSessionAuthFailureMetadata | undefined => {
+      if (!nativeSessionId || !nativeSessionCarrier) return undefined;
+      return {
+        carrier: nativeSessionCarrier,
+        valueFingerprint: createHash('sha256').update(nativeSessionId, 'utf8').digest('hex'),
+        candidateAdvSessionId:
+          candidateAdvSessionId != null && Number.isSafeInteger(candidateAdvSessionId) && candidateAdvSessionId > 0
+            ? candidateAdvSessionId
+            : null,
+      };
+    };
     let verifiedAdvSessionId: number | null = null;
     if (suIdentity && nativeSessionId) {
       try {
         const binding = await classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId });
         if (binding.binding === 'foreign') {
-          return { kind: 'failed', reason: 'superuser_foreign_native_session' };
+          return {
+            kind: 'failed',
+            reason: 'superuser_foreign_native_session',
+            nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
+          };
         }
         if (
           binding.binding === 'bound' &&
@@ -1617,7 +1651,11 @@ export async function tryBuildSpawnContext(
         // A supplied native-session claim is meaningful only when the binding
         // check succeeds. Failing open here would restore the inherited-SID bug
         // exactly when its verifier is unavailable.
-        return { kind: 'failed', reason: 'superuser_native_session_unverified' };
+        return {
+          kind: 'failed',
+          reason: 'superuser_native_session_unverified',
+          nativeSessionFailure: nativeSessionFailure(null),
+        };
       }
     }
     // Workspace, in precedence order (psu-workspace-scoping fix — without
@@ -3461,7 +3499,14 @@ export function registerMcpHost(server: McpServer): void {
       // to legacy bearer dispatch. That's the whole point of the
       // verification step.
       if (spawnRes.kind === 'failed') {
-        await recordMcpAuthFailureTelemetry(toolName, extra, spawnRes.reason, projected, callStartedAt);
+        await recordMcpAuthFailureTelemetry(
+          toolName,
+          extra,
+          spawnRes.reason,
+          projected,
+          callStartedAt,
+          spawnRes.nativeSessionFailure,
+        );
         return {
           isError: true,
           content: [
