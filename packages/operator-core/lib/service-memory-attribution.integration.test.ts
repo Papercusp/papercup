@@ -41,6 +41,25 @@ function completedQuerySamples(rows: readonly PgResultDiagnostic[]) {
   }));
 }
 
+// Exact server-generated HTTP IDs are the join. Counts/times only check the
+// resulting observation's completeness; they cannot select another request.
+// This function crosses the private probe boundary, so keep it closed.
+function namedRequestQueryResults(
+  pools: { pool: string; results: ReturnType<typeof completedQuerySamples> }[], requestIds: string[],
+) {
+  if (!requestIds.length || requestIds.length > 32 || new Set(requestIds).size !== requestIds.length ||
+      requestIds.some(id => !/^[a-f0-9-]{36}$/i.test(id))) throw Error('Exact HTTP request IDs required');
+  const results = pools.flatMap(pool => pool.results.filter(row =>
+    row.correlationState === 'linked' && row.correlation?.operation === 'workItems.byHarness' &&
+    requestIds.includes(row.correlation.requestId ?? '')).map(row => ({ pool: pool.pool, ...row })));
+  const identities = results.map(row => JSON.stringify([row.correlation!.requestId, row.pool,
+    row.source.processInstanceId, row.source.buildSha, row.source.poolInstanceId, row.connectionId, row.queryId]));
+  if (requestIds.some(id => !results.some(row => row.correlation!.requestId === id)) ||
+      new Set(identities).size !== results.length)
+    throw Error('Named HTTP request diagnostic missing or ambiguous');
+  return results;
+}
+
 // Buffer complete startup lines: stderr chunks can split an endpoint, and an
 // in-place exec keeps the PID while replacing its ephemeral inspector listener.
 function inspectorEndpoints(output: string): string[] {
@@ -1501,7 +1520,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
   it.each(['linked', 'unobserved', 'unknown'] as const)('preserves completed query correlation %s across the inspector boundary', state => {
     const source = { processInstanceId: 'query-process', buildSha: 'abcdef123', poolInstanceId: 'query-pool' };
     const correlation = { processInstanceId: 'operation-process', buildSha: 'abcdef123', rowId: 'row-1',
-      attemptId: 'attempt-1', hopId: 2, stage: 'scope-query', boundary: 'await' as const };
+      attemptId: 'attempt-1', hopId: 2, stage: 'scope-query', boundary: 'await' as const,
+      requestId: '11111111-1111-4111-8111-111111111111', operation: 'workItems.byHarness' };
     const row = { pool: 'org-admin', source, connectionId: 5, queryId: 7, backendPid: 1234,
       queryFamily: 'select:harness_shared.spawned_agents', command: 'select', rowCount: 129,
       wireBytes: 21360, elapsedMs: 31, status: 'error' as const, errorCode: '57014', recordedAt: 123456,
@@ -1517,10 +1537,35 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     expect(result.backendPid).toBe(1234); expect(result.errorCode).toBe('57014');
     expect(result.rowCount).toBe(129); expect(result.wireBytes).toBe(21360);
     if (state === 'linked') expect(result.correlation).toEqual({ processInstanceId: 'operation-process',
-      buildSha: 'abcdef123', rowId: 'row-1', attemptId: 'attempt-1', hopId: 2, stage: 'scope-query', boundary: 'await' });
+      buildSha: 'abcdef123', rowId: 'row-1', attemptId: 'attempt-1', hopId: 2, stage: 'scope-query', boundary: 'await',
+      requestId: '11111111-1111-4111-8111-111111111111', operation: 'workItems.byHarness' });
     else expect(result).not.toHaveProperty('correlation');
     expect(result).not.toHaveProperty('query'); expect(result).not.toHaveProperty('parameters');
     expect(result).not.toHaveProperty('rows');
+  });
+
+  it('joins named HTTP query diagnostics by exact IDs despite indistinguishable counts/times and reversed completion', () => {
+    const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+    const row = (requestId: string, operation = 'workItems.byHarness') => ({
+      source: { processInstanceId: 'process', buildSha: 'build', poolInstanceId: 'pool' },
+      connectionId: 1, queryId: 2, rowCount: 129, wireBytes: 100, recordedAt: 10,
+      correlationState: 'linked', correlation: { requestId, operation },
+    });
+    const exact = [row(ids[1]), row(ids[0])];
+    const joinRequests = new Function('return (' + namedRequestQueryResults.toString() + ')')();
+    const pools = [{ pool: 'org-app', results: [row('33333333-3333-4333-8333-333333333333'),
+      row(ids[0], 'workItems.stats'), ...exact] }];
+    expect(joinRequests(pools, ids)).toEqual(exact.map(value => ({ pool: 'org-app', ...value })));
+    const dependencyQuery = { ...row(ids[0]), connectionId: 3, queryId: 4, rowCount: 0, wireBytes: 0 };
+    expect(joinRequests([{ pool: 'org-app', results: [...exact, dependencyQuery] }], ids))
+      .toEqual([...exact, dependencyQuery].map(value => ({ pool: 'org-app', ...value })));
+    expect(() => joinRequests([{ pool: 'org-app', results: [row(ids[0], 'workItems.stats'), row(ids[1])] }], ids))
+      .toThrow('missing or ambiguous');
+    expect(() => joinRequests([{ pool: 'org-app', results: [...exact, row(ids[0])] }], ids))
+      .toThrow('missing or ambiguous');
+    expect(() => joinRequests([{ pool: 'org-app', results: [exact[0]] }], ids)).toThrow('missing or ambiguous');
+    for (const invalid of [[], [ids[0], ids[0]], ['private-secret'], Array(33).fill(ids[0])])
+      expect(() => joinRequests(pools, invalid)).toThrow('Exact HTTP request IDs');
   });
 
   it('resolves evidence destinations before runtime preparation independently of runner cwd', () => {
@@ -2329,6 +2374,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const postgres = require('postgres');
       const inspectorEndpoints = ${inspectorEndpoints.toString()};
       const completedQuerySamples = ${completedQuerySamples.toString()};
+      const namedRequestQueryResults = ${namedRequestQueryResults.toString()};
       const retainedContainerCensus = ${retainedContainerCensus.toString()};
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const e = process.env, base = e.PAPERCUSP_OPERATOR_URL;
@@ -2390,7 +2436,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           report.httpFailure = { route, method, status: response.status, error: String(error).slice(0, 500) };
           throw new Error(route + ' HTTP ' + response.status + ': ' + report.httpFailure.error);
         }
-        return { body: JSON.parse(bytes.toString()), bytes: bytes.length };
+        return { body: JSON.parse(bytes.toString()), bytes: bytes.length,
+          requestId: response.headers.get('x-papercusp-request-id') };
       };
       const descendants = pid => {
         const result = [];
@@ -2522,11 +2569,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         // the HTTP page. pgQueryFamily names the FIRST FROM (the spine CTE), not
         // every relation touched by a query, so do not infer its owner from it.
         const completedPage = row => row.status === 'ok' && row.rowCount === 129 && row.wireBytes > 0;
-        report.namedQuery = { name: 'workItems.byHarness', startedAt: warmStartedAt,
+        report.namedQuery = { name: 'workItems.byHarness', requestId: warm.requestId, startedAt: warmStartedAt,
           httpRows: warm.body.rows.length, expectedDbRows: 129,
-          results: preflight.pools.flatMap(pool => pool.results.filter(row =>
-            completedPage(row) && row.recordedAt >= warmStartedAt).map(row => ({ pool: pool.pool, ...row }))) };
-        if (report.namedQuery.results.length !== 1)
+          results: namedRequestQueryResults(preflight.pools, [warm.requestId]) };
+        if (!report.namedQuery.results.some(completedPage))
           throw new Error('Completed named-query diagnostic unobserved');
         for (let window = 0; window < 3; window++) {
           phase('matched-window-' + window);
@@ -2537,17 +2583,16 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           if (report.mode === 'diagnostic') { await profiler('HeapProfiler.startSampling', { samplingInterval: 32768 }); sampling = true; }
           const start = await sample('ordinary-' + window + '-start');
           const requestStart = Date.now();
-          const responses = await Promise.all(Array.from({ length: 8 }, () => call(route).then(({ body, bytes }) => {
+          const responses = await Promise.all(Array.from({ length: 8 }, () => call(route).then(({ body, bytes, requestId }) => {
             if (body.rows?.length !== 128) throw new Error('Concurrent fixture page mismatch');
             if (JSON.stringify(body.rows) !== warmRows) throw new Error('Useful fixture rows changed during concurrent reads');
-            return { rows: body.rows.length, bytes, rowFingerprint: report.rowFingerprint };
+            return { rows: body.rows.length, bytes, requestId, rowFingerprint: report.rowFingerprint };
           })));
           const end = await sample('ordinary-' + window + '-end');
           const ordinary = sampling ? await profiler('HeapProfiler.stopSampling') : null; sampling = false;
           report.windows.push({ window, idleMs, requestWallMs: Date.now() - requestStart,
             startAt: start.at, endAt: end.at, responses,
-            completedPageResults: end.pools.flatMap(pool => pool.results.filter(row =>
-              completedPage(row) && row.recordedAt >= requestStart).map(row => ({ pool: pool.pool, ...row }))),
+            completedPageResults: namedRequestQueryResults(end.pools, responses.map(row => row.requestId)),
             idleAllocation: idle ? allocationSummary(idle.profile) : null,
             ordinaryAllocation: ordinary ? allocationSummary(ordinary.profile) : null });
           if (report.mode === 'diagnostic') {
@@ -2584,8 +2629,23 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   '@papercusp/operator-core.snapshot-fold-slots', '@papercusp/lexicon:host',
                   '@papercusp/operator-core.repoCitationTrackingCache', '@papercusp/operator-core.agentsAcrossWorkspaceCache',
                   '@papercusp/operator-core.midTurnMemoryAdmission',
-                ] });
-                objectIds = [...new Set(report.heapOwnerBinding.roots.filter(root => root.status === 'found').map(root => root.id))];
+                ], pgRequestIds: report.windows.at(-1).responses.map(row => row.requestId) });
+                const queries = report.heapOwnerBinding.queries;
+                if (queries.unobservedRequestIds.length || queries.omitted || queries.omittedPools || queries.omittedRows)
+                  throw Error('Exact request weak-object coverage is incomplete');
+                for (const identity of queries.records) {
+                  const result = report.windows.at(-1).completedPageResults.find(row =>
+                    row.correlation.requestId === identity.requestId && row.pool === identity.pool &&
+                    row.connectionId === identity.connectionId && row.queryId === identity.queryId);
+                  if (!result || identity.pool !== result.pool || identity.connectionId !== result.connectionId ||
+                      identity.queryId !== result.queryId || ['processInstanceId', 'buildSha', 'poolInstanceId']
+                        .some(field => identity.source[field] !== result.source[field]))
+                    throw Error('HTTP/query/heap exact identity drift');
+                }
+                objectIds = [...new Set([
+                  ...report.heapOwnerBinding.roots.filter(root => root.status === 'found').map(root => root.id),
+                  ...queries.records.flatMap(row => row.objects.filter(object => object.status === 'found').map(object => object.id)),
+                ])];
                 if (!objectIds.length) throw Error('No singleton snapshot object IDs observed');
                 if (!report.heapOwnerBinding.roots.some(root => root.owner === '@papercusp/operator-core.operatorCache' && root.status === 'found'))
                   throw Error('Operator cache snapshot binding unobserved');
@@ -2688,10 +2748,21 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             expect(report.heapRetainers.limits.retainerDepth).toBe(1);
             expect(report.heapOwnerBinding.pid).toBe(report.pid);
             expect(report.heapOwnerBinding.roots).toHaveLength(9);
+            const queryBindings = report.heapOwnerBinding.queries;
+            expect(queryBindings.unobservedRequestIds).toEqual([]);
+            expect(queryBindings.records.length).toBeGreaterThanOrEqual(8);
+            expect(new Set(queryBindings.records.map((row: any) => row.requestId))).toEqual(
+              new Set(report.windows.at(-1).responses.map((row: any) => row.requestId)));
+            for (const row of queryBindings.records) {
+              expect(row.objects.map((object: any) => object.phase)).toEqual(['decodedResult', 'resolvedRows', 'responseValue']);
+              expect(row.objects.every((object: any) => ['found', 'collected', 'not-in-snapshot'].includes(object.status))).toBe(true);
+            }
             expect(report.heapRetainers.requestedNodes.length).toBeGreaterThan(0);
             expect(report.heapRetainers.requestedNodes.every((row: any) => row.status === 'found' && row.node.id === row.id)).toBe(true);
             const ids = new Set(report.heapRetainers.requestedNodes.map((row: any) => row.id));
             expect(report.heapOwnerBinding.roots.filter((row: any) => row.status === 'found').every((row: any) => ids.has(row.id))).toBe(true);
+            expect(queryBindings.records.flatMap((row: any) => row.objects).filter((object: any) => object.status === 'found')
+              .every((object: any) => ids.has(object.id))).toBe(true);
           }
         }
         expect(report.heapSnapshot.census.nodeCount).toBeGreaterThan(0);
@@ -2733,7 +2804,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       }
       const results = report.samples.flatMap((sample: any) => sample.pools.flatMap((pool: any) => pool.results));
       expect(report.namedQuery.httpRows).toBe(128);
-      expect(report.namedQuery.results).toHaveLength(1);
+      expect(report.namedQuery.results.length).toBeGreaterThanOrEqual(1);
       expect(results.some((row: any) => row.rowCount === report.namedQuery.expectedDbRows && row.wireBytes > 0)).toBe(true);
       console.log('P011_COHORT_SUMMARY ' + JSON.stringify({ buildSha, bundleHash, pid: report.pid,
         windows: report.windows.length, samples: report.samples.length, database: report.database,
