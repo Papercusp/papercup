@@ -101,6 +101,8 @@ export interface GetFeedbackRequest {
   workspaceId: string;
   requesterId: string;
   question: string;
+  /** The production binding supplies its actual launch permission. */
+  allowDispatch?: boolean;
   tried?: string;
   observed?: string;
   decisionAtStake?: string;
@@ -936,6 +938,7 @@ export async function getFeedbackCore(
     [...excludeOwners, req.requesterId].filter((owner) => !cycleCheckOwners.has(owner)),
   );
   route.qualified = route.qualified.filter((candidate) => !excludedFromCandidacy.has(candidate.ownerId));
+  route.snapshot.deliveryIntent = req.allowDispatch === false ? 'retrieval-only' : 'dispatch';
   route.snapshot.candidates = route.snapshot.candidates.filter(
     (candidate) => !excludedFromCandidacy.has(candidate.ownerId),
   );

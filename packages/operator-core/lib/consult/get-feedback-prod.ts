@@ -51,7 +51,7 @@ export async function getFeedbackProd(
   const embeddingProfile = resolved
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
     : null;
-  return getFeedbackCore(request, {
+  return getFeedbackCore({ ...request, allowDispatch: !dispatchDisabled }, {
     getSql: () => getOrgPg().sql,
     route: async (params) => {
       const routed = await routeConsult({

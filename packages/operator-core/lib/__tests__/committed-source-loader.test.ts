@@ -80,10 +80,14 @@ beforeAll(() => {
     '',
   ].join('\n'));
   put(fixture, 'child.mjs', "import { v } from './mod.mjs';\nconsole.log(`CHILD=${v}`);\n");
+  // WI-10005802: a door ENTRY (the file node was asked to run), not just a module it imports.
+  put(fixture, 'door.mjs', "console.log('DOOR=HEAD');\n");
   git(fixture, ['add', '-A']);
   git(fixture, ['commit', '-q', '-m', 'fixture']);
 
   // The working tree after the commit: what a held restricted write would look like.
+  put(fixture, 'door.mjs', "console.log('DOOR=DIRTY');\n");
+  put(fixture, 'new-door.mjs', "console.log('NEW-DOOR-RAN');\n");
   put(fixture, 'mod.mjs', "export const v = 'DIRTY';\n");
   put(fixture, 'ts/mod.ts', "export const v: string = 'DIRTY';\n");
   put(fixture, 'new.mjs', "console.log('NEW-RAN');\n");
@@ -200,6 +204,63 @@ describe('committed-source loader — a scratch checkout', () => {
     delete withoutOptions.NODE_OPTIONS;
     expect(run([...prefix, 'fork-entry.mjs'], withoutOptions).stdout).toContain('CHILD=DIRTY');
   }, 60_000);
+
+  // WI-10005802: the doors start their own node entries (the router, the tree and bundle gates,
+  // the bundle-host helpers) as `node --import <loader> <entry>` — no tsx, no NODE_OPTIONS — so a
+  // held write to the ENTRY itself runs its committed bytes, and a new uncommitted entry refuses.
+  it('runs the committed bytes of a dirty door ENTRY started as `node --import <loader> <entry>`', () => {
+    expect(run(['door.mjs'], cleanEnv()).stdout).toContain('DOOR=DIRTY');
+
+    const loaded = run(['--import', COMMITTED_SOURCE_LOADER, 'door.mjs'], cleanEnv());
+    expect(loaded.status).toBe(0);
+    expect(loaded.stdout).toContain('DOOR=HEAD');
+    expect(loaded.stdout).not.toContain('DOOR=DIRTY');
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted door.mjs');
+  }, 60_000);
+
+  it('refuses a door entry with no committed version before it runs', () => {
+    expect(run(['new-door.mjs'], cleanEnv()).stdout).toContain('NEW-DOOR-RAN');
+
+    const loaded = run(['--import', COMMITTED_SOURCE_LOADER, 'new-door.mjs'], cleanEnv());
+    expect(loaded.status).not.toBe(0);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused new-door.mjs');
+    expect(loaded.stdout).not.toContain('NEW-DOOR-RAN');
+  }, 60_000);
+});
+
+/**
+ * WI-10005802: the CLI launchers of the test router. testing:run judges the router's own closure in
+ * its in-process census before it spawns the router; the CLI paths have no such step, so they
+ * start the router (and the install-mutex hop before it) under the committed-source loader.
+ */
+describe('committed-source loader — the test router CLI launchers', () => {
+  const LOADER_FLAG = '--import ./scripts/lib/committed-source-loader.mjs';
+  const scripts = (JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts;
+
+  it('every root package.json script that starts the router or its install-mutex hop passes the loader first', () => {
+    const launches = Object.entries(scripts).flatMap(([name, command]) =>
+      [...command.matchAll(/\bnode\s+((?:--\S+\s+(?:\S+\s+)?)*?)(scripts\/(?:test-files|npm-install-safe)\.mjs)/g)].map((m) => ({
+        name,
+        entry: m[2],
+        flags: m[1].trim(),
+      })),
+    );
+    // Positive control: the population this guard judges is real.
+    expect(launches.map((l) => l.name)).toEqual(expect.arrayContaining(['test:file', 'lint:tool-prompts']));
+    // install:safe is the dependency installer, not a door: it runs no test code.
+    const doors = launches.filter((l) => l.name !== 'install:safe');
+    expect(doors.filter((l) => l.flags !== LOADER_FLAG)).toEqual([]);
+    expect(scripts['test:file']).toContain(`node ${LOADER_FLAG} scripts/npm-install-safe.mjs --exec-under-lock -- node ${LOADER_FLAG} scripts/test-files.mjs`);
+  });
+
+  it('scripts/workspace-test.mjs routes explicit files through the router under the loader', async () => {
+    const { workspaceTestInvocation } = (await import('../../../../scripts/workspace-test.mjs')) as {
+      workspaceTestInvocation: (argv: string[], repoRoot: string) => { command: string; args: string[]; routed: boolean };
+    };
+    const invocation = workspaceTestInvocation(['a.test.ts'], REPO);
+    expect(invocation.routed).toBe(true);
+    expect(invocation.args.slice(0, 3)).toEqual(['--import', COMMITTED_SOURCE_LOADER, join(REPO, 'scripts', 'test-files.mjs')]);
+  });
 });
 
 describe('committed-source loader — the real census closure', () => {

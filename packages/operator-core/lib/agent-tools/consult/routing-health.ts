@@ -31,7 +31,7 @@ export default defineTool({
   // @not-a-cell A caller-windowed report over persisted consult dispatch records; one door derives it and no other surface re-derives these counts.
   profile: 'engineer',
   description:
-    'Is review routing working? Per selection policy, the answering sessions the router launched in a window, and what became of each: answered, declined, failed (by reason), hung past its answer window, or still pending, plus skipped ranks by reason. The window is a launch cohort (default: the last 24 h).',
+    'Is consultation delivery working? Reports separate launch-attempt and request-time cohorts. Request intent distinguishes dispatch, deliberate retrieval-only and unknown legacy intent; requested dispatch is partitioned into recorded feedback, honest decline, pending, unavailable, failed and unmeasured outcomes. Feedback receipts outrank later lifecycle labels. Default window: last 24 h.',
   guidance: {
     when:
       'You need the answer rate or failure reasons of routed reviews/consults (rubric vetting, acceptance grading, grading-integrity audits, ordinary consults) — instead of hand-written SQL over consult_state.',
@@ -73,6 +73,7 @@ export default defineTool({
           dispatchLogCapped: z.number(),
         })
         .optional(),
+      requestCohort: z.unknown().optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
@@ -95,6 +96,8 @@ export default defineTool({
       workspaceId,
       new Date(window.sinceMs).toISOString(),
       new Date(window.untilMs).toISOString(),
+      undefined,
+      new Date(nowMs).toISOString(),
     );
     const result = health.routingHealthFromRows(rows, { ...window, nowMs, truncatedByLimit: truncated });
     return { data: { ok: true, ...result } };

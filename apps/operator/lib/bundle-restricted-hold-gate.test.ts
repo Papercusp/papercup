@@ -8,6 +8,7 @@
  * operator-core and driven from real Postgres in restricted-hold-fence.integration.test.ts); here
  * it is injected so every gate verdict path is exercised without a database.
  */
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -230,6 +231,47 @@ describe('bundle-host.sh wiring', () => {
     expect(common).toContain('meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")');
     expect(common).toContain('"${meta_args[@]}"; then');
     expect(common).toContain('>> "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt"');
+  });
+
+  /**
+   * WI-10005802: everything bundle-host.sh runs in node BEFORE the gate judges the build (and the
+   * gate itself) comes from the live shared tree, so each starts under the committed-source loader
+   * and runs its committed (HEAD) bytes. A plain `node "<helper>"` would run a held write unjudged.
+   * `node --input-type=module --check < file` only parses stdin, so it is the one allowed form.
+   */
+  it('starts every node helper under the committed-source loader (WI-10005802)', () => {
+    expect(script).toContain('COMMITTED_NODE=(node --import "$REPO_ROOT/scripts/lib/committed-source-loader.mjs")');
+    const plainNode = (text: string) =>
+      text
+        .split('\n')
+        .map((line, index) => ({ line: line.trim(), number: index + 1 }))
+        .filter(({ line }) => !line.startsWith('#') && /(^|[\s!(;]|\$\()node\s+"/.test(line));
+    expect(plainNode(script), 'bundle-host.sh runs a helper with plain node').toEqual([]);
+    expect(plainNode(common), 'bundle-host-common.sh runs a helper with plain node').toEqual([]);
+    for (const helper of [
+      '"$REPO_ROOT/scripts/npm-install-safe.mjs"',
+      '"$FRESHNESS_HELPER" check',
+      '"$GATE_HELPER" snapshot',
+      '"$GATE_HELPER" "${args[@]}"',
+      '"$SCRIPT_DIR/write-bundle-stale-marker.mjs"',
+      '"$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait',
+      '"$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs"',
+      '"$SCRIPT_DIR/ascii-escape-bundle.mjs"',
+      '"$FRESHNESS_HELPER" stamp',
+    ]) {
+      expect(script, `bundle-host.sh lost the loader on ${helper}`).toContain(`"\${COMMITTED_NODE[@]}" ${helper}`);
+    }
+  });
+
+  it("bundle-host-common.sh's helpers use bundle-host.sh's loader, and plain node for other callers", () => {
+    const declaration = common.split('\n').find((line) => line.includes('local -a run_node='));
+    expect(declaration, 'bundle-host-common.sh lost its run_node declaration').toBeDefined();
+    // Run the exact declaration in bash: with COMMITTED_NODE unset (release packaging) and set.
+    const probe = `f() { ${declaration!.trim()}; printf '%s|' "\${run_node[@]}"; echo; }; f; COMMITTED_NODE=(node --import /x/loader.mjs); f`;
+    const result = spawnSync('bash', ['-c', probe], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim().split('\n')).toEqual(['node|', 'node|--import|/x/loader.mjs|']);
+    expect(common).toContain('"${run_node[@]}" "$repo_root/scripts/check-bundled-cli-entry-guards.mjs"');
   });
 });
 

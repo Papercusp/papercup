@@ -3,11 +3,15 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { expect, it } from 'vitest';
+import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
 
 const root = resolve(__dirname, '../../../..');
 const source = resolve(root, 'packages/operator-core/lib/search/session-ingest.ts');
 
 it('persists exact authenticated source stamps through the real ingest SQL without promoting mismatches', () => {
+  // Check the negative control against the actual catalogue before starting PG.
+  const machineText = '[SYSTEM NOTIFICATION: NOT USER INPUT]\nMachine-authored status';
+  expect(classifyRecordedTurn(machineText).verdict).toBe('machine-surface');
   const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
   const probe = String.raw`
     import assert from 'node:assert/strict';
@@ -64,7 +68,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       await stamp(candidate('expired'), { expires_at: new Date(now.getTime() - 1) });
       await stamp(candidate('injected', 'codex', { text: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\nkeep going' }));
       candidate('legacy-residual');
-      candidate('new-machine-rule', 'codex', { text: '## Orientation\nMachine-authored status' });
+      candidate('new-machine-rule', 'codex', { text: process.env.TEST_PROMPT_ORIGIN_MACHINE_TEXT });
       candidate('assistant');
       await insertTurns(sql, cases.map(c => c.row));
       const rows = await sql\`SELECT source_kind, session_id, turn_origin_verdict
@@ -74,7 +78,8 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       for (const c of cases) {
         const stored = rows.find(row => row.session_id === c.row.session_id);
         const expected = ['claude', 'codex', 'omp', 'codex-history'].includes(c.label) ? 'owner-typed'
-          : c.label === 'injected' ? 'agent-injected' : 'unenrolled-origin';
+          : c.label === 'injected' ? 'agent-injected'
+          : c.label === 'new-machine-rule' ? 'machine-surface' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
       }
       // A classifier upgrade outlives the ephemeral receipt. Re-derive the
@@ -117,9 +122,10 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
   const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
     process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
     cwd: root, encoding: 'utf8', timeout: 180000, maxBuffer: 2 * 1024 * 1024,
-    env: { ...process.env, TEST_PROMPT_ORIGIN_SOURCE_HASH: sourceHash },
+    env: { ...process.env, TEST_PROMPT_ORIGIN_SOURCE_HASH: sourceHash, TEST_PROMPT_ORIGIN_MACHINE_TEXT: machineText },
   });
   const environment = result.stdout.match(/^PROMPT_ORIGIN_RUNTIME (.+)$/m)?.[1];
+  if (result.status !== 0) process.stderr.write(result.stdout.slice(-5000) + '\n' + result.stderr.slice(-2000));
   expect(environment, result.stdout.slice(-2000)).toBeTruthy();
   expect(existsSync(JSON.parse(environment!).home)).toBe(false);
   expect(result.status, result.stdout.slice(-5000) + '\n' + result.stderr.slice(-5000)).toBe(0);

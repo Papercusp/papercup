@@ -169,6 +169,46 @@ describe('routingHealthFromRows — seeded attempts in and out of the window', (
   });
 });
 
+describe('routingHealthFromRows request cohort', () => {
+  it('partitions explicit intents and terminal receipts without confusing lifecycle or launch attempts', () => {
+    const make = (id: string, partial: Partial<RoutingHealthConsultRow> = {}) => row({
+      conversation_id: id, created_at: iso(T0 + H), routing: { deliveryIntent: 'dispatch' }, ...partial,
+    });
+    const population = [
+      make('retrieval', { routing: { deliveryIntent: 'retrieval-only' }, state: 'expired' }),
+      make('legacy', { routing: {} }),
+      make('expired-answer', { state: 'expired', has_feedback: true }),
+      make('recovered-answer', { has_feedback: true, dispatch_attempts: [launch(T0 + H, 'answerer', [{ outcome: 'failed', reason: 'launch-failed' }])] }),
+      make('decline', { state: 'closed_cant_help' }),
+      make('pending', { state: 'awaiting_responder', expires_at: iso(NOW + H) }),
+      make('capacity', { state: 'no_available_responder', dispatch_attempts: [{ at: iso(T0 + H), dispatched: false, attempts: [{ outcome: 'skipped', reason: 'account-walled' }] }] }),
+      make('failure', { state: 'expired', dispatch_attempts: [answerFailure(T0 + H, 'answerer', 'answer-window-expired')] }),
+      make('unknown-result'),
+      make('old', { created_at: iso(T0 - H), has_feedback: true }),
+      make('future', { created_at: iso(UNTIL), has_feedback: true }),
+    ];
+    const health = routingHealthFromRows(population, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    const counts = health.requestCohort.totals;
+    expect(counts).toEqual({
+      requests: 9, dispatchRequested: 7, retrievalOnly: 1, legacyIntentUnknown: 1,
+      outcomes: { received: 2, declined: 1, pending: 1, unavailable: 1, failed: 1, unmeasured: 1 },
+    });
+    expect(counts.dispatchRequested + counts.retrievalOnly + counts.legacyIntentUnknown).toBe(counts.requests);
+    expect(Object.values(counts.outcomes).reduce((sum, value) => sum + value, 0)).toBe(counts.dispatchRequested);
+    expect(health.totals.failed).toBe(2); // The distinct launch-attempt population is preserved.
+    expect(health.requestCohort.window.cohort).toBe('request-time');
+  });
+
+  it('requires recorded answer content rather than a closed_answered label and respects scan bounds', () => {
+    const result = routingHealthFromRows([
+      row({ conversation_id: 'label-only', created_at: iso(T0), routing: { deliveryIntent: 'dispatch' }, state: 'closed_answered' }),
+      row({ conversation_id: 'archive', created_at: iso(T0), routing: { deliveryIntent: 'dispatch' }, outcome: { source: 'archive', answer: { answer: 'grounded response' } } }),
+    ], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW, truncatedByLimit: true });
+    expect(result.requestCohort.totals.outcomes).toMatchObject({ received: 1, unmeasured: 1 });
+    expect(result.bounded.truncatedByLimit).toBe(true);
+  });
+});
+
 describe('routingHealthFromRows — honesty markers', () => {
   it('reports every known policy even with no consults, so a zero is measured, not omitted', () => {
     const result = routingHealthFromRows([], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });

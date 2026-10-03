@@ -33,7 +33,7 @@ import {
   HostedRuntimeMembershipAuthority,
   HostedServiceIdentityDirectory,
 } from './service-adapters';
-import type { HostedServiceContextRunner } from './workos-lifecycle-postgres';
+import { PostgresWorkosLifecycleProjectionStore, type HostedServiceContextRunner } from './workos-lifecycle-postgres';
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
@@ -133,6 +133,30 @@ function signInBinder(denials: string[]) {
   });
 }
 
+/** Run the actual lifecycle writer that can win the race with explicit signup. */
+async function projectWorkosUser(input: HostedSelfSignupInput): Promise<string> {
+  const eventId = unique('workos-event');
+  const occurredAt = new Date().toISOString();
+  await db.adminSql`
+    INSERT INTO papercusp_auth.webhook_event_receipts
+      (provider, event_id, event_type, subject_ref, event_created_at, payload,
+       payload_sha256, received_at, verified_at, enqueued_at, retention_until)
+    VALUES ('workos', ${eventId}, 'user.created', ${input.identity.externalUserId},
+      ${occurredAt}::timestamptz, '{}'::jsonb, ${'a'.repeat(64)}, now(), now(), now(), now() + interval '1 day')
+  `;
+  const store = new PostgresWorkosLifecycleProjectionStore(runService);
+  expect(await store.applyOrdered({
+    entityKey: `workos:user:${input.identity.externalUserId}`,
+    cursor: { eventId, occurredAt, version: '1' },
+    mutation: { kind: 'upsert-user', provider: 'workos', subject: input.identity.externalUserId,
+      email: input.identity.primaryEmail.toLowerCase(), displayName: 'Lifecycle User' },
+  })).toMatchObject({ disposition: 'applied' });
+  const [row] = await db.adminSql<Array<{ id: string }>>`
+    SELECT id::text FROM papercusp_auth.hosted_users WHERE primary_email = ${input.identity.primaryEmail.toLowerCase()}
+  `;
+  return row.id;
+}
+
 describe('hosted self-signup admission (real Postgres, real roles)', () => {
   const admission = () => new PostgresHostedSelfSignupAdmission(runService);
 
@@ -188,6 +212,93 @@ describe('hosted self-signup admission (real Postgres, real roles)', () => {
     expect(replay).toEqual(first);
     expect(await census(email)).toEqual(before);
     expect(await attemptStatuses(email)).toEqual(['completed']);
+  });
+
+  it('admits a lifecycle-projected active identity only through explicit signup, reusing its user', async () => {
+    const email = `${unique('projected')}@example.test`;
+    const input = signupInput(email);
+    const userId = await projectWorkosUser(input);
+    const denials: string[] = [];
+    expect(await signInBinder(denials)({ providerId: PROVIDER, identity: input.identity } as never)).toBeNull();
+    expect(denials).toEqual(['no_active_membership']);
+
+    const result = await admission().complete(input);
+    expect(result).toMatchObject({ ok: true, binding: { userId } });
+    expect(await census(email)).toEqual({ users: 1, identities: 1, organizations: 1, memberships: 1,
+      ownerMemberships: 1, legal: 2, entitlements: 1, sessions: 1 });
+    expect(await attemptStatuses(email)).toEqual(['completed']);
+    expect(await admission().complete(input)).toEqual(result);
+  });
+
+  it('serializes concurrent explicit admissions for a lifecycle-projected identity', async () => {
+    const email = `${unique('projected-race')}@example.test`;
+    const input = signupInput(email);
+    await projectWorkosUser(input);
+    const results = await Promise.all([
+      admission().complete(input),
+      admission().complete({ ...input, attemptId: unique('racing-attempt') }),
+    ]);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.filter(r => !r.ok)).toEqual([{ ok: false, code: 'duplicate_identity', retryable: false }]);
+    expect(await census(email)).toMatchObject({ users: 1, organizations: 1, memberships: 1, sessions: 1 });
+  });
+
+  it('shares the lifecycle ordering lock when projection and explicit admission race', async () => {
+    const email = `${unique('lifecycle-race')}@example.test`;
+    const input = signupInput(email);
+    const [userId, result] = await Promise.all([projectWorkosUser(input), admission().complete(input)]);
+    expect(result).toMatchObject({ ok: true, binding: { userId } });
+    expect(await census(email)).toEqual({ users: 1, identities: 1, organizations: 1, memberships: 1,
+      ownerMemberships: 1, legal: 2, entitlements: 1, sessions: 1 });
+  });
+
+  it('counts admission attempts for a projected identity without membership toward the abuse limit', async () => {
+    const email = `${unique('projected-abuse')}@example.test`;
+    const input = signupInput(email);
+    await projectWorkosUser(input);
+    for (let i = 0; i < 5; i += 1) {
+      await db.adminSql`
+        INSERT INTO papercusp_auth.hosted_signup_attempts (attempt_id, provider, subject, email, fingerprint, status)
+        VALUES (${unique('failed-attempt')}, ${PROVIDER}, ${input.identity.externalUserId}, ${email},
+          ${`${PROVIDER}|${input.identity.externalUserId}|${email}`}, 'pending')
+      `;
+    }
+    expect(await admission().complete(input)).toEqual({ ok: false, code: 'rate_limited', retryable: false });
+    expect(await attemptStatuses(email)).toContain('rate_limited');
+    expect(await census(email)).toMatchObject({ organizations: 0, memberships: 0, sessions: 0 });
+  });
+
+  it('refuses inactive lifecycle identities and a mismatch with the verified email', async () => {
+    for (const status of ['deactivated', 'deleted']) {
+      const email = `${unique(status)}@example.test`;
+      const input = signupInput(email);
+      const userId = await projectWorkosUser(input);
+      await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = ${status},
+        deactivated_at = CASE WHEN ${status} = 'deactivated' THEN now() ELSE NULL END,
+        deleted_at = CASE WHEN ${status} = 'deleted' THEN now() ELSE NULL END WHERE id = ${userId}::uuid`;
+      await db.adminSql`UPDATE papercusp_auth.external_identities SET status = ${status},
+        deactivated_at = CASE WHEN ${status} = 'deactivated' THEN now() ELSE NULL END,
+        deleted_at = CASE WHEN ${status} = 'deleted' THEN now() ELSE NULL END WHERE hosted_user_id = ${userId}::uuid`;
+      expect(await admission().complete(input)).toEqual({ ok: false, code: 'duplicate_identity', retryable: false });
+      expect(await census(email)).toMatchObject({ organizations: 0, memberships: 0, sessions: 0 });
+    }
+    const input = signupInput(`${unique('email-match')}@example.test`);
+    await projectWorkosUser(input);
+    expect(await admission().complete({ ...input, identity: { ...input.identity, primaryEmail: `${unique('different')}@example.test` } }))
+      .toEqual({ ok: false, code: 'duplicate_identity', retryable: false });
+  });
+
+  it('does not create a new tenant for a user with revoked membership history', async () => {
+    const email = `${unique('prior-member')}@example.test`;
+    const input = signupInput(email);
+    const first = await admission().complete(input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await db.adminSql`UPDATE papercusp_auth.organization_memberships SET status = 'revoked', revoked_at = now() WHERE user_id = ${first.binding.userId}::uuid`;
+    const before = await census(email);
+    expect(await admission().complete({ ...input, attemptId: unique('new-attempt') }))
+      .toEqual({ ok: false, code: 'duplicate_identity', retryable: false });
+    expect(await census(email)).toEqual(before);
   });
 
   it('refuses a second signup for an existing identity or email without admitting anything new', async () => {

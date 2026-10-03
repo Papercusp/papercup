@@ -197,6 +197,8 @@ export interface RoutingCandidate {
 
 export interface RoutingSnapshot {
   query: string;
+  /** Set by consultation creation; absent on legacy rows, never inferred. */
+  deliveryIntent?: 'dispatch' | 'retrieval-only';
   /**
    * The stage-1 floor actually applied, against `candidate.relevance` (D-001).
    * Deliberately NOT named `floor`: the retired field of that name gated the

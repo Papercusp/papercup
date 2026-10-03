@@ -44,7 +44,15 @@ export function workspaceTestInvocation(argv = process.argv.slice(2), repoRoot =
   const vitestArgs = args.filter((arg) => !isVitestTestFileArg(arg) && arg !== '--passWithNoTests' && arg !== '--');
   return {
     command: process.execPath,
-    args: [resolve(repoRoot, 'scripts/test-files.mjs'), ...files, ...(vitestArgs.length ? ['--', ...vitestArgs] : [])],
+    // WI-10005802: the router runs under the committed-source loader, so it and every module it
+    // imports run their committed (HEAD) bytes before its restricted-hold census can judge anything.
+    args: [
+      '--import',
+      resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs'),
+      resolve(repoRoot, 'scripts/test-files.mjs'),
+      ...files,
+      ...(vitestArgs.length ? ['--', ...vitestArgs] : []),
+    ],
     cwd: process.cwd(),
     routed: true,
   };

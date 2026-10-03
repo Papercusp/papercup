@@ -1243,6 +1243,11 @@ interface TurnRow {
  */
 export const UNENROLLED_ORIGIN_VERDICT = 'unenrolled-origin';
 
+/** Durable identity of a successful exact hook-receipt correlation. Unlike
+ * the old owner-typed text residual, this survives receipt expiry and lets
+ * the classifier backfill preserve positive evidence without guessing. */
+export const HOOK_AUTHENTICATED_PROMPT_ORIGIN = 'hook-authenticated-prompt';
+
 /**
  * Source kinds whose `speaker='user'` rows may arrive without an enrollment
  * envelope, and whose uncorrelated `owner-typed` residual is therefore
@@ -1303,7 +1308,7 @@ export function correlatePromptOriginStamps(rows: TurnRow[], stamps: PromptOrigi
     }
     if (best < 0) continue;
     used.add(best);
-    row.turn_origin = null;
+    row.turn_origin = HOOK_AUTHENTICATED_PROMPT_ORIGIN;
     row.turn_origin_verdict = 'owner-typed';
     matched += 1;
   }
@@ -2007,10 +2012,13 @@ export async function backfillTurnProvenanceOnce(
       turn_idx: number;
       speaker: string;
       head: string | null;
+      turn_origin: string | null;
+      turn_origin_verdict: string | null;
     }>
   >`
     SELECT workspace_id, source_kind, session_id, turn_idx, speaker,
-           left(text, ${CLASSIFY_HEAD_CHARS}) AS head
+           left(text, ${CLASSIFY_HEAD_CHARS}) AS head,
+           turn_origin, turn_origin_verdict
       FROM harness_shared.session_turns
      WHERE turn_origin_classifier_version IS NULL
         OR turn_origin_classifier_version < ${MACHINE_SURFACE_CATALOGUE_VERSION}
@@ -2051,6 +2059,20 @@ export async function backfillTurnProvenanceOnce(
       text: r.head ?? '',
     } as TurnRow;
     stampTurnProvenance(staged);
+
+    // Only the insert-time exact hook correlation writes this identity.
+    // Preserve that positive evidence after ephemeral receipt expiry, but
+    // let every current machine/envelope/speaker verdict win. Untagged old
+    // owner-typed residuals still downgrade, so this cannot retroactively
+    // authenticate historical rows from clean text alone.
+    if (
+      staged.turn_origin_verdict === UNENROLLED_ORIGIN_VERDICT &&
+      r.turn_origin_verdict === 'owner-typed' &&
+      r.turn_origin === HOOK_AUTHENTICATED_PROMPT_ORIGIN
+    ) {
+      staged.turn_origin = HOOK_AUTHENTICATED_PROMPT_ORIGIN;
+      staged.turn_origin_verdict = 'owner-typed';
+    }
 
     wsIds.push(r.workspace_id);
     kinds.push(r.source_kind);

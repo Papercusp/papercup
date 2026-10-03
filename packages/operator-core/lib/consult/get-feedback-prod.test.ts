@@ -46,6 +46,16 @@ import { getFeedbackProd } from './get-feedback-prod';
 describe('getFeedbackProd expert-routing settings', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it.each([true, false])('passes actual dispatch permission %s to creation without launching when disabled', async (allowDispatch) => {
+    await getFeedbackProd(
+      { workspaceId: 'workspace-1', requesterId: 'requester', question: 'question' },
+      { ownerId: 'requester' } as never,
+      { allowDispatch },
+    );
+    expect(h.getFeedbackCore.mock.calls[0]?.[0]).toMatchObject({ allowDispatch });
+    expect(h.makeConsultReachDispatcher).toHaveBeenCalledTimes(allowDispatch ? 1 : 0);
+  });
+
   it('uses one persisted snapshot for comparison recency and dispatch ranks', async () => {
     await getFeedbackProd(
       { workspaceId: 'workspace-1', requesterId: 'requester', question: 'question', subjectRef: 'acceptance-x' },

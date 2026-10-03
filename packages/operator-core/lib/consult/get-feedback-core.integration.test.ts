@@ -986,6 +986,14 @@ describe('getFeedbackCore — routed', () => {
     expect(new Date(row.expires_at as string).getTime()).toBe(NOW.getTime() + HARD_BLOCKED_EXPIRY_MS);
   });
 
+  it.each([true, false])('persists explicit dispatch intent %s for request-cohort reporting', async (allowDispatch) => {
+    const { deps } = makeDeps(routeOf([cand('agent-a')]));
+    if (!allowDispatch) deps.reach = async () => ({ queued: 0, woke: 0, pickupConfirmed: false });
+    const result = asOk(await getFeedbackCore({ ...baseReq, allowDispatch }, deps));
+    const stored = await stateRow(result.conversation_id);
+    expect((stored.routing as RoutingSnapshot).deliveryIntent).toBe(allowDispatch ? 'dispatch' : 'retrieval-only');
+  });
+
   it('R-2: a DEAD top candidate is selected, not skipped — deadness changes neither rank nor eligibility', async () => {
     const deadTop = cand('agent-dead', { score: 0.9, liveness: 'ended' });
     const liveSecond = cand('agent-live', { score: 0.6, liveness: 'parked' });

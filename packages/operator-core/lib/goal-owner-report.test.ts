@@ -349,3 +349,226 @@ describe('GOAL_OWNER_REPORT_HEADINGS', () => {
     expect(GOAL_OWNER_REPORT_HEADING_LIST).toBe('MOVED / COST / OWNER-WALLED / KILLED / NEXT WAKE');
   });
 });
+
+/**
+ * P-005 (goal-holder-plans-ideation-truthful-reports-2026-10-03): the send-time
+ * truth checks. The fixtures are the measured goal 60d3a8 falsities: (a) COST
+ * "not measured per goal" while goals.metadata.spentCents=313180 (goal-lineage-rollup)
+ * existed; (b) OWNER-WALLED listing bare ids; (c) a MOVED line later found false and
+ * not corrected in the next report (WI-10005610).
+ */
+describe('P-005 goal owner report truth checks', () => {
+  const measuredSpend = {
+    spentCents: 313180,
+    measured: true,
+    source: 'goal-lineage-rollup',
+    measuredAt: '2026-10-03T02:00:00.000Z',
+  };
+  const walls = [
+    { ref: 'WI-10004856', action: 'choose the hud P-003 route (solo / fleet / drop)' },
+    { ref: 'WI-10004875', action: null },
+    { ref: 'WI-10005042', action: 'paste the Stripe restricted key' },
+  ];
+  const inputs = (over: Partial<GoalOwnerReportTruthInputs> = {}): GoalOwnerReportTruthInputs => ({
+    spend: measuredSpend,
+    ownerWalls: walls,
+    previousReport: null,
+    currentRefStates: {},
+    ...over,
+  });
+  const fields = (over: Partial<Record<(typeof GOAL_OWNER_REPORT_FIELDS)[number], string>> = {}) => ({
+    moved: 'P-006 shipped (WI-10005778 done)',
+    cost: 'goal lineage $3,131.80 (goal-lineage-rollup); pot-wide $4266/24h',
+    ownerWalled:
+      'WI-10004856: choose the hud P-003 route (solo/fleet/drop); WI-10004875: decide whether to keep the calendar sidecar; ' +
+      'WI-10005042: paste the Stripe restricted key',
+    killed: 'none',
+    nextWake: 'loop fire in ~15 min',
+    ...over,
+  });
+
+  describe('money and ref parsing', () => {
+    it('reads every written money form in cents, and never a bare number', () => {
+      expect(moneyAmountsInCents('$3,131.80')).toEqual([313180]);
+      expect(moneyAmountsInCents('$3.1k')).toEqual([310000]);
+      expect(moneyAmountsInCents('313180c')).toEqual([313180]);
+      expect(moneyAmountsInCents('313180 cents')).toEqual([313180]);
+      expect(moneyAmountsInCents('313180¢')).toEqual([313180]);
+      expect(moneyAmountsInCents('3131.80 USD')).toEqual([313180]);
+      expect(moneyAmountsInCents('pot-wide $4266/24h')).toEqual([426600]);
+      expect(moneyAmountsInCents('24h window; 4 owner walls; P-003')).toEqual([]);
+    });
+
+    it('matches a cited amount within max(absolute floor, relative band) of the measured spend', () => {
+      expect(GOAL_REPORT_COST_TOLERANCE).toEqual({ absCents: 1000, relative: 0.03 });
+      expect(costCitesMeasuredSpend('goal $3,131.80', 313180)).toBe(true);
+      expect(costCitesMeasuredSpend('goal ~$3.1k', 313180)).toBe(true); // 3180c off, band 9395c
+      expect(costCitesMeasuredSpend('goal ~$3.0k', 313180)).toBe(false); // 13180c off
+      expect(costCitesMeasuredSpend('not measured per goal; pot-wide $4266/24h', 313180)).toBe(false);
+      expect(costCitesMeasuredSpend('$5', 340)).toBe(true); // absolute floor of 1000c for a small spend
+      expect(costCitesMeasuredSpend('$20', 340)).toBe(false);
+    });
+
+    it('recognizes a COST line that admits it measured nothing', () => {
+      expect(costLineIsUnmeasured('not measured per goal; pot-wide $4266/24h')).toBe(true);
+      expect(costLineIsUnmeasured('unmeasured')).toBe(true);
+      expect(costLineIsUnmeasured('')).toBe(true);
+      expect(costLineIsUnmeasured('goal lineage $3,131.80')).toBe(false);
+    });
+
+    it('splits OWNER-WALLED entries and flags the ones that are only ids', () => {
+      expect(walledEntries('WI-10004856, WI-10004875, WI-10005042')).toEqual([
+        { entry: 'WI-10004856, WI-10004875, WI-10005042', bare: true },
+      ]);
+      expect(walledEntries('WI-10004856/4875/5042')).toEqual([{ entry: 'WI-10004856/4875/5042', bare: true }]);
+      expect(walledEntries('WI-10004856: choose the hud P-003 route; none')).toEqual([
+        { entry: 'WI-10004856: choose the hud P-003 route', bare: false },
+      ]);
+      expect(walledEntries('none')).toEqual([]);
+      expect(workItemRefsIn('WI-1 then EI-22 then WI-1 and F-3')).toEqual(['WI-1', 'EI-22', 'F-3']);
+    });
+
+    it('records the state of each MOVED ref it could read, and nothing when the read failed', () => {
+      expect(citedRefStatesFor('WI-1 done; WI-2 done; WI-9 unknown', { 'WI-1': 'done', 'WI-2': 'open' })).toEqual([
+        { ref: 'WI-1', state: 'done' },
+        { ref: 'WI-2', state: 'open' },
+      ]);
+      expect(citedRefStatesFor('WI-1 done', null)).toBeNull();
+    });
+  });
+
+  describe('checkGoalOwnerReportTruth', () => {
+    it('refuses the measured 60d3a8 report: unmeasured COST and bare-id OWNER-WALLED', () => {
+      const { violations, summary } = checkGoalOwnerReportTruth(
+        fields({
+          cost: 'not measured per goal; pot-wide $4266/24h',
+          ownerWalled: 'WI-10004856, WI-10004875, WI-10005042',
+        }),
+        inputs(),
+      );
+      expect(violations.map((v) => [v.check, v.kind, 'ref' in v ? v.ref : null])).toEqual([
+        ['cost', 'measured-spend-not-cited', null],
+        ['owner-walled', 'wall-without-action', 'WI-10004856'],
+        ['owner-walled', 'wall-without-action', 'WI-10004875'],
+        ['owner-walled', 'wall-without-action', 'WI-10005042'],
+      ]);
+      expect(violations[0]!.message).toContain('$3,131.80 (goal-lineage-rollup, measured 2026-10-03T02:00:00.000Z)');
+      // The refusal names the recorded owner ask, or how to record one.
+      expect(violations[1]!.message).toContain('choose the hud P-003 route');
+      expect(violations[2]!.message).toContain('work_items:set_blocker');
+      expect(summary).toEqual({ cost: 'unread', ownerWalls: 'unread', corrections: 'no-baseline' });
+      const text = describeGoalOwnerReportTruthViolations(GOAL, violations);
+      expect(text).toContain(`GOAL owner report for ${GOAL} contradicts measured goal state; nothing was sent.`);
+      expect(text).toContain('4. OWNER-WALLED names WI-10005042 by id only');
+    });
+
+    it('passes the truthful version of the same report and summarizes what it established', () => {
+      const { violations, summary } = checkGoalOwnerReportTruth(fields(), inputs());
+      expect(violations).toEqual([]);
+      expect(summary).toEqual({ cost: 'cited-measured', ownerWalls: 'all-listed-with-action', corrections: 'no-baseline' });
+    });
+
+    it('refuses an open owner wall the report omits, quoting its recorded action', () => {
+      const { violations } = checkGoalOwnerReportTruth(
+        fields({ ownerWalled: 'none' }),
+        inputs({ ownerWalls: [walls[0]!] }),
+      );
+      expect(violations).toEqual([
+        expect.objectContaining({
+          check: 'owner-walled',
+          kind: 'wall-not-listed',
+          ref: 'WI-10004856',
+          expected: 'choose the hud P-003 route (solo / fleet / drop)',
+        }),
+      ]);
+    });
+
+    it('flags a bare-id entry even for an item the wall read did not return', () => {
+      const { violations } = checkGoalOwnerReportTruth(fields({ ownerWalled: 'WI-77' }), inputs({ ownerWalls: [] }));
+      expect(violations).toEqual([expect.objectContaining({ check: 'owner-walled', kind: 'wall-without-action', ref: 'WI-77', expected: null })]);
+    });
+
+    it('reports none-open when the goal has no open walls and the report says none', () => {
+      const { violations, summary } = checkGoalOwnerReportTruth(fields({ ownerWalled: 'none' }), inputs({ ownerWalls: [] }));
+      expect(violations).toEqual([]);
+      expect(summary.ownerWalls).toBe('none-open');
+    });
+
+    it('never refuses on an unreadable or unmeasured spend', () => {
+      const unmeasuredCost = fields({ cost: 'not measured per goal; pot-wide $4266/24h' });
+      const unmeasured = checkGoalOwnerReportTruth(
+        unmeasuredCost,
+        inputs({ spend: { spentCents: 1200, measured: false, source: 'goal-pots', measuredAt: null } }),
+      );
+      expect(unmeasured.violations).toEqual([]);
+      expect(unmeasured.summary.cost).toBe('goal-spend-unmeasured');
+      const unread = checkGoalOwnerReportTruth(unmeasuredCost, inputs({ spend: null, ownerWalls: null }));
+      expect(unread.violations).toEqual([]);
+      expect(unread.summary).toMatchObject({ cost: 'unread', ownerWalls: 'unread' });
+    });
+
+    describe('corrections owed from the previous report (WI-10005610)', () => {
+      const previousReport = {
+        at: '2026-10-03T01:00:00.000Z',
+        citedRefStates: [
+          { ref: 'WI-10005610', state: 'done' },
+          { ref: 'WI-10005725', state: 'wip' },
+        ],
+      };
+
+      it('refuses a report that is silent about a ref the previous report called done and that has regressed', () => {
+        const { violations, summary } = checkGoalOwnerReportTruth(
+          fields(),
+          inputs({ previousReport, currentRefStates: { 'WI-10005610': 'open', 'WI-10005725': 'open' } }),
+        );
+        // WI-10005725 was reported as wip, never as finished, so nothing is owed for it.
+        expect(violations).toEqual([
+          expect.objectContaining({
+            check: 'correction',
+            kind: 'correction-owed',
+            ref: 'WI-10005610',
+            reportedState: 'done',
+            currentState: 'open',
+            reportedAt: '2026-10-03T01:00:00.000Z',
+          }),
+        ]);
+        expect(summary.corrections).toBe('unread');
+      });
+
+      it('accepts the report once it names the regressed ref, and records the correction as carried', () => {
+        const { violations, summary } = checkGoalOwnerReportTruth(
+          fields({ moved: 'CORRECTION: WI-10005610 is open again, not done as the 01:00Z report said. P-006 shipped.' }),
+          inputs({ previousReport, currentRefStates: { 'WI-10005610': 'open' } }),
+        );
+        expect(violations).toEqual([]);
+        expect(summary.corrections).toBe('carried');
+      });
+
+      it('owes nothing while every previously-done ref is still done, and judges nothing without a readable baseline', () => {
+        expect(
+          checkGoalOwnerReportTruth(fields(), inputs({ previousReport, currentRefStates: { 'WI-10005610': 'done' } })).summary
+            .corrections,
+        ).toBe('none-owed');
+        expect(
+          checkGoalOwnerReportTruth(fields(), inputs({ previousReport, currentRefStates: null })).summary.corrections,
+        ).toBe('unread');
+        expect(
+          checkGoalOwnerReportTruth(fields(), inputs({ previousReport: { at: previousReport.at, citedRefStates: null } }))
+            .summary.corrections,
+        ).toBe('no-baseline');
+      });
+    });
+  });
+
+  it('stamps the cited ref states and truth summary, and the stamp still counts as a report', () => {
+    const parsed = parseGoalOwnerReport(
+      ['MOVED: WI-1 done', 'COST: $3,131.80', 'OWNER-WALLED: none', 'KILLED: none', 'NEXT WAKE: ~15 min'].join('\n'),
+    );
+    const summary = { cost: 'cited-measured', ownerWalls: 'none-open', corrections: 'none-owed' } as const;
+    const stamp = stampGoalOwnerReport(GOAL, parsed, { citedRefStates: [{ ref: 'WI-1', state: 'done' }], summary });
+    expect(stamp).toMatchObject({ citedRefStates: [{ ref: 'WI-1', state: 'done' }], truth: summary });
+    expect(isGoalOwnerReportStamp(stamp, GOAL)).toBe(true);
+    const bare = stampGoalOwnerReport(GOAL, parsed);
+    expect('citedRefStates' in bare || 'truth' in bare).toBe(false);
+  });
+});
