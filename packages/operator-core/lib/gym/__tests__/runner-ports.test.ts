@@ -167,7 +167,8 @@ describe('createGymRunnerPorts', () => {
         implementation: { path: 'impl.js', before: hash(before), after: hash(mutated ? after : before) },
         execution: { cwd: clonePath, report,
           command: ['npm', 'run', 'test:file', '--', 'oracle.test.js', '--', '--reporter=json', expect.stringMatching(/^--outputFile=/)],
-          unresolved: ['oracle-imported-dependencies', 'test-command-runtime', 'pipeline-runtime'] },
+          unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+            'oracle-worker-source-evidence-unavailable'], workerSources: { report: null, modules: [] } },
       });
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   });
@@ -175,6 +176,7 @@ describe('createGymRunnerPorts', () => {
   it('measures real Git and Vitest oracle artifacts across an implementation change', async () => {
     const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-real-'));
     const vitestDir = dirname(fileURLToPath(import.meta.resolve('vitest/package.json')));
+    const reporterPath = join(dirname(fileURLToPath(import.meta.resolve('@papercusp/test-config/vitest-config'))), 'executed-source-map-reporter.ts');
     const implementation = 'export const answer = 42;\n';
     const changedImplementation = 'export const answer = 41;\n';
     const digest = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -182,20 +184,29 @@ describe('createGymRunnerPorts', () => {
       // Reuse the installed framework; this fixture owns no agent or live DB.
       mkdirSync(join(clonePath, 'node_modules'));
       symlinkSync(vitestDir, join(clonePath, 'node_modules', 'vitest'), 'dir');
-      writeFileSync(join(clonePath, 'package.json'), JSON.stringify({ type: 'module', scripts: {
+      mkdirSync(join(clonePath, 'libs'));
+      symlinkSync(dirname(dirname(reporterPath)), join(clonePath, 'libs', 'test-config'), 'dir');
+      writeFileSync(join(clonePath, 'package.json'), JSON.stringify({ name: 'gym-oracle-fixture', type: 'module', scripts: {
         'test:file': `node ${JSON.stringify(join(vitestDir, 'vitest.mjs'))} run --config vitest.config.mjs`,
       } }));
       writeFileSync(join(clonePath, 'vitest.config.mjs'), `export default { test: {
         include: ['oracle.test.mjs'], pool: 'forks', maxWorkers: 1, fileParallelism: false,
-        reporters: ['json'], outputFile: process.argv.find(a => a.startsWith('--outputFile='))?.slice(13),
+        experimental: { importDurations: { limit: 1000000 } },
+        reporters: ['json', ${JSON.stringify(reporterPath)}], outputFile: process.argv.find(a => a.startsWith('--outputFile='))?.slice(13),
       } };\n`);
       writeFileSync(join(clonePath, 'impl.mjs'), implementation);
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 42;\n');
       writeFileSync(join(clonePath, 'oracle.test.mjs'), `import { test, expect } from 'vitest';
         import { answer } from './impl.mjs';
-        test('actual task', () => expect(answer).toBe(42));\n`);
+        import { expected } from './helper.mjs';
+        import { writeFileSync } from 'node:fs';
+        test('actual task', () => {
+          if (expected === 43) writeFileSync(new URL('./helper.mjs', import.meta.url), 'export const expected = 44;');
+          expect(answer).toBe(expected);
+        });\n`);
       const git = (args: string[]) => execFileSync('git', args, { cwd: clonePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       git(['init', '--quiet']);
-      git(['add', 'package.json', 'vitest.config.mjs', 'impl.mjs', 'oracle.test.mjs']);
+      git(['add', 'package.json', 'vitest.config.mjs', 'impl.mjs', 'helper.mjs', 'oracle.test.mjs']);
       git(['-c', 'user.name=Gym fixture', '-c', 'user.email=gym-fixture@example.invalid', 'commit', '--quiet', '-m', 'Pinned oracle fixture']);
       const pinCommit = git(['rev-parse', 'HEAD']).trim();
       const port = createGymRunnerPorts(cfg().config).runOracle!;
@@ -213,6 +224,26 @@ describe('createGymRunnerPorts', () => {
       expect(post.execution).toMatchObject({ exitCode: 1, signal: null });
       expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
       expect(JSON.parse(post.execution!.report).testResults[0].assertionResults[0].status).toBe('failed');
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution!.workerSources).toMatchObject({
+          modules: [{ testFile: 'oracle.test.mjs', sourceEvidence: {
+            status: 'stable', sources: expect.arrayContaining([
+              expect.objectContaining({ path: 'helper.mjs', sha256: digest('export const expected = 42;\n') }),
+            ]),
+          } }],
+        });
+        expect(receipt.execution!.workerSources!.report).toBeTruthy();
+      }
+      expect(post.execution!.workerSources!.modules[0]!.state).toBe('failed');
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 43;\n');
+      const drifting = await port(input);
+      if (!drifting || Array.isArray(drifting)) throw new Error('Missing drift receipt');
+      expect(drifting.execution!.workerSources).toMatchObject({ modules: [{ sourceEvidence: {
+        status: 'changed', sources: expect.arrayContaining([expect.objectContaining({
+          path: 'helper.mjs', sha256: digest('export const expected = 43;\n'),
+          currentSha256: digest('export const expected = 44;'),
+        })]),
+      } }] });
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   }, 30_000);
 
