@@ -2664,10 +2664,28 @@ export default defineTool({
       if ('harness_slug' in m) delete m.harness_slug;
     };
     applyHarnessSlugAlias(a);
+    // WI-10005668 (measured 2026-10-02, 24h of tool_invocations): a caller who passes
+    // `to` as a BARE recipient string — `to: "su-…"` — was refused 13x/6 owners and
+    // re-failed 11 of those 13 times. The cause was this file, not the caller:
+    // `toPresent` below is `Array.isArray(a.to) && …`, so a scalar string read as
+    // MISSING and the refusal said "needs `to`: at least one recipient id" to a
+    // caller who HAD supplied one — no retry could get closer to the contract from
+    // that message. A single recipient string is unambiguous (ids, `*`, `human` and
+    // @selectors are all strings), so normalize it to the one-element array the
+    // schema declares, here — before the strict object schema sees it — exactly as
+    // `harness_slug` is. The published JSON Schema is unchanged (preprocess is
+    // transparent to it): `to` still advertises an array. An EMPTY string is left
+    // alone so it keeps falling through to the specific refusal below.
+    const applyScalarToNormalization = (m: { to?: unknown } | null | undefined) => {
+      if (!m || typeof m !== 'object') return;
+      if (typeof m.to === 'string' && m.to.length > 0) m.to = [m.to];
+    };
+    applyScalarToNormalization(a);
     if (Array.isArray(a?.items)) {
       for (const it of a.items) {
         if (it && typeof it === 'object') {
           applyHarnessSlugAlias(it as { harness?: unknown; harness_slug?: unknown });
+          applyScalarToNormalization(it as { to?: unknown });
         }
       }
     }
