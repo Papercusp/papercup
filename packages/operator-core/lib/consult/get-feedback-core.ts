@@ -282,11 +282,11 @@ export interface GetFeedbackResult {
    * outcome; `state` reports the conversation's lifecycle, which on this path is
    * still genuinely "no responder attached" and is what the DB CHECK persists.
    */
-  verdict: 'routed' | 'no_qualified_responder' | 'served_from_archive' | 'relevance_unmeasured';
+  verdict: 'routed' | 'no_qualified_responder' | 'served_from_archive' | 'relevance_unmeasured' | 'retrieval_only';
   /** WHY, honestly (D-003: distinct causes must stay distinguishable).
    * `embed_unavailable` always accompanies verdict `relevance_unmeasured`; the
    * other two accompany `no_qualified_responder`. */
-  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable';
+  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable' | 'retrieval_only';
   conversation_id: string;
   thread_id: string;
   /** 'served_from_archive' is a TS-surface state only — the DB row reuses
@@ -1208,8 +1208,12 @@ export async function getFeedbackCore(
   // selectee's allowlist exhausted, and the honest terminal for that is
   // `no_available_responder` with NO responder named (see 7c). `chosen` itself
   // is non-null on this path, so the widening is the walk's, not the route's.
-  let finalChosen: RoutingCandidate | null = chosen;
-  let finalChosenVia: SelectionVia | null = chosenVia;
+  const retrievalOnly = req.allowDispatch === false;
+  // Retrieval preserves the ranked menu but never attaches an answering
+  // identity or enters the dispatch/cascade path. The persisted no-responder
+  // state is inert; deliveryIntent distinguishes it from failed dispatch.
+  let finalChosen: RoutingCandidate | null = retrievalOnly ? null : chosen;
+  let finalChosenVia: SelectionVia | null = retrievalOnly ? null : chosenVia;
   const provisionalState: GetFeedbackResult['state'] = finalChosen
     ? 'awaiting_responder'
     : 'no_qualified_responder';
@@ -1260,11 +1264,13 @@ export async function getFeedbackCore(
   // dispatch walk, and is recorded there as `no_available_responder`.
   // Set only on the exhausted-menu terminal (7c); drives the honest hint there.
   let preLaunchRefusals: ReturnType<typeof summarizePreLaunchRefusals> | null = null;
-  let reason: GetFeedbackResult['reason'] = finalChosen
-    ? undefined
-    : route.snapshot.degraded === 'embed-unavailable'
-      ? 'embed_unavailable'
-      : 'below_floor';
+  let reason: GetFeedbackResult['reason'] = retrievalOnly
+    ? 'retrieval_only'
+    : finalChosen
+      ? undefined
+      : route.snapshot.degraded === 'embed-unavailable'
+        ? 'embed_unavailable'
+        : 'below_floor';
 
   // 4) Delivery gating is SELECTION only — the per-task wake budget is REMOVED
   //    (D-005: maxResponders is the only per-consult bound; residual spam guards
@@ -1497,6 +1503,8 @@ export async function getFeedbackCore(
     ? latency === 'hard-blocked'
       ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
       : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next expert is dispatched with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
+    : retrievalOnly
+      ? 'Retrieval-only: dispatch was disabled. No answering session was requested; do not park. Read remaining_candidates with sessions:read / sessions:search and decide from their transcript evidence.'
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
       : reason === 'no_available_responder' && preLaunchRefusals && preLaunchRefusals.total > 0 &&
@@ -1511,11 +1519,13 @@ export async function getFeedbackCore(
     // Derived from `reason` rather than re-testing `snapshot.degraded`, so the
     // verdict and the reason can never drift into disagreeing about the same
     // route (EI-21485716602970457).
-    verdict: finalChosen
-      ? 'routed'
-      : reason === 'embed_unavailable'
-        ? 'relevance_unmeasured'
-        : 'no_qualified_responder',
+    verdict: retrievalOnly
+      ? 'retrieval_only'
+      : finalChosen
+        ? 'routed'
+        : reason === 'embed_unavailable'
+          ? 'relevance_unmeasured'
+          : 'no_qualified_responder',
     ...(reason ? { reason } : {}),
     conversation_id: opened.conversation_id,
     thread_id: opened.thread_id,
@@ -1523,7 +1533,7 @@ export async function getFeedbackCore(
     responder: finalChosen,
     responder_via: finalChosenVia,
     remaining_candidates: (finalSelected.length > 0
-      ? finalSelected.slice(1)
+      ? retrievalOnly ? finalSelected : finalSelected.slice(1)
       : route.qualified.map((c) => ({ candidate: c, via: 'floor' as SelectionVia }))
     ).map((s) => ({
       ownerId: s.candidate.ownerId,
