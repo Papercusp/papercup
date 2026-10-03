@@ -68,16 +68,30 @@ export function completionSettlementManifest(
   // but omit them from the settlement receipt and its normalized path set.
   const repoBackedIdentity = stamp.contentIdentity.filter((identity) => identity.outOfRepoArtifact !== true);
   if (repoBackedIdentity.length === 0) return undefined;
+  const defaultRoot = nodePath.resolve(stamp.repositoryRoot);
   const contentIdentity = [...repoBackedIdentity]
-    .map((identity) => ({ ...identity, path: identity.path.replaceAll('\\', '/') }))
-    .sort((a, b) => a.path.localeCompare(b.path));
-  const normalizedPaths = [...new Set(contentIdentity.map(({ path }) => path))];
+    .map((identity) => ({
+      ...identity,
+      path: identity.path.replaceAll('\\', '/'),
+      ...(identity.repositoryRoot ? { repositoryRoot: nodePath.resolve(identity.repositoryRoot) } : {}),
+    }))
+    .sort((a, b) => {
+      const rootOrder = (a.repositoryRoot ?? defaultRoot).localeCompare(b.repositoryRoot ?? defaultRoot);
+      if (rootOrder !== 0) return rootOrder;
+      const pathOrder = a.path.localeCompare(b.path);
+      if (pathOrder !== 0) return pathOrder;
+      return (a.headSha ?? stamp.headSha).localeCompare(b.headSha ?? stamp.headSha);
+    });
+  // Keep one normalized path for each content-identity entry. A plain Set used to
+  // collapse equal relative names from sibling checkouts, making the receipt unable
+  // to represent both path identities even though the tree stamp already had them.
+  const normalizedPaths = contentIdentity.map(({ path }) => path);
   if (normalizedPaths.length === 0) return undefined;
   return {
     version: 1,
     generation,
     evidenceHash: createHash('sha256').update(canonicalEvidence(evidence)).digest('hex'),
-    repositoryRoot: nodePath.resolve(stamp.repositoryRoot),
+    repositoryRoot: defaultRoot,
     headSha: stamp.headSha,
     normalizedPaths,
     contentIdentity,

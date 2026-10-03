@@ -66,20 +66,300 @@ type SettlementHistoryPathAttestation = {
   toCommitSha: string;
   proof: 'exact-path-blob-history';
 };
-type SettlementHistoryAttestation = {
-  version: 1;
-  generation: number;
-  evidenceHash: string;
+type SettlementHistoryCheckoutAttestation = {
   repositoryRoot: string;
   closeHeadSha: string;
   emittedCommitSha: string;
   paths: SettlementHistoryPathAttestation[];
 };
+type SettlementHistoryAttestation = {
+  version: 2;
+  generation: number;
+  evidenceHash: string;
+  checkouts: SettlementHistoryCheckoutAttestation[];
+};
 
 /** EI-22344624691081449: manifest entries may describe an intentional deletion. */
 type SettlementIdentity = CompletionSettlementManifest['contentIdentity'][number] & {
   deletion?: true;
+  repositoryRoot?: string;
+  headSha?: string;
 };
+
+type CheckoutIdentityGroup = {
+  repositoryRoot: string;
+  headSha: string;
+  contentIdentity: SettlementIdentity[];
+};
+
+function settlementIdentityRoot(identity: SettlementIdentity, manifest: CompletionSettlementManifest): string {
+  return identity.repositoryRoot ?? manifest.repositoryRoot;
+}
+
+function settlementIdentityHead(identity: SettlementIdentity, manifest: CompletionSettlementManifest): string {
+  return identity.headSha ?? manifest.headSha;
+}
+
+function checkoutIdentityKey(repositoryRoot: string, headSha: string): string {
+  return JSON.stringify([repositoryRoot, headSha]);
+}
+
+function checkoutPathKey(repositoryRoot: string, headSha: string, path: string): string {
+  return JSON.stringify([repositoryRoot, headSha, path]);
+}
+
+function checkoutGroups(manifest: CompletionSettlementManifest): CheckoutIdentityGroup[] {
+  const groups = new Map<string, CheckoutIdentityGroup>();
+  for (const raw of manifest.contentIdentity) {
+    const identity = raw as SettlementIdentity;
+    const repositoryRoot = settlementIdentityRoot(identity, manifest);
+    const headSha = settlementIdentityHead(identity, manifest);
+    const key = checkoutIdentityKey(repositoryRoot, headSha);
+    let group = groups.get(key);
+    if (!group) {
+      group = { repositoryRoot, headSha, contentIdentity: [] };
+      groups.set(key, group);
+    }
+    group.contentIdentity.push(identity);
+  }
+  return [...groups.values()].sort((a, b) =>
+    a.repositoryRoot.localeCompare(b.repositoryRoot) || a.headSha.localeCompare(b.headSha),
+  );
+}
+
+function manifestForCheckout(
+  manifest: CompletionSettlementManifest,
+  group: CheckoutIdentityGroup,
+): CompletionSettlementManifest {
+  return {
+    ...manifest,
+    repositoryRoot: group.repositoryRoot,
+    headSha: group.headSha,
+    normalizedPaths: [...new Set(group.contentIdentity.map(({ path }) => path))],
+    contentIdentity: group.contentIdentity,
+    residualPaths: undefined,
+  };
+}
+
+function historyCheckoutAttestations(
+  raw: unknown,
+  manifest: CompletionSettlementManifest,
+): SettlementHistoryCheckoutAttestation[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  const value = raw as Record<string, unknown>;
+  if (value.generation !== manifest.generation || value.evidenceHash !== manifest.evidenceHash) return [];
+  const candidates: unknown[] = value.version === 1 && Array.isArray(value.paths)
+    ? [{
+        repositoryRoot: value.repositoryRoot ?? manifest.repositoryRoot,
+        closeHeadSha: value.closeHeadSha ?? manifest.headSha,
+        emittedCommitSha: value.emittedCommitSha,
+        paths: value.paths,
+      }]
+    : value.version === 2 && Array.isArray(value.checkouts)
+      ? value.checkouts
+      : [];
+  const verified: SettlementHistoryCheckoutAttestation[] = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const checkout = candidate as Record<string, unknown>;
+    const repositoryRoot = checkout.repositoryRoot;
+    const closeHeadSha = checkout.closeHeadSha;
+    const emittedCommitSha = checkout.emittedCommitSha;
+    if (
+      typeof repositoryRoot !== 'string' || !repositoryRoot.trim() ||
+      typeof closeHeadSha !== 'string' || !SHA_RE.test(closeHeadSha) ||
+      typeof emittedCommitSha !== 'string' || !SHA_RE.test(emittedCommitSha) ||
+      !Array.isArray(checkout.paths) || checkout.paths.length === 0
+    ) continue;
+    const group = checkoutGroups(manifest).find(
+      (item) => item.repositoryRoot === repositoryRoot && item.headSha === closeHeadSha,
+    );
+    if (!group) continue;
+    const paths: SettlementHistoryPathAttestation[] = [];
+    let valid = true;
+    for (const rawPath of checkout.paths) {
+      if (!rawPath || typeof rawPath !== 'object' || Array.isArray(rawPath)) {
+        valid = false;
+        break;
+      }
+      const pathEntry = rawPath as Record<string, unknown>;
+      const path = pathEntry.path;
+      const workingTreeBlobSha = pathEntry.workingTreeBlobSha;
+      if (
+        typeof path !== 'string' || !path.trim() ||
+        typeof workingTreeBlobSha !== 'string' || !SHA_RE.test(workingTreeBlobSha) ||
+        pathEntry.fromHeadSha !== closeHeadSha || pathEntry.toCommitSha !== emittedCommitSha ||
+        pathEntry.proof !== 'exact-path-blob-history'
+      ) {
+        valid = false;
+        break;
+      }
+      const matches = group.contentIdentity.filter(
+        (identity) => identity.path === path && identity.deletion !== true && identity.workingTreeBlobSha === workingTreeBlobSha,
+      );
+      if (matches.length !== 1) {
+        valid = false;
+        break;
+      }
+      paths.push({
+        path,
+        workingTreeBlobSha,
+        fromHeadSha: closeHeadSha,
+        toCommitSha: emittedCommitSha,
+        proof: 'exact-path-blob-history',
+      });
+    }
+    if (valid) verified.push({ repositoryRoot, closeHeadSha, emittedCommitSha, paths });
+  }
+  return verified;
+}
+
+function identityHasHistoryProof(
+  identity: SettlementIdentity,
+  group: CheckoutIdentityGroup,
+  attestations: readonly SettlementHistoryCheckoutAttestation[],
+): boolean {
+  return attestations.some((checkout) =>
+    checkout.repositoryRoot === group.repositoryRoot && checkout.closeHeadSha === group.headSha &&
+    checkout.paths.some((path) =>
+      path.path === identity.path && path.workingTreeBlobSha === identity.workingTreeBlobSha,
+    ),
+  );
+}
+
+function identityIsExactInStamp(
+  identity: SettlementIdentity,
+  group: CheckoutIdentityGroup,
+  treeStampValue: unknown,
+): boolean {
+  if (!treeStampValue || typeof treeStampValue !== 'object' || Array.isArray(treeStampValue)) return false;
+  const stamp = treeStampValue as Record<string, unknown>;
+  if (!Array.isArray(stamp.contentIdentity)) return false;
+  return stamp.contentIdentity.some((rawEntry) => {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) return false;
+    const entry = rawEntry as Record<string, unknown>;
+    const root = typeof entry.repositoryRoot === 'string' ? entry.repositoryRoot : stamp.repositoryRoot;
+    if (root !== group.repositoryRoot || entry.path !== identity.path) return false;
+    if (identity.deletion === true) {
+      return entry.deletion === true && entry.workingTreeBlobSha == null && entry.headBlobSha == null;
+    }
+    return entry.workingTreeBlobSha === identity.workingTreeBlobSha &&
+      entry.headBlobSha === identity.workingTreeBlobSha;
+  });
+}
+
+function identityNeedsCheckoutSettlement(
+  identity: SettlementIdentity,
+  group: CheckoutIdentityGroup,
+  evidence: Record<string, unknown> | undefined,
+  manifest: CompletionSettlementManifest,
+  attestations: readonly SettlementHistoryCheckoutAttestation[],
+): boolean {
+  if (identity.deletion === true && identity.workingTreeBlobSha == null && identity.headBlobSha == null) return false;
+  if (identity.deletion !== true && identity.workingTreeBlobSha != null && identity.headBlobSha === identity.workingTreeBlobSha) return false;
+  return !identityIsExactInStamp(identity, group, evidence?.treeStamp) &&
+    !identityHasHistoryProof(identity, group, attestations);
+}
+
+function completionEvidenceIdentityIsProven(
+  evidence: Record<string, unknown> | undefined,
+  manifest: CompletionSettlementManifest,
+  attestations: readonly SettlementHistoryCheckoutAttestation[],
+): boolean {
+  const rawStamp = evidence?.treeStamp;
+  if (!rawStamp || typeof rawStamp !== 'object' || Array.isArray(rawStamp)) return false;
+  const stamp = rawStamp as Record<string, unknown>;
+  if (!Array.isArray(stamp.contentIdentity)) return false;
+  for (const rawEntry of stamp.contentIdentity) {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) return false;
+    const entry = rawEntry as Record<string, unknown>;
+    if (entry.outOfRepoArtifact === true) continue;
+    if (entry.deletion === true) {
+      if (entry.workingTreeBlobSha != null || entry.headBlobSha != null) return false;
+      continue;
+    }
+    if (typeof entry.workingTreeBlobSha === 'string' && entry.headBlobSha === entry.workingTreeBlobSha) continue;
+    const repositoryRoot = typeof entry.repositoryRoot === 'string' ? entry.repositoryRoot : stamp.repositoryRoot;
+    const headSha = typeof entry.headSha === 'string' ? entry.headSha : stamp.headSha;
+    if (typeof repositoryRoot !== 'string' || typeof headSha !== 'string') return false;
+    const manifestGroup = checkoutGroups(manifest).find(
+      (group) => group.repositoryRoot === repositoryRoot && group.headSha === headSha,
+    );
+    if (!manifestGroup || typeof entry.path !== 'string' || typeof entry.workingTreeBlobSha !== 'string') return false;
+    const manifestMatches = manifestGroup.contentIdentity.filter(
+      (identity) => identity.path === entry.path && identity.workingTreeBlobSha === entry.workingTreeBlobSha && identity.deletion !== true,
+    );
+    if (manifestMatches.length !== 1) return false;
+    const attested = attestations.some((checkout) =>
+      checkout.repositoryRoot === repositoryRoot && checkout.closeHeadSha === headSha &&
+      checkout.paths.some((path) =>
+        path.path === entry.path && path.workingTreeBlobSha === entry.workingTreeBlobSha,
+      ),
+    );
+    if (!attested) return false;
+  }
+  return true;
+}
+
+function refreshedTreeStampForCheckout(
+  rawStamp: unknown,
+  manifest: CompletionSettlementManifest,
+  groups: readonly CheckoutIdentityGroup[],
+  repositoryRoot: string,
+  commitSha: string,
+  emittedTree: ReadonlyMap<string, HeadBlobResolution>,
+): CompletionTreeStamp | undefined {
+  const stamp = rawStamp && typeof rawStamp === 'object' && !Array.isArray(rawStamp)
+    ? rawStamp as Record<string, unknown>
+    : {
+        repositoryRoot: manifest.repositoryRoot,
+        headSha: manifest.headSha,
+        contentIdentity: manifest.contentIdentity,
+      };
+  if (!Array.isArray(stamp.contentIdentity) || typeof stamp.repositoryRoot !== 'string' || typeof stamp.headSha !== 'string') return undefined;
+  const groupsByHead = new Map(groups.map((group) => [group.headSha, group]));
+  const fullyExactHeads = new Set<string>();
+  for (const group of groups) {
+    const allExact = group.contentIdentity.every((identity) => {
+      const actual = emittedTree.get(identity.path);
+      if (identity.deletion === true) return actual?.status === 'absent';
+      return typeof identity.workingTreeBlobSha === 'string' &&
+        actual?.status === 'resolved' && actual.sha === identity.workingTreeBlobSha;
+    });
+    if (allExact) fullyExactHeads.add(group.headSha);
+  }
+  let changed = false;
+  const contentIdentity = stamp.contentIdentity.map((rawEntry) => {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) return rawEntry;
+    const entry = rawEntry as Record<string, unknown>;
+    const root = typeof entry.repositoryRoot === 'string' ? entry.repositoryRoot : stamp.repositoryRoot as string;
+    const head = typeof entry.headSha === 'string' ? entry.headSha : stamp.headSha as string;
+    if (root !== repositoryRoot) return rawEntry;
+    const group = groupsByHead.get(head);
+    if (!group || !fullyExactHeads.has(group.headSha)) return rawEntry;
+    const identity = group.contentIdentity.find((candidate) => candidate.path === entry.path);
+    if (!identity) return rawEntry;
+    const actual = emittedTree.get(identity.path);
+    if (identity.deletion === true && actual?.status === 'absent') {
+      changed = true;
+      return { ...entry, repositoryRoot, headSha: commitSha, headBlobSha: null };
+    }
+    if (
+      identity.deletion !== true && typeof identity.workingTreeBlobSha === 'string' &&
+      actual?.status === 'resolved' && actual.sha === identity.workingTreeBlobSha
+    ) {
+      changed = true;
+      return { ...entry, repositoryRoot, headSha: commitSha, headBlobSha: actual.sha };
+    }
+    return rawEntry;
+  });
+  if (!changed) return undefined;
+  return {
+    ...(stamp as unknown as CompletionTreeStamp),
+    ...(stamp.repositoryRoot === repositoryRoot ? { headSha: commitSha } : {}),
+    contentIdentity: contentIdentity as CompletionTreeStamp['contentIdentity'],
+  };
+}
 
 /**
  * WI-1409142: restore the two blob-sha keys the terminal payload write used to drop.
@@ -293,66 +573,6 @@ export async function notifySettlementStranded(notice: SettlementStrandedNotice)
 }
 
 /**
- * WI-1053550: the treeStamp this reconciler's authority upgrade needs to SURVIVE
- * migration 972's `completion_authority_floor_trg`. That trigger polices ONLY
- * `_completionEvidence.treeStamp.contentIdentity` (mirroring
- * `completionTreeContentIdentityMatches()`) — a surface this reconciler never
- * wrote before this fix. It refreshed `settlementManifest` only, so an upgrade
- * to `committed` was downgraded straight back by the trigger on the very same
- * write: the trigger re-read the ORIGINAL close-time treeStamp (captured before
- * git-sync had landed the commit, so headBlobSha routinely didn't match yet)
- * and found it still unproven, no matter how conclusively the manifest's own
- * exact-commit lookup had just settled the row.
- *
- * A zero residual count can now come from either an exact emitted-tree match or a
- * path-history match. Only the former can refresh treeStamp: a superseded historical
- * blob is not the emitted commit's current head blob. This function therefore checks
- * the emitted tree map independently and refuses to synthesize a false head identity.
- * The database floor still requires exact tree identity; historical-only authority
- * needs a corresponding floor extension before it can persist.
- */
-function confirmedTreeStampForSettlement(
-  manifest: CompletionSettlementManifest,
-  commitSha: string,
-  emittedTree: ReadonlyMap<string, HeadBlobResolution>,
-): CompletionTreeStamp | undefined {
-  const normalized = new Set(manifest.normalizedPaths);
-  const contentIdentity = manifest.contentIdentity
-    // WI-1409142: `!= null` also excludes an ABSENT key. The schema now accepts a
-    // missing sha as null, so a strict `!== null` would let `undefined` through and
-    // write a treeStamp entry whose shas are undefined — which
-    // completionTreeContentIdentityMatches would then have to reject, silently
-    // undoing the very upgrade this function exists to make survive the trigger.
-    .filter((entry) => {
-      if (!normalized.has(entry.path)) return false;
-      const deletion = (entry as SettlementIdentity).deletion === true;
-      return deletion || entry.workingTreeBlobSha != null;
-    })
-    .map((entry) => {
-      const deletion = (entry as SettlementIdentity).deletion === true;
-      return {
-        path: entry.path,
-        workingTreeBlobSha: deletion ? null : entry.workingTreeBlobSha,
-        headBlobSha: deletion ? null : entry.workingTreeBlobSha,
-        ...(deletion ? { deletion: true as const } : {}),
-      };
-    });
-  if (contentIdentity.length === 0) return undefined;
-  // History can prove settlement after a later commit has superseded a path,
-  // but that does not make the older blob part of commitSha's exact tree. Only
-  // refresh treeStamp when the emitted tree itself still matches every identity.
-  const exactTreeMatches = contentIdentity.every((entry) => {
-    if ((entry as SettlementIdentity).deletion === true) {
-      return emittedTree.get(entry.path)?.status === 'absent';
-    }
-    const actual = emittedTree.get(entry.path);
-    return actual?.status === 'resolved' && actual.sha === entry.workingTreeBlobSha;
-  });
-  if (!exactTreeMatches) return undefined;
-  return { repositoryRoot: manifest.repositoryRoot, headSha: commitSha, contentIdentity };
-}
-
-/**
  * A declared path git accepts as a pathspec inside the repository. `git ls-tree` exits 128
  * on the whole call for a path outside the repository (`/reports/...` was measured in the
  * live candidate set on 2026-10-02), so one such path would fail the batched read for every
@@ -387,20 +607,15 @@ function settlementManifestOfRow(row: CandidateRow) {
   }
 }
 
-function declaredPathsForBatch(rows: readonly CandidateRow[]): string[] {
+function declaredPathsForBatch(rows: readonly CandidateRow[], repositoryRoot: string): string[] {
   const paths = new Set<string>();
   for (const row of rows) {
-    const payload = row.payload;
-    if (!payload || typeof payload !== 'object') continue;
-    const evidence = (payload as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
-    const manifest = evidence && typeof evidence === 'object'
-      ? (evidence as Record<string, unknown>).settlementManifest
-      : undefined;
-    const declared = manifest && typeof manifest === 'object'
-      ? (manifest as Record<string, unknown>).normalizedPaths
-      : undefined;
-    if (!Array.isArray(declared)) continue;
-    for (const path of declared) if (batchSafeDeclaredPath(path)) paths.add(path);
+    const manifest = settlementManifestOfRow(row);
+    if (!manifest) continue;
+    for (const group of checkoutGroups(manifest)) {
+      if (group.repositoryRoot !== repositoryRoot) continue;
+      for (const { path } of group.contentIdentity) if (batchSafeDeclaredPath(path)) paths.add(path);
+    }
   }
   return [...paths];
 }
@@ -687,8 +902,22 @@ async function reconcileProposedCompletionsCore(
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId}
        AND authority = 'proposed'
-       AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
        AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest']}::text[] IS NOT NULL
+       AND (
+         payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
+         OR EXISTS (
+           SELECT 1
+             FROM jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'contentIdentity']}::text[]) = 'array'
+                   THEN payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'contentIdentity']}::text[]
+                 ELSE '[]'::jsonb
+               END
+             ) AS settlement_identity(value)
+            WHERE COALESCE(NULLIF(settlement_identity.value->>'repositoryRoot', ''),
+                           payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[]) = ${scope.repositoryRoot}
+         )
+       )
      ORDER BY (jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'residualPaths']}::text[]) IS NOT DISTINCT FROM 'array') ASC,
               updated_ts ASC, feature_id ASC
      LIMIT ${MAX_CANDIDATES}`;
@@ -697,7 +926,7 @@ async function reconcileProposedCompletionsCore(
 
   // WI-10005285: every row is read against the same commit, so read the tree once per pass.
   // WI-10005357: the history reader's gitlink reads at that commit batch the same way.
-  historyReader?.hint(scope.repositoryRoot, commitSha, declaredPathsForBatch(rows));
+  historyReader?.hint(scope.repositoryRoot, commitSha, declaredPathsForBatch(rows, scope.repositoryRoot));
   // WI-10005380: announce every row's close-time (path, blob) pairs before any row asks, so
   // one history search per range answers every row that shares it; and each row's paths at
   // its close-time HEAD, so that search resolves them from one ls-tree per HEAD.
@@ -705,22 +934,26 @@ async function reconcileProposedCompletionsCore(
     for (const row of rows) {
       const manifest = settlementManifestOfRow(row);
       if (!manifest) continue;
-      historyReader.hint(manifest.repositoryRoot, manifest.headSha, manifest.normalizedPaths);
-      historyReader.hintBlobs(
-        manifest.repositoryRoot,
-        manifest.headSha,
-        manifest.contentIdentity.flatMap((entry) =>
-          entry.deletion !== true && typeof entry.workingTreeBlobSha === 'string'
-            ? [{ path: entry.path, blobSha: entry.workingTreeBlobSha }]
-            : [],
-        ),
-      );
+      for (const group of checkoutGroups(manifest)) {
+        if (group.repositoryRoot !== scope.repositoryRoot) continue;
+        const paths = [...new Set(group.contentIdentity.map(({ path }) => path))];
+        historyReader.hint(group.repositoryRoot, group.headSha, paths);
+        historyReader.hintBlobs(
+          group.repositoryRoot,
+          group.headSha,
+          group.contentIdentity.flatMap((entry) =>
+            entry.deletion !== true && typeof entry.workingTreeBlobSha === 'string'
+              ? [{ path: entry.path, blobSha: entry.workingTreeBlobSha }]
+              : [],
+          ),
+        );
+      }
     }
   }
   let batchUnavailable = false;
   const lookup =
     rows.length > 1
-      ? batchHeadBlobLookup(baseLookup, scope.repositoryRoot, commitSha, declaredPathsForBatch(rows), deps.signal, () => {
+      ? batchHeadBlobLookup(baseLookup, scope.repositoryRoot, commitSha, declaredPathsForBatch(rows, scope.repositoryRoot), deps.signal, () => {
           batchUnavailable = true;
         })
       : baseLookup;
@@ -759,104 +992,157 @@ async function reconcileProposedCompletionsCore(
         unreadableByIndex[index] = row.feature_id;
         return;
       }
-      let emittedTree: ReadonlyMap<string, HeadBlobResolution> | undefined;
+      if (!evidence || typeof evidence !== 'object') {
+        unreadableByIndex[index] = row.feature_id;
+        return;
+      }
+      const allGroups = checkoutGroups(parsed.data);
+      const currentGroups = allGroups.filter((group) => group.repositoryRoot === scope.repositoryRoot);
+      if (currentGroups.length === 0) {
+        unreadableByIndex[index] = row.feature_id;
+        return;
+      }
+      const emittedTree = new Map<string, HeadBlobResolution>();
       const captureLookup: CompletionHeadBlobLookup = async (root, sha, paths, opts) => {
-        emittedTree = await lookup(root, sha, paths, opts);
-        return emittedTree;
+        const found = await lookup(root, sha, paths, opts);
+        if (found) for (const [path, identity] of found) emittedTree.set(path, identity);
+        return found;
       };
-      const historyMatches = new Map<string, string>();
-      // A row's history reads at its close-time HEAD fold into one ls-tree (read lazily,
-      // so a row whose paths all match the commit costs nothing here).
-      historyReader?.hint(parsed.data.repositoryRoot, parsed.data.headSha, parsed.data.normalizedPaths);
-      const residualPaths = await residualPathsForCommit(
-        parsed.data,
-        commitSha,
-        captureLookup,
-        deps.signal,
-        historyLookup,
-        (path, workingTreeBlobSha) => historyMatches.set(path, workingTreeBlobSha),
-        workingTreeLookup,
-      );
-      if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
-      if (!residualPaths) {
-        // The manifest parsed above and the pass is not aborted, so a git lookup measured
-        // nothing: the exact-tree lookup came back empty, or a per-path history read timed
-        // out (EI-24821039535031884). Leave the row untouched for the next fire, but count it.
+      const historyMatchesByCheckout = new Map<string, Map<string, string>>();
+      const currentResiduals: Array<SettlementResidualPath & { repositoryRoot: string; headSha: string }> = [];
+      let measuredEveryCheckout = true;
+      for (const group of currentGroups) {
+        const groupKey = checkoutIdentityKey(group.repositoryRoot, group.headSha);
+        const historyMatches = new Map<string, string>();
+        const checkoutManifest = manifestForCheckout(parsed.data, group);
+        historyReader?.hint(group.repositoryRoot, group.headSha, checkoutManifest.normalizedPaths);
+        const residuals = await residualPathsForCommit(
+          checkoutManifest,
+          commitSha,
+          captureLookup,
+          deps.signal,
+          historyLookup,
+          (path, workingTreeBlobSha) => historyMatches.set(path, workingTreeBlobSha),
+          workingTreeLookup,
+        );
+        if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
+        if (!residuals) {
+          measuredEveryCheckout = false;
+          break;
+        }
+        historyMatchesByCheckout.set(groupKey, historyMatches);
+        currentResiduals.push(...residuals.map((entry) => ({
+          ...entry,
+          repositoryRoot: group.repositoryRoot,
+          headSha: group.headSha,
+        })));
+      }
+      if (!measuredEveryCheckout) {
+        // A failed root/head read measured nothing for the row. Do not persist partial
+        // results from another checkout; the next pass retries the complete current root.
         lookupUnavailableByIndex[index] = row.feature_id;
         return;
       }
-      residualByIndex[index] = residualPaths.length;
-      const nextManifest = { ...parsed.data, residualPaths };
-      // EI-24710716781971154: the migration-1207 floor requires a proof for EVERY identity
-      // entry whose close-time working blob differs from head — not only the ones a later
-      // commit superseded. A MIXED row (some paths still exact in the emitted tree, some
-      // superseded) cannot refresh treeStamp (see confirmedTreeStampForSettlement) and used
-      // to attest only its history matches, so the floor rejected the exact-tree paths:
-      // the UPDATE to 'committed' was reverted by the trigger on every rotation (134 of 555
-      // candidates, measured 2026-09-30). Attest those paths too. It is truthful: a path
-      // whose emitted-tree blob IS the close-time blob trivially held it within
-      // [closeHead, emittedCommit]. The selection mirrors the floor's own inputs
-      // (treeStamp.contentIdentity entries it would still call unproven), so a path the floor
-      // does not read is never attested — an extra entry that failed the floor's binding
-      // checks would invalidate the whole attestation and downgrade rows that pass today.
-      const attestedPaths = new Map(historyMatches);
-      if (residualPaths.length === 0 && historyMatches.size > 0 && emittedTree) {
-        const stampIdentity = (evidence?.treeStamp as { contentIdentity?: unknown } | undefined)?.contentIdentity;
-        if (Array.isArray(stampIdentity)) {
-          const declaredByPath = new Map(parsed.data.contentIdentity.map((entry) => [entry.path, entry as SettlementIdentity]));
-          const normalizedPaths = new Set(parsed.data.normalizedPaths);
-          for (const raw of stampIdentity) {
-            const entry = (raw ?? {}) as Record<string, unknown>;
-            const path = entry.path;
-            const blob = entry.workingTreeBlobSha;
-            if (typeof path !== 'string' || typeof blob !== 'string' || attestedPaths.has(path)) continue;
-            if (entry.deletion === true || entry.outOfRepoArtifact === true) continue;
-            if (entry.headBlobSha === blob) continue; // exact-proven at close; the floor needs nothing more
-            const declared = declaredByPath.get(path);
-            if (!normalizedPaths.has(path) || declared?.workingTreeBlobSha !== blob || declared.deletion === true) continue;
-            const actual = emittedTree.get(path);
-            if (actual?.status === 'resolved' && actual.sha === blob) attestedPaths.set(path, blob);
+      const currentRootResiduals = currentResiduals;
+      const previousResiduals = parsed.data.residualPaths ?? [];
+      const preservedResiduals = previousResiduals.filter(
+        (entry) => (entry.repositoryRoot ?? parsed.data.repositoryRoot) !== scope.repositoryRoot,
+      );
+      const attestationCheckouts = historyCheckoutAttestations(evidence.historyAttestation, parsed.data)
+        .filter((checkout) => checkout.repositoryRoot !== scope.repositoryRoot);
+      for (const group of currentGroups) {
+        const groupResiduals = currentRootResiduals.filter(
+          (entry) => entry.repositoryRoot === group.repositoryRoot && entry.headSha === group.headSha,
+        );
+        if (groupResiduals.length > 0) continue;
+        const closeHistoryMatches = historyMatchesByCheckout.get(checkoutIdentityKey(group.repositoryRoot, group.headSha));
+        const paths = new Map<string, string>();
+        for (const identity of group.contentIdentity) {
+          if (identity.deletion === true || typeof identity.workingTreeBlobSha !== 'string') continue;
+          if (identity.headBlobSha === identity.workingTreeBlobSha) continue;
+          const actual = emittedTree.get(identity.path);
+          if (
+            closeHistoryMatches?.get(identity.path) === identity.workingTreeBlobSha ||
+            (actual?.status === 'resolved' && actual.sha === identity.workingTreeBlobSha)
+          ) {
+            paths.set(identity.path, identity.workingTreeBlobSha);
           }
         }
+        if (paths.size > 0) {
+          attestationCheckouts.push({
+            repositoryRoot: group.repositoryRoot,
+            closeHeadSha: group.headSha,
+            emittedCommitSha: commitSha,
+            paths: [...paths.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([path, workingTreeBlobSha]) => ({
+              path,
+              workingTreeBlobSha,
+              fromHeadSha: group.headSha,
+              toCommitSha: commitSha,
+              proof: 'exact-path-blob-history' as const,
+            })),
+          });
+        }
       }
-      const historyAttestation: SettlementHistoryAttestation | null =
-        residualPaths.length === 0 && attestedPaths.size > 0
-          ? {
-              version: 1,
-              generation: parsed.data.generation,
-              evidenceHash: parsed.data.evidenceHash,
-              repositoryRoot: parsed.data.repositoryRoot,
-              closeHeadSha: parsed.data.headSha,
-              emittedCommitSha: commitSha,
-              paths: [...attestedPaths.entries()].map(([path, workingTreeBlobSha]) => ({
-                path,
-                workingTreeBlobSha,
-                fromHeadSha: parsed.data.headSha,
-                toCommitSha: commitSha,
-                proof: 'exact-path-blob-history' as const,
-              })),
-            }
-          : null;
-      // WI-1053550: refresh treeStamp only when the emitted tree itself matches every
-      // close-time blob. A history-only settlement cannot truthfully claim that the
-      // superseded blob is still in the emitted tree.
-      const confirmedTreeStamp =
-        residualPaths.length === 0 && emittedTree
-          ? confirmedTreeStampForSettlement(parsed.data, commitSha, emittedTree)
-          : undefined;
+      attestationCheckouts.sort((a, b) =>
+        a.repositoryRoot.localeCompare(b.repositoryRoot) || a.closeHeadSha.localeCompare(b.closeHeadSha),
+      );
+      const historyAttestation: SettlementHistoryAttestation | null = attestationCheckouts.length > 0
+        ? {
+            version: 2,
+            generation: parsed.data.generation,
+            evidenceHash: parsed.data.evidenceHash,
+            checkouts: attestationCheckouts,
+          }
+        : null;
+      const confirmedTreeStamp = refreshedTreeStampForCheckout(
+        evidence.treeStamp,
+        parsed.data,
+        currentGroups,
+        scope.repositoryRoot,
+        commitSha,
+        emittedTree,
+      );
+      const nextEvidence = {
+        ...evidence,
+        historyAttestation,
+        ...(confirmedTreeStamp ? { treeStamp: confirmedTreeStamp } : {}),
+      };
+      const nextResiduals = [...preservedResiduals, ...currentRootResiduals];
+      for (const group of allGroups) {
+        if (group.repositoryRoot === scope.repositoryRoot) continue;
+        const alreadyHasResidual = preservedResiduals.some(
+          (entry) => (entry.repositoryRoot ?? parsed.data.repositoryRoot) === group.repositoryRoot &&
+            (entry.headSha ?? parsed.data.headSha) === group.headSha,
+        );
+        if (alreadyHasResidual) continue;
+        for (const identity of group.contentIdentity) {
+          if (!identityNeedsCheckoutSettlement(identity, group, evidence, parsed.data, attestationCheckouts)) continue;
+          nextResiduals.push({
+            path: identity.path,
+            repositoryRoot: group.repositoryRoot,
+            headSha: group.headSha,
+            reason: 'checkout-not-processed',
+          });
+        }
+      }
+      nextResiduals.sort((a, b) =>
+        (a.repositoryRoot ?? parsed.data.repositoryRoot).localeCompare(b.repositoryRoot ?? parsed.data.repositoryRoot) ||
+        (a.headSha ?? parsed.data.headSha).localeCompare(b.headSha ?? parsed.data.headSha) ||
+        a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason),
+      );
+      const nextManifest = { ...parsed.data, residualPaths: nextResiduals };
+      const persistedEvidence = { ...nextEvidence, settlementManifest: nextManifest };
+      const canCommit = nextResiduals.length === 0 &&
+        completionEvidenceIdentityIsProven(persistedEvidence, parsed.data, attestationCheckouts);
+      residualByIndex[index] = nextResiduals.length;
       const nextPayload = {
         ...payload,
-        [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
-          ...evidence,
-          settlementManifest: nextManifest,
-          historyAttestation,
-          ...(confirmedTreeStamp ? { treeStamp: confirmedTreeStamp } : {}),
-        },
+        [TERMINAL_COMPLETION_EVIDENCE_KEY]: persistedEvidence,
       };
       const result = await sql<{ feature_id: string; authority?: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = ${sql.json(nextPayload)},
-             authority = CASE WHEN ${residualPaths.length} = 0 THEN 'committed' ELSE authority END,
+             authority = CASE WHEN ${canCommit} THEN 'committed' ELSE authority END,
              updated_ts = ${Date.now()}
        WHERE feature_id = ${row.feature_id}
          AND workspace_id = ${scope.workspaceId}
@@ -864,7 +1150,7 @@ async function reconcileProposedCompletionsCore(
          AND authority = 'proposed'
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'generation']}::text[] = ${String(parsed.data.generation)}
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'evidenceHash']}::text[] = ${parsed.data.evidenceHash}
-         AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
+         AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY]}::text[] IS NOT DISTINCT FROM ${sql.json(evidence)}
        RETURNING feature_id, authority`;
       // EI-24710716781971154: RETURNING reflects the row AFTER migration 972/1207's
       // `downgrade_unproven_committed_close` trigger, which silently reverts an
@@ -872,7 +1158,7 @@ async function reconcileProposedCompletionsCore(
       // NOT proof of an upgrade: only `authority === 'committed'` is. Counting it anyway
       // reported a settlement and fired `work-item:settled:<id>` for a row the floor had
       // rejected, again on every rotation. Track it instead, so it is visible.
-      if (residualPaths.length === 0 && result[0] && result[0].authority !== 'committed') {
+      if (canCommit && result[0] && result[0].authority !== 'committed') {
         floorRejectedByIndex[index] = result[0].feature_id;
       }
       // WI-10004711: tell the closer ONCE, on the transition into stranded. The prior
@@ -881,11 +1167,17 @@ async function reconcileProposedCompletionsCore(
       // residue) starts clean. A missed CAS (result empty) is someone else's write: silent.
       const priorStranded = new Set(
         (parsed.data.residualPaths ?? [])
-          .filter((entry) => entry.reason === 'superseded-before-commit')
-          .map((entry) => entry.path),
+          .filter((entry) => entry.reason === 'superseded-before-commit' &&
+            (entry.repositoryRoot ?? parsed.data.repositoryRoot) === scope.repositoryRoot)
+          .map((entry) => checkoutPathKey(
+            entry.repositoryRoot ?? parsed.data.repositoryRoot,
+            entry.headSha ?? parsed.data.headSha,
+            entry.path,
+          )),
       );
-      const newlyStranded = residualPaths
-        .filter((entry) => entry.reason === 'superseded-before-commit' && !priorStranded.has(entry.path))
+      const newlyStranded = currentRootResiduals
+        .filter((entry) => entry.reason === 'superseded-before-commit' &&
+          !priorStranded.has(checkoutPathKey(entry.repositoryRoot, entry.headSha, entry.path)))
         .map((entry) => entry.path);
       if (result[0] && newlyStranded.length > 0) {
         strandedByIndex[index] = result[0].feature_id;
@@ -895,9 +1187,9 @@ async function reconcileProposedCompletionsCore(
             harness: row.harness_slug,
             workspaceId: scope.workspaceId,
             terminalOwner: row.terminal_owner ?? null,
-            strandedPaths: residualPaths
+            strandedPaths: currentRootResiduals
               .filter((entry) => entry.reason === 'superseded-before-commit')
-              .map((entry) => entry.path),
+              .map((entry) => `${entry.repositoryRoot}:${entry.path}`),
             commitSha,
             generation: parsed.data.generation,
           });
@@ -908,7 +1200,7 @@ async function reconcileProposedCompletionsCore(
           );
         }
       }
-      if (residualPaths.length === 0 && result[0] && result[0].authority === 'committed') {
+      if (canCommit && result[0] && result[0].authority === 'committed') {
         const id = result[0].feature_id;
         upgradedByIndex[index] = id;
         // D-003: the generation/evidence-scoped CAS above is the exact-once gate.
@@ -1037,8 +1329,22 @@ export async function countNeverAttemptedCandidates(
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId}
        AND authority = 'proposed'
-       AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
        AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest']}::text[] IS NOT NULL
+       AND (
+         payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
+         OR EXISTS (
+           SELECT 1
+             FROM jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'contentIdentity']}::text[]) = 'array'
+                   THEN payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'contentIdentity']}::text[]
+                 ELSE '[]'::jsonb
+               END
+             ) AS settlement_identity(value)
+            WHERE COALESCE(NULLIF(settlement_identity.value->>'repositoryRoot', ''),
+                           payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[]) = ${scope.repositoryRoot}
+         )
+       )
        AND jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'residualPaths']}::text[]) IS DISTINCT FROM 'array'
        AND updated_ts < ${eligibleBeforeMs}`;
   return Number(rows[0]?.n ?? 0);
