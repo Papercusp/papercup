@@ -140,16 +140,16 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       const svc = u.Service ?? {};
       const execStart = svc.ExecStart?.[0] ?? '';
       const violations: string[] = [];
-      if (execStart !== '${PHONE_NODE_BIN} --import tsx --watch src/index.ts') {
+      if (execStart !== '${PHONE_NODE_BIN} --import tsx src/index.ts') {
         violations.push(
-          `ExecStart must use Node's watcher for the phone sidecar, got: ${execStart || '<missing>'}`,
+          `ExecStart must supervise the phone HTTP process directly, got: ${execStart || '<missing>'}`,
         );
       }
       if (svc.WorkingDirectory?.[0] !== '${PHONE_SIDECAR_DIR}') {
         violations.push(`WorkingDirectory must remain the rendered SIDECAR_DIR, got: ${svc.WorkingDirectory?.[0]}`);
       }
-      if (svc.Restart?.[0] !== 'always') {
-        violations.push(`Restart must be always, got: ${svc.Restart?.[0]}`);
+      if (svc.Restart?.[0] !== 'on-failure') {
+        violations.push(`Restart must be on-failure, got: ${svc.Restart?.[0]}`);
       }
       if (!(u.Install?.WantedBy ?? []).includes('default.target')) {
         violations.push('Install.WantedBy must include default.target');
@@ -157,7 +157,7 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       return violations;
     }
 
-    it('keeps source-change restart in the tracked template', () => {
+    it('lets systemd supervise and restart the HTTP process directly', () => {
       expect(existsSync(PHONE_TEMPLATE), `${PHONE_TEMPLATE} is missing`).toBe(true);
       expect(phoneTemplateViolations(source())).toEqual([]);
     });
@@ -170,16 +170,16 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       expect(deploy).toContain("'${PHONE_SIDECAR_DIR}'");
     });
 
-    it('rejects the old plain-tsx command that served stale code', () => {
-      const mutant = source().replace('--import tsx --watch src/index.ts', '--import tsx src/index.ts');
+    it('rejects a watcher parent that can remain alive after its HTTP child dies', () => {
+      const mutant = source().replace('--import tsx src/index.ts', '--import tsx --watch src/index.ts');
       expect(mutant).not.toBe(source());
-      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/Node's watcher/);
+      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/HTTP process directly/);
     });
 
-    it('rejects a crash-only restart policy that omits the requested always-restart contract', () => {
-      const mutant = source().replace('Restart=always', 'Restart=on-failure');
+    it('rejects a restart policy that does not recover a failed HTTP process', () => {
+      const mutant = source().replace('Restart=on-failure', 'Restart=no');
       expect(mutant).not.toBe(source());
-      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/Restart must be always/);
+      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/Restart must be on-failure/);
     });
   });
 

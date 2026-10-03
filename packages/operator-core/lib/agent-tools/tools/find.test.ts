@@ -1351,7 +1351,7 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     const checkShape =
       'check?:object{kind:enum(tests|cargo|instrument|probe|coverage|requirements),' +
       'files?:array(1-20)<string>,manifestPath?:string(1-500),sourceFiles?:array(1-50)<string>,' +
-      'test?:string(1-500),instrumentKey?:string(≥1),probe?,scope?:object,floor?:enum(l1|l2|l3|l4)}';
+      'test?:string(1-500),instrumentKey?:string(≥1),probe?,all?:array(1-8),scope?:object,floor?:enum(l1|l2|l3|l4)}';
 
     // `check` is a nested discriminated union. The compact response must retain
     // all callable arms, not just the first `tests` branch.
