@@ -63,13 +63,17 @@ function makePorts(opts: FakeOpts) {
   return { ports, calls, overrideOps };
 }
 
-function oracleExecution() {
+function oracleExecution(implementationHash = 'b'.repeat(64)) {
   return { command: ['fixture-oracle'], cwd: '/scratch/gym', report: '{}', unresolved: ['fixture-runtime'],
     exitCode: 0, signal: null,
-    workerSources: { report: '{}', modules: [{ testFile: 'oracle.test.js', state: 'passed', sourceEvidence: {
+    workerSources: { report: '{}', reference: { pinCommit: makeSpec().harnessCommit, sources: [
+      { path: 'oracle.test.js', sha256: 'a'.repeat(64) }, { path: 'impl.js', sha256: 'b'.repeat(64) },
+    ] } as { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> } | undefined,
+    modules: [{ testFile: 'oracle.test.js', state: 'passed', sourceEvidence: {
       schemaVersion: 'vite-collected-source-evidence-v1', scope: 'repository-worker-vite-original-sources',
       status: 'stable', reasons: [] as string[], sources: [{ path: 'oracle.test.js',
-        sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }],
+        sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) },
+      { path: 'impl.js', sha256: implementationHash, currentSha256: implementationHash }],
     } }] } };
 }
 
@@ -279,7 +283,7 @@ describe('runGymPipeline', () => {
       sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
       implementation: { path: implPath!, before: run === 1 ? 'b'.repeat(64) : 'c'.repeat(64),
         after: run === 1 ? 'b'.repeat(64) : 'c'.repeat(64) },
-      execution: oracleExecution(),
+      execution: oracleExecution((run === 1 ? 'b' : 'c').repeat(64)),
     });
     const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
       oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
@@ -328,6 +332,37 @@ describe('runGymPipeline', () => {
         return { results: [{ name: 'task', passed: true }], testPath, pinCommit: pinCommit!,
           sourceHashes: { pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64) },
           implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
+      };
+      const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+        oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+          pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+      expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+      expect(result.deterministicSignals?.regressions).toBeUndefined();
+      expect(result.deterministicSignals?.oracle).toMatchObject({ workerSourcesCurrent: false });
+    });
+
+  it.each(['missing-reference', 'wrong-commit', 'changed-helper', 'unknown-helper', 'omitted-helper', 'duplicate-reference',
+    'missing-implementation', 'wrong-implementation'] as const)(
+    'withholds positive claims when immutable worker source provenance has %s', async (mode) => {
+      const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+      ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
+        const execution = oracleExecution();
+        const sources = execution.workerSources.modules[0]!.sourceEvidence.sources;
+        const reference = execution.workerSources.reference!;
+        sources.push({ path: 'helper.js', sha256: 'c'.repeat(64), currentSha256: 'c'.repeat(64) });
+        reference.sources.push({ path: 'helper.js', sha256: 'c'.repeat(64) });
+        if (mode === 'missing-reference') execution.workerSources.reference = undefined;
+        else if (mode === 'wrong-commit') reference.pinCommit = 'd'.repeat(40);
+        else if (mode === 'changed-helper') reference.sources[2]!.sha256 = 'd'.repeat(64);
+        else if (mode === 'unknown-helper') reference.sources[2]!.sha256 = null;
+        else if (mode === 'omitted-helper') reference.sources.pop();
+        else if (mode === 'duplicate-reference') reference.sources.push({ ...reference.sources[2]! });
+        else if (mode === 'missing-implementation') sources.splice(1, 1);
+        else sources[1] = { path: 'impl.js', sha256: 'd'.repeat(64), currentSha256: 'd'.repeat(64) };
+        return { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }],
+          testPath, pinCommit: pinCommit!, sourceHashes: {
+            pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64),
+          }, implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
       };
       const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
         oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',

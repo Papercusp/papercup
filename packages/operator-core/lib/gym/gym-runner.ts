@@ -31,7 +31,11 @@ export interface GymOracleRun {
     exitCode: number | null; signal: string | null;
     /** Original worker sources from the existing framework OUT channel. This
      * scope excludes runner/config/native code and the remote pipeline. */
-    workerSources?: { report: string | null; modules: Array<{ testFile: string; state: string;
+    workerSources?: { report: string | null;
+      /** Immutable repository blobs for the measured worker source population.
+       * Kept separate from the bytes actually evaluated by Vitest. */
+      reference?: { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> };
+      modules: Array<{ testFile: string; state: string;
       sourceEvidence: { schemaVersion: string; scope: string; status: string;
         sources: Array<{ path: string; sha256: string; currentSha256: string | null }>; reasons: string[] } }> };
   };
@@ -246,6 +250,18 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
             hashes.set(source.path, source.sha256);
           }
           if (hashes.get(spec.task.oracle!.testPath) !== receipt?.sourceHashes.pinned) return null;
+          // Hashing a file on disk does not prove the oracle evaluated it.
+          if (hashes.get(spec.task.oracle!.implPath) !== receipt?.implementation?.before) return null;
+          const reference = measured.reference;
+          if (reference?.pinCommit !== spec.task.oracle!.pinCommit || !Array.isArray(reference.sources)) return null;
+          const referenceHashes = new Map<string, string>();
+          for (const source of reference.sources) {
+            if (!source || typeof source.path !== 'string' || typeof source.sha256 !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(source.sha256) || referenceHashes.has(source.path)) return null;
+            referenceHashes.set(source.path, source.sha256);
+          }
+          if (referenceHashes.size !== hashes.size || [...hashes].some(([path, hash]) =>
+            !referenceHashes.has(path) || (path !== spec.task.oracle!.implPath && referenceHashes.get(path) !== hash))) return null;
           // The declared implementation may change between arms. Other imported
           // sources are part of the fixed oracle/environment, not the candidate.
           hashes.delete(spec.task.oracle!.implPath);

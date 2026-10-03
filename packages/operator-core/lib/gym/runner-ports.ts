@@ -280,15 +280,15 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         try { return createHash('sha256').update(readFileSync(join(clonePath, path))).digest('hex'); }
         catch { return null; }
       };
-      let pinned: string | null = null;
-      const safePath = safeRepoPath(testPath);
-      if (pinCommit && isPinnedCommit(pinCommit) && safePath) {
+      const referenceHash = async (path: string): Promise<string | null> => {
+        if (!pinCommit || !isPinnedCommit(pinCommit) || !safeRepoPath(path)) return null;
         try {
-          const blob = await execCapture('git', ['show', `${pinCommit}:${testPath}`],
+          const blob = await execCapture('git', ['show', `${pinCommit}:${path}`],
             { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
-          pinned = createHash('sha256').update(blob.stdout).digest('hex');
-        } catch { /* missing immutable oracle is explicitly unmeasured */ }
-      }
+          return createHash('sha256').update(blob.stdout).digest('hex');
+        } catch { return null; } // unavailable immutable source stays unknown
+      };
+      const pinned = await referenceHash(testPath);
       const before = fileHash(testPath);
       const implementationBefore = implPath ? fileHash(implPath) : null;
       const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
@@ -331,12 +331,20 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           const parsed = sourceReport && JSON.parse(sourceReport);
           if (Array.isArray(parsed?.diagnostics)) modules = parsed.diagnostics;
         } catch { /* retain malformed raw source report */ }
+        const sourcePaths = new Set(modules.flatMap((module) =>
+          Array.isArray(module?.sourceEvidence?.sources) ? module.sourceEvidence.sources
+            .filter((source) => typeof source?.path === 'string').map((source) => source.path) : []));
+        const referenceSources: Array<{ path: string; sha256: string | null }> = [];
+        for (const path of [...sourcePaths].sort()) {
+          referenceSources.push({ path, sha256: path === testPath ? pinned : await referenceHash(path) });
+        }
         return pinCommit ? { results, testPath, pinCommit,
           sourceHashes: { pinned, before, after: fileHash(testPath) },
           implementation: implPath ? { path: implPath, before: implementationBefore, after: fileHash(implPath) } : null,
           execution: { command, cwd: clonePath, report, exitCode, signal,
-            workerSources: { report: sourceReport, modules },
+            workerSources: { report: sourceReport, modules, reference: { pinCommit, sources: referenceSources } },
             unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+              ...(referenceSources.some((source) => source.sha256 === null) ? ['oracle-worker-source-reference-unavailable'] : []),
               ...(!sourceReport || modules.length === 0 ? ['oracle-worker-source-evidence-unavailable'] : [])] },
         } : results;
       } catch {

@@ -226,6 +226,9 @@ describe('createGymRunnerPorts', () => {
       expect(JSON.parse(post.execution!.report).testResults[0].assertionResults[0].status).toBe('failed');
       for (const receipt of [pre, post]) {
         expect(receipt.execution!.workerSources).toMatchObject({
+          reference: { pinCommit, sources: expect.arrayContaining([
+            { path: 'helper.mjs', sha256: digest('export const expected = 42;\n') },
+          ]) },
           modules: [{ testFile: 'oracle.test.mjs', sourceEvidence: {
             status: 'stable', sources: expect.arrayContaining([
               expect.objectContaining({ path: 'helper.mjs', sha256: digest('export const expected = 42;\n') }),
@@ -235,6 +238,20 @@ describe('createGymRunnerPorts', () => {
         expect(receipt.execution!.workerSources!.report).toBeTruthy();
       }
       expect(post.execution!.workerSources!.modules[0]!.state).toBe('failed');
+      // A stable dirty helper must retain its immutable reference separately.
+      // Comparing pre/post alone would silently accept the rewritten oracle.
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 41;\n');
+      const dirtyHelper = await port(input);
+      if (!dirtyHelper || Array.isArray(dirtyHelper)) throw new Error('Missing dirty helper receipt');
+      expect(dirtyHelper.results[0]!.passed).toBe(true);
+      expect(dirtyHelper.execution!.workerSources).toMatchObject({
+        reference: { pinCommit, sources: expect.arrayContaining([
+          { path: 'helper.mjs', sha256: digest('export const expected = 42;\n') },
+        ]) },
+        modules: [{ sourceEvidence: { status: 'stable', sources: expect.arrayContaining([
+          expect.objectContaining({ path: 'helper.mjs', sha256: digest('export const expected = 41;\n') }),
+        ]) } }],
+      });
       writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 43;\n');
       const drifting = await port(input);
       if (!drifting || Array.isArray(drifting)) throw new Error('Missing drift receipt');
