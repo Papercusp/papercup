@@ -19,7 +19,11 @@
  * the parsing and rating halves are pure and unit-tested.
  */
 import type { Sql } from 'postgres';
-import { GOAL_OWNER_REPORT_FIELD } from './goal-owner-report';
+import { costLineIsUnmeasured, GOAL_OWNER_REPORT_FIELD, walledEntries } from './goal-owner-report';
+
+// The classifiers live with the report contract (the send gate refuses on the same
+// definitions, P-005); re-exported so existing importers keep one source.
+export { costLineIsUnmeasured, walledEntries };
 import { GOAL_REVIEW_CLUSTER_MIN_ITEMS, GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS } from './goal-planning-review';
 import { readGoalHolderRows } from './goals/holder';
 
@@ -127,33 +131,6 @@ export interface GoalHolderBehaviorMetrics {
 // ---------------------------------------------------------------------------
 // Pure parsing
 // ---------------------------------------------------------------------------
-
-/** A COST line that admits it did not measure the goal's spend. */
-export function costLineIsUnmeasured(cost: string | null | undefined): boolean {
-  if (!cost || !cost.trim()) return true;
-  return /\bnot\s+(?:measured|attributable|goal-attributable)\b|\bunmeasured\b/i.test(cost);
-}
-
-const WORK_ITEM_REF = /\b(?:WI|EI|F)-\d+\b/g;
-
-/**
- * Split an ownerWalled section into entries and flag those that are only ids. "WI-10004856,
- * WI-10004875, WI-10005042" and "WI-10004856/4875/5042" name no action for the owner;
- * "hud P-003 route (solo/fleet/drop)" does.
- */
-export function walledEntries(text: string | null | undefined): { entry: string; bare: boolean }[] {
-  if (!text || !text.trim()) return [];
-  return text
-    .split(/;|\n/)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry && !/^(?:none|nothing|n\/a)\.?$/i.test(entry))
-    .map((entry) => {
-      const hasRef = WORK_ITEM_REF.test(entry);
-      WORK_ITEM_REF.lastIndex = 0;
-      const residue = entry.replace(WORK_ITEM_REF, ' ').replace(/[^A-Za-z]+/g, ' ').trim();
-      return { entry, bare: hasRef && residue.split(/\s+/).filter((word) => word.length > 1).length === 0 };
-    });
-}
 
 function countIdeas(value: unknown): number {
   if (Array.isArray(value)) return value.length;

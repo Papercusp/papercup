@@ -88,6 +88,7 @@ import {
   type GoalOwnerReportDraft,
   type GoalOwnerReportDraftInput,
 } from './goal-owner-report';
+import { openOwnerWallPredicateSql, ownerWallActionSql } from './goal-owner-report-truth';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import { claimSpecFilterAdmitsTarget, claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler/claim-spec';
 // Type-only: the placement compiler reads a closure VERDICT, it never resolves
@@ -1999,15 +2000,13 @@ export async function readGoalPortfolioBrief(args: {
                 ) movement) AS report_movements,
              (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                        'ref', wall.feature_id,
-                       'action', COALESCE(NULLIF(wall.payload->>'ownerAction', ''),
-                         NULLIF(wall.payload->>'ownerAsk', ''), 'open this work item for the exact owner action'))
+                       -- P-005: the owner ask lives on the set_blocker record for every
+                       -- live wall; ownerAction/ownerAsk alone left all of them unnamed.
+                       'action', COALESCE(${ownerWallActionSql(sql)}, 'open this work item for the exact owner action'))
                        ORDER BY wall.feature_id), '[]'::jsonb)
                FROM harness_shared.work_items wall
                WHERE wall.workspace_id = g.workspace_id AND wall.goal_id = g.id
-                 AND wall.status <> ALL(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])
-                 AND (wall.status IN ('needs-human', 'needs_human') OR wall.needs_human_review
-                   OR COALESCE((wall.payload->>'needsOwnerAction')::boolean, false)
-                   OR COALESCE((wall.payload->>'needsHuman')::boolean, false))) AS owner_walls,
+                 AND ${openOwnerWallPredicateSql(sql)}) AS owner_walls,
              (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                        'ref', stopped.ref, 'criterion', stopped.criterion,
                        'atMs', stopped.at_ms) ORDER BY stopped.at_ms DESC), '[]'::jsonb)
