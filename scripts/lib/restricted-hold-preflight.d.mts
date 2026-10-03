@@ -9,13 +9,13 @@ export declare const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST: 'admitted-by-
 export declare const RESTRICTED_HOLD_PREFLIGHT_CLI: string;
 
 export type RestrictedHoldPreflightRefusal = { verdict: 'refuse'; error: string; hint: string };
-export type RestrictedHoldPreflightSkipReason = 'testing-run' | 'admitted-upstream' | 'nested-in-vitest';
+export type RestrictedHoldPreflightSkipReason = 'testing-run' | 'admitted-upstream' | 'release-gate' | 'nested-in-vitest';
 export type RestrictedHoldPreflightResult =
   | { verdict: 'admit' }
   | { verdict: 'skipped'; reason: RestrictedHoldPreflightSkipReason }
   | RestrictedHoldPreflightRefusal;
 
-export type VitestRootPreflightSkipReason = 'testing-run' | 'admitted-upstream' | 'github-actions';
+export type VitestRootPreflightSkipReason = 'testing-run' | 'admitted-upstream' | 'release-gate' | 'github-actions';
 export type VitestRootPreflightResult =
   | { verdict: 'admit'; setEnv: Record<'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT', 'admitted-by-vitest-root'> }
   | { verdict: 'skipped'; reason: VitestRootPreflightSkipReason }

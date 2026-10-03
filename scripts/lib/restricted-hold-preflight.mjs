@@ -91,8 +91,9 @@ export function interpretRestrictedHoldPreflight(result) {
  *   (testing:run, or this router's own top-level invocation), not at every nested hop. Without
  *   this, each in-test router call would pay a ~2s census spawn and a Postgres dependency.
  * - An enclosing router or vitest root already admitted this process tree (its marker is inherited).
+ * - The green-checkpoint gate's isolated checkout cannot hold a restricted write (see isReleaseGate).
  * @param {NodeJS.ProcessEnv} env
- * @returns {'testing-run' | 'admitted-upstream' | 'nested-in-vitest' | null}
+ * @returns {'testing-run' | 'admitted-upstream' | 'release-gate' | 'nested-in-vitest' | null}
  */
 export function restrictedHoldPreflightSkipReason(env) {
   const upstream = admittedUpstream(env);
@@ -133,12 +134,14 @@ function admittedUpstream(env) {
  * admitted marker instead, which the root sets after it admits and every child process inherits.
  * - GitHub Actions runners host no Papercusp operator, so no restricted session and no census exist
  *   there (only `GITHUB_ACTIONS`, never the generic `CI`, which local tooling also sets).
+ * - The green-checkpoint gate's isolated checkout cannot hold a restricted write (see isReleaseGate).
  * @param {NodeJS.ProcessEnv} env
- * @returns {'testing-run' | 'admitted-upstream' | 'github-actions' | null}
+ * @returns {'testing-run' | 'admitted-upstream' | 'release-gate' | 'github-actions' | null}
  */
 export function vitestRootPreflightSkipReason(env) {
   const upstream = admittedUpstream(env);
   if (upstream) return upstream;
+  if (isReleaseGate(env)) return 'release-gate';
   if (env.GITHUB_ACTIONS === 'true') return 'github-actions';
   return null;
 }
