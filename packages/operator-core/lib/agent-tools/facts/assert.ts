@@ -761,7 +761,33 @@ export default defineTool({
       shareable: z.boolean().optional().describe(shareableDescription),
     });
 
-    return flatArgs
+    /**
+     * WI-10005668 — `value` is the one wrong spelling of `body` callers reach for
+     * overwhelmingly (measured 2026-10-02: 32 refusals / 14 distinct owners in 24h on
+     * `facts:assert`, the same contract shape as the `memory:remember`/`work_items:*`
+     * families). The refusal was a dead end for them, so accept it as an ALIAS: when the
+     * caller supplied a string `value` and NO `body`, treat the string as the body.
+     *
+     * Deliberately narrow: only `value` (not `claim`, 8 refusals/5 owners — too ambiguous
+     * with the claim/evidence vocabulary elsewhere), only a string, and never when `body`
+     * is present — so a call that names both still reaches the strict-object refusal for the
+     * stray key instead of silently choosing one. A `z.preprocess` wrapper is transparent to
+     * the published JSON Schema (the alias is NOT advertised — the canonical field is still
+     * `body`, so the tool prompt does not grow), and it adds no `ctx.addIssue`, so it cannot
+     * mask sibling field issues the way an issue-raising preprocess does.
+     */
+    const foldValueAliasIntoBody = (data: unknown): unknown => {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+      const record = data as Record<string, unknown>;
+      if (typeof record.value !== 'string' || record.body !== undefined) return data;
+      const { value, ...rest } = record;
+      return { ...rest, body: value };
+    };
+
+    return z
+      .preprocess(
+        foldValueAliasIntoBody,
+        flatArgs
       .superRefine((value, ctx) => {
         if (!value || typeof value !== 'object') return;
         const v = value as {
@@ -907,7 +933,8 @@ export default defineTool({
           ctx.addIssue({ code: 'custom', path, message: lifetimeError });
         }
       })
-      .meta({ 'x-papercusp-call-constraint': FACT_LIFETIME_CALL_CONSTRAINT });
+      .meta({ 'x-papercusp-call-constraint': FACT_LIFETIME_CALL_CONSTRAINT }),
+      );
   })(),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');

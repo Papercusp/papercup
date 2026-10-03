@@ -138,6 +138,16 @@ export interface SystemActionOptions {
    * drift out of step with the registration it is about.
    */
   scheduling?: SystemActionScheduling;
+  /**
+   * WI-10005745 (D-012): the handler spawns a process that EXECUTES code from the integration tree
+   * (`PAPERCUSP_INTEGRATION_ROOT` / the module repo root — on bg-host, the live shared tree): a tsx
+   * or node script, a CLI bin, `cargo test`, a test runner. While a session holding an active
+   * personal disclosure has writes held in that tree, the dispatcher SKIPS such a fire (recorded on
+   * the routine row, never silent) rather than run that code with the network. Reading files, git
+   * plumbing, systemctl and parse-only work do not count. restricted-tree-actions.test.ts derives
+   * the candidate set from source and fails until each action is declared or justified.
+   */
+  executesIntegrationTreeCode?: boolean;
 }
 
 /** How a system action's routine row is expected to exist. See `SystemActionOptions.scheduling`. */
@@ -148,6 +158,8 @@ export interface SystemActionEntry {
   ownSteps: boolean;
   scheduling: SystemActionScheduling;
   routineTimeoutMs?: number;
+  /** See `SystemActionOptions.executesIntegrationTreeCode`. */
+  executesIntegrationTreeCode: boolean;
 }
 
 /** The reserved `target_role` prefix that routes a routine to a system action. */
@@ -164,6 +176,7 @@ export function registerSystemAction(name: string, fn: SystemAction, opts: Syste
     // opinion about scheduling is treated as one that SHOULD have a routine row, so a missing
     // row is reported rather than silently accepted.
     scheduling: opts.scheduling === 'on-demand' ? 'on-demand' : 'standing',
+    executesIntegrationTreeCode: opts.executesIntegrationTreeCode === true,
   };
   if (opts.routineTimeoutMs !== undefined) entry.routineTimeoutMs = opts.routineTimeoutMs;
   REGISTRY.set(name, entry);

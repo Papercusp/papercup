@@ -182,6 +182,44 @@ export async function restrictedHoldRefusal(
 }
 
 /**
+ * The routine door (WI-10005745): a system action that spawns a process executing code FROM the
+ * tree (a tsx/node script, a CLI bin, `cargo test`, a test runner) has no import graph this fence
+ * can walk — cargo compiles build.rs, a CLI reaches anything — so the rule is coarse on purpose:
+ * any held restricted write under any of `roots` skips the fire. Fail-closed like the others.
+ */
+export async function restrictedTreeHoldRefusal(
+  roots: readonly string[],
+  deps: Pick<RestrictedHoldFenceDeps, 'holdings'> = {},
+): Promise<RestrictedHoldRefusal | null> {
+  const seen = new Set<string>();
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    let realRoot: string;
+    let held: string[];
+    try {
+      realRoot = await realpath(root);
+      if (seen.has(realRoot)) continue;
+      seen.add(realRoot);
+      held = await heldPathsUnder(realRoot, await (deps.holdings ?? restrictedHoldingsFor)(realRoot));
+    } catch (error) {
+      return {
+        error: 'restricted_hold_state_unknown',
+        hint: `could not verify whether a restricted session's writes are held in ${root}; the action was not run (${error instanceof Error ? error.message : String(error)})`,
+      };
+    }
+    if (held.length === 0) continue;
+    const shown = held.slice(0, 3).map((abs) => (abs.startsWith(realRoot + sep) ? abs.slice(realRoot.length + 1) : abs));
+    return {
+      error: 'restricted_write_held',
+      hint:
+        `${held.length} held restricted write(s) in ${realRoot} (${shown.join(', ')}${held.length > shown.length ? ', …' : ''}). ` +
+        `This action executes code from that tree with network access (D-012); it runs on its next fire after the disclosure is released`,
+    };
+  }
+  return null;
+}
+
+/**
  * What a host bundle consumed (WI-10005745): every input file esbuild recorded in a metafile, and
  * every file or directory the bundler copied verbatim. Absolute paths.
  */

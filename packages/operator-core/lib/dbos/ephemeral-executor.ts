@@ -23,7 +23,8 @@
  */
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getOrgPg, listActiveEphemeralRoutines, recordEphemeralFire } from '@papercusp/db-org';
-import { getSystemAction, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
+import { getSystemAction, getSystemActionEntry, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
+import { restrictedTreeSkipReason } from '../harness/routines/restricted-tree-skip';
 // host-bootstrap imports this executor directly, without importing routines-workflow. Keep the
 // side-effect registry load on this production fire path or every `system:` ephemeral action is
 // absent and each cadence silently records "no system action ... registered" on every tick.
@@ -326,6 +327,12 @@ export function productionEphemeralExecutorDeps(): EphemeralExecutorDeps {
       const name = r.targetRole.slice(SYSTEM_TARGET_PREFIX.length);
       const action = getSystemAction(name);
       if (!action) throw new Error(`no system action "${name}" registered (ephemeral routine ${r.id})`);
+      // WI-10005745 (D-012): same restricted-hold skip as the durable routine workflow.
+      const skip = await restrictedTreeSkipReason(name, getSystemActionEntry(name));
+      if (skip) {
+        console.warn(`[ephemeral] ${skip} (routine ${r.id})`);
+        return { diagnostics: { restrictedHoldSkip: skip } };
+      }
       return await runWithWorkspace(r.workspaceId, () =>
         action({
           installSlug: r.installSlug,

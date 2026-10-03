@@ -57,6 +57,7 @@ import {
   SYSTEM_TARGET_PREFIX,
   type SystemActionResult,
 } from '../harness/routines/system-actions';
+import { restrictedTreeSkipReason } from '../harness/routines/restricted-tree-skip';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import {
   CRITICAL_PROBE_MS,
@@ -667,6 +668,30 @@ async function routineFireImpl(
     } else if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
       const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
       const entry = getSystemActionEntry(action);
+      // WI-10005745 (D-012): an action that executes integration-tree code is skipped while a
+      // restricted session's writes are held in that tree. The verdict is a step so a replay takes
+      // the same branch; the skip is recorded on the routine row, never silent.
+      if (entry?.executesIntegrationTreeCode) {
+        const skip = await DBOS.runStep(() => restrictedTreeSkipReason(action, entry), {
+          name: `system:${action}:restricted-hold`,
+        });
+        if (skip) {
+          console.warn(`[routines] ${skip} (routine ${routineId})`);
+          await DBOS.runStep(
+            async () => {
+              const { sql } = getOrgPg();
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = COALESCE(metadata, '{}'::jsonb)
+                         || jsonb_build_object('last_skip_reason', ${skip.slice(0, 600)}::text, 'last_skip_at', now()::text),
+                       updated_at = now()
+                 WHERE id = ${routineId}`.catch(() => {});
+            },
+            { name: `system:${action}:restricted-hold-record` },
+          );
+          return;
+        }
+      }
       const systemActionCtx = {
         installSlug,
         workspaceId,
