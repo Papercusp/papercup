@@ -2410,6 +2410,183 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
  * These pin the reconcile to the HEALTHY path. Move the call back below the `held`
  * early-return and the integration tests all still pass — these are what go red.
  */
+// WI-10005904: measured 2026-10-03 04:57Z..05:30Z on goal 60d3a8. The account
+// session override allowed only a codex account; the claude holder's launches
+// all died at boot with "--account auto could not be honored". Each one was
+// counted as a holder death: it spent an hourly rate-cap slot and a damping
+// restart, and after six the respawner paused the goal as needs-human.
+describe('runGoalHolderRespawnOnce — boot deaths on the account route never spend the holder-death cap (WI-10005904)', () => {
+  const sql = {} as never;
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+  const UNHONORED =
+    'psu exited (code 1) before the session registered presence\n' +
+    '--account auto could not be honored: claude requires a claude account pool. ' +
+    'Refusing to fall back to the default system login.';
+  /** A durable 6-per-hour ledger, so a slot that is not returned would eventually cap. */
+  function rateLedger() {
+    const slots: number[] = [];
+    const reserveRateSlot = vi.fn(async (_goal: GoalRowLike, at: number) => {
+      const inWindow = slots.filter((t) => at - t < 3_600_000).length;
+      if (inWindow >= 6) return { kind: 'capped' as const, attemptsInWindow: inWindow };
+      slots.push(at);
+      return { kind: 'reserved' as const, attemptsInWindow: inWindow + 1 };
+    });
+    const releaseRateSlot = vi.fn(async (_goal: GoalRowLike, at: number) => {
+      const i = slots.indexOf(at);
+      if (i >= 0) slots.splice(i, 1);
+      return i >= 0;
+    });
+    return { slots, reserveRateSlot, releaseRateSlot };
+  }
+
+  it('six consecutive unhonored launches return every slot, leave damping untouched, never pause, and hold recovery with a doubling hold', async () => {
+    let clock = NOW;
+    const { slots, reserveRateSlot, releaseRateSlot } = rateLedger();
+    const launch = vi.fn(async (): Promise<{ ownerId: string; warnings: string[] }> => {
+      throw new Error(UNHONORED);
+    });
+    const pauseNeedsHuman = vi.fn(async () => true);
+    const escalateGiveUp = vi.fn(async () => {});
+    const escalateUnhonoredLaunch = vi.fn(
+      async (_goal: GoalRowLike, _info: { refusal: string; count: number; holdMs: number }) => {},
+    );
+    const states = new Map();
+    const capacityDeferrals = new Map<string, GoalHolderCapacityDeferral>();
+    const unhonoredLaunches = new Map<string, GoalHolderUnhonoredLaunchState>();
+    const deps = respawnDeps({
+      reserveRateSlot,
+      releaseRateSlot,
+      launch,
+      pauseNeedsHuman,
+      escalateGiveUp,
+      escalateUnhonoredLaunch,
+      states,
+      capacityDeferrals,
+      unhonoredLaunches,
+      now: () => clock,
+    });
+
+    const holds: number[] = [];
+    for (let i = 1; i <= 6; i += 1) {
+      const result = await runGoalHolderRespawnOnce(sql, deps);
+      expect(result).toMatchObject({ attempted: 1, launchUnhonored: 1, launchFailed: 0, gaveUp: 0, respawned: 0 });
+      expect(launch).toHaveBeenCalledTimes(i);
+      // Damping is untouched and the slot is back in the ledger.
+      expect(states.size).toBe(0);
+      expect(slots).toEqual([]);
+      const episode = [...capacityDeferrals.values()][0];
+      const holdMs = unhonoredLaunchHoldMs(i);
+      expect(episode?.holdUntilMs).toBe(clock + holdMs);
+      holds.push(holdMs);
+      // A clear capacity reading does not launch while the hold runs: that reading
+      // is what failed to foresee the death.
+      clock += holdMs - 1;
+      expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, deferredCapacity: 1 });
+      expect(launch).toHaveBeenCalledTimes(i);
+      clock += 1;
+    }
+
+    expect(holds[0]).toBe(GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MS);
+    expect(holds).toEqual([10, 20, 40, 80, 120, 120].map((m) => m * 60_000));
+    expect(holds[5]).toBe(GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MAX_MS);
+    expect(reserveRateSlot).toHaveBeenCalledTimes(6);
+    expect(releaseRateSlot).toHaveBeenCalledTimes(6);
+    expect(pauseNeedsHuman).not.toHaveBeenCalled();
+    expect(escalateGiveUp).not.toHaveBeenCalled();
+    expect(escalateUnhonoredLaunch.mock.calls.map((c) => c[1].count)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(escalateUnhonoredLaunch.mock.calls[0]?.[1].refusal).toMatch(/^--account auto could not be honored: /);
+  });
+
+  it('a successful launch resets the doubling', async () => {
+    let clock = NOW;
+    const { reserveRateSlot, releaseRateSlot } = rateLedger();
+    let fail = true;
+    const launch = vi.fn(async (g: GoalRowLike) => {
+      if (fail) throw new Error(UNHONORED);
+      return { ownerId: `replacement-${g.goalId}`, warnings: [] };
+    });
+    const unhonoredLaunches = new Map<string, GoalHolderUnhonoredLaunchState>();
+    const deps = respawnDeps({
+      reserveRateSlot,
+      releaseRateSlot,
+      launch,
+      unhonoredLaunches,
+      capacityDeferrals: new Map(),
+      states: new Map(),
+      now: () => clock,
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ launchUnhonored: 1 });
+    expect([...unhonoredLaunches.values()].map((s) => s.count)).toEqual([1]);
+    clock += GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MS;
+    fail = false;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, respawned: 1, launchUnhonored: 0 });
+    expect(unhonoredLaunches.size).toBe(0);
+  });
+
+  it('an ordinary launch failure is still damped and keeps its slot (the control)', async () => {
+    const { slots, reserveRateSlot, releaseRateSlot } = rateLedger();
+    const states = new Map();
+    const deps = respawnDeps({
+      reserveRateSlot,
+      releaseRateSlot,
+      launch: async () => {
+        throw new Error('spawn psu ENOENT');
+      },
+      states,
+      capacityDeferrals: new Map(),
+      unhonoredLaunches: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, launchFailed: 1, launchUnhonored: 0 });
+    expect(states.size).toBe(1);
+    expect(slots).toHaveLength(1);
+    expect(releaseRateSlot).not.toHaveBeenCalled();
+  });
+
+  it('escalates a session-override deferral on the first tick instead of waiting out the rate-pause grace', async () => {
+    const target = { provider: 'claude' as const, accountId: null, agent: 'claude' };
+    const overrideDeferred: GoalHolderLaunchCapacityVerdict = {
+      kind: 'deferred',
+      target,
+      binding: 'session-override',
+      untilMs: null,
+      accountIds: ['aviynw', 'aviynw2'],
+      reason: 'the account session override (forced: aviynw_codex; excluded: none) disallows every claude account',
+      pool: {
+        provider: 'claude',
+        total: 2,
+        serviceable: 2,
+        walledFresh: 0,
+        paused: 0,
+        pacing: 0,
+        unknown: 0,
+        atCapacity: false,
+        binding: null,
+        reason: '2 of 2 can serve',
+      },
+    };
+    const escalateCapacityDeferral = vi.fn(async () => {});
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const deps = respawnDeps({
+      assessLaunchCapacity: async () => overrideDeferred,
+      escalateCapacityDeferral,
+      launch,
+      capacityDeferrals: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, deferredCapacity: 1 });
+    expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
+    expect(escalateCapacityDeferral).toHaveBeenCalledWith(expect.anything(), overrideDeferred, 0);
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, deferredCapacity: 1 });
+    expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+  });
+});
+
 describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821882158913073)', () => {
   const sql = {} as never;
 
