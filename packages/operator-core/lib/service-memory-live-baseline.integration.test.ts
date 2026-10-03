@@ -169,6 +169,14 @@ function spawnerLoadedIdentity(pid: number, capability: any) {
     serverGeneration: fence.serverGeneration, connectionId: fence.connectionId };
 }
 
+function assertSpawnerIdentity(before: any, after: any) {
+  if (before.status !== after.status || before.pid !== after.pid ||
+      JSON.stringify(before.buildInfo) !== JSON.stringify(after.buildInfo) ||
+      before.serverGeneration !== after.serverGeneration || before.connectionId !== after.connectionId) {
+    throw Error('Loaded spawner identity or socket generation changed');
+  }
+}
+
 function configuredHostRole(facts: any) {
   if (!facts || typeof facts.cluster?.isPrimary !== 'boolean' ||
       typeof facts.cluster?.isWorker !== 'boolean' || facts.cluster.isPrimary === facts.cluster.isWorker ||
@@ -251,6 +259,13 @@ describe('actual current-build operator memory baseline', () => {
     expect(() => spawnerLoadedIdentity(7, { ...capability, processExecFence: {} })).toThrow('Malformed');
     expect(() => spawnerLoadedIdentity(7, { ...capability,
       processExecIdentity: { pid: 7, buildInfo: { sha: ' ', version: '1.0.0' } } })).toThrow('Malformed');
+    const before = spawnerLoadedIdentity(7, capability);
+    expect(() => assertSpawnerIdentity(before, structuredClone(before))).not.toThrow();
+    for (const field of ['pid', 'serverGeneration', 'connectionId', 'status']) {
+      expect(() => assertSpawnerIdentity(before, { ...before, [field]: 'changed' })).toThrow('generation changed');
+    }
+    expect(() => assertSpawnerIdentity(before, { ...before,
+      buildInfo: { ...before.buildInfo, sha: 'different' } })).toThrow('generation changed');
   });
   it('keeps PID and exact owner selection outside configurable traversal limits', () => {
     expect(parsePinnedLimits('{"maxDepth":8,"maxEntries":32768,"budgetMs":200}'))
@@ -487,6 +502,8 @@ describe('actual current-build operator memory baseline', () => {
     let client: ReturnType<typeof createCdpClient> | undefined;
     let port: number | undefined;
     let opened = false;
+    let spawnerIpc: SpawnerIpcClient | undefined;
+    let spawnerSocket: string | undefined;
     const health = async () => {
       const response = await fetch(base + '/api/health', { signal: AbortSignal.timeout(10000) });
       expect(response.status).toBe(200);
@@ -539,11 +556,13 @@ describe('actual current-build operator memory baseline', () => {
         const configured = await client.evaluate('process.env.PAPERCUSP_SPAWNER_IPC_SOCKET ?? null', { returnByValue: true });
         const socketPath = configured?.result?.value;
         if (typeof socketPath !== 'string' || !socketPath.startsWith('/')) throw Error('Loaded spawner socket unavailable');
-        const ipc = new SpawnerIpcClient(socketPath);
-        try {
-          const capability = await ipc.call('spawn:cancel', {}, { timeoutMs: 5000 });
-          report.counterBundle.loadedBuild = spawnerLoadedIdentity(counterPid, capability);
-        } finally { ipc.close(); }
+        spawnerSocket = socketPath;
+        const socket = statSync(socketPath);
+        if (!socket.isSocket()) throw Error('Loaded spawner endpoint is not a socket');
+        report.counterBundle.socketBefore = { dev: socket.dev, ino: socket.ino };
+        spawnerIpc = new SpawnerIpcClient(socketPath);
+        const capability = await spawnerIpc.call('spawn:cancel', {}, { timeoutMs: 5000 });
+        report.counterBundle.loadedBuild = spawnerLoadedIdentity(counterPid, capability);
         assertIdentity(counterBefore, processSample(counterPid));
         if (process.env.PAPERCUSP_P011_SPAWNER_BUILD) {
           expect(report.counterBundle.loadedBuild.status).toBe('known');
@@ -650,6 +669,17 @@ describe('actual current-build operator memory baseline', () => {
       report.healthAfter = await health();
       report.bundle.diskSha256After = hash(readFileSync(bundlePath));
       expect(report.bundle.diskSha256After).toBe(report.bundle.diskSha256);
+      report.counterBundle.diskSha256After = hash(readFileSync(counterEntry));
+      expect(report.counterBundle.diskSha256After).toBe(report.counterBundle.diskSha256);
+      if (spawnerIpc && spawnerSocket) {
+        const capability = await spawnerIpc.call('spawn:cancel', {}, { timeoutMs: 5000 });
+        report.counterBundle.loadedBuildAfter = spawnerLoadedIdentity(counterPid, capability);
+        assertSpawnerIdentity(report.counterBundle.loadedBuild, report.counterBundle.loadedBuildAfter);
+        const socket = statSync(spawnerSocket);
+        report.counterBundle.socketAfter = { dev: socket.dev, ino: socket.ino };
+        expect(socket.isSocket()).toBe(true);
+        expect(report.counterBundle.socketAfter).toEqual(report.counterBundle.socketBefore);
+      }
       expect(report.samples).toHaveLength(9); expect(report.requests).toHaveLength(24);
       expect(report.samples.every((row: any) => row.os.pssBytes > 0 && row.memory.heapUsed > 0)).toBe(true);
       if (process.env.PAPERCUSP_P011_PINNED_STATE) expect(report.samples.every((row: any) =>
@@ -669,6 +699,7 @@ describe('actual current-build operator memory baseline', () => {
       report.incomplete = false;
     } catch (error) { report.error = error instanceof Error ? error.message : String(error); throw error; }
     finally {
+      spawnerIpc?.close();
       try {
         if (client && opened && port) report.cleanup.inspector = await closeInspector(client, port);
         else { client?.close(); report.cleanup.inspector = { preservedPreexisting: true }; }
