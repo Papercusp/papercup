@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, embedIncrementalRelevanceQueries, hashJson, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, hashJson, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
 import type { WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
@@ -461,6 +461,40 @@ describe('incremental relevance vector reuse', () => {
     expect(retained.missingIndexes).toEqual([4, 5, 6, 7]);
     expect(retained.evidence).toMatchObject({ documentsReused: 3, newDocumentKeys: ['added'],
       snapshotExpansion: true, timingComparableToFullInference: false });
+  });
+  it('embeds only missing documents through the existing merge validation and preserves donor arrays', async () => {
+    const f = retainedPreparedFixture(); expandSnapshot(f);
+    f.setCurrentQueries(independentCohortFixture().queries);
+    const retained = (await loadRetainedRelevanceVectors(f.p, 'memory'))!;
+    const before = structuredClone(retained.docVectors), embed = vi.fn(async () => [f.unit(16)]);
+    const documents = await embedIncrementalRelevanceDocuments(retained, retained.documentTexts, embed);
+    expect(embed).toHaveBeenCalledOnce(); expect(embed).toHaveBeenCalledWith(['new document text']);
+    expect(documents).toEqual([f.unit(0), f.unit(16), f.unit(1), f.unit(2)]);
+    expect(retained.docVectors).toEqual(before); expect(retained.documentVectors[1]).toBeUndefined();
+    const queryEmbed = vi.fn(async () => []);
+    expect(await embedIncrementalRelevanceQueries(retained, retained.queryTexts, queryEmbed))
+      .toEqual(f.vectors.vectors.mdenseon.queryVectors);
+    expect(queryEmbed).not.toHaveBeenCalled();
+    for (const bad of [[1], [2, ...f.unit(0).slice(1)], [NaN, ...f.unit(0).slice(1)]]) {
+      await expect(embedIncrementalRelevanceDocuments(retained, retained.documentTexts, async () => [bad]))
+        .rejects.toThrow('dimensions/normalization');
+    }
+    await expect(embedIncrementalRelevanceDocuments(retained, retained.documentTexts, async () => []))
+      .rejects.toThrow('new vector population');
+    const wrongTexts = [...retained.documentTexts]; wrongTexts[1] += ' changed';
+    const noCalls = vi.fn(async () => []);
+    await expect(embedIncrementalRelevanceDocuments(retained, wrongTexts, noCalls)).rejects.toThrow('text identity');
+    await expect(embedIncrementalRelevanceDocuments(retained, ['wrong'], noCalls)).rejects.toThrow('document population');
+    const wrongQueries = [...retained.queryTexts]; wrongQueries[0] += ' changed';
+    await expect(embedIncrementalRelevanceQueries(retained, wrongQueries, noCalls)).rejects.toThrow('text identity');
+    expect(noCalls).not.toHaveBeenCalled();
+  });
+  it('does not call the document embedder for an unchanged corpus', async () => {
+    const f = retainedPreparedFixture(), retained = (await loadRetainedRelevanceVectors(f.p, 'memory'))!;
+    const embed = vi.fn(async () => []);
+    expect(await embedIncrementalRelevanceDocuments(retained, retained.documentTexts, embed))
+      .toEqual(f.vectors.vectors.mdenseon.docVectors);
+    expect(embed).not.toHaveBeenCalled();
   });
   it.each(['opt-in', 'text', 'metadata', 'removed', 'order', 'seed', 'date', 'format', 'invalid-option'])
     ('refuses expanded snapshot %s before vector embedding', async (failure) => {

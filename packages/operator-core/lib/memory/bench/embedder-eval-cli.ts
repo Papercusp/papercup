@@ -113,7 +113,7 @@ import { compareLegs, compareSourceGroupedLegs, classesDisagree, ALL_ANSWERABLE,
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, qualifyMdenseOnBoundaries, summarizeIncumbentReferenceFiles, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
   assertCandidateArm, failMeasurementCell, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors,
-  embedIncrementalRelevanceQueries, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
+  embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { loadPerformanceInput, collectSidecarPerformance, runPerformanceBlocks, isolatedEvaluationBuilders, observeSidecarTransport } from './sidecar-performance';
 
@@ -688,7 +688,7 @@ async function main(): Promise<void> {
   const queryTexts = gold.queries.map((q) => q.query);
   const reusedRelevance = preparedMeasurement && independent
     ? await loadRetainedRelevanceVectors(preparedMeasurement, corpusChoice as 'memory' | 'prose') : undefined;
-  if (reusedRelevance && !reusedRelevance.missingIndexes.length) {
+  if (reusedRelevance && !reusedRelevance.missingIndexes.length && !reusedRelevance.missingDocumentIndexes.length) {
     throw new Error('retained relevance has no new queries; use offline scoring rather than starting a worker');
   }
   if (preparedMeasurement && !independent) {
@@ -864,15 +864,21 @@ async function main(): Promise<void> {
     console.log(`\n== ${leg.name}: embedding ==`);
     const rssBeforeMB = rssMB();
     try {
-      const doc = reusedRelevance ? { vecs: reusedRelevance.docVectors, seconds: 0, peakRssMB: rssBeforeMB }
-        : await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
+      let newDocumentPass: Awaited<ReturnType<typeof embedAll>> | undefined;
+      const doc = reusedRelevance ? {
+        vecs: await embedIncrementalRelevanceDocuments(reusedRelevance, corpusTexts, async (texts) => {
+          newDocumentPass = await embedAll(leg.doc, texts, `${leg.name}/new-doc`);
+          return newDocumentPass.vecs;
+        }),
+        seconds: newDocumentPass?.seconds ?? 0, peakRssMB: newDocumentPass?.peakRssMB ?? rssBeforeMB,
+      } : await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
       let newQueryPass: Awaited<ReturnType<typeof embedAll>> | undefined;
       const query = reusedRelevance ? {
         vecs: await embedIncrementalRelevanceQueries(reusedRelevance, queryTexts, async (texts) => {
           newQueryPass = await embedAll(leg.query, texts, `${leg.name}/new-query`);
           return newQueryPass.vecs;
         }),
-        seconds: newQueryPass!.seconds, peakRssMB: newQueryPass!.peakRssMB,
+        seconds: newQueryPass?.seconds ?? 0, peakRssMB: newQueryPass?.peakRssMB ?? rssBeforeMB,
       } : await embedAll(leg.query, queryTexts, `${leg.name}/query`);
       const workerState = getWorkerState();
       if ((leg.name === 'mdenseon' || (leg.name === 'sidecar:mdenseon' && isolatedSidecar)) && (!workerState.alive || workerState.disabled)) {
@@ -883,10 +889,13 @@ async function main(): Promise<void> {
         workerState, repeatedWarm,
         ...leg.metadata,
         ...(reusedRelevance ? { retainedRelevance: reusedRelevance.evidence,
-          measuredQueryCount: reusedRelevance.missingIndexes.length, timingScope: 'new queries only; documents reused' } : {}),
+          measuredDocumentCount: reusedRelevance.missingDocumentIndexes.length,
+          measuredQueryCount: reusedRelevance.missingIndexes.length,
+          timingScope: reusedRelevance.missingDocumentIndexes.length
+            ? 'new documents and queries only; retained vectors reused' : 'new queries only; documents reused' } : {}),
         docSeconds: +doc.seconds.toFixed(1),
         querySeconds: +query.seconds.toFixed(1),
-        msPerDoc: +((doc.seconds * 1000) / Math.max(corpusTexts.length, 1)).toFixed(1),
+        msPerDoc: +((doc.seconds * 1000) / Math.max(reusedRelevance?.missingDocumentIndexes.length ?? corpusTexts.length, 1)).toFixed(1),
         msPerQuery: +((query.seconds * 1000) / Math.max(reusedRelevance?.missingIndexes.length ?? queryTexts.length, 1)).toFixed(1),
         rssBeforeMB,
         peakRssMB: Math.max(doc.peakRssMB, query.peakRssMB),

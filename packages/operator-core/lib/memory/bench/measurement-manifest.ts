@@ -279,6 +279,9 @@ export function loadIndependentMeasurementInputs(prepared: PreparedMeasurement, 
  * New labels may change relevance, but a reused query's text/source may not. */
 export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement, corpus: 'memory' | 'prose') {
   const donorId = prepared.cell.parameters.reuseCellId;
+  const expansion = prepared.cell.parameters.reuseSnapshotExpansion;
+  if (expansion !== undefined && expansion !== true && expansion !== false) throw new Error('invalid retained relevance snapshot expansion option');
+  if (expansion && donorId === undefined) throw new Error('snapshot expansion requires declared retained relevance reuse');
   if (donorId === undefined) return undefined;
   if (typeof donorId !== 'string' || !donorId || prepared.cell.bar !== 'relevance'
     || prepared.cell.corpus !== corpus || prepared.arm.execution.transport !== 'worker') {
@@ -324,8 +327,21 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
   const oldDataset = donor.datasets.find((d) => d.corpus === corpus)!;
   const dataset = prepared.manifest.datasets.find((d) => d.corpus === corpus)!;
   const oldSnapshot = donor.inputs[oldDataset.snapshot], snapshot = prepared.manifest.inputs[dataset.snapshot];
-  if (oldSnapshot.sha256 !== snapshot.sha256 || oldSnapshot.bytes !== snapshot.bytes) {
+  if (!expansion && (oldSnapshot.sha256 !== snapshot.sha256 || oldSnapshot.bytes !== snapshot.bytes)) {
     throw new Error('retained relevance snapshot changed');
+  }
+  if (expansion) {
+    const before = await readPinned(oldSnapshot), after = await readPinned(snapshot);
+    if (before.formatVersion !== 1 || after.formatVersion !== 1
+      || typeof before.seed !== 'string' || !before.seed || before.seed !== after.seed
+      || before.seed !== donor.seed || before.seed !== prepared.manifest.seed
+      || !Number.isFinite(Date.parse(before.snapshotAt)) || before.snapshotAt !== after.snapshotAt) {
+      throw new Error('retained relevance snapshot expansion frozen identity mismatch');
+    }
+    const priorEntries = before.suites[corpus].entries as CorpusEntry[];
+    const priorKeys = new Set(priorEntries.map((e) => e.key));
+    const kept = (after.suites[corpus].entries as CorpusEntry[]).filter((e) => priorKeys.has(e.key));
+    if (hashJson(kept) !== hashJson(priorEntries)) throw new Error('retained relevance snapshot expansion source content/provenance/order mismatch');
   }
   const previous = loadIndependentMeasurementInputs({ ...prepared, manifest: donor, cell, arm }, corpus);
   const current = loadIndependentMeasurementInputs(prepared, corpus);
@@ -352,6 +368,14 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
     throw new Error('retained relevance vector population/order/normalization mismatch');
   }
   const oldIndexes = new Map(previous.queries.map((q, i) => [q.id, i]));
+  const oldDocumentIndexes = new Map(previous.entries.map((e, i) => [e.key, i]));
+  const missingDocumentIndexes: number[] = [];
+  const documentVectors = current.entries.map((e, index): number[] | undefined => {
+    const oldIndex = oldDocumentIndexes.get(e.key);
+    if (oldIndex === undefined) { missingDocumentIndexes.push(index); return undefined; }
+    if (hashJson(e) !== hashJson(previous.entries[oldIndex])) throw new Error('retained relevance document identity changed');
+    return vectors.docVectors[oldIndex];
+  });
   const queryIdentity = (q: typeof current.queries[number]) => ({ id: q.id, query: q.query, class: q.class,
     group: q.group, partition: q.partition });
   const missingIndexes: number[] = [];
@@ -363,34 +387,56 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
     }
     return vectors.queryVectors[oldIndex];
   });
-  return { docVectors: vectors.docVectors as number[][], queryVectors, missingIndexes,
+  return { docVectors: vectors.docVectors as number[][], documentVectors, missingDocumentIndexes,
+    queryVectors, missingIndexes, dimensions: arm.profile.nativeDims,
+    documentTexts: current.entries.map((e) => e.text), queryTexts: current.queries.map((q) => q.query),
     evidence: { donorCellId: donorId, manifest: refs.reuseManifest, completion: refs.reuseCompletion,
       raw: completed[0].raw, vectors: refs.reuseVectors, vectorsInputId, documentsReused: vectors.docVectors.length,
       reusedQueryIds: current.queries.filter((_, i) => queryVectors[i] !== undefined).map((q) => q.id),
       newQueryIds: missingIndexes.map((i) => current.queries[i].id),
+      newDocumentKeys: missingDocumentIndexes.map((i) => current.entries[i].key), snapshotExpansion: expansion === true,
       scope: 'embedding reuse only; independent new labels, scoring and source-power acceptance remain required',
       timingComparableToFullInference: false } };
 }
 
-/** Keep local new-query indices separate from the complete accepted order. */
-export async function embedIncrementalRelevanceQueries(
-  retained: NonNullable<Awaited<ReturnType<typeof loadRetainedRelevanceVectors>>>, queryTexts: string[],
+/** Merge both vector kinds through the same validated receipt and local index
+ * map. The retained arrays stay immutable; only absent vectors are embedded. */
+async function embedIncrementalRelevancePopulation(
+  retained: NonNullable<Awaited<ReturnType<typeof loadRetainedRelevanceVectors>>>, texts: string[], kind: 'query' | 'document',
   embedMissing: (texts: string[]) => Promise<number[][]>,
 ): Promise<number[][]> {
-  if (queryTexts.length !== retained.queryVectors.length) throw new Error('incremental relevance query population mismatch');
-  const newVectors = retained.missingIndexes.length ? await embedMissing(retained.missingIndexes.map((i) => queryTexts[i])) : [];
-  if (newVectors.length !== retained.missingIndexes.length) throw new Error('incremental relevance new vector population mismatch');
-  if (newVectors.some((v) => !Array.isArray(v) || v.length !== retained.docVectors[0].length
+  const vectors = kind === 'query' ? retained.queryVectors : retained.documentVectors;
+  const indexes = kind === 'query' ? retained.missingIndexes : retained.missingDocumentIndexes;
+  const declaredTexts = kind === 'query' ? retained.queryTexts : retained.documentTexts;
+  if (texts.length !== vectors.length) throw new Error(`incremental relevance ${kind} population mismatch`);
+  if (hashJson(texts) !== hashJson(declaredTexts)) throw new Error(`incremental relevance ${kind} text identity mismatch`);
+  const newVectors = indexes.length ? await embedMissing(indexes.map((i) => texts[i])) : [];
+  if (newVectors.length !== indexes.length) throw new Error('incremental relevance new vector population mismatch');
+  if (newVectors.some((v) => !Array.isArray(v) || v.length !== retained.dimensions
     || v.some((x) => typeof x !== 'number' || !Number.isFinite(x))
     || Math.abs(Math.sqrt(v.reduce((s, x) => s + x * x, 0)) - 1) > 0.001)) {
     throw new Error('incremental relevance new vector dimensions/normalization mismatch');
   }
-  const merged = [...retained.queryVectors];
-  retained.missingIndexes.forEach((index, localIndex) => { merged[index] = newVectors[localIndex]; });
+  const merged = [...vectors];
+  indexes.forEach((index, localIndex) => { merged[index] = newVectors[localIndex]; });
   return merged.map((v) => {
-    if (!v) throw new Error('incremental relevance missing query vector');
+    if (!v) throw new Error(`incremental relevance missing ${kind} vector`);
     return v;
   });
+}
+/** Keep local new-query indices separate from the complete accepted order. */
+export async function embedIncrementalRelevanceQueries(
+  retained: NonNullable<Awaited<ReturnType<typeof loadRetainedRelevanceVectors>>>, texts: string[],
+  embedMissing: (texts: string[]) => Promise<number[][]>,
+): Promise<number[][]> {
+  return embedIncrementalRelevancePopulation(retained, texts, 'query', embedMissing);
+}
+/** Document expansion uses the query merge's existing validation, not a cache. */
+export async function embedIncrementalRelevanceDocuments(
+  retained: NonNullable<Awaited<ReturnType<typeof loadRetainedRelevanceVectors>>>, texts: string[],
+  embedMissing: (texts: string[]) => Promise<number[][]>,
+): Promise<number[][]> {
+  return embedIncrementalRelevancePopulation(retained, texts, 'document', embedMissing);
 }
 /** No inference or SQL writes happen until every selected identity is verified. */
 export async function prepareMeasurementCell(file: string, expectedSha256: string, cellId: string,
