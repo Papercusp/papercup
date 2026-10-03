@@ -327,8 +327,8 @@ describe("buildMcpProxyTransportBlock (D-005, pure given an injected reader)", (
       criticalContinuationQueueStalls: 1,
       criticalContinuationQueueMaxWaitMs: 701_000,
     });
-    expect(out.mcpProxyTransport.note).toMatch(/≥5m/);
-    expect(out.mcpProxyTransport.note).toMatch(/non-expiring/);
+    expect(out.mcpProxyTransport.note).toMatch(/last hour/);
+    expect(out.mcpProxyTransport.note).toMatch(/does not establish whether a request remains queued/);
   });
 
   it("inherits the listenPort:0 exclusion from the shared summarizer — test/sidecar noise never surfaces", () => {

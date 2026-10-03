@@ -513,7 +513,7 @@ export function buildMcpProxyTransportBlock(
       newestAt: h.newestAt,
       note:
         h.criticalContinuationQueueStalls > 0
-          ? `${h.criticalContinuationQueueStalls} critical continuation write(s) waited ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m (longest ${Math.round(h.criticalContinuationQueueMaxWaitMs / 1000)}s). Checkpoint/completion writes remain non-expiring and are still waiting.`
+          ? `${h.criticalContinuationQueueStalls} critical continuation request(s) exceeded ${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m during the last hour (longest observed ${Math.round(h.criticalContinuationQueueMaxWaitMs / 1000)}s). This is a recent incident signal and does not establish whether a request remains queued.`
           : h.handshakeStalls > 0
           ? `${h.handshakeStalls} upstream-silence stall(s) on the MCP handshake (WI-6740). Each was RETRIED and survived — but this is the class that leaves a session tool-dark for its entire life if the retry ever runs out. Not benign.`
           : `${h.hardFailures} hard tool-transport failure(s) the proxy could not hide from callers.`,
