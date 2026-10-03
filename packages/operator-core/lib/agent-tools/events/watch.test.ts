@@ -17,9 +17,44 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 }, note: 'resumable' })),
 }));
+// WI-10005697: the await store is faked as a tiny IN-MEMORY ROW STORE rather than a pair
+// of canned answers, so "register the identical standing watch twice" is a real
+// idempotency assertion driven end-to-end through the handler. The fake lives in the
+// vi.mock factory on purpose — installing it per-test via mockImplementation would need an
+// `as never` cast, which raises the shrink-only lint:mock-cast-escape ratchet.
+const fakeStore = vi.hoisted(() => {
+  const rows: Array<Record<string, unknown>> = [];
+  return { rows, reset: () => void (rows.length = 0) };
+});
 vi.mock('../../events/await/store', () => ({
-  registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 1, eventKey: i.eventKey, once: i.once, minSleepSec: i.minSleepSec, urgency: i.urgency, expiresTs: null, timeoutBehavior: i.timeoutBehavior })),
+  registerAwait: vi.fn(async (i: Record<string, unknown>) => {
+    const row = {
+      id: fakeStore.rows.length + 1,
+      eventKey: i.eventKey,
+      once: i.once,
+      minSleepSec: i.minSleepSec ?? null,
+      urgency: i.urgency ?? false,
+      expiresTs: null,
+      timeoutBehavior: i.timeoutBehavior,
+      payloadFilter: i.payloadFilter ?? null,
+    };
+    fakeStore.rows.push(row);
+    return row;
+  }),
   cancelAwait: vi.fn(async () => true),
+  // Identity mirrors the finder's SQL: event key + canonical payload filter + wake floor
+  // + urgency, over standing deadline-free rows.
+  findMatchingActiveStandingWatch: vi.fn(
+    async (q: Record<string, unknown>) =>
+      fakeStore.rows.find(
+        (r) =>
+          r.once === false &&
+          r.eventKey === q.eventKey &&
+          JSON.stringify(r.payloadFilter ?? null) === JSON.stringify(q.payloadFilter ?? null) &&
+          (r.minSleepSec ?? null) === (q.minSleepSec ?? null) &&
+          (r.urgency ?? false) === (q.urgency ?? false),
+      ) ?? null,
+  ),
 }));
 vi.mock('../../events/await/engine', () => ({
   startAwaitSweeper: vi.fn(),
@@ -64,7 +99,7 @@ vi.mock('../coordination/event-subscriptions', () => ({ subscribeEventKey: vi.fn
 
 import watch from './watch';
 import { lookupByMcpName, toArgsJsonSchema } from '@papercusp/agent-mcp';
-import { registerAwait, cancelAwait } from '../../events/await/store';
+import { registerAwait, cancelAwait, findMatchingActiveStandingWatch } from '../../events/await/store';
 import { deliverToSpecificAwaits } from '../../events/await/engine';
 import { registerPredicateWatch, evalPredicateWatch, findMatchingActivePredicateWatch } from '../../events/await/predicate-watch';
 import { subscribeTopic } from '../coordination/topics';
@@ -78,7 +113,12 @@ const call = async (args: Record<string, unknown>) => {
   return JSON.parse(res.content[0].text);
 };
 
-beforeEach(() => vi.clearAllMocks());
+// WI-10005697: the in-memory fake await store (vi.mock factory above) persists across
+// tests, and its row ids are observable in assertions, so it resets with the mocks.
+beforeEach(() => {
+  vi.clearAllMocks();
+  fakeStore.reset();
+});
 
 describe('watch routing', () => {
   it('wake:false (default) → inject path: a standing topic subscription, no await', async () => {
@@ -414,5 +454,71 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
         once: true,
       }),
     );
+  });
+});
+
+describe('WI-10005697: standing pattern watch dedupe', () => {
+  // The motivating key on purpose: 'work-item:claimable' carries both a '-' and a ':',
+  // the separators normalizeEventKey() strips. The finder compares the key EXACTLY for
+  // that reason, and this case fails if that ever regresses to a normalized compare.
+  const claimable = { pattern: 'work-item:claimable', wake: true, once: false, payload_filter: { id: 'WI-1' } };
+
+  it('the drained-lane contract is IDEMPOTENT: the identical standing watch twice yields ONE row + a deduped marker', async () => {
+    const first = await call({ ...claimable });
+    const second = await call({ ...claimable });
+
+    expect(registerAwait).toHaveBeenCalledTimes(1); // the second registration inserted nothing
+    expect(fakeStore.rows).toHaveLength(1);
+    expect(first.deduped).toBeUndefined();
+    expect(second.deduped).toMatchObject({ joined_watch_id: first.watch.id });
+    expect(second.watch.id).toBe(first.watch.id);
+    expect(second.watch.payload_filter).toMatchObject({ id: 'WI-1' });
+  });
+
+  it('CALIBRATION: a DIFFERING payload_filter is a different watch and still gets its own row', async () => {
+    const a = await call({ ...claimable, payload_filter: { id: 'WI-1' } });
+    const b = await call({ ...claimable, payload_filter: { id: 'WI-2' } });
+
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(fakeStore.rows).toHaveLength(2);
+    expect(a.deduped).toBeUndefined();
+    expect(b.deduped).toBeUndefined();
+    expect(b.watch.id).not.toBe(a.watch.id);
+  });
+
+  it('CALIBRATION: a differing wake floor / urgency is a different watch and still gets its own row', async () => {
+    await call({ ...claimable });
+    await call({ ...claimable, min_sleep_sec: 600 });
+    await call({ ...claimable, urgency: true });
+
+    expect(registerAwait).toHaveBeenCalledTimes(3);
+    expect(fakeStore.rows).toHaveLength(3);
+  });
+
+  it('the dedupe identity is scoped by subscriber + key + payload filter + floor + urgency', async () => {
+    await call({ ...claimable, min_sleep_sec: 120, urgency: true });
+    expect(findMatchingActiveStandingWatch).toHaveBeenCalledWith({
+      subscriberId: 'su-watcher',
+      eventKey: 'work-item:claimable',
+      payloadFilter: { id: 'WI-1' },
+      minSleepSec: 120,
+      urgency: true,
+    });
+  });
+
+  it('a ONE-SHOT wake is OUT of scope — it is consumed by its fire, so the dedupe never runs', async () => {
+    await call({ pattern: 'feature:settled', wake: true, once: true });
+    await call({ pattern: 'feature:settled', wake: true, once: true });
+
+    expect(findMatchingActiveStandingWatch).not.toHaveBeenCalled();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+  });
+
+  it('a DEADLINE-bearing standing watch is OUT of scope — its expiry is per-registration state', async () => {
+    await call({ ...claimable, timeout_sec: 600 });
+    await call({ ...claimable, timeout_sec: 600 });
+
+    expect(findMatchingActiveStandingWatch).not.toHaveBeenCalled();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
   });
 });
