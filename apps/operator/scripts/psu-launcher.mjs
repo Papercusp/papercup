@@ -5167,7 +5167,10 @@ export function contextTrimmingEnv(agent, env = process.env) {
 export function healContextTrimmingEnv(env, agent = env?.PAPERCUSP_AGENT) {
   const filled = [];
   for (const [k, v] of Object.entries(contextTrimmingEnv(agent))) {
-    if (env[k] === undefined || env[k] === "") {
+    // An empty value counts as absent only when the derived value is not itself
+    // empty: under PAPERCUSP_CLAUDE_FULL_SEED the compact list is legitimately "",
+    // and refilling "" over "" would make the heal report it forever (WI-10005917).
+    if (env[k] === undefined || (env[k] === "" && v !== "")) {
       env[k] = v;
       filled.push(k);
     }
