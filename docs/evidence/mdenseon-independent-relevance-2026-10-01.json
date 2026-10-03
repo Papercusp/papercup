@@ -1,4 +1,38 @@
 {
+  "expandedVectorPreparation": {
+    "status": "canonical additive-vector guards and frozen-runtime document alignment verified; expanded labels and inference still absent",
+    "workItem": "WI-10004537",
+    "seedDomainDefect": "EI-24928001483229549",
+    "reuse": "Extended the existing retained relevance receipt and shared merge validation. Explicit reuseSnapshotExpansion preserves old source bytes, metadata, relative order, partition and census time; population seeds compare with population seeds, while measurement seeds compare separately. Only missing documents or exact new query identities are embedded. Default whole-snapshot refusal remains unchanged.",
+    "canonicalGuardTests": { "runs": [20622430, 20622431], "passed": 179, "failed": 0, "skipped": 0 },
+    "seedCounterexample": { "testRunId": 20622429, "failedBeforeFix": 1, "distinction": "The real frozen population seed and measurement-order seed differ while each remains unchanged. The old cross-domain equality refuses; separate same-domain comparisons pass." },
+    "canonicalCliStartup": {
+      "task": "0muru50agktgetsm3dg", "exitCode": 0,
+      "scope": "Actual three-file framework run passed 151 then-current manifest tests, 27 candidate tests and one CLI startup integration test with zero skips. The router marked Git-HEAD provenance unknown as background sync advanced during the run; this is not full frozen-source acceptance. Later 152-test manifest run 20622430 qualifies the corrected seed-domain source separately."
+    },
+    "sourceOverlay": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v5/source-overlay-receipt.json",
+      "sha256": "6e959e075668221f2bf23d91b40d56f5260cf4ca5175541d887fcb8d6cfb4bb2", "bytes": 1514973
+    },
+    "runtimeQualification": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v5/runtime-module-qualification.json",
+      "sha256": "20063921dad8d22d5c8048fb9112dc985b1b6d8c11c9499a5a97c0c29fee4f42", "bytes": 9120
+    },
+    "qualificationTask": "0murumwndhqfyf11nro", "qualificationExitCode": 0,
+    "qualificationFinishedAt": "2026-10-03T03:45:30.178Z",
+    "actualRuntime": "Same retained Node, CPU fp32 four intra-op/one inter-op threads, unchanged three measured arms and old worker 754f42bb. Two source leaves over 3,136 links; no full runtime copy or original-tree write.",
+    "sharedManifestIdentities": 1, "distinctVectorInputs": 6,
+    "exactV8DocumentVectorsChecked": 3081, "exactV8QueryVectorsChecked": 684,
+    "missingExpandedMemoryDocumentsAcrossThreeArms": 369,
+    "wrongCellVectorBindingRefused": true, "alteredSourceAlignmentRefused": true,
+    "modelCalls": 0, "workerStarted": false,
+    "sourceAndDocumentAlignmentQualification": true,
+    "fullExpandedCellInputQualification": false, "newIndependentLabelsPresent": false,
+    "expandedSnapshotInferencePerformed": false, "fullTimingsReusable": false,
+    "fullAccessibleCensusExhausted": false, "p003Complete": false, "adoptionAuthorized": false,
+    "preservedAttempts": "Failed v3 qualifier rejected the incorrect cross-seed comparison before inference. The v4 source tree has no source receipt after a data-URL filesystem-identity failure, so it is unqualified. Both remain immutable; v5 binds a filesystem source identity before materialization and applies the corrected seed guard. No paid or embedding work was repeated.",
+    "scope": "The actual old-runtime full guard loads the six already accepted V8 populations; the same maintained document-map guard aligns the larger source-selected snapshot while preserving every old vector. This pre-label qualification does NOT rebind old proof to a larger snapshot or invent new labels. Genuine memory-expansion collection, complete ancestry/consensus audit and independent labels remain prerequisites for expanded full-cell scoring."
+  },
   "snapshotExpansionPreparation": {
     "status": "guarded additive recovery and source selection verified; collection and expanded vector qualification not performed",
     "workItem": "WI-10004537",
