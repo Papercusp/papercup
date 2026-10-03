@@ -1086,69 +1086,103 @@ export function configureStagingRestartReadinessReaderForTests(
  * around injectable/test implementations too. A readiness failure is returned
  * as data so the caller can report "scheduled but not ready" without claiming
  * `restarted:true`.
+ *
+ * WI-10005747 (EI-24792459933326276): a new MainPID is only process-START evidence —
+ * the gateway binds :8788 and answers /healthz moments later. The wait used to probe
+ * the listener ONCE at the instant the PID changed and return `ready:false` on the
+ * first miss (and on one failed /healthz), reporting a false negative for a restart
+ * that succeeded seconds later. The listener + health phases now keep polling to the
+ * SAME deadline as the PID phase; `ready:false` means the budget was spent, not that
+ * the first look was early.
  */
-async function waitForGatewayRestartReadiness(beforePid: number | null): Promise<GatewayRestartReadiness> {
-  const startedAt = Date.now();
-  const deadline = startedAt + GATEWAY_RESTART_PID_WAIT_MS;
-  const previousPidKnown = isLiveMainPid(beforePid);
-  let current: Awaited<ReturnType<typeof probeServiceStart>> | null = null;
+export type GatewayReadinessDeps = {
+  readService: () => Promise<{ mainPid?: number | null } | null | undefined>;
+  probeListener: (pid: number) => Promise<GatewayListenerReadiness>;
+  probeHealth: () => Promise<HttpProbeResult>;
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+  waitMs: number;
+  pollMs: number;
+};
 
-  const readCurrent = async (): Promise<Awaited<ReturnType<typeof probeServiceStart>> | null> => {
-    try {
-      return await probeServiceStart(RESTART_TARGET_UNITS.gateway);
-    } catch {
-      return null;
-    }
-  };
-
-  while (Date.now() <= deadline) {
-    current = await readCurrent();
-    const currentPid = current?.mainPid;
-    const pidChanged = isLiveMainPid(currentPid) && (!previousPidKnown || currentPid !== beforePid);
-    if (pidChanged) {
-      const listener = await probeGatewayListenerOwnership(currentPid);
-      if (!listener.ownedByPid) {
-        return {
-          ready: false,
-          pidChanged: true,
-          observedPid: currentPid,
-          listener,
-          health: null,
-          waitedMs: Date.now() - startedAt,
-        };
-      }
-
-      let health: HttpProbeResult;
+function defaultGatewayReadinessDeps(): GatewayReadinessDeps {
+  return {
+    readService: async () => {
       try {
-        health = await probeHttpReachable(gatewayHealthUrl());
-      } catch (error) {
-        health = {
-          reachable: false,
-          detail: error instanceof Error ? error.message : String(error),
-        };
+        return await probeServiceStart(RESTART_TARGET_UNITS.gateway);
+      } catch {
+        return null;
       }
-      return {
-        ready: health.reachable,
-        pidChanged: true,
-        observedPid: currentPid,
-        listener,
-        health,
-        waitedMs: Date.now() - startedAt,
-      };
+    },
+    probeListener: probeGatewayListenerOwnership,
+    probeHealth: async () => {
+      try {
+        return await probeHttpReachable(gatewayHealthUrl());
+      } catch (error) {
+        return { reachable: false, detail: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    now: () => Date.now(),
+    sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    waitMs: GATEWAY_RESTART_PID_WAIT_MS,
+    pollMs: GATEWAY_RESTART_PID_POLL_MS,
+  };
+}
+
+export async function waitForGatewayRestartReadiness(
+  beforePid: number | null,
+  overrides: Partial<GatewayReadinessDeps> = {},
+): Promise<GatewayRestartReadiness> {
+  const deps = { ...defaultGatewayReadinessDeps(), ...overrides };
+  const startedAt = deps.now();
+  const deadline = startedAt + deps.waitMs;
+  const previousPidKnown = isLiveMainPid(beforePid);
+  let lastLivePid: number | null = null;
+  // The replacement PID, once seen, is sticky: a later service read that comes back empty
+  // (fail-soft probe) must not make us forget that the restart already cycled the process.
+  let changedPid: number | null = null;
+  let listener: GatewayListenerReadiness | null = null;
+  let health: HttpProbeResult | null = null;
+
+  while (deps.now() <= deadline) {
+    const current = await deps.readService();
+    const currentPid = current?.mainPid;
+    if (isLiveMainPid(currentPid)) {
+      lastLivePid = currentPid;
+      if (!previousPidKnown || currentPid !== beforePid) changedPid = currentPid;
     }
 
-    const remainingMs = deadline - Date.now();
+    if (changedPid !== null) {
+      listener = await deps.probeListener(changedPid);
+      if (listener.ownedByPid) {
+        health = await deps.probeHealth();
+        if (health.reachable) {
+          return {
+            ready: true,
+            pidChanged: true,
+            observedPid: changedPid,
+            listener,
+            health,
+            waitedMs: deps.now() - startedAt,
+          };
+        }
+      } else {
+        health = null;
+      }
+    }
+
+    const remainingMs = deadline - deps.now();
     if (remainingMs <= 0) break;
-    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(GATEWAY_RESTART_PID_POLL_MS, remainingMs)));
+    await deps.sleep(Math.min(deps.pollMs, remainingMs));
   }
 
   return {
     ready: false,
-    pidChanged: false,
-    observedPid: isLiveMainPid(current?.mainPid) ? current.mainPid : null,
-    listener: null,
-    health: null,
-    waitedMs: Date.now() - startedAt,
+    pidChanged: changedPid !== null,
+    observedPid: changedPid ?? lastLivePid,
+    listener,
+    health,
+    waitedMs: deps.now() - startedAt,
   };
 }
 
