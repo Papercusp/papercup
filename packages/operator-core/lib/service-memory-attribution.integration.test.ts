@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { afterAll, describe, expect, it } from 'vitest';
 import { HOST_MALLOC_ARENA_MAX } from '../../../apps/operator/bin/malloc-arena-reexec';
 import { createCdpClient, readProcessMemory, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
@@ -417,13 +418,17 @@ function assertServingInboxPin(before: ServingInboxPin, after: ServingInboxPin) 
 async function readServingInboxPin(directory: string, expectedBuild: string, pid: number): Promise<ServingInboxPin> {
   if (!/^[a-f0-9]{10,64}$/.test(expectedBuild)) throw Error('Serving inbox requires an explicit build SHA');
   const before = servingInboxProcess(pid, directory);
-  const response = await fetch('http://127.0.0.1:3170/api/health', { signal: AbortSignal.timeout(10000) });
-  if (!response.ok) throw Error('Serving inbox health HTTP failure: ' + response.status);
-  const health = servingInboxHealth(await response.json(), expectedBuild);
+  const health = await readServingInboxHealth('http://127.0.0.1:3170/api/health', expectedBuild);
   const artifacts = inboxArtifactManifest(directory);
   if (JSON.stringify(before) !== JSON.stringify(servingInboxProcess(pid, directory)))
     throw Error('Serving inbox process changed during preflight');
   return { health, process: before, artifacts };
+}
+
+async function readServingInboxHealth(endpoint: string, expectedBuild: string) {
+  const response = await fetch(endpoint, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw Error('Serving inbox health HTTP failure: ' + response.status);
+  return servingInboxHealth(await response.json(), expectedBuild);
 }
 
 function assertInboxArtifactCopy(source: ReturnType<typeof inboxArtifactManifest>, candidate: ReturnType<typeof inboxArtifactManifest>,
@@ -1010,6 +1015,60 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         expect(() => auditSavedInboxPair({ incomplete: false, runner })).toThrow('incomplete run');
       }
     });
+    it('reads serving health on a fresh socket across synchronous runtime work', async () => {
+      // The independent server can retire a socket while this test's event loop
+      // is blocked, just as the real peer can during runCohortWithLog/spawnSync.
+      // Shared counters prove a stable peer and distinguish a reused closed
+      // socket from a new request; no production process or cohort is started.
+      const run = async (read: (endpoint: string) => Promise<unknown>) => {
+        const state = new Int32Array(new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT));
+        const worker = new Worker(`
+          const { parentPort, workerData } = require('node:worker_threads');
+          const state = new Int32Array(workerData);
+          const server = require('node:http').createServer((req, res) => {
+            Atomics.add(state, 2, 1);
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Keep-Alive', 'timeout=60');
+            res.end(JSON.stringify({ ok: true, service: 'papercusp-operator', sha: 'aaaaaaaaaa', version: '0.0.0' }));
+            res.on('finish', () => setTimeout(() => req.socket.destroy(), 100));
+          });
+          server.on('connection', socket => {
+            Atomics.add(state, 0, 1);
+            socket.on('close', () => { Atomics.store(state, 1, 1); Atomics.notify(state, 1); });
+          });
+          server.keepAliveTimeout = 60000;
+          server.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));
+        `, { eval: true, workerData: state.buffer });
+        try {
+          const port = await new Promise<number>((resolvePort, reject) => {
+            worker.once('message', resolvePort); worker.once('error', reject);
+          });
+          const endpoint = 'http://127.0.0.1:' + port + '/api/health';
+          await read(endpoint);
+          // Let response consumption release the socket into the idle pool.
+          // The peer's delayed close still occurs only after we start blocking.
+          await new Promise<void>(ready => setImmediate(ready));
+          // Block until the peer has closed, without delivering the client's
+          // queued socket-close or idle-timer callbacks before the next read.
+          expect(Atomics.wait(state, 1, 0, 2000)).not.toBe('timed-out');
+          let error: unknown, value: unknown;
+          try { value = await read(endpoint); } catch (caught) { error = caught; }
+          return { error, value, connections: Atomics.load(state, 0), requests: Atomics.load(state, 2) };
+        } finally { await worker.terminate(); }
+      };
+      const pooled = await run(async endpoint => (await fetch(endpoint)).json());
+      console.log('P011_HEALTH_POOLED_PROBE ' + JSON.stringify({ connections: pooled.connections, requests: pooled.requests,
+        error: String(pooled.error), cause: (pooled.error as { cause?: { code?: string } })?.cause?.code }));
+      expect((pooled.error as { cause?: { code?: string } })?.cause?.code).toBe('UND_ERR_SOCKET');
+      expect(pooled.connections).toBe(1); expect(pooled.requests).toBe(1);
+      const pinned = await run(endpoint => readServingInboxHealth(endpoint, 'a'.repeat(10)));
+      expect(pinned.error).toBeUndefined();
+      expect(pinned.value).toEqual({ sha: 'a'.repeat(10), version: '0.0.0' });
+      expect(pinned.connections).toBe(2); expect(pinned.requests).toBe(2);
+      console.log('P011_HEALTH_SOCKET_GUARD ' + JSON.stringify({ pooled: { error: 'UND_ERR_SOCKET', connections: pooled.connections,
+        requests: pooled.requests }, pinned: { connections: pinned.connections, requests: pinned.requests },
+        scope: 'Independent local peer; historical staging socket cause remains unproven' }));
+    }, 15000);
     it.each([
       ['unknown SHA', { sha: null }], ['other SHA', { sha: 'd'.repeat(10) }],
       ['missing version', { version: undefined }], ['wrong service', { service: 'other' }],
