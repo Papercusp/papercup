@@ -323,8 +323,10 @@ export async function resolveWorkItemBehaviorContract(
       `Shapes: plans:set-specs takes ONE object under \`spec\` (not an array) with at least specId, ` +
       `expectedRevision (0 to create), planItemId, behavior, behaviorClass and lifecycleStatus; ` +
       `plans:bind-spec-evidence takes ONE object under \`binding\` with at least workItemId, specId, ` +
-      `specRevision, evidenceKind and evidenceRef. Read the exact enum values with tools:find ` +
-      `before the first call.`;
+      `specRevision, evidenceKind and evidenceRef, plus exactly one of \`measurement\` ` +
+      `({ schemaVersion: 1, kind, sourcePaths, ... }) or \`sourceFingerprint\` (or the ledger form ` +
+      `{ workItemId, specId, fromTestRun } that derives the rest from a test_runs row). Read the exact ` +
+      `enum values with tools:find before the first call.`;
   return {
     workItemId: workItem.id,
     groups,

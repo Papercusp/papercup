@@ -213,6 +213,14 @@ describe('resolveWorkItemBehaviorContract — impact reporting', () => {
     for (const key of ['workItemId', 'specRevision', 'evidenceKind', 'evidenceRef']) {
       expect(report).toContain(key);
     }
+    // Measured live while re-binding a sibling clause: a binding without `measurement.schemaVersion`
+    // is refused ("expected 1"), and the plain binding schema requires exactly one of
+    // measurement / sourceFingerprint — neither was named before.
+    expect(report).toContain('schemaVersion: 1');
+    expect(report).toContain('sourceFingerprint');
+    // The ledger form is the alternative shape; naming only the plain one would mislead a
+    // closer who already holds a test_runs row.
+    expect(report).toContain('fromTestRun');
     expect(report).toContain('tools:find');
   });
 
