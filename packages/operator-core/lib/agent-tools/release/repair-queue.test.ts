@@ -504,6 +504,16 @@ describe('release:repair-queue', () => {
     expect(result.note).toMatch(/confirm:true/);
     expect(mocks.write).not.toHaveBeenCalled();
     expect(mocks.retract).not.toHaveBeenCalled();
+    // WI-10005695: the response names where the admit spent its time, step by step.
+    expect(result.timings.inFlight).toEqual([]);
+    expect(result.timings.steps.map((s: { step: string }) => s.step)).toEqual([
+      'inspect-queue',
+      'ledger-read',
+      'hunk-exact',
+      'build-proof',
+      'containment',
+    ]);
+    expect(result.timings.steps.every((s: { ms: number; ok: boolean }) => s.ok && s.ms >= 0)).toBe(true);
   });
 
   it('rejects a stale expected queue identity before reading the edit ledger or building an admission', async () => {
