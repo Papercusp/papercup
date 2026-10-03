@@ -42,6 +42,10 @@ const ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE = 'acceptance_bar_approval_required'
 const ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT =
   "Run rubrics:amend with dryRun:true, post preview.approval as a work_items:comment, repeat the dry run with reviewPreviewPost:'thread-post:<preview-id>', follow review.next, and apply only with approvalRef:'thread-post:<reviewer-answer-id>'.";
 
+const REVIEWER_MODEL_NOT_ALLOWED_CODE = 'reviewer_model_not_allowed';
+const REVIEWER_MODEL_NOT_ALLOWED_NEXT =
+  'Choose an agent/model pair present in the workspace expert model allowlist, or update that allowlist before retrying. rubrics:amend never substitutes an unavailable reviewer.';
+
 function noLiveDischargeMappingRefusal(error: unknown): {
   ok: false;
   code: string;
@@ -71,6 +75,22 @@ function acceptanceBarApprovalRequiredRefusal(error: unknown): {
     code: ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE,
     error: message,
     next: ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT,
+  };
+}
+
+function reviewerModelNotAllowedRefusal(error: unknown): {
+  ok: false;
+  code: string;
+  error: string;
+  next: string;
+} | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.startsWith(`${REVIEWER_MODEL_NOT_ALLOWED_CODE}:`)) return null;
+  return {
+    ok: false,
+    code: REVIEWER_MODEL_NOT_ALLOWED_CODE,
+    error: message,
+    next: REVIEWER_MODEL_NOT_ALLOWED_NEXT,
   };
 }
 
@@ -111,7 +131,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     }).strict().optional().describe(
-      'Routed-review backend/model and optional effort; required with reviewPreviewPost. Unavailable choices are refused, never substituted.',
+      'Routed-review backend/model and optional effort; required with reviewPreviewPost. The pair must match a workspace expert-model allowlist entry. Unavailable choices return a structured refusal and are never substituted.',
     ),
     criteria: z
       .array(amendmentCriterionSchema)
@@ -282,7 +302,7 @@ export default defineTool({
     'Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining). The subject Decision, BAR/spec revisions, and rebind commit atomically; prior proof and grades remain history; the shrink guard applies.',
   guidance: {
     returns:
-      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). Missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`) and required outside-lineage approval (`acceptance_bar_approval_required`) return { ok:false, code, error, next } as domain refusals and make no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
+      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). Missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`), required outside-lineage approval (`acceptance_bar_approval_required`), and unavailable reviewer models (`reviewer_model_not_allowed`) return { ok:false, code, error, next } as domain refusals and make no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
@@ -395,19 +415,26 @@ export default defineTool({
         if (!identity.workspaceId) {
           throw new Error('acceptance_bar_amendment_review_unscoped: a routed review needs a concrete workspace identity');
         }
-        const review = await openAcceptanceBarAmendmentReview({
-          rubricRef: args.rubricRef,
-          previewPostRef: args.reviewPreviewPost,
-          preview,
-          ...(args.reason ? { reason: args.reason } : {}),
-          patch: amendmentPatch(args),
-          identity,
-          workspaceId: identity.workspaceId,
-          // WI-10003299: a fresh-reviewer launch reuses this call's context,
-          // re-attributed to the review's system principal.
-          launchCtx: ctx,
-          ...(args.reviewerModel ? { reviewerModel: args.reviewerModel } : {}),
-        });
+        let review: Awaited<ReturnType<typeof openAcceptanceBarAmendmentReview>>;
+        try {
+          review = await openAcceptanceBarAmendmentReview({
+            rubricRef: args.rubricRef,
+            previewPostRef: args.reviewPreviewPost,
+            preview,
+            ...(args.reason ? { reason: args.reason } : {}),
+            patch: amendmentPatch(args),
+            identity,
+            workspaceId: identity.workspaceId,
+            // WI-10003299: a fresh-reviewer launch reuses this call's context,
+            // re-attributed to the review's system principal.
+            launchCtx: ctx,
+            ...(args.reviewerModel ? { reviewerModel: args.reviewerModel } : {}),
+          });
+        } catch (error) {
+          const refusal = reviewerModelNotAllowedRefusal(error);
+          if (refusal) return { ...refusal, dryRun: true };
+          throw error;
+        }
         return { ok: true, dryRun: true, preview, review };
       });
       const settled = await settleWithin(run, amendForegroundBudgetMs());

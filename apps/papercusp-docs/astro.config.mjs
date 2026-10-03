@@ -13,14 +13,20 @@ function normalizeExternalAstroModuleIds() {
     resolveId(id, importer) {
       const queryIndex = id.indexOf('?');
       const pathEnd = queryIndex === -1 ? undefined : queryIndex;
-      const query = queryIndex === -1 ? '' : id.slice(queryIndex);
+      const idQuery = queryIndex === -1 ? '' : id.slice(queryIndex);
+      const importerQueryIndex = importer?.indexOf('?') ?? -1;
+      const importerQuery = importerQueryIndex === -1 ? '' : importer.slice(importerQueryIndex);
+      const importerHasAstroQuery = new URLSearchParams(importerQuery.slice(1)).has('astro');
+      // A relative external component imported by Astro's virtual page module has its
+      // `?astro&type=page` context on the importer, not on the queryless target ID.
+      // Carry that context so Astro resolves the component against the same compile key.
+      const query = queryIndex === -1 && importerHasAstroQuery ? importerQuery : idQuery;
       const isAstroVirtualRequest = new URLSearchParams(query.slice(1)).has('astro');
       const hasFilesystemPrefix = id.startsWith('/@fs/');
       const filename = hasFilesystemPrefix
         ? id.slice('/@fs'.length, pathEnd)
         : id.slice(0, pathEnd);
       if (!filename.endsWith('.astro')) return null;
-      const importerQueryIndex = importer?.indexOf('?') ?? -1;
       const importerId = importer === undefined
         ? null
         : importerQueryIndex === -1

@@ -26,7 +26,15 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences, IMPORTANCE_LEVELS, type Importance, type LegacyReason } from './parser';
+import {
+  findTerminalPlanChildMutations,
+  parsePlan,
+  maskFences,
+  IMPORTANCE_LEVELS,
+  type Importance,
+  type LegacyReason,
+  type TerminalPlanChildMutation,
+} from './parser';
 import { echoParsedItem } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -382,7 +390,15 @@ export function appendItemToBody(
  *  argument, not inferred from a union-returning mutator. */
 type AddItemValue =
   | { ok: true; itemId: string; createdPhase: boolean; slug: string }
-  | { ok: false; code: 'not_found' | 'legacy_plan'; reason?: LegacyReason };
+  | { ok: false; code: 'not_found' }
+  | { ok: false; code: 'legacy_plan'; reason?: LegacyReason }
+  | {
+      ok: false;
+      code: 'terminal_parent_child_mutation';
+      parentStatus: string;
+      changes: TerminalPlanChildMutation[];
+      reason: string;
+    };
 
 /** Append ONE item, returning the self-describing bulk result. PRESERVES the
  *  in-lock allocate → build → append → bump, the revision capture, the plan-event
@@ -420,6 +436,27 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
         };
       }
       const itemId = allocateNextItemId(current);
+      const currentItems = parsed.items.map((item) => ({ id: item.id, status: item.storedStatus }));
+      const changes = findTerminalPlanChildMutations(
+        parsed.frontmatter.status,
+        currentItems,
+        [...currentItems, { id: itemId, status: 'todo' }],
+      );
+      if (parsed.frontmatter.status && changes.length > 0) {
+        return {
+          newBody: null,
+          value: {
+            ok: false,
+            code: 'terminal_parent_child_mutation',
+            parentStatus: parsed.frontmatter.status,
+            changes,
+            reason:
+              'the parent plan is still ' +
+              parsed.frontmatter.status +
+              '; transition it explicitly with plans:set-plan-status before adding a live child',
+          },
+        };
+      }
       const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance);
       const { newBody, createdPhase } = appendItemToBody(current, it.phase, itemLine);
       const final = bumpUpdatedDate(newBody);
@@ -446,11 +483,13 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   }
 
   if (!result.value.ok) {
+    const value = result.value;
     return {
       ok: false,
       slug: it.slug,
-      error: result.value.code,
-      ...('reason' in result.value && result.value.reason ? { reason: result.value.reason } : {}),
+      error: value.code,
+      ...('reason' in value && value.reason ? { reason: value.reason } : {}),
+      ...('parentStatus' in value ? { parentStatus: value.parentStatus, changes: value.changes } : {}),
     };
   }
 

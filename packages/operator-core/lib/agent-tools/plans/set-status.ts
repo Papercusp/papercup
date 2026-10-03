@@ -26,7 +26,15 @@ import type { RefusalContract } from '../../capability-envelope/refusal-contract
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { ITEM_STATUSES, maskFences, parsePlan, NOTE_SUFFIX_RE, type Importance } from './parser';
+import {
+  findTerminalPlanChildMutations,
+  ITEM_STATUSES,
+  maskFences,
+  parsePlan,
+  NOTE_SUFFIX_RE,
+  type Importance,
+  type TerminalPlanChildMutation,
+} from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { emitPlanItemDoneEvent } from './plan-item-events';
 import { isPlanDrained, emitFleetDrainedForPlan } from '../../fleet-drained-events';
@@ -275,6 +283,12 @@ type SetStatusValue =
       wipItemText?: string;
     }
   | { ok: false; code: 'not_found' | 'item_not_found' }
+  | {
+      ok: false;
+      code: 'terminal_parent_child_mutation';
+      parentStatus: string;
+      changes: TerminalPlanChildMutation[];
+    }
   /** `onlyIfNotTerminal` tripped: the item is already done/dropped and the caller
    *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
    *  report what it left alone. Not an error — see the `terminal_guard` branch below. */
@@ -1451,6 +1465,23 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           },
         };
       }
+      const parentStatus = parsePlan(current, { filePath: it.slug + '.md' }).frontmatter.status;
+      const parentChildChanges = findTerminalPlanChildMutations(
+        parentStatus,
+        [{ id: it.itemId, status: oldStatus }],
+        [{ id: it.itemId, status: it.status }],
+      );
+      if (parentStatus && parentChildChanges.length > 0) {
+        return {
+          newBody: null,
+          value: {
+            ok: false,
+            code: 'terminal_parent_child_mutation',
+            parentStatus,
+            changes: parentChildChanges,
+          },
+        };
+      }
       // Non-destructive flip: refuse to move an item OFF a terminal status.
       // Read INSIDE the lock (like drainedPlan/wipItemText above) so the decision is
       // race-safe against a concurrent flip rather than a stale pre-lock read.
@@ -1696,6 +1727,21 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           `not applied — this item was \`${result.value.expectedStatus}\` when the report was ` +
           `written and is \`${result.value.currentStatus ?? 'unknown'}\` now; applying it would ` +
           'have overwritten newer work',
+      };
+    }
+    if (result.value.code === 'terminal_parent_child_mutation') {
+      return {
+        ok: false,
+        slug: it.slug,
+        itemId: it.itemId,
+        error: result.value.code,
+        parentStatus: result.value.parentStatus,
+        changes: result.value.changes,
+        ...claimRollback,
+        reason:
+          'not applied — the parent plan remains ' +
+          result.value.parentStatus +
+          '; change its lifecycle status explicitly before reopening this item',
       };
     }
     return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code, ...claimRollback };

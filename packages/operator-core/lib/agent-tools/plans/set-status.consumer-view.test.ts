@@ -157,4 +157,23 @@ describe('plans:set-status consumerView attestation', () => {
 
     expect(readItems).not.toHaveBeenCalled();
   });
+
+  it('refuses reopening a finished child while its parent plan remains terminal', async () => {
+    const terminalBody = planBody('done').replace(
+      'title: demo',
+      'title: demo' + String.fromCharCode(10) + 'status: shipped',
+    );
+    driveLock(terminalBody);
+
+    const result = await setStatus('todo');
+
+    expect(result).toMatchObject({
+      ok: false,
+      itemId: 'P-007',
+      error: 'terminal_parent_child_mutation',
+      parentStatus: 'shipped',
+      changes: [{ itemId: 'P-007', kind: 'reopened', from: 'done', to: 'todo' }],
+    });
+    expect(readItems).not.toHaveBeenCalled();
+  });
 });

@@ -448,6 +448,39 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(Object.keys(call.patch)).toEqual(['criterion']);
   });
 
+  it('returns a structured refusal when the requested reviewer model is outside the workspace allowlist', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    const error = new Error(
+      'reviewer_model_not_allowed: codex/gpt-6-sol is absent from the workspace expert allowlist',
+    );
+    reviewMocks.openAcceptanceBarAmendmentReview.mockRejectedValueOnce(error);
+
+    const result = await body({
+      ...patchArgs,
+      reviewPreviewPost: 'thread-post:42',
+      reviewerModel: { agent: 'codex', model: 'gpt-6-sol' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      dryRun: true,
+      code: 'reviewer_model_not_allowed',
+      error: error.message,
+      next: expect.stringContaining('workspace expert model allowlist'),
+    });
+    expect(JSON.stringify(z.toJSONSchema(amendTool.args as never))).toContain(
+      'workspace expert-model allowlist entry',
+    );
+
+    const unrelated = new Error('unexpected review failure');
+    reviewMocks.openAcceptanceBarAmendmentReview.mockRejectedValueOnce(unrelated);
+    await expect(body({
+      ...patchArgs,
+      reviewPreviewPost: 'thread-post:42',
+      reviewerModel: { agent: 'codex', model: 'gpt-6-sol' },
+    })).rejects.toThrow(unrelated.message);
+  });
+
   it('an approval-required dry run without a preview post says how to open the routed review, not whom to message', async () => {
     rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
 

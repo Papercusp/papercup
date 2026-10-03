@@ -278,3 +278,80 @@ describe('evaluateSetContent — plan-drain transition detection (EI-24932476076
     if (proseResult.value.ok) expect(proseResult.value.planDrainTransitionChanged).toBeUndefined();
   });
 });
+
+describe('evaluateSetContent — terminal parent child mutations', () => {
+  const tick = String.fromCharCode(96);
+  const terminalParent = FRONTMATTER
+    .replace('status: draft', 'status: shipped')
+    .concat(BODY.replace('- [ ] P-001 First item', '- **P-001** ' + tick + 'done' + tick + ' First item'));
+  const evaluate = (current: string, proposed: string) =>
+    evaluateSetContent(current, proposed, 'ei-1812-test', hashPlanContent(current), {
+      allowShrink: true,
+      wholeDocumentRewrite: true,
+    });
+
+  it('rejects a new nonterminal child and points to the explicit parent lifecycle writer', async () => {
+    const nl = String.fromCharCode(10);
+    const proposed = terminalParent.replace(
+      '## Decisions',
+      '- **P-002** ' + tick + 'todo' + tick + ' New live work' + nl + nl + '## Decisions',
+    );
+    const result = await evaluate(terminalParent, proposed);
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toMatchObject({
+      ok: false,
+      code: 'terminal_parent_child_mutation',
+      parentStatus: 'shipped',
+      changes: [{ itemId: 'P-002', kind: 'added', from: null, to: 'todo' }],
+      message: expect.stringContaining('plans:set-plan-status'),
+    });
+  });
+
+  it('rejects reopening a finished child even with a fresh CAS baseline', async () => {
+    const proposed = terminalParent.replace(
+      tick + 'done' + tick + ' First item',
+      tick + 'wip' + tick + ' First item',
+    );
+    const result = await evaluate(terminalParent, proposed);
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toMatchObject({
+      ok: false,
+      code: 'terminal_parent_child_mutation',
+      parentStatus: 'shipped',
+      changes: [{ itemId: 'P-001', kind: 'reopened', from: 'done', to: 'wip' }],
+    });
+  });
+
+  it('allows terminal-child reclassification and updates to an already-live historical child', async () => {
+    const terminalReclassification = terminalParent.replace(
+      tick + 'done' + tick + ' First item',
+      tick + 'dropped' + tick + ' First item',
+    );
+    const terminalResult = await evaluate(terminalParent, terminalReclassification);
+    expect(terminalResult.value.ok).toBe(true);
+
+    const nl = String.fromCharCode(10);
+    const parentWithExistingLiveChild = terminalParent.replace(
+      '## Decisions',
+      '- **P-002** ' + tick + 'todo' + tick + ' Existing live child' + nl + nl + '## Decisions',
+    );
+    const liveToLive = parentWithExistingLiveChild.replace(
+      tick + 'todo' + tick + ' Existing live child',
+      tick + 'wip' + tick + ' Existing live child',
+    );
+    const liveResult = await evaluate(parentWithExistingLiveChild, liveToLive);
+    expect(liveResult.value.ok).toBe(true);
+  });
+
+  it('allows appending a terminal historical row', async () => {
+    const nl = String.fromCharCode(10);
+    const proposed = terminalParent.replace(
+      '## Decisions',
+      '- **P-002** ' + tick + 'done' + tick + ' Historical completion' + nl + nl + '## Decisions',
+    );
+    const result = await evaluate(terminalParent, proposed);
+    expect(result.value.ok).toBe(true);
+  });
+});
