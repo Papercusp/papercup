@@ -142,7 +142,7 @@ describe('advisory label lists', () => {
 
   it('composes the success list as sql-shape plus the four result-derived ones', () => {
     expect(DELIVERED_ADVISORY_LABELS).toHaveLength(22);
-    expect(DELIVERED_ADVISORY_LABELS[17]).toBe('tenant-scope');
+    expect(DELIVERED_ADVISORY_LABELS[18]).toBe('tenant-scope');
   });
 
   it('gives the ERROR path its own tail — routing, never tenant-scope', () => {
@@ -150,8 +150,8 @@ describe('advisory label lists', () => {
     // appends only toolRoutingAdvisory, so reusing the success labels would
     // record every routing advisory on a failed query as a tenant-scope fire.
     expect(ERROR_PATH_ADVISORY_LABELS).toHaveLength(19);
-    expect(ERROR_PATH_ADVISORY_LABELS[17]).toBe('tool-routing');
-    expect(ERROR_PATH_ADVISORY_LABELS[17]).not.toBe(DELIVERED_ADVISORY_LABELS[17]);
+    expect(ERROR_PATH_ADVISORY_LABELS[18]).toBe('tool-routing');
+    expect(ERROR_PATH_ADVISORY_LABELS[18]).not.toBe(DELIVERED_ADVISORY_LABELS[18]);
   });
 
   it('refuses to guess when values outrun labels', () => {

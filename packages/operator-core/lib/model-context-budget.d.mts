@@ -56,6 +56,35 @@ export function claudeInheritedEffortOverride({ model, settings }?: {
     } | null;
 }): string | null;
 /**
+ * The settings a claude child falls back to for its model and effort
+ * (readClaudeLaunchSettings); null when unknown.
+ * @typedef {{ model?: unknown, effortLevel?: unknown } | null} ClaudeLaunchSettings
+ */
+/**
+ * The settings.json a claude launch will actually read: the per-session isolated
+ * CLAUDE_CONFIG_DIR when one is set (EI-155), else the shared user-level dir.
+ * @param {Record<string, string | undefined>} env
+ * @param {string} [home]
+ * @returns {string}
+ */
+export function effectiveClaudeSettingsPath(env: Record<string, string | undefined>, home?: string): string;
+/**
+ * The `{ model, effortLevel }` a claude child falls back to when its argv names
+ * no effort: the effective settings.json (the per-session isolated
+ * CLAUDE_CONFIG_DIR when set, else ~/.claude), with `ANTHROPIC_MODEL` taking
+ * precedence over settings.model as it does in the CLI. Pass the env the CHILD
+ * will run with, not the parent's. Fail-open to null — a missing or unreadable
+ * file must never fail a launch or a wake. `readFile` for tests. Shared by the
+ * psu launcher and the wake executor's resume leg (WI-10005900).
+ * @param {Record<string, string | undefined>} [env]
+ * @param {{ home?: string, readFile?: (p: string) => string }} [options]
+ * @returns {ClaudeLaunchSettings}
+ */
+export function readClaudeLaunchSettings(env?: Record<string, string | undefined>, { home, readFile }?: {
+    home?: string;
+    readFile?: (p: string) => string;
+}): ClaudeLaunchSettings;
+/**
  * Render the root model settings that must survive a model-less resume.  The
  * model id and effort are separated because Codex's TOML schema accepts the
  * effort as `model_reasoning_effort`, not as part of `model`.
@@ -352,4 +381,12 @@ export const CODEX_MAX_CONFIGURED_WINDOW: 1000000;
  * 258,400 window compacts BEFORE a leader's 400k limit is ever reached.
  */
 export const CODEX_AUTO_COMPACT_FRACTION: 0.9;
+/**
+ * The settings a claude child falls back to for its model and effort
+ * (readClaudeLaunchSettings); null when unknown.
+ */
+export type ClaudeLaunchSettings = {
+    model?: unknown;
+    effortLevel?: unknown;
+} | null;
 export type CodexModelSource = "explicit" | "inherited" | "configured-default";

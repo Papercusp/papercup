@@ -143,7 +143,7 @@ describe('runFleetTransitionSweep', () => {
   it('carries a healthy loop state from fleet assignments into member observations', async () => {
     productionMocks.listFleetAssignments.mockResolvedValue([presenceRow('gather')]);
     productionMocks.reconcileWakeability.mockImplementation(async (agents) =>
-      agents.map((agent) => ({ ...agent, sessionState: 'recorded', wakeable: false })),
+      agents.map((agent: object) => ({ ...agent, sessionState: 'recorded', wakeable: false })),
     );
     productionMocks.decorateLoopMonitorStates.mockImplementation(async (agents) => {
       for (const agent of agents) Object.assign(agent, { monitorState: 'waiting' });

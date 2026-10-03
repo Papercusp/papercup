@@ -163,6 +163,38 @@ describe('completionSettlementManifest', () => {
     });
     expect(first?.evidenceHash).toMatch(/^[0-9a-f]{64}$/);
   });
+  it('preserves identical relative paths owned by distinct checkouts', () => {
+    const samePath = 'src/fix.ts';
+    const siblingHead = 'd'.repeat(40);
+    const receipt = completionSettlementManifest({
+      treeStamp: {
+        repositoryRoot: ROOT,
+        headSha: SHA,
+        contentIdentity: [
+          identity,
+          {
+            path: samePath,
+            workingTreeBlobSha: 'e'.repeat(40),
+            headBlobSha: 'f'.repeat(40),
+            repositoryRoot: '/sibling',
+            headSha: siblingHead,
+          },
+        ],
+      },
+    });
+
+    expect(receipt?.normalizedPaths).toEqual([samePath, samePath]);
+    expect(receipt?.contentIdentity).toEqual([
+      identity,
+      {
+        path: samePath,
+        workingTreeBlobSha: 'e'.repeat(40),
+        headBlobSha: 'f'.repeat(40),
+        repositoryRoot: '/sibling',
+        headSha: siblingHead,
+      },
+    ]);
+  });
   it('does not invent a receipt without server-observed content identities', () => {
     expect(
       completionSettlementManifest({
