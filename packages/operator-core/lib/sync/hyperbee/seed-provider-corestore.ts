@@ -37,9 +37,9 @@
 
 import Corestore from 'corestore';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import type {
   SeedProvider,
@@ -65,6 +65,7 @@ import {
 export { isExternalTriggerEnvelope, valueCarriesExternalIngest };
 import {
   DROP_SNAPSHOT_ROW,
+  SnapshotRowFolder,
   formatSnapshotFoldStall,
   isSnapshotOp,
   produceFilteredSnapshotIntoLog,
@@ -127,6 +128,64 @@ export interface SeedUuidIdempotencyDropPlan {
     readonly valueSha256: string;
     readonly occurrences: readonly { segment: string; line: number; fieldPath: readonly (string | number)[] }[];
   }[];
+}
+
+/** Export the locally present canonical source population before UUID drops.
+ * Hypercore supplies the signed source blocks; no author/header/ciphertext is rewritten.
+ * Each segment is this immutable private JSONL export, NOT a guessed RocksDB byte locator.
+ * The external assembler still authenticates every envelope; final GO re-exports independently.
+ * Excluded tables are omitted by the same policy used by the seed provider. */
+export async function exportSeedUuidIdempotencySource(inp: {
+  sourceStore: Corestore; sourceKeyHex: string; sourceLength: number;
+  outputDir: string; segment: string;
+}): Promise<{
+  sourceKeyHex: string; sourceLength: number; rowCount: number; rowsPath: string; rowsSha256: string;
+  sourceBlocksRead: number; sourceBlocksJsonSha256: string;
+}> {
+  if (!/^[0-9a-f]{64}$/.test(inp.sourceKeyHex) || !Number.isSafeInteger(inp.sourceLength)
+      || inp.sourceLength <= 0 || !/^segment-[0-9]{6}\.(?:blob|log)$/.test(inp.segment)) {
+    throw new Error('[seed:corestore] invalid UUID source export binding');
+  }
+  const directory = await lstat(inp.outputDir);
+  if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077)
+      || await realpath(inp.outputDir) !== resolve(inp.outputDir)) {
+    throw new Error('[seed:corestore] UUID source export directory must be private');
+  }
+  const core = inp.sourceStore.get({ key: Buffer.from(inp.sourceKeyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
+  await core.ready();
+  if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
+  const blocks = createHash('sha256');
+  const folder = new SnapshotRowFolder({ excludeTables: SEED_EXCLUDED_TABLES });
+  for (let index = 0; index < inp.sourceLength; index++) {
+    const op = await core.get(index, { wait: false }) as PeerLogOp | null;
+    if (!op) throw new Error('[seed:corestore] UUID source export requires every block locally');
+    blocks.update(JSON.stringify([index, op]) + '\n');
+    folder.add(op, op.value, index);
+  }
+  if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
+  const rows = folder.finish();
+  const path = join(inp.outputDir, inp.segment);
+  const file = await open(path, 'wx', 0o600);
+  const digest = createHash('sha256');
+  try {
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index]!;
+      const text = JSON.stringify({ ...row, segment: inp.segment, line: index + 1,
+        storedValueJson: JSON.stringify(row.value) }) + '\n';
+      digest.update(text);
+      await file.writeFile(text);
+    }
+    await file.sync();
+    if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
+  } catch (error) {
+    await file.close();
+    await rm(path, { force: true });
+    throw error;
+  }
+  await file.close();
+  return { sourceKeyHex: inp.sourceKeyHex, sourceLength: inp.sourceLength,
+    rowCount: rows.length, rowsPath: path, rowsSha256: digest.digest('hex'),
+    sourceBlocksRead: inp.sourceLength, sourceBlocksJsonSha256: blocks.digest('hex') };
 }
 
 /** Producer evidence only. The final validator must independently check class coverage and source auth. */

@@ -14,13 +14,14 @@
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import Corestore from 'corestore';
-import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import {
   createCorestoreSeedProvider,
+  exportSeedUuidIdempotencySource,
   CORESTORE_SEED_KIND,
   isExternalTriggerEnvelope,
   mintFilteredSeedContentCore,
@@ -37,6 +38,37 @@ const cleanups: Array<() => void | Promise<void>> = [];
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
 describe('D-166 source-bound UUID output row drops', () => {
+  it('exports actual local source blocks into a private immutable census with original headers and ciphertext', async () => {
+    const source = makeStore(tmpDir('seed-uuid-export-'));
+    await source.ready();
+    const own = await openOwnLog(source);
+    const encrypted = { __rekey: 'synthetic-framing-only-assembler-must-authenticate' };
+    const row: PeerLogOp = { type: 'put', table: 'harness_plans', hbKey: 'row', ts: 1,
+      schema_version: 1, epoch: 0, author_pubkey: '', value: encrypted };
+    await own.append(row);
+    await own.append({ ...row, hbKey: 'discarded', value: { obsolete: true } });
+    await own.append({ ...row, type: 'del', hbKey: 'discarded', value: undefined });
+    const before = await own.get(0);
+    const dir = tmpDir('seed-uuid-export-files-'); chmodSync(dir, 0o700);
+    const input = { sourceStore: source, sourceKeyHex: own.keyHex, sourceLength: own.length,
+      outputDir: dir, segment: 'segment-000001.blob' };
+    const exported = await exportSeedUuidIdempotencySource(input);
+    const bytes = readFileSync(exported.rowsPath);
+    const rows = bytes.toString().trim().split('\n').map(text => JSON.parse(text));
+    expect(exported.sourceBlocksRead).toBe(3);
+    expect(exported.rowsSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(rows.find(r => r.hbKey === 'row')).toMatchObject({ author_pubkey: '', epoch: 0, value: encrypted,
+      segment: input.segment, storedValueJson: JSON.stringify(encrypted) });
+    expect(rows.find(r => r.hbKey === 'discarded')).toMatchObject({ deleted: true, value: null });
+    expect(rows.every((r, index) => r.line === index + 1)).toBe(true);
+    expect(statSync(exported.rowsPath).mode & 0o077).toBe(0);
+    expect(own.length).toBe(3); expect(await own.get(0)).toEqual(before);
+    await expect(exportSeedUuidIdempotencySource(input)).rejects.toThrow('EEXIST');
+    await expect(exportSeedUuidIdempotencySource({ ...input, sourceLength: 2 })).rejects.toThrow('head changed');
+    chmodSync(dir, 0o755);
+    await expect(exportSeedUuidIdempotencySource({ ...input, segment: 'segment-000002.blob' })).rejects.toThrow('private');
+  });
+
   const sourceKeyHex = 'ab'.repeat(32);
   const value = { ciphertext: 'unchanged-authenticated-envelope', originalSignature: 'original-auth' };
   const valueHash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');

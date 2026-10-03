@@ -109,6 +109,7 @@ import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SEED_REA
 export { mergeReleaseSeedRedactionValues } from './seed-identity-guard.js';
 import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, realpath } from 'node:fs/promises';
 import Corestore from 'corestore';
+import { exportSeedUuidIdempotencySource } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -345,6 +346,45 @@ export async function readSeedUuidIdempotencyDropPlans(
     }
     return value.plans;
   } catch { throw refused(); }
+}
+
+/** Read-only D166 census from a manifest-bound frozen Corestore. This never opens the
+ * live writer, refreshes history, or replaces an existing export. Independent GO must
+ * reproduce the export against the actual frozen source and final candidate. */
+export async function exportSeedUuidIdempotencyCensus(input: {
+  storeDir: string; manifestPath: string; manifestSha256: string;
+  epochKeysPath: string; epochKeysSha256: string; outputDir: string;
+}): Promise<string> {
+  const manifestBytes = await readFile(input.manifestPath);
+  if (!/^[0-9a-f]{64}$/.test(input.manifestSha256)
+      || createHash('sha256').update(manifestBytes).digest('hex') !== input.manifestSha256) {
+    throw new Error('UUID source manifest binding changed');
+  }
+  const manifest = decodeManifest(manifestBytes.toString('utf8'));
+  const entries = manifest.stores.filter(entry => entry.kind === 'corestore');
+  if (entries.length !== 1) throw new Error('UUID source must contain exactly one Corestore entry');
+  const meta = entries[0]!.meta as { coreKeys?: unknown; coreLengths?: Record<string, unknown> };
+  if (!Array.isArray(meta?.coreKeys) || !meta.coreKeys.length
+      || new Set(meta.coreKeys).size !== meta.coreKeys.length || !meta.coreLengths
+      || meta.coreKeys.some(key => typeof key !== 'string' || !/^[0-9a-f]{64}$/.test(key)
+        || !Number.isSafeInteger(meta.coreLengths?.[key]) || (meta.coreLengths[key] as number) <= 0)) {
+    throw new Error('UUID source core coverage incomplete');
+  }
+  const store = new Corestore(input.storeDir, { readOnly: true });
+  try {
+    await store.ready();
+    const sources = [];
+    for (const [index, key] of (meta.coreKeys as string[]).entries()) {
+      sources.push(await exportSeedUuidIdempotencySource({ sourceStore: store,
+        sourceKeyHex: key, sourceLength: meta.coreLengths[key] as number,
+        outputDir: input.outputDir, segment: `segment-${String(index + 1).padStart(6, '0')}.blob` }));
+    }
+    const configPath = join(input.outputDir, 'uuid-census.private.json');
+    await writeFile(configPath, JSON.stringify({ reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
+      potId: manifest.potId, sourceManifestPath: input.manifestPath, sourceManifestSha256: input.manifestSha256,
+      epochKeysPath: input.epochKeysPath, epochKeysSha256: input.epochKeysSha256, sources }), { mode: 0o600, flag: 'wx' });
+    return configPath;
+  } finally { await store.close(); }
 }
 
 export interface PickGitEncryptionInput {
@@ -1470,6 +1510,17 @@ export function parseHeadSnapshotTimeoutMs(args: Args, env: NodeJS.ProcessEnv = 
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  if ('export-uuid-idempotency-census' in args) {
+    const fields = ['store-dir', 'uuid-source-manifest', 'uuid-source-manifest-sha256',
+      'uuid-epoch-keys', 'uuid-epoch-keys-sha256', 'export-uuid-idempotency-census'] as const;
+    if (fields.some(name => !str(args, name))) throw new Error('UUID source export requires exact frozen store, manifest/hash, epoch-keys/hash and a private output directory');
+    const config = await exportSeedUuidIdempotencyCensus({ storeDir: str(args, 'store-dir')!,
+      manifestPath: str(args, 'uuid-source-manifest')!, manifestSha256: str(args, 'uuid-source-manifest-sha256')!,
+      epochKeysPath: str(args, 'uuid-epoch-keys')!, epochKeysSha256: str(args, 'uuid-epoch-keys-sha256')!,
+      outputDir: str(args, 'export-uuid-idempotency-census')! });
+    console.log(JSON.stringify({ schema: 'papercusp-uuid-idempotency-source-export-v1', configPath: config }));
+    return;
+  }
   // WI-10005568: a validated plaintext finding does not make the projection able
   // to inspect its source envelope. Refuse before opening/refreshing any store;
   // otherwise the cut can appear successful while carrying the same credential.
