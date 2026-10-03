@@ -1073,7 +1073,7 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(checker).toHaveBeenCalledOnce();
     expect(checker.mock.calls[0]?.[0]).toEqual([migration]);
-    expect(out.status).toBe('synced');
+    expect(out.status, JSON.stringify({ out, logs })).toBe('synced');
     expect(out.skippedPaths).toContainEqual({
       scope: 'superproject',
       path: migration,
@@ -1093,6 +1093,7 @@ describe('runGitSync (real git, no submodule)', () => {
     mkdirSync(join(repo, 'libs/db/sql'), { recursive: true });
     writeFileSync(join(repo, migration), '-- reservation status is unavailable\n');
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
     const checker = vi.fn(async (_dirtyPaths: readonly string[]) => {
       throw new Error('reservation ledger unavailable');
     });
@@ -1101,9 +1102,10 @@ describe('runGitSync (real git, no submodule)', () => {
       repoPath: repo,
       config: cfg,
       migrationReservationChecker: checker,
+      log: (message) => logs.push(message),
     });
 
-    expect(out.status).toBe('synced');
+    expect(out.status, JSON.stringify({ out, logs })).toBe('synced');
     expect(out.skippedPaths).toContainEqual({
       scope: 'superproject',
       path: migration,

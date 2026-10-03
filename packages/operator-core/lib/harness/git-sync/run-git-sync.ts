@@ -4253,15 +4253,11 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       };
     }
   }
-  const migrationFenceRefusals = [
-    ...(o.migrationDependencyRefusals ?? []),
-    ...preStageMigrationRefusals.map((refusal) => ({
-      scope: o.scope,
-      path: refusal.path,
-      reason: 'migration-reservation' as const,
-      detail: refusal.reason,
-    })),
-  ];
+  // Only a child repo's refusal creates a cross-repo dependency fence in the
+  // superproject. A refusal found in this repo is already quarantined by path
+  // above; treating it as a child refusal would hold every root path when its
+  // attribution is unknown and strand unrelated work.
+  const migrationFenceRefusals = [...(o.migrationDependencyRefusals ?? [])];
   const migrationDependencyFenceSkippedPaths: GitSyncSkippedPath[] = [];
   if (o.scope === 'superproject' && migrationFenceRefusals.length > 0 && dirty.length > 0) {
     const nestedRepoPaths = o.migrationDependencySubmodulePaths ?? [];
