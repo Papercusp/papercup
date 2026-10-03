@@ -182,6 +182,7 @@ type SessionPortRequestBody = {
   targetBackend?: unknown;
   targetModel?: unknown;
   targetAccount?: unknown;
+  targetOwnerId?: unknown;
   contextSize?: unknown;
   launchContext?: unknown;
   expectedSourceHash?: unknown;
@@ -255,8 +256,8 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     return { response: json({ ok: false, error: 'sourceAdvSessionId must be a positive integer' }, 400) } as const;
   }
   const targetBackend = body.targetBackend;
-  if (targetBackend !== 'codex' && targetBackend !== 'omp') {
-    return { response: json({ ok: false, error: 'V1 targetBackend must be codex|omp' }, 400) } as const;
+  if (targetBackend !== 'claude' && targetBackend !== 'codex' && targetBackend !== 'omp') {
+    return { response: json({ ok: false, error: 'targetBackend must be claude|codex|omp' }, 400) } as const;
   }
   const normalizedContextSize = normalizeSuContextSize(body.contextSize);
   if (!normalizedContextSize.ok) {
@@ -277,6 +278,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   await store.assertSessionPortStorageReady();
   const trackedRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
   if (!trackedRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
+  service.resolveSessionPortTargetOwner(trackedRow.coordOwnerId ?? '', body.targetOwnerId);
   // The row whose transcript this port reads. Normally the tracked row itself;
   // for an evidence span in an earlier carry-respawn incarnation, the same row
   // re-pointed at that incarnation's native session (see
@@ -372,6 +374,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   const stableSource = await service.acquireTrackedSessionSource(sourceRow);
   const modelProvider = targetBackend === 'codex'
     ? 'openai'
+    : targetBackend === 'claude' ? 'anthropic'
     : (targetModel?.includes('/') ? targetModel.split('/')[0] : 'omp-configured-provider');
   const inspection = service.inspectAcquiredSessionPort({
     sourceRow,
@@ -385,6 +388,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       availableInputTokens: budget.availableInputTokens,
       contextSize,
       launchContextHash: createHash('sha256').update(launchContextText).digest('hex'),
+      ...(body.targetOwnerId === undefined ? {} : { ownerId: body.targetOwnerId as string }),
     },
     currentInstruction: typeof body.currentInstruction === 'string' ? body.currentInstruction : null,
     ...(evidenceSpan ? { evidenceSpan } : {}),

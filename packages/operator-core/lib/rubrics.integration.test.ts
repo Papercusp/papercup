@@ -24,6 +24,7 @@ import { runWithWorkspace } from './workspace-als';
 import { activeWorkspaceId } from './workspace-registry';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
+import setTemplateDataTool from './agent-tools/plans/set-template-data';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
@@ -3898,6 +3899,62 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await storedTemplateData('growable-rubric')).criteria.map((c) => c.key)).toContain(
       'portfolio-activity-floor',
     );
+  });
+
+  it('records an exact projectable rubric snapshot when set-template-data advances the plan version', async () => {
+    const slug = 'versioned-template-data-rubric';
+    await seedRubric(slug);
+    const before = await rubrics.getRubric(slug);
+    if (!before) throw new Error(`seeded rubric '${slug}' did not resolve`);
+    const priorData = await storedTemplateData(slug) as unknown as {
+      [key: string]: unknown;
+      criteria: Array<Record<string, unknown>>;
+    };
+    const revisedMethod = 'Read the exact committed set-template-data revision snapshot.';
+    const nextData = {
+      ...priorData,
+      criteria: priorData.criteria.map((criterion, index) =>
+        index === 0 ? { ...criterion, method: revisedMethod } : criterion,
+      ),
+    };
+
+    const response = await setTemplateDataTool.handler(
+      { harness: 'papercusp', slug, data: nextData, rationale: 'Exercise the real rubric writer.' } as never,
+      {
+        isSuperuser: true,
+        uiClientId: 'su-rubric-template-data-integration',
+        workspaceId: activeWorkspaceId(),
+        harnessSlug: 'papercusp',
+      } as never,
+    );
+    const responseText = response.content.find((part) => part.type === 'text')?.text;
+    expect(responseText).toBeTruthy();
+    const written = JSON.parse(responseText!) as {
+      ok: boolean;
+      version: number;
+      revision: { seq: number } | null;
+    };
+    expect(written.ok).toBe(true);
+    expect(written.version).toBe(before.revision! + 1);
+    expect(written.revision).toEqual({ seq: 2 });
+
+    const historical = await rubrics.getRubric(slug, before.revision!);
+    expect(historical?.criteria).toEqual(before.criteria);
+    const current = await rubrics.getRubric(slug, written.version);
+    expect(current?.revision).toBe(written.version);
+    expect(current?.criteria[0]?.method).toBe(revisedMethod);
+
+    const [snapshotRow] = await db.adminSql<{ seq: number; content_snapshot: string }[]>`
+      SELECT seq, content_snapshot FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${slug} ORDER BY seq DESC LIMIT 1`;
+    const snapshotJson = snapshotRow.content_snapshot.match(/~~~json\s*\n([\s\S]*?)\n~~~/)?.[1];
+    expect(snapshotJson).toBeTruthy();
+    expect(JSON.parse(snapshotJson!)).toMatchObject({
+      schemaVersion: 2,
+      rubricRevision: written.version,
+      templateData: nextData,
+    });
   });
 
   it("leaves a NON-rubric plan's structured data alone (the guard is scoped, not global)", async () => {

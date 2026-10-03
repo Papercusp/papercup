@@ -709,6 +709,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true, // WI-1830: set-status fires `fleet:drained:<slug>` on the plan-drain edge
     sugar: 'fleet:await-drained',
   },
+  {
+    family: 'fleet-leader-changed',
+    keyTemplate: 'fleet:leader-changed:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      'The durable registered leader changed after an authorized handoff or a compare-and-swap succession. The payload names the previous and current leader; re-read fleet:status for the current roster and vacancy clock.',
+    emitter:
+      'takeFleetLeadership (packages/operator-core/lib/agent-tools/fleet_registry/take-leadership-core.ts) after the registry write succeeds',
+    exists: true,
+    replacesPoll: 'polling fleet:status for a leader vacancy or handoff',
+  },
   // ── Fleet transitions a LEADER reacts to (P-009 / D-008 of
   //    fleet-leadership-continuity-and-actuation-2026-08-01).
   //

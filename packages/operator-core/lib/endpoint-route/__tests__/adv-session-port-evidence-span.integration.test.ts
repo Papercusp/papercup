@@ -29,7 +29,8 @@ vi.mock('../../model-context-budget.mjs', () => ({
   buildContextBudget: () => ({ level: 'ok', window: 200_000, availableInputTokens: 100_000 }),
 }));
 vi.mock('../../session-port/store', () => ({ assertSessionPortStorageReady: async () => {} }));
-vi.mock('../../session-port/service', () => ({
+vi.mock('../../session-port/service', async (importOriginal) => ({
+  resolveSessionPortTargetOwner: (await importOriginal<typeof import('../../session-port/service')>()).resolveSessionPortTargetOwner,
   acquireTrackedSessionSource: async (row: unknown) => {
     state.acquiredRow = row;
     return {
@@ -126,6 +127,21 @@ async function inspect(body: Record<string, unknown>): Promise<Response> {
 }
 
 describe('session-port evidence-span route (P-007)', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('binds an isolated answer owner on the %s target without changing the source row', async (backend) => {
+    const sourceBefore = structuredClone(state.sourceRow);
+    const response = await inspect({ targetBackend: backend, targetOwnerId: 'su-answer-owner' });
+    expect(response.status).toBe(200);
+    expect(state.inspectArgs).toMatchObject({ target: { backend, ownerId: 'su-answer-owner' } });
+    expect(state.sourceRow).toEqual(sourceBefore);
+  });
+
+  it.each(['su-source', null, '', 42])('refuses invalid isolated target owner %s before reading the transcript', async (targetOwnerId) => {
+    const response = await inspect({ targetOwnerId });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/isolated target owner/) });
+    expect(state.acquiredRow).toBeNull();
+  });
+
   it.each(['codex', 'omp'] as const)('selects the exact %s source kind even when another backend has the same native id', async (backend) => {
     state.sourceRow = { ...(state.sourceRow as Record<string, unknown>), agent: backend,
       ...(backend === 'omp' ? { sessionId: null, ompThreadId: SESSION } : {}) };

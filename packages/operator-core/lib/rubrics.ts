@@ -2911,6 +2911,7 @@ function rubricRevisionInTransaction(
   rationale: string,
   fallbackTemplateData?: unknown,
   compatibilityAudit?: () => RubricCompatibilityAudit | undefined,
+  onRecorded?: (revision: Awaited<ReturnType<typeof recordPlanRevisionInTransaction>>) => void,
 ): (
   tx: PlanRevisionSql,
   writtenBody: string,
@@ -2933,7 +2934,7 @@ function rubricRevisionInTransaction(
     const criteriaHash = await rubricRevisionCriteriaHash(snapshotTemplateData, scope);
     // withPlanLock has already resolved the concrete scope and holds the plan lock. Capture
     // the revision in that same transaction so an insert failure rolls back the rubric.
-    await recordPlanRevisionInTransaction(tx, {
+    const recorded = await recordPlanRevisionInTransaction(tx, {
       planSlug: rubricId,
       harnessSlug: scope.harnessSlug,
       workspaceId: scope.workspaceId,
@@ -2952,6 +2953,32 @@ function rubricRevisionInTransaction(
       })(),
       identity,
     });
+    onRecorded?.(recorded);
+  };
+}
+
+/** Build the strict rubric revision hook used by other rubric-aware plan writers. */
+export function createRubricRevisionCapture(
+  rubricId: string,
+  by: string | undefined,
+  rationale: string,
+): {
+  recorded: { current: Awaited<ReturnType<typeof recordPlanRevisionInTransaction>> | null };
+  revisionInTransaction: ReturnType<typeof rubricRevisionInTransaction>;
+} {
+  const recorded: { current: Awaited<ReturnType<typeof recordPlanRevisionInTransaction>> | null } = {
+    current: null,
+  };
+  return {
+    recorded,
+    revisionInTransaction: rubricRevisionInTransaction(
+      rubricId,
+      by,
+      rationale,
+      undefined,
+      undefined,
+      (revision) => { recorded.current = revision; },
+    ),
   };
 }
 

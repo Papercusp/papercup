@@ -93,6 +93,28 @@ describe('isolated answering identity on the maintained session port', () => {
       sourceRow: row, stableSource: source('evidence'), target: { ...target, ownerId } as never,
     })).toThrow(/isolated target owner/);
   });
+
+  it('persists the isolated owner and disclosure in the existing prepared contract', async () => {
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('exact evidence'), target: { ...target, ownerId: 'su-answer-owner' },
+    });
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'consult-port-isolated-'));
+    const createPrepared = vi.fn(async (input: any) => ({ ...input, status: 'prepared' }) as SessionPortRow);
+    try {
+      const prepared = await prepareInspectedSessionPort({
+        inspection, expectedSourceHash: inspection.source.sha256, tokenKey: 'server-only-key',
+        artifactRoot, findExisting: async () => null, createPrepared,
+      });
+      expect(prepared.summary.target.ownerId).toBe('su-answer-owner');
+      expect(createPrepared.mock.calls[0]![0].metadata).toMatchObject({
+        sourceCoordOwnerId: 'su-source', disclosure: { authorityCarried: false },
+        summary: { target: { ownerId: 'su-answer-owner' } },
+      });
+      expect(readFileSync(createPrepared.mock.calls[0]![0].artifactPath, 'utf8')).toContain('exact evidence');
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('session-port current-version test fixtures', () => {

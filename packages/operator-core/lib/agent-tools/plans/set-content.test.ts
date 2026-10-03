@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { argsSchema, evaluateSetContent } from './set-content';
+import { hashPlanContent } from './content-hash';
 import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 
 const FRONTMATTER = `---
@@ -251,7 +252,7 @@ describe('evaluateSetContent — plan-drain transition detection (EI-24932476076
       .replace('status: ready', 'status: awaiting-acceptance')
       .replace('`todo`', '`done`');
     const reopened = awaiting.replace('`done`', '`blocked`');
-    const result = await evaluateSetContent(awaiting, reopened, 'ei-1812-test', undefined, {
+    const result = await evaluateSetContent(awaiting, reopened, 'ei-1812-test', hashPlanContent(awaiting), {
       allowShrink: true,
       wholeDocumentRewrite: true,
     });
