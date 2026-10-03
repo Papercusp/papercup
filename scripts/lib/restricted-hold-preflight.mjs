@@ -12,7 +12,7 @@
 // uses. It fails CLOSED: no marker line, bad JSON, a crash or a timeout all refuse.
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** stdout marker the CLI prints exactly once, followed by a JSON verdict. */
 export const RESTRICTED_HOLD_PREFLIGHT_MARKER = 'RESTRICTED_HOLD_PREFLIGHT';
@@ -231,10 +231,37 @@ export function runTreeRestrictedHoldPreflight({ roots, env = process.env, timeo
   return spawnCensus({ repoRoot: absolute[0], files: absolute.slice(1), env, timeoutMs, spawn, leading: ['--tree'] });
 }
 
+/**
+ * The committed-source loader (WI-10005764). The census's own ~5,600-module closure lives in the
+ * shared tree it judges, so it must not run a held restricted write before it can refuse one: the
+ * loader makes every ES module of a checkout execute its committed (HEAD) bytes, and refuses new
+ * uncommitted modules and checkout CommonJS. It must load BEFORE tsx (tsx's load hook then reads
+ * the raw bytes through it).
+ */
+export const COMMITTED_SOURCE_LOADER = fileURLToPath(new URL('./committed-source-loader.mjs', import.meta.url));
+
+/**
+ * The node argv and env every census spawn uses. The loader goes first on the argv, and also into
+ * NODE_OPTIONS so a node process the census itself starts — the closure walk forks its worker with
+ * `execArgv: []` (mutation-probe-fence) — enforces the same committed-source rule.
+ * @param {string[]} args the CLI arguments after the entry path
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function censusSpawnArgs(args, env) {
+  const loaderImport = `--import=${pathToFileURL(COMMITTED_SOURCE_LOADER).href}`;
+  const inherited = env.NODE_OPTIONS ?? '';
+  const nodeOptions = inherited.includes(loaderImport) ? inherited : `${loaderImport} ${inherited}`.trim();
+  return {
+    argv: ['--import', COMMITTED_SOURCE_LOADER, '--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, ...args],
+    env: { ...env, NODE_OPTIONS: nodeOptions },
+  };
+}
+
 function spawnCensus({ repoRoot, files, env, timeoutMs, spawn, leading = [] }) {
-  const result = spawn(process.execPath, ['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, ...leading, repoRoot, ...files], {
+  const census = censusSpawnArgs([...leading, repoRoot, ...files], env);
+  const result = spawn(process.execPath, census.argv, {
     cwd: repoRoot,
-    env,
+    env: census.env,
     encoding: 'utf8',
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,

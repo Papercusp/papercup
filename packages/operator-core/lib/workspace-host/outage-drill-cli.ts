@@ -146,7 +146,9 @@ export async function main(argv: readonly string[]): Promise<number> {
         proxyCommand: `gcloud compute start-iap-tunnel %h %p --listen-on-stdin --project=${project} --zone=${zone} --verbosity=error`,
       };
       cloudCli = 'gcloud';
-      target = { cloud: 'gcp', project, network: need('network'), ruleName: `pc-j5-outage-drill-${nonce}`.toLowerCase().slice(0, 63) };
+      if (mode === 'drill') {
+        target = { cloud: 'gcp', project, network: need('network'), ruleName: `pc-j5-outage-drill-${nonce}`.toLowerCase().slice(0, 63) };
+      }
     } else if (cloud === 'aws') {
       const region = need('region');
       const instanceId = need('instance-id');
@@ -154,22 +156,48 @@ export async function main(argv: readonly string[]): Promise<number> {
       ssh = { alias: awsSsmHostKeyAlias({ region, instanceId }), destination: instanceId, proxyCommand: buildAwsSsmProxyCommand({ region, awsProfile }) };
       cloudCli = 'aws';
       cloudArgsSuffix = awsProfile ? ['--profile', awsProfile] : [];
-      target = await resolveAwsTarget(region, instanceId, cloudArgsSuffix);
+      if (mode === 'drill') target = await resolveAwsTarget(region, instanceId, cloudArgsSuffix);
     } else {
       throw new Error(`--cloud must be gcp or aws, got ${cloud}`);
     }
-    config = {
-      target,
-      papercuspOrigin: args.get('papercusp-origin') ?? 'https://app.papercusp.com',
-      modelProviderOrigin: args.get('model-origin') ?? 'https://api.anthropic.com',
-      serviceUnit: args.get('service') ?? 'papercusp-workspace.service',
-      agentCommand: args.get('agent') ?? DEFAULT_AGENT,
-      workspaceDir: need('workspace-dir'),
-      nonce,
-      secret: randomBytes(16).toString('hex'),
-    };
+    if (mode === 'task') {
+      task = { agentKind, agentCommand, workspaceDir, nonce, secret };
+    } else {
+      if (target === null) throw new Error('the drill has no egress block target');
+      config = {
+        target,
+        papercuspOrigin: args.get('papercusp-origin') ?? 'https://app.papercusp.com',
+        modelProviderOrigin: args.get('model-origin') ?? 'https://api.anthropic.com',
+        serviceUnit: args.get('service') ?? 'papercusp-workspace.service',
+        agentCommand,
+        agentKind,
+        workspaceDir,
+        nonce,
+        secret,
+      };
+    }
   } catch (error) {
     console.error(String(error instanceof Error ? error.message : error));
+    return 2;
+  }
+  const hostExec = sshHostExec(ssh);
+  const log = (line: string) => console.error(`[j5] ${new Date().toISOString()} ${line}`);
+  if (task !== null) {
+    const evidence = await runGatedAgentTask(task, {
+      hostExec,
+      sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+      now: () => new Date(),
+      log,
+    });
+    const verdict = evaluateGatedAgentTask(evidence);
+    const report = JSON.stringify({ hostId, mode: 'task', task, evidence, verdict }, null, 2);
+    const out = args.get('out');
+    if (out) writeFileSync(out, `${report}\n`);
+    console.log(report);
+    return verdict.passed ? 0 : 1;
+  }
+  if (config === null) {
+    console.error('the drill has no configuration');
     return 2;
   }
   const databaseUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
@@ -178,17 +206,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
   const sql = postgres(databaseUrl, { max: 1 });
-  const controller = join(homedir(), '.local/state/papercusp/controller');
   try {
     const evidence = await runOutageDrill(config, {
-      hostExec: (command) =>
-        run('ssh', [
-          '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
-          '-o', `UserKnownHostsFile=${join(controller, 'known_hosts')}`, '-o', `HostKeyAlias=${ssh.alias}`,
-          '-o', 'IdentitiesOnly=yes', '-i', join(controller, 'id_ed25519'), '-o', 'ConnectTimeout=30',
-          '-o', `ProxyCommand=${ssh.proxyCommand}`,
-          `${WORKSPACE_ACCOUNT}@${ssh.destination}`, command,
-        ], 90_000),
+      hostExec,
       cloudExec: (cloudArgs) => run(cloudCli, [...cloudArgs, ...cloudArgsSuffix], 120_000),
       resolveAddresses: (hostname) => resolve4(hostname),
       readConnectorLastSeenAt: async () => {
@@ -199,7 +219,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       },
       sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
       now: () => new Date(),
-      log: (line) => console.error(`[j5] ${new Date().toISOString()} ${line}`),
+      log,
     });
     const verdict = evaluateOutageDrill(evidence);
     const report = JSON.stringify({ hostId, config, evidence, verdict }, null, 2);

@@ -24,7 +24,14 @@ const DEADLINE_MATCH_TOLERANCE_MS = 2_000;
  * PLAN_CONTEXT_MAX, or behind a degraded read) is unknown, not resolved. Its
  * pending reminder is kept for up to this long, so a holder who takes turns more
  * often than the reminder's lead time is still reminded. Measured before the
- * fix: 164 of 175 reminders for one goal holder were cancelled before firing.
+ * fix (goal holder su-9e72a11f, 2026-10-02 21:00Z-03:00Z): ALL of its pending
+ * plan-acceptance, placement and planning reminders dropped to zero at once on
+ * some turns (21:47-22:07Z, 22:37-22:57Z, 02:57Z) and were re-armed a turn later,
+ * so an event landing in that gap was never delivered. [inferred] cause: a turn
+ * whose agenda did not evaluate them (900ms portfolio read timeout, or the plan
+ * rotating out of PLAN_CONTEXT_MAX). Most of those rows are EVENT watches, so a
+ * low fired share is not itself a defect; cancel_reason is what makes delivery
+ * measurable.
  */
 export const AGENT_OBLIGATION_UNEVALUATED_RETENTION_MS = 24 * 60 * 60 * 1_000;
 

@@ -74,9 +74,31 @@ export interface IdeatePassRecordSuccess {
 
 export type IdeatePassRecordResult = IdeatePassRecordSuccess | {
   ok: false;
-  reason: 'goal-review-unavailable' | 'goal-review-scope-mismatch';
+  reason: 'goal-review-unavailable' | 'goal-review-scope-mismatch' | 'goal-review-unresolved-plan-ref';
   message: string;
 };
+
+/**
+ * P-003: a coverage map is falsifiable only if its planRefs name real plans.
+ * Returns the refs (plan:<harness>/<slug>) with no live, unarchived plan row.
+ */
+export async function missingCoveragePlanRefs(workspaceId: string, refs: readonly string[]): Promise<string[]> {
+  const parsed = [...new Set(refs)].map((ref) => ({ ref, match: /^plan:([^/\s]+)\/(\S+)$/.exec(ref) }));
+  const wellFormed = parsed.filter((entry) => entry.match);
+  if (wellFormed.length === 0) return parsed.map((entry) => entry.ref);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const keys = wellFormed.map((entry) => `${entry.match![1]}/${entry.match![2]}`);
+  const rows = await sql<{ key: string }[]>`
+    SELECT harness_slug || '/' || plan_slug AS key
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${workspaceId}
+       AND (harness_slug || '/' || plan_slug) = ANY(${keys})
+       AND coalesce(archived, false) = false
+  `;
+  const found = new Set(rows.map((row) => row.key));
+  return parsed.filter((entry) => !entry.match || !found.has(`${entry.match[1]}/${entry.match[2]}`)).map((entry) => entry.ref);
+}
 
 /** Injectable seam — unit tests drive the flow with a fake recorder (no PG). */
 export interface IdeatePassRecordDeps {
@@ -88,11 +110,14 @@ export interface IdeatePassRecordDeps {
     ownerId: string;
     review: GoalPlanningReview;
   }) => Promise<GoalPlanFeedbackResult[]>;
+  /** P-003: which coverage planRefs do not resolve to a live plan. Omitted ⇒ not checked. */
+  missingPlanRefs?: (workspaceId: string, refs: readonly string[]) => Promise<string[]>;
 }
 
 const defaultDeps: IdeatePassRecordDeps = {
   recordTick: recordScoutTick,
   readGoalReviewContext: readGoalPlanningReviewContext,
+  missingPlanRefs: missingCoveragePlanRefs,
   recordGoalFeedback: async (input) => (await import('../../scout/goal-feedback')).recordGoalReviewFeedback(input),
 };
 
@@ -125,6 +150,17 @@ export async function runIdeatePassRecord(
     }
     if (requested.goalId !== context.goalId) {
       return { ok: false, reason: 'goal-review-scope-mismatch', message: 'The review does not name this caller\'s current GOAL; no review was recorded.' };
+    }
+    const coverageRefs = (requested.coverage ?? []).flatMap((entry) => (entry.planRef ? [entry.planRef] : []));
+    if (coverageRefs.length > 0 && deps.missingPlanRefs) {
+      const missing = await deps.missingPlanRefs(workspaceId!, coverageRefs);
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          reason: 'goal-review-unresolved-plan-ref',
+          message: `Coverage planRef(s) name no live plan: ${missing.join(', ')}. Cite an existing plan as plan:<harness>/<slug>, or write it first (plans:new, then plans:start); no review was recorded.`,
+        };
+      }
     }
     goalReview = goalPlanningReviewSchema.parse({
       ...requested,

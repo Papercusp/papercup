@@ -8,6 +8,7 @@ import {
 import {
   AGENT_OBLIGATION_REMINDER_BINDING_KIND,
   AGENT_OBLIGATION_REMINDER_MIN_SLEEP_SEC,
+  AGENT_OBLIGATION_UNEVALUATED_RETENTION_MS,
   reconcileAgentObligationReminders,
   type AgentObligationReminderDeps,
 } from './agent-obligation-reminders';
@@ -106,10 +107,11 @@ function fakeStore(seed: AwaitRow[] = []) {
     rows.push(row);
     return row;
   });
-  const cancel = vi.fn(async ({ awaitId }: { awaitId: number; subscriberId: string }) => {
+  const cancel = vi.fn(async ({ awaitId, reason }: { awaitId: number; subscriberId: string; reason?: string }) => {
     const row = rows.find((candidate) => candidate.id === awaitId && candidate.cancelledAt == null);
     if (!row || row.firedAt != null) return false;
     row.cancelledAt = new Date(NOW).toISOString();
+    row.cancelReason = reason ?? null;
     return true;
   });
   const deps: AgentObligationReminderDeps = {
@@ -265,24 +267,97 @@ describe('reconcileAgentObligationReminders', () => {
     expect(store.rows.find((row) => row.cancelledAt == null)?.boundTo?.ref).toBe(next.id);
   });
 
-  it('retires reminders when the obligation leaves scope and does not turn a past deadline into an immediate wake loop', async () => {
+  it('retires a reminder only when its obligation is MEASURED resolved, and does not turn a past deadline into an immediate wake loop', async () => {
     const store = fakeStore();
     const current = obligation();
     await reconcileAgentObligationReminders(
       { ownerId: 'su-owner', agenda: agenda(current), now: new Date(NOW) },
       store.deps,
     );
+    const discharged = obligation({ status: 'not-applicable', changeSignal: undefined });
+    expect(discharged.id).toBe(current.id);
     const pastOnly = obligation({
       episode: 'past-only',
       changeSignal: { nextDeadlineAt: new Date(NOW - 1_000).toISOString(), cancellationRef: 'goal:goal-1' },
     });
     const receipt = await reconcileAgentObligationReminders(
-      { ownerId: 'su-owner', agenda: agenda(pastOnly), now: new Date(NOW) },
+      { ownerId: 'su-owner', agenda: agenda(discharged, pastOnly), now: new Date(NOW) },
       store.deps,
     );
 
     expect(receipt.desired).toBe(0);
     expect(store.rows.filter((row) => row.cancelledAt == null)).toHaveLength(0);
+    expect(store.rows.map((row) => row.cancelReason)).toEqual(['obligation-discharged']);
+  });
+
+  // P-010 (goal-holder-plans-ideation-truthful-reports-2026-10-03). Measured
+  // 2026-10-02: every pending plan-acceptance, placement and planning reminder of
+  // one goal holder dropped to zero on turns whose agenda did not evaluate them
+  // (bounded window or degraded read), then re-armed a turn later, leaving 20-60
+  // min gaps where an event was never delivered. Absence is not resolution.
+  it('keeps a pending reminder across turns that do not evaluate its obligation (bounded window or degraded read)', async () => {
+    const store = fakeStore();
+    await reconcileAgentObligationReminders(
+      { ownerId: 'su-owner', agenda: agenda(obligation()), now: new Date(NOW) },
+      store.deps,
+    );
+    // A different obligation (another plan in the window); ids key on rule + scope, not episode.
+    // Its own event key, as in production (plan:acceptance:<slug> per plan): the
+    // store keeps only the newest pending one-shot per subscriber+key (migration 941).
+    const other = obligation({
+      scope: { workspaceId: 'ws', ownerId: 'su-owner', goalId: 'goal-other-window' },
+      changeSignal: { event: 'goal:owner-report:goal-other-window', nextDeadlineAt: DEADLINE, cancellationRef: 'goal:goal-other-window' },
+    });
+    expect(other.id).not.toBe(obligation().id);
+    for (let turn = 0; turn < 3; turn += 1) {
+      const receipt = await reconcileAgentObligationReminders(
+        { ownerId: 'su-owner', agenda: agenda(other), now: new Date(NOW + turn * 60_000) },
+        store.deps,
+      );
+      expect(receipt.retainedUnevaluated).toBe(1);
+    }
+    expect(store.rows.filter((row) => row.cancelledAt != null)).toHaveLength(0);
+    expect(store.register).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a pending reminder when its obligation is measured unknown', async () => {
+    const store = fakeStore();
+    const current = obligation();
+    await reconcileAgentObligationReminders(
+      { ownerId: 'su-owner', agenda: agenda(current), now: new Date(NOW) },
+      store.deps,
+    );
+    const unknown = obligation({
+      status: 'unknown',
+      changeSignal: undefined,
+      measurementFailure: { code: 'read-failed', detail: 'portfolio read timed out', retry: 'retry the read' },
+    });
+    expect(unknown.id).toBe(current.id);
+    const receipt = await reconcileAgentObligationReminders(
+      { ownerId: 'su-owner', agenda: agenda(unknown), now: new Date(NOW) },
+      store.deps,
+    );
+    expect(receipt.retainedUnevaluated).toBe(1);
+    expect(store.rows.filter((row) => row.cancelledAt != null)).toHaveLength(0);
+  });
+
+  it('expires an unevaluated reminder after the retention horizon and stamps why', async () => {
+    const store = fakeStore();
+    await reconcileAgentObligationReminders(
+      { ownerId: 'su-owner', agenda: agenda(obligation()), now: new Date(NOW) },
+      store.deps,
+    );
+    const receipt = await reconcileAgentObligationReminders(
+      {
+        ownerId: 'su-owner',
+        agenda: agenda(obligation({ scope: { workspaceId: 'ws', ownerId: 'su-owner', goalId: 'goal-later-window' }, changeSignal: undefined })),
+        now: new Date(NOW + AGENT_OBLIGATION_UNEVALUATED_RETENTION_MS + 1_000),
+      },
+      store.deps,
+    );
+    expect(receipt.retainedUnevaluated).toBe(0);
+    expect(store.rows[0]!.cancelReason).toBe('obligation-unevaluated-expired');
+    expect(store.rows.filter((row) => row.cancelledAt != null && row.cancelReason == null)).toHaveLength(0);
   });
 
   it('fails soft with an explicit receipt when the await ledger is unavailable', async () => {
