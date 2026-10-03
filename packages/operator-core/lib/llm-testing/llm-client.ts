@@ -21,6 +21,7 @@
 
 import { LlmCallError, tryParseJson, type LlmCallOpts, type LlmCallResult } from '@papercusp/testing-shell/llm';
 import { costFromTokens, priceFor } from '@papercusp/model-pricing';
+import { createHash } from 'node:crypto';
 
 import {
   runAgentChat,
@@ -286,6 +287,14 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     return llmCallViaCodexGateway(opts, model, promptText);
   }
 
+  // Reuse the shared runner's actual HTTP boundary, rather than inferring egress
+  // from its backend label. Retain before failure, including SDK-internal retries.
+  type Diagnostic = Parameters<NonNullable<Parameters<typeof runAgentChat>[0]['onTransportDiagnostic']>>[0];
+  const transportDiagnostics: Diagnostic[] = [];
+  const promptSha256 = createHash('sha256').update(JSON.stringify({
+    system: opts.system ?? null, messages: opts.messages,
+  })).digest('hex');
+
   for await (const ev of runAgentChat({
     backend,
     model,
@@ -321,6 +330,13 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     retryDeadlineMs: opts.retryDeadlineMs,
     onAdmitted: opts.onAdmitted,
     onResponseStart: opts.onResponseStart,
+    onTransportDiagnostic: diagnostic => {
+      if (transportDiagnostics.length === 64) transportDiagnostics.shift();
+      transportDiagnostics.push(diagnostic);
+      // Synchronous console output survives callers that throw before writing a
+      // successful-call receipt. No credentials, text, bodies or arbitrary headers.
+      console.info('[llm-transport]', JSON.stringify({ ...diagnostic, promptSha256 }));
+    },
     ownerId: opts.ownerId,
     // Usage attribution: the priority label already names the caller ('gym',
     // 'scout'); reuse it so this client's header samples stop being anonymous.
@@ -366,7 +382,11 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
 
   if (lastErrMsg !== undefined) {
     const turn = lastErrTurn ?? classifyHttpError({ message: lastErrMsg }, providerForBackend(backend));
-    throw new LlmCallError(turn);
+    const error = new LlmCallError(turn);
+    const last = transportDiagnostics.at(-1);
+    if (last) error.message += ` [llm-transport ${JSON.stringify({ ...last, promptSha256 })}]`;
+    // Keep the original classified turn intact (identity, class and retry policy).
+    throw error;
   }
   if (!sawResult) throw new Error(`llmCall: ${backend} backend produced no result event`);
 
@@ -382,7 +402,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     outputTokens,
     costUsd,
     stopReason,
-    raw: null,
+    raw: transportDiagnostics.length ? { transportDiagnostics, promptSha256 } : null,
     ...(servedAccount ? { servedAccount } : {}),
   };
 }
