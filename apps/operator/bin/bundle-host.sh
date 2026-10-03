@@ -342,6 +342,22 @@ report_bundle_step_failure() {
   fi
 }
 
+# WI-10005745: snapshot the last-known-good artifacts BEFORE anything is rebuilt over them.
+gate_snapshot_args=()
+for gate_artifact in "${OUTFILE##*/}" spawner-sidecar.mjs spawner-sidecar.mjs.meta.json \
+    "${HOST_WORKER_OUTPUTS[@]}" "${HOST_RUNTIME_SIBLING_OUTPUTS[@]}" blueprints sql; do
+  gate_snapshot_args+=(--artifact "$gate_artifact")
+done
+mkdir -p "$BUNDLE_HOST_GATE_META_DIR"
+if ! node "$GATE_HELPER" snapshot --outdir "$OUTDIR" --snapshot-dir "$GATE_SNAPSHOT_DIR" \
+    "${gate_snapshot_args[@]}" >"$GATE_LOG" 2>&1; then
+  cat "$GATE_LOG"
+  echo "🚨 ERROR: could not snapshot the last-known-good bundle for the restricted-hold gate; not building over it." | tee -a "$GATE_LOG"
+  restricted_hold_fallback "$GATE_LOG"
+  exit "$FALLBACK_RC"
+fi
+cat "$GATE_LOG"
+
 echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx loader)"
 bundle_rc=0
 # `( … ) || bundle_rc=$?` rather than a bare call: `set -e` would otherwise kill
@@ -402,6 +418,8 @@ bundle_rc=0
     --metafile "$METAFILE" --base-dir "$SCRIPT_DIR/.."; then
     exit 1
   fi
+  # WI-10005745: the restricted-hold gate reads these exact inputs after every step has published.
+  cp -f "$METAFILE" "$BUNDLE_HOST_GATE_META_DIR/${OUTFILE##*/}.meta.json" || exit 1
   # WI-38221: widen-avoidance pass. Runs on $TMPFILE, BEFORE the atomic rename
   # below, so the swap stays atomic and a failure here leaves the last-known-good
   # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped
@@ -496,6 +514,10 @@ if [[ $bundle_rc -ne 0 ]]; then
   echo "       to fall back to. Refusing to start rather than exec a missing entrypoint."
   exit 1
 fi
+
+# A fresh bundle is now published: from here every exit runs the restricted-hold gate
+# (normally below, before the freshness stamp; otherwise from the EXIT trap).
+GATE_PENDING=1
 
 # Success: the running code matches the tree again, so retract any stale claim.
 rm -f "$STALE_MARKER"
@@ -713,6 +735,12 @@ case "${ENTRY##*/}" in
     cat "$SPAWNER_BUILD_LOG"
     ;;
 esac
+
+# WI-10005745: every artifact has published — gate them all before anything stamps them fresh.
+if [[ "$GATE_PENDING" == "1" ]] && ! restricted_hold_gate; then
+  restricted_hold_fallback "$GATE_LOG"
+  exit "$FALLBACK_RC"
+fi
 
 # Stamp only after the bundle AND every runtime sibling/asset has published.
 # The helper refuses a dirty tree, a changed HEAD, a missing output, or an

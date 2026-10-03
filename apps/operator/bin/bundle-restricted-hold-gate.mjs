@@ -34,7 +34,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
   formatBundleRestrictedHoldRefusal,
@@ -47,6 +47,7 @@ const MANIFEST = 'manifest.json';
 /** Hardlink a file or tree (falls back to a copy when a link is impossible, e.g. EXDEV). */
 function linkTree(src, dst) {
   const st = lstatSync(src);
+  mkdirSync(dirname(dst), { recursive: true });
   if (st.isDirectory()) {
     mkdirSync(dst, { recursive: true });
     for (const entry of readdirSync(src)) linkTree(join(src, entry), join(dst, entry));
@@ -204,9 +205,13 @@ function main() {
     return GATE_EXIT.admit;
   }
   if (command === 'gate') {
-    if (!opts.root || !opts.baseDir || !opts.outdir || !opts.snapshotDir || !existsSync(join(opts.snapshotDir, MANIFEST))) {
+    const snapshotted = Boolean(opts.outdir && opts.snapshotDir && existsSync(join(opts.snapshotDir, MANIFEST)));
+    if (!opts.root || !opts.baseDir || !snapshotted) {
       console.error('bundle-restricted-hold-gate gate needs --root, --base-dir, --outdir and an existing --snapshot-dir');
-      return GATE_EXIT.misuse;
+      if (!snapshotted) return GATE_EXIT.misuse;
+      restoreArtifacts({ outdir: opts.outdir, snapshotDir: opts.snapshotDir });
+      rmSync(opts.snapshotDir, { recursive: true, force: true });
+      return GATE_EXIT.refuse;
     }
     return runGate(opts);
   }
