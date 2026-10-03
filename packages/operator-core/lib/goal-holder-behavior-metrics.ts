@@ -21,6 +21,7 @@
 import type { Sql } from 'postgres';
 import { GOAL_OWNER_REPORT_FIELD } from './goal-owner-report';
 import { GOAL_REVIEW_CLUSTER_MIN_ITEMS, GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS } from './goal-planning-review';
+import { readGoalHolderRows } from './goals/holder';
 
 export const GOAL_HOLDER_METRICS_VERSION = 1 as const;
 /** Ideation is judged per goal-day: the 24h ending at the window end. */
@@ -361,16 +362,12 @@ export async function resolveHolderGoalForWindow(
      ORDER BY count(*) DESC
      LIMIT 1`;
   if (fromCalls[0]) return { workspaceId: fromCalls[0].workspace_id, goalId: fromCalls[0].goal_id };
-  const fromLease = await sql<{ workspace_id: string; subject: string }[]>`
-    SELECT workspace_id, subject
-      FROM harness_shared.agent_modes
-     WHERE owner_id = ${input.holderOwnerId}
-       AND mode = 'goal'
-       AND subject IS NOT NULL
-       AND set_at <= ${end}
-     ORDER BY set_at DESC
-     LIMIT 1`;
-  return fromLease[0] ? { workspaceId: fromLease[0].workspace_id, goalId: fromLease[0].subject } : null;
+  // The lease row through the canonical holder read (lint:no-raw-goal-holder-read). No
+  // liveness fold: this asks which goal the owner held in a PAST window, not who holds it now.
+  const fromLease = (await readGoalHolderRows(sql))
+    .filter((row) => row.ownerId === input.holderOwnerId && row.setAtMs <= end.getTime())
+    .sort((a, b) => b.setAtMs - a.setAtMs)[0];
+  return fromLease ? { workspaceId: fromLease.workspaceId, goalId: fromLease.goalId } : null;
 }
 
 /**
