@@ -25,7 +25,8 @@
       "sha256": "742174f4bfa108954fa9e1d63d875581da9903e55fb6b6b863f319205e3e6617"
     }
   ],
-  "sourceCommitVerification": "Listed final source bytes were still awaiting scheduled mobile git-sync at evidence assembly; do not record ledger or claim committed until exact source hash/commit verification. Prior mobile495d0f60 is historical, not the final tested source identity.",
+  "sourceCommitVerification": "Verified all three listed source fingerprints against both current working bytes and Git HEAD blobs at mobile175d64894e6c643945dfeaf0a90a1f9eb012cfa2 after automatic git-sync. The mobile working tree is clean. Retained final5 log fingerprint matches. Prior mobile495d0f60 is historical, not the final tested source identity. No tests were replayed for this commit verification.",
+  "mobileSourceCommit": "175d64894e6c643945dfeaf0a90a1f9eb012cfa2",
   "assertions": [
     {
       "id": "complete-host-prerequisite-population",
@@ -88,7 +89,6 @@
     }
   ],
   "remaining": [
-    "Exact final mobile source automatic commit verification",
     "Third actual ARM64 native consumer attempt and real Android ELF",
     "Other native ABIs/execution and original release acceptance floors"
   ],
