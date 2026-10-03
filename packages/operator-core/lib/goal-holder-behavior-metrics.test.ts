@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyDissolvedCluster,
   costLineIsUnmeasured,
   coverageHasUncoveredClusterNeed,
+  emptyDissolvedClusterFates,
   HOLDER_BEHAVIOR_CRITERIA,
   HOLDER_BEHAVIOR_INSTRUMENT_KEYS,
   holderBehaviorCriterionForInstrument,
@@ -42,6 +44,8 @@ function witnessed(): GoalHolderBehaviorMetrics {
       unplannedOpenGoalItems: 31,
       unplannedClusters: 1,
       overdueUnplannedClusters: 1,
+      overdueClustersAtStart: 1,
+      dissolvedOverdueClusters: emptyDissolvedClusterFates(), overdueClustersNudged: 0,
     },
     ideation: {
       since: '2026-10-02T02:13:10.000Z',
@@ -80,6 +84,8 @@ function healthy(): GoalHolderBehaviorMetrics {
       unplannedOpenGoalItems: 2,
       unplannedClusters: 0,
       overdueUnplannedClusters: 0,
+      overdueClustersAtStart: 0,
+      dissolvedOverdueClusters: emptyDissolvedClusterFates(), overdueClustersNudged: 0,
     },
     ideation: {
       since: '2026-10-02T02:13:10.000Z',
@@ -164,6 +170,8 @@ describe('rateGoalHolderBehavior thresholds', () => {
           unplannedOpenGoalItems: p.unplanned ?? 3,
           unplannedClusters: p.clusters ?? p.overdue,
           overdueUnplannedClusters: p.overdue,
+          overdueClustersAtStart: p.overdue,
+          dissolvedOverdueClusters: emptyDissolvedClusterFates(), overdueClustersNudged: 0,
         },
       })['holder-plan-authorship'].verdict;
     // Overdue cluster: nothing written, written only, written+started all fail; staffed passes.
@@ -178,6 +186,83 @@ describe('rateGoalHolderBehavior thresholds', () => {
     // Written but not staffed with nothing overdue is unknown; written and staffed passes.
     expect(at({ overdue: 0, plansNew: 1, fleets: 0 })).toBe('unknown');
     expect(at({ overdue: 0, plansNew: 1, fleets: 1 })).toBe('pass');
+  });
+
+  it('plan authorship: a cluster overdue at window START is judged by how it dissolved, never "not exercised" (WI-10005965)', () => {
+    const at = (fates: Partial<Record<'planned' | 'dismissed-with-reason' | 'dissolved-without-drop' | 'dropped-without-reason', number>>, fleets = 0) =>
+      rateGoalHolderBehavior({
+        ...healthy(),
+        planAuthorship: {
+          plansNew: fleets,
+          plansStarted: 0,
+          planFleetLaunches: fleets,
+          unplannedOpenGoalItems: 26,
+          unplannedClusters: 0,
+          overdueUnplannedClusters: 0,
+          overdueClustersAtStart: 1,
+          dissolvedOverdueClusters: { ...emptyDissolvedClusterFates(), ...fates },
+          overdueClustersNudged: 0,
+        },
+      })['holder-plan-authorship'];
+    // The measured P-008 W2 shape (goal 60d3a8, 2026-10-03): cluster EI-23772322660353682 was
+    // overdue at 09:49:40Z; the holder dropped 3 duplicates with reasons and closed the nudge
+    // dropped with a reason. Before the fix this read "unknown: Not exercised: 0 clusters".
+    const w2 = at({ 'dismissed-with-reason': 1 });
+    expect(w2.verdict).toBe('pass');
+    expect(w2.reason).toContain('1 dismissed with a reason');
+    expect(at({ planned: 1 }).verdict).toBe('pass');
+    // Dropping the cluster away with no reason fails, even beside an unrelated staffed plan.
+    expect(at({ 'dropped-without-reason': 1 }).verdict).toBe('fail');
+    expect(at({ 'dropped-without-reason': 1 }, 1).verdict).toBe('fail');
+    // Work completed or items regrouped: nothing to credit or blame.
+    expect(at({ 'dissolved-without-drop': 1 }).verdict).toBe('unknown');
+  });
+
+  it('plan authorship: a fail names whether the overdue cluster was ever nudged (WI-10005942)', () => {
+    const fail = (nudged: number) =>
+      rateGoalHolderBehavior({
+        ...healthy(),
+        planAuthorship: {
+          plansNew: 0, plansStarted: 0, planFleetLaunches: 0, unplannedOpenGoalItems: 30,
+          unplannedClusters: 1, overdueUnplannedClusters: 1, overdueClustersAtStart: 1,
+          dissolvedOverdueClusters: emptyDissolvedClusterFates(), overdueClustersNudged: nudged,
+        },
+      })['holder-plan-authorship'];
+    // P-008 W1 shape: the cluster's detector (signal 5) reached the holder's serving build
+    // mid-window and no nudge existed for most of it, so the fail must flag the attribution.
+    expect(fail(0).verdict).toBe('fail');
+    expect(fail(0).reason).toContain('0 of them had a watchdog nudge filed at least one reporting cycle before window end; check whether the holder could see');
+    expect(fail(1).verdict).toBe('fail');
+    expect(fail(1).reason).toContain('1 of them had a watchdog nudge filed at least one reporting cycle before window end.');
+    expect(fail(1).reason).not.toContain('check whether the holder could see');
+  });
+
+  it('classifyDissolvedCluster: plan membership, reasoned nudge close, then per-member drop reasons (WI-10005965)', () => {
+    const member = (status: string, reason: string | null = null, planned = false) => ({ status, reason, planned });
+    // Measured W2 members: canonical item blocked, 3 duplicates dropped with terminal_completion_ref reasons.
+    const w2Members = [
+      member('blocked'),
+      member('dropped', 'Duplicate kernel stale-artifact preflight symptom; canonical duplicate edge points to EI-23772322660353682.'),
+      member('dropped', 'Duplicate kernel stale-artifact preflight symptom; canonical duplicate edge points to EI-23772322660353682.'),
+      member('dropped', 'Duplicate kernel stale-artifact preflight symptom; canonical duplicate edge points to EI-23772322660353682.'),
+    ];
+    const w2Nudge = { status: 'dropped', reason: 'Dropped the request for a new four-item plan after explicit duplicate consolidation.' };
+    expect(classifyDissolvedCluster({ members: w2Members, nudges: [w2Nudge] })).toBe('dismissed-with-reason');
+    // Per-member drop reasons alone also count as a reasoned dismissal.
+    expect(classifyDissolvedCluster({ members: w2Members, nudges: [] })).toBe('dismissed-with-reason');
+    // Same drops with no reason anywhere: the dodge this rule exists to catch.
+    expect(
+      classifyDissolvedCluster({ members: [member('blocked'), member('dropped'), member('dropped', '  '), member('dropped')], nudges: [] }),
+    ).toBe('dropped-without-reason');
+    // A nudge closed without a reason does not rescue reasonless drops.
+    expect(
+      classifyDissolvedCluster({ members: [member('dropped'), member('dropped'), member('dropped')], nudges: [{ status: 'dropped', reason: null }] }),
+    ).toBe('dropped-without-reason');
+    // Planned members, or a nudge closed done, mean the cluster was placed as a plan.
+    expect(classifyDissolvedCluster({ members: [member('open', null, true), member('dropped')], nudges: [] })).toBe('planned');
+    expect(classifyDissolvedCluster({ members: [member('done'), member('open')], nudges: [{ status: 'done', reason: 'planned as p' }] })).toBe('planned');
+    // No member dropped: completed or regrouped.
+    expect(classifyDissolvedCluster({ members: [member('done'), member('done'), member('open')], nudges: [] })).toBe('dissolved-without-drop');
   });
 
   it("review quality counts only the graded holder's reviews; ideas count for the goal (WI-10005920)", () => {

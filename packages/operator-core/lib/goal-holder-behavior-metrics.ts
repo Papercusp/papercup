@@ -108,6 +108,17 @@ export interface GoalHolderBehaviorMetrics {
     unplannedClusters: number;
     /** Of those, clusters that existed for more than 2 reporting cycles at window end (D-002). */
     overdueUnplannedClusters: number;
+    /** Clusters already overdue at window START (same detector and age rule, read as of the
+     *  start). Without this, a cluster the holder dissolved mid-window left no trace and the
+     *  criterion read "not exercised" (WI-10005965). */
+    overdueClustersAtStart: number;
+    /** Of the start-overdue clusters, those that no longer formed a cluster at window end, by
+     *  fate (classifyDissolvedCluster). */
+    dissolvedOverdueClusters: Record<DissolvedClusterFate, number>;
+    /** Of the end-overdue clusters, those with a watchdog nudge filed at least one reporting
+     *  cycle before window end. A fail over un-nudged clusters may be system-attributable
+     *  (WI-10005942). */
+    overdueClustersNudged: number;
   };
   ideation: {
     since: string;
@@ -222,6 +233,51 @@ export interface HolderBehaviorRating {
   reason: string;
 }
 
+/**
+ * What became of a cluster that was overdue at window START but no longer formed a cluster
+ * at window END (WI-10005965):
+ *  - `planned`: a member is now in a plan, or the cluster's nudge was closed `done`;
+ *  - `dismissed-with-reason`: the cluster's nudge was closed `dropped` with a reason, or every
+ *    dropped member carries a drop reason (the P-002 nudge contract: "if these items are NOT
+ *    one cluster, close this item as dropped with the reason");
+ *  - `dissolved-without-drop`: no member was dropped (work completed, or the items regrouped);
+ *  - `dropped-without-reason`: members were dropped with no recorded reason and no reasoned
+ *    nudge close — dropping the cluster away, which must not read as "not exercised".
+ */
+export type DissolvedClusterFate =
+  | 'planned'
+  | 'dismissed-with-reason'
+  | 'dissolved-without-drop'
+  | 'dropped-without-reason';
+
+export const DISSOLVED_CLUSTER_FATES: readonly DissolvedClusterFate[] = [
+  'planned',
+  'dismissed-with-reason',
+  'dissolved-without-drop',
+  'dropped-without-reason',
+];
+
+export function emptyDissolvedClusterFates(): Record<DissolvedClusterFate, number> {
+  return { planned: 0, 'dismissed-with-reason': 0, 'dissolved-without-drop': 0, 'dropped-without-reason': 0 };
+}
+
+const hasReason = (reason: string | null | undefined): boolean => (reason ?? '').trim().length > 0;
+
+export function classifyDissolvedCluster(input: {
+  /** Each member's state as read at grading time. */
+  members: ReadonlyArray<{ status: string; planned: boolean; reason: string | null }>;
+  /** Unplanned-cluster nudges covering this cluster, closed by window end. */
+  nudges: ReadonlyArray<{ status: string; reason: string | null }>;
+}): DissolvedClusterFate {
+  if (input.members.some((m) => m.planned)) return 'planned';
+  const reasoned = input.nudges.filter((n) => hasReason(n.reason));
+  if (reasoned.some((n) => n.status === 'done')) return 'planned';
+  if (reasoned.some((n) => n.status === 'dropped')) return 'dismissed-with-reason';
+  const dropped = input.members.filter((m) => m.status === 'dropped');
+  if (dropped.length === 0) return 'dissolved-without-drop';
+  return dropped.every((m) => hasReason(m.reason)) ? 'dismissed-with-reason' : 'dropped-without-reason';
+}
+
 export function rateGoalHolderBehavior(
   metrics: GoalHolderBehaviorMetrics,
 ): Record<HolderBehaviorCriterion, HolderBehaviorRating> {
@@ -240,10 +296,35 @@ export function rateGoalHolderBehavior(
         verdict: 'fail',
         reason:
           `${plans.overdueUnplannedClusters} unplanned cluster(s) of ${GOAL_REVIEW_CLUSTER_MIN_ITEMS}+ goal items were older ` +
-          `than 2 reporting cycles and the holder ${did} in the window (a plan must be written and staffed).`,
+          `than 2 reporting cycles and the holder ${did} in the window (a plan must be written and staffed). ` +
+          `${plans.overdueClustersNudged} of them had a watchdog nudge filed at least one reporting cycle before window end` +
+          (plans.overdueClustersNudged < plans.overdueUnplannedClusters
+            ? '; check whether the holder could see an un-nudged cluster before attributing the miss to the holder.'
+            : '.'),
+      };
+    }
+    // WI-10005965: a cluster overdue at window start that vanished by window end is judged by
+    // HOW it vanished. Dropping members with no reason is the witnessed failure in another
+    // form, so it fails even when an unrelated plan was staffed.
+    const fates = plans.dissolvedOverdueClusters;
+    if (fates['dropped-without-reason'] > 0) {
+      return {
+        verdict: 'fail',
+        reason:
+          `${fates['dropped-without-reason']} cluster(s) overdue at window start were dissolved by dropping members ` +
+          `with no recorded reason and no reasoned close of the cluster nudge (a cluster is planned, or dismissed with a reason).`,
       };
     }
     if (staffed) return { verdict: 'pass', reason: `Holder ${did}.` };
+    const placed = fates.planned + fates['dismissed-with-reason'];
+    if (placed > 0) {
+      return {
+        verdict: 'pass',
+        reason:
+          `Holder placed ${placed} of ${plans.overdueClustersAtStart} cluster(s) overdue at window start: ` +
+          `${fates.planned} planned, ${fates['dismissed-with-reason']} dismissed with a reason; ${did}.`,
+      };
+    }
     if (plans.plansNew > 0) {
       return { verdict: 'unknown', reason: `Holder ${did}: written but not staffed, and no cluster was overdue.` };
     }
@@ -417,15 +498,27 @@ export async function readGoalDayCandidates(
  */
 async function readWindowClusters(
   window: GoalHolderWindow,
+  startMs: number,
   endMs: number,
   sql: Sql,
-): Promise<{ total: number; overdue: number }> {
+): Promise<{
+  total: number;
+  overdue: number;
+  overdueAtStart: number;
+  dissolved: Record<DissolvedClusterFate, number>;
+  nudged: number;
+}> {
   const [{ readUnplannedGoalClusters, overdueUnplannedClusters }, cadence] = await Promise.all([
     import('./goals/unplanned-clusters'),
     import('./system-health/goal-owner-report-watchdog'),
   ]);
-  const [read, goalRows] = await Promise.all([
-    readUnplannedGoalClusters(sql, { workspaceId: window.workspaceId, goalId: window.goalId, asOfMs: endMs }),
+  const scope = { workspaceId: window.workspaceId, goalId: window.goalId };
+  // The as-of START read reuses the detector's historical mode, so plan membership is read as
+  // of now: a cluster planned during the window is excluded from both reads (under-count,
+  // never over-count), and the end-of-window staffed check is what credits it.
+  const [read, startRead, goalRows] = await Promise.all([
+    readUnplannedGoalClusters(sql, { ...scope, asOfMs: endMs }),
+    readUnplannedGoalClusters(sql, { ...scope, asOfMs: startMs }),
     sql<{ standing: boolean | null }[]>`
       SELECT standing FROM harness_shared.goals
        WHERE workspace_id = ${window.workspaceId} AND id = ${window.goalId}`,
@@ -433,7 +526,101 @@ async function readWindowClusters(
   const cycleMs = goalRows[0]?.standing
     ? cadence.GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS
     : cadence.GOAL_OWNER_REPORT_MAX_SILENCE_MS;
-  return { total: read.clusters.length, overdue: overdueUnplannedClusters(read.clusters, endMs, cycleMs).length };
+  const overdueAtStart = overdueUnplannedClusters(startRead.clusters, startMs, cycleMs);
+  // A start cluster sharing any member with an end cluster still stands; the end check
+  // judges it. One sharing none was dissolved during the window.
+  const stillClustered = new Set(read.clusters.flatMap((c) => c.memberIds));
+  const dissolvedMembers = overdueAtStart
+    .filter((c) => !c.memberIds.some((id) => stillClustered.has(id)))
+    .map((c) => c.memberIds);
+  const overdueAtEnd = overdueUnplannedClusters(read.clusters, endMs, cycleMs);
+  const [dissolved, nudged] = await Promise.all([
+    classifyDissolvedClusters(window, dissolvedMembers, endMs, sql),
+    countNudgedClusters(window, overdueAtEnd.map((c) => c.memberIds), endMs - cycleMs, sql),
+  ]);
+  return {
+    total: read.clusters.length,
+    overdue: overdueAtEnd.length,
+    overdueAtStart: overdueAtStart.length,
+    dissolved,
+    nudged,
+  };
+}
+
+/**
+ * How many of the end-overdue clusters had a goal liveness watchdog nudge filed at least one
+ * reporting cycle before window end, i.e. early enough for the holder to act (WI-10005942).
+ * A fail without one may be a detector the holder could not see yet (P-008 W1: signal 5
+ * reached the holder's serving build mid-window and the nudge landed 17 min before window
+ * end), so the rating names it.
+ */
+async function countNudgedClusters(
+  window: GoalHolderWindow,
+  clusters: string[][],
+  cutoffMs: number,
+  sql: Sql,
+): Promise<number> {
+  if (clusters.length === 0) return 0;
+  const rows = await sql<{ member_ids: string[] | null }[]>`
+    SELECT ARRAY(SELECT jsonb_array_elements_text(w.payload -> 'unplannedCluster' -> 'memberIds')) AS member_ids
+      FROM harness_shared.work_items w
+     WHERE w.workspace_id = ${window.workspaceId}
+       AND w.goal_id = ${window.goalId}
+       AND w.payload ? 'unplannedCluster'
+       AND w.created_ts <= ${cutoffMs}`;
+  return clusters.filter((memberIds) =>
+    rows.some((row) => (row.member_ids ?? []).some((id) => memberIds.includes(id))),
+  ).length;
+}
+
+/** Read each dissolved cluster's member states and covering nudge closes, then classify. */
+async function classifyDissolvedClusters(
+  window: GoalHolderWindow,
+  clusters: string[][],
+  endMs: number,
+  sql: Sql,
+): Promise<Record<DissolvedClusterFate, number>> {
+  const fates = emptyDissolvedClusterFates();
+  if (clusters.length === 0) return fates;
+  const ids = [...new Set(clusters.flat())];
+  // A drop's reason lands on a different column per close route: payload._completionEvidence
+  // for one, terminal_completion_ref for the other, so read both.
+  const [memberRows, nudgeRows] = await Promise.all([
+    sql<{ feature_id: string; status: string; planned: boolean; reason: string | null }[]>`
+      SELECT w.feature_id, w.status,
+             (w.source_plan_slug IS NOT NULL OR EXISTS (
+                SELECT 1 FROM harness_shared.coord_links pl
+                 WHERE pl.workspace_id = w.workspace_id AND pl.src_ref = w.feature_id
+                   AND pl.dst_kind IN ('plan_item', 'plan'))) AS planned,
+             COALESCE(NULLIF(w.payload -> '_completionEvidence' ->> 'summary', ''),
+                      NULLIF(w.terminal_completion_ref, '')) AS reason
+        FROM harness_shared.work_items w
+       WHERE w.workspace_id = ${window.workspaceId}
+         AND w.feature_id = ANY(${ids}::text[])`,
+    sql<{ status: string; member_ids: string[] | null; reason: string | null }[]>`
+      SELECT w.status,
+             ARRAY(SELECT jsonb_array_elements_text(w.payload -> 'unplannedCluster' -> 'memberIds')) AS member_ids,
+             COALESCE(NULLIF(w.payload -> '_completionEvidence' ->> 'summary', ''),
+                      NULLIF(w.terminal_completion_ref, '')) AS reason
+        FROM harness_shared.work_items w
+       WHERE w.workspace_id = ${window.workspaceId}
+         AND w.goal_id = ${window.goalId}
+         AND w.payload ? 'unplannedCluster'
+         AND w.closed_ts IS NOT NULL
+         AND w.closed_ts <= ${endMs}`,
+  ]);
+  const byId = new Map(memberRows.map((row) => [row.feature_id, row]));
+  for (const memberIds of clusters) {
+    const members = memberIds.flatMap((id) => {
+      const row = byId.get(id);
+      return row ? [{ status: row.status, planned: Boolean(row.planned), reason: row.reason }] : [];
+    });
+    const nudges = nudgeRows
+      .filter((row) => (row.member_ids ?? []).some((id) => memberIds.includes(id)))
+      .map((row) => ({ status: row.status, reason: row.reason }));
+    fates[classifyDissolvedCluster({ members, nudges })] += 1;
+  }
+  return fates;
 }
 
 /**
@@ -552,7 +739,7 @@ export async function collectGoalHolderBehaviorMetrics(
       byHolder: row.author === window.holderOwnerId,
     })),
   );
-  const clusters = await readWindowClusters(window, endMs, sql);
+  const clusters = await readWindowClusters(window, start.getTime(), endMs, sql);
   const reminder = reminderRows[0];
   return {
     version: GOAL_HOLDER_METRICS_VERSION,
@@ -564,6 +751,9 @@ export async function collectGoalHolderBehaviorMetrics(
       unplannedOpenGoalItems: Number(unplannedRows[0]?.n ?? 0),
       unplannedClusters: clusters.total,
       overdueUnplannedClusters: clusters.overdue,
+      overdueClustersAtStart: clusters.overdueAtStart,
+      dissolvedOverdueClusters: clusters.dissolved,
+      overdueClustersNudged: clusters.nudged,
     },
     ideation: { since: daySince.toISOString(), plansNew: Number(plansNewDayRows[0]?.n ?? 0), ...reviews },
     ownerReports: summarizeOwnerReports(
