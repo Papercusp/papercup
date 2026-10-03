@@ -1,5 +1,5 @@
 import { getOrgPg } from '@papercusp/db-org';
-import { buildSidecarAwareEmbedder } from '../memory/embed-sidecar-wiring';
+import { buildDeferredSidecarAwareEmbedder, buildSidecarAwareEmbedder } from '../memory/embed-sidecar-wiring';
 import { backfillTable, type BackfillStats, type BackfillTarget } from '../search/embed-backfill';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 
@@ -16,8 +16,18 @@ export const PERSONAL_EMBED_TARGET: BackfillTarget = {
   recencyColKind: 'timestamptz',
 };
 
+/**
+ * The backfill's document embedder. It is DEFERRED: the sidecar is resolved (and
+ * so spawned when down) only by the first real embed, never by the build.
+ *
+ * WI-10005962 (P-532d): this pass runs on every 5-min embed-backfill tick, right
+ * after the prose sweep. Built eagerly, it ensured the embed sidecar on every tick
+ * before knowing whether any document needed embedding, so a drained Server
+ * respawned its ~2 GB sidecar about every 10 min with zero real embeds, and the
+ * idle exit never held. D-050 had deferred only the prose sweep's builders.
+ */
 export async function buildPersonalDocumentEmbedder() {
-  return buildSidecarAwareEmbedder(PERSONAL_EMBEDDER_MODE, 'document');
+  return buildDeferredSidecarAwareEmbedder(PERSONAL_EMBEDDER_MODE, 'document');
 }
 
 export async function buildPersonalQueryEmbedder() {
