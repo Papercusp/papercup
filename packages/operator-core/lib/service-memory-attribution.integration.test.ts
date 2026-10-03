@@ -399,7 +399,8 @@ function servingInboxProcess(pid: number, directory: string) {
     .update(readFileSync(prefix + '/exe')).digest('hex'), ownsStagingSocket };
 }
 
-type ServingInboxPin = { health: { sha: string; version: string }; process: ReturnType<typeof servingInboxProcess>;
+type ServingInboxPin = { health: { sha: string; version: string };
+  process: Omit<ReturnType<typeof servingInboxProcess>, 'ownsStagingSocket'> & { ownsStagingSocket: boolean };
   artifacts: ReturnType<typeof inboxArtifactManifest> };
 
 function servingInboxHealth(health: any, expectedBuild: string) {
@@ -431,6 +432,19 @@ function assertInboxArtifactCopy(source: ReturnType<typeof inboxArtifactManifest
   const expected = candidate.map(row => row.path === 'hono-host.mjs' ? { ...row,
     bytes: Buffer.byteLength(restoredBundle), sha256: createHash('sha256').update(restoredBundle).digest('hex') } : row);
   if (JSON.stringify(expected) !== JSON.stringify(baseline)) throw Error('Serving inbox baseline companion or intervention drift');
+}
+
+// The maintained launcher owns this PG port. A test-runtime label alone must
+// not authorize fixture writes through an inherited ambient database URL.
+function privateInboxEndpoints(workspace: string, backgroundWorkers: string, databaseUrl: string, operatorUrl: string, pgPort: string) {
+  const database = new URL(databaseUrl), operator = new URL(operatorUrl);
+  const loopback = (host: string) => ['127.0.0.1', 'localhost', '[::1]'].includes(host);
+  if (!workspace.startsWith('test-runtime-') || backgroundWorkers !== '0' ||
+      !['postgres:', 'postgresql:'].includes(database.protocol) || !loopback(database.hostname) ||
+      !/^\d+$/.test(pgPort) || Number(pgPort) <= 0 || Number(pgPort) > 65535 || database.port !== pgPort ||
+      operator.protocol !== 'http:' || !loopback(operator.hostname) || !operator.port ||
+      ['3070', '3170', pgPort].includes(operator.port)) throw Error('Private inbox database/runtime endpoint containment failed');
+  return { workspace, backgroundWorkers: 0, loopbackDatabase: true, ownedPgPort: Number(pgPort), ambientOperatorPortsExcluded: true };
 }
 
 // Closed helper also runs in CDP. Validate the actual library shape before
@@ -1031,6 +1045,21 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         expect(() => inboxArtifactManifest(seed)).toThrow('companion missing');
       } finally { rmSync(directory, { recursive: true, force: true }); }
     });
+    const endpoints = ['test-runtime-private', '0', 'postgresql://127.0.0.1:55555/private', 'http://127.0.0.1:55556', '55555'];
+    it('requires the launcher-owned PG port before any private fixture write', () => {
+      expect(privateInboxEndpoints(...endpoints as [string, string, string, string, string])).toMatchObject({ ownedPgPort: 55555 });
+    });
+    it.each([
+      ['ambient identity', 0, 'papercusp-workspace'], ['background host', 1, '1'],
+      ['remote database', 2, 'postgresql://remote:55555/private'],
+      ['ambient database port', 2, 'postgresql://127.0.0.1:5432/private'],
+      ['missing owned port', 4, ''], ['malformed owned port', 4, 'bad'],
+      ['remote operator', 3, 'http://remote:55556'], ['live operator', 3, 'http://127.0.0.1:3070'],
+      ['staging operator', 3, 'http://127.0.0.1:3170'], ['PG/operator collision', 3, 'http://127.0.0.1:55555'],
+    ] as const)('rejects %s endpoints before fixtures', (_name, index, value) => {
+      const changed = endpoints.slice(); changed[index] = value;
+      expect(() => privateInboxEndpoints(...changed as [string, string, string, string, string])).toThrow('endpoint containment');
+    });
   });
 
   it('selects only the real cachedRead inbox namespace before a paired runtime', async () => {
@@ -1148,15 +1177,15 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         if (!e.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-') || e.PAPERCUSP_BACKGROUND_WORKERS !== '0')
           throw Error('Private request-only operator-api profile required');
         const { createCdpClient, readProcessMemory } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
+        const privateEndpoints = (${privateInboxEndpoints.toString()})(e.PAPERCUSP_WORKSPACE_ID,
+          e.PAPERCUSP_BACKGROUND_WORKERS, e.HARNESS_ADMIN_DATABASE_URL, e.PAPERCUSP_OPERATOR_URL, e.PAPERCUSP_PG_PORT);
+        const privateHome = fs.realpathSync(e.HOME);
+        if (!privateHome.startsWith(fs.realpathSync(e.TEST_PRIVATE_PARENT) + path.sep) ||
+            !path.basename(path.dirname(privateHome)).startsWith('papercusp-test-runtime-'))
+          throw Error('Private inbox database/runtime containment failed');
+        report.privateContainment = { ...privateEndpoints, disposableHome: true };
         sql = postgres(e.HARNESS_ADMIN_DATABASE_URL, { max: 1 });
         report.database = (await sql.unsafe('select current_database() as database'))[0].database;
-        const databaseUrl = new URL(e.HARNESS_ADMIN_DATABASE_URL);
-        if (!['127.0.0.1', 'localhost', '[::1]'].includes(databaseUrl.hostname) ||
-            ['3070', '3170'].includes(new URL(e.PAPERCUSP_OPERATOR_URL).port) ||
-            !fs.realpathSync(e.HOME).startsWith(fs.realpathSync(e.TEST_PRIVATE_PARENT) + path.sep))
-          throw Error('Private inbox database/runtime containment failed');
-        report.privateContainment = { workspace: e.PAPERCUSP_WORKSPACE_ID, backgroundWorkers: 0,
-          loopbackDatabase: true, disposableHome: true, ambientOperatorPortsExcluded: true };
         report.schema = (await sql.unsafe('select filename, sha256 from harness_shared.schema_migrations order by applied_at desc limit 1'))[0];
         const variants = Array.from({ length: 8 }, (_, i) => ({ directed: true, limit: i + 1,
           include_ambient: Boolean(i & 1), include_intents: Boolean(i & 2), max_body_chars: 1 }));
