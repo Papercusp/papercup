@@ -62,6 +62,7 @@
  *     round-robin. The already-resolved account arrives as `initialAccount`, so a
  *     double-advance is structurally impossible rather than merely avoided.
  */
+import { describeFetchError } from '../loopback-fetch';
 import { claudeAttemptHeaders } from './credential-store';
 import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
 import type { GatewayTransportId } from './provider-adapters';
@@ -584,8 +585,8 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         // three same-account retries (gateway.ts:4212, the sibling-egress rotate).
         // The live handler treats a transport failure as recoverable, so mark it.
         throw new GatewayRequestKernelError(
-          `inference-gateway: claude upstream failed: ${(error as Error).message}`,
-          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true },
+          `inference-gateway: claude upstream failed: ${describeFetchError(error)}`,
+          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true, cause: error },
         );
       }
       const headers = headersToObject(response.headers);

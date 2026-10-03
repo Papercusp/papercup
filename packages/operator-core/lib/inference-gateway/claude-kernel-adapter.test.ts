@@ -265,6 +265,23 @@ describe('claude kernel adapter', () => {
     expect(prepared[0]!.accountId).toBe('A');
   });
 
+  it('preserves undici fetch diagnostics and the original cause on transport failure', async () => {
+    const fetchFailure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNRESET', message: 'read ECONNRESET' },
+    });
+    const { options } = harness(async () => { throw fetchFailure; }, { policy: { maxAttempts: 1 } });
+    const error = await executeGatewayRequestKernel(options).then(
+      () => { throw new Error('expected upstream failure'); },
+      (reason: unknown) => reason as { code: string; message: string; cause?: unknown },
+    );
+
+    expect(error).toMatchObject({
+      code: 'upstream-error',
+      message: 'inference-gateway: claude upstream failed: fetch failed (ECONNRESET: read ECONNRESET)',
+    });
+    expect(error.cause).toBe(fetchFailure);
+  });
+
   it('retries a SIBLING egress IP on the SAME account for a bare-burst 429, without consulting the pool (D-011)', async () => {
     const { pool, calls } = makePool([acct('B')]);
     let n = 0;

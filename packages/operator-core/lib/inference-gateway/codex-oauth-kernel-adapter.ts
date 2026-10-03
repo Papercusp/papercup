@@ -39,6 +39,7 @@
  * same lane, selected from the request body BEFORE the kernel is entered
  * (gateway.ts:5451). This adapter is oauth-http only and never substitutes it.
  */
+import { describeFetchError } from '../loopback-fetch';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
@@ -560,8 +561,8 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         opts.onEgressFailure?.(account.accountId);
         opts.coolIp(egress.key, opts.transportCooldownMs);
         throw new GatewayRequestKernelError(
-          `inference-gateway: codex OAuth upstream failed: ${(error as Error).message}`,
-          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true },
+          `inference-gateway: codex OAuth upstream failed: ${describeFetchError(error)}`,
+          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true, cause: error },
         );
       }
 

@@ -536,6 +536,24 @@ describe('codex OAuth kernel adapter — sibling-egress re-attempt precedes rota
     expect(started[0]?.metadata.egressKey).toBe('chatgpt-a:ip2');
   });
 
+  it('preserves undici fetch diagnostics and the original cause on transport failure', async () => {
+    const fetchFailure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNRESET', message: 'read ECONNRESET' },
+    });
+    const { options } = harness(async () => { throw fetchFailure; });
+    options.policy = { ...options.policy, maxAttempts: 1 };
+    const error = await executeGatewayRequestKernel(options).then(
+      () => { throw new Error('expected upstream failure'); },
+      (reason: unknown) => reason as { code: string; message: string; cause?: unknown },
+    );
+
+    expect(error).toMatchObject({
+      code: 'upstream-error',
+      message: 'inference-gateway: codex OAuth upstream failed: fetch failed (ECONNRESET: read ECONNRESET)',
+    });
+    expect(error.cause).toBe(fetchFailure);
+  });
+
   it('rotates the account when no sibling IP is available', async () => {
     const pool = makePool([{ accountId: 'chatgpt-b' }]);
     const seen: string[] = [];
