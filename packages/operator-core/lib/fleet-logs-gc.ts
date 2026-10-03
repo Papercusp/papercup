@@ -42,8 +42,10 @@
  * so a genuinely in-use file is never caught by the age bound.
  */
 import { readdirSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
 import { workspacesRoot } from './workspace-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 
