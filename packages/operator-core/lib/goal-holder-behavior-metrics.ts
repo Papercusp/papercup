@@ -80,6 +80,11 @@ export interface GoalReviewRow {
   ideasFiled: unknown;
   /** Open goal-stamped items with no plan at the moment of the review. */
   unplannedAtReview: number;
+  /** Whether the graded holder filed this review. Ideas count for the goal whoever filed
+   *  them; review quality counts only against the holder who wrote the review, so a new
+   *  holder does not inherit a predecessor's reviews for the rest of the goal-day
+   *  (WI-10005920). Absent means the holder's own review. */
+  byHolder?: boolean;
 }
 
 export interface OwnerReportRow {
@@ -95,8 +100,14 @@ export interface GoalHolderBehaviorMetrics {
     plansNew: number;
     plansStarted: number;
     planFleetLaunches: number;
-    /** Open (at window end) goal-stamped work items with no source plan. */
+    /** Open (at window end) goal-stamped work items with no source plan. Context only: a
+     *  count of singletons is not a cluster, so it never decides the rating (WI-10005920). */
     unplannedOpenGoalItems: number;
+    /** Unplanned clusters of 3+ related goal items open at window end (findUnplannedClusters,
+     *  the detector the goal liveness watchdog nudges from). */
+    unplannedClusters: number;
+    /** Of those, clusters that existed for more than 2 reporting cycles at window end (D-002). */
+    overdueUnplannedClusters: number;
   };
   ideation: {
     since: string;
@@ -166,6 +177,7 @@ export function summarizeGoalReviews(rows: readonly GoalReviewRow[]): Omit<
   let reviewsWithUncoveredClusterNeed = 0;
   for (const row of rows) {
     ideasFiled += countIdeas(row.ideasFiled);
+    if (row.byHolder === false) continue;
     const isNoNewPlan = row.disposition !== null && noNewPlan.has(row.disposition);
     if (isNoNewPlan) {
       noNewPlanReviews += 1;
@@ -215,25 +227,31 @@ export function rateGoalHolderBehavior(
 ): Record<HolderBehaviorCriterion, HolderBehaviorRating> {
   const { planAuthorship: plans, ideation, ownerReports: reports, loop, nudges } = metrics;
 
+  // D-002 / R-1: the trigger is an unplanned CLUSTER of 3+ related items older than 2
+  // reporting cycles, never a raw count of unplanned singletons (the drain fleet's job).
+  // "Written, started and staffed": a successful fleet:launch-on-plan staffs the plan and
+  // its launch failsafe promotes the plan's items, so a staffed plan is a started plan.
   const planRating = ((): HolderBehaviorRating => {
-    if (plans.unplannedOpenGoalItems >= GOAL_REVIEW_CLUSTER_MIN_ITEMS && plans.plansNew === 0) {
+    const staffed = plans.plansNew > 0 && plans.planFleetLaunches > 0;
+    const did =
+      `wrote ${plans.plansNew}, started ${plans.plansStarted}, staffed ${plans.planFleetLaunches} plan(s)`;
+    if (plans.overdueUnplannedClusters > 0 && !staffed) {
       return {
         verdict: 'fail',
-        reason: `${plans.unplannedOpenGoalItems} open goal items had no plan and the holder wrote 0 plans in the window.`,
+        reason:
+          `${plans.overdueUnplannedClusters} unplanned cluster(s) of ${GOAL_REVIEW_CLUSTER_MIN_ITEMS}+ goal items were older ` +
+          `than 2 reporting cycles and the holder ${did} in the window (a plan must be written and staffed).`,
       };
     }
-    if (plans.plansNew > 0 && (plans.plansStarted > 0 || plans.planFleetLaunches > 0)) {
-      return {
-        verdict: 'pass',
-        reason: `Holder wrote ${plans.plansNew} plan(s), started ${plans.plansStarted}, launched ${plans.planFleetLaunches} plan fleet(s).`,
-      };
-    }
+    if (staffed) return { verdict: 'pass', reason: `Holder ${did}.` };
     if (plans.plansNew > 0) {
-      return { verdict: 'unknown', reason: `Holder wrote ${plans.plansNew} plan(s) but none was started or staffed in the window.` };
+      return { verdict: 'unknown', reason: `Holder ${did}: written but not staffed, and no cluster was overdue.` };
     }
     return {
       verdict: 'unknown',
-      reason: `Not exercised: ${plans.unplannedOpenGoalItems} unplanned open goal items (< ${GOAL_REVIEW_CLUSTER_MIN_ITEMS}) and no plan written.`,
+      reason:
+        `Not exercised: ${plans.unplannedClusters} unplanned cluster(s), none older than 2 reporting cycles ` +
+        `(${plans.unplannedOpenGoalItems} unplanned goal items), and no plan written.`,
     };
   })();
 
@@ -391,6 +409,34 @@ export async function readGoalDayCandidates(
 }
 
 /**
+ * Unplanned clusters for the goal as of the window end, through the same detector and
+ * age rule the goal liveness watchdog nudges from (D-002), so the WOE rating and the nudge
+ * agree on what a cluster is. Imported lazily: the detector module opens the org pool and
+ * the report-cadence constants live with the report watchdog, and this module's pure
+ * half must stay importable without either.
+ */
+async function readWindowClusters(
+  window: GoalHolderWindow,
+  endMs: number,
+  sql: Sql,
+): Promise<{ total: number; overdue: number }> {
+  const [{ readUnplannedGoalClusters, overdueUnplannedClusters }, cadence] = await Promise.all([
+    import('./goals/unplanned-clusters'),
+    import('./system-health/goal-owner-report-watchdog'),
+  ]);
+  const [read, goalRows] = await Promise.all([
+    readUnplannedGoalClusters(sql, { workspaceId: window.workspaceId, goalId: window.goalId, asOfMs: endMs }),
+    sql<{ standing: boolean | null }[]>`
+      SELECT standing FROM harness_shared.goals
+       WHERE workspace_id = ${window.workspaceId} AND id = ${window.goalId}`,
+  ]);
+  const cycleMs = goalRows[0]?.standing
+    ? cadence.GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS
+    : cadence.GOAL_OWNER_REPORT_MAX_SILENCE_MS;
+  return { total: read.clusters.length, overdue: overdueUnplannedClusters(read.clusters, endMs, cycleMs).length };
+}
+
+/**
  * Read every metric for one window. event_awaits and routine_loop_transitions rows for a
  * session live under workspace 'default', not the papercusp workspace, so those two reads
  * scope by the holder's (globally unique) owner id only.
@@ -428,8 +474,9 @@ export async function collectGoalHolderBehaviorMetrics(
            AND w.source_plan_slug IS NULL
            AND w.created_ts <= ${endMs}
            AND (w.closed_ts IS NULL OR w.closed_ts > ${endMs})`,
-      sql<{ invoked_at: Date; disposition: string | null; coverage: unknown; ideas_filed: unknown; unplanned: string }[]>`
+      sql<{ invoked_at: Date; author: string | null; disposition: string | null; coverage: unknown; ideas_filed: unknown; unplanned: string }[]>`
         SELECT t.invoked_at,
+               t.coord_owner_id AS author,
                t.args_json -> 'goalReview' ->> 'disposition' AS disposition,
                t.args_json -> 'goalReview' -> 'coverage' AS coverage,
                t.args_json -> 'ideasFiled' AS ideas_filed,
@@ -502,8 +549,10 @@ export async function collectGoalHolderBehaviorMetrics(
       coverage: row.coverage,
       ideasFiled: row.ideas_filed,
       unplannedAtReview: Number(row.unplanned),
+      byHolder: row.author === window.holderOwnerId,
     })),
   );
+  const clusters = await readWindowClusters(window, endMs, sql);
   const reminder = reminderRows[0];
   return {
     version: GOAL_HOLDER_METRICS_VERSION,
@@ -513,6 +562,8 @@ export async function collectGoalHolderBehaviorMetrics(
       plansStarted: toolCount('plans:start'),
       planFleetLaunches: toolCount('fleet:launch-on-plan'),
       unplannedOpenGoalItems: Number(unplannedRows[0]?.n ?? 0),
+      unplannedClusters: clusters.total,
+      overdueUnplannedClusters: clusters.overdue,
     },
     ideation: { since: daySince.toISOString(), plansNew: Number(plansNewDayRows[0]?.n ?? 0), ...reviews },
     ownerReports: summarizeOwnerReports(

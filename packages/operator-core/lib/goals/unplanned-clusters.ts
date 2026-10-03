@@ -235,9 +235,25 @@ export interface UnplannedClusterRead {
  */
 export async function readUnplannedGoalClusters(
   sql: Sql,
-  args: { workspaceId: string; goalId: string; limit?: number },
+  args: {
+    workspaceId: string;
+    goalId: string;
+    limit?: number;
+    /**
+     * Read the items that were open at this instant (created_ts <= asOfMs and not closed
+     * by then) instead of the items open now. Used to grade a past window
+     * (goal-holder-behavior-metrics). Plan membership (source_plan_slug, plan links) is
+     * still read as of now, so an item planned after `asOfMs` is excluded: an as-of read
+     * can under-count a cluster the holder planned later, never over-count one.
+     */
+    asOfMs?: number;
+  },
 ): Promise<UnplannedClusterRead> {
   const limit = args.limit ?? UNPLANNED_CLUSTER_READ_LIMIT;
+  const openAt =
+    args.asOfMs == null
+      ? sql`w.status <> ALL(${[...TERMINAL_WORK_ITEM_STATES]}::text[])`
+      : sql`w.created_ts <= ${args.asOfMs} AND (w.closed_ts IS NULL OR w.closed_ts > ${args.asOfMs})`;
   const rows = await sql<
     Array<{ feature_id: string; harness_slug: string | null; title: string | null; summary: string | null; created_ts: string | number }>
   >`
@@ -246,7 +262,7 @@ export async function readUnplannedGoalClusters(
      WHERE w.workspace_id = ${args.workspaceId}
        AND w.goal_id = ${args.goalId}
        AND w.source_plan_slug IS NULL
-       AND w.status <> ALL(${[...TERMINAL_WORK_ITEM_STATES]}::text[])
+       AND ${openAt}
        AND w.lane IS DISTINCT FROM 'observation'
        AND NOT (COALESCE(w.payload, '{}'::jsonb) ? 'unplannedCluster')
        AND NOT EXISTS (
