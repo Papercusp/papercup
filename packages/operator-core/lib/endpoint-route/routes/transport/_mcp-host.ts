@@ -4581,6 +4581,10 @@ export function registerMcpHost(server: McpServer): void {
                   args,
                   canCodeRun: canCodeRunHere,
                   codeRunInSurface,
+                  // The explicit request group is authoritative for calls nested in one
+                  // functions.exec/model turn, even when their sequential durations exceed the
+                  // timing heuristic used for clients that do not supply one.
+                  turnId: req.params._meta?.outputGroupId ?? req.params._meta?.turnId,
                   // EI-23761431768707969: the door spilled THIS call because its output cohort's
                   // shared fan-out budget was already spent. The door tells the agent to re-issue
                   // it, so the nudge must not count that forced re-issue as a chosen round-trip.
