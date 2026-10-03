@@ -17,7 +17,7 @@
  * Read-only — it can never affect the system it watches.
  */
 import { promisify } from 'node:util';
-import { statfs as statfsCb } from 'node:fs';
+import { stat as statCb, statfs as statfsCb } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { generated, getOrgPg } from '@papercusp/db-org';
@@ -27,6 +27,7 @@ import { notifySyncInvalidate } from '../sync-sse';
 import { workspacesRoot } from '../workspace-registry';
 import { listDiskRootChildrenAsync, type DiskRootChildScan } from './disk';
 
+const statPath = promisify(statCb);
 const statfs = promisify(statfsCb);
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
@@ -106,7 +107,7 @@ export function watchedPaths(): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const all = [workspacesRoot(), tmpdir(), ...extra];
+  const all = [workspacesRoot(), '/mnt/data', tmpdir(), ...extra];
   return [...new Set(all)]; // dedup identical paths
 }
 
@@ -443,8 +444,12 @@ export function formatDiskEscalation(
  * so correctness-critical writers can reuse the alarm's statfs interpretation. */
 export async function sampleDiskSnapshots(paths: string[] = watchedPaths()): Promise<DiskSnapshot[]> {
   const out: DiskSnapshot[] = [];
+  const seenDevices = new Set<string>();
   for (const path of paths) {
     try {
+      const fsIdentity = await statPath(path);
+      const device = String(fsIdentity.dev);
+      if (seenDevices.has(device)) continue;
       const fsst = await statfs(path);
       const bsize = Number(fsst.bsize) || 0;
       const blocks = Number(fsst.blocks) || 0;
@@ -462,9 +467,10 @@ export async function sampleDiskSnapshots(paths: string[] = watchedPaths()): Pro
         freeInodes: ffree,
         freeInodesPct: files > 0 ? ffree / files : 0,
       });
+      seenDevices.add(device);
     } catch (err) {
       // A single unreadable path must not sink the whole probe.
-      console.warn(`[disk-space-alarm] statfs(${path}) failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
+      console.warn(`[disk-space-alarm] stat/statfs(${path}) failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     }
   }
   return out;

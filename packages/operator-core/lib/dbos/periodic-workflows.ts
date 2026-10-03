@@ -41,7 +41,12 @@ import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/esca
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { gcOldOperatorTurns } from '../operator-turns-gc';
-import { runFleetLogsGc, runLaunchContextGc, runPapercuspWorkdirGc } from '../fleet-logs-gc';
+import {
+  runFleetLogsGc,
+  runLaunchContextGc,
+  runPapercuspWorkdirGc,
+  runWindowsBuildScratchGc,
+} from '../fleet-logs-gc';
 import { listLiveSessionRenders } from '../stale-prompt-render-sweep';
 import { gcLedgerDir } from '../turn-provenance/turn-provenance';
 import { readRegistry } from '../workspace-registry';
@@ -667,6 +672,20 @@ async function fleetLogsGcTick(): Promise<void> {
           : `[launch-context-gc] scanned ${renders.scanned} render(s) → removed ` +
               `${renders.removed}, freed ${Math.round(renders.bytesFreed / (1024 * 1024))}MB, ` +
               `held ${renders.liveHeld} in use by live session(s)`,
+      );
+
+      // Reclaim interrupted Windows cross-build containers after 48 hours.
+      // The helper checks recursive mtimes, live writers, and the linked
+      // worktree's Git lock before removing its exact registration.
+      const windowsBuildScratch = await runWindowsBuildScratchGc({ dryRun: false });
+      const buildScratchSkipped = windowsBuildScratch.candidates.filter((candidate) => !candidate.removed);
+      console.log(
+        `[windows-build-scratch-gc] considered ${windowsBuildScratch.scanned} producer dir(s) → ` +
+          `removed ${windowsBuildScratch.removed}, freed ` +
+          `${Math.round(windowsBuildScratch.bytesFreed / (1024 * 1024))}MB` +
+          (buildScratchSkipped.length
+            ? `, kept ${buildScratchSkipped.length} (${buildScratchSkipped.map((candidate) => candidate.skipped ?? 'unknown').join(',')})`
+            : ''),
       );
     },
     { name: 'fleet-logs-gc' },

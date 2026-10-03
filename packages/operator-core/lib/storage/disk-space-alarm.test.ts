@@ -18,6 +18,7 @@ import {
   runDiskSpaceAlarmOnce,
   diskPolicyFromEnv,
   watchedPaths,
+  sampleDiskSnapshots,
   DEFAULT_DISK_POLICY,
   type DiskSnapshot,
   type DiskAlarmPolicy,
@@ -451,16 +452,29 @@ describe('diskPolicyFromEnv', () => {
 });
 
 describe('watchedPaths', () => {
-  it('watches the process temp filesystem by default and deduplicates an explicit repeat', () => {
+  it('prefers /mnt/data to the process temp path and deduplicates identical extras', () => {
     const previous = process.env.PAPERCUSP_DISK_ALARM_PATHS;
     process.env.PAPERCUSP_DISK_ALARM_PATHS = `${tmpdir()},${tmpdir()}`;
     try {
       const paths = watchedPaths();
       expect(paths).toContain(tmpdir());
+      expect(paths.indexOf('/mnt/data')).toBeLessThan(paths.indexOf(tmpdir()));
       expect(paths.filter((path) => path === tmpdir())).toHaveLength(1);
     } finally {
       if (previous == null) delete process.env.PAPERCUSP_DISK_ALARM_PATHS;
       else process.env.PAPERCUSP_DISK_ALARM_PATHS = previous;
+    }
+  });
+
+  it('samples only one path for filesystem aliases with the same stat.dev', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-alarm-device-alias-'));
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    try {
+      const snapshots = await sampleDiskSnapshots([root, nested]);
+      expect(snapshots.map((snapshot) => snapshot.path)).toEqual([root]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
