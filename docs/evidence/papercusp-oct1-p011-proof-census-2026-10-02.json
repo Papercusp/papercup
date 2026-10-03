@@ -21,7 +21,7 @@
     }
   },
   "recordedAt": "2026-10-02T08:27:23Z",
-  "qualificationUpdatedAt": "2026-10-03T00:05:32Z",
+  "qualificationUpdatedAt": "2026-10-03T00:21:18Z",
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
   "spawnerEntryComparison": {
@@ -70,7 +70,35 @@
       "evidencePlane": "live",
       "scope": "Nine counter samples and 24 read-only HTTP requests across three actual staging windows. Node digest, exact maintained sibling path, ancestry, PID/start identity and configured spawner role are bound. Inspector closed and both process identities were preserved.",
       "identityLimits": "Main health identifies build 80fbc954da; sibling disk digest is 91d3eef33cdbbc8110c597bc287b4f1ff7937b6da93115e550f655058a5b6b4d. Independently advertised loaded sibling build remains unknown. Ambient HTTP assignment to the sidecar is unknown.",
-      "bindingLimits": "Operational binding at PERF-OCT1-P011-MEMORY revision 2 supports the bounded live baseline only. Exact spec and ledger run are current; source/test currentness remains unknown without explicit comparisons. No matched live counterfactual, production recovery or clause fulfillment is claimed."
+      "bindingLimits": "Original operational binding 22985 at PERF-OCT1-P011-MEMORY revision 2 supports the bounded live baseline only and remains unknown for source/test currentness. New binding 23004 independently remeasures the exact saved raw/qualification receipts and unchanged named emitter; its freshness scope is those files, not current serving behavior or the complete executed source graph. No matched live counterfactual, production recovery or clause fulfillment is claimed.",
+      "receiptFreshness": {
+        "binding": 23004,
+        "previousBinding": 22985,
+        "observedAt": "2026-10-02T23:46:08.718Z",
+        "measurement": {
+          "schemaVersion": 1,
+          "kind": "repo-files",
+          "sourcePaths": [
+            "docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json",
+            "docs/evidence/papercusp-oct1-p011-current-standalone-memory-qualification-r1-2026-10-02.json"
+          ],
+          "testPaths": [
+            "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts"
+          ]
+        },
+        "sourceFingerprint": "sha256-file-set-v1:f91d8a6d8b0c8ab7c773fb74c2a52f270a6e600fb3be582d84c5b0580dd16148",
+        "testFingerprint": "sha256-file-set-v1:9e65344f483a82b90e9ddb7d425ef5666a1edefd0fdc53423dc2dda669c14fc9",
+        "readback": "plans:get-spec-evidence independently returned server-measured current for spec, source, test and saved testRun; original 22985 remains preserved with unknown source/test. The observation timestamp is unchanged and no measurement was replayed.",
+        "adequacy": {
+          "selection": "PERF-OCT1-P011-MEMORY@2; evidenceRef file:docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json only",
+          "evaluatorBuild": "d740fc3802",
+          "verdict": "fail",
+          "passing": ["traceability", "correct-layer", "execution-integrity", "freshness"],
+          "remaining": ["falsifiability", "oracle-independence", "plan-class-risk-floor", "disclosed-gap"],
+          "requiredProofFloor": "l4",
+          "scope": "Filtered receipt adequacy only. This does not replace the complete clause evaluation, remove older stale or disclosed-gap rows, establish independent acceptance, or verify current runtime adoption."
+        }
+      }
     },
     "acceptance": "Final-safe private resource reduction and separately bounded actual standalone observation are verified within their recorded scopes. Parent memory acceptance, historical attribution, R-8/R-9 and shipment remain open. Original R2 and older cohorts were not replayed."
   },
