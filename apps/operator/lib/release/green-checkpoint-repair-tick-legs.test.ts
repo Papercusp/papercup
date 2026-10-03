@@ -29,6 +29,7 @@ import {
   measureRepairTickLegs,
   NON_TEST_GATE_SCRIPTS,
   REPAIR_TICK_SETUP_LOCK_MAX_RETRIES,
+  type CheckpointDeps,
   type CheckpointResult,
   type RepairTickLegs,
 } from "./green-checkpoint";
@@ -469,5 +470,94 @@ describe("augmentWithRepairTickLegs", () => {
     const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log });
     expect(result).toBe(base);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("measurement failed"));
+  });
+
+  // WI-10005728: the tick's measurement used to reach gate_health only; queue.legs stayed
+  // empty, so every leg read `never-admitted` and leg shrink / fixedAtHead never moved.
+  describe("folds the measurement into the queue's leg lifecycle (WI-10005728)", () => {
+    const NEXT_HEAD = "b".repeat(40);
+
+    it("admits a measured-red leg as failing and persists it with the snapshot's CAS token", async () => {
+      const queue = awaitingFixerQueue();
+      const writeFrozenRepairQueue = vi.fn(async () => {});
+      const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        writeFrozenRepairQueue,
+        log: vi.fn(),
+      });
+      expect(writeFrozenRepairQueue).toHaveBeenCalledTimes(1);
+      const [written, options] = writeFrozenRepairQueue.mock.calls[0] as unknown as [
+        NonNullable<CheckpointResult["repairQueue"]>,
+        { expectedUpdatedAtMs: number | null },
+      ];
+      expect(options).toEqual({ expectedUpdatedAtMs: queue.updatedAtMs });
+      expect(written.legs).toEqual([
+        expect.objectContaining({ id: "lint:tsc", state: "failing", admittedHead: HEAD }),
+      ]);
+      expect(written.updatedAtMs).toBeGreaterThan(queue.updatedAtMs);
+      expect(result.repairQueue).toEqual(written);
+    });
+
+    it("marks the leg fixed when a later tick measures it passing at a newer head", async () => {
+      const writes: NonNullable<CheckpointResult["repairQueue"]>[] = [];
+      const writeFrozenRepairQueue = vi.fn(async (q: NonNullable<CheckpointResult["repairQueue"]> | null) => {
+        if (q) writes.push(q);
+      });
+      await augmentWithRepairTickLegs(holdResult({ repairQueue: awaitingFixerQueue() }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        writeFrozenRepairQueue,
+        log: vi.fn(),
+      });
+      const afterFix = { ...writes[0], repairHead: NEXT_HEAD };
+      const passed: RepairTickLegs = {
+        head: NEXT_HEAD,
+        atMs: 2_000,
+        ok: true,
+        failingSignatures: [],
+        legs: [{ id: "lint:tsc", status: "pass", durationMs: 5 }],
+      };
+      await augmentWithRepairTickLegs(holdResult({ repairQueue: afterFix }), {
+        runRepairTickLegs: vi.fn(async () => passed),
+        writeFrozenRepairQueue,
+        log: vi.fn(),
+      });
+      expect(writes[1].legs).toEqual([
+        expect.objectContaining({ id: "lint:tsc", state: "fixed", resolvedHead: NEXT_HEAD }),
+      ]);
+    });
+
+    it("folds into the FRESH row and leaves a different frozen candidate untouched", async () => {
+      const snapshot = awaitingFixerQueue();
+      const reopened = { ...snapshot, candidate: "c".repeat(40), updatedAtMs: 5_000 };
+      const transitionFrozenRepairQueue = vi.fn(
+        async (transition: (fresh: typeof snapshot) => typeof snapshot) => ({
+          queue: transition(reopened),
+        }),
+      );
+      const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: snapshot }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        transitionFrozenRepairQueue:
+          transitionFrozenRepairQueue as unknown as CheckpointDeps["transitionFrozenRepairQueue"],
+        log: vi.fn(),
+      });
+      expect(transitionFrozenRepairQueue).toHaveBeenCalledTimes(1);
+      expect(result.repairQueue).toBe(reopened);
+      expect(result.repairQueue?.legs).toBeUndefined();
+    });
+
+    it("keeps the hold result (with its measurement) when the lifecycle write fails", async () => {
+      const queue = awaitingFixerQueue();
+      const log = vi.fn();
+      const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        writeFrozenRepairQueue: vi.fn(async () => {
+          throw new Error("conflict");
+        }),
+        log,
+      });
+      expect(result.repairTickLegs).toEqual(measured);
+      expect(result.repairQueue).toBe(queue);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("leg lifecycle write failed"));
+    });
   });
 });
