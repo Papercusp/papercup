@@ -170,6 +170,16 @@ export interface ReconcileOptions {
    * genuine escape.
    */
   releasedScopes?: ReadonlySet<string>;
+  /**
+   * pid → kernel identity for processes the scan READ but did not list
+   * (`ScanResult.unlistedIdentityByPid`, WI-10005782): out-of-slice processes
+   * whose argv carries no repo path, such as a wake executor's unconfined
+   * `claude -p --resume` turn. Consulted only when an unconfined row's identity
+   * is absent from `kernel`. A match needs the row's own pid AND its stored
+   * identity, so a recycled pid can never keep a dead row alive. Omitted ⇒ the
+   * row strands on absence, as before.
+   */
+  unlistedIdentityByPid?: ReadonlyMap<number, string>;
 }
 
 /**
