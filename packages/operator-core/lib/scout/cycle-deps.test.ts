@@ -681,6 +681,19 @@ describe('rosterForBudget', () => {
       ).toEqual({ lenses: ['first-principles', 'analogical'] });
     });
 
+    it('visits every lens on a one-ideator budget even when every attempt routes zero ideas', () => {
+      const recency: Record<string, number> = {};
+      const visits: string[] = [];
+      for (let cycle = 0; cycle < 8; cycle++) {
+        const lens = rosterForBudget(1, undefined, recency).lenses![0];
+        visits.push(lens);
+        // The existing tick ledger records the attempt, not a fictitious route.
+        recency[lens] = cycle + 1;
+      }
+      expect(visits.slice(0, 4)).toEqual(['analogical', 'first-principles', 'reframing', 'constraint-removal']);
+      expect(visits.slice(4)).toEqual(visits.slice(0, 4));
+    });
+
     it('empty/absent recency is byte-identical to the legacy first-N truncation (stable sort)', () => {
       expect(rosterForBudget(2, undefined, {})).toEqual({ lenses: ['analogical', 'first-principles'] });
       expect(rosterForBudget(1, undefined, {})).toEqual({ lenses: ['analogical'] });
