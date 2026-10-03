@@ -95,6 +95,7 @@ import {
   type IndexDiskVerdict,
 } from '../../code-intelligence/contracts';
 import { SELECTIVE_ACCEPTANCE_CORPUS, SELECTIVE_SOURCE_BLOBS } from '../../code-intelligence/selective-corpus';
+import { classifyAnalyzeFailure, describeAnalyzeFailure } from '../../code-intelligence/gitnexus-analyze-failure';
 
 /** Registry alias this repo is indexed under (`analyze --name papercusp`). The alias
  *  disambiguates it from other checkouts on the box whose basename would collide. */
@@ -2260,6 +2261,12 @@ export interface AnalyzeRunResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /**
+   * The terminating signal, when the child died from one. Node reports a signal death as
+   * `code=null`, which `runGitnexusAnalyze` collapses to `code: 1` — so without this field a vendor
+   * SIGSEGV (WI-10005680) is indistinguishable from an ordinary failure. Optional: absent = no signal.
+   */
+  signal?: NodeJS.Signals | null;
 }
 
 /** A completed index is healthy only after its graph canary actually passed. */
@@ -2431,7 +2438,7 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
     child.stdout?.on('data', (d) => (stdout += d.toString()));
     child.stderr?.on('data', (d) => (stderr += d.toString()));
     child.on('error', (e) => finish({ code: 1, stdout, stderr: stderr + String(e), timedOut }));
-    child.on('close', (code) => finish({ code: code ?? 1, stdout, stderr, timedOut }));
+    child.on('close', (code, signal) => finish({ code: code ?? 1, stdout, stderr, timedOut, signal }));
     });
   })();
 }
@@ -2863,6 +2870,11 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
   const strandedNote = describeStrandedIncompleteIndex(stranded);
   if (strandedNote) console.warn(`[gitnexus-reindex]${strandedNote}`);
 
+  // WI-10005680: classify the failure ONCE so the warn line and the alert body agree. A deadline kill
+  // is reported by its own branch below, and a success has nothing to classify.
+  const analyzeFailure = success || r.timedOut ? null : classifyAnalyzeFailure(r);
+  const analyzeFailureNote = analyzeFailure ? describeAnalyzeFailure(analyzeFailure) : '';
+
   if (r.timedOut) {
     // Recover the residue HERE, not on the next tick.
     //
@@ -2904,7 +2916,12 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
         livenessNote,
     );
   } else if (r.code !== 0) {
-    console.warn(`[gitnexus-reindex] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
+    // WI-10005680: name the failure (which knob, which residue) ahead of the raw tail — the line that
+    // names GITNEXUS_LBUG_MAX_DB_SIZE can sit outside a 500-char tail, and a SIGSEGV arrives as code 1.
+    console.warn(
+      `[gitnexus-reindex] exited ${r.code}${r.signal ? ` (signal ${r.signal})` : ''} after ${elapsedSec}s — ` +
+        `${analyzeFailureNote ? `${analyzeFailureNote} — ` : ''}${(r.stderr || r.stdout).slice(-500)}`,
+    );
   } else if (!success) {
     console.warn(`[gitnexus-reindex] CANARY FAILED after ${elapsedSec}s — ${canary?.summary ?? 'canary could not run'}`);
   } else {
@@ -2944,8 +2961,8 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
         body:
           `system:gitnexus-reindex has now failed ${update.next.consecutiveFailures} consecutive time(s) on ` +
           `${ctx.installSlug}. gitnexus.query / gitnexus.context lookups may be erroring while this persists. ` +
-          `Latest failure: ${r.timedOut ? `timed out after ${timeoutMs}ms` : r.code !== 0 ? `exited ${r.code}` : canary?.summary ?? 'canary could not run'} — ` +
-          `${(r.stderr || r.stdout).slice(-300)}${strandedNote}`,
+          `Latest failure: ${r.timedOut ? `timed out after ${timeoutMs}ms` : r.code !== 0 ? `exited ${r.code}${r.signal ? ` (signal ${r.signal})` : ''}` : canary?.summary ?? 'canary could not run'} — ` +
+          `${analyzeFailureNote ? `${analyzeFailureNote} — ` : ''}${(r.stderr || r.stdout).slice(-300)}${strandedNote}`,
         importance: 'urgent',
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.installSlug,
@@ -2953,6 +2970,8 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
           consecutiveFailures: update.next.consecutiveFailures,
           timedOut: r.timedOut,
           code: r.code,
+          signal: r.signal ?? null,
+          failureKind: analyzeFailure?.kind ?? null,
           incompleteIndex: stranded,
         },
       });

@@ -19,6 +19,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { analyzeEnv, GITNEXUS_ANALYZE_STACK_KB } from '../harness/routines/gitnexus-reindex-action';
+import { classifyAnalyzeFailure, describeAnalyzeFailure } from './gitnexus-analyze-failure';
 import type { CorpusCase } from './acceptance-corpus';
 import type { EngineArm, EngineQueryResult, PhaseCost } from './engine-comparison';
 import type { SymbolSite } from './contracts';
@@ -84,6 +85,17 @@ const phaseOf = (r: ExecResult, deps: ArmDeps, okOverride?: boolean): PhaseCost 
   error: (okOverride ?? r.code === 0) ? null : `exit ${r.code}${r.code === 124 || r.code === 137 ? ' (deadline: process group killed)' : ''}: ${r.stderr.trim().slice(-300)}`,
   loadAvg1: deps.loadAvg1(),
 });
+
+/**
+ * `phaseOf` for a `gitnexus analyze` phase (WI-10005680): a failed run's error leads with the NAMED
+ * failure (which knob, which residue) instead of a bare `exit 139: <300-char tail>` — the vendor
+ * line that names GITNEXUS_LBUG_MAX_DB_SIZE can sit outside that tail. The raw tail is kept after it.
+ */
+const analyzePhaseOf = (r: ExecResult, deps: ArmDeps): PhaseCost => {
+  const phase = phaseOf(r, deps);
+  const failure = phase.ok ? null : classifyAnalyzeFailure(r);
+  return failure ? { ...phase, error: `${describeAnalyzeFailure(failure)} | ${phase.error}` } : phase;
+};
 
 const posix = (p: string): string => p.split('\\').join('/').replace(/^\.\//, '');
 
@@ -279,9 +291,9 @@ export function createGitnexusArm(
     treeRoot: cfg.treeRoot,
     unavailable: null,
     // `--skip-agents-md`: never let the analyzer write AGENTS.md/CLAUDE.md/hooks.
-    index: async () => phaseOf(await run(['analyze', '--skip-agents-md', '--force', '.']), deps),
+    index: async () => analyzePhaseOf(await run(['analyze', '--skip-agents-md', '--force', '.']), deps),
     // The tool's own update path: a plain re-analyze (no --force) of the working tree.
-    refresh: async () => phaseOf(await run(['analyze', '--skip-agents-md', '.']), deps),
+    refresh: async () => analyzePhaseOf(await run(['analyze', '--skip-agents-md', '.']), deps),
     async query(kase: CorpusCase): Promise<EngineQueryResult> {
       // Disclosed bench mapping: exact-name `symbol-search` is the engine's native `context`
       // lookup, so route it as the facade's `symbol` op (the production facade only routes
