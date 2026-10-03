@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { inspectNativeCudaAllocationFailure } from './measurement-manifest';
 
 const roots: string[] = [];
@@ -254,5 +255,71 @@ describe('small native ORT teardown control', () => {
     expect(child.status).not.toBe(0);
     expect(child.stderr).toContain('invalid native teardown control configuration');
     expect(child.stdout).toBe('');
+  });
+});
+
+describe('corruption-specific native allocator detector control', () => {
+  const controlFixture = fileURLToPath(new URL('./fixtures/native-ort-teardown-control.mjs', import.meta.url));
+  const nativeSource = fileURLToPath(new URL('./fixtures/native-allocator-detector-control.c', import.meta.url));
+  const debugAllocator = '/usr/lib/x86_64-linux-gnu/libc_malloc_debug.so.0';
+  const pin = (path: string) => {
+    const bytes = readFileSync(path);
+    return { path, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+  };
+
+  it.each(['clean', 'tail-overwrite'] as const)('observes actual %s inside the same Node process with debug malloc', async fault => {
+    const root = mkdtempSync(join(tmpdir(), 'native-allocator-detector-')); roots.push(root);
+    const binding = join(root, 'allocator-control.node');
+    // Stable N-API is compiled against the executing installation, not assumed
+    // system headers. The canonical test parent owns this bounded compiler and
+    // captured Node lifetime; no independent service or GPU is started.
+    const headers = resolve(dirname(process.execPath), '../include/node');
+    const compilation = spawnSync('cc', ['-O0', '-fPIC', '-shared', '-I', headers, nativeSource, '-o', binding],
+      { encoding: 'utf8', timeout: 10000 });
+    expect(compilation.status, compilation.stderr).toBe(0);
+    const env = { ...process.env, GLIBC_TUNABLES: 'glibc.malloc.tcache_count=0:glibc.malloc.perturb=165:glibc.malloc.check=3',
+      MALLOC_CHECK_: '3', MALLOC_PERTURB_: '165', LD_PRELOAD: debugAllocator };
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root,
+      JSON.stringify({ allocatorControl: { binding, fault } })], { env, encoding: 'utf8', timeout: 10000 });
+    expect(child.status, child.stderr).toBe(fault === 'clean' ? 0 : 1);
+    const terminal = JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'));
+    const stdout = readFileSync(join(root, 'target.stdout.log'), 'utf8');
+    const stderr = readFileSync(join(root, 'target.stderr.log'), 'utf8');
+    const { inspectAllocatorDetectorCapture } = await import('./fixtures/native-ort-teardown-control.mjs');
+    expect(inspectAllocatorDetectorCapture(stdout, stderr, terminal, { fault, binding: pin(binding),
+      debugAllocator: pin(debugAllocator), serializedAdmissionContext: env.PAPERCUSP_ADMISSION_CONTEXT ?? null }))
+      .toMatchObject({ fault, detectorTriggered: fault === 'tail-overwrite', requestedBytes: 64,
+        embeddingModelInferencePerformed: false, heapCorruptionRootCauseConfirmed: false,
+        exitCode: fault === 'clean' ? 0 : null, signal: fault === 'clean' ? null : 'SIGABRT' });
+    expect(() => inspectAllocatorDetectorCapture(stdout, stderr, { ...terminal, eof: false }, {
+      fault, binding: pin(binding), debugAllocator: pin(debugAllocator), serializedAdmissionContext: null,
+    })).toThrow('allocator detector');
+  }, 20000);
+
+  it('refuses missing, foreign, synthetic-signal, unbound allocator and partial-EOF evidence', async () => {
+    const { inspectAllocatorDetectorCapture: inspect } = await import('./fixtures/native-ort-teardown-control.mjs');
+    const binding = { path: '/fixture/control.node', bytes: 1, sha256: 'a'.repeat(64) };
+    const debug = { path: '/fixture/libc_malloc_debug.so.0', bytes: 2, sha256: 'b'.repeat(64) };
+    const row = { event: 'start', processId: 123, fault: 'tail-overwrite', requestedBytes: 64, mutationBytes: 1,
+      binding, embeddingModelInferencePerformed: false, observation: { serializedAdmissionContext: 'bound-context',
+        allocator: { MALLOC_CHECK_: '3', GLIBC_TUNABLES: 'glibc.malloc.check=3', LD_PRELOAD: debug.path }, libraries: [debug] } };
+    const records = (value = row) => 'PC_NATIVE_ALLOCATOR\t' + JSON.stringify(value) + '\n';
+    const steps = 'PC_NATIVE_ALLOCATOR_CORE_LIMIT_ZERO\nPC_NATIVE_ALLOCATOR_TAIL_OVERWRITE\nPC_NATIVE_ALLOCATOR_BEFORE_FREE\n';
+    const stdout = records() + steps, stderr = 'free(): invalid pointer\n';
+    const terminal = { processId: 123, eof: true, captureStartedBeforeExec: true, exitCode: null, signal: 'SIGABRT' };
+    const expected = { fault: 'tail-overwrite' as const, binding, debugAllocator: debug, serializedAdmissionContext: 'bound-context' };
+    expect(inspect(stdout, stderr, terminal, expected).detectorTriggered).toBe(true);
+    for (const [out, err, end, want] of [
+      ['', stderr, terminal, expected],
+      [stdout, stderr, { ...terminal, processId: 124 }, expected],
+      [stdout, stderr, { ...terminal, eof: false }, expected],
+      [stdout, stderr, { ...terminal, captureStartedBeforeExec: false }, expected],
+      [stdout, stderr, { ...terminal, signal: 'SIGSEGV' }, expected],
+      [stdout, 'manually raised SIGABRT\n', terminal, expected],
+      [stdout.replace('PC_NATIVE_ALLOCATOR_TAIL_OVERWRITE\n', ''), stderr, terminal, expected],
+      [stdout, stderr, terminal, { ...expected, serializedAdmissionContext: 'foreign-context' }],
+      [stdout, stderr, terminal, { ...expected, binding: { ...binding, sha256: 'c'.repeat(64) } }],
+      [stdout, stderr, terminal, { ...expected, debugAllocator: { ...debug, sha256: 'c'.repeat(64) } }],
+    ] as const) expect(() => inspect(out, err, end, want)).toThrow(/allocator/);
   });
 });
