@@ -303,7 +303,14 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
   });
 
   function fixture(
-    overrides: { sbomDigest?: string; containerfileDrift?: boolean; sbomManifest?: string; inputBaseSha256?: string } = {},
+    overrides: {
+      sbomDigest?: string;
+      containerfileDrift?: boolean;
+      sbomManifest?: string;
+      inputBaseSha256?: string;
+      /** The release the bake recorded; "absent" writes a pre-WI-10005761 manifest with no key. */
+      bakeRelease?: { version: string } | null | "absent";
+    } = {},
   ) {
     const root = mkdtempSync(join(tmpdir(), "bootc-release-request-"));
     dirs.push(root);
@@ -329,6 +336,7 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       digest: DIGEST,
       pinnedRef: `${REPO}@${DIGEST}`,
       registryNamespace: "127.0.0.1:5096/papercusp",
+      ...(overrides.bakeRelease === "absent" ? {} : { release: overrides.bakeRelease === undefined ? { version: VERSION } : overrides.bakeRelease }),
       clouds: [{ cloud: "aws", type: "ami", artifact: join(out, "aws/disk.raw"), sha256: "2".repeat(64), sizeBytes: 1024 }],
     }));
     writeFileSync(join(sc, "supply-chain-summary.json"), JSON.stringify({ digest: DIGEST, verifiedFromRegistry: true }));
@@ -511,6 +519,21 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
   it("refuses an SBOM that describes a different image", async () => {
     const f = fixture({ sbomDigest: `sha256:${"1".repeat(64)}` });
     await expect(buildBootcTrustReport({ inputFile: f.inputFile, repoRoot: f.repo, emit: "trust-report" }, NOW)).rejects.toThrow(/syft SBOM describes/);
+  });
+
+  // WI-10005761 (measured on P-012): an OS-only bake paired with a release booted in the clean room,
+  // passed harden-os, then died at install-runtime ('release ... is not present in the booted image').
+  // The artifact is what --emit clean-room-input and --emit request are built from, so refusing here
+  // refuses before any clean-room spend. Calibration: the composing test below uses a matching bake.
+  it.each([
+    ["an OS-only bake", null, /is OS-only \(it carries no release\), but the release names/],
+    ["a bake recorded before releases were recorded", "absent", /records no baked release/],
+    ["a bake carrying another release", { version: "0.0.21-p318r62b" }, /carries release 0\.0\.21-p318r62b, but the release names/],
+  ] as const)("refuses %s paired with the publication, naming both versions", async (_name, bakeRelease, message) => {
+    const f = fixture({ bakeRelease });
+    const build = buildBootcImageArtifact({ inputFile: f.inputFile, repoRoot: f.repo, emit: "clean-room-input" }, NOW);
+    await expect(build).rejects.toThrow(message);
+    await expect(build).rejects.toThrow(new RegExp(`names ${VERSION.replace(/\./g, "\\.")}; re-bake with .*--release-version`));
   });
 
   it("refuses when the Containerfile moved since the bake's recorded revision", async () => {

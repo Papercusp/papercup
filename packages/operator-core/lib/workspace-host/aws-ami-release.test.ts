@@ -289,6 +289,7 @@ function bootcBakeManifest(): WorkspaceHostBootcBakeManifest {
     digest: `sha256:${BOOTC_SHA}`,
     pinnedRef: `${image}@sha256:${BOOTC_SHA}`,
     registryNamespace: 'registry.example.com/papercusp',
+    release: { version: VERSION },
     clouds: [
       { cloud: 'gcp', type: 'gce', artifact: '/release/gcp/disk.raw', sha256: '1'.repeat(64), sizeBytes: 101 },
       { cloud: 'aws', type: 'ami', artifact: '/release/aws/disk.raw', sha256: '2'.repeat(64), sizeBytes: 102 },

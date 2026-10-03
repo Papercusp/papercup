@@ -21,6 +21,7 @@ import {
 import type { ArtifactTrustReport } from './artifact-trust';
 import {
   validateWorkspaceHostBootcBakeManifest,
+  workspaceHostBootcBakeReleaseMismatch,
   workspaceHostReleaseSubjectSha256,
   type WorkspaceHostBootcBakeManifest,
 } from './bootc-bake-manifest';
@@ -186,6 +187,10 @@ export function evaluateWorkspaceHostReleaseGate(
       ) {
         bakeErrors.push('bootcBakeManifest is not bound to artifact.bootc.imageDigest');
       }
+      // WI-10005761: the bootstrap requires the release tree IN the image, so the release this
+      // artifact names must be the one the bake proved it carries.
+      const releaseMismatch = workspaceHostBootcBakeReleaseMismatch(manifest, input.artifact.release.version);
+      if (releaseMismatch) bakeErrors.push(releaseMismatch);
     }
   } else if (input.bootcBakeManifest) {
     bakeErrors.push('bootcBakeManifest is valid only for hostModel bootc-image');

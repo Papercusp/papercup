@@ -58,6 +58,7 @@ import {
 import type { AwsAmiReleaseRequest } from "@papercusp/operator-core/lib/workspace-host/aws-ami-release";
 import {
   parseWorkspaceHostBootcBakeManifest,
+  workspaceHostBootcBakeReleaseMismatch,
   workspaceHostBootcCloudArtifact,
 } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
@@ -785,6 +786,11 @@ export async function buildBootcImageArtifact(
   const publishedTrust = requiredRecord(publication.trustReport, "publication manifest trustReport");
   if (publishedTrust.trusted !== true) fail("the paired server publication is not trusted; refusing to pair a release with it");
   const version = requiredString(release.version, "publication manifest release.version");
+  // WI-10005761: refuse BEFORE any clean-room spend. On the bootc model the bootstrap never
+  // installs a release, so a bake that does not carry this version boots and then dies at
+  // install-runtime; that cost two billable clean rooms on P-012.
+  const releaseMismatch = workspaceHostBootcBakeReleaseMismatch(trust.bake, version);
+  if (releaseMismatch) fail(releaseMismatch);
   const bundleSha256 = requiredHex(release.bundleSha256, "publication manifest release.bundleSha256");
   if (requiredHex(releaseArtifact.sha256, "publication manifest releaseArtifact.sha256") !== bundleSha256) {
     fail("publication manifest is internally inconsistent: releaseArtifact.sha256 differs from release.bundleSha256");
