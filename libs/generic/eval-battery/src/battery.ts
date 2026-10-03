@@ -66,6 +66,10 @@ export interface BatteryCellResult<TCell, THandle, TMetrics> {
   status: BatteryCellStatus;
   error?: string;
   elapsedMs: number;
+  /** Known judge charges across repairs and rate-pause retries, including failed cells. */
+  judgeCostUsd: number;
+  /** False when a call failed without a measured charge; the dollar total is then a lower bound. */
+  judgeCostMeasured: boolean;
 }
 
 export interface RunBatteryConfig<TCell> {
@@ -102,6 +106,23 @@ export async function runBattery<TCell, THandle, TSignals = unknown, TMetrics = 
   for (const { runId, cell } of config.cells) {
     const started = deps.now();
     let handle: THandle | undefined;
+    let judgeCostUsd = 0;
+    let judgeCostMeasured = true;
+    const recordCharge = (cost: unknown) => {
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) judgeCostUsd += cost;
+      else judgeCostMeasured = false;
+    };
+    const measuredJudge: JudgeLlmCall = async (opts) => {
+      let reply;
+      try {
+        reply = await deps.llmCall(opts);
+      } catch (error) {
+        recordCharge((error as { costUsd?: unknown } | null)?.costUsd);
+        throw error;
+      }
+      recordCharge(reply.costUsd);
+      return reply;
+    };
     try {
       handle = await deps.subject.run(cell);
       await deps.hooks?.onStart?.({ runId, cell, handle });
@@ -119,19 +140,22 @@ export async function runBattery<TCell, THandle, TSignals = unknown, TMetrics = 
         () =>
           judgeBatteryRun(
             { intent, projectContext, distilledTrace: distilled.distilledTrace, rubric: config.rubric },
-            { llmCall: deps.llmCall },
+            { llmCall: measuredJudge },
           ),
         { now: deps.now, sleep, ...(deps.ratePauseHooks ?? {}) },
       );
+      // A rate-pause can restart judgement after an earlier paid reply. Its
+      // successful score alone accounts only for the final judgement attempt.
+      score.costUsd = judgeCostUsd;
       await deps.hooks?.onScore?.({ runId, cell, score, metrics });
 
-      results.push({ runId, cell, handle, score, metrics, status: 'scored', elapsedMs });
+      results.push({ runId, cell, handle, score, metrics, status: 'scored', elapsedMs, judgeCostUsd, judgeCostMeasured });
     } catch (err) {
       // Never abort the battery on one cell. A rate-limited turn (past the bounded pause)
       // → 'rate_limited'; anything else → 'errored'. Recorded + excluded from aggregation.
       const status: BatteryCellStatus = isRateLimited(err) ? 'rate_limited' : 'errored';
       const message = err instanceof Error ? err.message : String(err);
-      results.push({ runId, cell, handle, status, error: message, elapsedMs: Math.max(0, deps.now() - started) });
+      results.push({ runId, cell, handle, status, error: message, elapsedMs: Math.max(0, deps.now() - started), judgeCostUsd, judgeCostMeasured });
     }
   }
   return results;
