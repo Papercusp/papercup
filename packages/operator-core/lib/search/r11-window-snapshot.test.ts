@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
+import { buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
 
 const at = '2026-10-03T03:00:00.000Z';
 const snapshot = (stage: R11Snapshot['stage'], offsetMs: number, rows: Array<{ key: string; stale: boolean }>): R11Snapshot => ({
@@ -59,6 +59,21 @@ describe('R-11 prospective snapshot', () => {
     expect(() => buildR11TimerSpecs(snapshot('Tcut', 0, []))).toThrow('T0 snapshot');
     t0.capturedAt = 'not-a-timestamp';
     expect(() => buildR11TimerSpecs(t0)).toThrow('invalid database timestamp');
+  });
+
+  it('passes frozen T0 and Tcut files to the correct one-shot user timers', () => {
+    const [cutTimer, endTimer] = buildR11TimerSpecs(snapshot('T0', 0, []));
+    const paths = { t0: '/evidence/t0.json.gz', cut: '/evidence/cut.json.gz', t1: '/evidence/t1.json.gz' };
+    const runtime = { repoRoot: '/repo', tsx: '/repo/node_modules/.bin/tsx', script: '/repo/scripts/r11-window-snapshot.mts' };
+    const common = (unit: string, at: string) => ['--user', `--unit=${unit}`, `--on-calendar=${at}`,
+      '--timer-property=AccuracySec=1s', '--working-directory=/repo', '/usr/bin/bash', '-c',
+      'set -a; . ./apps/operator/.env.local; set +a; exec "$@"', 'r11-capture', runtime.tsx, runtime.script];
+    expect(buildR11SystemdRunArgs(cutTimer, paths, runtime)).toEqual([
+      ...common(cutTimer.unit, cutTimer.at), 'Tcut', paths.cut, paths.t0,
+    ]);
+    expect(buildR11SystemdRunArgs(endTimer, paths, runtime)).toEqual([
+      ...common(endTimer.unit, endTimer.at), 'T1', paths.t1, paths.t0, paths.cut,
+    ]);
   });
 
   it('rejects malformed, early and out-of-order cutoff captures', () => {

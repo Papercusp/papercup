@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveBackfillEmbedder } from '../packages/operator-core/lib/search/embed-backfill.ts';
-import { buildR11TimerSpecs, captureR11Snapshot, evaluateR11Snapshots, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
+import { buildR11SystemdRunArgs, buildR11TimerSpecs, captureR11Snapshot, evaluateR11Snapshots, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
 
 const [stage, path, arg3, arg4, arg5] = process.argv.slice(2);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -38,18 +38,12 @@ try {
     }
     const script = fileURLToPath(import.meta.url);
     const tsx = resolve(repoRoot, 'node_modules/.bin/tsx');
-    const outputs = { Tcut: arg3, T1: arg4 };
     const armed: string[] = [];
     const timers = [];
     try {
       for (const spec of specs) {
-        const args = spec.stage === 'Tcut'
-          ? ['Tcut', outputs.Tcut, path]
-          : ['T1', outputs.T1, path, outputs.Tcut];
-        const command = ['--user', `--unit=${spec.unit}`, `--on-calendar=${spec.at}`,
-          '--timer-property=AccuracySec=1s', `--working-directory=${repoRoot}`,
-          '/usr/bin/bash', '-c', 'set -a; . ./apps/operator/.env.local; set +a; exec "$@"',
-          'r11-capture', tsx, script, ...args];
+        const command = buildR11SystemdRunArgs(spec, { t0: path, cut: arg3, t1: arg4 },
+          { repoRoot, tsx, script });
         if (arg5 !== '--dry-run') {
           execFileSync('systemd-run', command, { encoding: 'utf8' });
           armed.push(`${spec.unit}.timer`);

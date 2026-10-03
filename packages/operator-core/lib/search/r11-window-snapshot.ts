@@ -38,6 +38,21 @@ export interface R11TimerSpec {
   at: string;
 }
 
+/** Build the exact user timer command, including each stage's frozen inputs. */
+export function buildR11SystemdRunArgs(
+  spec: R11TimerSpec,
+  paths: { t0: string; cut: string; t1: string },
+  runtime: { repoRoot: string; tsx: string; script: string },
+): string[] {
+  const args = spec.stage === 'Tcut'
+    ? ['Tcut', paths.cut, paths.t0]
+    : ['T1', paths.t1, paths.t0, paths.cut];
+  return ['--user', `--unit=${spec.unit}`, `--on-calendar=${spec.at}`,
+    '--timer-property=AccuracySec=1s', `--working-directory=${runtime.repoRoot}`,
+    '/usr/bin/bash', '-c', 'set -a; . ./apps/operator/.env.local; set +a; exec "$@"',
+    'r11-capture', runtime.tsx, runtime.script, ...args];
+}
+
 /** Freeze both one-shot deadlines from the database timestamp in the T0 receipt. */
 export function buildR11TimerSpecs(t0: R11Snapshot): [R11TimerSpec, R11TimerSpec] {
   if (t0.stage !== 'T0') throw new Error('Timer scheduling requires a T0 snapshot');
