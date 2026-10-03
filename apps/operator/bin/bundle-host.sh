@@ -219,7 +219,77 @@ PROBE_STAMP="$TMPFILE.probe-window.json"
 NEW_BLUEPRINTS_DIR=""
 NEW_SQL_DIR=""
 SYSTEMD_ENV_RUNNER_TMP=""
-trap 'rm -f "$TMPFILE" "$METAFILE" "$PROBE_STAMP"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"; [[ -n "$SYSTEMD_ENV_RUNNER_TMP" ]] && rm -f "$SYSTEMD_ENV_RUNNER_TMP"' EXIT
+# Restricted-hold gate (WI-10005745 — D-012 residue of WI-10005724). bg-host runs THIS tree's
+# bundle with the network, so a write left by a session holding an active personal disclosure must
+# never stand in it. Before the build the gate hardlink-snapshots every artifact the build may
+# replace; after it, ONE census intersects the held restricted writes with the build's EXACT inputs
+# (esbuild metafiles + verbatim-copied files/dirs) and restores the snapshot on anything but an
+# admit. It runs on the normal path below AND from the EXIT trap, so every exit after a fresh
+# publish (including the worker/spawner stale-start exits) is gated. bundle-restricted-hold-gate.mjs.
+GATE_HELPER="$SCRIPT_DIR/bundle-restricted-hold-gate.mjs"
+GATE_SNAPSHOT_DIR="$OUTDIR/.restricted-lkg.$$"
+BUNDLE_HOST_GATE_META_DIR="$OUTDIR/.restricted-gate-meta.$$"
+GATE_LOG="$OUTFILE.restricted-hold-gate.log"
+GATE_PENDING=0
+FALLBACK_RC=1
+restricted_hold_gate() { # 0 = admitted · 1 = refused (the snapshot was restored)
+  GATE_PENDING=0
+  local -a args=(gate --root "$REPO_ROOT" --base-dir "$PWD" --outdir "$OUTDIR" --snapshot-dir "$GATE_SNAPSHOT_DIR"
+    --metafile "$BUNDLE_HOST_GATE_META_DIR/${OUTFILE##*/}.meta.json" --metafile-dir "$BUNDLE_HOST_GATE_META_DIR"
+    --path "${PAPERCUSP_HARNESS_BLUEPRINTS_DIR:-../../libs/papercusp/packages/harness/blueprints}"
+    --path "${PAPERCUSP_LOCKS_SQL_DIR:-../../libs/papercusp/packages/locks/src/sql}")
+  local src gate_rc=0
+  for src in "${HOST_RUNTIME_SIBLING_SOURCES[@]}"; do args+=(--path "$REPO_ROOT/$src"); done
+  if [[ -f "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt" ]]; then
+    args+=(--list-file "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt")
+  fi
+  if [[ -f "$OUTDIR/spawner-sidecar.mjs.meta.json" ]]; then
+    args+=(--metafile "$OUTDIR/spawner-sidecar.mjs.meta.json")
+  fi
+  node "$GATE_HELPER" "${args[@]}" >"$GATE_LOG" 2>&1 || gate_rc=$?
+  cat "$GATE_LOG"
+  [[ $gate_rc -eq 0 ]]
+}
+restricted_hold_fallback() { # <log> — sets FALLBACK_RC; the caller exits with it
+  local log="$1"
+  rm -f "$FRESH_MARKER"
+  if [[ ! -s "$OUTFILE" ]]; then
+    echo "🚨 ERROR: the restricted-hold gate refused this build and there is NO last-known-good $OUTFILE."
+    echo "🚨   Refusing to start rather than exec a missing entrypoint."
+    FALLBACK_RC=1
+    return
+  fi
+  node "$SCRIPT_DIR/write-bundle-stale-marker.mjs" "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$log" || true
+  echo "🚨 dist-host/ is the LAST-KNOWN-GOOD bundle, NOT the current tree: the restricted-hold gate"
+  echo "🚨   refused this build (D-012, WI-10005745). /api/health reports bundleStale."
+  echo "🚨   Marker: $STALE_MARKER — restart the host after the disclosure is released."
+  if [[ "${PAPERCUSP_BUNDLE_ALLOW_STALE_START:-0}" == "1" ]]; then
+    echo "🚨 The service STARTS on that bundle, by request (PAPERCUSP_BUNDLE_ALLOW_STALE_START=1)."
+    FALLBACK_RC=0
+    return
+  fi
+  echo "🚨 The CALLER FAILS (exit 1): stale bytes must not be reported as a release."
+  FALLBACK_RC=1
+}
+bundle_host_on_exit() {
+  local rc=$?
+  rm -f "$TMPFILE" "$METAFILE" "$PROBE_STAMP"
+  [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"
+  [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"
+  [[ -n "$SYSTEMD_ENV_RUNNER_TMP" ]] && rm -f "$SYSTEMD_ENV_RUNNER_TMP"
+  if [[ "$GATE_PENDING" == "1" ]] && ! restricted_hold_gate; then
+    if [[ $rc -eq 0 ]]; then
+      restricted_hold_fallback "$GATE_LOG"
+      rc=$FALLBACK_RC
+    else
+      rm -f "$FRESH_MARKER"
+      node "$SCRIPT_DIR/write-bundle-stale-marker.mjs" "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$GATE_LOG" || true
+    fi
+  fi
+  rm -rf "$GATE_SNAPSHOT_DIR" "$BUNDLE_HOST_GATE_META_DIR"
+  exit "$rc"
+}
+trap bundle_host_on_exit EXIT
 
 # EI-20093985382484201: A BUNDLE FAILURE MUST NOT TAKE THE SERVICE DOWN.
 # ExecStartPre runs this on EVERY restart against the LIVE shared tree, which

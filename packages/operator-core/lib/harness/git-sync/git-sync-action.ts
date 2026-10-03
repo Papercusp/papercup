@@ -87,7 +87,6 @@ import {
   nextHivePublicationTerm,
   requireHiveEffectAuthority,
 } from '../../sync/pot-git/hive-effect-authority';
-import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
 import {
   runRefAnnouncePublishTick,
   runRefAnnounceReceiveTick,
@@ -6671,32 +6670,10 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
            )
          WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
       `;
-      // P-505 continuous will: refresh our handoff token to the state we just
-      // published, so a successor (crash OR graceful) adopts epoch+1 from it.
-      // Best-effort — a miss only degrades a future takeover to the crash path.
-      try {
-        await publishHandoffToken(
-          repoPath,
-          actor.devicePubkey,
-          {
-            epoch,
-            seq: outcome.announcement.seq,
-            stagingSha: outcome.announcement.staging_sha,
-            parked: (outcome.integration?.skippedConflicts ?? []).map((c) => ({
-              deviceHex: c.deviceHex,
-              sha: c.sha,
-            })),
-            nowMs: Date.now(),
-          },
-          actor.sign,
-        );
-      } catch (e) {
-        console.warn(
-          `[git-sync] ${slug}: handoff-token refresh failed (successor falls back to crash-path takeover): ${
-            e instanceof Error ? e.message : e
-          }`,
-        );
-      }
+      // WI-10005753 (p2p-git-live-activation-2026-07-09#D-055): no handoff
+      // token is published here. Under F6/D-022 successor epochs come from
+      // nextHivePublicationTerm (hive-effect-authority.ts), and nothing read
+      // the per-advance token after authority-epoch.ts was deleted.
     }
     const warning = formatIntegratorErrorWarning(slug, outcome.errors);
     if (warning) console.warn(warning);

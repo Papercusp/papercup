@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ORPHANED_RESPAWN_MAX_AGE_MS,
+  PRODUCTION_CARRY_DELIVERY_RATE_FLOOR,
+  PRODUCTION_CARRY_MIN_TERMINAL_OUTCOMES,
   listOrphanCandidateOwners,
   orphanedRespawnAlert,
   type OrphanedRespawnAlert,
@@ -117,6 +119,7 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
       delivered: 1,
       dropped: 1,
       respawnFailed: 1,
+      retiredSuperseded: 0,
       terminalOutcomes: 3,
       deliveryRate: 1 / 3,
       failureReasons: {
@@ -124,6 +127,39 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
         'respawn-failed:spawn-failed': 1,
       },
     });
+  });
+
+  // WI-10005752: `respawn-carry-dropped {reason:'superseded'}` is the host RETIRING a moot request
+  // because a real successor already exists — not a lost continuation. Measured 2026-10-03 over
+  // 4,263 owner ledgers: 5,433 such rows against ~1.6k deliveries, so counting them as drops
+  // pins the rate under the 0.5 floor with nothing actually lost.
+  it('does not count superseded retirements as failed deliveries (WI-10005752)', () => {
+    const events: PtyHostEvent[] = [
+      ...Array.from({ length: 12 }, (_, i) => event('respawn-carry-delivered', -10_000 - i)),
+      ...Array.from({ length: 30 }, (_, i) =>
+        event('respawn-carry-dropped', -5_000 - i, { reason: 'superseded', rearmed: true })),
+      event('respawn-carry-dropped', -4_000, { reason: 'turn-start-unverified' }),
+    ];
+    const reading = summarizeProductionCarryDelivery(events, NOW);
+
+    expect(reading).toMatchObject({
+      delivered: 12,
+      dropped: 1,
+      respawnFailed: 0,
+      retiredSuperseded: 30,
+      terminalOutcomes: 13,
+      failureReasons: { 'turn-start-unverified': 1 },
+    });
+    expect(reading.deliveryRate).toBeCloseTo(12 / 13);
+    expect(reading.failureReasons).not.toHaveProperty('superseded');
+
+    // CONTROL: the pre-fix tally (every respawn-carry-dropped is a drop) reads the SAME window as
+    // 12/43 ≈ 28% — under the 0.5 floor with 43 ≥ the 20-outcome minimum, i.e. a false alarm.
+    const naiveDropped = events.filter((e) => e.kind === 'respawn-carry-dropped').length;
+    const naiveRate = 12 / (12 + naiveDropped);
+    expect(naiveRate).toBeLessThan(PRODUCTION_CARRY_DELIVERY_RATE_FLOOR);
+    expect(12 + naiveDropped).toBeGreaterThanOrEqual(PRODUCTION_CARRY_MIN_TERMINAL_OUTCOMES);
+    expect(reading.deliveryRate!).toBeGreaterThanOrEqual(PRODUCTION_CARRY_DELIVERY_RATE_FLOOR);
   });
 
   it('reads recent per-owner bounded tails and excludes the shared drill ledger', async () => {

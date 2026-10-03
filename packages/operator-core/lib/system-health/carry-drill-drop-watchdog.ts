@@ -114,6 +114,13 @@ export interface ProductionCarryDeliveryReading {
   delivered: number;
   dropped: number;
   respawnFailed: number;
+  /**
+   * Host RETIREMENT rows (`respawn-carry-dropped {reason:'superseded'}`, WI-10005752): a real
+   * successor already existed, so a moot older request was retired. NOT a delivery outcome —
+   * excluded from `dropped`, `terminalOutcomes`, `deliveryRate` and `failureReasons`, and
+   * surfaced here so the exclusion is visible rather than silent.
+   */
+  retiredSuperseded: number;
   terminalOutcomes: number;
   /** `null` means the window had no terminal outcomes, not a 0% delivery rate. */
   deliveryRate: number | null;
@@ -176,6 +183,7 @@ export function summarizeProductionCarryDelivery(
   let delivered = 0;
   let dropped = 0;
   let respawnFailed = 0;
+  let retiredSuperseded = 0;
   const failureReasons = new Map<string, number>();
 
   for (const event of events) {
@@ -188,6 +196,13 @@ export function summarizeProductionCarryDelivery(
       continue;
     }
     if (kind !== 'respawn-carry-dropped' && kind !== 'respawn-failed') continue;
+    // A retirement is not a failed delivery (see carry-respawn-outcome RESPAWN_RETIRED_REASON):
+    // counting it measured ~5.4k such rows against ~1.6k deliveries across the owner ledgers,
+    // which would pin the rate under the floor with no continuation actually lost.
+    if (kind === 'respawn-carry-dropped' && event.reason === 'superseded') {
+      retiredSuperseded += 1;
+      continue;
+    }
 
     const reason = typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : 'unknown';
     const reasonKey = kind === 'respawn-failed' ? `respawn-failed:${reason}` : reason;
@@ -203,6 +218,7 @@ export function summarizeProductionCarryDelivery(
     delivered,
     dropped,
     respawnFailed,
+    retiredSuperseded,
     terminalOutcomes,
     deliveryRate: terminalOutcomes > 0 ? delivered / terminalOutcomes : null,
     failureReasons: Object.fromEntries([...failureReasons.entries()].sort(([a], [b]) => a.localeCompare(b))),

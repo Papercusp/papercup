@@ -905,3 +905,44 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
     }
   });
 });
+
+describe('WI-10005668 — a bare-string `to` is normalized, not misreported as missing', () => {
+  // Measured 24h of tool_invocations: `to: "su-…"` (a scalar recipient) was refused 13x
+  // and re-failed 11 times, because `toPresent` was Array.isArray-only so the caller
+  // who HAD passed a recipient was told "needs `to`: at least one recipient id".
+  const dataTo = (args: unknown): unknown => {
+    const r = sendTool.args.safeParse(args);
+    return r.success ? (r.data as { to?: unknown }).to : undefined;
+  };
+
+  it('accepts a bare-string `to` on the single form and delivers it as a one-element array', () => {
+    expect(sendTool.args.safeParse({ to: 'su-peer', summary: 'hi', expects: 'none' }).success).toBe(true);
+    expect(dataTo({ to: 'su-peer', summary: 'hi', expects: 'none' })).toEqual(['su-peer']);
+  });
+
+  it('accepts a bare-string `to` on an items[] entry too', () => {
+    const args = { items: [{ to: '@fleet:alpha', summary: 'hi', expects: 'none' }] };
+    const r = sendTool.args.safeParse(args);
+    expect(r.success).toBe(true);
+    expect((r.data as { items: Array<{ to: unknown }> }).items[0]?.to).toEqual(['@fleet:alpha']);
+  });
+
+  it('does NOT let the normalization bypass the directed forYouBecause gate', () => {
+    // The scalar becomes a one-element DIRECTED array BEFORE checkStructured runs, so
+    // expects:'action' with no forYouBecause section is still refused — normalizing
+    // `to` must never be a way around a gate the array form hits.
+    const args = { to: 'su-peer', summary: 'hi', expects: 'action', body: [{ text: 'do it' }] };
+    const r = sendTool.args.safeParse(args);
+    expect(r.success).toBe(false);
+    expect(refusal(args)).toMatch(/forYouBecause/);
+  });
+
+  it('keeps the array form working and keeps genuinely missing/empty/wrong-typed `to` refused', () => {
+    expect(dataTo({ to: ['su-peer'], summary: 'hi', expects: 'none' })).toEqual(['su-peer']);
+    for (const bad of ['', 5, null, []] as const) {
+      const args = { to: bad, summary: 'hi', expects: 'none' };
+      expect(sendTool.args.safeParse(args).success, `to: ${JSON.stringify(bad)} must stay refused`).toBe(false);
+    }
+    expect(paths({ summary: 'hi', expects: 'none' })).toContain('to');
+  });
+});

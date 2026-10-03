@@ -107,8 +107,9 @@ export interface WorktreeBridgeConfig {
    * With `allowedDevices` (a member SET), ALSO set `maxGrantedEpoch` (WI-1560,
    * see AcceptStagingAdvanceOpts) — the ADMITTED-member variant of the same
    * poisoning is otherwise still open: any member key passes the set gate and
-   * can claim an arbitrary epoch. Cap it at the last verified G-0 handoff
-   * grant (`adoptHandoffToken(...).nextEpoch`) / the lease epoch.
+   * can claim an arbitrary epoch. Cap it at the lease epoch. (Production no
+   * longer publishes per-advance handoff tokens — WI-10005753 / git-live
+   * D-055 — so `adoptHandoffToken(...).nextEpoch` is a legacy-only source.)
    */
   accept: AcceptStagingAdvanceOpts;
   runGit?: RunGit;

@@ -395,11 +395,17 @@ describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
     const root = mkdtempSync(join(tmpdir(), 'console-boot-detail-'));
     const receipt = join(root, "quote's boot.log");
     try {
+      // Delay the receipt consumer so nested process-substitution races cannot
+      // hide behind a fast tail process. The footer must wait for this flush.
+      const tail = join(root, 'tail');
+      writeFileSync(tail, '#!/bin/bash\nsleep 0.1\nexec /usr/bin/tail "$@"\n');
+      chmodSync(tail, 0o700);
       const script = interactiveRcScript(keepWindowOpenOnFailure(
         "printf 'PSU_REAL_BOOT_REFUSAL\\n' >&2; exit 2", { receiptPath: receipt },
       ));
       const result = spawnSync('bash', ['-c', script], {
-        env: { ...process.env, SHELL: '/bin/true' }, encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, SHELL: '/bin/true' },
+        encoding: 'utf8', timeout: 5000,
       });
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(0); // the inspection shell still opens
