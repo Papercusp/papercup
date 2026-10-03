@@ -1125,9 +1125,9 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
           ? { all: true as const }
           : { ids: stubCompletionEvidenceIds };
 
-    // A clipped prior-attempt brief has a different recovery route from the
-    // tier-relative clips this shaper creates. payloadTier:'full' widens the
-    // latter, but prior-attempt text is recovered through priorAttemptRefs.
+    // A clipped prior-attempt brief has a different recovery route from other
+    // tier-relative clips. Its work_items:get contract exposes the full source
+    // through priorAttemptRefs using the record's rawRef.
     const clippedPriorAttemptText = [...dropped].some(
       (field) => field.startsWith("priorAttempts.") && field.endsWith("(text clipped)"),
     );
@@ -1189,7 +1189,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
                   : ""
               }${
                 clippedPriorAttemptText
-                  ? "Prior-attempt record text marked `textTruncated` was clipped before payload-tier shaping. Re-read with its `rawRef` in `priorAttemptRefs`; `payloadTier:'full'` does not expand that brief. "
+                  ? "Prior-attempt record text marked `textTruncated` has a field-specific drill-down. Re-read it with its `rawRef` in `priorAttemptRefs`; a `payloadTier:'full'` retry alone does not retrieve that record's full source text. "
                   : ""
               }${tierRecoveryGuidance}`,
             },

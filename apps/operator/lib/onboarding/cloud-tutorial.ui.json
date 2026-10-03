@@ -11,6 +11,50 @@
     "ref": "cloud-with-guide",
     "children": [
       {
+        "kind": "card",
+        "ref": "prepared-workspace-entry",
+        "a11y": {
+          "role": "region",
+          "ariaLabel": {
+            "default": "Beginner workspace entry",
+            "key": "cloudTutorial.copy.30"
+          }
+        },
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "default": "Do useful work with your first agent",
+              "key": "cloudTutorial.copy.31"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "preparedWorkspaces",
+              "shape": "authorized-healthy-running-rows|loading|public-access-recovery|no-prepared-workspace"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "recommendedDefaultsAndCosts",
+              "shape": "existing-model-and-account-defaults|interactive-mode|provider-and-model-charges"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "select-prepared-workspace",
+            "interactions": ["select-authorized-existing-workspace-without-provisioning"]
+          },
+          {
+            "kind": "component",
+            "ref": "choose-advanced-path",
+            "interactions": ["explicitly-select-version-1-byoc-path"]
+          }
+        ]
+      },
+      {
         "kind": "raw",
         "ref": "existing-cloud-surface",
         "ecosystem": "react-tailwind",
@@ -34,6 +78,10 @@
             "copy": {
               "default": "Get your first agent running",
               "key": "cloudTutorial.copy.2"
+            },
+            "binding": {
+              "slot": "versionedLessonHeading",
+              "shape": "version-1-first-agent|version-2-useful-work"
             }
           },
           {
@@ -144,7 +192,19 @@
             "ref": "contextual-help",
             "binding": {
               "slot": "help",
-              "shape": "existing-agent-chat-with-minimal-permitted-lesson-context"
+              "shape": "existing-agent-chat-with-step-status-version-and-optional-public-recovery-category"
+            }
+          },
+          {
+            "kind": "raw",
+            "ref": "existing-versioned-session-controls",
+            "ecosystem": "react-tailwind",
+            "spec": {
+              "why-raw": "Reuse the existing owner-bound launcher, transcript and task controls. Version 1 keeps its sample task; version 2 adds notes-to-action-plan, explicit review, revision and an independently written different task."
+            },
+            "binding": {
+              "slot": "versionedTaskPractice",
+              "shape": "scope-session-request-result-correlated|review-before-revision|review-before-independent-task|pending|public-failure"
             }
           }
         ]
@@ -345,6 +405,20 @@
     }
   },
   "components": [
+    {
+      "id": "select-prepared-workspace",
+      "registry": "action.primary",
+      "props": {
+        "label": "Use this prepared workspace"
+      }
+    },
+    {
+      "id": "choose-advanced-path",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Advanced: connect my own cloud"
+      }
+    },
     {
       "id": "show-target",
       "registry": "action.secondary",

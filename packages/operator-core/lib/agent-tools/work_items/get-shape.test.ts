@@ -1397,7 +1397,8 @@ describe("shapeWorkItemsGet — priorAttempts survives, and says what it cut", (
     );
     expect(out._shapeNote?.next).toContain("priorAttemptRefs");
     expect(out._shapeNote?.next).toContain("rawRef");
-    expect(out._shapeNote?.next).not.toContain("payloadTier:'full'");
+    expect(out._shapeNote?.next).toContain("retry alone does not retrieve");
+    expect(out._shapeNote?.next).not.toContain("Fields were dropped or clipped for the 'trimmed' tier");
   });
 
   it("names both recovery routes when prior-attempt text and a tier-shaped field are clipped", () => {

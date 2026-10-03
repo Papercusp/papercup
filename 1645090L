@@ -1,0 +1,14 @@
+
+> @papercupai/papercusp-monorepo@0.0.1 lint:tsc
+> node scripts/lint-tsc.mjs --files=packages/operator-core/lib/goal-holder-behavior-metrics.ts,packages/operator-core/lib/goals/unplanned-clusters.ts,packages/operator-core/lib/goal-holder-behavior-metrics.test.ts,packages/operator-core/lib/scorecards-holder-behavior-instruments.test.ts,packages/operator-core/lib/harness/improvements/tool-error-classifier.ts,packages/operator-core/lib/goals/unplanned-clusters.test.ts,packages/operator-core/lib/scorecards.ts,packages/operator-core/lib/system-health/goal-liveness-watchdog.ts
+
+LINT_TSC_RUN_STAMP label=operator-core at=2026-10-03T08:41:25.706Z head=b64ed7dc71 scope=files files=8
+  checked files : packages/operator-core/lib/goal-holder-behavior-metrics.ts
+                 packages/operator-core/lib/goals/unplanned-clusters.ts
+                 packages/operator-core/lib/goal-holder-behavior-metrics.test.ts
+                 packages/operator-core/lib/scorecards-holder-behavior-instruments.test.ts
+                 packages/operator-core/lib/harness/improvements/tool-error-classifier.ts
+                 packages/operator-core/lib/goals/unplanned-clusters.test.ts
+                 packages/operator-core/lib/scorecards.ts
+                 packages/operator-core/lib/system-health/goal-liveness-watchdog.ts
+gen:declarations: no enrolled modules explicitly selected; no declarations published
