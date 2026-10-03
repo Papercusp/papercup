@@ -1308,9 +1308,9 @@ describe('P-003 idle answering sessions end at the consult window (WI-10003199)'
 // outcome-REPLACING terminal writers — the cascade-exhausted expiry and the P-014
 // review-conversion flip — must carry it forward, or a sweep landing after the
 // requester reconciled would silently RE-OPEN the debt.
-describe('sweepExpiredConsults — carries a recorded reconciliation through the terminal write (EI-23764501791910357)', () => {
+describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpiredConsults — carries a recorded reconciliation through the terminal write (EI-23764501791910357): %s', (disposition) => {
   const RECONCILIATION = {
-    disposition: 'rescoped',
+    disposition,
     note: 'kept going on my assumption, narrowed scope when the answer arrived',
     by: 'req-1',
     at: PAST,

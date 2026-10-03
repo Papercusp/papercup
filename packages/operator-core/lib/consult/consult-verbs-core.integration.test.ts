@@ -1841,21 +1841,34 @@ describe('consultReconcileCore', () => {
     expect(((await stateRow(full)).outcome as { reconciliation: { disposition: string } }).reconciliation.disposition).toBe('moot');
   });
 
-  describe('the outcome-REPLACING writers carry a recorded reconciliation forward', () => {
+  describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('the outcome-REPLACING writers carry a recorded reconciliation forward: %s', (disposition) => {
     async function reconcileFirst(id: string, deps: ConsultVerbDeps) {
       const r = await consultReconcileCore(
-        { workspaceId: WS, authorId: REQUESTER, conversationId: id, disposition: 'confirmed', note: 'reconciled before the close' },
+        { workspaceId: WS, authorId: REQUESTER, conversationId: id, disposition, note: 'reconciled before the close' },
         deps,
       );
       if ('error' in r) throw new Error(r.error);
     }
     const reconciliation = {
-      disposition: 'confirmed',
+      disposition,
       note: 'reconciled before the close',
       by: REQUESTER,
       at: NOW.toISOString(),
       consult_state: 'active',
     };
+
+    it('a substantive responder reply keeps it', async () => {
+      const id = await seedConsult({ state: 'active' });
+      const { deps } = makeDeps();
+      await reconcileFirst(id, deps);
+      const reply = await consultReplyCore(
+        { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'late answer', evidence: EVIDENCE },
+        deps,
+      );
+      if ('error' in reply) throw new Error(reply.error);
+      expect((await stateRow(id)).outcome).toEqual({ reconciliation });
+      expect(await metaRows(id)).toMatchObject([{ kind: 'answer', author_id: RESPONDER }]);
+    });
 
     it('close (answered) keeps it', async () => {
       const id = await seedConsult({ state: 'active' });
