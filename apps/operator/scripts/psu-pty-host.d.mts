@@ -1551,10 +1551,12 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     isStale?: (() => boolean) | undefined;
     isSuperseded?: ((_msg: any) => boolean) | undefined;
 }): {
-    /** Live count of carry-respawns either awaiting their first delivery
-     *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input
-     *  to shouldDeferWakeForPendingRespawn). */
-    pendingCount(): number;
+    /** Live count of accepted first attempts and re-armed retries.
+     *  Filter carry-respawn for wake arbitration: the controller also owns
+     *  turn retries, which must never suppress themselves as pending carries.
+     *  @param {string | null} [mode]
+     */
+    pendingCount(mode?: string | null): number;
     /** Whether a message is still owned by the detached re-arm loop. */
     isPendingMessage(msg: any): boolean;
     /**

@@ -41,6 +41,7 @@ import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { claimSpecSchema, validateClaimSpec } from '../../scheduler/claim-spec';
 import { readClaimSpecDelta, type ClaimSpecDeltaReading } from '../../scheduler/get-next';
 import { previewSpecFilterPartition } from '../../scheduler/spec-predicate-partition';
+import { evaluateGoalFenceGuardForIncumbent } from '../../scheduler/spec-pool-preview';
 import { specIsIssueFamilyOnly } from './get_next';
 
 /**
@@ -302,6 +303,21 @@ export default defineTool({
     const familyScopeIncomplete = deltaFamilyScopeIncomplete(record.spec, proposedSpec);
     if (familyScopeIncomplete) warnings.unshift(FAMILY_SCOPE_BLIND_SPOT_WARNING);
 
+    // WI-10005785: the write door refuses (or discloses) a revision by the goal-fence guard, and a
+    // preview that never ran it showed clean counts for a revision set_claim_spec then REFUSED.
+    // Run the SAME shared helper, with confirm:false — a preview reports what the write would do
+    // before the caller acknowledges anything, so a refusal here reads exactly as it will there.
+    const goalFence = evaluateGoalFenceGuardForIncumbent({
+      incumbent: record,
+      candidateFilter: proposedSpec.view.filter,
+      confirm: false,
+    });
+    if (goalFence.refuse) {
+      warnings.unshift(`GOAL FENCE: set_claim_spec would REFUSE this revision. ${goalFence.errors.join(' ')}`);
+    } else if (goalFence.warning) {
+      warnings.push(`GOAL FENCE: ${goalFence.warning}`);
+    }
+
     // EI-23760081161304754 (plan dry-run-for-claims…, P-005): the counts above are COUNTS, and a
     // count cannot show the rows a nullable field leaves UNKNOWN under the proposed filter — they
     // fall out of every predicate AND out of `proposedClaimable` while the number stays
@@ -351,6 +367,8 @@ export default defineTool({
         // EI-21177555351818650: programmatic sibling of the warning above — true whenever
         // this reading's counts cover only a SUBSET of what scheduler:get_next can claim.
         familyScopeIncomplete,
+        /** WI-10005785: true when set_claim_spec would refuse this revision's goal-fence change. */
+        goalFenceWouldRefuse: goalFence.refuse,
         ...(predicatePartition ? { predicatePartition } : {}),
         ...(predicatePartitionError ? { predicatePartitionError } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),

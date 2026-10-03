@@ -27,7 +27,9 @@ function normalizeExternalAstroModuleIds() {
       const outsideProjectRoot =
         relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
       if (!outsideProjectRoot) return null;
-      if (hasFilesystemPrefix && absoluteFilename === filename) return null;
+      // Vite's dev server strips /@fs itself, but its build load fallback can
+      // treat an already canonical /@fs ID as a literal path.
+      if (hasFilesystemPrefix && absoluteFilename === filename) return absoluteFilename + query;
       return `/@fs${absoluteFilename}${query}`;
     },
   };
@@ -45,8 +47,9 @@ export default defineConfig({
   site: 'https://app.papercusp.com',
   base: '/docs',
   // lint:as-committed links dependencies to the shared install. Astro normalizes /@fs IDs to
-  // their real path but treats raw external absolute IDs as app-root-relative. Normalize every
-  // external Astro component and its virtual requests to /@fs so they share one compile key.
+  // their real path but treats raw external absolute IDs as app-root-relative. Normalize external
+  // Astro IDs to /@fs first, then resolve canonical /@fs IDs back to their physical path so Vite's
+  // build loader does not try to open /@fs as a literal directory.
   ...(isLintAsCommittedClone
     ? {
         vite: {

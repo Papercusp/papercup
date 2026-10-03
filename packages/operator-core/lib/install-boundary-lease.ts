@@ -144,6 +144,50 @@ export async function acquireInstallBoundaryLease(
   };
 }
 
+/**
+ * How long a long-running script launch keeps the read lease after spawning.
+ * This covers tsx's static import graph resolving from the shared node_modules,
+ * with headroom for a heavily loaded host. The lock is writer-preferring, so an
+ * install queued behind it waits at most this long.
+ */
+export const INSTALL_BOUNDARY_BOOT_HOLD_MS = 120_000;
+
+export interface InstallBoundaryBootWindowOpts {
+  /** How long to keep the lease after `launch` starts; defaults to INSTALL_BOUNDARY_BOOT_HOLD_MS. */
+  holdMs?: number;
+  /** Test seam; defaults to acquireInstallBoundaryLease. */
+  acquire?: (root: string | null) => Promise<InstallBoundaryLease>;
+}
+
+/**
+ * Run `launch` (which spawns a child from `root`'s node_modules and resolves when
+ * that child finishes) under the install boundary for its BOOT window only.
+ *
+ * For a script that runs for an hour, such as the green-checkpoint gate, a lease
+ * held until completion would block every install for that hour. Module resolution
+ * happens at boot, though. That is where an interrupted install killed the gate on
+ * 2026-10-03 08:32Z ("Cannot find module '@octokit/rest'", WI-10005925). So the
+ * lease is released after `holdMs` or when `launch` settles, whichever is first.
+ *
+ * Fail-open like acquireInstallBoundaryLease: a `timed-out` / `error` lease still
+ * launches; the outcome is returned so the caller can report it.
+ */
+export async function withInstallBoundaryBootWindow<T>(
+  root: string | null,
+  launch: () => Promise<T>,
+  opts: InstallBoundaryBootWindowOpts = {},
+): Promise<{ value: T; lease: InstallBoundaryLease }> {
+  const lease = await (opts.acquire ?? ((r) => acquireInstallBoundaryLease(r)))(root);
+  const hold = setTimeout(lease.release, opts.holdMs ?? INSTALL_BOUNDARY_BOOT_HOLD_MS);
+  hold.unref?.();
+  try {
+    return { value: await launch(), lease };
+  } finally {
+    clearTimeout(hold);
+    lease.release();
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

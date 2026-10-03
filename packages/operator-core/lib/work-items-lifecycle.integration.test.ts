@@ -1844,14 +1844,24 @@ describe('P-006 held-open guard — non-holder terminal transitions refuse', () 
                     SET payload = jsonb_set(payload, '{held_open_at}', to_jsonb(${stale}::text))
                   WHERE feature_id IN (${local.id}, ${remote.id})`;
     await db.sql`UPDATE harness_shared.work_items SET origin = 'remote' WHERE feature_id = ${remote.id}`;
-    // Control: on a LOCAL row the inline liveness check lifts the dead hold and lets the close through.
-    const closed = await wi.setWorkItemState(local.id, 'resolved', { by: 'agX', completionRef: 'dead hold lifted' });
-    expect(closed?.state).toBe('done');
-    // A peer's holder is never judged from this node's presence, so the hold stays enforced.
-    await expect(
-      wi.setWorkItemState(remote.id, 'resolved', { by: 'agX', completionRef: 'looks stale' }),
-    ).rejects.toThrow(/HELD OPEN by su-peer-ghost/);
-    expect((await wi.getWorkItem(remote.id, 'papercup'))?.state).toBe('open');
+    // The inline lift announces itself with a console.warn; capture it so the assertions can
+    // name exactly which row was lifted (and so fail-on-console does not reject the expected warn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Control: on a LOCAL row the inline liveness check lifts the dead hold and lets the close through.
+      const closed = await wi.setWorkItemState(local.id, 'resolved', { by: 'agX', completionRef: 'dead hold lifted' });
+      expect(closed?.state).toBe('done');
+      // A peer's holder is never judged from this node's presence, so the hold stays enforced.
+      await expect(
+        wi.setWorkItemState(remote.id, 'resolved', { by: 'agX', completionRef: 'looks stale' }),
+      ).rejects.toThrow(/HELD OPEN by su-peer-ghost/);
+      expect((await wi.getWorkItem(remote.id, 'papercup'))?.state).toBe('open');
+      const warned = warn.mock.calls.map((c) => String(c[0]));
+      expect(warned.filter((m) => m.startsWith(`[hold-open] lifted EXPIRED hold on ${local.id}:`))).toHaveLength(1);
+      expect(warned.filter((m) => m.includes(remote.id))).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('force:true overrides the hold (leader/reaper escape hatch)', async () => {

@@ -4042,11 +4042,15 @@ export function makeCarryRearmController({
     onSettlement(messages, outcome);
   };
   return {
-    /** Live count of carry-respawns either awaiting their first delivery
-     *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input
-     *  to shouldDeferWakeForPendingRespawn). */
-    pendingCount() {
-      return pending.size + inFlight.size;
+    /** Live count of accepted first attempts and re-armed retries.
+     *  Filter carry-respawn for wake arbitration: the controller also owns
+     *  turn retries, which must never suppress themselves as pending carries.
+     *  @param {string | null} [mode]
+     */
+    pendingCount(mode = null) {
+      if (mode == null) return pending.size + inFlight.size;
+      return [...pending].filter((key) => rearmModeOf(latest.get(key)) === mode).length +
+        [...inFlight].filter((msg) => rearmModeOf(msg) === mode).length;
     },
     /** Whether a message is still owned by the detached re-arm loop. */
     isPendingMessage(msg) {
@@ -10131,6 +10135,15 @@ export function hostThroughPty(o) {
           promptAlreadyVerified: true,
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
+          prepareBeforeWrite: async () => {
+            if (shouldDeferWakeForPendingRespawn(mode, carryRearm.pendingCount('carry-respawn'))) {
+              appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', {
+                reason: 'carry-respawn-pending', phase: 'pre-write', rearmed: true,
+              });
+              return { ok: false, reason: 'carry-respawn-pending' };
+            }
+            return { ok: true };
+          },
         });
       }
       return recycleChild(message?.data, {
@@ -10409,7 +10422,7 @@ export function hostThroughPty(o) {
       // loop's next attempt have the idle window uncontested. Scoped to
       // `mode:'turn'` only — reset/recycle/mcp-reconnect stay unaffected;
       // they are already explicit operator/owner actions, not routine wakes.
-      if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount())) {
+      if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount('carry-respawn'))) {
         const dropExtra = { reason: 'carry-respawn-pending' };
         appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', dropExtra);
         // This is an internal delivery-ordering decision, not an agent-facing
@@ -11006,7 +11019,7 @@ export function hostThroughPty(o) {
         // EI-23247679868236430: admission happened before any mutex/gate wait.
         // A carry can become pending during those waits; recheck at the final
         // boundary before writing bytes or latching the owner-input lease.
-        if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount())) {
+        if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount('carry-respawn'))) {
           claimCoalesced();
           appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', {
             reason: 'carry-respawn-pending', phase: 'pre-write',

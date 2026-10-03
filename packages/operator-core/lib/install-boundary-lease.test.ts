@@ -10,6 +10,8 @@ import { repoLockName } from '../../../scripts/npm-install-safe.mjs';
 import {
   acquireInstallBoundaryLease,
   installBoundaryRoot,
+  withInstallBoundaryBootWindow,
+  type InstallBoundaryLease,
 } from './install-boundary-lease';
 import { bootDeathLogExcerpt, installBoundaryNote } from './console-spawn';
 
@@ -125,5 +127,118 @@ describe('bootDeathLogExcerpt', () => {
   it('returns the plain tail when it already holds the head line', () => {
     const log = "x\nError: Cannot find module 'y'\n  at z";
     expect(bootDeathLogExcerpt(log)).toBe(log);
+  });
+});
+
+describe('withInstallBoundaryBootWindow (WI-10005925)', () => {
+  function fakeLease(outcome: InstallBoundaryLease['outcome'] = 'acquired') {
+    const events: string[] = [];
+    const lease: InstallBoundaryLease = {
+      outcome,
+      waitedMs: 0,
+      release: () => {
+        events.push('release');
+      },
+    };
+    return { lease, events, acquire: async () => lease };
+  }
+
+  it('acquires before launching and releases after the boot hold while the launch is still running', async () => {
+    const { events, acquire } = fakeLease();
+    let finish: () => void = () => {};
+    const run = withInstallBoundaryBootWindow(
+      '/repo',
+      async () => {
+        events.push('launch');
+        await new Promise<void>((r) => { finish = r; });
+        return 'done';
+      },
+      { acquire, holdMs: 30 },
+    );
+    await new Promise((r) => setTimeout(r, 120));
+    // The hold expired with the child still running: the install is no longer blocked.
+    expect(events).toEqual(['launch', 'release']);
+    finish();
+    const { value, lease } = await run;
+    expect(value).toBe('done');
+    expect(lease.outcome).toBe('acquired');
+  });
+
+  it('releases as soon as the launch settles inside the hold, including on a throw', async () => {
+    const ok = fakeLease();
+    await withInstallBoundaryBootWindow('/repo', async () => 1, { acquire: ok.acquire, holdMs: 60_000 });
+    expect(ok.events).toEqual(['release']);
+
+    const failing = fakeLease();
+    await expect(
+      withInstallBoundaryBootWindow('/repo', async () => {
+        throw new Error('boom');
+      }, { acquire: failing.acquire, holdMs: 60_000 }),
+    ).rejects.toThrow('boom');
+    expect(failing.events).toEqual(['release']);
+  });
+
+  it('fails open: a timed-out lease still launches and reports its outcome', async () => {
+    const { acquire } = fakeLease('timed-out');
+    const { value, lease } = await withInstallBoundaryBootWindow('/repo', async () => 'launched', { acquire });
+    expect(value).toBe('launched');
+    expect(lease.outcome).toBe('timed-out');
+  });
+
+  describe('against the real fs-mutex', () => {
+    let lockDir: string;
+    let repoRoot: string;
+    const savedLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    beforeEach(() => {
+      lockDir = mkdtempSync(join(tmpdir(), 'install-boundary-boot-locks-'));
+      repoRoot = mkdtempSync(join(tmpdir(), 'install-boundary-boot-repo-'));
+      process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockDir;
+    });
+    afterEach(() => {
+      if (savedLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = savedLockDir;
+      rmSync(lockDir, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    });
+
+    it('a launch waits out an in-flight install, then an install queued during boot runs after the hold', async () => {
+      const order: string[] = [];
+      let finishInstall: () => void = () => {};
+      let writerHeld: () => void = () => {};
+      const held = new Promise<void>((r) => { writerHeld = r; });
+      const install = withFsMutex(installLockNameForRoot(repoRoot), async () => {
+        writerHeld();
+        await new Promise<void>((r) => { finishInstall = r; });
+        order.push('install-1-done');
+      }, { retryMs: 10 });
+      await held;
+
+      let finishChild: () => void = () => {};
+      let launched: () => void = () => {};
+      const childStarted = new Promise<void>((r) => { launched = r; });
+      const run = withInstallBoundaryBootWindow(repoRoot, async () => {
+        order.push('child-boot');
+        launched();
+        await new Promise<void>((r) => { finishChild = r; });
+      }, {
+        acquire: (root) => acquireInstallBoundaryLease(root, { env: {}, timeoutMs: 10_000 }),
+        holdMs: 200,
+      });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(order).toEqual([]); // the gate does not boot into a half-reified tree
+      finishInstall();
+      await install;
+      await childStarted;
+
+      const install2 = withFsMutex(installLockNameForRoot(repoRoot), async () => {
+        order.push('install-2');
+      }, { retryMs: 10 });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(order).toEqual(['install-1-done', 'child-boot']); // held out during boot
+      await install2; // released by the hold, while the child is still running
+      expect(order).toEqual(['install-1-done', 'child-boot', 'install-2']);
+      finishChild();
+      await run;
+    });
   });
 });

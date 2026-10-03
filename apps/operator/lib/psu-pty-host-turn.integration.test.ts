@@ -144,6 +144,89 @@ it('defers an already-admitted wake before writing when carry becomes pending', 
   }
 }, 15_000);
 
+it.each(['gate-wait', 're-arm'] as const)(
+  'defers an admitted wake at %s when a carry arrives before the native boundary',
+  async (deliveryPhase) => {
+    const root = mkdtempSync(join(tmpdir(), 'pty-carry-boundary-'));
+    const sessions = join(root, 'sessions', '2026', '10', '03');
+    mkdirSync(sessions, { recursive: true });
+    const transcript = join(sessions, 'rollout-carry-boundary.jsonl');
+    const ownerId = uniqueOwner(`CARRY-${deliveryPhase}`);
+    const sock = socketPathFor(ownerId);
+    const log = eventLogPathForOwner(ownerId);
+    const { io, captured } = fakeIo();
+    const childCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('READY\\n');setInterval(()=>process.stdout.write('REPAINT\\n'),10);",
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+      bridgeTty: false, onExit: () => {},
+      env: hermeticEnv({
+        PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: deliveryPhase === 're-arm' ? '150' : '2000',
+        PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '500',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+      }),
+      // Queue a real carry without launching a model process. This oracle is
+      // the wake's PTY bytes, independent of subsequent carry argv creation.
+      mintCarryRespawnArgs: () => { throw new Error('fixture carry argv unavailable'); },
+    });
+    const events = () => existsSync(log) ? readFileSync(log, 'utf8') : '';
+    try {
+      expect(await waitForHost(ownerId)).not.toBeNull();
+      expect(await waitForOutput(captured, 'REPAINT', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      expect(await injectIntoHostWithConfirmation(sock, {
+        mode: 'turn', ownerId, data: 'WAKE_BEFORE_CARRY', deliveryId: `wake-${deliveryPhase}`,
+      })).toMatchObject({ ok: true, reason: 'accepted' });
+      if (deliveryPhase === 're-arm') {
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline && !events().includes('"kind":"wake-rearm-queued"')) await sleep(15);
+        expect(events()).toContain('"kind":"wake-rearm-queued"');
+      } else {
+        // Repaints and the missing native completion keep the first prompt
+        // wait closed throughout this interval (well below its 2s cap).
+        await sleep(100);
+        expect(events()).not.toContain('"kind":"wake-rearm-queued"');
+      }
+      expect(await injectIntoHostWithConfirmation(sock, {
+        mode: 'carry-respawn', ownerId, data: 'fixture carry', deliveryId: `carry-${deliveryPhase}`,
+      })).toMatchObject({ ok: true, reason: 'accepted' });
+      writeFileSync(transcript, JSON.stringify({
+        timestamp: new Date().toISOString(), type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: 'boundary-after-carry' },
+      }) + '\n');
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !captured().includes('ECHO:WAKE_BEFORE_CARRY') &&
+        !events().includes('"phase":"pre-write"')) await sleep(15);
+      expect(captured()).not.toContain('ECHO:WAKE_BEFORE_CARRY');
+      const rows = events().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      expect(rows).toContainEqual(expect.objectContaining({
+        kind: 'wake-turn-deferred-for-pending-respawn', phase: 'pre-write',
+        ...(deliveryPhase === 're-arm' ? { rearmed: true } : {}),
+      }));
+      if (deliveryPhase === 're-arm') {
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'wake-rearm-dropped', reason: 'carry-respawn-pending',
+        }));
+      }
+    } finally {
+      await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+      await done;
+      rmSync(root, { recursive: true, force: true });
+      rmSync(log, { force: true });
+    }
+  }, 15_000,
+);
+
 it('re-armed wake uses its verified native boundary without a second busy-gate wait', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pty-rearm-boundary-'));
   const sessions = join(root, 'sessions', '2026', '09', '24');

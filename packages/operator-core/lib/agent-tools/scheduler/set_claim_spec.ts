@@ -22,7 +22,7 @@ import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
 import { claimSpecSchema, positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimFloorAttribution } from '../../work-items';
-import { evaluateGoalFenceGuard } from '../../scheduler/spec-pool-preview';
+import { evaluateGoalFenceGuardForIncumbent } from '../../scheduler/spec-pool-preview';
 
 /**
  * The coding-FACTORY push-pipeline roles: each is HANDED a FEATURE_ID by the orchestrator
@@ -516,11 +516,9 @@ export default defineTool({
         cupId: targetBeeId,
         workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
       });
-      const goalFence = evaluateGoalFenceGuard({
-        previousFilter:
-          incumbentRecord.source === 'default' ? undefined : incumbentRecord.spec.view.filter,
+      const goalFence = evaluateGoalFenceGuardForIncumbent({
+        incumbent: incumbentRecord,
         candidateFilter: validated.spec.view.filter,
-        previousSource: incumbentRecord.source === 'default' ? 'default' : 'authored',
         confirm: args.confirmGoalFenceDrop === true,
       });
       if (goalFence.refuse) {

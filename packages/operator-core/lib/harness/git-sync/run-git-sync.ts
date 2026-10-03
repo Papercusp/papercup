@@ -1259,7 +1259,77 @@ export interface GitSyncLockHolding {
 /** A dirty path deferred by this pass, with lock provenance or a guard reason. */
 export type GitSyncSkippedPath =
   | { scope: string; path: string; owner: string; intent: string }
-  | { scope: string; path: string; reason: 'migration-reservation'; detail: string };
+  | { scope: string; path: string; reason: 'migration-reservation' | 'migration-dependency-fence'; detail: string };
+
+/**
+ * Keep a superproject edit from outrunning a migration quarantined in one of its
+ * submodules. Reuse git-sync's edit-ledger attribution: same-work-item paths are
+ * held together, while confidently attributed unrelated work can still commit.
+ * If a refused migration or a dirty root path cannot be attributed, fail closed
+ * for that root path; if the refused migration itself is unknown, hold all root
+ * changes because their dependency cannot be ruled out.
+ */
+export function migrationDependencyFenceSkips(
+  refusedMigrations: readonly Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>[],
+  dirtySuperprojectPaths: readonly string[],
+  roster: readonly AttributionRosterEntry[],
+): GitSyncSkippedPath[] {
+  if (refusedMigrations.length === 0 || dirtySuperprojectPaths.length === 0) return [];
+
+  const attributionsByScope = new Map<string, Map<string, FileAttribution>>();
+  const attributionFor = (scope: string, path: string): FileAttribution | undefined => {
+    let map = attributionsByScope.get(scope);
+    if (!map) {
+      map = attributionMapForRepo([...roster], scope);
+      attributionsByScope.set(scope, map);
+    }
+    return map.get(path);
+  };
+
+  const blockedWorkItems = new Set<string>();
+  const blockedAgents = new Set<string>();
+  const agentsWithoutWorkItem = new Set<string>();
+  let unknownMigration = roster.length === 0;
+  for (const migration of refusedMigrations) {
+    const attribution = attributionFor(migration.scope, migration.path);
+    if (!attribution) {
+      unknownMigration = true;
+      continue;
+    }
+    blockedAgents.add(attribution.agent);
+    const workItems = (attribution.workItems ?? []).map((id) => id.trim()).filter(Boolean);
+    if (workItems.length === 0) agentsWithoutWorkItem.add(attribution.agent);
+    for (const id of workItems) blockedWorkItems.add(id);
+  }
+
+  const rootAttributions = attributionFor('', '') ? attributionsByScope.get('')! : attributionMapForRepo([...roster], '');
+  const migrationLocations = refusedMigrations
+    .map((migration) => migration.scope + '/' + migration.path)
+    .slice(0, 3)
+    .join(', ');
+  const details = (path: string): GitSyncSkippedPath => ({
+    scope: 'superproject',
+    path,
+    reason: 'migration-dependency-fence',
+    detail: unknownMigration
+      ? 'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known'
+      : 'deferred because this path shares work-item attribution with a reservation-blocked migration at ' + migrationLocations,
+  });
+
+  return [...new Set(dirtySuperprojectPaths)]
+    .filter((path) => {
+      if (unknownMigration) return true;
+      const attribution = rootAttributions.get(path);
+      if (!attribution) return true;
+      const workItems = (attribution.workItems ?? []).map((id) => id.trim()).filter(Boolean);
+      const sharesWorkItem = workItems.some((id) => blockedWorkItems.has(id));
+      const sameAgentWithoutKnownWorkItem =
+        blockedAgents.has(attribution.agent) &&
+        (agentsWithoutWorkItem.has(attribution.agent) || workItems.length === 0 || blockedWorkItems.size === 0);
+      return sharesWorkItem || sameAgentWithoutKnownWorkItem;
+    })
+    .map(details);
+}
 
 /** True when two repo-relative paths overlap as a file or directory lock. */
 function gitSyncPathsOverlap(a: string, b: string): boolean {

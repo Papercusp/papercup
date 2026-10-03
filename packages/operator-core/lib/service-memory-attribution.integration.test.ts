@@ -1224,6 +1224,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               await wait(250);
             }
             if (!ready || !endpoint) throw Error('Private host readiness/inspector failed: ' + tail);
+            const healthResponse = await fetch(e.PAPERCUSP_OPERATOR_URL + '/api/health', { signal: AbortSignal.timeout(10000) });
+            if (!healthResponse.ok) throw Error('Private copied host health HTTP failure');
+            const loadedHealth = await healthResponse.json();
+            if (e.TEST_EXPECTED_BUILD) (${servingInboxHealth.toString()})(loadedHealth, e.TEST_EXPECTED_BUILD);
+            cohort.loadedHealth = { sha: loadedHealth.sha, version: loadedHealth.version };
             client = createCdpClient(endpoint); await client.connect();
             const identity = (await client.evaluate('({pid:process.pid,entry:process.argv[1]})', { returnByValue: true })).result.value;
             if (identity.pid !== host.pid || identity.entry !== entry) throw Error('Inspector serving identity mismatch');
@@ -1343,7 +1348,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const result = runCohortWithLog([resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--', process.execPath, '-e', probe],
         { cwd: root, timeout: 360000, env: { ...process.env, TEST_CURRENT_PATH: current, TEST_BASELINE_PATH: baseline,
           TEST_REPORT_PATH: rawReport, TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX,
-          TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_PRIVATE_PARENT: tmpdir() } },
+          TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_PRIVATE_PARENT: tmpdir(), TEST_EXPECTED_BUILD: servingPin?.health.sha ?? '' } },
         join(directory, 'runtime.log'));
       const report = readCohortReport(rawReport, result);
       phase = 'report-verification';

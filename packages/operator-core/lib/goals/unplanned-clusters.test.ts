@@ -35,7 +35,7 @@ function item(id: string, minutesAfterT0: number, over: Partial<ClusterCandidate
 
 /** Signature keys come from the REAL builder, so a change to its format breaks these tests
  *  rather than leaving the parser silently matching nothing. */
-function sig(toolName: string, family: ToolErrorClass, errorCode: string | null, fieldPath: string | null = null): string {
+function sig(toolName: string, family: ToolErrorClass, errorCode?: string, fieldPath?: string): string {
   return toolFailureSignatureKey({ toolName, errorCode, fieldPath }, family);
 }
 
@@ -156,7 +156,7 @@ describe('findUnplannedClusters', () => {
 
   it('never clusters on a catch-all code that names no root cause', () => {
     const items = ['a:x', 'b:y', 'c:z'].map((tool, i) =>
-      item(`H${i}`, i, { failureSignatureKey: sig(tool, 'structural', i === 2 ? null : 'handler_error') }),
+      item(`H${i}`, i, { failureSignatureKey: sig(tool, 'structural', i === 2 ? undefined : 'handler_error') }),
     );
     expect(findUnplannedClusters(GOAL, items, [])).toEqual([]);
     expect(NON_DIAGNOSTIC_ERROR_CODES).toEqual(expect.arrayContaining(['handler_error', 'error-code-unknown']));
@@ -172,7 +172,7 @@ describe('parseToolFailureSignatureKey / failureClassAttr', () => {
       fieldPath: 'args.a:b',
     });
     // An error code that spells another family name is still read as the error code.
-    expect(parseToolFailureSignatureKey(toolFailureSignatureKey({ toolName: 'x:y', errorCode: 'caller', fieldPath: null }, 'rate-limit'))).toMatchObject({
+    expect(parseToolFailureSignatureKey(toolFailureSignatureKey({ toolName: 'x:y', errorCode: 'caller' }, 'rate-limit'))).toMatchObject({
       failureFamily: 'rate-limit',
       errorCode: 'caller',
     });

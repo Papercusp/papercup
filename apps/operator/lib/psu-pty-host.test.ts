@@ -5668,6 +5668,21 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(h.events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
   });
 
+  it('carry-only arbitration excludes turn retries while counting accepted and re-armed carries', () => {
+    const h = makeHarness({ promptResults: [] });
+    expect(h.controller.schedule({ mode: 'turn', data: 'wake' })).toBe('queued');
+    expect(h.controller.pendingCount()).toBe(1);
+    expect(h.controller.pendingCount('carry-respawn')).toBe(0);
+    const firstCarry = { mode: 'carry-respawn', data: 'accepted carry' };
+    h.controller.beginFirstAttempt(firstCarry);
+    expect(h.controller.pendingCount('carry-respawn')).toBe(1);
+    expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
+    expect(h.controller.pendingCount('carry-respawn')).toBe(2);
+    h.controller.endFirstAttempt(firstCarry);
+    expect(h.controller.pendingCount('carry-respawn')).toBe(1);
+    expect(h.controller.pendingCount('turn')).toBe(1);
+  });
+
   it('a drill and a non-drill retry can be pending at the same time (independent keys)', () => {
     const h = makeHarness({ promptResults: [] });
     expect(h.controller.schedule(DRILL_MSG)).toBe('queued');

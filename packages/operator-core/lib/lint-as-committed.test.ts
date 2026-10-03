@@ -139,7 +139,7 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       const virtualStyleId = `${sharedComponent}?astro&type=style&index=0&lang.css`;
       expect(normalizer?.resolveId?.(sharedComponent)).toBe(`/@fs${sharedComponent}`);
       expect(normalizer?.resolveId?.(virtualStyleId)).toBe(`/@fs${virtualStyleId}`);
-      expect(normalizer?.resolveId?.(`/@fs${virtualStyleId}`)).toBeNull();
+      expect(normalizer?.resolveId?.('/@fs' + virtualStyleId)).toBe(virtualStyleId);
 
       const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
       const cloneAppRoot = resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs');
@@ -150,7 +150,9 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
 
       const relativeTraversalRoute = `${relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute)}${virtualRouteQuery}`;
       expect(relativeTraversalRoute).toContain('../');
-      expect(normalizer?.resolveId?.(relativeTraversalRoute)).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
+      const normalizedTraversalRoute = normalizer?.resolveId?.(relativeTraversalRoute);
+      expect(normalizedTraversalRoute).toBe('/@fs' + sharedRoute + virtualRouteQuery);
+      expect(normalizer?.resolveId?.(normalizedTraversalRoute ?? '')).toBe(sharedRoute + virtualRouteQuery);
 
       const localComponent = resolve(repoRoot, 'apps/papercusp-docs/src/components/Local.astro');
       expect(normalizer?.resolveId?.(localComponent)).toBeNull();

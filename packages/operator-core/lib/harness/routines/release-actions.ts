@@ -40,6 +40,7 @@ import {
   ROUTINE_FIRE_WORKFLOW_ID_ENV,
 } from '../../release/in-flight-candidate';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { withInstallBoundaryBootWindow } from '../../install-boundary-lease';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
@@ -1110,21 +1111,36 @@ function runScript(
         ),
       );
     });
-  return wantScope
-    ? attempt(
-        buildIsolatedScopeArgv(
-          scopedPayload,
-          isolate.memoryMaxG,
-          'allow',
-          CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
-          isolate.terminalContext?.gateFireId
-            ? scheduledCheckpointScopeUnit(isolate.terminalContext.gateFireId)
-            : null,
-        ),
-        () => attempt(scopedPayload, null, checkpointPaths?.terminalPath),
-        checkpointPaths?.terminalPath,
-      )
-    : attempt(base, null);
+  const launch = (): Promise<RunResult> =>
+    wantScope
+      ? attempt(
+          buildIsolatedScopeArgv(
+            scopedPayload,
+            isolate.memoryMaxG,
+            'allow',
+            CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
+            isolate.terminalContext?.gateFireId
+              ? scheduledCheckpointScopeUnit(isolate.terminalContext.gateFireId)
+              : null,
+          ),
+          () => attempt(scopedPayload, null, checkpointPaths?.terminalPath),
+          checkpointPaths?.terminalPath,
+        )
+      : attempt(base, null);
+  // WI-10005925: the script boots from `root`'s shared node_modules via tsx. A peer's
+  // install:safe reify in that window crashed the 08:32Z gate before any verdict
+  // ("Cannot find module '@octokit/rest'"). Hold the install boundary across the boot
+  // window only. The gate runs for an hour, and holding the lease that long would
+  // block every install.
+  return withInstallBoundaryBootWindow(root, launch).then(({ value, lease }) => {
+    if (lease.outcome === 'timed-out' || lease.outcome === 'error') {
+      console.warn(
+        `[release-actions] ${relScript} launched without the install boundary (${lease.outcome}` +
+          `${lease.detail ? `: ${lease.detail}` : ''}, waited ${lease.waitedMs}ms)`,
+      );
+    }
+    return value;
+  });
 }
 
 /**

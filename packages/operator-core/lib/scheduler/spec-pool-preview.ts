@@ -410,6 +410,28 @@ export function evaluateGoalFenceGuard(input: GoalFenceGuardInput): CollapseGuar
 }
 
 /**
+ * The ONE place an incumbent claim-spec RECORD becomes goal-fence guard input, so the write door
+ * (`scheduler:set_claim_spec`) and the read-only preview door (`scheduler:preview_spec_delta`)
+ * cannot disagree about a proposed filter (WI-10005785). Before this existed only the write door
+ * ran the guard, so a fence-DROPPING revision previewed as clean counts and was then refused at
+ * the write, and the fence-preserving widen shape previewed without the disclosure the write adds.
+ * A `default` incumbent (no stored row) carries no fence, whatever the baseline spec contains.
+ */
+export function evaluateGoalFenceGuardForIncumbent(input: {
+  incumbent: { source: string; spec: { view: { filter?: FilterNode } } };
+  candidateFilter?: FilterNode;
+  confirm: boolean;
+}): CollapseGuardVerdict {
+  const authored = input.incumbent.source !== 'default';
+  return evaluateGoalFenceGuard({
+    previousFilter: authored ? input.incumbent.spec.view.filter : undefined,
+    candidateFilter: input.candidateFilter,
+    previousSource: authored ? 'authored' : 'default',
+    confirm: input.confirm,
+  });
+}
+
+/**
  * A `not:` predicate the STORED lane guaranteed, which the candidate revision no longer
  * carries. `describe` is for the caller-facing warning; `node` is the operand of the
  * dropped `not` (i.e. what it was excluding), kept so a caller can re-apply it verbatim.
