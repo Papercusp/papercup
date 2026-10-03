@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import launchAgent from './capability/launch-agent';
 import consultDecline from './consult/decline';
+import consultGetFeedback from './consult/get-feedback';
 import consultReply from './consult/reply';
 import fleetLaunchOnPlan from './fleet_registry/launch-on-plan';
 import gradeIdea from './scout/grade-idea';
@@ -25,6 +26,8 @@ import workItemsCreate from './work_items/create';
  */
 const LATE_RETURN_MUTATORS = {
   'blender:grade-idea': gradeIdea,
+  // EI-24923632103429261: the p95 budget detector measured an over-budget tail.
+  'consult:get_feedback': consultGetFeedback,
   'consult:reply': consultReply,
   'consult:decline': consultDecline,
   'fleet:launch-on-plan': fleetLaunchOnPlan,
