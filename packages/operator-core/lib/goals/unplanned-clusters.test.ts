@@ -4,7 +4,26 @@
  * reporting cycles → one holder nudge. Pure-function guards; the sweep leg that calls
  * these is guarded in system-health/goal-liveness-watchdog.test.ts.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const nudgeMocks = vi.hoisted(() => ({
+  sql: vi.fn(async () => [] as Array<{ feature_id: string }>),
+  createWorkItem: vi.fn(async () => ({ id: 'WI-NUDGE' })),
+  stampPromotedGoal: vi.fn(async () => undefined),
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: nudgeMocks.sql }),
+}));
+vi.mock('../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../work-items')>()),
+  createWorkItem: nudgeMocks.createWorkItem,
+}));
+vi.mock('./provenance-stamp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./provenance-stamp')>()),
+  stampPromotedGoal: nudgeMocks.stampPromotedGoal,
+}));
 
 import { IMPROVEMENT_TOPIC } from '../agent-tools/coordination/topics-core';
 import {
@@ -21,6 +40,7 @@ import {
   citedPaths,
   findUnplannedClusters,
   overdueUnplannedClusters,
+  fileUnplannedClusterNudge,
   titlePrefix,
   type ClusterCandidateItem,
 } from './unplanned-clusters';
@@ -204,5 +224,32 @@ describe('overdueUnplannedClusters', () => {
   it('scales with the goal cadence: 3h is overdue at a 1h cycle and not at a 4h cycle', () => {
     expect(overdueUnplannedClusters([cluster], T0 + 3 * H, 1 * H)).toEqual([cluster]);
     expect(overdueUnplannedClusters([cluster], T0 + 3 * H, 4 * H)).toEqual([]);
+  });
+});
+
+describe('fileUnplannedClusterNudge admission', () => {
+  it('keeps the holder assignment with a reasoned watchdog bypass', async () => {
+    const id = await fileUnplannedClusterNudge({
+      workspaceId: 'papercusp-workspace',
+      goalId: 'work-on-everything-60d3a8',
+      goalTitle: 'Work on everything',
+      holderOwnerId: 'goal-holder',
+      reportCycleMs: 4 * H,
+      cluster: {
+        key: 'work-on-everything-60d3a8:EI-ANCHOR',
+        anchorId: 'EI-ANCHOR',
+        memberIds: ['EI-ANCHOR', 'EI-2', 'EI-3'],
+        formedAtMs: T0,
+        reasons: ['path:packages/operator-core/lib/goals/unplanned-clusters.ts'],
+        harness: 'papercusp',
+      },
+    });
+
+    expect(id).toBe('WI-NUDGE');
+    expect(nudgeMocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      assignee: 'goal-holder',
+      admission: 'auto',
+      admittedBy: 'bypass:goal-liveness-watchdog',
+    }));
   });
 });

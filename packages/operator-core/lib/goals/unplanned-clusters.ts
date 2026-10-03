@@ -386,6 +386,11 @@ export async function fileUnplannedClusterNudge(alert: UnplannedClusterAlert): P
     workspaceId,
     createdBy: 'system:goal-liveness-watchdog',
     assignee: alert.holderOwnerId,
+    // This is a threshold-triggered, anchor-deduped planning obligation routed to the
+    // goal holder. Born-pending admission intentionally strips assignee so the promoter
+    // can decide; that would put the holder's planning decision back in the drain pool.
+    admission: 'auto',
+    admittedBy: 'bypass:goal-liveness-watchdog',
     payload: {
       unplannedCluster: {
         goalId,
