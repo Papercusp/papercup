@@ -123,6 +123,7 @@ import statusTool, {
 } from './status';
 import type { FleetRosterEntry } from '../../fleet/fleet-roster';
 import { fleetSlugFromName } from '../../agent-fleets-store';
+import { FLEET_LEADER_MISSING_GRACE_MS } from '../../scheduler/fleet-scope-admission';
 
 const CTX = { workspaceId: 'ws', role: 'operator' } as never;
 const parse = (res: { content?: { text: string }[]; data?: unknown }) =>
@@ -448,6 +449,13 @@ describe('fleet:status', () => {
           lastActiveSecAgo: 4,
         },
       ],
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: true,
+        recordedLive: false,
+        sessionState: 'ended',
+        complete: true,
+      },
       degradedLegs: [],
     });
 
@@ -509,6 +517,88 @@ describe('fleet:status', () => {
       reason: 'registered-leader-ended',
       leaderOwnerId: 'su-leader',
       liveMemberCount: 1,
+    });
+  });
+
+  it('reports complete leader absence with the persisted succession grace clock', async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const missingSinceMs = nowMs - 2 * 60_000;
+    h.getFleet.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      title: 'Rocket Fleet',
+      description: 'Handles the rocket lane',
+      owner: 'su-owner',
+      leaderOwnerId: 'su-leader',
+      leaderMissingSinceMs: missingSinceMs,
+      colorScheme: 'forest',
+      lastLaunchTransaction: null,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        alive: true,
+        sessionState: 'live',
+      }],
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: false,
+        recordedLive: false,
+        sessionState: null,
+        complete: true,
+      },
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leaderVacant).toBe(true);
+    expect(out.leaderVacancy).toEqual({
+      state: 'complete-absence',
+      vacant: true,
+      livenessComplete: true,
+      recordedLive: false,
+      missingSinceMs,
+      graceMs: FLEET_LEADER_MISSING_GRACE_MS,
+      graceRemainingMs: FLEET_LEADER_MISSING_GRACE_MS - 2 * 60_000,
+    });
+    expect(out.leadershipBlockage).toEqual({
+      reason: 'registered-leader-missing',
+      leaderOwnerId: 'su-leader',
+      liveMemberCount: 1,
+    });
+  });
+
+  it('treats a completely verified recorded-live leader as present, not vacant', async () => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [],
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: false,
+        recordedLive: true,
+        sessionState: 'recorded',
+        complete: true,
+      },
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leaderLive).toBe(true);
+    expect(out.leaderSessionState).toBe('recorded');
+    expect(out.leaderVacant).toBe(false);
+    expect(out.leaderVacancy).toMatchObject({
+      state: 'leader-live',
+      vacant: false,
+      livenessComplete: true,
+      recordedLive: true,
+      missingSinceMs: null,
+      graceRemainingMs: null,
     });
   });
 

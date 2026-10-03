@@ -30,6 +30,7 @@ import {
   classifyGoalDrainFleet,
   classifyGoalPlanFleetCoverage,
   fleetKey,
+  readActiveFleetPullStallAlerts,
   readGoalPlanFleetObservation,
   runGoalDrainFleetSweepOnce,
   scanGoalDrainFleets,
@@ -115,6 +116,77 @@ describe('drain-fleet recovery guards', () => {
     expect(classifyGoalDrainFleetPullStall({
       members: [{ ...member, sessionState: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
     })).toBeNull();
+  });
+
+  it('scans active registered fleets that have no goal declaration', async () => {
+    const statements: string[] = [];
+    const sqlTag = vi.fn(async (parts: TemplateStringsArray) => {
+      const statement = parts.join(' ');
+      statements.push(statement);
+      if (statement.includes('FROM harness_shared.agent_fleets')) {
+        return [{ workspace_id: 'ws', fleet_slug: 'standalone' }];
+      }
+      if (statement.includes('FROM harness_shared.tool_invocations')) return [];
+      throw new Error(`unexpected query: ${statement}`);
+    });
+    const readRoster = vi.fn(async () => ({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        sessionState: 'live',
+        startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+      }],
+      degradedLegs: [],
+    } as never));
+    const readEverMembers = vi.fn(async () => ['su-member']);
+
+    const alerts = await readActiveFleetPullStallAlerts(
+      sqlTag as unknown as Sql,
+      [],
+      NOW,
+      { listRoster: readRoster as never, listEverMembers: readEverMembers as never },
+    );
+
+    expect(statements[0]).toMatch(/FROM harness_shared\.agent_fleets[\s\S]*WHERE control_state = 'active'/);
+    expect(alerts).toEqual([{
+      workspaceId: 'ws',
+      fleetSlug: 'standalone',
+      liveMemberIds: ['su-member'],
+      stalledForMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS + 1,
+    }]);
+  });
+
+  it('suppresses an active-fleet pull alarm when any roster evidence leg is degraded', async () => {
+    const sqlTag = vi.fn(async (parts: TemplateStringsArray) => {
+      const statement = parts.join(' ');
+      if (statement.includes('FROM harness_shared.agent_fleets')) {
+        return [{ workspace_id: 'ws', fleet_slug: 'uncertain' }];
+      }
+      throw new Error(`unexpected query: ${statement}`);
+    });
+    const readRoster = vi.fn(async () => ({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        sessionState: 'live',
+        startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+      }],
+      degradedLegs: ['wakeability'],
+    } as never));
+    const readEverMembers = vi.fn(async () => ['su-member']);
+
+    const alerts = await readActiveFleetPullStallAlerts(
+      sqlTag as unknown as Sql,
+      [],
+      NOW,
+      { listRoster: readRoster as never, listEverMembers: readEverMembers as never },
+    );
+
+    expect(alerts).toEqual([]);
+    expect(readEverMembers).not.toHaveBeenCalled();
+    expect(sqlTag).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -779,6 +851,16 @@ describe('runGoalDrainFleetSweepOnce', () => {
     graceMs: GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
     ...relaunchDeps(),
     ...planFleetDeps(),
+  });
+
+  it('keeps the active-fleet pull scan running when there are no active goals', async () => {
+    const deps = baseDeps();
+    deps.readGoals = vi.fn(async () => ({ goals: [], holders: [] }));
+
+    const result = await runGoalDrainFleetSweepOnce(sql, deps);
+
+    expect(deps.readPullStallAlerts).toHaveBeenCalledWith([], NOW);
+    expect(result).toMatchObject({ scanned: 0, skipped: false });
   });
 
   it('repairs an UNCOUPLED fleet in place: no alarm, no dead stamp, no relaunch (EI-24556293106348130)', async () => {

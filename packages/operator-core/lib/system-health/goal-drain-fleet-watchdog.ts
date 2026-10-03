@@ -938,7 +938,7 @@ export interface GoalDrainFleetSweepDeps {
   deadGraceMs: number;
   /** After the dead-fleet grace, promote the oldest positively-live member if the registered leader is explicitly ended. */
   promoteDrainLeader: (alert: GoalDrainAlert, goal: GoalDrainRowLike) => Promise<boolean>;
-  /** Current active goal-drain fleets with live members but no successful get_next in the stall window. */
+  /** Current active registered fleets with live members but no successful get_next in the stall window. */
   readPullStallAlerts: (goals: readonly GoalDrainRowLike[], nowMs: number) => Promise<GoalDrainFleetPullStallAlert[]>;
   /** Deduped watchdog alarm for a stalled drain-fleet pull lane. */
   escalatePullStall: (alert: GoalDrainFleetPullStallAlert) => Promise<void>;
@@ -960,8 +960,8 @@ export interface GoalDrainFleetSweepDeps {
 export interface GoalDrainFleetPullStallAlert {
   workspaceId: string;
   fleetSlug: string;
-  goalId: string;
-  title: string;
+  goalId?: string;
+  title?: string;
   liveMemberIds: string[];
   stalledForMs: number;
 }
@@ -1469,34 +1469,54 @@ const SUMMARY_VERDICT: Record<Exclude<GoalDrainReason, 'no-drain-fleet-declared'
   'drain-fleet-not-goal-scoped': 'not scoped to the goal (D-005)',
 };
 
-async function readGoalDrainPullStallAlerts(
+export async function readActiveFleetPullStallAlerts(
   sql: Sql,
   goals: readonly GoalDrainRowLike[],
   nowMs: number,
+  readers: {
+    listRoster?: typeof listFleetRosterDiagnosed;
+    listEverMembers?: typeof fleetEverMembers;
+  } = {},
 ): Promise<GoalDrainFleetPullStallAlert[]> {
-  const targets = new Map<string, GoalDrainRowLike>();
+  const listRoster = readers.listRoster ?? listFleetRosterDiagnosed;
+  const listEverMembers = readers.listEverMembers ?? fleetEverMembers;
+  const activeFleets = await sql<{ workspace_id: string; fleet_slug: string }[]>`
+    SELECT workspace_id, fleet_slug
+      FROM harness_shared.agent_fleets
+     WHERE control_state = 'active'
+     ORDER BY workspace_id, fleet_slug
+  `;
+  const goalsByFleet = new Map<string, GoalDrainRowLike>();
   for (const goal of goals) {
-    if (goal.drainFleet) targets.set(fleetKey(goal.workspaceId, goal.drainFleet), goal);
+    if (goal.drainFleet) goalsByFleet.set(fleetKey(goal.workspaceId, goal.drainFleet), goal);
   }
   const alerts: GoalDrainFleetPullStallAlert[] = [];
-  for (const goal of targets.values()) {
-    if (!goal.drainFleet) continue;
+  for (const fleet of activeFleets) {
+    if (!fleet.workspace_id || !fleet.fleet_slug) continue;
+    const goal = goalsByFleet.get(fleetKey(fleet.workspace_id, fleet.fleet_slug));
     try {
-      const roster = await listFleetRosterDiagnosed({
-        fleetSlug: goal.drainFleet,
-        workspaceId: goal.workspaceId,
+      const roster = await listRoster({
+        fleetSlug: fleet.fleet_slug,
+        workspaceId: fleet.workspace_id,
       });
-      if (roster.degradedLegs.includes('presence')) continue;
-      const suMembers = roster.entries.filter((member) => member.agentRole === 'su');
+      // Unknown liveness is not an empty fleet. This scan speaks only when all
+      // roster legs that determine presence/session truth completed cleanly.
+      if (roster.degradedLegs.length > 0) continue;
+      const suMembers = roster.entries
+        .filter((member) => member.agentRole === 'su')
+        .map((member) => member.agentId === roster.leaderLiveness?.ownerId &&
+          roster.leaderLiveness.recordedLive === true
+          ? { ...member, sessionState: 'live' as const }
+          : member);
       const ownerIds = [...new Set([
-        ...await fleetEverMembers(goal.drainFleet, { workspaceId: goal.workspaceId }),
+        ...await listEverMembers(fleet.fleet_slug, { workspaceId: fleet.workspace_id }),
         ...suMembers.map((member) => member.agentId),
       ])];
       if (ownerIds.length === 0) continue;
       const successes = await sql<{ owner_id: string }[]>`
         SELECT DISTINCT coord_owner_id AS owner_id
           FROM harness_shared.tool_invocations
-         WHERE workspace_id = ${goal.workspaceId}
+         WHERE workspace_id = ${fleet.workspace_id}
            AND tool_name = 'scheduler:get_next'
            AND coord_owner_id = ANY(${ownerIds}::text[])
            AND invoked_at >= ${new Date(nowMs - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS).toISOString()}::timestamptz
@@ -1509,10 +1529,9 @@ async function readGoalDrainPullStallAlerts(
         nowMs,
       });
       if (stall) alerts.push({
-        workspaceId: goal.workspaceId,
-        fleetSlug: goal.drainFleet,
-        goalId: goal.goalId,
-        title: goal.title,
+        workspaceId: fleet.workspace_id,
+        fleetSlug: fleet.fleet_slug,
+        ...(goal ? { goalId: goal.goalId, title: goal.title } : {}),
         ...stall,
       });
     } catch {
@@ -1525,10 +1544,11 @@ async function readGoalDrainPullStallAlerts(
 async function defaultEscalatePullStall(alert: GoalDrainFleetPullStallAlert): Promise<void> {
   await openEscalation(WATCHDOG_IDENTITY, {
     severity: 'advisory',
-    summary: `Drain fleet '${alert.fleetSlug}' has live members but no successful scheduler pulls for 10 minutes`,
+    summary: `Fleet '${alert.fleetSlug}' has live members but no successful scheduler pulls for 10 minutes`,
     body:
-      `Goal '${alert.goalId}' (${alert.title}) has live member(s) ${alert.liveMemberIds.join(', ')}, ` +
-      `but none of the fleet's ever-members recorded a successful scheduler:get_next in the last ` +
+      `${alert.goalId ? `Goal '${alert.goalId}' (${alert.title ?? 'untitled'}) points to this fleet. ` : ''}` +
+      `Fleet '${alert.fleetSlug}' has live member(s) ${alert.liveMemberIds.join(', ')}, but none of its ` +
+      `ever-members recorded a successful scheduler:get_next in the last ` +
       `${Math.ceil(GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS / 60_000)} minutes. A success is an invocation ` +
       `with status='ok' and schedulerDisposition.kind='claimed' or 'no-claim'; errors and unrecorded calls ` +
       `do not count. Check fleet:status and scheduler:pull_ledger { fleet: '${alert.fleetSlug}' } for the ` +
@@ -1536,9 +1556,9 @@ async function defaultEscalatePullStall(alert: GoalDrainFleetPullStallAlert): Pr
     meta: {
       dedupKind: 'goal-drain-fleet-pull-stall',
       subjectSignature: `${alert.workspaceId}:${alert.fleetSlug}`,
-      goalId: alert.goalId,
-      goalWorkspaceId: alert.workspaceId,
-      drainFleet: alert.fleetSlug,
+      ...(alert.goalId
+        ? { goalId: alert.goalId, goalWorkspaceId: alert.workspaceId, drainFleet: alert.fleetSlug }
+        : { fleetSlug: alert.fleetSlug }),
       liveMemberIds: alert.liveMemberIds,
       stalledForMs: alert.stalledForMs,
     },
@@ -2068,7 +2088,7 @@ function sweepDeps(sql: Sql, overrides: Partial<GoalDrainFleetSweepDeps>): GoalD
     escalateRelaunchExhausted: defaultEscalateRelaunchExhausted,
     deadGraceMs: GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
     promoteDrainLeader: (alert, goal) => defaultPromoteDrainLeader(alert, goal),
-    readPullStallAlerts: (goals, nowMs) => readGoalDrainPullStallAlerts(sql, goals, nowMs),
+    readPullStallAlerts: (goals, nowMs) => readActiveFleetPullStallAlerts(sql, goals, nowMs),
     escalatePullStall: defaultEscalatePullStall,
     readPlanFleetCohort: (goals, resolveFleetLiveness) => readGoalPlanFleetCohort(sql, goals, resolveFleetLiveness),
     escalatePlanFleet: defaultEscalatePlanFleet,
@@ -2233,11 +2253,12 @@ export async function runGoalDrainFleetSweepOnce(
   if (!(await deps.flagEnabled())) return { scanned: 0, escalated: 0, skipped: true, ...none };
 
   const { goals, holders } = await deps.readGoals();
-  if (goals.length === 0) return { scanned: 0, escalated: 0, skipped: false, ...none };
 
   const activeKeys = new Set(goals.map((g) => fleetKey(g.workspaceId, g.goalId)));
   const relevant = holders.filter((h) => activeKeys.has(fleetKey(h.workspaceId, h.goalId)));
-  const verdicts = await deps.resolveLiveness([...new Set(relevant.map((h) => h.ownerId))]);
+  const verdicts = relevant.length
+    ? await deps.resolveLiveness([...new Set(relevant.map((h) => h.ownerId))])
+    : new Map<string, LivenessVerdict>();
 
   const declaredGoals = goals.filter((g): g is GoalDrainRowLike & { drainFleet: string } => g.drainFleet !== null);
   const declared = declaredGoals.map((g) => ({
@@ -2245,7 +2266,9 @@ export async function runGoalDrainFleetSweepOnce(
     holderOwnerId: relevant.find((h) => h.goalId === g.goalId && h.workspaceId === g.workspaceId &&
       !!verdicts.get(h.ownerId) && holderCountsAsAlive(verdicts.get(h.ownerId)!))?.ownerId,
   }));
-  const fleetLiveness = await deps.resolveFleetLiveness(declared);
+  const fleetLiveness = declared.length
+    ? await deps.resolveFleetLiveness(declared)
+    : new Map<string, DrainFleetLiveness>();
 
   // EI-24556293106348130: an UNCOUPLED fleet (live leader + live worker, no edge
   // to the live holder) is repaired in place — never alarmed, never relaunched.
@@ -2273,7 +2296,9 @@ export async function runGoalDrainFleetSweepOnce(
   const alivePairs = declaredGoals
     .filter((g) => fleetLiveness.get(fleetKey(g.workspaceId, g.drainFleet)) === 'alive')
     .map((g) => ({ workspaceId: g.workspaceId, fleetSlug: g.drainFleet, goalId: g.goalId }));
-  const specScopes = await deps.resolveFleetSpecScopes(alivePairs);
+  const specScopes = alivePairs.length
+    ? await deps.resolveFleetSpecScopes(alivePairs)
+    : new Map<string, DrainFleetSpecScope>();
 
   const alerts = scanGoalDrainFleets(goals, relevant, verdicts, fleetLiveness, specScopes, deps.now(), deps.graceMs);
   let escalated = 0;
