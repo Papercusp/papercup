@@ -24,6 +24,7 @@ import {
   type AdmissionCensusRunResult,
 } from './work-items-admission-census';
 import {
+  admissionEndpointBlock,
   admissionPairKey,
   bindAdmissionMergeSnapshot,
   buildPromoterPrompt,
@@ -2191,7 +2192,28 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       scope,
     });
     const scopedPairsBefore = fullInput.pairs.length;
-    const input = { ...fullInput, pairs: fullInput.pairs.slice(0, maxPairsPerStage) };
+    // D-010: reuse the promoter's live snapshot protection before spending a
+    // bounded slot. A known protected endpoint must not roll back movable work
+    // beside it. Persistence still rechecks every selected endpoint under locks.
+    const protectedEndpoints = new Map<string, { itemId: string; reason: string; detail: string }>();
+    const movablePairs = fullInput.pairs.filter((pair) => {
+      let protectedPair = false;
+      for (const item of [pair.a, pair.b]) {
+        const block = admissionEndpointBlock(item.mergeSnapshot);
+        if (!block) continue;
+        protectedPair = true;
+        protectedEndpoints.set(item.id, { itemId: item.id, reason: block.reason, detail: block.detail });
+      }
+      return !protectedPair;
+    });
+    const prescreen = {
+      availablePairs: scopedPairsBefore,
+      movablePairs: movablePairs.length,
+      protectedPairs: scopedPairsBefore - movablePairs.length,
+      protectedEndpoints: protectedEndpoints.size,
+      samples: [...protectedEndpoints.values()].slice(0, 20),
+    };
+    const input = { ...fullInput, pairs: movablePairs.slice(0, maxPairsPerStage) };
     // Pair checkpoints are valid only for the exact quality identity that
     // admitted them. Including the gate key here prevents a model/prompt/
     // threshold/dataset drift from replaying old production judgements under a
@@ -2254,9 +2276,20 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       selectedPairs: input.pairs.length,
       deferredPairs: scopedPairsBefore - input.pairs.length,
     };
-    if (JSON.stringify(stageEnvelope.workBudget) !== JSON.stringify(workBudget)) {
-      stageEnvelope = { ...stageEnvelope, workBudget };
+    if (
+      JSON.stringify(stageEnvelope.workBudget) !== JSON.stringify(workBudget) ||
+      JSON.stringify(stageEnvelope.prescreen) !== JSON.stringify(prescreen)
+    ) {
+      stageEnvelope = { ...stageEnvelope, workBudget, prescreen };
       await writeBulkStageEnvelope(sql, stageRunId, stageEnvelope, executionId);
+    }
+    if (input.pairs.length === 0 && scopedPairsBefore > 0) {
+      const message = `bulk admission prescreen blocked: ${prescreen.protectedPairs} protected pair(s), no movable pairs`;
+      const error = new BulkAdmissionBlockedError(message, {
+        kind: 'guard', class: 'prescreen_all_pairs_protected', retryable: true, message,
+      });
+      await failBulkStage(sql, stageRunId, error, 0, executionId);
+      throw error;
     }
     const preflightResult =
       stageEnvelope.preflight ??

@@ -330,6 +330,50 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
   }, 60_000);
 
+  it('gives the pair budget to movable work and reexamines protected pairs after their hold lifts', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'Separate second pair', 'open', NULL, '{}'::jsonb,
+              'change', NULL, 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id = 'c'`;
+    await db.sql`UPDATE harness_shared.work_items SET payload = '{"_claimHold":true}'::jsonb WHERE feature_id = 'b'`;
+    const seen: string[] = [];
+    const llmCall = async (input: Parameters<PromoterLlmCall>[0]) => {
+      const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+      seen.push(...keys);
+      return {
+        text: '', json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'separate findings' })) },
+        inputTokens: 25, outputTokens: 10,
+      };
+    };
+    const options = {
+      workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, maxStages: 1, maxPairsPerStage: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 }, llmCall,
+    };
+    const result = await runBulk({ ...options, runId: 'bulk-prescreen-mixed' });
+    expect(seen).toEqual(['c::d']);
+    expect(result).toMatchObject({ converged: false, convergenceReason: 'stage-budget', finalScopedPairs: 1 });
+    expect(result.stages[0]).toMatchObject({ pairs: 1, censusBefore: 2, censusAfter: 1 });
+    const [stage] = await db.sql<Array<{ status: string; protected_pairs: number; movable_pairs: number }>>`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{prescreen,protectedPairs}')::int AS protected_pairs,
+             (detail #>> '{prescreen,movablePairs}')::int AS movable_pairs
+        FROM harness_shared.admission_runs WHERE id = 'bulk-prescreen-mixed-stage-1'`;
+    expect(stage).toEqual({ status: 'complete', protected_pairs: 1, movable_pairs: 1 });
+    const [protectedRow] = await db.sql<Array<{ status: string; held: boolean }>>`
+      SELECT status, (payload->>'_claimHold')::boolean AS held
+        FROM harness_shared.work_items WHERE feature_id = 'b'`;
+    expect(protectedRow).toEqual({ status: 'open', held: true });
+    await db.sql`UPDATE harness_shared.work_items SET payload = '{}'::jsonb WHERE feature_id = 'b'`;
+    const resumed = await runBulk({ ...options, runId: 'bulk-prescreen-lifted' });
+    expect(seen).toEqual(['c::d', 'a::b']);
+    expect(resumed).toMatchObject({ converged: true, finalScopedPairs: 0 });
+  }, 60_000);
+
   it('preserves a merge endpoint with explicit unknown implementation readiness', async () => {
     await seed();
     await db.sql`
@@ -996,7 +1040,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(ledger).toEqual([{ model_id: override }]);
   }, 60_000);
 
-  it('includes durable parks for judging but the shared guard refuses every mutation and records the hold', async () => {
+  it('keeps protected-only pairs in the census but spends no model call and never reports convergence', async () => {
     await seed();
     const mergedPark = {
       _claimHold: true,
@@ -1023,6 +1067,9 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
               'open', NULL, ${JSON.stringify(distinctPark)}::text::jsonb, 'change', 'watch:other', 4, 4,
               '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
 
+    const llmCall = vi.fn(async () => {
+      throw new Error('protected-only pairs must not reach the model');
+    });
     await expect(
       runBulk({
         workspaceId: WS,
@@ -1030,25 +1077,10 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         runId: 'bulk-parks',
         sql: db.sql,
         census: { chunkCount: 2, targetTokens: 1_000 },
-        llmCall: async (input) => {
-          expect(input.system).toContain('DUPLICATION ONLY');
-          expect(input.messages[0]?.content).toContain('a::b');
-          expect(input.messages[0]?.content).toContain('c::d');
-          expect(input.messages[0]?.content).toContain('su-parked-duplicate');
-          return {
-            text: '',
-            json: {
-              judgements: [
-                { pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure and remedy' },
-                { pairKey: 'c::d', verdict: 'distinct', reason: 'different failure and remedy' },
-              ],
-            },
-            inputTokens: 100,
-            outputTokens: 30,
-          };
-        },
+        llmCall,
       }),
-    ).rejects.toThrow(/merge guard refused 2 endpoint/);
+    ).rejects.toThrow(/prescreen blocked: 2 protected pair/);
+    expect(llmCall).not.toHaveBeenCalled();
 
     const parked = await db.sql<
       Array<{
@@ -1107,18 +1139,18 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
              (detail #>> '{outcome,rolledBack}')::int AS rolled_back,
              (detail #>> '{outcome,unchanged}')::int AS unchanged,
              (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed,
-             ARRAY(SELECT entry->>'reason' FROM jsonb_array_elements(detail->'guardRefusals') entry ORDER BY 1)
+             ARRAY(SELECT entry->>'reason' FROM jsonb_array_elements(detail->'prescreen'->'samples') entry ORDER BY 1)
                AS refusal_reasons
         FROM harness_shared.admission_runs
        WHERE id = 'bulk-parks-stage-1'`;
     expect(ledger).toEqual([
       {
         status: 'blocked',
-        held: 2,
-        attempted: 2,
+        held: 0,
+        attempted: 0,
         successful: 0,
         rolled_back: 0,
-        unchanged: 2,
+        unchanged: 0,
         rows_changed: 0,
         refusal_reasons: ['claim-held', 'claim-held'],
       },
