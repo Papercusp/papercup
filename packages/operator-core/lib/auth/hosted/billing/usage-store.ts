@@ -182,7 +182,9 @@ export class PostgresHostedUsageStore {
 
   /** Exact tenant/month/time read; organization reads can include its own
    * workspaces. Next observation counters come from committed stream history,
-   * not the browser. Future receipts prevent stale reads from reusing a revision. */
+   * not the browser. Future receipts prevent stale reads from reusing a revision.
+   * A bounded batch of the oldest observations rotates after successful reads;
+   * this is never a full provider population census. */
   async readOpenRouterBindings(input: { scope: HostedUsageScope; month: string; asOfMs: number }): Promise<OpenRouterUsageBinding[]> {
     input = Object.freeze({ ...input, scope: Object.freeze({ ...input.scope }) });
     buildHostedUsageStatement({ ...input, records: [], source: {
@@ -203,7 +205,8 @@ export class PostgresHostedUsageStore {
            AND b.provider = 'openrouter' AND b.openrouter_credential_ref IS NOT NULL
            AND b.occurred_at_ms >= ${startMs} AND b.occurred_at_ms < ${endMs}
            AND b.observed_at_ms <= ${input.asOfMs} AND h.latest_observed_at_ms <= ${input.asOfMs}
-         ORDER BY b.customer_workspace_id COLLATE "C", b.usage_id COLLATE "C"`;
+         ORDER BY h.latest_observed_at_ms, b.customer_workspace_id COLLATE "C", b.usage_id COLLATE "C"
+         LIMIT 25`;
       return rows.map(row => {
         const r = receipt(row);
         const binding: OpenRouterUsageBinding = {

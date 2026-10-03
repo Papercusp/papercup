@@ -8,7 +8,7 @@ import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { PILOT_COST_CATEGORIES } from './unit-economics';
 import { buildHostedUsageStatement, type HostedUsageRecord, type HostedUsageScope } from './usage-statement';
 import { PostgresHostedUsageStore, type OpenRouterGenerationBinding } from './usage-store';
-import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, type OpenRouterUsageBinding } from './openrouter-usage';
+import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
 import { createHostedUsageSource } from './usage-service';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
@@ -23,7 +23,7 @@ const runService: HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>)
   }) as Promise<T>;
 const store = () => new PostgresHostedUsageStore(runService);
 
-async function tenant(controlWorkspaceId: string = randomUUID(), organizationId: string = randomUUID()): Promise<HostedUsageScope & { customerWorkspaceId: string }> {
+async function tenant(controlWorkspaceId: string = randomUUID(), organizationId: string = randomUUID(), state: 'active' | 'deleted' = 'active'): Promise<HostedUsageScope & { customerWorkspaceId: string }> {
   const customerWorkspaceId = randomUUID();
   await db.adminSql`
     INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name)
@@ -39,9 +39,9 @@ async function tenant(controlWorkspaceId: string = randomUUID(), organizationId:
             'gcp', 'fixture-project', 'us-central1', 'n2-standard-2', 'ubuntu-2404', 40, 'default', 'running', 'running')`;
   await db.adminSql`
     INSERT INTO harness_shared.customer_workspaces
-      (workspace_id, id, organization_id, workspace_host_id, display_name, state, created_by_principal_kind, created_by_principal_id)
+      (workspace_id, id, organization_id, workspace_host_id, display_name, state, deleted_at, created_by_principal_kind, created_by_principal_id)
     VALUES (${controlWorkspaceId}, ${customerWorkspaceId}, ${organizationId}, ${customerWorkspaceId},
-            'Usage fixture', 'active', 'user', 'fixture-user')`;
+            'Usage fixture', ${state}, ${state === 'deleted' ? new Date(T) : null}, 'user', 'fixture-user')`;
   return { controlWorkspaceId, organizationId, customerWorkspaceId };
 }
 
@@ -285,7 +285,9 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
   });
 
   it('prevents global generation reassignment across racing tenants and hides foreign/time/month bindings', async () => {
-    const a = await tenant(); const otherOrg = await tenant(a.controlWorkspaceId);
+    const a = await tenant(randomUUID(), randomUUID(), 'deleted'); const otherOrg = await tenant(a.controlWorkspaceId);
+    // Preserve the real one-live-workspace guard. A historical deleted row is
+    // enough to exercise same-org foreign-workspace binding reads.
     const otherWorkspace = await tenant(a.controlWorkspaceId, a.organizationId); const otherControl = await tenant();
     const b = captured(a);
     const outcomes = await Promise.all([store().bindOpenRouterGeneration(b), store().bindOpenRouterGeneration({ ...b, scope: otherOrg })]);
@@ -343,5 +345,21 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
         1, category, payer, occurred_at_ms, observed_at_ms, quantity, unit, cost_source, cost_micros, source_ref,
         openrouter_credential_ref, NULL, openrouter_is_byok
       FROM papercusp_auth.hosted_usage_receipts WHERE usage_id = ${b.generationId}`)).rejects.toMatchObject({ code: '23514' });
+  });
+  it('bounds provider-read batches and rotates oldest observations without asserting full census', async () => {
+    const scope = await tenant();
+    const population = Array.from({ length: 27 }, () => captured(scope));
+    for (const b of population) expect(await store().bindOpenRouterGeneration(b)).toBe('recorded');
+    const first = await bindings(scope); expect(first).toHaveLength(25);
+    const seen = new Set(first.map(b => b.generationId));
+    const missing = population.filter(b => !seen.has(b.generationId)).map(b => b.generationId).sort();
+    expect(missing).toHaveLength(2);
+    for (const b of first) expect(await store().append(openRouterUsageRecord(b, {
+      data: { id: b.generationId, is_byok: b.isByok, total_cost: 0.001 },
+    }))).toBe('recorded');
+    const next = await bindings(scope, T + 2000); expect(next).toHaveLength(25);
+    expect(next.slice(0, 2).map(b => b.generationId).sort()).toEqual(missing);
+    expect(next.slice(0, 2).every(b => b.revision === 2)).toBe(true);
+    expect(next.slice(2).every(b => b.revision === 3)).toBe(true);
   });
 });

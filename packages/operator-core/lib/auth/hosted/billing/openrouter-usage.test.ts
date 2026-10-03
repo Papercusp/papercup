@@ -138,7 +138,7 @@ describe('OpenRouter hosted usage collector', () => {
     expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
   });
   it('composes the durable binding reader through the existing source without inventing provider census or billing finality', async () => {
-    const pinned = { ...binding, credentialSha256: createHash('sha256').update('server-secret').digest('hex') };
+    const pinned = { ...binding, observedAtMs: time + 2000, credentialSha256: createHash('sha256').update('server-secret').digest('hex') };
     const readOpenRouterBindings = vi.fn(async () => [pinned]);
     const records: HostedUsageRecord[] = [];
     const store = { readOpenRouterBindings, append: vi.fn(async (r: HostedUsageRecord) => {
@@ -162,10 +162,37 @@ describe('OpenRouter hosted usage collector', () => {
     const input = { scope, month: '2026-10', asOfMs: time + 2000 };
     expect(await empty.read(input)).toMatchObject({ complete: false, records: [] });
     expect(readCredential).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
-    const mismatched = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => [{ ...binding,
+    const mismatched = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => [{ ...binding, observedAtMs: input.asOfMs,
       credentialSha256: createHash('sha256').update('correct-key').digest('hex') }] }, readCredential, fetch });
     expect(await mismatched.read(input)).toMatchObject({ complete: false, records: [] });
     expect(fetch).not.toHaveBeenCalled();
+  });
+  it('validates the entire bound population before any credential lookup, including foreign tenant/time/metadata', async () => {
+    const input = { scope, month: '2026-10', asOfMs: time + 2000 };
+    const good = { ...binding, observedAtMs: input.asOfMs };
+    for (const bad of [{ ...good, scope: { ...scope, organizationId: 'other' } },
+      { ...good, scope: { ...scope, customerWorkspaceId: 'other' } }, { ...good, observedAtMs: input.asOfMs + 1 },
+      { ...good, occurredAtMs: Date.UTC(2026, 10, 1) }, { ...good, credentialSha256: 'invalid' }]) {
+      const readCredential = vi.fn(async () => 'server-secret'); const fetch = vi.fn<typeof globalThis.fetch>();
+      const collector = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => [good, bad] }, readCredential, fetch });
+      await expect(collector.read(input)).rejects.toThrow(/binding/);
+      expect(readCredential).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+    }
+  });
+  it('stops the provider-read batch after its shared deadline aborts, keeping the census explicitly incomplete', async () => {
+    const input = { scope, month: '2026-10', asOfMs: time + 2000 };
+    const b = { ...binding, observedAtMs: input.asOfMs };
+    const abort = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(abort.signal);
+    const readCredential = vi.fn(async () => 'server-secret');
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, options) => {
+      expect(options?.signal).toBe(abort.signal); abort.abort(); throw new Error('timed out');
+    });
+    try {
+      const collector = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => [b, { ...b, generationId: 'gen-other' }] }, readCredential, fetch });
+      expect(await collector.read(input)).toMatchObject({ complete: false, records: [] });
+      expect(readCredential).toHaveBeenCalledTimes(1); expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { timeout.mockRestore(); }
   });
   it('rejects malformed server authority before credential lookup', async () => {
     const s = setup({ readBinding: async () => ({ ...binding, revision: 0 }) });

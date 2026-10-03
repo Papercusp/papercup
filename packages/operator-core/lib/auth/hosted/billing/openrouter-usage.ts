@@ -12,6 +12,7 @@ import { formatMicrosDecimal, splitMicrosDecimal } from '../../../cupboard/money
 import { PostgresHostedUsageStore, type HostedUsageAppendResult } from './usage-store';
 import { validateHostedUsageRecord, type HostedUsageRecord } from './usage-statement';
 import type { HostedUsageCollector } from './usage-service';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 
 type Scope = Pick<HostedUsageRecord, 'controlWorkspaceId' | 'organizationId' | 'customerWorkspaceId'>;
 export interface OpenRouterUsageBinding {
@@ -165,10 +166,23 @@ export function createOpenRouterHostedUsageCollector(options: {
     id: 'openrouter:bound-generations', provider: 'openrouter', categories: ['inference-fees'],
     async read(input) {
       const bindings = await options.store.readOpenRouterBindings(input);
+      const { startMs, endMs } = shadowMonthBounds(input.month);
+      // Validate the full server batch before resolving ANY account key. An
+      // organization request may include only its own workspace bindings.
+      for (const binding of bindings) {
+        const scope = snapshotScope(binding.scope);
+        if (scope.controlWorkspaceId !== input.scope.controlWorkspaceId || scope.organizationId !== input.scope.organizationId
+          || (input.scope.customerWorkspaceId !== null && scope.customerWorkspaceId !== input.scope.customerWorkspaceId)
+          || binding.occurredAtMs < startMs || binding.occurredAtMs >= endMs
+          || binding.observedAtMs !== input.asOfMs) throw new Error('OpenRouter binding scope/time mismatch');
+        openRouterUsageRecord(binding, { data: { id: binding.generationId, is_byok: binding.isByok, total_cost: null } });
+      }
       const records: HostedUsageRecord[] = [];
+      const deadline = AbortSignal.timeout(10_000);
       // Sequential provider reads keep account rate pressure bounded. No
       // incomplete/failed read is represented as a zero charge or full census.
       for (const binding of bindings) {
+        if (deadline.aborted) break;
         const collector = new OpenRouterHostedUsageCollector({
           readBinding: async (scope, generationId) => sameScope(scope, binding.scope)
             && generationId === binding.generationId ? binding : null,
@@ -176,7 +190,7 @@ export function createOpenRouterHostedUsageCollector(options: {
           // createHostedUsageSource validates the whole batch before appending.
           append: async () => 'recorded',
         });
-        const result = await collector.collect({ scope: binding.scope, generationId: binding.generationId });
+        const result = await collector.collect({ scope: binding.scope, generationId: binding.generationId }, deadline);
         if (result.outcome === 'recorded' && 'record' in result) records.push(result.record);
       }
       return { scope: input.scope, month: input.month, complete: false,
