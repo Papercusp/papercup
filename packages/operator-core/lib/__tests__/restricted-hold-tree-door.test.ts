@@ -158,7 +158,16 @@ describe('shell doors refuse before booting anything', () => {
     const env = { PATH: `${bin}:/usr/local/bin:/usr/bin:/bin`, HOME: home, TMPDIR: home };
     return { env, record, tauriRan };
   }
-  const gateArgv = (door: string) => [join(REPO, 'scripts', 'restricted-hold-tree-gate.mjs'), '--door', door, REPO];
+  // WI-10005802: each door starts the gate under the committed-source loader, so the gate and the
+  // preflight library run their committed (HEAD) bytes (the loader suite pins what that means).
+  const gateArgv = (door: string) => [
+    '--import',
+    COMMITTED_SOURCE_LOADER,
+    join(REPO, 'scripts', 'restricted-hold-tree-gate.mjs'),
+    '--door',
+    door,
+    REPO,
+  ];
 
   it('tauri-guarded dev: refuses with the gate verdict and never reaches tauri', () => {
     const { env, record, tauriRan } = shims(RESTRICTED_HOLD_PREFLIGHT_EXIT.refuse);
