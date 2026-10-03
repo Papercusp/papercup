@@ -198,6 +198,38 @@ describe('resolveWorkItemBehaviorContract — impact reporting', () => {
     expect(out.impact.report).toContain('omitting `slug`');
   });
 
+  // EI-23820598120293502: the advice named both verbs and the arg to omit but not what either
+  // verb REQUIRES, which cost a closer five corrective round-trips (a one-item array under
+  // `spec`; `revision` vs `specRevision`; loose args instead of a `binding` object). Pin the
+  // structural facts, not the enum lists, so the advice cannot drift back to naming only verbs.
+  it('names the wrapper key and required keys of both verbs, not just their names', async () => {
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, readers());
+    const report = out.impact.report ?? '';
+    expect(report).toContain('ONE object under `spec` (not an array)');
+    for (const key of ['specId', 'expectedRevision', 'planItemId', 'behavior', 'behaviorClass', 'lifecycleStatus']) {
+      expect(report).toContain(key);
+    }
+    expect(report).toContain('ONE object under `binding`');
+    for (const key of ['workItemId', 'specRevision', 'evidenceKind', 'evidenceRef']) {
+      expect(report).toContain(key);
+    }
+    expect(report).toContain('tools:find');
+  });
+
+  it('does not state the shapes when the item HAS a source plan (the remedy there is different)', async () => {
+    // The stamped branch tells the closer to link/promote against an existing clause on its
+    // own plan; the ad-hoc-scope shape advice would be wrong there.
+    const out = await resolveWorkItemBehaviorContract(
+      { id: 'EI-1', kind: 'bug', harness: 'papercup', sourcePlanSlug: 'some-plan', sourcePlanItemIds: ['P-001'] },
+      readers(),
+    );
+    const report = out.impact.report;
+    // Positive control: the report exists and IS the stamped-branch remedy. Without this the
+    // negative assertion below would also pass if the item resolved no report at all.
+    expect(report).toContain('link one with plans:bind-spec-evidence');
+    expect(report).not.toContain('ONE object under `spec`');
+  });
+
   it('falls back to the required SHAPE rather than naming a planItemId the write would reject', async () => {
     // `EI-1` derives `P-1`, which fails `plan_spec_clause_revisions_plan_item_id_check`
     // (`^P-[0-9]{3,}$`). The advice must still NAME the argument without inventing a value

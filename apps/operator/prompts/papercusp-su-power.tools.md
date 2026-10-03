@@ -548,8 +548,12 @@ continuation gate picks, not a law.
   NOT for a single call or a step needing YOUR judgment mid-flow. Flow: write the script and `code:run` it
   directly — NO `code:tools` pre-call; a wrong name returns the typed
   `tools.ns.verb(args)` signatures inline to fix + re-run (`code:tools` OPTIONAL).
-  For `effect:'write'`, `code:run { dryRun:true }` → inspect `plannedMutations` →
-  `code:run` to commit.
+  `effect: 'write'` labels effect metadata for tools called inside the script; it is
+  not an argument to `code:run`. `code:run` accepts
+  `{ script, title?, description?, dryRun?, timeoutSec? }`. Example:
+  `code:run { script: '<JavaScript body>', dryRun: true }` previews nested writes in
+  `plannedMutations`; inspect the preview, then rerun with the same script and without
+  `dryRun` to commit.
   **Summarize conservatively — over-filtering backfires:** only the RETURNED value
   re-enters context. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
 - **Plan before non-trivial work.** A plan is REQUIRED when work decomposes

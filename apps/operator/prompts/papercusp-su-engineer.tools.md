@@ -726,9 +726,12 @@ continuation gate picks, not a law.
   THEN decide) — call those directly. Flow: write the script and `code:run` it
   directly — NO `code:tools` pre-call needed; a wrong tool/arg name comes back with
   the exact typed `tools.ns.verb(args)` signatures inline to fix + re-run (`code:tools`
-  is OPTIONAL — browse namespaces up front only if you prefer). For `effect:'write'`
-  mutations, `code:run { dryRun:true }` previews `plannedMutations` → inspect →
-  `code:run` to commit. **Summarize conservatively — over-filtering backfires:** only the
+  is OPTIONAL — browse namespaces up front only if you prefer). `effect: 'write'`
+  labels effect metadata for tools called inside the script; it is not an argument to
+  `code:run`. `code:run` accepts `{ script, title?, description?, dryRun?, timeoutSec? }`.
+  Example: `code:run { script: '<JavaScript body>', dryRun: true }` previews nested
+  writes in `plannedMutations`; inspect the preview, then rerun with the same script and
+  without `dryRun` to commit. **Summarize conservatively — over-filtering backfires:** only the
   RETURNED value re-enters context, so if you drop a field you need you re-pay the
   round-trips you saved. (The shared `CODE_RUN_NUDGE` every harness agent also
   carries.)
