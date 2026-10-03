@@ -86,7 +86,10 @@ describe('criterion ALL probes', () => {
 
   it('refuses an unjudgeable child without borrowing its sibling result', async () => {
     const next = readProbe({ args: { id: 'unreadable' } });
-    const result = await evaluate([readProbe(), next], async (_name, args) => args.id === 'unreadable' ? {} : { state: 'green' });
+    const result = await evaluate([readProbe(), next], async (_name, args) => {
+      if (args.id === 'unreadable') throw new Error('ledger unavailable');
+      return { state: 'green' };
+    });
     expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
   });
 

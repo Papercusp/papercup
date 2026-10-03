@@ -8,6 +8,10 @@ import { REPLAY_BASELINE_VARIANT } from './battery';
 import { REPLAY_LOOP_ID, type ReplayRunner } from './types';
 import { getLearningLoop, listLearningSpendEvents, listLearningSpendReservations } from '../learning-governor/store';
 import { LEARNING_GOVERNOR_BUDGET_FLOOR_USD } from '../learning-governor/core';
+import { transferReplayPort } from '../transfer/replay-adapter';
+import { admitTransferLesson, recordTransferOutcome, setLessonMemoryId } from '../transfer/store';
+import { applyTransferVerdict } from '../transfer/gate';
+import { readProducerObservations } from '../experiment/producer-lifecycle-store';
 
 let db: OrgTestDb;
 beforeAll(async () => {
@@ -32,6 +36,41 @@ const glue = () => ({ enabled: async () => true, getSql: async () => db.adminSql
   preflight: async () => ({ allow: true, remainingUsd: 1 }), log: (message: string) => { throw new Error(message); } });
 
 describe('governed replay durable spend boundary', () => {
+  it('carries the actual settled reservation and scored cell identities through the production transfer adapter', async () => {
+    const workspaceId = `ws-transfer-${randomUUID()}`;
+    await registerReplayLoop(db.adminSql, { workspaceId, budgetUsd: 1 });
+    const admitted = await admitTransferLesson(db.adminSql, { workspaceId, signature: 'provenance',
+      lessonText: 'verify the result', sourceRef: 'fixture:transfer-source', potSlug: 'test-transfer' });
+    if (!admitted.admitted) throw new Error('fixture admission failed');
+    const port = transferReplayPort({ workspaceId,
+      runner: async (input) => ({ ...await run(input), execution: { model: 'fixture-student', codeHash: 'fixture-runner' } }),
+      llmCall: judge, runGoverned: (q, deps) => runGovernedReplay(q, deps, glue()),
+    });
+    const outcome = await port({ lesson: admitted.lesson, transcript: { ref: 'fixture:transfer-source',
+      turns: [{ index: 0, role: 'user', text: 'complete the task' }, { index: 1, role: 'assistant', text: 'historical continuation' }] } });
+    const reservations = await listLearningSpendReservations(db.adminSql, { workspaceId });
+    expect(reservations).toHaveLength(1);
+    expect(outcome.evaluation!.reservation).toEqual(reservations[0]);
+    expect(outcome.evaluation!.reservation).toMatchObject({ status: 'settled', potSlug: 'test-transfer', runRef: outcome.batteryId });
+    expect(outcome.evaluation!.reservation!.usedUsd).toBeCloseTo(outcome.costUsd);
+    expect(outcome.costUsd).toBeCloseTo(0.12);
+    const cells = await db.adminSql`SELECT run_id AS id, status FROM harness_shared.replay_runs WHERE workspace_id = ${workspaceId} ORDER BY run_id`;
+    expect(outcome.evaluation!.outcomes.map((cell) => ({ id: cell.runId, status: cell.status })).sort((a, b) => a.id.localeCompare(b.id))).toEqual(cells);
+    expect(outcome.evaluation!.experiment.modelHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(outcome.evaluation!.experiment.codeHash).toBeNull();
+    expect(await listLearningSpendEvents(db.adminSql, { workspaceId })).toHaveLength(1);
+    await recordTransferOutcome(db.adminSql, { workspaceId, id: admitted.lesson.id, batteryId: outcome.batteryId,
+      delta: outcome.withComposite - outcome.baselineComposite, transition: applyTransferVerdict(admitted.lesson, 'passed'),
+      evaluation: outcome.evaluation });
+    const receipt = (await readProducerObservations(db.adminSql, { producer: 'transfer', workspaceId }))[0];
+    expect(receipt).toMatchObject({ evaluationCurrent: true, sourceCurrent: true, contract: null, promotionAllowed: false });
+    expect(receipt.evaluation).toEqual(outcome.evaluation);
+    await setLessonMemoryId(db.adminSql, { workspaceId, id: admitted.lesson.id, memoryId: randomUUID() });
+    const linked = (await readProducerObservations(db.adminSql, { producer: 'transfer', workspaceId }))[0];
+    expect(linked).toMatchObject({ evaluationCurrent: false, sourceCurrent: true, contract: null, promotionAllowed: false });
+    expect(linked.evaluation).toEqual(outcome.evaluation);
+  });
+
   it('records a reservation before actual replay execution and charges the battery once', async () => {
     const workspaceId = `ws-replay-${randomUUID()}`;
     await registerReplayLoop(db.adminSql, { workspaceId, budgetUsd: 1 });

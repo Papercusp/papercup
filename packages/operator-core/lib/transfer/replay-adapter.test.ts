@@ -113,7 +113,7 @@ describe('transferReplayPort', () => {
       },
     });
     const outcome = await port({ lesson, transcript: transcript(['user', 'assistant', 'tool_use', 'assistant']) });
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       withComposite: 7.5,
       baselineComposite: 6.0,
       batteryId: 'transfer:lesson-1:t1',
@@ -125,6 +125,8 @@ describe('transferReplayPort', () => {
     ]);
     expect(seenConfig!.cases).toHaveLength(1);
     expect(seenConfig!.baselineMode).toBe('matched');
+    expect(outcome.evaluation).toMatchObject({ reservation: null, invocations: [],
+      experiment: { modelHash: null, promptHash: null, codeHash: null } });
   });
 
   it('the actual transfer battery runs matched baseline and lesson students, retaining both charges', async () => {
@@ -150,6 +152,50 @@ describe('transferReplayPort', () => {
     expect(calls[1].systemPrompt).toContain(lesson.lessonText);
     expect(outcome.withComposite).toBeGreaterThan(outcome.baselineComposite);
     expect(outcome.costUsd).toBeCloseTo(0.06);
+    expect(outcome.evaluation?.invocations).toHaveLength(2);
+    expect(outcome.evaluation?.experiment.promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(outcome.evaluation?.experiment.modelHash).toBeNull();
+  });
+
+  it('pins the inputs actually executed, changes pins with the task/lesson/model, and retains unknown code coverage', async () => {
+    const evaluate = async (model: string, lessonText: string, userText: string) => {
+      const port = transferReplayPort({
+        workspaceId: 'ws', now: () => Date.parse('2026-10-03T00:00:00Z'),
+        runner: async () => ({ outputText: 'continuation', costUsd: 0.02, inputTokens: 1, outputTokens: 1,
+          replayed: true, execution: { model, codeHash: 'fixture-runner' } }),
+        llmCall: async () => ({ text: JSON.stringify({ d1: 7, d2: 7, d3: 7, rationale: 'fixture' }), costUsd: 0.01 }) as never,
+        runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 }, result: await runReplayBattery(config, deps) }),
+      });
+      const source = transcript(['user', 'assistant', 'tool_use', 'assistant']);
+      source.turns[0].text = userText;
+      return (await port({ lesson: { ...lesson, lessonText }, transcript: source })).evaluation!;
+    };
+    const first = await evaluate('student-a', 'lesson-a', 'task-a');
+    const same = await evaluate('student-a', 'lesson-a', 'task-a');
+    const model = await evaluate('student-b', 'lesson-a', 'task-a');
+    const prompt = await evaluate('student-a', 'lesson-b', 'task-a');
+    const task = await evaluate('student-a', 'lesson-a', 'task-b');
+    expect(first.experiment).toEqual(same.experiment);
+    expect(first.experiment.modelHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(model.experiment.modelHash).not.toBe(first.experiment.modelHash);
+    expect(prompt.experiment.promptHash).not.toBe(first.experiment.promptHash);
+    expect(task.experiment.taskHash).not.toBe(first.experiment.taskHash);
+    expect(task.experiment.promptHash).not.toBe(first.experiment.promptHash);
+    expect(first.loadedCode.adapter).toMatch(/^[a-f0-9]{16}$/);
+    expect(first.loadedCode.battery).toMatch(/^[a-f0-9]{16}$/);
+    expect(first.experiment.codeHash).toBeNull();
+    expect(first.reservation).toBeNull();
+    expect(first.outcomes.every((cell) => cell.replayed && cell.status === 'scored')).toBe(true);
+  });
+
+  it('refuses a mismatched workspace or transcript before invoking the governed battery', async () => {
+    let called = false;
+    const port = transferReplayPort({ workspaceId: 'ws', runner: async () => ({} as never), llmCall: async () => ({} as never),
+      runGoverned: async () => { called = true; return { verdict: { allow: false, remainingUsd: null }, result: null }; } });
+    const source = transcript(['user', 'assistant', 'user', 'assistant']);
+    await expect(port({ lesson: { ...lesson, workspaceId: 'other' }, transcript: source })).rejects.toThrow(/source does not match/);
+    await expect(port({ lesson, transcript: { ...source, ref: 'other' } })).rejects.toThrow(/source does not match/);
+    expect(called).toBe(false);
   });
 
   it('throws on a governed refusal (recorded as status error upstream, never silent)', async () => {

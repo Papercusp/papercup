@@ -207,6 +207,7 @@ async function resolveDispatchSource(
 export type DispatchSkipReason =
   | 'fork-unsupported'
   | 'conversion-unavailable'
+  | 'source-session-untracked'
   | 'convert-needs-live-source-identity'
   | 'account-walled'
   | 'source-context-critical'
@@ -821,7 +822,7 @@ function childExitFailure(exit: SpawnChildExit): string | null {
 
 /** The operation a rank implies against this source, or the reason there is none. */
 export function planDispatchOperation(
-  source: { agent: string | null; live: boolean },
+  source: { agent: string | null; live: boolean; tracked?: boolean },
   rank: Pick<AllowedExpertModel, 'agent'>,
 ): { operation: DispatchOperation } | { operation: null; reason: DispatchSkipReason; detail: string } {
   const sourceAgent = (source.agent ?? '').toLowerCase();
@@ -849,6 +850,15 @@ export function planDispatchOperation(
         detail:
           `a consult fork needs a tracked fork to carry its pre-pinned identity, and tracked forks ` +
           `are claude-only, so a ${rank.agent} source cannot be forked`,
+      };
+    }
+    if (source.tracked === false) {
+      return {
+        operation: null,
+        reason: 'source-session-untracked',
+        detail:
+          'a consult fork needs an exact psu-tracked source to mint an independent responder identity; ' +
+          'this raw native session can only be resumed or forked in place',
       };
     }
     return { operation: 'fork' };
@@ -880,7 +890,32 @@ export function planDispatchOperation(
         'skipped in favour of the next rank',
     };
   }
+  if (source.tracked === false) {
+    return {
+      operation: null,
+      reason: 'source-session-untracked',
+      detail:
+        'a cross-backend session port needs an exact psu-tracked source session; this raw native session ' +
+        'can only be resumed or forked in place, so the rank is skipped before launch',
+    };
+  }
   return { operation: 'convert' };
+}
+
+/**
+ * `resolveResumeTarget` can exact-pin an older/native transcript while its
+ * `binding` describes the owner's current adv_sessions incarnation. A consult
+ * fork or session port needs the exact source itself to be psu-tracked; the
+ * launcher rejects a raw native source after spawn, so compare the pin with the
+ * persisted binding before any rank is launched.
+ */
+function isExactTrackedResumeTarget(target: Pick<ResumeTarget, 'ownerId' | 'sessionId' | 'binding'>): boolean {
+  return Boolean(
+    target.ownerId &&
+      target.sessionId &&
+      target.binding?.coordOwnerId === target.ownerId &&
+      target.binding.sessionId === target.sessionId,
+  );
 }
 
 /**
@@ -1101,7 +1136,14 @@ async function walkConsultDispatch(
     }
 
     for (const rank of ranks) {
-      const plan = planDispatchOperation(target, rank);
+      const plan = planDispatchOperation(
+        {
+          agent: target.agent,
+          live: target.live,
+          tracked: isExactTrackedResumeTarget(target),
+        },
+        rank,
+      );
       if (plan.operation === null) {
         attempts.push({
           rank: rank.rank,

@@ -18,6 +18,7 @@ import type {
   TransferSourceKind,
   TransferStatus,
   TransferTier,
+  TransferReplayEvidence,
 } from './types';
 
 type Row = Record<string, unknown>;
@@ -161,6 +162,7 @@ export async function recordTransferOutcome(
     transition: GateTransition;
     batteryId: string;
     delta: number;
+    evaluation?: TransferReplayEvidence;
   },
 ): Promise<TransferLesson | null> {
   return withProducerLifecycleWrite(sql, async (sql) => {
@@ -173,7 +175,8 @@ export async function recordTransferOutcome(
            updated_at = now()
      WHERE workspace_id = ${q.workspaceId} AND id = ${q.id}
      RETURNING *`) as Row[];
-  if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id });
+  if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id,
+    ...(q.evaluation === undefined ? {} : { evaluation: q.evaluation }) });
   return rows.length ? mapLesson(rows[0]) : null;
   });
 }

@@ -32,6 +32,7 @@ import {
   type Subject,
 } from '@papercusp/eval-battery';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
+import { computeOwnSourceHash } from '../scout/src-hash';
 import { divergenceSignals, type DivergenceSignals } from './divergence';
 import { cutTranscript, intentFromTranscript, renderTurns } from './transcript';
 import {
@@ -43,6 +44,9 @@ import {
   type ReplayStore,
   type ReplayVariant,
 } from './types';
+
+/** Captured when this module loads, never from a later checkout HEAD. */
+export const REPLAY_BATTERY_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
 
 /** The zero-cost historical anchor: echoes the original continuation. */
 export const REPLAY_BASELINE_VARIANT: ReplayVariant = {

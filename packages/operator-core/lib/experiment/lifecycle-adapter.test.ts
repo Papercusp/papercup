@@ -72,6 +72,20 @@ describe('P-011 common candidate/evidence/decision lifecycle', () => {
     }
   });
 
+  it('preserves partial evaluation through later writes, marks changed source stale, and never allows promotion', () => {
+    const input = { stage: 'observation' as const, workspaceId: 'ws-1', sourceRef: 'transfer:lesson',
+      recordedAt: '2026-10-03T00:00:00Z', source: { status: 'passed', last_battery_id: 'actual-battery' } };
+    const evaluation = { experiment: { batteryId: 'actual-battery', codeHash: null }, reservation: { id: 'actual-reservation', status: 'open' } };
+    const first = adaptTransferOutput({ ...input, evaluation });
+    expect(first).toMatchObject({ evaluation, evaluationCurrent: true, contract: null, promotionAllowed: false });
+    const linked = adaptTransferOutput({ ...input, source: { ...input.source, memory_id: 'memory', learning_lifecycle: first } });
+    expect(linked).toMatchObject({ evaluation, evaluationCurrent: false, contract: null, promotionAllowed: false });
+    const next = adaptTransferOutput({ ...input, source: { status: 'error', learning_lifecycle: linked } });
+    expect(next.evaluation).toEqual(evaluation);
+    expect(next.evaluationSourceHash).toBe(first.sourceHash);
+    expect(next.evaluationCurrent).toBe(false);
+  });
+
   it('maps rejection and inconclusive producer outputs without allowing activation', () => {
     const rejected = adaptGymOutput(baseInput('reject'));
     expect(rejected.validation.ok).toBe(true);

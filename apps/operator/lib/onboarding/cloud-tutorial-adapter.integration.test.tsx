@@ -54,7 +54,9 @@ describe("Assessed walkthrough dependencies", () => {
       imports.set(file, modules);
       for (const module of modules) {
         if (module.startsWith(".") || module.startsWith("@/")) continue;
-        expect(module, `Unassessed tutorial dependency in ${file}`).toMatch(/^(?:react|react-joyride|motion\/react|@papercusp\/operator-core\/lib\/onboarding\/cloud-tutorial-lesson)$/);
+        // Both internal modules expose the existing deterministic lesson/public
+        // recovery contract; this adds no frontend engine or external library.
+        expect(module, `Unassessed tutorial dependency in ${file}`).toMatch(/^(?:react|react-joyride|motion\/react|@papercusp\/operator-core\/lib\/onboarding\/cloud-tutorial-(?:lesson|help))$/);
       }
     }
     expect(imports.get("cloud-tutorial-adapter.tsx")).toEqual(["react", "react-joyride"]);

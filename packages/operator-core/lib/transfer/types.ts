@@ -31,6 +31,9 @@
  */
 import type { SignalOrigin } from '../harness/improvements/provenance';
 import type { ReplayTranscript } from '../replay/types';
+import type { ReplayOutcome } from '../replay/battery';
+import type { LearningExperiment } from '../experiment/types';
+import type { LearningSpendReservation } from '../learning-governor/store';
 
 /** The governor registration id for this loop (migration 244 vocabulary). */
 export const TRANSFER_LOOP_ID = 'frontier:transfer-harness';
@@ -123,6 +126,29 @@ export interface TransferTestOutcome {
   /** Groups the underlying replay_runs cells (replay_runs.battery_id). */
   batteryId: string;
   costUsd: number;
+  /** Actual replay execution and spend; legacy/fake ports may omit it.
+   * Missing pins remain null and cannot authorize common-contract promotion. */
+  evaluation?: TransferReplayEvidence;
+}
+
+export interface TransferReplayEvidence {
+  experiment: Omit<LearningExperiment, 'modelHash' | 'promptHash' | 'codeHash'> & {
+    modelHash: string | null;
+    promptHash: string | null;
+    codeHash: string | null;
+  };
+  reservation: LearningSpendReservation | null;
+  outcomes: readonly ReplayOutcome[];
+  budgetExhausted: boolean;
+  invocations: readonly {
+    variantId: string;
+    systemPromptHash: string;
+    contextHash: string;
+    model: string | null;
+    codeHash: string | null;
+  }[];
+  /** Measured modules, kept separately from a complete execution-code pin. */
+  loadedCode: { adapter: string | null; battery: string | null };
 }
 
 /**

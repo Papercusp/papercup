@@ -19,7 +19,11 @@
  * own distillation spend, so no battery dollar is ever double-counted.
  */
 import type { JudgeLlmCall } from '@papercusp/eval-battery';
+import { createHash } from 'node:crypto';
+import { computeOwnSourceHash } from '../scout/src-hash';
 import {
+  DEFAULT_REPLAY_RUBRIC,
+  REPLAY_BATTERY_SOURCE_HASH,
   REPLAY_BASELINE_VARIANT,
   runGovernedReplay,
   type GovernedReplayResult,
@@ -29,9 +33,11 @@ import {
   type ReplayTranscript,
   type ReplayVariant,
 } from '../replay';
-import type { TransferLesson, TransferReplayPort } from './types';
+import type { TransferLesson, TransferReplayEvidence, TransferReplayPort } from './types';
 
 export const WITH_LESSON_VARIANT_ID = 'with-lesson';
+const TRANSFER_ADAPTER_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
+const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** The cut point for a transfer case: the first ACTING turn (the student
  *  takes over where the original agent started acting). Clamped to the valid
@@ -64,17 +70,23 @@ export interface TransferReplayAdapterDeps {
   llmCall: JudgeLlmCall;
   /** Injectable for tests (default: the real runGovernedReplay). */
   runGoverned?: (
-    q: { workspaceId: string; config: ReplayBatteryConfig },
+    q: { workspaceId: string; config: ReplayBatteryConfig; potSlug?: string | null },
     deps: { runner: ReplayRunner; llmCall: JudgeLlmCall; now(): number },
   ) => Promise<GovernedReplayResult>;
   /** Per-test battery spend cap (the governor's remaining budget clamps it further). */
   maxSpendUsd?: number;
+  now?: () => number;
 }
 
 /** Bind lib/replay's battery as the tick's TransferReplayPort. */
 export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferReplayPort {
   const run = deps.runGoverned ?? runGovernedReplay;
   return async ({ lesson, transcript }) => {
+    if (lesson.workspaceId !== deps.workspaceId || lesson.sourceRef !== transcript.ref) {
+      throw new Error('transfer replay source does not match the lesson workspace/transcript');
+    }
+    const now = deps.now ?? Date.now;
+    const startedAt = new Date(now()).toISOString();
     const replayCase: ReplayCase = {
       kind: 'historical',
       caseId: lesson.id,
@@ -90,9 +102,19 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
       baselineMode: 'matched',
       ...(deps.maxSpendUsd !== undefined ? { maxSpendUsd: deps.maxSpendUsd } : {}),
     };
-    const { verdict, result } = await run(
-      { workspaceId: deps.workspaceId, config },
-      { runner: deps.runner, llmCall: deps.llmCall, now: () => Date.now() },
+    const invocations: TransferReplayEvidence['invocations'][number][] = [];
+    const runner: ReplayRunner = async (input) => {
+      const handle = await deps.runner(input);
+      invocations.push({
+        variantId: input.variant.variantId,
+        systemPromptHash: hash(input.systemPrompt), contextHash: hash(input.contextText),
+        model: handle.execution?.model ?? null, codeHash: handle.execution?.codeHash ?? null,
+      });
+      return handle;
+    };
+    const { verdict, result, reservation } = await run(
+      { workspaceId: deps.workspaceId, config, potSlug: lesson.potSlug },
+      { runner, llmCall: deps.llmCall, now },
     );
     if (!result) {
       throw new Error(
@@ -113,6 +135,25 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
       baselineComposite: baseline.meanComposite,
       batteryId: result.batteryId,
       costUsd: result.totalCostUsd,
+      evaluation: {
+        experiment: {
+          batteryId: result.batteryId, testId: 'replay',
+          baselineId: REPLAY_BASELINE_VARIANT.variantId, challengerId: WITH_LESSON_VARIANT_ID,
+          taskHash: hash(replayCase),
+          modelHash: invocations.length === 2 && invocations.every((v) => v.model !== null)
+            ? hash({ students: invocations.map((v) => ({ variantId: v.variantId, model: v.model })), judge: DEFAULT_REPLAY_RUBRIC.model }) : null,
+          promptHash: invocations.length === 2
+            ? hash(invocations.map((v) => ({ variantId: v.variantId, systemPromptHash: v.systemPromptHash, contextHash: v.contextHash }))) : null,
+          rubricHash: result.rubricHash,
+          // The measured module hashes below do not yet cover the transport,
+          // transcript renderer and judge engine. Do not label a subset complete.
+          codeHash: null,
+          repeats: config.repeats, startedAt, completedAt: new Date(now()).toISOString(),
+        },
+        reservation: reservation ?? null, outcomes: result.outcomes,
+        budgetExhausted: result.budgetExhausted, invocations,
+        loadedCode: { adapter: TRANSFER_ADAPTER_SOURCE_HASH, battery: REPLAY_BATTERY_SOURCE_HASH },
+      },
     };
   };
 }

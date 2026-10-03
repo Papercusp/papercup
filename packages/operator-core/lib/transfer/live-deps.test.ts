@@ -45,6 +45,7 @@ describe('provider-neutral transfer learning LLMs', () => {
       inputTokens: 3,
       outputTokens: 2,
       replayed: true,
+      execution: { model: LEARNING_MODEL_SPEC, codeHash: expect.stringMatching(/^[a-f0-9]{16}$/) },
     });
     expect(TRANSFER_STUDENT_MODEL).toBe(LEARNING_MODEL_SPEC);
     expect(call).toHaveBeenCalledWith(expect.objectContaining({ model: LEARNING_MODEL_SPEC, maxTokens: 2_048 }));

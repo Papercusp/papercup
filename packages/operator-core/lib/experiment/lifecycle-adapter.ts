@@ -92,6 +92,9 @@ export interface ProducerObservationInput {
   recordedAt: string;
   /** The actual persisted row, including its original verdict/provenance. */
   source: Record<string, unknown>;
+  /** Actual producer evaluation, including partial/unknown pins. It remains
+   * evidence on an observation and never implies contract acceptance. */
+  evaluation?: unknown;
 }
 
 export interface ProducerLifecycleObservation {
@@ -109,6 +112,9 @@ export interface ProducerLifecycleObservation {
   sourceCurrent?: boolean;
   /** Missing full-contract sections; no synthetic pins, actors or zero-dollar spend. */
   missing: readonly ['candidate', 'experiment', 'evidence', 'spend', 'decision'];
+  evaluation?: unknown;
+  evaluationSourceHash?: string;
+  evaluationCurrent?: boolean;
 }
 
 function canonical(value: unknown): unknown {
@@ -126,14 +132,20 @@ function adaptProducerObservation(producer: LearningProducer, input: ProducerObs
     throw new Error('producer observation requires workspace, source identity and a valid recording time');
   }
   // Exclude our receipt to avoid recursively hashing a previous snapshot.
-  const { learning_lifecycle: _previous, ...fields } = input.source;
+  const { learning_lifecycle: previousValue, ...fields } = input.source;
   const source = canonical(fields) as Record<string, unknown>;
+  const sourceHash = createHash('sha256').update(JSON.stringify(source)).digest('hex');
+  const previous = previousValue && typeof previousValue === 'object'
+    ? previousValue as Partial<ProducerLifecycleObservation> : undefined;
+  const evaluation = input.evaluation === undefined ? previous?.evaluation : input.evaluation;
+  const evaluationSourceHash = input.evaluation === undefined ? previous?.evaluationSourceHash : sourceHash;
   return {
     receiptVersion: '1', stage: 'observation', producer,
     workspaceId: input.workspaceId, sourceRef: input.sourceRef,
-    sourceHash: createHash('sha256').update(JSON.stringify(source)).digest('hex'),
+    sourceHash,
     source, recordedAt: input.recordedAt, contract: null, promotionAllowed: false,
     missing: ['candidate', 'experiment', 'evidence', 'spend', 'decision'],
+    ...(evaluation === undefined ? {} : { evaluation, evaluationSourceHash, evaluationCurrent: evaluationSourceHash === sourceHash }),
   };
 }
 

@@ -35,6 +35,7 @@ import {
   type LessonDistillerLlm,
   type TranscriptRefLister,
   type TransferLesson,
+  type TransferReplayEvidence,
   type TransferReplayPort,
   type TransferTranscriptSource,
 } from './types';
@@ -49,6 +50,7 @@ export interface TransferStorePort {
     transition: GateTransition;
     batteryId: string;
     delta: number;
+    evaluation?: TransferReplayEvidence;
   }): Promise<unknown>;
   markError(q: { workspaceId: string; id: string }): Promise<void>;
   setMemoryId(q: { workspaceId: string; id: string; memoryId: string | null }): Promise<void>;
@@ -230,6 +232,7 @@ async function testLeg(
       transition,
       batteryId: outcome.batteryId,
       delta: outcome.withComposite - outcome.baselineComposite,
+      ...(outcome.evaluation === undefined ? {} : { evaluation: outcome.evaluation }),
     });
     if (verdict === 'passed') result.passed += 1;
     else if (transition.tier === 'retired') result.retired += 1;

@@ -122,6 +122,9 @@ export interface ReplayRunHandle {
   /** False when the handle is the historical continuation echoed as the
    *  zero-cost baseline (no runner invoked). */
   replayed: boolean;
+  /** Identity supplied by the runner that actually made the continuation call.
+   * Absent for historical echoes and runners that cannot attest their execution. */
+  execution?: { model: string; codeHash: string | null };
 }
 
 /** Produces the replayed continuation for one cell. */

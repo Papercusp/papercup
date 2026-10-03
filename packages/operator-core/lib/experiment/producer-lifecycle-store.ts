@@ -21,6 +21,8 @@ export interface ProducerWriteScope {
   sourceId?: string | null;
   /** Reconciliation/expiry stays batched instead of adding serial per-row queries. */
   sourceIds?: readonly string[];
+  /** Single-output evaluation captured by the producer that executed it. */
+  evaluation?: unknown;
 }
 
 /**
@@ -31,6 +33,7 @@ export interface ProducerWriteScope {
 export async function recordProducerObservation(sql: Sql, scope: ProducerWriteScope): Promise<void> {
   const ids = [...new Set(scope.sourceIds ?? (scope.sourceId == null ? [] : [scope.sourceId]))];
   if (!ids.length) return;
+  if (scope.evaluation !== undefined && ids.length !== 1) throw new Error('producer evaluation requires one source identity');
   const store = stores[scope.producer];
   const rows = await sql.unsafe(
     `SELECT * FROM harness_shared.${store.table}
@@ -45,6 +48,7 @@ export async function recordProducerObservation(sql: Sql, scope: ProducerWriteSc
   const receipts = sources.map((source) => store.adapt({
     stage: 'observation', workspaceId: scope.workspaceId,
     sourceRef: `${scope.producer}:${String(source[store.key])}`, source, recordedAt,
+    ...(scope.evaluation === undefined ? {} : { evaluation: scope.evaluation }),
   }));
   await sql.unsafe(
     `UPDATE harness_shared.${store.table} AS source SET learning_lifecycle = receipt.payload::jsonb
@@ -80,6 +84,7 @@ export async function readProducerObservations(
       stage: 'observation', workspaceId: query.workspaceId, sourceRef: receipt.sourceRef,
       recordedAt: receipt.recordedAt, source: row,
     });
-    return { ...receipt, sourceCurrent: current.sourceHash === receipt.sourceHash };
+    return { ...receipt, sourceCurrent: current.sourceHash === receipt.sourceHash,
+      ...(receipt.evaluation === undefined ? {} : { evaluationCurrent: receipt.evaluationSourceHash === current.sourceHash }) };
   });
 }

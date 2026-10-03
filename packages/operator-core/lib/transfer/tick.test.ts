@@ -12,6 +12,8 @@ import { DEFAULT_TRANSFER_TICK, type TransferTickOptions } from './gate';
 import { lessonSignature } from './distill';
 import type { AdmitLessonInput, AdmitLessonResult } from './store';
 import { runTransferTick, type TransferStorePort, type TransferTickDeps } from './tick';
+import { transferReplayPort } from './replay-adapter';
+import { runReplayBattery } from '../replay/battery';
 import type { TransferLesson, TransferTestOutcome } from './types';
 
 /* ── fakes ──────────────────────────────────────────────────────────────── */
@@ -295,6 +297,35 @@ function seededHarness(outcome: TransferTestOutcome | Error, seedFails = 0): Har
 }
 
 describe('runTransferTick — testing leg (the student-transfer gate, D-006)', () => {
+  it('hands actual replay provenance to the store before mirroring the memory tier', async () => {
+    const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'unused', costUsd: 0 });
+    const order: string[] = [];
+    const port = transferReplayPort({ workspaceId: 'ws',
+      runner: async () => ({ outputText: 'verified', costUsd: 0.01, inputTokens: 1, outputTokens: 1, replayed: true }),
+      llmCall: async ({ messages }) => {
+        const score = messages[0].content.includes('variant: with lesson') ? 8 : 6;
+        return { text: JSON.stringify({ d1: score, d2: score, d3: score, rationale: 'fixture' }), costUsd: 0.01 } as never;
+      },
+      runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 }, result: await runReplayBattery(config, deps) }),
+    });
+    h.deps.replay = port;
+    const record = h.store.recordOutcome.bind(h.store);
+    h.deps.store = { ...h.deps.store, admit: h.store.admit.bind(h.store), listForTesting: h.store.listForTesting.bind(h.store),
+      markError: h.store.markError.bind(h.store), setMemoryId: h.store.setMemoryId.bind(h.store),
+      recordOutcome: async (q) => {
+        order.push('persist');
+        expect(q.evaluation?.outcomes).toHaveLength(2);
+        expect(q.evaluation?.experiment.batteryId).toBe(q.batteryId);
+        expect(q.evaluation?.experiment.codeHash).toBeNull();
+        await record(q);
+      },
+    };
+    const update = h.memory.update.bind(h.memory);
+    h.memory.update = async (id, patch) => { order.push('mirror'); await update(id, patch); };
+    await runTransferTick('ws', h.deps, OPTS);
+    expect(order).toEqual(['persist', 'mirror']);
+  });
+
   it('a PASSING lesson promotes to validated and the memory tier is patched', async () => {
     const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'B1', costUsd: 0.05 });
     const result = await runTransferTick('ws', h.deps, OPTS);
