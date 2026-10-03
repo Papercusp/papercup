@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, fork, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -36,6 +36,8 @@ import { mutationProbeRefusal, testImportClosures } from './mutation-probe-fence
 
 const readQueueMock = vi.mocked(readQueue);
 let root: string;
+let admissionBase = '';
+let previousAdmissionBase: string | undefined;
 
 it('keeps concurrent closure workers independent of an active caller compiler', async () => {
   const dir = makeRoot();
@@ -140,15 +142,29 @@ it('returns promptly when a compiler fails to spawn and emits no exit event', as
   expect(child.stderr.destroyed).toBe(true);
 }, 1000);
 
+beforeEach(() => {
+  previousAdmissionBase = process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  admissionBase = mkdtempSync(join(tmpdir(), 'testing-run-mutation-probe-admission-'));
+  process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = admissionBase;
+});
+
 afterEach(() => {
   readQueueMock.mockReset();
   if (root) rmSync(root, { recursive: true, force: true });
   root = '';
+  if (admissionBase) rmSync(admissionBase, { recursive: true, force: true });
+  if (previousAdmissionBase === undefined) delete process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  else process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = previousAdmissionBase;
 });
 
 function makeRoot(): string {
   root = mkdtempSync(join(tmpdir(), 'testing-run-mutation-probe-fence-'));
   return root;
+}
+
+function admissionDirFor(dir: string): string {
+  const key = createHash('sha256').update(realpathSync(dir)).digest('hex');
+  return join(admissionBase, `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${key}`);
 }
 
 it('refuses the run before root discovery when the checkout has an active mutation-probe lock', async () => {
@@ -233,7 +249,7 @@ describe('mutationProbeRefusal narrowing', () => {
     const dir = checkout({ ...base,
       'tests/dynamic.test.ts': 'export const load = (name: string) => import(name);\n',
     });
-    const manifestDir = join('/tmp', `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${createHash('sha256').update(dir).digest('hex')}`);
+    const manifestDir = admissionDirFor(dir);
     mkdirSync(manifestDir, { mode: 0o700 });
     try {
       writeFileSync(join(manifestDir, 'original.manifest'),
@@ -248,7 +264,6 @@ describe('mutationProbeRefusal narrowing', () => {
 
   describe('a lock that outlives the dirty window (EI-24720263797874266)', () => {
     const sha = (value: string) => createHash('sha256').update(value).digest('hex');
-    const admissionDirFor = (dir: string) => join('/tmp', `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${sha(realpathSync(dir))}`);
     function recordRestore(dir: string, path: string, original: string, rootField = realpathSync(dir)): void {
       const subjectPath = join(realpathSync(dir), path);
       const records = join(admissionDirFor(dir), 'restored');

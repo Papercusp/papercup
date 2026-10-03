@@ -1615,6 +1615,62 @@ describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', ()
     expect((await client.describeInstance(original))?.state).toBe('running');
   });
 
+  it('rolls a failure AFTER the launch back: retires the replacement, re-attaches the volume to the original and starts it (WI-10005978)', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const original = host.resources.find((item) => item.kind === 'vm')!.providerId;
+    const volume = host.resources.find((item) => item.kind === 'disk')!.providerId;
+    const plan = await provider.plan(
+      {
+        action: 'upgrade',
+        operationId: 'upgrade-3',
+        idempotencyKey: 'upgrade-3',
+        host,
+        image: { id: 'ami-0123456789abcdef0' },
+        desired: desired(),
+      },
+      context(),
+    );
+    const detach = `detach-data-volume:${original}`;
+    const attach = plan.steps.find((step) => step.id === `attach-replacement-volume:${original}`)!;
+    const bootstrap = plan.steps.find((step) => step.id === 'start-host-bootstrap')!;
+    const reinstate = { op: 'reinstate-instance', instanceId: original, volumeId: volume, retireReplacement: true };
+    expect(attach.rollback?.input).toMatchObject(reinstate);
+    expect(bootstrap.rollback?.input).toMatchObject(reinstate);
+    // lifecycle-runner strandedByFailure() rolls back only a step that depends on an applied
+    // destructive step, so every step that carries a rollback must name the destructive detach.
+    for (const step of plan.steps.filter((candidate) => candidate.rollback)) {
+      expect(step.dependsOn, step.id).toContain(detach);
+    }
+
+    // quiesce, detach, launch and attach applied; the bootstrap then fails and its rollback runs.
+    const { known } = await applyPlan(provider, { ...plan, steps: plan.steps.slice(0, 4) }, host.resources);
+    const replacement = known.find((item) => item.kind === 'vm' && item.providerId !== original)!.providerId;
+    expect((await client.describeVolume(volume))?.attachedInstanceId).toBe(replacement);
+    const rollbackOf = (step: typeof bootstrap, knownResources: typeof known) =>
+      provider.apply(
+        {
+          planId: plan.planId,
+          operationId: plan.operationId,
+          step: { ...step, id: `${step.id}:rollback`, input: step.rollback!.input },
+          knownResources,
+        },
+        context(),
+      );
+    // Two candidate replacements are ambiguous: guessing could terminate the wrong instance.
+    await expect(
+      rollbackOf(bootstrap, [...known, { ...known.find((item) => item.kind === 'vm')!, providerId: 'i-0ambiguous000000' }]),
+    ).rejects.toThrow(/ambiguous_replacement/);
+
+    const result = await rollbackOf(bootstrap, known);
+    expect(result.state).toBe('applied');
+    expect(client.destroyMutations).toContain(`terminate:${replacement}`);
+    expect(client.destroyMutations).not.toContain(`terminate:${original}`);
+    expect((await client.describeInstance(replacement))?.state).toBe('terminated');
+    expect((await client.describeVolume(volume))?.attachedInstanceId).toBe(original);
+    expect((await client.describeInstance(original))?.state).toBe('running');
+  });
+
   it('refuses an upgrade it cannot carry out exactly', async () => {
     const { client, provider } = providerAndClient();
     const { host } = await provision(client, provider);

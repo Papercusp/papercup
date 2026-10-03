@@ -29,7 +29,7 @@ const { default: tool } = await import('./tool-log');
 type ArgsSchema = {
   safeParse: (value: unknown) => { success: boolean; data?: Record<string, unknown> };
 };
-type Guidance = { when?: string };
+type Guidance = { when?: string; argRedirects?: { limit?: string } };
 
 const argsSchema = (tool as unknown as { args: ArgsSchema }).args;
 const guidance = (tool as unknown as { guidance?: Guidance }).guidance;
@@ -56,10 +56,13 @@ beforeEach(() => {
 describe('activity:tool-log timestamp boundaries', () => {
   it('advertises and enforces top_k as an integer in the range 1..25', () => {
     const schema = z.toJSONSchema(argsSchema as never) as {
-      properties?: Record<string, { type?: string; minimum?: number; maximum?: number }>;
+      properties?: Record<string, { type?: string; minimum?: number; maximum?: number; description?: string }>;
     };
 
     expect(schema.properties?.top_k).toMatchObject({ type: 'integer', minimum: 1, maximum: 25 });
+    expect(schema.properties?.top_k?.description).toContain('default 8');
+    expect(schema.properties?.top_k?.description).toContain('maximum 25');
+    expect(guidance?.argRedirects?.limit).toContain('integer 1-25');
     expect(argsSchema.safeParse({ owner: 'self', top_k: 25 }).success).toBe(true);
     expect(argsSchema.safeParse({ owner: 'self', top_k: 26 }).success).toBe(false);
     expect(argsSchema.safeParse({ owner: 'self', top_k: 0 }).success).toBe(false);

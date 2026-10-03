@@ -597,6 +597,14 @@ describe('capability:read', () => {
       }
     }
 
+    for (const field of ['offset', 'limit', 'tail']) {
+      const description = lineBranch?.properties?.[field]?.description;
+      expect(description, `${field} must explain scratch-reference size limits`).toContain(
+        'Scratch-reference line windows can be refused when selected text exceeds the response-size limit',
+      );
+      expect(description).toContain('byte_offset+byte_limit');
+    }
+
     const argsSchema = readTool.args as unknown as {
       safeParse: (value: unknown) => { success: boolean };
     };

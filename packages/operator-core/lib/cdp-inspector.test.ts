@@ -83,7 +83,7 @@ describe('P011 exact request weak-target heap-ID reader', () => {
     const handles = new Map<string, object>();
     const calls: string[] = [];
     if (options.getter) Object.defineProperty(row, 'correlation', { get() { calls.push('getter'); return { requestId }; } });
-    return { calls, async evaluate(expression: string, opts?: any) {
+    return { calls, pool, row, handles, decoded, mapped, response, async evaluate(expression: string, opts?: any) {
       calls.push('evaluate');
       const value = runInNewContext(expression, context);
       if (opts?.returnByValue) {
@@ -101,6 +101,13 @@ describe('P011 exact request weak-target heap-ID reader', () => {
     }, async send(method: string, params: any) {
       calls.push(method);
       if (method === 'Runtime.releaseObjectGroup') { handles.clear(); return {}; }
+      if (method === 'Runtime.callFunctionOn') {
+        const value = runInNewContext('(' + params.functionDeclaration + ').apply(remote, args)',
+          { ...context, remote: handles.get(params.objectId), args: (params.arguments ?? []).map((arg: any) => arg.value) });
+        if (params.returnByValue || !value || typeof value !== 'object') return { result: { value } };
+        const objectId = 'handle-' + handles.size; handles.set(objectId, value);
+        return { result: { objectId } };
+      }
       if (method !== 'HeapProfiler.getHeapObjectId') throw new Error('Unexpected method');
       if (options.rejectId) throw new Error('snapshot read failed');
       return { heapSnapshotObjectId: options.badId ? '9007199254740993' :
@@ -161,6 +168,106 @@ describe('P011 exact request weak-target heap-ID reader', () => {
     expect(report.queries?.unobservedRequestIds).toEqual([requestId]);
     expect(client.calls).not.toContain('getter');
   });
+
+  it('keeps exact weak selection across FIFO churn without retaining the result or diagnostic row', async () => {
+    const client = fixture();
+    const report = await readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId],
+      captureSnapshot: async metadata => {
+        expect(metadata.records).toHaveLength(1);
+        const selected: any = [...client.handles.values()][0];
+        expect(selected.records[0]).not.toBe(client.row);
+        expect(selected.records[0].objectRefs.decodedResult).toBeInstanceOf(WeakRef);
+        expect(Object.values(selected.records[0])).not.toContain(client.decoded);
+        expect(client.calls).not.toContain('HeapProfiler.getHeapObjectId');
+        // The writer's existing newest-32 FIFO invariant evicts the request.
+        client.pool.pgResults = Array.from({ length: 32 }, (_, queryId) =>
+          ({ ...client.row, queryId, correlation: { requestId: missingRequestId } }));
+      } });
+    expect(report.queries?.records[0].objects.map(o => o.id)).toEqual([11, 12, 13]);
+    expect(report.queries?.registryBeforeSnapshot.matched).toBe(1);
+    expect(report.queries?.registryAfterSnapshot.matched).toBe(0);
+    const live = await readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId] });
+    expect(live.queries?.unobservedRequestIds).toEqual([requestId]);
+    expect(client.handles.size).toBe(0);
+  });
+
+  it.each(['duplicate', 'getter'] as const)('refuses %s selection before invoking a costly snapshot', async defect => {
+    const client = fixture({ [defect]: true });
+    let snapshots = 0;
+    await expect(readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId],
+      captureSnapshot: async () => { snapshots++; } })).rejects.toThrow('pre-snapshot');
+    expect(snapshots).toBe(0); expect(client.handles.size).toBe(0);
+    expect(client.calls).not.toContain('getter');
+  });
+
+  it('releases weak selection after a snapshot failure', async () => {
+    const client = fixture();
+    await expect(readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId],
+      captureSnapshot: async () => { throw new Error('capture failed'); } })).rejects.toThrow('capture failed');
+    expect(client.handles.size).toBe(0);
+    expect(client.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+  });
+
+  it('survives the actual diagnostic FIFO writer on a real inspector without pinning a collected decoded result', async () => {
+    const registryUrl = new URL('../../../libs/papercusp/libs/db/src/acquire-registry.ts', import.meta.url).href;
+    const child = spawn(process.execPath, ['--import', 'tsx', '--inspect=127.0.0.1:0', '--input-type=module', '-e', `
+      const { recordPgResult, recordPgDiagnosticResponse, setPgDiagnosticContextResolver,
+        capturePgDiagnosticContext, pgResultDiagnosticSnapshot, PG_RESULT_DIAGNOSTIC_LIMIT } = await import(${JSON.stringify(registryUrl)});
+      const source = ${JSON.stringify(source)};
+      const correlation = { processInstanceId: source.processInstanceId, buildSha: source.buildSha,
+        attemptId: ${JSON.stringify(requestId)}, requestId: ${JSON.stringify(requestId)}, operation: 'workItems.byHarness' };
+      setPgDiagnosticContextResolver(() => correlation);
+      globalThis.decoded = [{ kind: 'raw' }];
+      globalThis.mapped = [{ kind: 'mapped' }];
+      globalThis.envelope = { rows: mapped };
+      recordPgResult('selection-fixture', { connectionId: 1, queryId: 2, backendPid: null,
+        query: 'select 1', rowCount: 1, wireBytes: 1, status: 'ok',
+        result: decoded, context: capturePgDiagnosticContext() }, source);
+      recordPgDiagnosticResponse(correlation, 'resolvedRows', mapped);
+      recordPgDiagnosticResponse(correlation, 'responseValue', envelope);
+      globalThis.churn = () => {
+        globalThis.decoded = undefined;
+        for (let queryId = 3; queryId < 3 + PG_RESULT_DIAGNOSTIC_LIMIT; queryId++)
+          recordPgResult('selection-fixture', { connectionId: 1, queryId, backendPid: null,
+            query: 'select 1', rowCount: 0, wireBytes: 0, status: 'ok' }, source);
+        return pgResultDiagnosticSnapshot('selection-fixture');
+      };
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    try {
+      const deadline = Date.now() + 15_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      const report = await readPinnedHeapObjectIds(client, { expectedPid: child.pid!, owners: [owner], pgRequestIds: [requestId],
+        captureSnapshot: async metadata => {
+          expect(metadata.records).toHaveLength(1);
+          const churn = (await client!.evaluate('churn()', { returnByValue: true })).result.value;
+          expect(churn).toMatchObject({ capacity: 32, totalRecorded: 33 });
+          expect(churn.results).toHaveLength(32);
+          expect(churn.results.every((row: any) => !row.correlation)).toBe(true);
+          // A later inspector task permits collection; the weak selection must
+          // not make the evicted raw result a snapshot root.
+          await client!.send('HeapProfiler.enable');
+          await client!.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false });
+        } });
+      expect(report.queries?.registryBeforeSnapshot.matched).toBe(1);
+      expect(report.queries?.registryAfterSnapshot.matched).toBe(0);
+      expect(report.queries?.records[0].objects[0]).toEqual({ phase: 'decodedResult', status: 'collected' });
+      expect(report.queries?.records[0].objects.slice(1).every(o => o.status === 'found')).toBe(true);
+      const live = await readPinnedHeapObjectIds(client, { expectedPid: child.pid!, owners: [owner], pgRequestIds: [requestId] });
+      expect(live.queries?.unobservedRequestIds).toEqual([requestId]);
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  }, 45_000);
 
   it('binds weak targets to exact objects on a real private inspector and releases all handles', async () => {
     const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `

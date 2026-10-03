@@ -49,6 +49,8 @@ const CONTENT_INDEX_EXCLUSIVITY =
   'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), and evidence_class.';
 const EVIDENCE_CLASS_EXCLUSIVITY =
   'Text or Markdown scratch spills do not support evidence selection; read them with line or byte windows. Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
+const SCRATCH_LINE_WINDOW_SIZE_NOTE =
+  'Scratch-reference line windows can be refused when selected text exceeds the response-size limit; reduce limit/tail or use byte_offset+byte_limit for exact large text.';
 
 const CAPABILITY_READ_SEE_ALSO = [
   'capability:edit (exact-string edit)',
@@ -198,14 +200,20 @@ const readPathArgs = {
 
 const lineWindowArgs = z.object({
   ...readPathArgs,
-  offset: z.number().int().nonnegative().optional().describe(`1-based line to start from. ${LINE_WINDOW_EXCLUSIVITY}`),
-  limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}). ${LINE_WINDOW_EXCLUSIVITY}`),
+  offset: z.number().int().nonnegative().optional().describe(
+    `1-based line to start from. ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
+  ),
+  limit: z.number().int().positive().optional().describe(
+    `Max lines to read (default ${DEFAULT_LIMIT}). ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
+  ),
   tail: z
     .number()
     .int()
     .positive()
     .optional()
-    .describe(`Read the LAST N lines instead of reading forward — the \`tail -n N\` equivalent. Ignores offset. ${LINE_WINDOW_EXCLUSIVITY}`),
+    .describe(
+      `Read the LAST N lines instead of reading forward — the \`tail -n N\` equivalent. Ignores offset. ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
+    ),
   raw: z
     .boolean()
     .optional()

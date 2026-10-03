@@ -31,7 +31,7 @@
  *     escalation (non-clobber upsert) + a one-shot coord broadcast, and never
  *     dispatch a resolver.
  *
- * All seams are mocked (run-git-sync, su-lock-store, in-workspace-txn,
+ * All seams are mocked (run-git-sync, pot-git storage bootstrap, su-lock-store, in-workspace-txn,
  * harness-registry, loopback-fetch, launch-blueprint, coordination/messages,
  * pipeline-events, db-org, docs/sweep-after-sync) — no PG, no network, no
  * subprocess (the eligibility gate's disk checks hit real mkdtemp dirs). The
@@ -243,6 +243,13 @@ let potGitMode: 'legacy' | 'bridged' | 'p2p-only' = 'legacy';
 vi.mock('./hive-git-mode', () => ({
   getPotGitMode: async () => potGitMode,
 }));
+const ensurePotGitRepoMock = vi.hoisted(() => vi.fn());
+vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../sync/pot-git/storage')>()),
+  // The action suite does not exercise bare-store initialization. Keep cold
+  // bootstrap on its fixture root instead of defaultRunGit's production sidecar.
+  ensurePotGitRepo: (...args: unknown[]) => ensurePotGitRepoMock(...args),
+}));
 const fetchRepoPushPermissionMock = vi.fn(async (_owner: string, _repo: string) => true);
 vi.mock('../github-repo-permissions', () => ({
   fetchRepoPushPermission: (owner: string, repo: string) => fetchRepoPushPermissionMock(owner, repo),
@@ -250,6 +257,8 @@ vi.mock('../github-repo-permissions', () => ({
 
 // Real dirs for the gate's disk checks (path exists / has .git).
 const tmpRoot = mkdtempSync(join(tmpdir(), 'git-sync-action-'));
+const isolatedPotGitRoot = join(tmpRoot, 'pot-git');
+const savedPotGitRoot = process.env.PAPERCUSP_POT_GIT_ROOT;
 const repoDir = join(tmpRoot, 'repo');
 const noGitDir = join(tmpRoot, 'norepo');
 mkdirSync(join(repoDir, '.git'), { recursive: true });
@@ -263,6 +272,8 @@ const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
 afterAll(() => {
   if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
   else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+  if (savedPotGitRoot === undefined) delete process.env.PAPERCUSP_POT_GIT_ROOT;
+  else process.env.PAPERCUSP_POT_GIT_ROOT = savedPotGitRoot;
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -542,6 +553,7 @@ import {
   resolveGitServingStateWithBootRecovery,
   formatIntegratorErrorWarning,
   resetIntegratorErrorWarningsForTest,
+  runBootstrapLeg,
   GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
@@ -867,6 +879,14 @@ function definitelyDeadPid(): Promise<number> {
 
 beforeEach(() => {
   process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
+  process.env.PAPERCUSP_POT_GIT_ROOT = isolatedPotGitRoot;
+  ensurePotGitRepoMock.mockReset().mockImplementation(async (potHomeSlug: string, repoKey: string) => {
+    const root = process.env.PAPERCUSP_POT_GIT_ROOT;
+    if (root !== isolatedPotGitRoot) throw new Error('test pot-git root was not isolated');
+    const repoPath = join(root, potHomeSlug, repoKey + '.git');
+    mkdirSync(repoPath, { recursive: true });
+    return repoPath;
+  });
   tryAcquireResourceMock.mockReset();
   tryReleaseResourceMock.mockReset();
   releaseAllResourcesForOwnerMock.mockReset();
@@ -1265,6 +1285,18 @@ describe('P-004 dependency-generation prebuild handoff', () => {
       toolingRoot: tmpRoot,
       queuedAtMs: expect.any(Number),
     });
+  });
+
+  it('WI-10005972: cold bootstrap keeps store setup inside the isolated test fixture', async () => {
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+
+    await runBootstrapLeg('papercup', ctx.workspaceId);
+
+    expect(ensurePotGitRepoMock).toHaveBeenCalledOnce();
+    const [potHomeSlug, repoKey] = ensurePotGitRepoMock.mock.calls[0] as [string, string];
+    expect(await ensurePotGitRepoMock.mock.results[0]?.value).toBe(
+      join(isolatedPotGitRoot, potHomeSlug, repoKey + '.git'),
+    );
   });
 
   it('does not queue a candidate after a conflict outcome', async () => {

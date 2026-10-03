@@ -208,6 +208,67 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     expect((await store().reserve(request(s, { maximumCostMicros: 1 }))).outcome).toBe('refused');
   });
 
+  it('aggregates fractional final liabilities without flooring each bill or over-rounding each hold', async () => {
+    const s = await tenant();
+    for (const exact of ['0.4', '0.6', '0.0000000000000000001']) {
+      const r = request(s, { maximumCostMicros: 1 });
+      expect((await store().reserve(r)).outcome).toBe('reserved');
+      await store().observe(observation(r, { costMicros: 0, costMicrosExact: exact }));
+    }
+    const refused = await store().reserve(request(s, { maximumCostMicros: 99_999 }));
+    expect(refused.outcome).toBe('refused');
+    expect(refused.decisions[0]).toMatchObject({ availableMicros: 99_998, availableMicrosExact: '99998.9999999999999999999' });
+    expect((await store().reserve(request(s, { maximumCostMicros: 99_998 }))).outcome).toBe('reserved');
+  });
+
+  it('persists exact amounts across restarts, replaces corrections and rejects changed fractional replays', async () => {
+    const s = await tenant(); const r = request(s, { maximumCostMicros: 1 }); await store().reserve(r);
+    const first = observation(r, { costMicros: 0, costMicrosExact: '0.1234567890123456789' });
+    expect((await store().observe(first)).receipt?.costMicrosExact).toBe(first.costMicrosExact);
+    expect((await store().observe(first)).outcome).toBe('duplicate');
+    expect((await store().observe({ ...first, costMicrosExact: '0.1234567890123456788' })).outcome).toBe('conflict');
+    const [saved] = await db.adminSql`SELECT cost_micros::text AS exact FROM papercusp_auth.hosted_budget_receipts
+      WHERE organization_id = ${s.organizationId} AND revision = 1`;
+    expect(saved?.exact).toBe(first.costMicrosExact);
+    await store().observe(observation(r, { revision: 2, observedAtMs: T + 2, costMicros: 0, costMicrosExact: '0.2' }));
+    const next = await store().reserve(request(s, { maximumCostMicros: 99_999 }));
+    expect(next.outcome).toBe('reserved'); expect(next.decisions[0]?.availableMicrosExact).toBe('99999.8');
+  });
+
+  it('retains pending fractional reports and suspends even submicro old-month overruns', async () => {
+    const s = await tenant(); const r = request(s, { maximumCostMicros: 1, month: '2026-09', asOfMs: Date.UTC(2026, 8, 2) });
+    await store().reserve(r);
+    const report = observation(r, { costSource: 'provider-reported', costMicros: 0, costMicrosExact: '0.1', providerFinal: false });
+    expect((await store().observe(report)).settlement).toMatchObject({ state: 'pending', heldMicros: 1, releasedMicros: 0 });
+    expect((await store().reserve(request(s, { maximumCostMicros: 100_000 }))).outcome).toBe('refused');
+    const overrun = await store().observe(observation(r, { revision: 2, observedAtMs: T + 2,
+      costMicros: 1, costMicrosExact: '1.0000000000000000001' }));
+    expect(overrun.settlement).toMatchObject({ overrunMicros: 0, overrunMicrosExact: '0.0000000000000000001', suspend: true });
+    expect((await store().reserve(request(s, { maximumCostMicros: 0 }))).decisions[0]?.reason).toBe('unreconciled-charge');
+  });
+
+  it('accounts for exact external liabilities and net window funding from the locked authority reader', async () => {
+    const s = await tenant();
+    const fractional: HostedBudgetContextReader = async (sql, input) => {
+      const ctx = (await readContext(sql, input))!;
+      return { ...ctx, limits: ctx.limits.map(limit => ({ ...limit, fundedMicros: 99_999,
+        fundedMicrosExact: '99999.9', externalSpentMicros: 0, externalSpentMicrosExact: '0.1' })) };
+    };
+    const refused = await store(fractional).reserve(request(s, { maximumCostMicros: 100_000 }));
+    expect(refused.decisions[0]).toMatchObject({ capMicros: 99_999, capMicrosExact: '99999.9', availableMicros: 99_999, availableMicrosExact: '99999.8' });
+    expect((await store(fractional).reserve(request(s, { maximumCostMicros: 99_999 }))).outcome).toBe('reserved');
+  });
+
+  it('rejects invalid exact projections before changing immutable reservation history', async () => {
+    const s = await tenant(); const r = request(s); await store().reserve(r);
+    for (const costMicrosExact of ['0.1', '40003.00', '40003e0', '-1', '9007199254740991.1']) {
+      await expect(store().observe(observation(r, { costMicrosExact }))).rejects.toThrow(/budget/);
+    }
+    await expect(store().observe(observation(r, { costSource: 'unpriced', costMicros: null, costMicrosExact: '0.1', providerFinal: false })))
+      .rejects.toThrow(/budget/);
+    expect(await rows(s)).toHaveLength(1);
+  });
+
   it('does not hide a final overrun, permit a downgrade, or erase exposure with a new budget key', async () => {
     const s = await tenant(); const r = request(s); await store().reserve(r);
     const result = await store().observe(observation(r, { costMicros: 100_001 }));

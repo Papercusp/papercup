@@ -209,7 +209,7 @@ function pgDiagnosticReader(expectedPid, requestIds, key, phase, select) {
     const pools = data(state, 'pools');
     if (!pools || types.isProxy(pools) || !types.isMap(pools)) return key ? 'registry-unavailable' : { status: 'registry-unavailable', records: [] };
     const records = [], matches = [], selectedRows = [], poolSummaries = [];
-    const captured = data(this, 'records');
+    const captured = data(this, 'selectionTag') === 'p011-pg-weakselection-v1' ? data(this, 'records') : undefined;
     const poolCount = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call(pools);
     let matched = 0, inspectedPools = 0, omittedRows = 0;
     const entries = captured ? [['selected', { pgResults: captured }]] :
@@ -241,9 +241,14 @@ function pgDiagnosticReader(expectedPid, requestIds, key, phase, select) {
             // Copy only identity primitives and the existing weak references.
             // Never copy the diagnostic row or dereference a result here.
             const refs = data(row, 'objectRefs');
+            const weak = name => {
+              const ref = data(refs, name);
+              return ref && !types.isProxy(ref) && Object.getPrototypeOf(ref) === WeakRef.prototype &&
+                Reflect.ownKeys(ref).length === 0 ? ref : undefined;
+            };
             selectedRows.push({ ...identity, objectRefs: {
-              decodedResult: data(refs, 'decodedResult'), resolvedRows: data(refs, 'resolvedRows'),
-              responseValue: data(refs, 'responseValue') } });
+              decodedResult: weak('decodedResult'), resolvedRows: weak('resolvedRows'),
+              responseValue: weak('responseValue') } });
           }
         }
       }
@@ -251,7 +256,7 @@ function pgDiagnosticReader(expectedPid, requestIds, key, phase, select) {
     if (!key) {
       const metadata = { status: 'observed', matched, omitted: matched - records.length,
         inspectedPools, omittedPools: captured ? 0 : Math.max(0, poolCount - inspectedPools), omittedRows, poolSummaries, records };
-      return select ? { metadata, records: selectedRows } : metadata;
+      return select ? { selectionTag: 'p011-pg-weakselection-v1', metadata, records: selectedRows } : metadata;
     }
     if (matches.length !== 1) return matches.length === 0 ? 'evicted' : 'ambiguous';
     const ref = data(data(matches[0], 'objectRefs'), phase);

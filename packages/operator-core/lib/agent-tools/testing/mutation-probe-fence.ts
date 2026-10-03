@@ -135,7 +135,11 @@ async function verifiedRestored(admissionDir: string, realRoot: string, subject:
  * A hand mutation or later edit changes the bytes, so that path stays uncovered and fenced.
  */
 async function uncoveredProbePaths(realRoot: string, probePaths: string[]): Promise<string[]> {
-  const admissionDir = join('/tmp', `papercusp-mutation-probe-${getuid?.() ?? 0}-${sha256(realRoot)}`);
+  // Share the same configurable admission base as the probe writer and overlay.
+  // Tests set a private per-file base so a killed fixture cannot leave manifests
+  // in the production /tmp namespace; production remains /tmp by default.
+  const admissionBase = processEnv.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT || '/tmp';
+  const admissionDir = join(admissionBase, `papercusp-mutation-probe-${getuid?.() ?? 0}-${sha256(realRoot)}`);
   const manifest = await readFile(join(admissionDir, 'original.manifest')).catch(() => null);
   let overlaid: string | null = null;
   if (manifest) {
