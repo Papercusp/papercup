@@ -7,6 +7,7 @@ import {
   awsCustomerSetupTemplate,
   awsWorkspaceHostLeastPrivilegePolicy,
 } from './aws-customer-setup-template';
+import { cloudFormationDanglingReferences } from './cloudformation-references';
 import { awsSpotServiceLinkedRoleStatement, hostedAwsHostStackFragment } from './hosted-aws-host-stack';
 
 const ACCOUNT = '123456789012';
@@ -90,17 +91,23 @@ describe('awsCustomerSetupTemplate — the customer-run (desktop) AWS setup temp
   it('pins the stack to the requested region and builds the same host resources as the hosted stack', () => {
     const document = doc();
     expect(JSON.stringify(document.Rules)).toContain(REGION);
-    const fragment = hostedAwsHostStackFragment(ACCOUNT, REGION);
+    const fragment = hostedAwsHostStackFragment(ACCOUNT, REGION, AWS_CUSTOMER_OPERATOR_ROLE_LOGICAL_ID);
     for (const logicalId of Object.keys(fragment.Resources)) {
       expect(document.Resources[logicalId]).toEqual((fragment.Resources as Record<string, unknown>)[logicalId]);
     }
   });
 
-  it('every Output resolves to a resource in the template, and every connection field has an Output', () => {
+  it('every reference anywhere in the template resolves, and every connection field has an Output', () => {
     const document = doc();
+    // The WHOLE document, not just Outputs: WI-10005783 was a KMS key policy inside Resources
+    // pointing at the hosted stack's role id, which CloudFormation refused at create-stack.
+    expect(cloudFormationDanglingReferences(document as unknown as Record<string, unknown>)).toEqual([]);
     for (const logicalId of referencedLogicalIds(document.Outputs)) {
       expect(document.Resources, `Output references ${logicalId}`).toHaveProperty(logicalId);
     }
+    // The disk key is usable by THIS template's operator role.
+    const keyPolicy = JSON.stringify(document.Resources.HostKey!.Properties.KeyPolicy);
+    expect(keyPolicy).toContain(JSON.stringify({ 'Fn::GetAtt': [AWS_CUSTOMER_OPERATOR_ROLE_LOGICAL_ID, 'Arn'] }));
     for (const outputKey of Object.keys(AWS_CUSTOMER_SETUP_CONNECTION_FIELDS)) {
       expect(document.Outputs, `missing Output ${outputKey}`).toHaveProperty(outputKey);
     }

@@ -577,7 +577,9 @@ function awsTemplate(
   }
   // D-009: a customer role's stack also builds the host's network, instance profile, KMS key
   // and launch template in `region`, the AWS twin of the GCP managed network.
-  const host = source.method === 'customer-role' && region ? hostedAwsHostStackFragment(accountId, region) : null;
+  const host = source.method === 'customer-role' && region
+    ? hostedAwsHostStackFragment(accountId, region, HOSTED_AWS_WORKSPACE_HOST_ROLE_LOGICAL_ID)
+    : null;
   const trust = source.method === 'customer-role'
     ? {
         Effect: 'Allow',

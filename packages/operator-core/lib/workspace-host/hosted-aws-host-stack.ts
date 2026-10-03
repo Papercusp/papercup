@@ -131,14 +131,22 @@ function spotServiceRoleCondition(): Record<string, unknown> {
  * CloudFormation resources, rules and outputs that build the host's infrastructure in `region`.
  * The Rule refuses to create the stack in any other region, so a template rendered for one
  * region can never quietly build somewhere the server will not look.
+ *
+ * `operatorRoleLogicalId` names the role, declared by the CALLER's own template, that manages the
+ * host and therefore uses the disk key. It is required because each stack names its role
+ * differently: the hosted stack declares HOSTED_AWS_WORKSPACE_HOST_ROLE_LOGICAL_ID, the desktop
+ * customer setup template declares AWS_CUSTOMER_OPERATOR_ROLE_LOGICAL_ID. A fixed id here made the
+ * customer template's key policy point at a resource it never declares, and CloudFormation
+ * refused the whole stack (WI-10005783).
  */
-export function hostedAwsHostStackFragment(accountId: string, region: string): {
+export function hostedAwsHostStackFragment(accountId: string, region: string, operatorRoleLogicalId: string): {
   Rules: Record<string, unknown>;
   Resources: Record<string, unknown>;
   Outputs: Record<string, unknown>;
 } {
   const names = hostedAwsHostNames(accountId);
   const vpc = { Ref: 'HostVpc' };
+  const operatorRoleArn = { 'Fn::GetAtt': [operatorRoleLogicalId, 'Arn'] };
   return {
     Rules: {
       PapercuspRegion: {
@@ -262,14 +270,14 @@ export function hostedAwsHostStackFragment(accountId: string, region: string): {
               {
                 Sid: 'WorkspaceHostDiskUse',
                 Effect: 'Allow',
-                Principal: { AWS: { 'Fn::GetAtt': [HOSTED_AWS_WORKSPACE_HOST_ROLE_LOGICAL_ID, 'Arn'] } },
+                Principal: { AWS: operatorRoleArn },
                 Action: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
                 Resource: '*',
               },
               {
                 Sid: 'WorkspaceHostDiskGrants',
                 Effect: 'Allow',
-                Principal: { AWS: { 'Fn::GetAtt': [HOSTED_AWS_WORKSPACE_HOST_ROLE_LOGICAL_ID, 'Arn'] } },
+                Principal: { AWS: operatorRoleArn },
                 Action: 'kms:CreateGrant',
                 Resource: '*',
                 Condition: { Bool: { 'kms:GrantIsForAWSResource': true } },

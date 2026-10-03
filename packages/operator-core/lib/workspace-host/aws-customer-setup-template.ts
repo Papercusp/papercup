@@ -124,7 +124,7 @@ function validated(request: AwsCustomerSetupTemplateRequest): Required<AwsCustom
 
 export function awsCustomerSetupTemplate(request: AwsCustomerSetupTemplateRequest): AwsCustomerSetupTemplate {
   const { accountId, region, principalArn } = validated(request);
-  const host = hostedAwsHostStackFragment(accountId, region);
+  const host = hostedAwsHostStackFragment(accountId, region, AWS_CUSTOMER_OPERATOR_ROLE_LOGICAL_ID);
   const roleName = `${AWS_CUSTOMER_OPERATOR_ROLE_NAME_PREFIX}${accountId}`;
   const hostOutputs = host.Outputs as Record<string, unknown>;
   const document: Record<string, unknown> = {
