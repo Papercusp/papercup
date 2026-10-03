@@ -4270,6 +4270,167 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
   });
+
+  // WI-10005698: a suppressed no-op must not enroll the CALLER either. Two independent
+  // faults composed to break this, and each half gets its own case below because each
+  // was individually survivable:
+  //   WHO  — the caller-exclusion branch excluded a GOAL holder only when a leader was
+  //          ACTUALLY spawned, so a portfolio steward topping up an existing fleet that
+  //          still had a live leader fell through the ignored-spawn path into the normal
+  //          join and was enrolled as a member (flipping its mission to execute-plan-only).
+  //   WHEN — that whole enrollment block ran BEFORE this deficit guard, so even an
+  //          ordinary caller had its fleet label, leader control, compaction seed and
+  //          window colour written by a call that opened nothing.
+  // This is handler-level by construction: no type changed and each side was locally
+  // correct, so only the ORDERING of two correct things was wrong — nothing a unit test
+  // on either side alone could see.
+  it('WHO: a GOAL-holder portfolio steward stays out of a fleet it only tops up', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    // BOTH mocks are load-bearing: the getModeSubject call that marks the caller a
+    // portfolio steward is itself gated behind `if (goalSettings.goalId)`, so mocking the
+    // mode subject alone leaves goalHolderSubject null and the caller is enrolled as an
+    // ordinary member — i.e. the test would silently stop exercising the fix.
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'parent-goal',
+      settings: null,
+      drainFleetSlug: null,
+      degraded: false,
+      degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue('parent-goal');
+    // Arming goalId above also arms the goal plan-placement fence, which returns an early
+    // ok:false 'goal-plan-placement-prerequisite' BEFORE the enrollment path. Satisfy it
+    // explicitly here rather than leaning on the file-level default, so this case cannot
+    // start silently refusing (and passing vacuously) if that default drifts.
+    obligationAgendaReadMock.mockImplementation(async (input: any) => ({
+      goalId: input.goalId,
+      observedAt: new Date().toISOString(),
+      agenda: {
+        sourceGeneration: 'agenda-current',
+        evaluations: [
+          {
+            id: 'obl:goal-plan-placement:steward',
+            ruleId: 'goal-plan-placement',
+            family: 'plan-placement',
+            title: 'Place my-plan',
+            scope: {
+              workspaceId: input.workspaceId,
+              ownerId: input.ownerId,
+              goalId: input.goalId,
+              planSlug: 'my-plan',
+            },
+            responsibleOwnerId: input.ownerId,
+            status: 'due',
+            sourceGeneration: 'placement-current',
+            evidence: [
+              {
+                ref: 'goal-plan-placement:my-plan',
+                observedAt: new Date().toISOString(),
+                freshness: 'current',
+              },
+            ],
+          },
+        ],
+      },
+    }));
+    // An EXISTING fleet owned by someone else, still led: leader:'spawn' is IGNORED (a
+    // second leader is a coup), and that ignored-spawn path is precisely the one that used
+    // to fall through to the normal join and enroll the steward as an ordinary member.
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        owner: 'other-caller',
+        leaderOwnerId: 'other-leader',
+        colorScheme: { name: 'Ocean' },
+      },
+      created: false,
+    });
+    // Deliberately a REAL wave (0 alive, 1 requested) so the deficit guard ADMITS. That
+    // isolates the WHO half from the WHEN half: the steward must stay out on its own
+    // merits, not merely because nothing was opened. Members really do spawn here.
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Steward Top Up',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        leader: 'spawn',
+      } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    // Guard the path itself: several early returns above (the goal plan-placement fence,
+    // the admission refusals) answer ok:false and carry NO callerMembership, so without
+    // this every "not called" assertion below would pass vacuously on a refusal.
+    expect(payload.error ?? null).toBeNull();
+    expect(payload.ok).toBe(true);
+    expect(payload.relaunchSuppressed).toBeUndefined();
+    expect(payload.leaderSpawnIgnored).toContain('only tops up members');
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    // The steward reason, not the spawned-leader one: being a portfolio holder is its own
+    // ground for staying out, which is why callerExcludedFromFleet was NOT widened.
+    expect(payload.callerMembership.enrolled).toBe(false);
+    expect(payload.callerMembership.role).toBe('delegator');
+    expect(payload.callerMembership.reason).toBe('goal-holder-portfolio-steward');
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
+  });
+
+  it('WHEN: an ordinary caller is not enrolled by a call the deficit guard suppresses', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    // No goal mocks: callerIsPortfolioSteward is false, so this caller DOES take the
+    // enrollment branch. Only the deferral past this guard keeps the writes from running.
+    getFleetMock.mockResolvedValueOnce({
+      leaderOwnerId: 'owner-1',
+      colorScheme: { name: 'Ocean' },
+    });
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1', 'm-2']);
+
+    const res = await invokeLaunchHandler(
+      { name: 'Ordinary Top Up', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    expect(payload.relaunchSuppressed).toBe(true);
+    expect(payload.liveMembers).toBe(2);
+    expect(payload.opened).toEqual([]);
+    // Distinct reason from the WHO case: this caller was eligible to join and simply
+    // never reached the writes, which is what the reported shape has to say honestly.
+    expect(payload.callerMembership).toEqual({
+      enrolled: false,
+      role: 'leader',
+      reason: 'launch-suppressed-before-enrollment',
+    });
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+  });
+
+  it('CALIBRATION: a real wave still enrolls the caller (the two cases above are not vacuous)', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    getFleetMock.mockResolvedValueOnce({
+      leaderOwnerId: 'owner-1',
+      colorScheme: { name: 'Ocean' },
+    });
+    // 1 requested, 0 alive => the deficit guard ADMITS, so the deferred writes must run.
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+
+    const res = await invokeLaunchHandler(
+      { name: 'Real Wave', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    expect(payload.relaunchSuppressed).toBeUndefined();
+    expect(payload.callerMembership.enrolled).toBe(true);
+    expect(setPresenceFleetMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 // WI-1811 (fleet-launch-agent-inheritance-2026-07-03#P-007): the P-005 idempotency guard's
