@@ -377,11 +377,13 @@ describe('harness-docs full flow', () => {
     const docId = 'public-manual/quickstart.mdx';
     const anchored = await anchorManualDoc({ harnessSlug: 'demo', docId, verify: true });
     expect(anchored.ok).toBe(true);
-    const storedBody = async () => (await h.sql<{ content: string | null }[]>`
+    // upsertDocRecord stores COALESCE(content, '') for metadata-only FS rows.
+    // HarnessDocRecord itself intentionally does not expose the prose column.
+    const storedBody = async () => (await h.sql<{ content: string }[]>`
       SELECT content FROM harness_shared.harness_docs
        WHERE workspace_id = 'default' AND harness_slug = 'demo' AND doc_id = ${docId}
     `)[0]?.content;
-    expect(await storedBody()).toBeNull();
+    expect(await storedBody()).toBe('');
     expect((await buildMergedDocs('demo', { activePath: docId })).content).toBe(body);
     expect(await anchorManualDoc({ harnessSlug: 'demo', docId, content: '# Duplicate' }))
       .toMatchObject({ ok: false, error: expect.stringContaining('file_authoritative_source') });
@@ -398,7 +400,7 @@ describe('harness-docs full flow', () => {
     expect((await getDocRecord('demo', docId))?.status).toBe('review');
     expect(h.stewardDocs.find((doc) => doc.docId === docId)?.sourceFile).toBe('manual/quickstart.mdx');
     expect(readFileSync(join(repo, 'manual/quickstart.mdx'), 'utf8')).toBe(body);
-    expect(await storedBody()).toBeNull();
+    expect(await storedBody()).toBe('');
     await verifyManualDoc('demo', docId);
     expect((await getDocRecord('demo', docId))?.status).toBe('fresh');
   });
