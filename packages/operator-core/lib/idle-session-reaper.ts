@@ -43,6 +43,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
 import { interruptViaPty, findLiveHost, listLiveHostsAsync } from './events/await/psu-pty-discovery';
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
+import { AWAIT_CANCEL_REASONS } from './events/await/cancel-reasons';
 import { gatherOnDesktopSessions, isPidUnderOpenWindow } from './desktop-window-liveness';
 import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
 import { issuesScopeWorkspace } from './issues-engineer';
@@ -2097,7 +2098,7 @@ export async function reclaimDanglingInboxWakeAwaits(
       // row), so an await re-armed between the read and here is never clobbered.
       const rows = await sql<Array<{ id: number }>>`
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.danglingInboxWakeReclaimed}
          WHERE subscriber_id = ANY(${dead}::text[])
            AND event_key LIKE ${wakePrefix}
            AND policy = 'wake' AND once = false

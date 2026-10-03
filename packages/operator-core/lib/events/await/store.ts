@@ -26,6 +26,8 @@ import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import { reconcileEventExternalBlockers } from '../../work-items';
 import { reconcileEventDurableParks } from '../../work-items-durable-park-audit';
+import { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
+export { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -485,7 +487,7 @@ export async function retireLifecycleBoundWatches(
     const rows = await tx<{ awaits: number; predicate_watches: number }[]>`
       WITH retired_awaits AS (
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.lifecycleBindingRetired}
          WHERE bound_to = ANY(${bindingJsons}::text[]::jsonb[])
            AND (NOT ${ownerFilter}::boolean OR subscriber_id = ANY(${owners}::text[]))
            -- Announcements are declaration/latch rows, not lifecycle
@@ -544,7 +546,7 @@ export async function retireWatchesForReapedOwners(
   return boundedOrgTxn(async (tx) => {
     const awaits = await tx`
       UPDATE harness_shared.event_awaits
-         SET cancelled_at = now()
+         SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.ownerReaped}
        WHERE subscriber_id = ANY(${owners}::text[])
          -- A declared gate is durable coordination state, not an
          -- owner-scoped await.  Do not cancel it when the announcer is
@@ -635,7 +637,7 @@ export async function cancelInboxWakeAwaits(subscriberId: string): Promise<numbe
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.inboxWakeSessionEnded}
      WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
        AND policy = 'wake' AND once = false AND fired_at IS NULL AND cancelled_at IS NULL
        AND event_key LIKE 'coord:inbox-wake:%'
@@ -666,7 +668,8 @@ export async function cancelClaimableAwaits(
   const includeStanding = options.includeStanding === true;
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(),
+           cancel_reason = ${includeStanding ? AWAIT_CANCEL_REASONS.claimableFleetPaused : AWAIT_CANCEL_REASONS.claimableWorkClaimed}
      WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
        AND event_key = 'work-item:claimable'
        AND policy = 'wake'
@@ -712,6 +715,8 @@ export async function cancelAwaitsForSubscribersOnKeys(
     includeNotePrefix?: string;
     /** Restrict cancellation to one-shot rows; standing watches remain armed. */
     onceOnly?: boolean;
+    /** Stamped into cancel_reason; defaults to the generic sibling/supersession reason. */
+    reason?: AwaitCancelReason;
     /**
      * Run the cancel + delivery settle on this client instead of the org pool — for a
      * caller that already owns its connection (a sweep handed `sql`, or a fixture DB)
@@ -734,7 +739,8 @@ export async function cancelAwaitsForSubscribersOnKeys(
       const onceFilter = options.onceOnly ? tx`AND once = true` : tx``;
       const cancelled = await tx`
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(),
+               cancel_reason = ${options.reason ?? AWAIT_CANCEL_REASONS.siblingOrSupersededKey}
          WHERE workspace_id = ${ws}
            AND subscriber_id = ANY(${tx.array([...subscriberIds])}::text[])
            AND event_key = ANY(${tx.array([...eventKeys])}::text[])
@@ -775,13 +781,16 @@ export async function cancelAwaitsForSubscribersOnKeys(
  * a payload-filter match, never a guess. Best-effort shape: returns the count actually
  * cancelled (already-fired/cancelled rows are silently skipped, not an error).
  */
-export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number> {
+export async function cancelAwaitsByIds(
+  ids: readonly number[],
+  reason: AwaitCancelReason = AWAIT_CANCEL_REASONS.exactIdCleanup,
+): Promise<number> {
   if (ids.length === 0) return 0;
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(), cancel_reason = ${reason}
      WHERE workspace_id = ${ws} AND id = ANY(${[...ids]})
        AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
@@ -807,7 +816,8 @@ export type AwaitCancelReason =
   | 'obligation-superseded'
   | 'obligation-delivered'
   | 'obligation-unevaluated-expired'
-  | typeof AWAIT_SUPERSEDED_BY_REGISTRATION;
+  | typeof AWAIT_SUPERSEDED_BY_REGISTRATION
+  | AwaitSystemCancelReason;
 
 /**
  * Stamped by registerAwait itself when a new registration retires a pending
@@ -900,7 +910,8 @@ export async function cancelAwaitDetailed(input: {
 
     const rows = await tx`
       UPDATE harness_shared.event_awaits
-         SET cancelled_at = now(), cancel_reason = ${input.source === 'operator' ? 'operator' : (input.reason ?? null)}
+         SET cancelled_at = now(),
+             cancel_reason = ${input.source === 'operator' ? 'operator' : (input.reason ?? AWAIT_CANCEL_REASONS.internalCleanup)}
        WHERE workspace_id = ${ws} AND id = ${input.awaitId}
          AND subscriber_id = ${input.subscriberId}
          AND policy <> 'announce'
