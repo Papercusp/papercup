@@ -135,7 +135,7 @@ function auditSavedInboxPair(report: any) {
     if (!condition) throw Error('P011 inbox acceptance: ' + reason);
   };
   const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0;
-  check(report.incomplete === false && report.runner.status === 0 && !report.error, 'incomplete run');
+  check(report.incomplete === false && report.runner?.status === 0 && !report.error, 'incomplete run');
   check(report.cohorts.length === 2 && report.cohorts.map((c: any) => c.mode).join(',') === 'baseline,shared', 'paired hosts');
   check(Object.keys(report.sources.before).length > 0 && JSON.stringify(report.sources.before) === JSON.stringify(report.sources.after), 'source drift');
   const bodies = Array.from({ length: 256 }, (_, i) => ({ id: 'p011-' + (i + 1),
@@ -445,6 +445,14 @@ function privateInboxEndpoints(workspace: string, backgroundWorkers: string, dat
       operator.protocol !== 'http:' || !loopback(operator.hostname) || !operator.port ||
       ['3070', '3170', pgPort].includes(operator.port)) throw Error('Private inbox database/runtime endpoint containment failed');
   return { workspace, backgroundWorkers: 0, loopbackDatabase: true, ownedPgPort: Number(pgPort), ambientOperatorPortsExcluded: true };
+}
+
+async function persistInboxBeforePostflight(report: any, destination: string, postflight: () => Promise<void>) {
+  // Completed raw windows, source pins, intervention and runtime-log identity
+  // must survive a failing final network read. The outer catch records failure.
+  writeFileSync(destination, serializeIdentitySafeJson(report));
+  await postflight();
+  writeFileSync(destination, serializeIdentitySafeJson(report));
 }
 
 // Closed helper also runs in CDP. Validate the actual library shape before
@@ -997,6 +1005,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(servingInboxHealth({ ok: true, service: 'papercusp-operator', sha: 'a'.repeat(10), version: '0.0.0' }, 'a'.repeat(10)))
         .toEqual(fixture().health);
     });
+    it('rejects missing or failed runner provenance without inventing a resource verdict', () => {
+      for (const runner of [undefined, { status: 1 }]) {
+        expect(() => auditSavedInboxPair({ incomplete: false, runner })).toThrow('incomplete run');
+      }
+    });
     it.each([
       ['unknown SHA', { sha: null }], ['other SHA', { sha: 'd'.repeat(10) }],
       ['missing version', { version: undefined }], ['wrong service', { service: 'other' }],
@@ -1046,6 +1059,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       } finally { rmSync(directory, { recursive: true, force: true }); }
     });
     const endpoints = ['test-runtime-private', '0', 'postgresql://127.0.0.1:55555/private', 'http://127.0.0.1:55556', '55555'];
+    it('preserves completed raw resources and provenance when the final health read fails', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'papercusp-inbox-postflight-guard-'));
+      const destination = join(directory, 'report.json');
+      const completed = { cohorts: [{ pid: 7, samples: [{ pssBytes: 8192, allocatedBytes: 4096 }], reaped: true }],
+        sources: { before: { test: 'frozen-source' } }, runtimeLog: { bytes: 123, sha256: 'b'.repeat(64) },
+        intervention: { offset: 1, before: 'old-key', after: 'shared-key' }, preflight: fixture() };
+      try {
+        await expect(persistInboxBeforePostflight(completed, destination, async () => {
+          throw Error('injected final health socket failure');
+        })).rejects.toThrow('final health socket failure');
+        expect(JSON.parse(readFileSync(destination, 'utf8'))).toEqual(completed);
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
     it('requires the launcher-owned PG port before any private fixture write', () => {
       expect(privateInboxEndpoints(...endpoints as [string, string, string, string, string])).toMatchObject({ ownedPgPort: 55555 });
     });
@@ -1355,16 +1381,17 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       report.sources = { before: beforeSources, after: sources(), fullGraph: 'unknown' };
       report.build = build; report.runtimeLog = result.log; report.intervention = restored.intervention;
       report.preflight = preflight;
-      if (servingPin && sourceDirectory) {
-        phase = 'serving-generation-postflight';
-        const after = await readServingInboxPin(sourceDirectory, servingPin.health.sha, servingPin.process.pid);
-        preflight.servingAfter = after;
-        assertServingInboxPin(servingPin, after);
-        assertInboxArtifactCopy(servingPin.artifacts, inboxArtifactManifest(dirname(current)),
-          inboxArtifactManifest(dirname(baseline)), restored.bundle);
-        report.limitations.push('Staging health/socket/build and read-only artifact identity are separate from the private resource cohorts; production request allocation and full source graph remain unknown.');
-      }
-      writeFileSync(destination, serializeIdentitySafeJson(report));
+      await persistInboxBeforePostflight(report, destination, async () => {
+        if (servingPin && sourceDirectory) {
+          phase = 'serving-generation-postflight';
+          const after = await readServingInboxPin(sourceDirectory, servingPin.health.sha, servingPin.process.pid);
+          preflight.servingAfter = after;
+          assertServingInboxPin(servingPin, after);
+          assertInboxArtifactCopy(servingPin.artifacts, inboxArtifactManifest(dirname(current)),
+            inboxArtifactManifest(dirname(baseline)), restored.bundle);
+          report.limitations.push('Staging health/socket/build and read-only artifact identity are separate from the private resource cohorts; production request allocation and full source graph remain unknown.');
+        }
+      });
       expect(result.status, report.error ?? result.stderr).toBe(0);
       expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(4);
       expect(report.sources.before).toEqual(report.sources.after);
