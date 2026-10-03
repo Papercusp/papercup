@@ -22,6 +22,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ReportBodyTooLargeError, REPORT_BODY_MAX_BYTES } from '../../report-library';
+import { goalOwnerReportFixture } from '../../../test/fixtures/goal-owner-report';
+import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 const {
@@ -154,6 +156,19 @@ describe('reports:publish — origin is server-stamped (R-2)', () => {
 
 // ── R-1: validation + the body cap ───────────────────────────────────────────
 describe('reports:publish — validation (R-1)', () => {
+  it('passes the typed snapshot through the existing publish/get wire with exact body identity', async () => {
+    const snapshot = goalOwnerReportFixture('ws1');
+    const bodyMd = serializeGoalOwnerReportSnapshot(snapshot);
+    const r = record({ bodyMd, goalOwnerReport: snapshot, subject: { kind: 'goal', ref: snapshot.goalId, label: null } });
+    publishReportM.mockResolvedValue(r);
+    const published: any = body(await publishTool.handler({ title: 'GOAL snapshot', goal_owner_report: snapshot } as never, CTX as never) as Out);
+    expect(publishReportM.mock.calls[0]![1]).toMatchObject({ workspaceId: 'ws1', goalOwnerReport: snapshot });
+    expect(published.goal_owner_report).toEqual(snapshot);
+    expect(published.body_sha256).toMatch(/^[a-f0-9]{64}$/);
+    getReportM.mockResolvedValue(r);
+    const fetched: any = body(await getTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out);
+    expect(fetched.results[0].report).toMatchObject({ report_id: published.report_id, body_sha256: published.body_sha256, goal_owner_report: snapshot, body_md: bodyMd });
+  });
   it('SPEC-P-003-body-cap-refusal-carries-overage: an over-cap body is refused WITH its overage', async () => {
     const bytes = REPORT_BODY_MAX_BYTES + 1234;
     publishReportM.mockRejectedValue(new ReportBodyTooLargeError(bytes));

@@ -14,6 +14,9 @@ import { tmpdir } from 'node:os';
 import { chmod } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import Corestore from 'corestore';
+import { openOwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
+import { cutHiveSeed } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { fileURLToPath } from 'node:url';
 import {
   parseGitDepth,
@@ -40,9 +43,38 @@ import {
   withSeedOutput,
   readSeedFindingRedactions,
   readSeedUuidIdempotencyDropPlans,
+  exportSeedUuidIdempotencyCensus,
 } from "./cut-seed-cli";
 
 describe('D166 private row-drop plan transport', () => {
+  it('exports the actual frozen manifest population read-only and refuses changed source identities', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'uuid-frozen-export-'));
+    const store = new Corestore(join(dir, 'source'));
+    try {
+      await store.ready();
+      const own = await openOwnLog(store);
+      await own.append({ type: 'put', table: 'harness_plans', hbKey: 'row', value: { public: 'unchanged' },
+        ts: 1, schema_version: 1, author_pubkey: '' });
+      const seed = await cutHiveSeed({ potId: 'fixture-pot', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+        outDir: join(dir, 'seed'), git: null, corestore: { sourceStore: store, coreKeys: [own.keyHex] } });
+      const censusDir = join(dir, 'census'); await mkdir(censusDir, { mode: 0o700 });
+      const manifestBytes = await readFile(seed.manifestPath);
+      const inputs = { storeDir: join(dir, 'seed', 'corestore'), manifestPath: seed.manifestPath,
+        manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+        epochKeysPath: join(dir, 'unused-private-keys.json'), epochKeysSha256: 'b'.repeat(64), outputDir: censusDir };
+      const configPath = await exportSeedUuidIdempotencyCensus(inputs);
+      const config = JSON.parse(await readFile(configPath, 'utf8'));
+      expect(config.potId).toBe('fixture-pot'); expect(config.sources).toHaveLength(1);
+      expect(config.sources[0]).toMatchObject({ sourceKeyHex: own.keyHex, sourceLength: 1,
+        sourceBlocksRead: 1, rowCount: 1 });
+      const row = JSON.parse((await readFile(config.sources[0].rowsPath, 'utf8')).trim());
+      expect(row).toMatchObject({ table: 'harness_plans', hbKey: 'row', author_pubkey: '', value: { public: 'unchanged' } });
+      expect(own.length).toBe(1);
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, manifestSha256: '0'.repeat(64) })).rejects.toThrow('binding changed');
+      await expect(exportSeedUuidIdempotencyCensus(inputs)).rejects.toThrow('EEXIST');
+    } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it('checks exact private bytes and the producer contract before returning bindings', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'seed-uuid-plans-'));
     await chmod(dir, 0o700);

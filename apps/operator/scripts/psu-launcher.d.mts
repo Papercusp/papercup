@@ -3745,6 +3745,10 @@ export function resumeTargetSelectionFromLastActive(session: any, args: {} | und
 export function sessionPortTargetAccount(account: any): any;
 export function sessionPortRequestBody(source: any, target: any, account: any, args?: {}): {
     consultEvidenceSpan?: any;
+    contextSize: any;
+    launchContext: any;
+    currentInstruction: any;
+    targetOwnerId?: any;
     protocolVersion: number;
     transformVersion: number;
     workspace: any;
@@ -3752,9 +3756,6 @@ export function sessionPortRequestBody(source: any, target: any, account: any, a
     targetBackend: any;
     targetModel: any;
     targetAccount: any;
-    contextSize: any;
-    launchContext: any;
-    currentInstruction: any;
 };
 export function formatSessionPortInspection(result: any): any[];
 /** WI-3859 F4: the archive-at-death lifecycle DELETES an ended session's

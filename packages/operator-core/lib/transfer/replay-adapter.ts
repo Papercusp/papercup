@@ -21,8 +21,10 @@
 import type { JudgeLlmCall } from '@papercusp/eval-battery';
 import { createHash } from 'node:crypto';
 import { computeOwnSourceHash } from '../scout/src-hash';
+import { adaptTransferOutput } from '../experiment/lifecycle-adapter';
+import type { LearningEvidence } from '../experiment/types';
+import { transferLessonArtifactHash } from './store';
 import {
-  DEFAULT_REPLAY_RUBRIC,
   REPLAY_BATTERY_SOURCE_HASH,
   REPLAY_BASELINE_VARIANT,
   runGovernedReplay,
@@ -33,7 +35,7 @@ import {
   type ReplayTranscript,
   type ReplayVariant,
 } from '../replay';
-import type { TransferLesson, TransferReplayEvidence, TransferReplayPort } from './types';
+import { TRANSFER_LOOP_ID, type TransferLesson, type TransferReplayEvidence, type TransferReplayPort } from './types';
 
 export const WITH_LESSON_VARIANT_ID = 'with-lesson';
 const TRANSFER_ADAPTER_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
@@ -103,6 +105,7 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
       ...(deps.maxSpendUsd !== undefined ? { maxSpendUsd: deps.maxSpendUsd } : {}),
     };
     const invocations: TransferReplayEvidence['invocations'][number][] = [];
+    const judgeInvocations: Parameters<JudgeLlmCall>[0][] = [];
     const runner: ReplayRunner = async (input) => {
       const handle = await deps.runner(input);
       invocations.push({
@@ -114,7 +117,11 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
     };
     const { verdict, result, reservation } = await run(
       { workspaceId: deps.workspaceId, config, potSlug: lesson.potSlug },
-      { runner, llmCall: deps.llmCall, now },
+      { runner, llmCall: async (input) => {
+        // Pin every actual judge attempt, including repair/retry prompts.
+        judgeInvocations.push(structuredClone(input));
+        return deps.llmCall(input);
+      }, now },
     );
     if (!result) {
       throw new Error(
@@ -130,20 +137,18 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
           `(baseline=${baseline?.meanComposite ?? 'none'}, with-lesson=${withLesson?.meanComposite ?? 'none'})`,
       );
     }
-    return {
-      withComposite: withLesson.meanComposite,
-      baselineComposite: baseline.meanComposite,
-      batteryId: result.batteryId,
-      costUsd: result.totalCostUsd,
-      evaluation: {
+    const evaluation: TransferReplayEvidence = {
+        costMeasured: result.costMeasured,
         experiment: {
           batteryId: result.batteryId, testId: 'replay',
           baselineId: REPLAY_BASELINE_VARIANT.variantId, challengerId: WITH_LESSON_VARIANT_ID,
           taskHash: hash(replayCase),
-          modelHash: invocations.length === 2 && invocations.every((v) => v.model !== null)
-            ? hash({ students: invocations.map((v) => ({ variantId: v.variantId, model: v.model })), judge: DEFAULT_REPLAY_RUBRIC.model }) : null,
-          promptHash: invocations.length === 2
-            ? hash(invocations.map((v) => ({ variantId: v.variantId, systemPromptHash: v.systemPromptHash, contextHash: v.contextHash }))) : null,
+          modelHash: invocations.length === 2 && invocations.every((v) => v.model !== null) && judgeInvocations.length >= 2
+            ? hash({ students: invocations.map((v) => ({ variantId: v.variantId, model: v.model })),
+              judges: judgeInvocations.map((v) => ({ model: v.model, thinkingBudgetTokens: v.thinkingBudgetTokens, maxTokens: v.maxTokens })) }) : null,
+          promptHash: invocations.length === 2 && judgeInvocations.length >= 2
+            ? hash({ students: invocations.map((v) => ({ variantId: v.variantId, systemPromptHash: v.systemPromptHash, contextHash: v.contextHash })),
+              judges: judgeInvocations.map((v) => ({ system: v.system, messages: v.messages, responseFormat: v.responseFormat })) }) : null,
           rubricHash: result.rubricHash,
           // The measured module hashes below do not yet cover the transport,
           // transcript renderer and judge engine. Do not label a subset complete.
@@ -153,7 +158,52 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
         reservation: reservation ?? null, outcomes: result.outcomes,
         budgetExhausted: result.budgetExhausted, invocations,
         loadedCode: { adapter: TRANSFER_ADAPTER_SOURCE_HASH, battery: REPLAY_BATTERY_SOURCE_HASH },
-      },
+    };
+    // A governed source evaluation is a common lifecycle receipt even when it
+    // cannot authorize promotion. Keep unknown pins and unmeasured evidence;
+    // the frozen judge's scores do not stand in for objective/regression tests.
+    if (lesson.potSlug && reservation?.status === 'settled' && reservation.settledAt !== null &&
+        reservation.workspaceId === lesson.workspaceId && reservation.potSlug === lesson.potSlug &&
+        reservation.runRef === result.batteryId) {
+      const recordedAt = evaluation.experiment.completedAt!;
+      const refs = [`transfer:${lesson.id}`, ...result.outcomes.map((cell) => `replay-run:${cell.runId}`)];
+      const paired = result.outcomes.length === 2 && result.outcomes.every((cell) =>
+        cell.status === 'scored' && cell.replayed && cell.caseId === lesson.id && cell.repeat === 0 &&
+        cell.caseRef === transcript.ref && Number.isFinite(cell.composite)) &&
+        new Set(result.outcomes.map((cell) => cell.variantId)).size === 2 &&
+        result.outcomes.every((cell) => [REPLAY_BASELINE_VARIANT.variantId, WITH_LESSON_VARIANT_ID].includes(cell.variantId));
+      const evidence: LearningEvidence[] = (['objective', 'judgment', 'regression', 'probe', 'cost', 'rollback'] as const).map((kind) => {
+        const measured = kind === 'judgment' ? paired : kind === 'cost' ? result.costMeasured : false;
+        const passed = kind === 'judgment' ? withLesson.meanComposite! > baseline.meanComposite! :
+          kind === 'cost' && !result.budgetExhausted &&
+            Math.abs(reservation.usedUsd - result.totalCostUsd) < 1e-9 && reservation.usedUsd <= reservation.reservedUsd;
+        return { id: `${result.batteryId}:${kind}`, kind,
+          status: measured ? passed ? 'pass' : 'fail' : 'not-measured',
+          coverage: { required: 1, measured: measured ? 1 : 0 },
+          artifactRefs: kind === 'cost' ? [`learning-reservation:${reservation.id}`] : refs,
+          recordedAt };
+      });
+      const actor = { kind: 'system' as const, id: TRANSFER_LOOP_ID, role: 'transfer' };
+      const variantHash = transferLessonArtifactHash(lesson);
+      evaluation.contract = adaptTransferOutput({
+        candidate: { id: lesson.id, version: variantHash,
+          parentVersion: hash({ baseline: config.variants[0], taskHash: evaluation.experiment.taskHash }),
+          variantHash, actor, potScope: { workspaceId: lesson.workspaceId, potId: lesson.potSlug },
+          createdAt: lesson.createdAt },
+        experiment: evaluation.experiment,
+        evidence, spend: { requestedUsd: reservation.requestedUsd, reservedUsd: reservation.reservedUsd,
+          usedUsd: reservation.usedUsd, unsettledUsd: 0, settledAt: new Date(reservation.settledAt).toISOString() },
+        verdict: 'inconclusive', authority: actor,
+        reason: 'Source replay measured judgment and spend; complete execution pins and objective, regression, probe and rollback evidence are still required.',
+        decidedAt: recordedAt,
+      }).contract;
+    }
+    return {
+      withComposite: withLesson.meanComposite,
+      baselineComposite: baseline.meanComposite,
+      batteryId: result.batteryId,
+      costUsd: result.totalCostUsd,
+      evaluation,
     };
   };
 }

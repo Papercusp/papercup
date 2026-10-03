@@ -119,7 +119,7 @@ const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   compositionSource: 'compatibility' as const,
   resourceArtifacts: [],
 }));
-const provisionLaunchIdentityResourcesMock = vi.fn(async () => {});
+const provisionLaunchIdentityResourcesMock = vi.fn(async (_input: unknown) => {});
 const resolveLaunchIdentityModelDefaultMock = vi.fn(async (_input: unknown): Promise<string | null> => null);
 const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   codexHome: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}`,
@@ -450,8 +450,13 @@ const getFleetMock = vi.fn(async (_ws: string, slug: string): Promise<AgentFleet
   description: null,
   owner: 'su-1',
   leaderOwnerId: 'su-1',
+  leaderMissingSinceMs: null,
+  fleetType: 'single',
   colorScheme: null,
   controlState: 'active',
+  controlResumeGate: null,
+  controlExpiresAt: null,
+  controlNoResumePath: false,
   controlReason: null,
   controlBy: null,
   controlAt: null,
@@ -515,12 +520,12 @@ vi.mock('../../session-brief', async (orig) => ({
   restorePendingCarryRespawn: (...args: unknown[]) =>
     restorePendingCarryRespawnMock(...(args as [string, string, PendingCarryRespawnTestSlot])),
 }));
-const resolveWakeModeMock = vi.hoisted(() => vi.fn(async () => 'auto' as const));
-const ensureLaunchedWakeAutoMock = vi.hoisted(() => vi.fn(async () => null));
+const resolveWakeModeMock = vi.hoisted(() => vi.fn(async (_ownerId: string): Promise<'auto' | 'manual'> => 'auto'));
+const ensureLaunchedWakeAutoMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _options: unknown) => null));
 vi.mock('../../agent-tools/coordination/wake-mode', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
-  resolveWakeMode: (...args: unknown[]) => resolveWakeModeMock(...args),
-  ensureLaunchedWakeAuto: (...args: unknown[]) => ensureLaunchedWakeAutoMock(...args),
+  resolveWakeMode: (...args: unknown[]) => resolveWakeModeMock(...(args as [string])),
+  ensureLaunchedWakeAuto: (...args: unknown[]) => ensureLaunchedWakeAutoMock(...(args as [string, unknown])),
 }));
 // EI-21442511412659661: bootstrap must consult the shared liveness oracle and
 // treat an absent/rejected read as unknown (therefore blocking). Keep the route

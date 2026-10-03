@@ -1921,13 +1921,61 @@ export function waitStoredQualification(
   );
 }
 
+/**
+ * WI-10005957 — retarget an attempt that a PRE-SUITE no-verdict pinned to a sha nobody judged.
+ *
+ * A scheduled run that tears before its candidate is resolved (dependency prewarm, torn source)
+ * still settles with the integration TIP it read, so the stored attempt adopts that tip. The
+ * frozen repair queue keeps owning the attempt, and every later scheduled CLI resumes the queue's
+ * never-judged repairHead (`scheduledAttemptPrewarmTarget`). Activation then compares the stored
+ * tip with the head and refuses `conflict` on every fire — a wedge that nothing else clears,
+ * because `beginStoredQualification` only retargets a `repair-in-progress` waiter or a pending
+ * repair head.
+ *
+ * The same locked row is the authority: when its queue owns this attempt, its head awaits
+ * verification, the attaching CLI asks for exactly that head on its OWN unstarted placeholder,
+ * and no physical run under the attempt ever reached a suite, the queue's head is the only
+ * candidate the attempt can judge. Anything else is returned unchanged and keeps failing closed.
+ */
+export function retargetPreSuiteAttemptToOwningRepairHead(
+  current: CheckpointQualificationTransaction,
+  input: Pick<Parameters<typeof reserveQualificationRunner>[1], 'attemptId' | 'runnerId' | 'candidate' | 'started'>,
+  rawRepairQueue: unknown,
+): CheckpointQualificationTransaction {
+  const requested = input.candidate?.trim();
+  if (!requested || input.started !== true) return current;
+  if (current.attemptId !== input.attemptId || current.outcome.kind !== 'pending') return current;
+  if (!current.candidate || current.candidate === requested) return current;
+  const runner = current.currentPhysicalRunner;
+  if (!runner || runner.id !== input.runnerId || runner.phase !== 'launching' || runner.pid != null) return current;
+  const everJudged = (current.consumedPhysicalRuns ?? []).some((run) => run.outcome.kind !== 'pre-suite-no-verdict');
+  if (everJudged) return current;
+  const queue = parseFrozenCandidateRepairQueue(rawRepairQueue);
+  if (
+    !queue ||
+    queue.phase !== 'ready-to-verify' ||
+    queue.qualificationAttemptId !== current.attemptId ||
+    queue.fixerSpawnId !== null ||
+    queue.dispatchReservation != null ||
+    queue.repairHead !== requested ||
+    !frozenRepairHeadAwaitsVerification(queue)
+  ) return current;
+  return {
+    ...current,
+    candidate: requested,
+    repairHead: requested,
+    currentPhysicalRunner: { ...runner, candidate: requested },
+    evidenceRefs: uniqueStrings([...current.evidenceRefs, `candidate:${requested}`, `retargeted-from:${current.candidate}`]),
+  };
+}
+
 export function reserveStoredQualificationRunner(
   target: GateVerdictTarget,
   input: Parameters<typeof reserveQualificationRunner>[1],
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, (current) =>
+  return mutateStoredQualification(target, (current, context) =>
     current
-      ? reserveQualificationRunner(current, {
+      ? reserveQualificationRunner(retargetPreSuiteAttemptToOwningRepairHead(current, input, context.rawRepairQueue), {
           ...input,
           incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current.currentPhysicalRunner),
         })

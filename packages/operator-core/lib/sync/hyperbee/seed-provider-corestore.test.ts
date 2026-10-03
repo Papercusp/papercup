@@ -18,6 +18,8 @@ import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, wr
 import { homedir, hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { loadSodium, encodeOpAAD } from './hive-epoch-aead';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import {
   createCorestoreSeedProvider,
@@ -38,6 +40,55 @@ const cleanups: Array<() => void | Promise<void>> = [];
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
 describe('D-166 source-bound UUID output row drops', () => {
+  it('assembles an authenticated plan from a real Hypercore export and applies it to a new read-only core', async () => {
+    const source = makeStore(tmpDir('uuid-census-crypto-source-')); await source.ready();
+    const target = makeStore(tmpDir('uuid-census-crypto-target-')); await target.ready();
+    const own = await openOwnLog(source);
+    const sodium = await loadSodium();
+    const key = Buffer.alloc(32); sodium.randombytes_buf(key);
+    const seal = (hbKey: string, value: unknown): PeerLogOp => {
+      const row = { type: 'put' as const, table: 'harness_plans', hbKey, author_pubkey: '',
+        epoch: 0, ts: 1, schema_version: 1 };
+      const opId = createHash('sha256').update(JSON.stringify([row.table, hbKey, ''])).digest('hex');
+      const nonce = Buffer.alloc(24); sodium.randombytes_buf(nonce);
+      const plain = Buffer.from(JSON.stringify(value)); const cipher = Buffer.alloc(plain.length + 16);
+      sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(cipher, plain,
+        encodeOpAAD({ potId: 'fixture-pot', epoch: 0, opId }), null, nonce, key);
+      return { ...row, value: { __rekey: Buffer.concat([nonce, cipher]).toString('base64') } };
+    };
+    const refusedValue = ['6063cec6', 'f2df', '44d5', '8f67', 'd2d359ce7a23'].join('-');
+    const dropped = seal('drop', { idempotencyKey: refusedValue });
+    const retained = seal('keep', { public: 'unchanged' });
+    await own.append(dropped); await own.append(retained);
+    const original = await own.get(0);
+    const dir = tmpDir('uuid-census-crypto-private-'); chmodSync(dir, 0o700);
+    const exported = await exportSeedUuidIdempotencySource({ sourceStore: source, sourceKeyHex: own.keyHex,
+      sourceLength: own.length, outputDir: dir, segment: 'segment-000001.blob' });
+    const keysPath = join(dir, 'epoch-keys.json');
+    const keys = JSON.stringify({ 'fixture-pot': { 0: key.toString('base64') } });
+    writeFileSync(keysPath, keys, { mode: 0o600 });
+    const configPath = join(dir, 'config.json'); const planPath = join(dir, 'plans.json');
+    writeFileSync(configPath, JSON.stringify({ reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
+      potId: 'fixture-pot', epochKeysPath: keysPath,
+      epochKeysSha256: createHash('sha256').update(keys).digest('hex'), sources: [exported] }), { mode: 0o600 });
+    const assembler = spawnSync('python3', [join(import.meta.dirname, '../../../../../papercusp-desktop/bin/lib/print-gitleaks-findings.py'),
+      '--assemble-uuid-row-drops', configPath, planPath], { encoding: 'utf8', timeout: 30_000 });
+    expect(assembler.status, assembler.stderr).toBe(0);
+    expect(assembler.stdout + assembler.stderr).not.toContain(refusedValue);
+    const packet = JSON.parse(readFileSync(planPath, 'utf8'));
+    expect(packet.counts).toMatchObject({ originalAuthenticated: 2, droppedAuthenticated: 1,
+      authenticatedOriginalRetained: 1, redactedReattested: 0, occurrenceCount: 1 });
+    const minted = await mintFilteredSeedContentCore({ sourceStore: source, ownerKeyHex: own.keyHex,
+      stagingStore: target, redactValues: [], uuidIdempotencyDropPlan: packet.plans[0], onProjection: vi.fn() });
+    expect(minted.rowCount).toBe(1);
+    const output = target.get({ key: Buffer.from(minted.keyHex, 'hex'), valueEncoding: 'json' }); await output.ready();
+    expect(output.writable).toBe(false);
+    const block = await output.get(0) as { value: { rows: PeerLogOp[] } };
+    expect(block.value.rows[0]).toMatchObject({ hbKey: 'keep', value: retained.value, author_pubkey: '', epoch: 0 });
+    expect(JSON.stringify(block)).not.toContain((dropped.value as { __rekey: string }).__rekey);
+    expect(await own.get(0)).toEqual(original); expect(own.length).toBe(2);
+  });
+
   it('exports actual local source blocks into a private immutable census with original headers and ciphertext', async () => {
     const source = makeStore(tmpDir('seed-uuid-export-'));
     await source.ready();

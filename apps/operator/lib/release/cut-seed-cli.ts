@@ -86,6 +86,11 @@
  *   --uuid-idempotency-drop-plans FILE --uuid-idempotency-drop-plans-sha256 HASH
  *                          D-166 private source-bound whole-row drops. Requires a fresh filtered
  *                          cut with --skip-corestore-refresh, so source lengths cannot be changed.
+ *   --export-uuid-idempotency-census DIR --store-dir FROZEN_STORE
+ *   --uuid-source-manifest FILE --uuid-source-manifest-sha256 HASH
+ *   --uuid-epoch-keys FILE --uuid-epoch-keys-sha256 HASH
+ *                          Read-only export of the exact manifest's canonical source rows;
+ *                          the private assembler opens every original envelope independently.
  *                          Use an authorized source correction, then cut a fresh corestore.
  *   --json                 print the manifest + size report as JSON
  */
@@ -355,6 +360,7 @@ export async function exportSeedUuidIdempotencyCensus(input: {
   storeDir: string; manifestPath: string; manifestSha256: string;
   epochKeysPath: string; epochKeysSha256: string; outputDir: string;
 }): Promise<string> {
+  if (!(await lstat(input.storeDir)).isDirectory()) throw new Error('UUID frozen source store missing');
   const manifestBytes = await readFile(input.manifestPath);
   if (!/^[0-9a-f]{64}$/.test(input.manifestSha256)
       || createHash('sha256').update(manifestBytes).digest('hex') !== input.manifestSha256) {

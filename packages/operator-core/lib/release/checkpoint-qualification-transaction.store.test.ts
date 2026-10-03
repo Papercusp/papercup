@@ -9,6 +9,8 @@ import {
   beginStoredQualification,
   cancelStoredQualification,
   reserveQualificationRunner,
+  reserveStoredQualificationRunner,
+  retargetPreSuiteAttemptToOwningRepairHead,
   settleQualificationTransaction,
 } from './checkpoint-qualification-transaction';
 import {
@@ -621,5 +623,109 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     );
     expect(refused).toMatchObject({ status: 'conflict' });
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reserveStoredQualificationRunner pre-suite retarget (WI-10005957)', () => {
+  type Transaction = ReturnType<typeof beginQualificationTransaction>['transaction'];
+
+  // The measured wedge: an earlier fire tore before its candidate resolved and settled the
+  // attempt onto the integration tip; the next fire reserved its own placeholder on that tip.
+  function wedgedAttempt(overrides: Partial<Transaction> = {}): Transaction {
+    const begun = beginQualificationTransaction(null, { attemptId: 'attempt-1', nowMs: 100 }).transaction;
+    return {
+      ...begun,
+      phase: 'running',
+      candidate: 'tip-sha',
+      repairHead: null,
+      runId: null,
+      outcome: { kind: 'pending' },
+      consumedPhysicalRuns: [{
+        id: 'fire-1', unit: 'fire-1.scope', phase: 'launching', pid: null, pidIdentity: null, candidate: null,
+        evidenceRefs: ['gate-fire:fire-1', 'checkpoint-run:run-1'],
+        reservedAtMs: 110, heartbeatAtMs: 110, leaseExpiresAtMs: 10_000,
+        outcome: { kind: 'pre-suite-no-verdict', reason: 'infra-inconclusive' }, endedAtMs: 150,
+      }],
+      currentPhysicalRunner: {
+        id: 'fire-2', unit: 'fire-2.scope', phase: 'launching', pid: null, pidIdentity: null, candidate: 'tip-sha',
+        evidenceRefs: ['gate-fire:fire-2'], reservedAtMs: 200, heartbeatAtMs: 200, leaseExpiresAtMs: 100_000,
+      },
+      ...overrides,
+    };
+  }
+
+  function owningQueue() {
+    const red = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['broken.test.ts'], nowMs: 150 });
+    return markFrozenRepairAdmitted(red, {
+      atMs: 175, actor: 'fixer', source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1', toRepairHead: 'repair-1',
+      paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+    });
+  }
+
+  const attach = {
+    attemptId: 'attempt-1', runnerId: 'fire-2', runId: 'run-2', candidate: 'repair-1', pid: 4242,
+    leaseDurationMs: 1_000, started: true, evidenceRefs: ['checkpoint-run:run-2'],
+    incumbentLiveness: 'unknown' as const, nowMs: 300,
+  };
+
+  it('attaches the CLI to the owning queue\'s never-judged repair head instead of refusing conflict', async () => {
+    const queue = owningQueue();
+    expect(queue).toMatchObject({ phase: 'ready-to-verify', qualificationAttemptId: 'attempt-1', repairHead: 'repair-1' });
+    const { statements } = transactionHarness({ qualificationTransaction: wedgedAttempt(), repair_queue: queue });
+
+    const result = await reserveStoredQualificationRunner(target, attach);
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: {
+        attemptId: 'attempt-1',
+        candidate: 'repair-1',
+        repairHead: 'repair-1',
+        runId: 'run-2',
+        currentPhysicalRunner: { id: 'fire-2', candidate: 'repair-1', pid: 4242, phase: 'materializing' },
+      },
+    });
+    const stored = (result as { transaction: Transaction }).transaction;
+    expect(stored.evidenceRefs).toEqual(expect.arrayContaining(['candidate:repair-1', 'retargeted-from:tip-sha']));
+    expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(true);
+  });
+
+  it('keeps failing closed whenever the same row does not prove the queue owns an unjudged head', async () => {
+    const queue = owningQueue();
+    const unadmitted = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['broken.test.ts'], nowMs: 150 });
+    const cases: Array<{ name: string; transaction: Transaction; queue: unknown; candidate: string }> = [
+      { name: 'queue owned by another attempt', transaction: wedgedAttempt(),
+        queue: { ...queue, qualificationAttemptId: 'attempt-other' }, candidate: 'repair-1' },
+      { name: 'CLI asks for a sha that is not the queue head', transaction: wedgedAttempt(), queue, candidate: 'other-sha' },
+      { name: 'queue head equals the frozen candidate (nothing to verify)', transaction: wedgedAttempt(),
+        queue: unadmitted, candidate: 'candidate-1' },
+      { name: 'a fixer is dispatched', transaction: wedgedAttempt(), queue: { ...queue, fixerSpawnId: 'spawn-1' }, candidate: 'repair-1' },
+      { name: 'a suite already judged under this attempt', candidate: 'repair-1', queue,
+        transaction: wedgedAttempt({
+          consumedPhysicalRuns: [{
+            ...wedgedAttempt().consumedPhysicalRuns![0]!, outcome: { kind: 'red', reason: 'not-green' },
+          }],
+        }) },
+      { name: 'the placeholder already attached a process', candidate: 'repair-1', queue,
+        transaction: wedgedAttempt({
+          currentPhysicalRunner: { ...wedgedAttempt().currentPhysicalRunner!, phase: 'materializing', pid: 99 },
+        }) },
+      { name: 'no queue at all', transaction: wedgedAttempt(), queue: null, candidate: 'repair-1' },
+    ];
+    for (const testCase of cases) {
+      const { statements } = transactionHarness({ qualificationTransaction: testCase.transaction, repair_queue: testCase.queue });
+      const result = await reserveStoredQualificationRunner(target, { ...attach, candidate: testCase.candidate });
+      expect({ name: testCase.name, status: result.status }).toEqual({ name: testCase.name, status: 'conflict' });
+      expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+    }
+  });
+
+  it('is the identity when the stored candidate already matches or the caller is a reservation, not an attach', () => {
+    const current = wedgedAttempt();
+    const queue = owningQueue();
+    expect(retargetPreSuiteAttemptToOwningRepairHead(current, { ...attach, started: false }, queue)).toBe(current);
+    const aligned = wedgedAttempt({ candidate: 'repair-1' });
+    expect(retargetPreSuiteAttemptToOwningRepairHead(aligned, attach, queue)).toBe(aligned);
   });
 });

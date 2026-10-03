@@ -7905,9 +7905,9 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(() =>
       resolveResumeTarget(source, { agent: "codex", fork: true }),
     ).toThrow(/cannot be combined/);
-    expect(() =>
+    expect(
       resolveResumeTarget({ ...source, agent: "codex" }, { agent: "claude" }),
-    ).toThrow(/v1 supports/);
+    ).toMatchObject({ operation: "port", targetAgent: "claude" });
     expect(() =>
       resolveResumeTarget(source, { agent: "codex", model: "opus" }),
     ).toThrow(/belongs to/);

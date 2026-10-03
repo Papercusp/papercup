@@ -81,6 +81,82 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
+  it('dispatches exactly once across concurrent instances, only after the reservation commits', async () => {
+    const s = await tenant(); const r = request(s); const launches: string[] = [];
+    const outcomes = await Promise.all(Array.from({ length: 12 }, () => store().executeOnce(r, async grant => {
+      // A separate connection sees the admission, proving commit-before-I/O.
+      expect(await rows(s)).toHaveLength(1);
+      expect(grant).toMatchObject({ reservationId: r.reservationId, maximumCostMicros: 100_000,
+        providerLimitRef: r.providerLimitRef, policyId: 'fixture-policy', policyRevision: 1 });
+      expect(Object.isFrozen(grant)).toBe(true); expect(Object.isFrozen(grant.scope)).toBe(true);
+      launches.push(grant.reservationId); return 'provider-operation';
+    })));
+    expect(launches).toEqual([r.reservationId]);
+    expect(outcomes.filter(o => o.execution === 'completed')).toHaveLength(1);
+    expect(outcomes.filter(o => o.execution === 'not-started' && o.reservation.outcome === 'duplicate')).toHaveLength(11);
+    expect(outcomes.find(o => o.execution === 'completed')?.value).toBe('provider-operation');
+  });
+
+  it('keeps the launch fence and full hold after a provider starts but its response is lost', async () => {
+    const s = await tenant(); const r = request(s); let launches = 0;
+    await expect(store().executeOnce(r, async () => { launches++; throw new Error('lost provider response'); }))
+      .rejects.toThrow('lost provider response');
+    const retry = await store().executeOnce(r, async () => { launches++; });
+    expect(retry.execution).toBe('not-started'); expect(retry.reservation.outcome).toBe('duplicate');
+    expect((await store().reserve(request(s, { maximumCostMicros: 1 }))).outcome).toBe('refused');
+    expect(launches).toBe(1); expect(await rows(s)).toHaveLength(1);
+  });
+
+  it('never treats an orphaned admission or a final zero bill as permission to dispatch again', async () => {
+    const s = await tenant(); const r = request(s); let launches = 0;
+    // Crash after commit, before any network I/O; a successor cannot know that.
+    await store().reserve(r);
+    expect((await store().executeOnce(r, async () => { launches++; })).execution).toBe('not-started');
+    await store().observe(observation(r, { costMicros: 0 }));
+    expect((await store().executeOnce(r, async () => { launches++; })).execution).toBe('not-started');
+    // A separately admitted operation may use the released funding.
+    expect((await store().executeOnce(request(s), async () => { launches++; })).execution).toBe('completed');
+    expect(launches).toBe(1);
+  });
+
+  it('does not dispatch refused, conflicting, cross-workspace or unconfigured requests', async () => {
+    const s = await tenant(); const r = request(s); let launches = 0;
+    const execute = async () => { launches++; };
+    expect((await new PostgresHostedBudgetStore({ run: service }).executeOnce(r, execute)).execution).toBe('not-started');
+    expect((await store().executeOnce({ ...r, maximumCostMicros: 100_001 }, execute)).reservation.outcome).toBe('refused');
+    await store().reserve(r);
+    expect((await store().executeOnce({ ...r, providerLimitRef: 'fixture:other-limit' }, execute)).reservation.outcome).toBe('conflict');
+    const foreign = { ...r, scope: { ...s, customerWorkspaceId: randomUUID() } };
+    expect((await store().executeOnce(foreign, execute)).execution).toBe('not-started');
+    expect(launches).toBe(0);
+  });
+
+  it('does not call the provider before a failed commit and permits a subsequent successful admission', async () => {
+    const s = await tenant(); const r = request(s); let launches = 0;
+    const execute = async () => { launches++; };
+    const crashing: HostedServiceContextRunner = fn => service(async sql => { await fn(sql); throw new Error('commit failed'); });
+    await expect(store(readContext, crashing).executeOnce(r, execute)).rejects.toThrow('commit failed');
+    expect(launches).toBe(0); expect(await rows(s)).toHaveLength(0);
+    expect((await store().executeOnce(r, execute)).execution).toBe('completed');
+    expect(launches).toBe(1);
+  });
+
+  it('dispatches the frozen admitted binding even if the caller mutates its request during admission', async () => {
+    const s = await tenant(); const r = request(s);
+    const original = { ...r, scope: { ...s } };
+    const mutating: HostedBudgetContextReader = async (sql, input) => {
+      Object.assign(r, { maximumCostMicros: 1, providerLimitRef: 'fixture:changed' });
+      Object.assign(r.scope, { customerWorkspaceId: randomUUID() });
+      return readContext(sql, input);
+    };
+    const result = await store(mutating).executeOnce(r, async grant => {
+      expect(grant).toMatchObject({ scope: original.scope, maximumCostMicros: original.maximumCostMicros,
+        providerLimitRef: original.providerLimitRef });
+      return grant.reservationId;
+    });
+    expect(result.execution).toBe('completed'); expect(result.value).toBe(original.reservationId);
+  });
+
   it('serializes parallel work across separate store instances at the exact organization cap', async () => {
     const s = await tenant();
     const outcomes = await Promise.all(Array.from({ length: 15 }, () => store().reserve(request(s, { maximumCostMicros: 10_000 }))));

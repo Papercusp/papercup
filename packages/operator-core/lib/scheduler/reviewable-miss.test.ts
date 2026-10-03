@@ -22,7 +22,6 @@ describe('reviewableMiss (WI-10004358)', () => {
       },
       claim: { tool: 'improvements:agent-review', args: { mode: 'claim', harness: 'papercusp' } },
       grade: { tool: 'blender:grade-idea', ideaIdFrom: 'ledgerIdeaId' },
-      claimNext: { tool: 'improvements:agent-review', args: { mode: 'claim-next', harness: 'papercusp' } },
     });
     expect(r!.advice).toContain("work_items:claimable { harness:'papercusp', spec:'goal-drain-x', breakdownOnly:true");
     expect(r!.advice).toContain("improvements:agent-review { mode:'claim', id, harness:'papercusp' }");
@@ -35,10 +34,13 @@ describe('reviewableMiss (WI-10004358)', () => {
     expect(r!.advice).not.toContain("harness:''");
   });
 
-  it('states the one condition under which the lane really is drained for the caller', () => {
+  it('keeps review claims inside the scoped sample and never advertises harness-wide claim-next', () => {
     const r = reviewableMiss({ pendingAgentReview: 3 });
     expect(r!.message).toMatch(/never self-clears/);
     expect(r!.advice).toMatch(/claimed:false/);
-    expect(r!.advice).toMatch(/only then is this lane drained for you/);
+    expect(r!.advice).toMatch(/no review is available from this bounded sample/);
+    expect(r!.advice).toMatch(/Do not use claim-next/);
+    expect(r!.advice).not.toContain("mode:'claim-next'");
+    expect(r!.advice).toMatch(/does not prove the full pending-review population is exhausted/);
   });
 });

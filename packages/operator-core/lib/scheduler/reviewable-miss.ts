@@ -21,9 +21,9 @@
  * names the review route — list the spec's review ids, claim one, grade it — and must not
  * certify a drain. The route reuses the existing doors (work_items:claimable's
  * `excludedSample.queueControl.agentReview`, improvements:agent-review, blender:grade-idea);
- * nothing new is claimed on the caller's behalf. The review door itself refuses a reviewer
- * who submitted the row, so the only exit this adds is spelled out: if the door returns
- * `claimed:false`, every pending review is the caller's own and the lane IS drained for them.
+ * nothing new is claimed on the caller's behalf. Review claims stay tied to explicit ids
+ * returned by the caller's scoped read. The harness-wide `claim-next` mode cannot preserve a
+ * fleet claim spec, so it must never be offered as a fallback here.
  *
  * `revision-requested` rows are NOT counted: they wait on their SUBMITTER's resubmission, which
  * a peer cannot perform, so they would advertise work the caller cannot do.
@@ -50,8 +50,6 @@ export interface ReviewableMissRoute {
   claim: { tool: 'improvements:agent-review'; args: { mode: 'claim'; harness?: string } };
   /** Step 3: record the peer grade — this is what clears the review floor. */
   grade: { tool: 'blender:grade-idea'; ideaIdFrom: 'ledgerIdeaId' };
-  /** Fallback when the listed ids are all the caller's own or already taken. */
-  claimNext: { tool: 'improvements:agent-review'; args: { mode: 'claim-next'; harness?: string } };
 }
 
 export interface ReviewableMiss {
@@ -95,7 +93,6 @@ export function reviewableMiss(
     },
     claim: { tool: 'improvements:agent-review', args: { mode: 'claim', ...(harness ? { harness } : {}) } },
     grade: { tool: 'blender:grade-idea', ideaIdFrom: 'ledgerIdeaId' },
-    claimNext: { tool: 'improvements:agent-review', args: { mode: 'claim-next', ...(harness ? { harness } : {}) } },
   };
   const listCall =
     `work_items:claimable { ${harness ? `harness:'${harness}', ` : ''}${spec ? `spec:'${spec}', ` : ''}` +
@@ -110,7 +107,9 @@ export function reviewableMiss(
     `2) improvements:agent-review { mode:'claim', id${harness ? `, harness:'${harness}'` : ''} } on one you did not submit; ` +
     '3) read the item, then blender:grade-idea { ideaId: <its ledgerIdeaId>, grade, feedback } — 4+ approves it into the ' +
     'claimable pool, 3 or lower sends it back for revision. Then pull again. ' +
-    `If the review door returns claimed:false for every listed id and for mode:'claim-next', every pending review is your ` +
-    'own submission or already taken — only then is this lane drained for you, and the advice below applies.';
+    `If improvements:agent-review returns claimed:false for every id in that scoped read, no review is available ` +
+    `from this bounded sample. Do not use claim-next: it scopes only to a harness and can claim review work outside ` +
+    `this fleet spec. The sample is capped at ${REVIEWABLE_MISS_SAMPLE} ids per floor, so it does not prove the full ` +
+    'pending-review population is exhausted; keep the lane open and re-read the scoped claimability view when its candidates change.';
   return { route, message, advice };
 }

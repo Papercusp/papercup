@@ -826,68 +826,12 @@ export function planDispatchOperation(
   rank: Pick<AllowedExpertModel, 'agent'>,
 ): { operation: DispatchOperation } | { operation: null; reason: DispatchSkipReason; detail: string } {
   const sourceAgent = (source.agent ?? '').toLowerCase();
-  if (sourceAgent === rank.agent) {
-    // D-009 §1: OMP has no native branch command (`resumeArgsFor` throws
-    // forkUnsupportedMessage), so a same-backend OMP rank is unreachable even
-    // though the backends match.
-    if (rank.agent === 'omp') {
-      return {
-        operation: null,
-        reason: 'fork-unsupported',
-        detail: 'OMP has no native branch command, so an OMP source cannot be forked',
-      };
-    }
-    // A consult fork PRE-PINS its answering identity (--owner-id), and the
-    // launcher carries a pre-pinned identity only on the TRACKED fork, which is
-    // claude-only (psu-launcher `launchTrackedFork`). It refuses the untracked
-    // fallback for a pinned id, so a codex fork dies at boot every time — and
-    // launching it anyway costs a session and strands the consult on a
-    // responder that never existed (conv-muhi8wkf, 2026-09-25).
-    if (rank.agent !== 'claude') {
-      return {
-        operation: null,
-        reason: 'fork-unsupported',
-        detail:
-          `a consult fork needs a tracked fork to carry its pre-pinned identity, and tracked forks ` +
-          `are claude-only, so a ${rank.agent} source cannot be forked`,
-      };
-    }
-    if (source.tracked === false) {
-      return {
-        operation: null,
-        reason: 'source-session-untracked',
-        detail:
-          'a consult fork needs an exact psu-tracked source to mint an independent responder identity; ' +
-          'this raw native session can only be resumed or forked in place',
-      };
-    }
-    return { operation: 'fork' };
-  }
-  // D-009 §3: the session-port transform is claude-source-only by construction
-  // (one adapter, and acquireTrackedClaudeSource throws for any other source).
-  if (sourceAgent !== 'claude') {
+  if (!['claude', 'codex', 'omp'].includes(sourceAgent)) {
     return {
       operation: null,
       reason: 'conversion-unavailable',
       detail:
-        `no ${sourceAgent || 'unknown'} → ${rank.agent} transform exists (session ports are ` +
-        'claude-source-only), so this rank is skipped rather than failed',
-    };
-  }
-  // A session port CONTINUES the source's coordination identity onto the target
-  // backend — deliberately, so the ported session keeps its own loop/claims/
-  // locks/awaits. That is exactly right for a dead source and a collision for a
-  // live one, and D-002 forbids ever colliding with a live agent. The
-  // independent answering identity that would lift this is P-004's (the port's
-  // authority invariant is enforced server-side, in bootstrap-su, and is bound
-  // into the prepared port's idempotency hash — it is not a launcher flag).
-  if (source.live) {
-    return {
-      operation: null,
-      reason: 'convert-needs-live-source-identity',
-      detail:
-        'a session port continues the SOURCE coord identity, which would collide with the live source; ' +
-        'skipped in favour of the next rank',
+        `unsupported source backend ${sourceAgent || 'unknown'}`,
     };
   }
   if (source.tracked === false) {
@@ -899,7 +843,9 @@ export function planDispatchOperation(
         'can only be resumed or forked in place, so the rank is skipped before launch',
     };
   }
-  return { operation: 'convert' };
+  // Tracked Claude forks already preserve the live expert. Every other pair
+  // uses the maintained port with a preparation-bound independent answer owner.
+  return { operation: sourceAgent === 'claude' && rank.agent === 'claude' ? 'fork' : 'convert' };
 }
 
 /**
@@ -1275,7 +1221,7 @@ async function launchAnsweringSession(
   // responder before this session exists. A convert continues the source's own
   // identity (the port's authority invariant), so there is nothing to pin and
   // the answering id is already known.
-  const answeringOwnerId = operation === 'fork' ? d.mintOwnerId() : target.ownerId;
+  const answeringOwnerId = d.mintOwnerId();
   if (!answeringOwnerId) {
     return failed(
       'launch-failed',
@@ -1300,7 +1246,7 @@ async function launchAnsweringSession(
       // The wall probe measures the provider pool. Route pooled Claude/Codex
       // launches through that same pool so another account's headroom is usable.
       account: providerForBackend(rank.agent) ? 'auto' : 'default',
-      ...(operation === 'fork' ? { ownerId: answeringOwnerId } : {}),
+      ownerId: answeringOwnerId,
     });
   } catch (e) {
     // The composer refuses commands psu would reject at boot (an impossible
@@ -1313,9 +1259,7 @@ async function launchAnsweringSession(
   // passing the requester as --launched-by would persist a false identity edge
   // on that expert's new adv_sessions row. spawnHeadless still records the
   // requester as the task launcher, which is process-level attribution.
-  if (operation === 'fork') {
-    cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;
-  }
+  cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;
 
   let envelope: Awaited<ReturnType<typeof buildConsoleEnvelope>>;
   try {
@@ -1340,7 +1284,7 @@ async function launchAnsweringSession(
   // crossing that boundary so consult:reply already recognizes the child.
   // Keep the post-receipt write below as a retry if this best-effort stamp fails.
   let answeringOwnerStamped = false;
-  if (operation === 'fork' && opts.onAnsweringOwner) {
+  if (opts.onAnsweringOwner) {
     try {
       await opts.onAnsweringOwner(answeringOwnerId);
       answeringOwnerStamped = true;

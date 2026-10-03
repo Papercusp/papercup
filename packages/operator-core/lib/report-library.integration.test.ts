@@ -24,6 +24,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { parseGoalOwnerReportSnapshot, serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
+import { goalOwnerReportFixture } from '../test/fixtures/goal-owner-report';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   REPORT_BODY_MAX_BYTES,
@@ -42,6 +45,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const reportMigration = join(
   here, '..', '..', '..', 'libs', 'papercusp', 'libs', 'db', 'sql', '1166-report-library.sql',
 );
+const snapshotMigration = join(dirname(reportMigration), '1353-report-library-goal-snapshot.sql');
 
 /** A fresh workspace per test, so no test can see another's rows. */
 let wsSeq = 0;
@@ -59,10 +63,52 @@ describe('report_library store (real PG)', () => {
     // Bind this coverage to the production migration, not just the baseline.
     expect(existsSync(reportMigration), `migration missing at ${reportMigration}`).toBe(true);
     await db.adminSql.unsafe(readFileSync(reportMigration, 'utf8')).simple();
+    // Exercise the draft before arming, and the armed production file afterward.
+    await db.adminSql.unsafe(readFileSync(existsSync(snapshotMigration) ? snapshotMigration : `${snapshotMigration}.DRAFT`, 'utf8')).simple();
   }, 180_000);
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('REPORT-EXACT-IDENTITY-P001: round-trips the complete pinned GOAL fixture after a successor', async () => {
+    const workspaceId = nextWs();
+    const snapshot = goalOwnerReportFixture(workspaceId);
+    const body = serializeGoalOwnerReportSnapshot(snapshot);
+    expect(body.length).toBeGreaterThan(600);
+    const original = await publishReport(db.adminSql, { workspaceId, title: 'GOAL snapshot', goalOwnerReport: snapshot, visibility: 'workspace' }, AGENT_1);
+    const successorSnapshot = { ...snapshot, observedAt: '2026-10-03T10:05:00.000Z' };
+    const successor = await publishReport(db.adminSql, { workspaceId, title: 'New observation', goalOwnerReport: successorSnapshot, supersedes: original.reportId }, AGENT_1);
+    expect(successor.lineageId).toBe(original.lineageId);
+    expect(successor.bodySha256).not.toBe(original.bodySha256);
+    const pinned = await getReport(db.adminSql, workspaceId, original.reportId, { ownerId: 'reader' });
+    expect(pinned).toMatchObject({ workspaceId, reportId: original.reportId, subject: { kind: 'goal', ref: snapshot.goalId }, bodyMd: body, goalOwnerReport: snapshot, bodySha256: createHash('sha256').update(body, 'utf8').digest('hex') });
+    expect(pinned!.goalOwnerReport).toEqual(snapshot);
+    for (const wall of snapshot.ownerWalls) expect(pinned!.bodyMd).toContain(wall.exactAction);
+    expect(pinned!.bodyMd).toContain('completion unverified');
+    expect(pinned!.bodyMd).toContain('Successful mutation: work_items:complete');
+    expect(pinned!.bodyMd).toContain('Unknown: legacy-spend');
+    expect(await getReport(db.adminSql, 'different-workspace', original.reportId)).toBeNull();
+    await retireReport(db.adminSql, workspaceId, original.reportId);
+    expect((await getReport(db.adminSql, workspaceId, original.reportId))!.bodyMd).toBe(body);
+    await expect(db.adminSql`UPDATE harness_shared.report_library SET body_md = 'substitution' WHERE workspace_id = ${workspaceId} AND report_id = ${original.reportId}`).rejects.toThrow('immutable');
+    await expect(db.adminSql`UPDATE harness_shared.report_library SET goal_owner_report = NULL WHERE workspace_id = ${workspaceId} AND report_id = ${original.reportId}`).rejects.toThrow('immutable');
+  });
+
+  it('refuses malformed snapshots and workspace/subject/body substitutions before publication', async () => {
+    const workspaceId = nextWs();
+    const snapshot = goalOwnerReportFixture(workspaceId);
+    const base = { workspaceId, title: 'GOAL snapshot', goalOwnerReport: snapshot };
+    expect(parseGoalOwnerReportSnapshot(snapshot)).toEqual(snapshot);
+    for (const change of [
+      { goalOwnerReport: { ...snapshot, workspaceId: 'other' } },
+      { subject: { kind: 'goal' as const, ref: 'wrong-goal' } },
+      { bodyMd: 'caller substitute' },
+      { goalOwnerReport: { ...snapshot, observedAt: '2026-02-30T10:00:00.000Z' } },
+      { goalOwnerReport: { ...snapshot, ownerWalls: [{ ...snapshot.ownerWalls[0]!, exactAction: '' }] } },
+      { goalOwnerReport: { ...snapshot, cost: { ...snapshot.cost, spentCents: null, unknownReason: undefined } } },
+    ]) await expect(publishReport(db.adminSql, { ...base, ...change })).rejects.toThrow('invalid report');
+    expect(await listReports(db.adminSql, { workspaceId })).toEqual([]);
   });
 
   it('SPEC-P-002-publish-returns-id: publish returns a stable id that resolves on a later get', async () => {

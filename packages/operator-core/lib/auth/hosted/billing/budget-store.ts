@@ -63,6 +63,13 @@ export interface HostedBudgetObservation {
   readonly providerFinal: boolean;
   readonly evidenceRef: string;
 }
+/** A committed admission, bound to the exact provider limit and policy.
+ * This is delivered only to the winning server-side dispatch callback. */
+export interface HostedBudgetExecutionGrant extends Omit<HostedBudgetRequest, 'asOfMs'> {
+  readonly policyId: string;
+  readonly policyRevision: number;
+  readonly evidenceRef: string;
+}
 interface Receipt extends Omit<HostedBudgetRequest, 'asOfMs'> {
   readonly eventId: string;
   readonly revision: number;
@@ -141,6 +148,35 @@ export class PostgresHostedBudgetStore {
   constructor(options: { run?: HostedServiceContextRunner; readContext?: HostedBudgetContextReader } = {}) {
     this.run = options.run ?? withHostedServiceContext;
     this.readContext = options.readContext ?? (async () => null);
+  }
+
+  /** Commit the full exposure BEFORE invoking a provider, at most once.
+   * The reservation itself is the durable launch fence: only a fresh admission
+   * dispatches. Retries, completed bills and process/lease expiry never reopen
+   * it. A crash between commit and dispatch is deliberately ambiguous: keep
+   * the hold and reconcile the provider rather than blindly relaunching.
+   *
+   * Network I/O runs outside the transaction. A callback failure propagates
+   * without releasing money or deleting the fence. The authenticated caller
+   * must enforce the bound identified by providerLimitRef; this method cannot
+   * turn a forecast or an arbitrary reference into a provider-enforced limit.
+   */
+  async executeOnce<T>(input: HostedBudgetRequest, execute: (grant: HostedBudgetExecutionGrant) => Promise<T>) {
+    if (typeof execute !== 'function') throw new Error('invalid budget executor');
+    // Snapshot before the first await so a shared caller object cannot change
+    // the reserved scope or limit while authority is being read.
+    const snapshot = Object.freeze({ ...input, scope: scope(input.scope) });
+    const reservation = await this.reserve(snapshot);
+    if (reservation.outcome !== 'reserved') {
+      return { execution: 'not-started' as const, reservation, value: null };
+    }
+    const r = reservation.receipt;
+    const grant: HostedBudgetExecutionGrant = Object.freeze({ scope: snapshot.scope,
+      reservationId: r.reservationId, month: r.month, budgetKey: r.budgetKey,
+      maximumCostMicros: r.maximumCostMicros, providerLimitRef: r.providerLimitRef,
+      policyId: r.policyId, policyRevision: r.policyRevision, evidenceRef: r.evidenceRef });
+    const value = await execute(grant);
+    return { execution: 'completed' as const, reservation, value };
   }
 
   /** A duplicate is a saved receipt, NOT permission to start the provider again.

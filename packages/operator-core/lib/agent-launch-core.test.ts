@@ -475,6 +475,15 @@ describe('buildAgentLaunchCommand', () => {
         buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', targetAgent: 'codex' }),
       ).toThrow(/targetAgent/);
     });
+
+    it('pre-pins an explicitly isolated same-backend port while ordinary native resume stays protected', () => {
+      expect(buildAgentLaunchCommand({
+        mode: 'resume', agent: 'codex', targetAgent: 'codex', resumeId: '42', model: 'sol', ownerId: 'su-answer-owner',
+      })).toContain('--owner-id=su-answer-owner');
+      expect(() => buildAgentLaunchCommand({
+        mode: 'resume', agent: 'codex', resumeId: '42', model: 'sol', ownerId: 'su-answer-owner',
+      })).toThrow(/same-backend resume/);
+    });
   });
 
   it('composes a plan launch', () => {

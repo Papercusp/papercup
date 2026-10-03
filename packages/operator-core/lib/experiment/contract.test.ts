@@ -60,6 +60,15 @@ describe('validateLearningContract', () => {
     expect(validateLearningContract(baseContract())).toEqual({ ok: true, errors: [] });
   });
 
+  it('retains unknown execution pins while refusing their acceptance and activation', () => {
+    const contract = baseContract({ experiment: { ...baseContract().experiment,
+      modelHash: null, promptHash: null, codeHash: null } });
+    expect(validateLearningContract(contract)).toMatchObject({ ok: false, errors: expect.arrayContaining([
+      'experiment.modelHash must be non-empty', 'experiment.promptHash must be non-empty',
+      'experiment.codeHash must be non-empty',
+    ]) });
+  });
+
   it('fails closed when an accepted candidate has incomplete or unmeasured evidence', () => {
     const result = validateLearningContract(
       baseContract({

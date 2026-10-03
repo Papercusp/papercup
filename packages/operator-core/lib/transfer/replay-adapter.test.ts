@@ -4,7 +4,7 @@
  * refusal/unscored error paths. Fake governed-replay, zero LLM/PG.
  */
 import { describe, expect, it } from 'vitest';
-import { REPLAY_BASELINE_VARIANT, runReplayBattery, type ReplayBatteryConfig } from '../replay';
+import { DEFAULT_REPLAY_RUBRIC, REPLAY_BASELINE_VARIANT, runReplayBattery, type ReplayBatteryConfig } from '../replay';
 import type { ReplayTranscript, ReplayTurnRole } from '../replay/types';
 import {
   WITH_LESSON_VARIANT_ID,
@@ -119,6 +119,7 @@ describe('transferReplayPort', () => {
       baselineComposite: 6.0,
       batteryId: 'transfer:lesson-1:t1',
       costUsd: 0.02,
+      evaluation: { costMeasured: true },
     });
     expect(seenConfig!.variants.map((v) => v.variantId)).toEqual([
       REPLAY_BASELINE_VARIANT.variantId,
@@ -199,6 +200,29 @@ describe('transferReplayPort', () => {
     expect(called).toBe(false);
   });
 
+  it('pins actual judge model, effort and prompts rather than the declared default rubric', async () => {
+    const evaluate = async (model: string, thinkingBudgetTokens: number, dimension: string) => {
+      const port = transferReplayPort({ workspaceId: 'ws',
+        runner: async () => ({ outputText: 'continuation', costUsd: 0.02, inputTokens: 1, outputTokens: 1,
+          replayed: true, execution: { model: 'student', codeHash: null } }),
+        llmCall: async () => ({ text: JSON.stringify({ d1: 7, d2: 7, d3: 7, rationale: 'fixture' }),
+          costUsd: 0.01, inputTokens: 1, outputTokens: 1 }),
+        runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 },
+          result: await runReplayBattery({ ...config, rubric: { ...DEFAULT_REPLAY_RUBRIC, model, thinkingBudgetTokens,
+            dimensions: { ...DEFAULT_REPLAY_RUBRIC.dimensions, d1: dimension } } }, deps) }),
+      });
+      return (await port({ lesson, transcript: transcript(['user', 'assistant', 'tool_use', 'assistant']) })).evaluation!.experiment;
+    };
+    const first = await evaluate('actual-judge', 100, 'actual dimension');
+    const model = await evaluate('other-judge', 100, 'actual dimension');
+    const effort = await evaluate('actual-judge', 200, 'actual dimension');
+    const prompt = await evaluate('actual-judge', 100, 'different dimension');
+    expect(model.modelHash).not.toBe(first.modelHash);
+    expect(effort.modelHash).not.toBe(first.modelHash);
+    expect(prompt.promptHash).not.toBe(first.promptHash);
+    expect(first.codeHash).toBeNull();
+  });
+
   it('throws on a governed refusal (recorded as status error upstream, never silent)', async () => {
     const port = transferReplayPort({
       workspaceId: 'ws',
@@ -236,5 +260,18 @@ describe('transferReplayPort', () => {
     await expect(
       port({ lesson, transcript: transcript(['user', 'assistant', 'user', 'assistant']) }),
     ).rejects.toThrow(/no scored pair/);
+  });
+
+  it('forwards unknown cost without constructing a settled lifecycle from a missing reservation', async () => {
+    const port = transferReplayPort({ workspaceId: 'ws', runner: async () => ({} as never),
+      llmCall: async () => ({} as never), runGoverned: async ({ config }) => ({
+        verdict: { allow: true, remainingUsd: 1 }, result: { batteryId: config.batteryId,
+          outcomes: [], perVariant: aggregates(6, 8), comparison: null, totalCostUsd: 0.02,
+          costMeasured: false, rubricHash: 'actual-rubric', budgetExhausted: false },
+      }) });
+    const outcome = await port({ lesson: { ...lesson, potSlug: 'actual-pot' },
+      transcript: transcript(['user', 'assistant', 'user', 'assistant']) });
+    expect(outcome.evaluation?.costMeasured).toBe(false);
+    expect(outcome.evaluation?.contract).toBeUndefined();
   });
 });

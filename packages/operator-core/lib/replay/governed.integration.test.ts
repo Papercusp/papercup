@@ -44,7 +44,10 @@ describe('governed replay durable spend boundary', () => {
     if (!admitted.admitted) throw new Error('fixture admission failed');
     const port = transferReplayPort({ workspaceId,
       runner: async (input) => ({ ...await run(input), execution: { model: 'fixture-student', codeHash: 'fixture-runner' } }),
-      llmCall: judge, runGoverned: (q, deps) => runGovernedReplay(q, deps, glue()),
+      llmCall: async (input) => {
+        const score = input.messages[0].content.includes('variant: with lesson') ? 8 : 6;
+        return { ...await judge(), text: JSON.stringify({ d1: score, d2: score, d3: score, rationale: 'fixture verdict' }) };
+      }, runGoverned: (q, deps) => runGovernedReplay(q, deps, glue()),
     });
     const outcome = await port({ lesson: admitted.lesson, transcript: { ref: 'fixture:transfer-source',
       turns: [{ index: 0, role: 'user', text: 'complete the task' }, { index: 1, role: 'assistant', text: 'historical continuation' }] } });
@@ -58,12 +61,26 @@ describe('governed replay durable spend boundary', () => {
     expect(outcome.evaluation!.outcomes.map((cell) => ({ id: cell.runId, status: cell.status })).sort((a, b) => a.id.localeCompare(b.id))).toEqual(cells);
     expect(outcome.evaluation!.experiment.modelHash).toMatch(/^[a-f0-9]{64}$/);
     expect(outcome.evaluation!.experiment.codeHash).toBeNull();
+    expect(outcome.evaluation!.costMeasured).toBe(true);
+    const contract = outcome.evaluation!.contract!;
+    expect(contract).toMatchObject({ candidate: { id: admitted.lesson.id,
+      actor: { kind: 'system', id: 'frontier:transfer-harness' },
+      potScope: { workspaceId, potId: 'test-transfer' } },
+      experiment: { codeHash: null }, decision: { verdict: 'inconclusive' },
+      spend: { usedUsd: reservations[0].usedUsd, unsettledUsd: 0 } });
+    expect(contract.activation).toBeUndefined();
+    expect(contract.evidence.find((item) => item.kind === 'judgment')).toMatchObject({ status: 'pass', coverage: { required: 1, measured: 1 } });
+    expect(contract.evidence.filter((item) => item.status === 'not-measured').map((item) => item.kind))
+      .toEqual(['objective', 'regression', 'probe', 'rollback']);
+    expect(contract.evidence.find((item) => item.kind === 'cost')?.artifactRefs)
+      .toEqual([`learning-reservation:${reservations[0].id}`]);
     expect(await listLearningSpendEvents(db.adminSql, { workspaceId })).toHaveLength(1);
     await recordTransferOutcome(db.adminSql, { workspaceId, id: admitted.lesson.id, batteryId: outcome.batteryId,
       delta: outcome.withComposite - outcome.baselineComposite, transition: applyTransferVerdict(admitted.lesson, 'passed'),
       evaluation: outcome.evaluation });
     const receipt = (await readProducerObservations(db.adminSql, { producer: 'transfer', workspaceId }))[0];
-    expect(receipt).toMatchObject({ evaluationCurrent: true, sourceCurrent: true, contract: null, promotionAllowed: false });
+    expect(receipt).toMatchObject({ evaluationCurrent: true, sourceCurrent: true, contract: null, promotionAllowed: false,
+      source: { tier: 'probationary', status: 'error', pass_count: 0 } });
     expect(receipt.evaluation).toEqual(outcome.evaluation);
     await setLessonMemoryId(db.adminSql, { workspaceId, id: admitted.lesson.id, memoryId: randomUUID() });
     const linked = (await readProducerObservations(db.adminSql, { producer: 'transfer', workspaceId }))[0];

@@ -144,10 +144,12 @@ export interface LearningExperiment {
   readonly baselineId: string;
   readonly challengerId: string;
   readonly taskHash: string;
-  readonly modelHash: string;
-  readonly promptHash: string;
+  /** Unknown execution pins remain explicit on inconclusive producer receipts.
+   * Validation still refuses them before acceptance or activation. */
+  readonly modelHash: string | null;
+  readonly promptHash: string | null;
   readonly rubricHash: string;
-  readonly codeHash: string;
+  readonly codeHash: string | null;
   readonly repeats: number;
   readonly startedAt: string;
   readonly completedAt?: string;
@@ -223,7 +225,7 @@ export interface LearningContractValidation {
  */
 export function validateLearningContract(contract: LearningContract): LearningContractValidation {
   const errors: string[] = [];
-  const nonEmpty = (value: string | undefined, field: string) => {
+  const nonEmpty = (value: string | null | undefined, field: string) => {
     if (typeof value !== 'string' || value.trim().length === 0) errors.push(`${field} must be non-empty`);
   };
   const finiteNonNegative = (value: number, field: string) => {

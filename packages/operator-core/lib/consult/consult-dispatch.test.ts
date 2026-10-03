@@ -209,26 +209,24 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
     expect(planDispatchOperation({ agent: 'claude', live: false }, { agent: 'omp' })).toEqual({ operation: 'convert' });
   });
 
-  it('an OMP source cannot fork at all — OMP has no native branch command', () => {
+  it('an OMP source uses the maintained isolated port on its own backend', () => {
     expect(planDispatchOperation({ agent: 'omp', live: false }, { agent: 'omp' })).toMatchObject({
-      operation: null,
-      reason: 'fork-unsupported',
+      operation: 'convert',
     });
   });
 
-  it('a codex source cannot fork: the pre-pinned consult identity needs a tracked fork, which is claude-only', () => {
+  it('a live or ended Codex source uses the maintained isolated port on its own backend', () => {
     // The launcher refuses an untracked fork for a pinned id, so planning this as
     // a fork launched a session that died at boot (conv-muhi8wkf, 2026-09-25).
     for (const live of [false, true]) {
       expect(planDispatchOperation({ agent: 'codex', live }, { agent: 'codex' })).toMatchObject({
-        operation: null,
-        reason: 'fork-unsupported',
+        operation: 'convert',
       });
     }
   });
 
-  it('a non-Claude source cannot convert: the transform is claude-source-only, so the rank is SKIPPED', () => {
-    for (const source of ['codex', 'omp', '', null] as Array<string | null>) {
+  it('an unsupported source backend remains skipped before launch', () => {
+    for (const source of ['', null] as Array<string | null>) {
       const verdict = planDispatchOperation({ agent: source, live: false }, { agent: 'claude' });
       // A skip, never an error: D-009 §3 is explicit that this must not end the
       // consult, because the next rank may still be reachable.
@@ -237,10 +235,9 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
     }
   });
 
-  it('a LIVE claude source defers conversion (the port continues the source identity) but still forks', () => {
+  it('a LIVE claude source can use an isolated conversion and still supports native forks', () => {
     expect(planDispatchOperation({ agent: 'claude', live: true }, { agent: 'codex' })).toMatchObject({
-      operation: null,
-      reason: 'convert-needs-live-source-identity',
+      operation: 'convert',
     });
     // The whole point of D-002: a live expert is reachable by FORK, so liveness
     // never costs the consult its rank-1 pick.
@@ -357,7 +354,7 @@ describe('dispatchConsultResponder — the fork leg', () => {
     // A port keeps the source expert's coordination identity. The requester is
     // the process launcher, not the parent of that existing identity; stamping
     // it would make acceptance-lineage treat the expert as the requester's child.
-    expect(cmd).not.toContain('--launched-by=su-requester');
+    expect(cmd).toContain('--launched-by=su-requester');
   });
 
   it('FORKS a LIVE source rather than refusing it — the retired reviver refused here', async () => {
@@ -428,8 +425,8 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(cmd).not.toContain('--fork');
     // A conversion continues the SOURCE identity (the port's authority
     // invariant), so there is nothing to pre-pin and nothing pinned.
-    expect(cmd).not.toContain('--owner-id');
-    expect(r.answeringOwnerId).toBe('su-expert');
+    expect(cmd).toContain('--owner-id=su-answer-1');
+    expect(r.answeringOwnerId).toBe('su-answer-1');
   });
 
   it('skips a rank whose LAUNCH fails and dispatches the next', async () => {
@@ -829,9 +826,9 @@ describe('dispatchConsultResponder — the walk', () => {
     const r = await dispatchConsultResponder({ ...OPTS, evidence: undefined }, CTX, deps);
     expect(r.dispatched).toBe(false);
     expect(r.attempts.map((a) => [a.agent, a.reason])).toEqual([
-      ['claude', 'conversion-unavailable'],
-      ['codex', 'conversion-unavailable'],
-      ['omp', 'fork-unsupported'],
+      ['claude', 'evidence-span-unavailable'],
+      ['codex', 'evidence-span-unavailable'],
+      ['omp', 'evidence-span-unavailable'],
     ]);
     expect(r.attempts.every((a) => a.outcome === 'skipped')).toBe(true);
   });
@@ -1289,7 +1286,7 @@ describe('buildAgentLaunchCommand ownerId rule (the pre-pin this dispatch depend
     expect(() =>
       buildAgentLaunchCommand({ mode: 'resume', sessionId: 'sid', agent: 'claude', ownerId: 'su-new' }),
     ).toThrow(/same-backend resume/);
-    expect(() =>
+    expect(
       buildAgentLaunchCommand({
         mode: 'resume',
         sessionId: 'sid',
@@ -1297,7 +1294,7 @@ describe('buildAgentLaunchCommand ownerId rule (the pre-pin this dispatch depend
         targetAgent: 'claude',
         ownerId: 'su-new',
       }),
-    ).toThrow(/same-backend resume/);
+    ).toContain('--owner-id=su-new');
   });
 });
 

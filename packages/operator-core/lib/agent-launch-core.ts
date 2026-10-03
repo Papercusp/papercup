@@ -605,12 +605,11 @@ export function buildAgentLaunchCommand(opts: {
     // resuming under the RECORDED id instead produces a row pointing at a
     // session that will never answer to it.
     if (opts.ownerId) {
-      const isConversionLaunch = Boolean(targetAgent && targetAgent !== opts.agent?.trim());
+      const isConversionLaunch = Boolean(targetAgent);
       if (opts.mode !== 'fork' && !isConversionLaunch) {
         throw new Error(
-          'buildAgentLaunchCommand: ownerId pre-pins a NEWLY minted identity — valid on a fork or a ' +
-            'cross-backend conversion, but a same-backend resume re-attaches its recorded coord id and ' +
-            'must not be re-pinned',
+          'buildAgentLaunchCommand: ownerId pre-pins a NEWLY minted identity — valid on a fork or an ' +
+            'explicit session-port target; an ordinary same-backend resume must not be re-pinned',
         );
       }
       parts.push(`--owner-id=${safe('ownerId', opts.ownerId)}`);

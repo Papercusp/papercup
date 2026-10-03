@@ -14236,20 +14236,13 @@ export function resolveResumeTarget(session, args = {}, selected = {}) {
   }
   const pair = validateAgentModelPair(targetAgent, modelSpec);
   if (!pair.ok) throw new Error(pair.message);
-  const operation = targetAgent === sourceAgent ? "native" : "port";
+  const isolatedOwner = args.ownerId && args.ownerId !== session.coordOwnerId && !args.fork;
+  const operation = targetAgent === sourceAgent && !isolatedOwner ? "native" : "port";
   if (operation === "port") {
     if (args.fork)
       throw new Error(
         "--fork is a native same-backend operation and cannot be combined with a session port",
       );
-    if (
-      sourceAgent !== "claude" ||
-      (targetAgent !== "codex" && targetAgent !== "omp")
-    ) {
-      throw new Error(
-        `session-port protocol v1 supports tracked plain Claude → Codex/OMP only (got ${sourceAgent} → ${targetAgent})`,
-      );
-    }
   }
   return {
     operation,
@@ -14322,6 +14315,10 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
       "cross-backend resume requires the tracked source coordination identity",
     );
   }
+  const isolatedOwner = args.ownerId && args.ownerId !== source.coordOwnerId ? args.ownerId : null;
+  if (isolatedOwner && !/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(isolatedOwner)) {
+    throw new Error("isolated target owner must be a valid distinct su coordination identity");
+  }
   let consultEvidenceSpan = args.consultEvidenceSpan ?? null;
   if (consultEvidenceSpan == null && process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN) {
     try {
@@ -14340,6 +14337,7 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
     targetBackend: target.targetAgent,
     targetModel: target.modelSpec,
     targetAccount: sessionPortTargetAccount(account),
+    ...(isolatedOwner ? { targetOwnerId: isolatedOwner } : {}),
     contextSize: args.contextSize ?? null,
     launchContext: args.launchContext ?? null,
     currentInstruction: resumeKickoffText(args),
@@ -15018,8 +15016,8 @@ export function sessionPortTargetArgs(source, target, account, args, prepared) {
     // consult convert died at boot that way (WI-10003858).
     kickoff: false,
     kickoffPromptText: null,
-    launchedBy: null,
-    ownerId: source.coordOwnerId,
+    launchedBy: args.ownerId && args.ownerId !== source.coordOwnerId ? args.launchedBy ?? null : null,
+    ownerId: args.ownerId || source.coordOwnerId,
     resumeSession: null,
     sessionPortProtocol: SESSION_PORT_PROTOCOL_VERSION,
     sessionPortTransformVersion: SESSION_PORT_TRANSFORM_VERSION,
