@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
+  "name": "R-11 revision-5 first 24-hour bg-host embedding window: INCONCLUSIVE",
+  "framework": "operational",
   "plan": "shared-vector-search-libraries-2026-09-29",
   "planItem": "P-008",
   "workItem": "WI-10004277",
@@ -92,10 +94,12 @@
   },
   "assertions": [
     {"id": "full-window-coverage", "passed": false, "evidence": "The first 13,700 seconds of the required window have no retained journal records."},
-    {"id": "per-target-progress", "passed": null, "evidence": "Ten targets embedded rows in the observed portion, but there is no start-of-window missing-row snapshot."},
+    {"id": "per-target-progress", "passed": false, "evidence": "Ten targets embedded rows in the observed portion, but there is no start-of-window missing-row snapshot, so the required proof is incomplete."},
     {"id": "pre-extraction-format-strings", "passed": true, "evidence": "Every observed error-like template was found at 9a9473af95."},
-    {"id": "full-window-error-rate", "passed": null, "evidence": "Observed portion 112/205 is above baseline 74/266; the exact full-window numerator and denominator are unavailable."}
+    {"id": "full-window-error-rate", "passed": false, "evidence": "Observed portion 112/205 is above baseline 74/266; the exact full-window numerator and denominator are unavailable."}
   ],
+  "assertionsPassed": 1,
+  "assertionsTotal": 4,
   "limitations": [
     "No start-of-window per-target missing-row snapshot is available; aggregate embedding counts cannot prove that each row missing at the start was embedded.",
     "The observed error rate exceeds baseline, but absent early-window sweeps prevent the exact full-window ratio required by R-11.",
