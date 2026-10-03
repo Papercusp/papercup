@@ -206,6 +206,40 @@ describe('summarizeMcpProxyHealth — classification', () => {
     expect(d.byKind.post_connect_retry).toBe(1);
   });
 
+  describe('critical continuation queue dwell alarm', () => {
+    it('keeps a single normal low-volume wait below the five-minute floor out of the alarm', () => {
+      const d = summarizeMcpProxyHealth(
+        [rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-1', waitedMs: 61_800 })],
+        NOW,
+      );
+      expect(d.criticalContinuationQueueStalls).toBe(0);
+      expect(d.criticalContinuationQueueMaxWaitMs).toBe(61_800);
+    });
+
+    it('counts sustained waits once per trace despite periodic samples', () => {
+      const d = summarizeMcpProxyHealth(
+        [
+          rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-1', waitedMs: 300_000, listenPort: 9071 }),
+          rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-1', waitedMs: 701_000, listenPort: 9071 }),
+          rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-2', waitedMs: 600_000, listenPort: 9071 }),
+        ],
+        NOW,
+      );
+      expect(d.criticalContinuationQueueStalls).toBe(2);
+      expect(d.criticalContinuationQueueMaxWaitMs).toBe(701_000);
+      expect(d.byKind.critical_continuation_queue_wait).toBe(3);
+    });
+
+    it('does not alarm on non-instance sidecar records', () => {
+      const d = summarizeMcpProxyHealth(
+        [rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-test', waitedMs: 700_000, listenPort: 0 })],
+        NOW,
+      );
+      expect(d.criticalContinuationQueueStalls).toBe(0);
+      expect(d.nonInstance).toBe(1);
+    });
+  });
+
   it('byKind tallies every kind; newestAt is the freshest in-window record', () => {
     const d = summarizeMcpProxyHealth(
       [

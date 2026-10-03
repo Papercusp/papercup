@@ -40,6 +40,7 @@ import {
   POOL_PROJECTION_STALE_WARN_MS,
   POOL_PROJECTION_STALE_CRIT_MS,
   MCP_PROXY_HARD_FAIL_CRIT,
+  MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS,
   DISK_USED_WARN_PCT,
   DISK_USED_CRIT_PCT,
   diskBandWithHysteresis,
@@ -582,7 +583,7 @@ describe('worstStatus — the fail-soft roll-up', () => {
 });
 
 const mcpProxy = (o: Partial<McpProxyHealth> = {}): McpProxyHealth => ({
-  windowMs: 60 * 60_000, total: 0, hardFailures: 0, softBeatFailures: 0, recovered: 0, otherNon2xx: 0, benign: 0, nonInstance: 0, handshakeStalls: 0, shed: 0, byKind: {}, newestAt: null, ...o,
+  windowMs: 60 * 60_000, total: 0, hardFailures: 0, softBeatFailures: 0, recovered: 0, otherNon2xx: 0, benign: 0, nonInstance: 0, handshakeStalls: 0, shed: 0, criticalContinuationQueueStalls: 0, criticalContinuationQueueMaxWaitMs: 0, byKind: {}, newestAt: null, ...o,
 });
 const infra = (o: Partial<InfraHealth> = {}): InfraHealth => ({
   pg: { version: '16', total: 10, active: 2, idle: 8, postmasterStartMs: null }, gatewayReachable: true, perf: null, mcpProxy: null, ...o,
@@ -708,6 +709,14 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
   it('crit at/above MCP_PROXY_HARD_FAIL_CRIT hard failures — a regression that pages', () => {
     expect(infraStatus(infra({ mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) }))).toBe('crit');
   });
+  it('crits on a sustained critical-continuation wait, while sub-five-minute queueing stays quiet', () => {
+    expect(MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS).toBe(5 * 60_000);
+    expect(infraStatus(infra({ mcpProxy: mcpProxy({ criticalContinuationQueueMaxWaitMs: 61_800 }) }))).toBe('ok');
+    const stalled = infra({ mcpProxy: mcpProxy({ criticalContinuationQueueStalls: 1, criticalContinuationQueueMaxWaitMs: 701_000 }) });
+    expect(infraStatus(stalled)).toBe('crit');
+    expect(infraSummary(stalled, true)).toContain('MCP PROXY CRITICAL CONTINUATION QUEUE STALLED');
+    expect(infraStatus(infra({ pg: null, mcpProxy: mcpProxy({ criticalContinuationQueueStalls: 1, criticalContinuationQueueMaxWaitMs: 701_000 }) }))).toBe('crit');
+  });
   it('a crit MCP-proxy SLO breach OUTRANKS a greyed (null) PG leg — a real failure beats unknown', () => {
     expect(infraStatus(infra({ pg: null, mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) }))).toBe('crit');
   });
@@ -801,6 +810,11 @@ describe('infraCritAmbientOnly — EI-21025158485847408 (ambient-host infra crit
       infraCritAmbientOnly(infra({ perf: ambientPerf, mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) })),
     ).toBe(false);
   });
+  it('false when a critical continuation queue stall is ALSO crit, even with an ambient-only perf reason', () => {
+    expect(
+      infraCritAmbientOnly(infra({ perf: ambientPerf, mcpProxy: mcpProxy({ criticalContinuationQueueStalls: 1 }) })),
+    ).toBe(false);
+  });
   it('false when disk is ALSO crit', () => {
     expect(
       infraCritAmbientOnly(infra({ perf: ambientPerf, disk: [{ path: '/', usedPct: DISK_USED_CRIT_PCT }] })),
@@ -879,6 +893,7 @@ describe('infraSummary — every crit must NAME its cause (the escalation body)'
     const critShapes: Array<[string, InfraHealth]> = [
       ['toolFailures broken', infra({ toolFailures: { rating: 'broken', evidence: 'facts:assert 100% fail' } as InfraHealth['toolFailures'] })],
       ['mcp proxy breach', infra({ mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) })],
+      ['mcp critical continuation queue stall', infra({ mcpProxy: mcpProxy({ criticalContinuationQueueStalls: 1, criticalContinuationQueueMaxWaitMs: 701_000 }) })],
       ['perf wedge', infra({ perf: { status: 'crit', reasons: ['operator degraded'] } as InfraHealth['perf'] })],
       ['host pressure', infra({ hostPressure: evaluateHostPressure(hostPressureSample({ cpuPsiSomePct: 90 }), 20_000) })],
       ['disk pressure', infra({ disk: critDisk })],
