@@ -280,6 +280,38 @@ async function runBlockedMergeQualityGate(
 }
 
 describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
+  it.each([
+    { requested: undefined, expected: 512 },
+    { requested: 20_000, expected: 10_000 },
+  ])('uses the default/capped pair budget in the persisted stage ($requested -> $expected)', async ({ requested, expected }) => {
+    await seed();
+    const runId = `bulk-normalized-pair-budget-${expected}`;
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      maxStages: 1,
+      ...(requested === undefined ? {} : { maxPairsPerStage: requested }),
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async () => ({
+        text: '',
+        json: { judgements: [{ pairKey: 'a::b', verdict: 'distinct', reason: 'Separate findings' }] },
+        inputTokens: 25,
+        outputTokens: 10,
+      }),
+    });
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]?.pairs).toBe(1);
+    const [stage] = await db.sql<Array<{ status: string; budget: unknown }>>`
+      SELECT detail->>'status' AS status, detail->'workBudget' AS budget
+        FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+    expect(stage).toEqual({
+      status: 'complete',
+      budget: { pairLimit: expected, availablePairs: 1, selectedPairs: 1, deferredPairs: 0 },
+    });
+  }, 60_000);
+
   it.each([1, 2])('commits bounded pair work with maxStages=%i without hiding residuals or mistaking them for no progress', async (maxStages) => {
     await seed();
     await db.sql`
