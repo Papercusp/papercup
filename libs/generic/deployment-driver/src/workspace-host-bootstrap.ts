@@ -2645,7 +2645,18 @@ export function buildWorkspaceHostBootstrap(
     // fails every tool command while the run reports success (WI-10004636, plan D-012).
     `sandbox_probe_err="$(runuser -u "$AGENT_USER" -- ${BWRAP_BIN} ${BWRAP_USERNS_PROBE_ARGS.join(" ")} 2>&1)" || die "agent sandbox cannot create a user namespace as $AGENT_USER: \${sandbox_probe_err:-bwrap exited non-zero}"`,
     'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/embedded-pg"',
-    'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+    // WI-10005754: on the bootc model the runtime root is immutable image content. D-314 bakes its
+    // access as root:papercusp-runtime-read:750 and papercusp-host-prepare.service verifies that
+    // metadata on every boot (refusing a named-user ACL), so this script must not write it:
+    // `install -d` dies with EROFS on /opt, and the setfacl below would contradict D-314.
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? [
+          'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+        ]
+      : [
+          'install -d -o root -g "$SERVICE_GROUP" -m 0750 /etc/papercusp',
+          '[[ -d "$RUNTIME_ROOT/releases" ]] || die "image-provided runtime root $RUNTIME_ROOT/releases is absent on this bootc deployment"',
+        ]),
     // The AGENT identity must TRAVERSE the runtime root, because it is the account that runs the
     // bundled agent CLIs: `bind-credential` delivers Claude/Codex/OMP material into its 0700
     // home, and the agent probes execute `$RUNTIME_ROOT/current/bin/{claude,codex,omp}` as this
@@ -2666,7 +2677,9 @@ export function buildWorkspaceHostBootstrap(
     // that group also gates $STATE_ROOT (embedded PG, delivered credentials) and /etc/papercusp.
     // Traverse-and-read is the entire grant; root stays sole owner and sole writer, so the
     // immutability the 0750 was reaching for is carried by ownership, not by the read bits.
-    'setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? ['setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"']
+      : []),
     "install -d -o root -g root -m 0711 /srv/papercusp",
     'install -d -o root -g root -m 0770 "$WORKSPACE_ROOT"',
     'setfacl --remove-all "$WORKSPACE_ROOT"',
