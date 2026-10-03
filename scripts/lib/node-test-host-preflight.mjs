@@ -23,11 +23,20 @@ const REPO_ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
  * checkout alone (runner-loaded holds), not a closure.
  */
 export async function globalSetup() {
+  await runNodeTestHostPreflight();
+}
+
+/**
+ * Shared hook body for the live runner and an isolated integration fixture.
+ * Production uses REPO_ROOT; the optional root lets the fixture exercise the same
+ * node:test hook against a clean temporary checkout instead of the shared worktree.
+ */
+export async function runNodeTestHostPreflight({ repoRoot = REPO_ROOT } = {}) {
   const files = process.argv
     .slice(1)
     .filter((arg) => !arg.startsWith('-'))
     .flatMap((arg) => (/[*?[{]/.test(arg) ? globSync(arg, { cwd: process.cwd() }) : [arg]));
-  const result = runNodeTestRunnerPreflight({ repoRoot: REPO_ROOT, files, env: process.env });
+  const result = runNodeTestRunnerPreflight({ repoRoot, files, env: process.env });
   if (result.verdict === 'refuse') throw new Error(formatNodeTestRestrictedHoldRefusal(result));
   if (result.verdict === 'admit') Object.assign(process.env, result.setEnv);
 }
