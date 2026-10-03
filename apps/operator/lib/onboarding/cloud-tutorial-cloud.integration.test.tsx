@@ -9,12 +9,12 @@ import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
 import type { CloudWorkspacesControlRow } from "@/app/cloud-workspaces/page";
 
-const data = vi.hoisted(() => ({ rows: [] as CloudWorkspacesControlRow[], mutate: vi.fn(), invalidate: vi.fn() }));
+const data = vi.hoisted(() => ({ rows: [] as CloudWorkspacesControlRow[], loading: false, error: null as Error | null, mutate: vi.fn(), invalidate: vi.fn() }));
 // Substitute only the authenticated network boundary. The Cloud forms, Radix
 // dialog, guide, highlighting, URL state and router are actual application code.
 vi.mock("@papercusp/sync", async importOriginal => ({
   ...(await importOriginal<typeof import("@papercusp/sync")>()),
-  useSyncQuery: () => ({ data: data.rows, loading: false, fetching: false, error: null, invalidate: data.invalidate }),
+  useSyncQuery: () => ({ data: data.rows, loading: data.loading, fetching: false, error: data.error, invalidate: data.invalidate }),
   useSyncMutate: () => data.mutate, planChunks: vi.fn(),
 }));
 const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
@@ -32,7 +32,7 @@ function mount(initial = "/cloud-workspaces") {
   return { ...view, router };
 }
 beforeEach(() => {
-  data.rows = []; data.mutate.mockReset().mockResolvedValue({ ok: true }); data.invalidate.mockReset().mockResolvedValue(undefined);
+  data.rows = []; data.loading = false; data.error = null; data.mutate.mockReset().mockResolvedValue({ ok: true }); data.invalidate.mockReset().mockResolvedValue(undefined);
   window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker("control");
   delete window.__PAPERCUSP_HOSTED_BROWSER_API__;
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })));
@@ -53,6 +53,43 @@ afterEach(() => {
   expect(routeError).toBeUndefined();
 });
 describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
+  it("selects only an authorized healthy prepared workspace without provisioning or asking for credentials", async () => {
+    data.rows = [connection, { ...workspace, health: { status: "healthy", checks: [] }, estimatedMonthlyUsd: 18.5 },
+      { ...workspace, id: "stopped", name: "Stopped", desiredState: "stopped" },
+      { ...workspace, id: "unhealthy", name: "Unhealthy", health: { status: "unhealthy", checks: [] } }];
+    const { router } = mount();
+    const entry = await screen.findByRole("region", { name: "Beginner workspace entry" });
+    expect(within(entry).getByText(/existing model and account defaults.*interactive mode/)).toBeTruthy();
+    expect(within(entry).getByText(/\$18.50 per month/)).toBeTruthy();
+    expect(within(entry).queryAllByRole("button", { name: /Use prepared workspace/ })).toHaveLength(1);
+    fireEvent.click(within(entry).getByRole("button", { name: "Use prepared workspace My workspace" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ host: "customer", step: "operate", tab: "cost" }));
+    expect(screen.queryByRole("textbox", { name: "Connection label" })).toBeNull();
+    expect(data.mutate).not.toHaveBeenCalled();
+  });
+  it("explains missing preparation and opens the maintained advanced BYOC form only after an explicit choice", async () => {
+    const { router } = mount();
+    const entry = await screen.findByRole("region", { name: "Beginner workspace entry" });
+    expect(within(entry).getByText(/No prepared healthy workspace.*administrator/)).toBeTruthy();
+    expect(within(entry).queryByRole("button", { name: /Use prepared workspace/ })).toBeNull();
+    fireEvent.click(within(entry).getByRole("button", { name: "Advanced: connect my own cloud" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ tutorial: "advanced", step: "connect", connect: "gcp" }));
+    await screen.findByRole("textbox", { name: "Connection label" });
+    expect(data.mutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Use a prepared workspace instead" }));
+    await screen.findByRole("region", { name: "Beginner workspace entry" });
+    expect(data.mutate).not.toHaveBeenCalled();
+  });
+  it.each(["loading", "denied"])("does not offer stale workspace selections while access is %s", async mode => {
+    data.rows = [{ ...workspace, health: { status: "healthy", checks: [] } }];
+    data.loading = mode === "loading"; data.error = mode === "denied" ? new Error("private access detail") : null;
+    mount();
+    const entry = await screen.findByRole("region", { name: "Beginner workspace entry" });
+    expect(within(entry).queryByRole("button", { name: /Use prepared workspace/ })).toBeNull();
+    expect(entry.textContent).not.toContain("private access detail");
+    expect(data.mutate).not.toHaveBeenCalled();
+  });
+
   it("discloses cost before the user provisions and leaves the real provision action untouched by guide controls", async () => {
     data.rows = [{ ...connection,
       scopes: [{ id: "project", label: "Tutorial project" }],

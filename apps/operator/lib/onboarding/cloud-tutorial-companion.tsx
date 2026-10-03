@@ -9,6 +9,33 @@ import { useCloudTutorialProgress } from "./use-cloud-tutorial-progress";
 const CloudTutorialSession = lazy(async () => ({ default: (await import("./cloud-tutorial-session")).CloudTutorialSession }));
 const CloudTutorialAssistance = lazy(async () => ({ default: (await import("./cloud-tutorial-assistance")).CloudTutorialAssistance }));
 
+/** The authenticated workspace query owns eligibility. This entry only selects
+ * an existing row; it never provisions, launches, repairs or changes access. */
+export function CloudTutorialPreparedEntry({ workspaces, loading, error, onSelect, onAdvanced }: {
+  workspaces: readonly WorkspaceHostControlRow[]; loading: boolean; error: Error | null;
+  onSelect: (id: string) => void; onAdvanced: () => void;
+}) {
+  const prepared = workspaces.filter(row => row.desiredState === "running" && row.observedState === "running" && row.health?.status === "healthy");
+  return <section aria-label="Beginner workspace entry" data-tutorial-target="cloud-prepared-workspace" tabIndex={-1}
+    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 20, marginBottom: 16 }}>
+    <h2>Do useful work with your first agent</h2>
+    <p>Start with a prepared workspace. You do not need cloud credentials or machine settings for this path.</p>
+    <p>Recommended: keep the session launcher's existing model and account defaults and use interactive mode. Review model usage costs before you launch.</p>
+    {loading ? <p role="status">Checking your authorized workspaces…</p> : error ?
+      <p role="alert">Your workspace list could not be read. Sign in or ask your administrator to check access, then check again.</p> : prepared.length ?
+      <ul>{prepared.map(row => <li key={row.id}>
+        <strong>{row.name}</strong>
+        <p>{typeof row.estimatedMonthlyUsd === "number" && Number.isFinite(row.estimatedMonthlyUsd) && row.estimatedMonthlyUsd >= 0
+          ? `Estimated workspace cost: $${row.estimatedMonthlyUsd.toFixed(2)} per month. Provider billing is authoritative.`
+          : "A workspace cost estimate is unavailable. Ask your administrator about provider charges before using it."}</p>
+        <Button aria-label={`Use prepared workspace ${row.name}`} onClick={() => onSelect(row.id)}>Use this prepared workspace</Button>
+      </li>)}</ul> :
+      <p role="status">No prepared healthy workspace is available to your account. Ask your administrator to prepare one and grant you access. Choosing this guide does not create or repair a billable machine.</p>}
+    <p>Cloud resources can continue to incur charges while you use or pause this guide.</p>
+    <Button variant="ghost" onClick={onAdvanced}>Advanced: connect my own cloud</Button>
+  </section>;
+}
+
 export function CloudTutorialCompanion({ selectionKey, connection, workspace, boundWorkspaceId, configurationValid, configurationReviewed, controlLoading, controlError, onCheckAgain, onShowStep }: {
   selectionKey: string; connection: WorkspaceHostConnectionRow | null;
   workspace: WorkspaceHostControlRow | null; boundWorkspaceId: string | null;
