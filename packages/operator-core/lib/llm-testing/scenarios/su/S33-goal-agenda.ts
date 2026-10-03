@@ -160,7 +160,7 @@ export function s33NoDemandInputs() {
       review: {
         schemaVersion: 1, goalId: GOAL, disposition: 'no-eligible-work',
         rationale: 'Current scoped review found no uncovered goal outcome or eligible plan for this interval.',
-        evidenceRefs: [`goal:${GOAL}`], planRefs: [],
+        evidenceRefs: [`goal:${GOAL}`], planRefs: [], coverage: [],
         portfolioFingerprint: goalPlanningPortfolioFingerprint(portfolio), reviewedAt: NOW,
       },
     } },
