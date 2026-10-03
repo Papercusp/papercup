@@ -3555,6 +3555,61 @@
     "p003Complete": false,
     "modelAdoptionAuthorized": false
   },
+  "incrementalV8Relevance": {
+    "status": "six-incremental-cells-completed-source-margins-unresolved",
+    "task": "0murrcmbmkikee5244f",
+    "exitCode": 0,
+    "finishedAt": "2026-10-03T02:15:47.895Z",
+    "preparation": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/incremental-v8-relevance-preparation-v2.json",
+      "sha256": "71e3f860268c7c82a366fe515bcd8417e8a9b7b3716961f523ebb9939a0ad433",
+      "bytes": 65426
+    },
+    "manifest": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v6-incremental-v8-v2.json",
+      "sha256": "23ae9ad338c48a36d8f67d104c0285670cfd26689c75c6f54d99bd0b74130bbd",
+      "bytes": 131335
+    },
+    "completion": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v6-incremental-v8-labels-v2/completion.json",
+      "sha256": "9ac15ae9664e4780742284120128f7446074f74b0a9e1652f0da9cdd88fac019",
+      "bytes": 7744
+    },
+    "sourceAnalysis": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v6-incremental-v8-labels-v2/source-pair-analysis-v8-v2.json",
+      "sha256": "3a46a4d82d0758a56fa2737bf6e08dfc7e3cdfe6636ac2a16fd9a011b411f0cb",
+      "bytes": 1319801
+    },
+    "analysisTask": "0murrqem0co87971ipw",
+    "analysisExitCode": 0,
+    "runtime": "Qualified frozen overlay v2, unchanged three native CPU fp32 arms, four intra-op threads and one inter-op thread.",
+    "completedCells": 6,
+    "documentVectorsReusedAcrossCells": 3081,
+    "queryVectorsReusedAcrossCells": 156,
+    "newQueryEmbeddingsAcrossCells": 528,
+    "memoryCellQueries": { "reused": 40, "new": 124, "heldout": 116, "calibration": 48 },
+    "proseCellQueries": { "reused": 12, "new": 52, "heldout": 52, "calibration": 12 },
+    "oldDocumentAndReusedQueryArraysExact": true,
+    "heldoutRawReciprocalRanksAndTopScoresRecomputed": 504,
+    "analysisReferencePinsVerified": 1870,
+    "analysisModelCalls": 0,
+    "timingComparableToFullInference": false,
+    "decisionMargin": 0.03,
+    "primaryComparisonUnit": "source-target-component",
+    "observedMemorySourceComponents": 29,
+    "observedProseSourceComponents": 13,
+    "unresolvedMemoryClasses": ["lexical-gap", "exact-identifier", "session-start-intent"],
+    "unresolvedProseClasses": ["lexical-gap", "session-start-intent"],
+    "unresolvedPooledComparisons": 4,
+    "scope": "Four baseline/corpus comparisons use source-component bootstrap intervals. Every memory class remains unresolved at the fixed 0.03 margin; prose exact-identifier is inside the observed margin with zero observed variance, which supplies no extrapolated power or population-equivalence claim. Other prose classes and all pooled comparisons remain unresolved. Class point estimates differ in direction; pooled averages do not determine adoption. Calibration stays separate and incremental timings cannot replace full performance evidence.",
+    "censusRemainingOutsideSnapshot": {
+      "memory": { "calibrationSources": 29, "testSources": 94 },
+      "prose": { "calibrationSources": 480, "testSources": 1492 }
+    },
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false,
+    "modelAdoptionAuthorized": false
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
