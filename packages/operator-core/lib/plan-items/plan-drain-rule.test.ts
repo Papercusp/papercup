@@ -22,6 +22,11 @@ import type { ToolInvocationEvent } from '../events/types';
 
 const RULE_ID = 'plan-drain:terminality-changed';
 const ADD_RULE_ID = 'plan-drain:item-added';
+const CONTENT_RULE_IDS = {
+  'plans:set-content': 'plan-drain:content-rewritten',
+  'plans:edit': 'plan-drain:content-edited',
+  'plans:set-content-chunk': 'plan-drain:content-chunk-committed',
+} as const;
 const ctx = {
   uiClientId: 'agent-1',
   spawnId: 'spawn-1',
@@ -62,6 +67,22 @@ function addItemBulkEvent(items: Record<string, unknown>[]): ToolInvocationEvent
     result: {
       ok: true,
       data: { ok: true, results: items, counts: { ok, failed: items.length - ok } },
+    },
+    ctx,
+  };
+}
+
+function contentWriteEvent(
+  tool: keyof typeof CONTENT_RULE_IDS,
+  planDrainTransitionChanged = true,
+  ok = true,
+): ToolInvocationEvent {
+  return {
+    tool,
+    args: { slug: 'p-content' },
+    result: {
+      ok,
+      data: { ok, slug: 'p-content', planDrainTransitionChanged },
     },
     ctx,
   };
@@ -137,6 +158,17 @@ describe('planWhoseDrainStateMayHaveChanged — relevant lifecycle writes', () =
     expect(planWhoseDrainStateMayHaveChanged(event)).toBeNull();
   });
 
+  it('matches content writers only when the shared evaluator sees a changed transition target', () => {
+    for (const tool of Object.keys(CONTENT_RULE_IDS) as Array<keyof typeof CONTENT_RULE_IDS>) {
+      expect(planWhoseDrainStateMayHaveChanged(contentWriteEvent(tool))).toEqual({
+        planSlug: 'p-content',
+        harnessSlug: 'papercusp',
+      });
+      expect(planWhoseDrainStateMayHaveChanged(contentWriteEvent(tool, false))).toBeNull();
+      expect(planWhoseDrainStateMayHaveChanged(contentWriteEvent(tool, true, false))).toBeNull();
+    }
+  });
+
   it('carries no harness when the ctx has none, rather than guessing one', () => {
     // EI-8970: re-reading under the operator-home harness would resolve a
     // DIFFERENT plan row for a plan that lives elsewhere. Absent is honest.
@@ -153,6 +185,14 @@ describe('the rule on the real dispatch path', () => {
 
   it('is registered on plans:add-item', () => {
     expect(reactionRulesFor('plans:add-item').map((r) => r.id)).toContain(ADD_RULE_ID);
+  });
+
+  it('registers the transition-change reaction on every whole-content writer', () => {
+    for (const [tool, ruleId] of Object.entries(CONTENT_RULE_IDS) as Array<
+      [keyof typeof CONTENT_RULE_IDS, string]
+    >) {
+      expect(reactionRulesFor(tool).map((r) => r.id)).toContain(ruleId);
+    }
   });
 
   it('matches the FANNED per-item events and NOT the bulk carrier', () => {
@@ -205,5 +245,17 @@ describe('the rule on the real dispatch path', () => {
     expect(added!.fire).toBe(PLAN_DRAIN_TRANSITION_ACTION);
     expect(added!.args.plans).toEqual([{ planSlug: 'p-added', harnessSlug: 'papercusp' }]);
     expect(matchReactions(fanned![1]!).find((a) => a.ruleId === ADD_RULE_ID)).toBeUndefined();
+  });
+
+  it('fires lifecycle reconciliation for direct content writes that change the drain target', () => {
+    for (const [tool, ruleId] of Object.entries(CONTENT_RULE_IDS) as Array<
+      [keyof typeof CONTENT_RULE_IDS, string]
+    >) {
+      const action = matchReactions(contentWriteEvent(tool)).find((a) => a.ruleId === ruleId);
+      expect(action).toBeDefined();
+      expect(action!.fire).toBe(PLAN_DRAIN_TRANSITION_ACTION);
+      expect(action!.args.plans).toEqual([{ planSlug: 'p-content', harnessSlug: 'papercusp' }]);
+      expect(matchReactions(contentWriteEvent(tool, false)).find((a) => a.ruleId === ruleId)).toBeUndefined();
+    }
   });
 });

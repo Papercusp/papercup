@@ -1,19 +1,20 @@
 /**
  * plan-drain-rule.ts — P-004 of deterministic-plan-state-derivation-2026-08-31.
  *
- * When `plans:set-status` crosses the terminal boundary or `plans:add-item`
- * successfully adds an item, re-read the plan and move its lifecycle `status` if
- * the graph warrants it. This covers both a drained plan and one reopened by a
- * newly added live item.
+ * When a structured item write crosses the terminal boundary/adds an item, or
+ * a content writer changes whether the current lifecycle status warrants a
+ * drained-plan transition, re-read the plan and move its lifecycle `status` if
+ * the graph warrants it.
  *
  * # Why matching stays cheap and synchronous
  *
  * The reaction matcher is pure and synchronous, so it cannot re-read the plan.
  * For `plans:set-status` it asks whether the item crossed the terminal boundary;
  * for `plans:add-item` it asks whether an item was successfully added. The
- * ACTION performs the authoritative graph check under the plan lock. A
- * `todo → wip` flip cannot change whether a plan is drained, so it is filtered
- * out here and never costs a read.
+ * shared whole-content evaluator marks the three raw content writers only when
+ * the before/after graph changes the transition currently warranted by the
+ * stored status. The ACTION performs the authoritative graph check under the
+ * plan lock.
  *
  * # The event shape — read this before changing the predicate
  *
@@ -33,12 +34,13 @@ import { PLAN_DRAIN_TRANSITION_ACTION } from '../events/builtin-actions';
 import type { ToolInvocationEvent } from '../events/types';
 
 /** One fanned per-item `plans:add-item` or `plans:set-status` result. */
-interface PlanItemWriteResult {
+interface PlanDrainWriteResult {
   ok?: boolean;
   slug?: string;
   itemId?: string;
   oldStatus?: string | null;
   newStatus?: string;
+  planDrainTransitionChanged?: boolean;
 }
 
 function isTerminalItemStatus(status: string | null | undefined): boolean {
@@ -55,15 +57,22 @@ function isTerminalItemStatus(status: string | null | undefined): boolean {
 export function planWhoseDrainStateMayHaveChanged(
   e: ToolInvocationEvent,
 ): { planSlug: string; harnessSlug: string | null } | null {
-  const r = e.result?.data as PlanItemWriteResult | undefined;
-  if (
-    r?.ok === true &&
-    typeof r.slug === 'string' &&
-    typeof r.itemId === 'string' &&
+  const r = e.result?.data as PlanDrainWriteResult | undefined;
+  const itemWriteMayChangeDrain =
+    typeof r?.itemId === 'string' &&
     (e.tool === 'plans:add-item' ||
       (e.tool === 'plans:set-status' &&
         typeof r.newStatus === 'string' &&
-        isTerminalItemStatus(r.oldStatus) !== isTerminalItemStatus(r.newStatus)))
+        isTerminalItemStatus(r.oldStatus) !== isTerminalItemStatus(r.newStatus)));
+  const contentWriteMayChangeDrain =
+    (e.tool === 'plans:set-content' ||
+      e.tool === 'plans:edit' ||
+      e.tool === 'plans:set-content-chunk') &&
+    r?.planDrainTransitionChanged === true;
+  if (
+    r?.ok === true &&
+    typeof r.slug === 'string' &&
+    (itemWriteMayChangeDrain || contentWriteMayChangeDrain)
   ) {
     // Thread the triggering call's harness through, exactly as reconcile-rule
     // does (EI-8970): re-reading under the operator-home harness would resolve
@@ -87,6 +96,36 @@ registerReactionRule({
 registerReactionRule({
   id: 'plan-drain:item-added',
   on: 'plans:add-item',
+  when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
+  fire: PLAN_DRAIN_TRANSITION_ACTION,
+  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-drain',
+});
+
+registerReactionRule({
+  id: 'plan-drain:content-rewritten',
+  on: 'plans:set-content',
+  when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
+  fire: PLAN_DRAIN_TRANSITION_ACTION,
+  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-drain',
+});
+
+registerReactionRule({
+  id: 'plan-drain:content-edited',
+  on: 'plans:edit',
+  when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
+  fire: PLAN_DRAIN_TRANSITION_ACTION,
+  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-drain',
+});
+
+registerReactionRule({
+  id: 'plan-drain:content-chunk-committed',
+  on: 'plans:set-content-chunk',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
   args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
