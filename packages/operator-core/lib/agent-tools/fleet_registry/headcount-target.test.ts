@@ -158,6 +158,71 @@ beforeEach(() => {
 });
 
 describe('fleet:headcount-target canonical launch profile', () => {
+  it('accepts a planless claim-spec target while still requiring its harness', async () => {
+    const planlessArgs = {
+      fleet: 'byoc',
+      target: 50,
+      productiveCapacityFloor: 1,
+      harness: 'papercusp',
+      agent: 'codex',
+      model: 'gpt-6-luna',
+      effort: 'max',
+      account: 'auto',
+      headless: true,
+      carry: 'warm',
+      supervise: true,
+    } as const;
+    mocks.getFleetHeadcountTarget.mockResolvedValueOnce(null);
+
+    expect(tool.args.safeParse({ fleet: 'byoc', target: 50, harness: 'papercusp' }).success).toBe(true);
+    expect(tool.args.safeParse({ fleet: 'byoc', target: 50 }).success).toBe(false);
+
+    const result = await tool.handler(planlessArgs as never, {} as never);
+
+    expect(parse(result)).toMatchObject({
+      ok: true,
+      target: 50,
+      config: {
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-6-luna',
+        effort: 'max',
+        account: 'auto',
+        headless: true,
+        carry: 'warm',
+        supervise: true,
+      },
+    });
+    expect(parse(result).config).not.toHaveProperty('plan');
+    expect(mocks.resolveHarnessPlansDir).toHaveBeenCalledWith('papercusp', { workspaceId: 'ws-test' });
+    expect(mocks.readPlanBySlug).not.toHaveBeenCalled();
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      target: 50,
+      config: expect.objectContaining({ harness: 'papercusp', agent: 'codex', account: 'auto' }),
+    });
+  });
+
+  it('preserves and revalidates an existing plan when an update omits plan', async () => {
+    const result = await tool.handler(
+      { fleet: 'byoc', target: 4, harness: 'papercusp' } as never,
+      {} as never,
+    );
+
+    expect(parse(result)).toMatchObject({ ok: true, config: savedProfile.config });
+    expect(mocks.readPlanBySlug).toHaveBeenCalledWith('byoc-plan', {
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws-test',
+    });
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      target: 4,
+      config: savedProfile.config,
+    });
+  });
+
   it('disables the governor without deleting or even rereading the saved profile', async () => {
     const result = await tool.handler(
       { fleet: 'byoc', target: null, harness: 'papercusp', plan: 'byoc-plan', replaceExisting: false } as never,

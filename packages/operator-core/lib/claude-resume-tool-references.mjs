@@ -247,7 +247,7 @@ export function neutralizeClaudeToolReferences(jsonl, options = {}) {
           names.add(item.tool_name);
           changed = true;
           if (key !== 'tool_references') {
-            out.push({ type: 'text', text: `[tool reference ${item.tool_name} was loaded here before this session was forked]` });
+            out.push({ type: 'text', text: `[tool reference ${item.tool_name} was loaded here before this session was ${nativeOnly ? 'resumed' : 'forked'}]` });
           }
           continue;
         }

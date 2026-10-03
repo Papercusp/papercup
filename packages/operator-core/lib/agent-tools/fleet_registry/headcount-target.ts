@@ -38,8 +38,8 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('R5 per-fleet governor grant: true opts this fleet into fleet-headcount auto-top-up while FLEET_HEADCOUNT_GOVERNOR is ON; false revokes; omit preserves the stored grant. A governance knob, not a boot setting — changing it needs no replaceExisting.'),
-    harness: z.string().min(1).describe('Harness containing the plan.'),
-    plan: z.string().min(1).describe('Plan whose work the top-up members should pull.'),
+    harness: z.string().min(1).describe('Harness for the launch recipe and optional plan validation.'),
+    plan: z.string().min(1).optional().describe('Plan whose work the top-up members should pull. Omit for a planless claim-spec fleet.'),
     agent: z.enum(['claude', 'omp', 'codex']).optional().describe('Agent backend. Omit to preserve an existing profile; a new profile defaults to claude.'),
     model: z.string().min(1).optional(),
     effort: z.string().min(1).max(40).optional(),
@@ -120,14 +120,27 @@ export default defineTool({
       await setFleetHeadcountTarget({ workspaceId, fleetSlug: args.fleet, target: null });
       return json({ ok: true, fleet: args.fleet, target: null, disabled: true, launchProfilePreserved: true, by: ownerId });
     }
+    let resolvedHarness: Awaited<ReturnType<typeof resolveHarnessPlansDir>>;
     try {
-      const resolved = await resolveHarnessPlansDir(args.harness, { workspaceId });
-      const plan = await readPlanBySlug(args.plan, { harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId });
-      if (!plan) return json({ ok: false, error: `plan '${args.plan}' was not found in harness '${args.harness}'` }, true);
+      resolvedHarness = await resolveHarnessPlansDir(args.harness, { workspaceId });
     } catch (error) {
-      return json({ ok: false, error: `could not validate plan: ${error instanceof Error ? error.message : String(error)}` }, true);
+      return json({ ok: false, error: `could not validate harness: ${error instanceof Error ? error.message : String(error)}` }, true);
     }
     const existing = await getFleetHeadcountTarget(workspaceId, args.fleet);
+    const planToValidate = args.plan ?? existing?.config.plan;
+    if (planToValidate) {
+      try {
+        const plan = await readPlanBySlug(planToValidate, {
+          harnessSlug: resolvedHarness.harnessSlug,
+          workspaceId: resolvedHarness.workspaceId,
+        });
+        if (!plan) {
+          return json({ ok: false, error: `plan '${planToValidate}' was not found in harness '${args.harness}'` }, true);
+        }
+      } catch (error) {
+        return json({ ok: false, error: `could not validate plan: ${error instanceof Error ? error.message : String(error)}` }, true);
+      }
+    }
     let replacementConflicts: unknown[] = [];
     if (existing) {
       const resolution = resolveLoadedSavedFleetLaunchSpec({
@@ -154,7 +167,7 @@ export default defineTool({
     }
     const config = normalizePersistedFleetLaunchConfig({
       ...(existing?.config ?? {}),
-      plan: args.plan,
+      ...(args.plan !== undefined ? { plan: args.plan } : {}),
       harness: args.harness,
       agent: args.agent ?? existing?.config.agent ?? 'claude',
       ...(args.model ? { model: args.model } : {}),
