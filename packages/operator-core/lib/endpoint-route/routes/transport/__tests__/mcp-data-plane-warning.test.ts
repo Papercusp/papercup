@@ -143,6 +143,29 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
   });
 
+  it('does not warn for a populated testing:runs ledger envelope without an ok field', () => {
+    const body = {
+      count: 3,
+      total: 3,
+      truncatedByLimit: false,
+      latestPerFile: false,
+      effectiveSourceFilter: 'none (exact testRunIds receipt lookup)',
+      omittedBySourceFilter: 0,
+      runs: [{ id: 20649884, filePath: 'packages/operator-core/lib/example.test.ts', status: 'pass' }],
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-03T07:06:23.421Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
   it('keeps the warning for an empty tools:find envelope without an ok field', () => {
     const result: McpCallResult = {
       content: [{

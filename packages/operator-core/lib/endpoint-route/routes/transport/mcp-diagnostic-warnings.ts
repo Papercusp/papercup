@@ -84,8 +84,9 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   ) {
     return true;
   }
-  // tools:find uses a query envelope with `hits`, not the legacy `{ ok: true, ... }` shape.
+  // tools:find and testing:runs use populated top-level arrays without the legacy `{ ok: true, ... }` shape.
   if (Array.isArray(body.hits) && body.hits.length > 0) return true;
+  if (Array.isArray(body.runs) && body.runs.length > 0) return true;
   if (body.ok !== true) return false;
   if (body.ended === true || body.verified === true) return true;
   if (
