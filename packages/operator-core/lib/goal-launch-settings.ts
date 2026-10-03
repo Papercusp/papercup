@@ -3120,6 +3120,15 @@ export async function goalHeadcount(args: {
   workspaceId: string;
   goalId: string;
   fleetSlug?: string | null;
+  /**
+   * Owner ids that do NOT occupy a seat for THIS count. A respawn is net-zero on
+   * headcount — it replaces one member with one — so the member being replaced
+   * must not be charged against maxAgents/maxPerFleet while its replacement is
+   * being admitted (EI-24909345582884838: the old member was still `live` when the
+   * replacement's ceiling check ran, so a full fleet refused its own respawn after
+   * the SIGTERM had already gone out).
+   */
+  excludeOwnerIds?: readonly string[];
   sql?: Sql;
 }): Promise<{ headcount: GoalHeadcount; error: string | null }> {
   const empty: GoalHeadcount = { total: 0, fleet: args.fleetSlug ? 0 : null };
@@ -3130,6 +3139,7 @@ export async function goalHeadcount(args: {
   const graceSecs = Math.max(1, Math.floor(GOAL_HEADCOUNT_BOOT_GRACE_MS / 1000));
   try {
     const fleetKey = args.fleetSlug || '';
+    const excludedOwnerIds = [...new Set((args.excludeOwnerIds ?? []).filter((id) => id.length > 0))];
     const rows = await pg(args.sql)`
       SELECT
         count(*)::int AS total,
@@ -3149,6 +3159,7 @@ export async function goalHeadcount(args: {
       LEFT JOIN harness_shared.coord_presence p ON p.owner_id = b.owner_id
       WHERE b.workspace_id = ${args.workspaceId}
         AND b.goal_id = ${args.goalId}
+        AND b.owner_id <> ALL(${excludedOwnerIds}::text[])
         AND (
           p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval
           OR (p.owner_id IS NULL AND b.updated_at > now() - ${`${graceSecs} seconds`}::interval)
@@ -3639,6 +3650,11 @@ export async function resolveGoalLaunch(args: {
   fleetSlug?: string | null;
   /** How many agents this launch will start. Default 1. */
   count?: number;
+  /**
+   * Owner ids this launch REPLACES (fleet:respawn-member): excluded from the
+   * ceiling headcount so a respawn is net-zero. See {@link goalHeadcount}.
+   */
+  excludeOwnerIds?: readonly string[];
   requested?: LaunchProfile | null;
   sql?: Sql;
 }): Promise<GoalLaunchResolution> {
@@ -3681,6 +3697,8 @@ export async function resolveGoalLaunchForGoal(args: {
   goalRole?: GoalLaunchRole | null;
   fleetSlug?: string | null;
   count?: number;
+  /** Owner ids this launch replaces — not charged against the ceilings. See {@link goalHeadcount}. */
+  excludeOwnerIds?: readonly string[];
   requested?: LaunchProfile | null;
   sql?: Sql;
   /** Degraded reasons accumulated by a caller before delegating here. */
@@ -3880,6 +3898,7 @@ export async function resolveGoalLaunchForGoal(args: {
       workspaceId: args.workspaceId,
       goalId,
       fleetSlug: args.fleetSlug ?? null,
+      excludeOwnerIds: args.excludeOwnerIds,
       sql: args.sql,
     });
     headcount = counted.headcount;

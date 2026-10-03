@@ -737,6 +737,12 @@ export default defineTool({
     // identity-correlated before it is spawned, because concurrent respawns
     // cannot safely identify one another by roster ordering after launch.
     const respawnOwnerId = (args as typeof args & { __respawnOwnerId?: string }).__respawnOwnerId?.trim() || null;
+    // Internal seam, same trust boundary as __respawnOwnerId: the member this launch REPLACES.
+    // A respawn is net-zero on headcount, so the goal ceiling check must not charge the
+    // replaced member's seat (EI-24909345582884838) — otherwise a fleet AT maxPerFleet refuses
+    // its own replacement after fleet:respawn-member has already drained the old member.
+    const respawnReplacesOwnerId =
+      (args as typeof args & { __respawnReplacesOwnerId?: string }).__respawnReplacesOwnerId?.trim() || null;
     let isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     let isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
     const sourceAction = isResume || isSuccessor;
@@ -1476,6 +1482,7 @@ export default defineTool({
       goalRole: args.goalVerifier === 'grade' ? 'grading' : args.goalVerifier === 'test' ? 'test' : null,
       fleetSlug,
       count,
+      ...(respawnReplacesOwnerId ? { excludeOwnerIds: [respawnReplacesOwnerId] } : {}),
       requested: {
         ...(args.agent ? { agent: args.agent as 'claude' | 'codex' | 'omp' } : {}),
         ...(args.account ? { account: args.account } : {}),
