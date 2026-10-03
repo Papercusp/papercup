@@ -999,6 +999,29 @@ describe('getFeedbackCore — routed', () => {
     expect((stored.routing as RoutingSnapshot).deliveryIntent).toBe(allowDispatch ? 'dispatch' : 'retrieval-only');
   });
 
+  it.each(['proceed', 'hard-blocked'] as const)('retrieval-only %s returns the full menu without dispatch or a promised answer', async (latencyContract) => {
+    const { deps, reached } = makeDeps(routeOf([cand('agent-a'), cand('agent-b')]));
+    const result = asOk(await getFeedbackCore({ ...baseReq, allowDispatch: false, latencyContract }, deps));
+
+    expect(reached).toEqual([]);
+    expect(result).toMatchObject({
+      verdict: 'retrieval_only',
+      reason: 'retrieval_only',
+      state: 'no_qualified_responder',
+      responder: null,
+      responder_via: null,
+      expires_at: null,
+      park_key: null,
+      wake: { attempted: false, queued: 0, woke: 0, pickupConfirmed: false },
+    });
+    expect(result.remaining_candidates.map((candidate) => candidate.ownerId)).toEqual(['agent-a', 'agent-b']);
+    expect(result.hint).toContain('Retrieval-only');
+    expect(result.hint).not.toContain('NO allowed model');
+    const stored = await stateRow(result.conversation_id);
+    expect(stored).toMatchObject({ state: 'no_qualified_responder', responder_id: null, expires_at: null, wakes_used: 0 });
+    expect((stored.routing as RoutingSnapshot).deliveryIntent).toBe('retrieval-only');
+  });
+
   it.each(['answer', 'new_fact', 'decline'] as const)('reads typed responder receipts after expiry independently of the bounded cascade digest: %s', async (kind) => {
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
     const result = asOk(await getFeedbackCore(baseReq, deps));
