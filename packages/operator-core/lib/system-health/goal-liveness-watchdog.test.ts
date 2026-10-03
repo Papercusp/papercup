@@ -5,6 +5,11 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { GOAL_HOLDER_PRODUCTIVITY_GRACE_MS } from '../goals/activity';
 import type { GoalPortfolioThroughputRead } from '../goals/portfolio-throughput';
+import {
+  findUnplannedClusters,
+  type UnplannedClusterAlert,
+  type UnplannedClusterRead,
+} from '../goals/unplanned-clusters';
 import type { GoalHolderLaunchCapacityVerdict } from '../goals/holder-launch-capacity';
 import {
   GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS,
@@ -366,6 +371,8 @@ describe('runGoalLivenessSweepOnce', () => {
     // leg's default measurement is the only other PG dep in the sweep.
     readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
     escalatePortfolioIdle: async () => {},
+    readUnplannedClusters: async () => new Map(),
+    fileUnplannedCluster: async () => null,
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -390,6 +397,7 @@ describe('runGoalLivenessSweepOnce', () => {
       // P-002: a DARK goal is `lost`, not `held`, so the portfolio leg does not
       // judge it — placing nothing is only a finding about a steward who is there.
       portfolioIdleEscalated: 0,
+      unplannedClustersFiled: 0,
       skipped: false,
     });
     expect(seen[0]?.reason).toBe('abandoned');
@@ -414,6 +422,7 @@ describe('runGoalLivenessSweepOnce', () => {
       autoStarted: 0,
       portfolioIdleEscalated: 0,
       wedgeEscalated: 0,
+      unplannedClustersFiled: 0,
       skipped: true,
     });
     expect(called).toBe(false); // the kill-switch stops it BEFORE reading the DB
@@ -1563,6 +1572,8 @@ describe('the wedge leg inside runGoalLivenessSweepOnce', () => {
     // default measurement would run real SQL against the `{}` sql stub.
     readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
     escalatePortfolioIdle: async () => {},
+    readUnplannedClusters: async () => new Map(),
+    fileUnplannedCluster: async () => null,
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -1841,6 +1852,8 @@ describe('runGoalLivenessSweepOnce — the portfolio-idle leg', () => {
     escalateReadiness: async () => {},
     readHolderProductivity: async () => new Map<string, number>([[KEY, 99]]),
     escalateWedge: async () => {},
+    readUnplannedClusters: async () => new Map(),
+    fileUnplannedCluster: async () => null,
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -2576,5 +2589,144 @@ describe('runGoalHolderRespawnOnce — loss confirmation window (WI-10005559)', 
   it('keeps the window above the measured carry-respawn gap', () => {
     // 2026-10-02: drill cut 16:49:10Z, successor's first tool call 16:51:00Z.
     expect(GOAL_HOLDER_LOSS_CONFIRM_MS).toBeGreaterThanOrEqual(3 * 60_000);
+  });
+});
+
+describe('runGoalLivenessSweepOnce — the unplanned-cluster leg (goal-holder-plans P-002)', () => {
+  const sql = {} as never;
+  const KEY = goalReadinessKey(goal());
+  /** A 3-item cluster that formed `formedAgoMs` before NOW. */
+  const read = (formedAgoMs: number): UnplannedClusterRead => ({
+    clusters: findUnplannedClusters(
+      KEY,
+      ['WI-1', 'WI-2', 'WI-3'].map((id) => ({
+        id,
+        title: `[Reminder delivery] ${id}`,
+        createdAtMs: NOW - formedAgoMs,
+        harness: 'papercusp',
+      })),
+      [],
+    ),
+    itemCount: 3,
+    truncatedByLimit: false,
+  });
+
+  const base = (over: Record<string, unknown> = {}) => ({
+    readGoals: async () => ({ goals: [goal()], holders: [holder({ setAtMs: JUST_NOW })] }),
+    resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live')),
+    escalate: async () => {},
+    readReadiness: async () => new Map<string, GoalReadiness>(),
+    escalateReadiness: async () => {},
+    readHolderProductivity: async () => new Map<string, number>([[KEY, 99]]),
+    escalateWedge: async () => {},
+    readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
+    escalatePortfolioIdle: async () => {},
+    flagEnabled: async () => true,
+    now: () => NOW,
+    graceMs: GOAL_LIVENESS_GRACE_MS,
+    ...over,
+  });
+
+  it('files ONE holder-assigned nudge for a cluster older than 2 ordinary (4h) cycles', async () => {
+    const filed: UnplannedClusterAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readUnplannedClusters: async () => new Map([[KEY, read(8 * 3600_000 + 60_000)]]),
+        fileUnplannedCluster: async (a: UnplannedClusterAlert) => {
+          filed.push(a);
+          return 'WI-NUDGE';
+        },
+      }),
+    );
+    expect(r.unplannedClustersFiled).toBe(1);
+    expect(filed).toHaveLength(1);
+    expect(filed[0]).toMatchObject({
+      goalId: goal().goalId,
+      workspaceId: 'papercusp-workspace',
+      holderOwnerId: 'su-2c130be1',
+      reportCycleMs: 4 * 3600_000,
+    });
+    expect(filed[0].cluster.memberIds).toEqual(['WI-1', 'WI-2', 'WI-3']);
+  });
+
+  it('gives an ordinary goal its two cycles: a 3h-old cluster is not yet reportable', async () => {
+    let calls = 0;
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readUnplannedClusters: async () => new Map([[KEY, read(3 * 3600_000)]]),
+        fileUnplannedCluster: async () => {
+          calls += 1;
+          return 'WI-NUDGE';
+        },
+      }),
+    );
+    expect(calls).toBe(0);
+    expect(r.unplannedClustersFiled).toBe(0);
+  });
+
+  it('holds a STANDING goal to its hourly cadence: the same 3h-old cluster is reportable', async () => {
+    const filed: UnplannedClusterAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readGoals: async () => ({ goals: [goal({ standing: true })], holders: [holder({ setAtMs: JUST_NOW })] }),
+        readUnplannedClusters: async () => new Map([[KEY, read(3 * 3600_000)]]),
+        fileUnplannedCluster: async (a: UnplannedClusterAlert) => {
+          filed.push(a);
+          return 'WI-NUDGE';
+        },
+      }),
+    );
+    expect(r.unplannedClustersFiled).toBe(1);
+    expect(filed[0].reportCycleMs).toBe(3600_000);
+  });
+
+  it('does not count a cluster whose nudge already exists (the filer returns null)', async () => {
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readUnplannedClusters: async () => new Map([[KEY, read(9 * 3600_000)]]),
+        fileUnplannedCluster: async () => null,
+      }),
+    );
+    expect(r.unplannedClustersFiled).toBe(0);
+  });
+
+  it('never judges an UNHELD goal — that is the liveness leg', async () => {
+    let read_ = 0;
+    await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+        readUnplannedClusters: async (goals: readonly GoalRowLike[]) => {
+          read_ += goals.length;
+          return new Map([[KEY, read(9 * 3600_000)]]);
+        },
+        fileUnplannedCluster: async () => 'WI-NUDGE',
+      }),
+    );
+    expect(read_).toBe(0);
+  });
+
+  it('a failed read costs the leg silence, not the sweep', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await runGoalLivenessSweepOnce(
+        sql,
+        base({
+          readUnplannedClusters: async () => {
+            throw new Error('pg down');
+          },
+          fileUnplannedCluster: async () => 'WI-NUDGE',
+        }),
+      );
+      expect(r.skipped).toBe(false);
+      expect(r.unplannedClustersFiled).toBe(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('unplanned-cluster read failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

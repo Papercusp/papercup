@@ -1322,6 +1322,7 @@ export async function runGoalLivenessSweepOnce(
   autoStarted: number;
   wedgeEscalated: number;
   portfolioIdleEscalated: number;
+  unplannedClustersFiled: number;
   skipped: boolean;
 }> {
   const deps = sweepDeps(sql, overrides);
@@ -1333,6 +1334,7 @@ export async function runGoalLivenessSweepOnce(
       autoStarted: 0,
       wedgeEscalated: 0,
       portfolioIdleEscalated: 0,
+      unplannedClustersFiled: 0,
       skipped: true,
     };
   }
@@ -1346,6 +1348,7 @@ export async function runGoalLivenessSweepOnce(
       autoStarted: 0,
       wedgeEscalated: 0,
       portfolioIdleEscalated: 0,
+      unplannedClustersFiled: 0,
       skipped: false,
     };
   }
@@ -1507,6 +1510,50 @@ export async function runGoalLivenessSweepOnce(
     }
   }
 
+  // ── the UNPLANNED-CLUSTER leg — clustered work placed as loose singletons ──
+  // (goal-holder-plans-ideation-truthful-reports P-002). The GOAL contract places
+  // clustered work as a started plan; this leg finds 3+ open goal-stamped items that
+  // share one cluster, are in no plan, and have been so for more than 2 reporting
+  // cycles, and files ONE holder-assigned, goal-stamped nudge per cluster. Judges the
+  // same held population as the legs above: an unheld goal is the liveness leg's job.
+  let unplannedClustersFiled = 0;
+  if (heldHolders.size > 0) {
+    const heldGoals = goals.filter((g) => heldHolders.has(goalReadinessKey(g)));
+    let clusterReads = new Map<string, UnplannedClusterRead>();
+    try {
+      clusterReads = await deps.readUnplannedClusters(heldGoals);
+    } catch (e) {
+      console.warn(
+        `[goal-liveness-watchdog] unplanned-cluster read failed (non-fatal, cluster leg skipped): ${e instanceof Error ? e.message : String(e)}`,
+      );
+      clusterReads = new Map();
+    }
+    for (const g of heldGoals) {
+      const read = clusterReads.get(goalReadinessKey(g));
+      const fold = heldHolders.get(goalReadinessKey(g));
+      const holderOwnerId = fold?.elected?.ownerId ?? fold?.live[0]?.ownerId;
+      if (!read || !holderOwnerId) continue;
+      const reportCycleMs = goalReportCycleMs(g);
+      for (const cluster of overdueUnplannedClusters(read.clusters, deps.now(), reportCycleMs)) {
+        try {
+          const filed = await deps.fileUnplannedCluster({
+            workspaceId: g.workspaceId,
+            goalId: g.goalId,
+            goalTitle: g.title,
+            holderOwnerId,
+            cluster,
+            reportCycleMs,
+          });
+          if (filed) unplannedClustersFiled += 1;
+        } catch (e) {
+          console.warn(
+            `[goal-liveness-watchdog] unplanned-cluster nudge failed for ${cluster.key} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
+  }
+
   return {
     scanned: goals.length,
     escalated,
@@ -1514,6 +1561,7 @@ export async function runGoalLivenessSweepOnce(
     autoStarted,
     wedgeEscalated,
     portfolioIdleEscalated,
+    unplannedClustersFiled,
     skipped: false,
   };
 }
