@@ -284,10 +284,10 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
         const blocker = plan.items.find((candidate) => candidate.id === ref);
         // A terminal blocker imposes no wait, even when its text names the release plane.
         if (!blocker || isTerminalItemStatus(blocker.storedStatus)) return false;
-        // Preparing a service's deployment is source work, not proof that an
-        // implementation must await released code. Keep explicit main/final
-        // obligations protected even when a prerequisite starts with preparation.
-        const sourcePreparation = /^(?:prepare|configure|inventory)\b/i.test(blocker.text);
+        // Preparing or auditing a service's deployment is source work, not proof
+        // that dependent implementation must await released code. Keep actual
+        // deployed/main/production and final obligations protected for every verb.
+        const sourcePreparation = /^(?:prepare|configure|inventory|audit|review|inspect|document|map)\b/i.test(blocker.text);
         return DEPLOYED_ENV_RE.test(blocker.text) && (
           !sourcePreparation ||
           /\bdeploy(?:ed|ing)?\b/i.test(blocker.text) ||
