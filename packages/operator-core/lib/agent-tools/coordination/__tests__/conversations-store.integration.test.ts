@@ -125,6 +125,21 @@ describe('create → get round-trip', () => {
     expect(row?.title).toBe('a title');
   });
 
+  it('reads lifecycle only for the requested ids in the current workspace', async () => {
+    const other = new PgConversationStore({ getSql: () => sql, ensureSchema: async () => {}, workspaceId: 'other-ws' });
+    await store.create(input('batch-open'));
+    await store.create(input('batch-resolved'));
+    await store.setState('batch-resolved', 'resolved', { now_ts: T1 });
+    await other.create(input('batch-other'));
+
+    const rows = await store.getStatesByIds(['batch-open', 'batch-resolved', 'missing', 'batch-open', 'batch-other']);
+    expect(rows.sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: 'batch-open', state: 'open' },
+      { id: 'batch-resolved', state: 'resolved' },
+    ]);
+    expect(await store.getStatesByIds([])).toEqual([]);
+  });
+
   it('a duplicate-id create is DO NOTHING + read-back: the first row wins', async () => {
     await store.create(input('dup', { body: 'first' }));
     const second = await store.create(input('dup', { body: 'second', title: 'late title' }));

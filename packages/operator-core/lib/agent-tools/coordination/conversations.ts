@@ -185,7 +185,11 @@ import {
   type SupersedeConversationResult,
 } from './conversations-core';
 import type { AgentIdentity } from './identity';
-import type { ConversationRow, ListConversationsOpts } from './conversations-store';
+import type {
+  ConversationRow,
+  ConversationStateById,
+  ListConversationsOpts,
+} from './conversations-store';
 import type { DeliveryMode } from '@papercusp/coordination/capabilities';
 import { trackDetached } from '../../detached-imports';
 import {
@@ -205,8 +209,10 @@ const storeOpts = {
   getWorkspaceId: () => conversationsScopeWorkspace(),
 };
 
+const conversationStore = new PgConversationStore(storeOpts);
+
 const deps: ConversationDeps = {
-  conversations: new PgConversationStore(storeOpts),
+  conversations: conversationStore,
   threads: new PgThreadStore(storeOpts),
   // The post/answer durable write runs through ONE bounded, atomic admin-pool txn
   // (pg-bounded-txn): a tx-bound PgThreadStore reuses the exact tested store SQL,
@@ -255,6 +261,14 @@ export type {
   SupersedeConversationInput,
   SupersedeConversationResult,
 } from './conversations-core';
+
+/** Read only the requested conversation lifecycle rows in the caller's workspace. */
+export function getConversationStatesByIds(
+  conversationIds: readonly string[],
+  workspaceId?: string,
+): Promise<ConversationStateById[]> {
+  return runWithWorkspaceIfConcrete(workspaceId, () => conversationStore.getStatesByIds(conversationIds));
+}
 
 async function armQuestionInterest(
   ownerId: string,

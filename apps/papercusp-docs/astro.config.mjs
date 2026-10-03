@@ -1,7 +1,11 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const isLintAsCommittedClone = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1';
+const sharedStarlightRoot = dirname(fileURLToPath(import.meta.resolve('@astrojs/starlight')));
+const cloneStarlightRoot = fileURLToPath(new URL('../../node_modules/@astrojs/starlight/', import.meta.url));
 
 // Public-facing user manual for Papercusp. Engine: Starlight (on Astro).
 // The internal *engineering* docs are a separate app — apps/operator-docs.
@@ -14,10 +18,19 @@ const isLintAsCommittedClone = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE ===
 export default defineConfig({
   site: 'https://app.papercusp.com',
   base: '/docs',
-  // lint:as-committed symlinks third-party packages to the shared install. Keep Vite's
-  // resolver on those clone-local paths, matching Node's --preserve-symlinks flag. Otherwise
-  // Astro's virtual style module can use a different id from its compiled page.
-  ...(isLintAsCommittedClone ? { vite: { resolve: { preserveSymlinks: true } } } : {}),
+  // lint:as-committed links dependencies to the shared install. Starlight's integration
+  // supplies realpath-based component ids to Vite, while Astro's virtual modules use the
+  // clone root; alias those ids back through the clone symlink so both transforms share a key.
+  ...(isLintAsCommittedClone
+    ? {
+        vite: {
+          resolve: {
+            preserveSymlinks: true,
+            alias: [{ find: sharedStarlightRoot, replacement: cloneStarlightRoot }],
+          },
+        },
+      }
+    : {}),
   // Match `apps/operator-docs`: pages emitted as `<slug>.html` (not
   // `<slug>/index.html`), so the operator Hono host's `/docs/*` resolver
   // (`host-docs-public.ts`) can slug→.html-lookup uniformly.
