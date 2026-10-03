@@ -291,16 +291,15 @@ export interface FreshAmendmentReviewerInput extends AmendmentReviewBriefInput {
   reviewerModel?: ConsultReviewerModel;
 }
 
-/** Keep the fresh reviewer's backend inside the owner's current account steer.
- * A constrained pool can contain only Codex accounts while the launch default
- * is Claude; `account:'auto'` alone cannot change the backend. */
+/** Choose the first permitted expert rank with a serviceable account, including
+ * unsteered pools. `account:'auto'` chooses an account, not a backend: leaving
+ * the backend implicit can strand review on Claude while Codex is available. */
 export function selectFreshReviewerModelForAccountSteer(args: {
   forcedAccounts: readonly string[];
   excludeAccounts: readonly string[];
   accounts: readonly { id: string; provider?: string; available: boolean }[];
   ranks: readonly AllowedExpertModel[];
-}): ConsultReviewerModel | undefined {
-  if (args.forcedAccounts.length === 0 && args.excludeAccounts.length === 0) return undefined;
+}): ConsultReviewerModel {
   const forced = new Set(args.forcedAccounts);
   const excluded = new Set(args.excludeAccounts);
   const providers = new Set(args.accounts
@@ -315,7 +314,7 @@ export function selectFreshReviewerModelForAccountSteer(args: {
   return { agent: rank.agent, model: rank.model };
 }
 
-async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Promise<ConsultReviewerModel | undefined> {
+async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Promise<ConsultReviewerModel> {
   const [{ getAccountOverride }, { loadAccountPool }, { accountProvider, isAvailable },
     { readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings }] = await Promise.all([
     import('../deployment/account-session-override'),
@@ -324,7 +323,6 @@ async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Pr
     import('./expert-routing-settings'),
   ]);
   const override = await getAccountOverride(workspaceId);
-  if (override.forcedAccounts.length === 0 && override.excludeAccounts.length === 0) return undefined;
   const [pool, settings] = await Promise.all([
     loadAccountPool(workspaceId),
     readConsultExpertRoutingSettings(workspaceId),

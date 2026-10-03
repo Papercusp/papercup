@@ -544,10 +544,30 @@ describe('selectFreshReviewerModelForAccountSteer', () => {
     })).toEqual({ agent: 'codex', model: 'sol' });
   });
 
-  it('preserves the default route without restrictions and refuses an unavailable allowed pool', () => {
+  it('uses the first available allowed rank without account restrictions', () => {
     expect(selectFreshReviewerModelForAccountSteer({
       forcedAccounts: [], excludeAccounts: [], accounts, ranks,
-    })).toBeUndefined();
+    })).toEqual({ agent: 'claude', model: 'fable' });
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [],
+      accounts: accounts.map((account) => ({ ...account, available: account.provider === 'codex' })),
+      ranks,
+    })).toEqual({ agent: 'codex', model: 'sol' });
+  });
+
+  it('never widens the model policy or falls back to a default login when no allowed rank is available', () => {
+    expect(() => selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [],
+      accounts: accounts.map((account) => ({ ...account, available: false })), ranks,
+    })).toThrow('no expert model has an available account permitted by the workspace account steer');
+    expect(() => selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [],
+      accounts: [{ id: 'codex-1', provider: 'codex', available: true }],
+      ranks: [{ rank: 1, agent: 'claude', model: 'fable' }],
+    })).toThrow('no expert model has an available account permitted by the workspace account steer');
+  });
+
+  it('refuses an unavailable forced pool even if another provider is available', () => {
     expect(() => selectFreshReviewerModelForAccountSteer({
       forcedAccounts: ['codex-1'], excludeAccounts: [],
       accounts: accounts.map((account) => ({ ...account, available: account.id !== 'codex-1' })),
