@@ -171,6 +171,43 @@ describe('blind label collection through the injected stateless transport', () =
     fs.writeFileSync(file, JSON.stringify(snapshot));
     return file;
   }
+  it('parses a frozen snapshot once per invocation while rechecking its fingerprint across reused ancestry', async () => {
+    const f = fixture(2);
+    try {
+      const first = path.join(f.root, 'first'), middle = path.join(f.root, 'middle');
+      await collectIndependentCohort({ snapshot: f.snapshot, out: first, llm: f.llm, targetsPerPartition: 'all' });
+      await collectIndependentCohort({ snapshot: f.snapshot, out: middle, llm: f.llm,
+        targetsPerPartition: 'all', reuseCallsFrom: first, reuseSnapshotExpansion: true });
+      const read = vi.spyOn(fs, 'readFileSync'), stream = vi.spyOn(fs, 'createReadStream'), llm = vi.fn(f.llm);
+      try {
+        const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'final'), llm,
+          targetsPerPartition: 'all', reuseCallsFrom: middle, reuseSnapshotExpansion: true });
+        expect(llm).not.toHaveBeenCalled();
+        expect(read.mock.calls.filter(([file]) => file === f.snapshot)).toHaveLength(2); // Current + one validated donor parse.
+        expect(stream.mock.calls.filter(([file]) => file === f.snapshot).length).toBeGreaterThan(2);
+        expect(fs.readFileSync(receipt.labels.path)).toEqual(fs.readFileSync(path.join(middle, 'labels.json')));
+      } finally { read.mockRestore(); stream.mockRestore(); }
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['snapshot', 'identity'])('refuses an ancestor %s changed after the first cached recovery', async failure => {
+    const f = fixture(2);
+    try {
+      const first = path.join(f.root, 'first'), middle = path.join(f.root, 'middle');
+      await collectIndependentCohort({ snapshot: f.snapshot, out: first, llm: f.llm, targetsPerPartition: 'all' });
+      await collectIndependentCohort({ snapshot: f.snapshot, out: middle, llm: f.llm,
+        targetsPerPartition: 'all', reuseCallsFrom: first, reuseSnapshotExpansion: true });
+      const llm = vi.fn(f.llm); let changed = false;
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'refused'), llm,
+        targetsPerPartition: 'all', reuseCallsFrom: middle, reuseSnapshotExpansion: true,
+        log: message => {
+          if (!changed && message.includes(' reused original ')) {
+            changed = true;
+            fs.appendFileSync(failure === 'snapshot' ? f.snapshot : path.join(first, 'identity.json'), ' ');
+          }
+        } })).rejects.toThrow('fingerprint');
+      expect(changed).toBe(true); expect(llm).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
   it('expands memory without repaying unchanged prose or exact author prompts, including reference-bearing ancestry', async () => {
     const f = fixture(3);
     try {

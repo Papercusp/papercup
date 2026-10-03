@@ -649,6 +649,18 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
   const sourceTargets = selectBlindSourceTargets(snapshot, targets);
   const snapshotFingerprint = await fingerprintFile(opts.snapshot), ownerId = measurementOwner();
   const sourceFingerprint = await fingerprintFile(new URL('./judged.ts', import.meta.url).pathname);
+  const recoveryInputs = (prior: Snapshot, targets: typeof sourceTargets) => ({
+    snapshot: prior, targets,
+    authorInputs: new Map<string, string>((['memory', 'prose'] as const).flatMap((corpus) => [...targets[corpus].groups]
+      .map(([group, entries]) => [`${corpus}-author-${hashJson([corpus, group]).slice(0, 20)}`,
+        hashJson({ sources: entries.map((e) => ({ key: e.key, text: e.text })) })] as const))),
+    judgeInputs: Object.fromEntries((['memory', 'prose'] as const).map((corpus) => [corpus,
+      hashJson({ entries: prior.suites[corpus].entries, chosen: targets[corpus].chosen })])),
+  });
+  const currentInputs = recoveryInputs(snapshot, sourceTargets);
+  // Invocation-local parsed inputs only. Every ancestor identity and snapshot
+  // is still fingerprinted before a cached parse/target selection is used.
+  const parsedRecoveryInputs = new Map<string, ReturnType<typeof recoveryInputs>>();
   let authorReuse: { identity: Awaited<ReturnType<typeof fingerprintFile>>; identityHash: string } | undefined;
   const readAuthorIdentity = async (file: string, expected?: Awaited<ReturnType<typeof fingerprintFile>>) => {
     const actual = await fingerprintFile(file);
@@ -659,26 +671,33 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       || saved.identity?.contract?.author !== BLIND_COHORT_CONTRACT.author) throw new Error('invalid authors-only recovery identity: snapshot/owner/model/author contract mismatch');
     const sameSnapshot = saved.identity?.snapshotFingerprint?.sha256 === snapshotFingerprint.sha256
       && saved.identity?.snapshotFingerprint?.bytes === snapshotFingerprint.bytes;
-    let priorSnapshot = snapshot;
     if (!sameSnapshot && !opts.reuseSnapshotExpansion) throw new Error('invalid authors-only recovery identity: snapshot/owner/model/author contract mismatch');
+    const previous = saved.identity?.snapshotFingerprint;
     if (opts.reuseSnapshotExpansion) {
       // Expansion is explicit and monotone, never a waiver of old source
       // bytes, provenance, order, partition, seed, or frozen census time.
-      const previous = saved.identity?.snapshotFingerprint;
       if (!previous?.path || hashJson(await fingerprintFile(previous.path)) !== hashJson(previous)) {
         throw new Error('invalid snapshot expansion recovery: donor snapshot fingerprint');
       }
-      priorSnapshot = JSON.parse(fs.readFileSync(previous.path, 'utf8')) as Snapshot;
-      if (priorSnapshot.formatVersion !== snapshot.formatVersion || priorSnapshot.seed !== snapshot.seed
-        || priorSnapshot.snapshotAt !== snapshot.snapshotAt) throw new Error('invalid snapshot expansion recovery: frozen census identity');
-      for (const corpus of ['memory', 'prose'] as const) {
-        const priorEntries = priorSnapshot.suites[corpus].entries;
-        const priorKeys = new Set(priorEntries.map((e) => e.key));
-        const retained = snapshot.suites[corpus].entries.filter((e) => priorKeys.has(e.key));
-        if (hashJson(retained) !== hashJson(priorEntries)) throw new Error('invalid snapshot expansion recovery: retained source content/provenance/order');
-      }
     }
-    return { saved, snapshot: priorSnapshot, targets: selectBlindSourceTargets(priorSnapshot, saved.identity.targets),
+    const inputKey = hashJson([opts.reuseSnapshotExpansion ? previous : snapshotFingerprint, saved.identity.targets]);
+    let inputs = parsedRecoveryInputs.get(inputKey);
+    if (!inputs) {
+      const priorSnapshot = opts.reuseSnapshotExpansion ? JSON.parse(fs.readFileSync(previous.path, 'utf8')) as Snapshot : snapshot;
+      if (opts.reuseSnapshotExpansion) {
+        if (priorSnapshot.formatVersion !== snapshot.formatVersion || priorSnapshot.seed !== snapshot.seed
+          || priorSnapshot.snapshotAt !== snapshot.snapshotAt) throw new Error('invalid snapshot expansion recovery: frozen census identity');
+        for (const corpus of ['memory', 'prose'] as const) {
+          const priorEntries = priorSnapshot.suites[corpus].entries;
+          const priorKeys = new Set(priorEntries.map((e) => e.key));
+          const retained = snapshot.suites[corpus].entries.filter((e) => priorKeys.has(e.key));
+          if (hashJson(retained) !== hashJson(priorEntries)) throw new Error('invalid snapshot expansion recovery: retained source content/provenance/order');
+        }
+      }
+      inputs = recoveryInputs(priorSnapshot, selectBlindSourceTargets(priorSnapshot, saved.identity.targets));
+      parsedRecoveryInputs.set(inputKey, inputs);
+    }
+    return { saved, ...inputs,
       reference: { identity: actual, identityHash: saved.identityHash as string } };
   };
   const donor = reuseRoot ? await readAuthorIdentity(path.join(reuseRoot, 'identity.json')) : undefined;
@@ -716,15 +735,11 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       if (!opts.reuseSnapshotExpansion) return true;
       const corpus = name.startsWith('memory-') ? 'memory' : 'prose';
       if (isAuthor) {
-        const group = [...prior.targets[corpus].groups.keys()]
-          .find((g) => name === `${corpus}-author-${hashJson([corpus, g]).slice(0, 20)}`);
-        return group !== undefined && hashJson({ sources: prior.targets[corpus].groups.get(group)!
-          .map((e) => ({ key: e.key, text: e.text })) }) === hashJson(input);
+        return prior.authorInputs.get(name) === hashJson(input);
       }
       // A larger corpus changes document chunks; a larger target schedule
       // changes question batches. Never relabel either old judgment as new.
-      return hashJson(prior.snapshot.suites[corpus].entries) === hashJson(snapshot.suites[corpus].entries)
-        && hashJson(prior.targets[corpus].chosen) === hashJson(sourceTargets[corpus].chosen);
+      return prior.judgeInputs[corpus] === currentInputs.judgeInputs[corpus];
     };
     const mayReuseDonor = donor && reusable(donor);
     const validatePayload = (saved: any) => {
