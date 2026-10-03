@@ -86,11 +86,15 @@ describe('criterion ALL probes', () => {
 
   it('refuses an unjudgeable child without borrowing its sibling result', async () => {
     const next = readProbe({ args: { id: 'unreadable' } });
-    const result = await evaluate([readProbe(), next], async (_name, args) => {
-      if (args.id === 'unreadable') throw new Error('ledger unavailable');
-      return { state: 'green' };
-    });
-    expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await evaluate([readProbe(), next], async (_name, args) => {
+        if (args.id === 'unreadable') throw new Error('ledger unavailable');
+        return { state: 'green' };
+      });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('ledger unavailable'));
+      expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
+    } finally { warning.mockRestore(); }
   });
 
   it('rejects the shared batch cap across criteria at write time and before execution', async () => {
