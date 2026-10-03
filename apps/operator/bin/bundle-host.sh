@@ -72,7 +72,9 @@ COMMITTED_NODE=(node --import "$REPO_ROOT/scripts/lib/committed-source-loader.mj
 # host crash-loop on missing rocksdb-native. Re-enter the script through the
 # existing repo-keyed install mutex before sourcing bundle inputs or invoking
 # esbuild. The wrapper marks its child so this branch runs exactly once.
-if [[ "${PAPERCUSP_INSTALL_MUTEX_HELD:-0}" != "1" ]]; then
+if ! "${COMMITTED_NODE[@]}" --input-type=module -e \
+  'const { installLockNameForRoot, installMutexIsHeld } = await import(process.argv[1]); process.exit(installMutexIsHeld(installLockNameForRoot(process.argv[2])) ? 0 : 1);' \
+  "file://$REPO_ROOT/scripts/lib/install-lock-name.mjs" "$REPO_ROOT"; then
   exec "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/npm-install-safe.mjs" \
     --repo-root "$REPO_ROOT" --exec-under-lock -- "$SCRIPT_DIR/bundle-host.sh" "$@"
 fi

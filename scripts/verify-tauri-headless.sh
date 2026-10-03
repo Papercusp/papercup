@@ -1188,10 +1188,10 @@ build_verifier_operator_host() {
   }
   log "building frozen plain-node operator host (tsx runtime loader excluded)"
   # The dependency graph is a private immutable hardlink snapshot that was
-  # completed under npm-install-safe's donor mutex immediately above. Re-entering
-  # that shared writer lock cannot make these private bytes safer; mark the
-  # already-frozen graph so bundle-host runs only its read/build path.
-  PAPERCUSP_INSTALL_MUTEX_HELD=1 bash "$bundle_script" \
+  # completed under npm-install-safe's donor mutex immediately above. The
+  # bundler's normal guard keys its lease to this private snapshot; it neither
+  # re-enters the donor lock nor grants a blanket exemption to other roots.
+  bash "$bundle_script" \
     bin/hono-host.ts "$OPERATOR_HOST_BUNDLE" || {
       echo "FATAL: could not build the frozen verifier operator host bundle" >&2
       return 1
