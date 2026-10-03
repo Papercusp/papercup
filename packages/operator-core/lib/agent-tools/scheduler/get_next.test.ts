@@ -79,6 +79,7 @@ const diagnoseFleetScopePlanTerminalityM = vi.hoisted(() =>
   ),
 );
 const diagnoseFleetScopeLeaderLivenessM = vi.hoisted(() => vi.fn(async () => null as boolean | null));
+const reconcileFleetScopeLeaderSuccessionM = vi.hoisted(() => vi.fn(async () => null as 'live' | 'unavailable' | null));
 const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
 const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
 const releaseWorkItemM = vi.hoisted(() => vi.fn(async () => undefined));
@@ -194,6 +195,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   // existing family/exhaustion seams; keep this mock's module shape aligned with production.
   diagnoseFleetScopePlanTerminality: diagnoseFleetScopePlanTerminalityM,
   diagnoseFleetScopeLeaderLiveness: diagnoseFleetScopeLeaderLivenessM,
+  reconcileFleetScopeLeaderSuccession: reconcileFleetScopeLeaderSuccessionM,
   fleetLeaderUnavailableRefusal: (scope: any) => ({
     ok: false,
     error: 'fleet_leader_unavailable',
@@ -271,6 +273,8 @@ beforeEach(() => {
   scopeState.fleetAssignmentRows = undefined;
   diagnoseFleetScopeLeaderLivenessM.mockReset();
   diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+  reconcileFleetScopeLeaderSuccessionM.mockReset();
+  reconcileFleetScopeLeaderSuccessionM.mockResolvedValue(null);
   reconcileFleetScopeClaimsM.mockImplementation(async () => ({
     scope: scopeState.scope,
     quarantinedIds: scopeState.quarantinedIds,
@@ -574,7 +578,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       fleetRole: 'member',
       record: { source: 'fleet', spec: { specId: 'leaderless-rev4', revision: 4 } },
     };
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValueOnce(false);
+    reconcileFleetScopeLeaderSuccessionM.mockResolvedValueOnce('unavailable');
     getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim' } });
 
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
@@ -592,7 +596,10 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       recovery: { tool: 'fleet:take-leadership', args: { fleet: 'leaderless-fleet' } },
     });
     expect(body.advice).toMatch(/retry scheduler:get_next/);
-    expect(diagnoseFleetScopeLeaderLivenessM).toHaveBeenCalledWith({ scope: scopeState.scope });
+    expect(reconcileFleetScopeLeaderSuccessionM).toHaveBeenCalledWith({
+      scope: scopeState.scope,
+      identity: expect.objectContaining({ ownerId: 'su-member' }),
+    });
     expect(getNextM).not.toHaveBeenCalled();
   });
 
@@ -603,7 +610,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       fleetRole: 'member',
       record: { source: 'fleet', spec: { specId: 'lane-rev4', revision: 4 } },
     };
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+    reconcileFleetScopeLeaderSuccessionM.mockResolvedValue(null);
     getNextM.mockResolvedValue(null);
 
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
@@ -619,14 +626,14 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       record: { source: 'fleet', spec: { specId: 'lane-rev4', revision: 4 } },
     };
     scopeState.fleetAssignmentRows = [{ agentId: 'su-leader' }];
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+    reconcileFleetScopeLeaderSuccessionM.mockResolvedValueOnce('live');
     getNextM.mockResolvedValue(null);
 
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
 
-    expect(diagnoseFleetScopeLeaderLivenessM).toHaveBeenCalledWith({
+    expect(reconcileFleetScopeLeaderSuccessionM).toHaveBeenCalledWith({
       scope: scopeState.scope,
-      fleetAssignmentRows: scopeState.fleetAssignmentRows,
+      identity: expect.objectContaining({ ownerId: 'su-member' }),
     });
     expect(getNextM).toHaveBeenCalledOnce();
   });
@@ -670,6 +677,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     });
     expect(diagnoseFleetScopePlanTerminalityM).toHaveBeenCalledWith({ scope: scopeState.scope });
     expect(diagnoseFleetScopeLeaderLivenessM).not.toHaveBeenCalled();
+    expect(reconcileFleetScopeLeaderSuccessionM).not.toHaveBeenCalled();
     expect(getNextM).not.toHaveBeenCalled();
   });
 });

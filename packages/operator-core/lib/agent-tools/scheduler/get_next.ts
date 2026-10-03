@@ -71,6 +71,7 @@ import {
   diagnoseFleetScopeTerminalExhaustion,
   diagnoseFleetScopePlanTerminality,
   diagnoseFleetScopeLeaderLiveness,
+  reconcileFleetScopeLeaderSuccession,
   fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
@@ -1483,11 +1484,11 @@ export default defineTool({
           // terminal acceptance and wind-down have no live driver. A null reading is
           // deliberately fail-open; only a successful negative blocks new work.
           currentPreflightStep = 'fleet-leader-liveness';
-          const leaderLiveness = await diagnoseFleetScopeLeaderLiveness({
+          const leaderSuccession = await reconcileFleetScopeLeaderSuccession({
             scope: reconciliation.scope,
-            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
+            identity: ident,
           });
-          if (leaderLiveness === false) return { kind: 'leader-unavailable', reconciliation };
+          if (leaderSuccession === 'unavailable') return { kind: 'leader-unavailable', reconciliation };
         }
         // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
         // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
