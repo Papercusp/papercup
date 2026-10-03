@@ -958,16 +958,22 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(tool.args.safeParse({ ...runArgs, fullHistory: true }).success).toBe(true);
   });
   it('transports D166 inputs through the public cut schema, preview and detached runtime', async () => {
-    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original' };
+    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original',
+      censusPath: '/private/census.json', censusSha256: 'b'.repeat(64) };
     expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency }).success).toBe(true);
     expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency: { ...seedUuidIdempotency, plansSha256: 'bad' } }).success).toBe(false);
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency: { ...seedUuidIdempotency, censusPath: undefined } }).success).toBe(false);
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency: { ...seedUuidIdempotency, censusSha256: 'bad' } }).success).toBe(false);
     const preview = body(await tool.handler({ ...runArgs, seedUuidIdempotency } as never, { role: 'operator' } as never));
     expect(preview.wouldRun).toContain("PAPERCUSP_SEED_UUID_PLAN_PATH='/private/plans.json'");
+    expect(preview.wouldRun).toContain("PAPERCUSP_SEED_UUID_CENSUS_PATH='/private/census.json'");
+    expect(preview.wouldRun).toContain(`PAPERCUSP_SEED_UUID_CENSUS_SHA256='${'b'.repeat(64)}'`);
     await tool.handler({ ...runArgs, seedUuidIdempotency, confirm: true } as never, { role: 'operator' } as never);
     expect(launchM).toHaveBeenCalledWith(expect.objectContaining({ runtime: expect.objectContaining({ seedUuidIdempotency }) }));
   });
   it('refuses UUID plans with seed reuse or seedless before opening a managed operation', async () => {
-    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original' };
+    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original',
+      censusPath: '/private/census.json', censusSha256: 'b'.repeat(64) };
     for (const bad of [{ reuseSeed: true }, { seedless: true }]) {
       const result = body(await tool.handler({ ...runArgs, seedUuidIdempotency, ...bad } as never, { role: 'operator' } as never));
       expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('seed_uuid_mode_conflict') });
