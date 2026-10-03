@@ -319,9 +319,10 @@ export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
     }
     // Admission accepts exactly two shapes: a ready probe, or a quota refusal that proves the
     // credential authenticated. Every identity refusal still lands in the `else` and throws.
+    const allowedKinds = admissionVerificationKinds(agent, probes);
     const admissibleEvidence = unfundedSet.has(agent)
-      ? isUnfundedAgentVerificationEvidence(agent, agentEvidence, reportObservedAt)
-      : isReadyAgentVerificationEvidence(agent, agentEvidence, reportObservedAt);
+      ? isUnfundedAgentVerificationEvidence(agent, agentEvidence, reportObservedAt, allowedKinds)
+      : isReadyAgentVerificationEvidence(agent, agentEvidence, reportObservedAt, allowedKinds);
     if (!admissibleEvidence) {
       throw new Error(`workspace-host agent credential admission evidence has invalid '${agent}' verification`);
     }
@@ -434,13 +435,9 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
         credentialFreeAgents.push(agent);
         continue;
       }
-      // A present OMP credential must pass its authenticated-account probe. Falling back to
-      // local inference would prove the controller's Ollama runtime while saying nothing about
-      // the stored OMP bytes this guard exists to validate.
-      const configured =
-        dependencies.probes?.[agent] ?? DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES[agent];
-      const specs =
-        agent === 'omp' ? configured.filter((spec) => spec.verificationKind === 'authenticated-account') : configured;
+      // Readiness-bearing specs only, and authenticated-account only for a present OMP credential:
+      // see workspaceHostAgentAdmissionProbeSpecs for why each filter exists.
+      const specs = workspaceHostAgentAdmissionProbeSpecs(agent, dependencies.probes);
       if (specs.length === 0) {
         throw new Error(`agent credential admission has no credential-authentication probe for '${agent}'`);
       }
@@ -503,7 +500,7 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
     // "the canary layer requires allReady"; that reading sends the next editor looking for a
     // consumer that does not exist.
     if (!verification.admissible) throw new WorkspaceHostAgentCredentialAdmissionError(evidence);
-    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, input);
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, input, dependencies.probes);
     return evidence;
   } finally {
     // This tree contains the only plaintext copy outside the encrypted store. Cleanup failure is
