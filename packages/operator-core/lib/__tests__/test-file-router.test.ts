@@ -539,7 +539,10 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     ]);
 
     expect(invocation).toMatchObject({ command: process.execPath, routed: true });
+    // WI-10005802: the router starts under the committed-source loader, so its own code runs HEAD bytes.
     expect(invocation.args).toEqual([
+      '--import',
+      resolve(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs'),
       resolve(REPO_ROOT, 'scripts/test-files.mjs'),
       'lib/agent-tools/release/checkpoint-run.test.ts',
       'lib/release/green-checkpoint.test.ts',
@@ -563,6 +566,8 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     ])).toMatchObject({
       routed: true,
       args: [
+        '--import',
+        resolve(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs'),
         resolve(REPO_ROOT, 'scripts/test-files.mjs'),
         'lib/release/green-checkpoint-watchdog.integration.test.ts',
       ],
