@@ -395,7 +395,7 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     //     short-circuits past the banner AND the trailing shell, which is
     //     precisely the failure case the window is being held open FOR.
     expect(script).toContain('__papercusp_boot_rc=$?;');
-    expect(script).toContain('(exit "$__papercusp_boot_rc"); __papercusp_greeting_rc=$?;');
+    expect(script).toContain('(exit "$__papercusp_boot_rc")); __papercusp_greeting_rc=$?;');
     expect(script).not.toMatch(/&&\s*exec/);
 
     // (3) a trailing interactive login shell is what actually holds it open.
