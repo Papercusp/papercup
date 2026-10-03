@@ -92,7 +92,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       { seedUuidIdempotency: { ...seedUuidIdempotency, plansSha256: 'bad' } },
       { seedUuidIdempotency: { ...seedUuidIdempotency, censusSha256: 'bad' } },
       { seedUuidIdempotency: { ...seedUuidIdempotency, censusPath: 'relative' } },
-      { seedUuidIdempotency: { ...seedUuidIdempotency, censusPath: undefined } },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, censusPath: undefined as never } },
       { seedUuidIdempotency: { ...seedUuidIdempotency, sourceStoreDir: 'relative' } }]) {
       expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', seedUuidIdempotency, ...bad })).toThrow();
     }
