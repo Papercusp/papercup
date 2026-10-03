@@ -1834,6 +1834,96 @@ export function buildJsonbTypeofNegationAdvisory(rawSql: string): string | null 
 }
 
 /**
+ * Flag a jsonb-returning accessor (`->` / `#>`) compared with `IS [NOT] NULL`.
+ *
+ * `->` yields JSONB, so a key that is PRESENT with a JSON null value comes back
+ * as jsonb `null`, which is not SQL NULL: `(col->'k') IS NULL` is FALSE for
+ * every such row, and `IS NOT NULL` counts those rows as populated. The
+ * predicate is not merely imprecise, it is INVERTED on exactly the rows the
+ * caller is asking about — it read as "the field is populated on all 349 rows"
+ * in a real CTRL investigation (EI-23761509275982493), a perfectly plausible
+ * report that was the opposite of the truth.
+ *
+ * Two deliberate boundaries, both load-bearing:
+ *
+ *  1. The text-returning siblings `->>` / `#>>` ARE correct with `IS NULL`
+ *     (they return SQL NULL for a JSON null), so a chain whose LAST accessor is
+ *     a text arrow must not fire. Without that, the advisory would fire on the
+ *     very form it recommends and get discounted as noise — the failure mode
+ *     that retires an advisory faster than being wrong does.
+ *  2. The `IS NULL` must follow the accessor chain directly (closing parens
+ *     aside). An intervening cast — `(col->'k')::text IS NULL` — carries the
+ *     same trap but is left UNFLAGGED on purpose: a narrow trigger that is
+ *     always right beats a broad one agents learn to skip. Widen it only with
+ *     evidence that the cast form actually bites.
+ */
+export function buildJsonNullArrowAdvisory(rawSql: string): string | null {
+  const masked = rawSql.split('');
+  for (const [from, to] of sqlLiteralAndCommentRanges(rawSql)) {
+    for (let i = from; i < to; i++) {
+      if (masked[i] !== '\n') masked[i] = ' ';
+    }
+  }
+  const code = masked.join('');
+  const skipWhitespace = (from: number): number => {
+    let i = from;
+    while (i < code.length && /\s/.test(code[i] ?? '')) i++;
+    return i;
+  };
+  /** Offset just past a jsonb-returning arrow at `at`, or null. */
+  const jsonbArrowAt = (at: number): number | null => {
+    if (code.startsWith('->>', at) || code.startsWith('#>>', at)) return null;
+    if (code.startsWith('->', at) || code.startsWith('#>', at)) return at + 2;
+    return null;
+  };
+
+  for (let i = 0; i < code.length; i++) {
+    const afterArrow = jsonbArrowAt(i);
+    if (afterArrow === null) continue;
+
+    let cursor = skipWhitespace(afterArrow);
+    let endsWithTextArrow = false;
+    for (;;) {
+      // The key operand: an identifier, a number, or a quoted literal that the
+      // mask above already blanked to whitespace.
+      // Quote chars are consumed as part of the operand because the mask above
+      // blanks a literal's CONTENT; whether it also blanks the delimiters is not
+      // something this scan should depend on.
+      // Do NOT consume the predicate as if it were a key operand: the literal
+      // mask above can blank the key entirely, leaving IS NULL as the very next
+      // token. Consuming first ate the IS keyword, so every real trap returned
+      // null while the silent-form cases kept passing vacuously.
+      if (!/^IS\s+(?:NOT\s+)?NULL\b/i.test(code.slice(cursor))) {
+        while (cursor < code.length && /[A-Za-z0-9_$."']/.test(code[cursor] ?? '')) cursor++;
+      }
+      cursor = skipWhitespace(cursor);
+      if (code.startsWith('->>', cursor) || code.startsWith('#>>', cursor)) {
+        endsWithTextArrow = true;
+        break;
+      }
+      const chained = jsonbArrowAt(cursor);
+      if (chained === null) break;
+      cursor = skipWhitespace(chained);
+    }
+    if (endsWithTextArrow) continue;
+
+    while (code[cursor] === ')') cursor = skipWhitespace(cursor + 1);
+    if (!/^IS\s+(?:NOT\s+)?NULL\b/i.test(code.slice(cursor))) continue;
+
+    return (
+      '⚠ json null is not SQL NULL: `->` / `#>` return JSONB, so a key present with a ' +
+      'JSON null value is jsonb `null` — `(col->\'k\') IS NULL` is FALSE for those rows ' +
+      'and `IS NOT NULL` counts them as populated, inverting the predicate on exactly ' +
+      'the rows in question. Use `col->>\'k\' IS NULL`, ' +
+      '`jsonb_typeof(col->\'k\') = \'null\'`, or `col->\'k\' = \'null\'::jsonb`. ' +
+      '(EI-23761509275982493.)'
+    );
+  }
+
+  return null;
+}
+
+/**
  * Flag a read that treats `status = 'open'` (or the candidate VIEW) as the
  * answer to "what can be claimed".
  *

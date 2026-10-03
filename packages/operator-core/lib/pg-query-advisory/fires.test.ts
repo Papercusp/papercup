@@ -137,11 +137,11 @@ describe('advisory label lists', () => {
   // complete, plausible, entirely misattributed report. A failure here means
   // "go add the label", not "update the number".
   it('pins the sql-shape advisory count', () => {
-    expect(SQL_SHAPE_ADVISORY_LABELS).toHaveLength(17);
+    expect(SQL_SHAPE_ADVISORY_LABELS).toHaveLength(18);
   });
 
   it('composes the success list as sql-shape plus the four result-derived ones', () => {
-    expect(DELIVERED_ADVISORY_LABELS).toHaveLength(21);
+    expect(DELIVERED_ADVISORY_LABELS).toHaveLength(22);
     expect(DELIVERED_ADVISORY_LABELS[17]).toBe('tenant-scope');
   });
 
@@ -149,7 +149,7 @@ describe('advisory label lists', () => {
     // The specific misattribution this list exists to prevent: the error path
     // appends only toolRoutingAdvisory, so reusing the success labels would
     // record every routing advisory on a failed query as a tenant-scope fire.
-    expect(ERROR_PATH_ADVISORY_LABELS).toHaveLength(18);
+    expect(ERROR_PATH_ADVISORY_LABELS).toHaveLength(19);
     expect(ERROR_PATH_ADVISORY_LABELS[17]).toBe('tool-routing');
     expect(ERROR_PATH_ADVISORY_LABELS[17]).not.toBe(DELIVERED_ADVISORY_LABELS[17]);
   });

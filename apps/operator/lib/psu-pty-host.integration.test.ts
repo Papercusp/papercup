@@ -1678,7 +1678,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       mkdirSync(codexDir, { recursive: true });
       const codexFile = join(codexDir, 'rollout.jsonl');
       const codexSinceMs = Date.now();
-      writeFileSync(codexFile, `${JSON.stringify({ role: 'user', text: marker, timestamp: new Date(codexSinceMs).toISOString() })}\n`);
+      writeFileSync(codexFile, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: marker }] }, timestamp: new Date(codexSinceMs).toISOString() })}\n`);
       expect(findNativeTranscriptMarker({
         agent: 'codex', env: { CODEX_HOME: join(home, 'codex-target') }, marker, sinceMs: codexSinceMs, home,
       })).toBe(codexFile);
@@ -1687,7 +1687,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       mkdirSync(ompDir, { recursive: true });
       const ompFile = join(ompDir, 'thread.jsonl');
       const ompSinceMs = Date.now();
-      writeFileSync(ompFile, `${JSON.stringify({ type: 'message', text: marker, timestamp: new Date(ompSinceMs).toISOString() })}\n`);
+      writeFileSync(ompFile, `${JSON.stringify({ type: 'message', role: 'user', content: marker, timestamp: new Date(ompSinceMs).toISOString() })}\n`);
       const proof = await waitForNativeTranscriptMarker({
         agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker, sinceMs: ompSinceMs, home, timeoutMs: 100, pollMs: 5,
       });
@@ -1702,7 +1702,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       const claudeFile = join(claudeDir, `${claudeId}.jsonl`);
       const carryMarker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
       const claudeSinceMs = Date.now();
-      writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', timestamp: new Date(claudeSinceMs).toISOString(), message: { content: carryMarker } })}\n`);
+      writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', timestamp: new Date(claudeSinceMs).toISOString(), message: { role: 'user', content: carryMarker } })}\n`);
       expect(leadingTurnOriginMarker(`${carryMarker}\nContinue where you left off`)).toBe(carryMarker);
       const ownerMarker = '⟦turn-origin:coord-inject:owner nonce:0123456789abcdef⟧';
       expect(leadingTurnOriginMarker(`${ownerMarker}\nThe owner replied`)).toBe(ownerMarker);
@@ -2034,7 +2034,9 @@ describe('hostThroughPty real round-trip', () => {
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
         "let ready=false,b='',wrote=false;process.stdout.write('\\x1b[6n');setTimeout(()=>{ready=true;process.stdout.write('omp v16.3.3\\nREADY\\n');},400);",
-        "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',text:process.env.PORT_MARKER})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>{process.stdout.write('EXITING\\n');process.exit(0);},1200);}});",
+        // The real native transcript persists the whole user turn, including
+        // both its origin marker (submit verification) and port checksum.
+        "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',content:b,timestamp:new Date().toISOString()})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>{process.stdout.write('EXITING\\n');process.exit(0);},1200);}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
       try {
@@ -2072,11 +2074,12 @@ describe('hostThroughPty real round-trip', () => {
         const deadline = Date.now() + 5000;
         while (onKickoffPersisted.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
         expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
-        expect(onKickoffPersisted.mock.calls[0]?.[0]).toEqual({
+        expect(onKickoffPersisted.mock.calls[0]?.[0], captured()).toEqual({
           persisted: true,
           renderedHash: hash,
           nativeRef: nativeFile,
         });
+        expect(readFileSync(nativeFile, 'utf8')).toContain('⟦turn-origin:session-port nonce:');
         while (!captured().includes('EXITING') && Date.now() < deadline) await sleep(25);
         expect(captured()).toContain('EXITING');
         expect(await Promise.race([done.then(() => true), sleep(50).then(() => false)])).toBe(false);
@@ -2114,9 +2117,11 @@ describe('hostThroughPty real round-trip', () => {
         });
       });
       const childCode = [
+        "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
         "process.stdout.write('omp v16.3.3\\nREADY\\n');let b='',submitted=false;",
-        "process.stdin.on('data',d=>{b+=d;if(!submitted&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){submitted=true;process.stdout.write('SUBMITTED\\n');if(process.env.PORT_FAILURE==='child-exit')setTimeout(()=>process.exit(3),50);}});",
+        // Submit proof exists, but the exact managed checksum does not.
+        "process.stdin.on('data',d=>{b+=d;if(!submitted&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){submitted=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',content:b.split('\\n')[0],timestamp:new Date().toISOString()})+'\\n');process.stdout.write('SUBMITTED\\n');if(process.env.PORT_FAILURE==='child-exit')setTimeout(()=>process.exit(3),50);}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
       try {
@@ -2136,6 +2141,7 @@ describe('hostThroughPty real round-trip', () => {
             PI_CODING_AGENT_DIR: join(root, 'omp-agent'),
             PORT_MARKER: marker,
             PORT_FAILURE: failure,
+            PORT_NATIVE_FILE: join(root, 'omp-agent', 'sessions', 'project', 'thread.jsonl'),
             [KICKOFF_PROOF_PATH_ENV]: proofPath,
             [KICKOFF_PROOF_TOKEN_ENV]: token,
             TERM: 'xterm-256color',

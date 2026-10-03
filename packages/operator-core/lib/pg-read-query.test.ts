@@ -26,6 +26,7 @@ import {
   buildTenantScopeAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
+  buildJsonNullArrowAdvisory,
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
   buildNonSummingPartitionAdvisory,
@@ -1888,6 +1889,68 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
         "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'lane' = 'observation'",
       ),
     ).toContain('always-NULL accessor');
+  });
+});
+
+describe('buildJsonNullArrowAdvisory (json null is not SQL NULL — WI-10005716)', () => {
+  it('fires on a single-arrow accessor compared with IS NULL', () => {
+    expect(
+      buildJsonNullArrowAdvisory(
+        "SELECT 1 FROM harness_shared.work_items WHERE payload->'goalId' IS NULL",
+      ),
+    ).toContain('json null is not SQL NULL');
+  });
+
+  it('fires on IS NOT NULL — the populated-field reading that actually bit', () => {
+    const advisory =
+      buildJsonNullArrowAdvisory(
+        "SELECT count(*) FROM harness_shared.session_briefs WHERE control_state->'activation' IS NOT NULL",
+      ) ?? '';
+    expect(advisory).toContain('counts them as populated');
+    expect(advisory).toContain('EI-23761509275982493');
+  });
+
+  it('fires through a parenthesised operand, a chained path and the #> form', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT (payload->'_ei'->'severity') IS NULL FROM t"),
+    ).toContain('json null is not SQL NULL');
+    expect(buildJsonNullArrowAdvisory("SELECT payload #> '{a,b}' IS NULL FROM t")).toContain(
+      'json null is not SQL NULL',
+    );
+  });
+
+  // The remedy forms must stay SILENT. An advisory that fires on the very shape
+  // it recommends gets discounted as noise, which retires it faster than being
+  // wrong does — so these are the load-bearing cases, not the firing ones.
+  it('stays silent on the text-returning forms it recommends', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload->>'goalId' IS NULL"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload->'_ei'->>'severity' IS NULL"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload #>> '{a,b}' IS NULL"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE jsonb_typeof(payload->'k') = 'null'"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload->'k' = 'null'::jsonb"),
+    ).toBeNull();
+  });
+
+  it('stays silent when the arrow is not the operand of the IS NULL test', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT payload->'k' AS k FROM t WHERE id IS NULL"),
+    ).toBeNull();
+  });
+
+  it('ignores the pattern inside literals and comments', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 'payload->''k'' IS NULL' AS prose FROM t"),
+    ).toBeNull();
+    expect(buildJsonNullArrowAdvisory("SELECT 1 -- payload->'k' IS NULL")).toBeNull();
   });
 });
 

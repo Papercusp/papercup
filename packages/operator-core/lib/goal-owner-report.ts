@@ -431,3 +431,281 @@ export function diagnoseGoalOwnerReportEnvelope(envelope: unknown, goalId: strin
 export function envelopeHasCompleteGoalOwnerReport(envelope: unknown, goalId: string): boolean {
   return diagnoseGoalOwnerReportEnvelope(envelope, goalId).kind === 'complete';
 }
+
+// ---------------------------------------------------------------------------
+// Send-time truth checks
+//
+// Plan goal-holder-plans-ideation-truthful-reports-2026-10-03 P-005. The shape
+// checks above prove a report HAS five sections; they cannot tell the owner a
+// section is false. Three falsities were measured on goal 60d3a8:
+//   (a) COST said "not measured per goal; pot-wide $4266/24h" while the goal's
+//       own lineage spend (313180c, goal-lineage-rollup) was measured;
+//   (b) OWNER-WALLED listed bare ids, so the owner had to open each item to
+//       learn what was being asked of them;
+//   (c) a MOVED line known to be false stayed uncorrected for 44 minutes and
+//       was then handed to the successor (WI-10005610).
+// Each check below takes values the platform has measured, never the holder's
+// prose, and an unreadable input skips its check instead of refusing.
+// ---------------------------------------------------------------------------
+
+/** The goal's measured spend as the spend rollup stored it on the goal row. */
+export interface GoalReportMeasuredSpend {
+  spentCents: number | null;
+  /** True only for an authoritative lineage rollup with no unmeasured remainder. */
+  measured: boolean;
+  source: string | null;
+  measuredAt: string | null;
+}
+
+/** An open owner-walled work-item of the goal and the owner action recorded on it. */
+export interface GoalReportOwnerWall {
+  ref: string;
+  /** The recorded owner ask (ownerAction / ownerAsk / active human blocker); null when none was recorded. */
+  action: string | null;
+}
+
+export interface GoalReportCitedRef {
+  ref: string;
+  state: string;
+}
+
+export interface GoalOwnerReportTruthInputs {
+  /** null = the spend read failed; the cost check is skipped, not passed. */
+  spend: GoalReportMeasuredSpend | null;
+  /** null = the wall read failed. */
+  ownerWalls: GoalReportOwnerWall[] | null;
+  /** The goal's previous stamped report (any holder), with the ref states it recorded. */
+  previousReport: { at: string; citedRefStates: GoalReportCitedRef[] | null } | null;
+  /** Current state of every ref in previousReport.citedRefStates; null = read failed. */
+  currentRefStates: Record<string, string> | null;
+}
+
+export type GoalOwnerReportTruthViolation =
+  | { check: 'cost'; kind: 'measured-spend-not-cited'; expected: string; message: string }
+  | { check: 'owner-walled'; kind: 'wall-not-listed' | 'wall-without-action'; ref: string; expected: string | null; message: string }
+  | {
+      check: 'correction';
+      kind: 'correction-owed';
+      ref: string;
+      reportedState: string;
+      currentState: string;
+      reportedAt: string;
+      message: string;
+    };
+
+export interface GoalOwnerReportTruthSummary {
+  cost: 'cited-measured' | 'goal-spend-unmeasured' | 'unread';
+  ownerWalls: 'all-listed-with-action' | 'none-open' | 'unread';
+  corrections: 'none-owed' | 'carried' | 'no-baseline' | 'unread';
+}
+
+/** Absolute floor and relative band within which a cited amount matches the measured spend. */
+export const GOAL_REPORT_COST_TOLERANCE = Object.freeze({ absCents: 1000, relative: 0.03 });
+
+/** Report states that assert the work is finished; a later non-success state falsifies them. */
+export const GOAL_REPORT_SUCCESS_STATES: ReadonlySet<string> = TERMINAL_REPORT_STATES;
+
+/** A COST line that admits it did not measure the goal's spend. */
+export function costLineIsUnmeasured(cost: string | null | undefined): boolean {
+  if (!cost || !cost.trim()) return true;
+  return /\bnot\s+(?:measured|attributable|goal-attributable)\b|\bunmeasured\b/i.test(cost);
+}
+
+const WORK_ITEM_REF = /\b(?:WI|EI|F)-\d+\b/g;
+
+/** Work-item refs (WI-/EI-/F-) in prose, deduplicated in first-seen order. */
+export function workItemRefsIn(text: string | null | undefined): string[] {
+  if (!text) return [];
+  return [...new Set(text.match(WORK_ITEM_REF) ?? [])];
+}
+
+/**
+ * Split an ownerWalled section into entries and flag those that are only ids. "WI-10004856,
+ * WI-10004875, WI-10005042" and "WI-10004856/4875/5042" name no action for the owner;
+ * "hud P-003 route (solo/fleet/drop)" does.
+ */
+export function walledEntries(text: string | null | undefined): { entry: string; bare: boolean }[] {
+  if (!text || !text.trim()) return [];
+  return text
+    .split(/;|\n/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && !/^(?:none|nothing|n\/a)\.?$/i.test(entry))
+    .map((entry) => {
+      const hasRef = workItemRefsIn(entry).length > 0;
+      const residue = entry.replace(WORK_ITEM_REF, ' ').replace(/[^A-Za-z]+/g, ' ').trim();
+      return { entry, bare: hasRef && residue.split(/\s+/).filter((word) => word.length > 1).length === 0 };
+    });
+}
+
+/**
+ * Every money amount written in a COST line, in cents. Recognizes "$3,131.80",
+ * "$3.1k", "313180c" / "313180 cents" / "313180¢" and "3131.80 USD". A bare
+ * number is NOT money ("24h", "4 owner walls"), so it never matches by accident.
+ */
+export function moneyAmountsInCents(text: string): number[] {
+  const out: number[] = [];
+  const num = (raw: string) => Number(raw.replace(/,/g, ''));
+  for (const match of text.matchAll(/\$\s?(\d[\d,]*(?:\.\d+)?)(\s?[kK]\b)?/g)) {
+    const value = num(match[1]!);
+    if (Number.isFinite(value)) out.push(Math.round(value * (match[2] ? 1000 : 1) * 100));
+  }
+  for (const match of text.matchAll(/(?<![\w$.,])(\d[\d,]*(?:\.\d+)?)\s?(?:USD\b|dollars?\b)/gi)) {
+    const value = num(match[1]!);
+    if (Number.isFinite(value)) out.push(Math.round(value * 100));
+  }
+  for (const match of text.matchAll(/(?<![\w$.,])(\d[\d,]*)\s?(?:c\b|¢|cents?\b)/gi)) {
+    const value = num(match[1]!);
+    if (Number.isFinite(value)) out.push(Math.round(value));
+  }
+  return out;
+}
+
+export function formatUsdCents(cents: number): string {
+  return `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** True when some amount in the COST text is within tolerance of the measured goal spend. */
+export function costCitesMeasuredSpend(costText: string, spentCents: number): boolean {
+  const tolerance = Math.max(GOAL_REPORT_COST_TOLERANCE.absCents, Math.round(spentCents * GOAL_REPORT_COST_TOLERANCE.relative));
+  return moneyAmountsInCents(costText).some((amount) => Math.abs(amount - spentCents) <= tolerance);
+}
+
+/** The work-item refs the MOVED field cites, paired with their state at send time. */
+export function citedRefStatesFor(
+  moved: string,
+  states: Record<string, string> | null,
+): GoalReportCitedRef[] | null {
+  if (!states) return null;
+  return workItemRefsIn(moved)
+    .filter((ref) => typeof states[ref] === 'string')
+    .slice(0, 50)
+    .map((ref) => ({ ref, state: states[ref]! }));
+}
+
+const wallActionHint = (action: string | null) =>
+  action ? `"${action.length > 200 ? `${action.slice(0, 197)}...` : action}"` : 'the action it asks of the owner (none is recorded on the item: set it with work_items:set_blocker)';
+
+/**
+ * Judge a complete report against measured goal state. Returns the violations
+ * (empty = truthful on every check that could be read) and a summary for the
+ * stamp. Pure: the caller does the reads.
+ */
+export function checkGoalOwnerReportTruth(
+  fields: Pick<Record<GoalOwnerReportField, string>, GoalOwnerReportField>,
+  inputs: GoalOwnerReportTruthInputs,
+): { violations: GoalOwnerReportTruthViolation[]; summary: GoalOwnerReportTruthSummary } {
+  const violations: GoalOwnerReportTruthViolation[] = [];
+  const summary: GoalOwnerReportTruthSummary = { cost: 'unread', ownerWalls: 'unread', corrections: 'unread' };
+
+  // (a) COST: a measured lineage spend must be cited (any matching amount).
+  const spend = inputs.spend;
+  if (spend) {
+    if (spend.measured && spend.spentCents != null) {
+      if (costCitesMeasuredSpend(fields.cost, spend.spentCents)) {
+        summary.cost = 'cited-measured';
+      } else {
+        const expected = `${formatUsdCents(spend.spentCents)} (${spend.source ?? 'goal-lineage-rollup'}, measured ${spend.measuredAt ?? 'at an unrecorded time'})`;
+        violations.push({
+          check: 'cost',
+          kind: 'measured-spend-not-cited',
+          expected,
+          message:
+            `COST does not cite this goal's measured spend ${expected}. A pot-wide figure or "not measured" is false while ` +
+            'the goal lineage rollup has a value; state the goal figure (pot-wide context may follow it).',
+        });
+      }
+    } else {
+      summary.cost = 'goal-spend-unmeasured';
+    }
+  }
+
+  // (b) OWNER-WALLED: every open wall is listed, each with words beyond its id.
+  if (inputs.ownerWalls) {
+    const entries = walledEntries(fields.ownerWalled);
+    const flagged = new Set<string>();
+    for (const wall of inputs.ownerWalls) {
+      const pattern = new RegExp(`\\b${wall.ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+      const containing = entries.filter((entry) => pattern.test(entry.entry));
+      if (containing.length === 0) {
+        flagged.add(wall.ref);
+        violations.push({
+          check: 'owner-walled',
+          kind: 'wall-not-listed',
+          ref: wall.ref,
+          expected: wall.action,
+          message: `OWNER-WALLED omits open owner wall ${wall.ref}; list it with ${wallActionHint(wall.action)}.`,
+        });
+      } else if (containing.every((entry) => entry.bare)) {
+        flagged.add(wall.ref);
+        violations.push({
+          check: 'owner-walled',
+          kind: 'wall-without-action',
+          ref: wall.ref,
+          expected: wall.action,
+          message: `OWNER-WALLED names ${wall.ref} by id only; say what the owner must do: ${wallActionHint(wall.action)}.`,
+        });
+      }
+    }
+    for (const entry of entries) {
+      if (!entry.bare) continue;
+      for (const ref of workItemRefsIn(entry.entry)) {
+        if (flagged.has(ref)) continue;
+        flagged.add(ref);
+        violations.push({
+          check: 'owner-walled',
+          kind: 'wall-without-action',
+          ref,
+          expected: null,
+          message: `OWNER-WALLED names ${ref} by id only; say what the owner must do about it.`,
+        });
+      }
+    }
+    if (!violations.some((violation) => violation.check === 'owner-walled')) {
+      summary.ownerWalls = inputs.ownerWalls.length ? 'all-listed-with-action' : 'none-open';
+    }
+  }
+
+  // (c) CORRECTIONS: a ref the previous report cited as done that is no longer
+  // done must be named in this report, whoever sent the previous one.
+  const previous = inputs.previousReport;
+  if (!previous || !previous.citedRefStates) {
+    summary.corrections = 'no-baseline';
+  } else if (inputs.currentRefStates) {
+    const reportText = GOAL_OWNER_REPORT_FIELDS.map((field) => fields[field]).join('\n');
+    let carried = false;
+    for (const cited of previous.citedRefStates) {
+      if (!GOAL_REPORT_SUCCESS_STATES.has(cited.state)) continue;
+      const current = inputs.currentRefStates[cited.ref];
+      if (current === undefined || GOAL_REPORT_SUCCESS_STATES.has(current)) continue;
+      if (workItemRefsIn(reportText).includes(cited.ref)) {
+        carried = true;
+        continue;
+      }
+      violations.push({
+        check: 'correction',
+        kind: 'correction-owed',
+        ref: cited.ref,
+        reportedState: cited.state,
+        currentState: current,
+        reportedAt: previous.at,
+        message:
+          `The report at ${previous.at} told the owner ${cited.ref} was ${cited.state}; it is now ${current}. ` +
+          `Correct that line explicitly in this report (name ${cited.ref}, what was wrong, and its true state).`,
+      });
+    }
+    if (!violations.some((violation) => violation.check === 'correction')) {
+      summary.corrections = carried ? 'carried' : 'none-owed';
+    }
+  }
+
+  return { violations, summary };
+}
+
+/** One refusal message for a set of violations, in check order. */
+export function describeGoalOwnerReportTruthViolations(goalId: string, violations: readonly GoalOwnerReportTruthViolation[]): string {
+  const lines = violations.map((violation, index) => `${index + 1}. ${violation.message}`);
+  return (
+    `GOAL owner report for ${goalId} contradicts measured goal state; nothing was sent. Fix and resend:\n` +
+    lines.join('\n')
+  );
+}
