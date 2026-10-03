@@ -106,12 +106,15 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
     };
     const invocations: TransferReplayEvidence['invocations'][number][] = [];
     const judgeInvocations: Parameters<JudgeLlmCall>[0][] = [];
+    const judgeExecutions: NonNullable<TransferReplayEvidence['judgeExecutions']>[number][] = [];
     const runner: ReplayRunner = async (input) => {
       const handle = await deps.runner(input);
       invocations.push({
         variantId: input.variant.variantId,
         systemPromptHash: hash(input.systemPrompt), contextHash: hash(input.contextText),
         model: handle.execution?.model ?? null, codeHash: handle.execution?.codeHash ?? null,
+        ...(handle.execution?.loadedCode ? { loadedCode: structuredClone(handle.execution.loadedCode) } : {}),
+        ...(handle.execution?.unresolved ? { unresolved: [...handle.execution.unresolved] } : {}),
       });
       return handle;
     };
@@ -120,7 +123,10 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
       { runner, llmCall: async (input) => {
         // Pin every actual judge attempt, including repair/retry prompts.
         judgeInvocations.push(structuredClone(input));
-        return deps.llmCall(input);
+        const index = judgeExecutions.push(null) - 1;
+        const reply = await deps.llmCall(input);
+        judgeExecutions[index] = reply.execution ? structuredClone(reply.execution) : null;
+        return reply;
       }, now },
     );
     if (!result) {
@@ -145,19 +151,22 @@ export function transferReplayPort(deps: TransferReplayAdapterDeps): TransferRep
           taskHash: hash(replayCase),
           modelHash: invocations.length === 2 && invocations.every((v) => v.model !== null) && judgeInvocations.length >= 2
             ? hash({ students: invocations.map((v) => ({ variantId: v.variantId, model: v.model })),
-              judges: judgeInvocations.map((v) => ({ model: v.model, thinkingBudgetTokens: v.thinkingBudgetTokens, maxTokens: v.maxTokens })) }) : null,
+              judges: judgeInvocations.map((v, index) => ({ model: v.model,
+                transportModel: judgeExecutions[index]?.model ?? null,
+                thinkingBudgetTokens: v.thinkingBudgetTokens, maxTokens: v.maxTokens })) }) : null,
           promptHash: invocations.length === 2 && judgeInvocations.length >= 2
             ? hash({ students: invocations.map((v) => ({ variantId: v.variantId, systemPromptHash: v.systemPromptHash, contextHash: v.contextHash })),
               judges: judgeInvocations.map((v) => ({ system: v.system, messages: v.messages, responseFormat: v.responseFormat })) }) : null,
           rubricHash: result.rubricHash,
-          // The measured module hashes below do not yet cover the transport,
-          // transcript renderer and judge engine. Do not label a subset complete.
+          // Per-module receipts measure the local evaluator and renderer, but
+          // transport and imported dependencies remain incomplete.
           codeHash: null,
           repeats: config.repeats, startedAt, completedAt: new Date(now()).toISOString(),
         },
         reservation: reservation ?? null, outcomes: result.outcomes,
-        budgetExhausted: result.budgetExhausted, invocations,
-        loadedCode: { adapter: TRANSFER_ADAPTER_SOURCE_HASH, battery: REPLAY_BATTERY_SOURCE_HASH },
+        budgetExhausted: result.budgetExhausted, invocations, judgeExecutions,
+        loadedCode: { adapter: TRANSFER_ADAPTER_SOURCE_HASH, battery: REPLAY_BATTERY_SOURCE_HASH,
+          evaluator: result.loadedCode ? structuredClone(result.loadedCode) : null },
     };
     // A governed source evaluation is a common lifecycle receipt even when it
     // cannot authorize promotion. Keep unknown pins and unmeasured evidence;

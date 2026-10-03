@@ -129,6 +129,7 @@ describe('transferReplayPort', () => {
     expect(seenConfig!.baselineMode).toBe('matched');
     expect(outcome.evaluation).toMatchObject({ reservation: null, invocations: [],
       experiment: { modelHash: null, promptHash: null, codeHash: null } });
+    expect(outcome.evaluation?.loadedCode.evaluator).toBeNull();
   });
 
   it('the actual transfer battery runs matched baseline and lesson students, retaining both charges', async () => {
@@ -157,6 +158,65 @@ describe('transferReplayPort', () => {
     expect(outcome.evaluation?.invocations).toHaveLength(2);
     expect(outcome.evaluation?.experiment.promptHash).toMatch(/^[a-f0-9]{64}$/);
     expect(outcome.evaluation?.experiment.modelHash).toBeNull();
+    expect(outcome.evaluation?.loadedCode.evaluator).toMatchObject({
+      replayBattery: expect.stringMatching(/^[a-f0-9]{16}$/),
+      transcript: expect.stringMatching(/^[a-f0-9]{16}$/),
+      divergence: expect.stringMatching(/^[a-f0-9]{16}$/),
+      engine: expect.stringMatching(/^[a-f0-9]{64}$/),
+      judge: expect.stringMatching(/^[a-f0-9]{64}$/),
+      scoring: expect.stringMatching(/^[a-f0-9]{64}$/),
+      parser: expect.stringMatching(/^[a-f0-9]{64}$/),
+      ratePause: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it('retains every actual judge repair receipt and snapshots student transport coverage', async () => {
+    const execution = { model: 'wire-model', codeHash: null,
+      loadedCode: { client: 'loaded-client' }, unresolved: ['remote-gateway'] };
+    let judgeAttempts = 0;
+    const port = transferReplayPort({ workspaceId: 'ws',
+      runner: async () => ({ outputText: 'continuation', costUsd: 0.01,
+        inputTokens: 1, outputTokens: 1, replayed: true, execution }),
+      llmCall: async () => {
+        judgeAttempts++;
+        return { text: judgeAttempts === 1 ? 'invalid JSON' :
+          JSON.stringify({ d1: 7, d2: 7, d3: 7, rationale: 'fixture' }),
+          inputTokens: 1, outputTokens: 1, costUsd: 0.01,
+          ...(judgeAttempts === 1 ? {} : { execution }) };
+      },
+      runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 },
+        result: await runReplayBattery(config, deps) }),
+    });
+    const result = (await port({ lesson, transcript: transcript(['user', 'assistant', 'tool_use', 'assistant']) })).evaluation!;
+    expect(result.judgeExecutions).toHaveLength(3);
+    expect(result.judgeExecutions?.[0]).toBeNull();
+    expect(result.judgeExecutions?.[1]).toEqual(execution);
+    expect(result.invocations[0]).toMatchObject({ loadedCode: { client: 'loaded-client' }, unresolved: ['remote-gateway'] });
+    execution.loadedCode.client = 'later-checkout';
+    execution.unresolved.length = 0;
+    expect(result.judgeExecutions?.[1]?.loadedCode?.client).toBe('loaded-client');
+    expect(result.invocations[0].unresolved).toEqual(['remote-gateway']);
+    expect(result.experiment.codeHash).toBeNull();
+  });
+
+  it('changes the model pin when the judge transport uses a different wire model', async () => {
+    const evaluate = async (wireModel: string) => {
+      const port = transferReplayPort({ workspaceId: 'ws',
+        runner: async () => ({ outputText: 'continuation', costUsd: 0.01,
+          inputTokens: 1, outputTokens: 1, replayed: true, execution: { model: 'student', codeHash: null } }),
+        llmCall: async () => ({ text: JSON.stringify({ d1: 7, d2: 7, d3: 7, rationale: 'fixture' }),
+          costUsd: 0.01, inputTokens: 1, outputTokens: 1,
+          execution: { model: wireModel, codeHash: null, unresolved: ['gateway-runtime'] } }),
+        runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 },
+          result: await runReplayBattery(config, deps) }),
+      });
+      return (await port({ lesson, transcript: transcript(['user', 'assistant', 'tool_use', 'assistant']) })).evaluation!;
+    };
+    const first = await evaluate('wire-a');
+    const second = await evaluate('wire-b');
+    expect(first.experiment.modelHash).not.toBe(second.experiment.modelHash);
+    expect(first.experiment.promptHash).toBe(second.experiment.promptHash);
+    expect(first.experiment.codeHash).toBeNull();
   });
 
   it('pins the inputs actually executed, changes pins with the task/lesson/model, and retains unknown code coverage', async () => {

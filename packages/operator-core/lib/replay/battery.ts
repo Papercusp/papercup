@@ -22,6 +22,7 @@ import {
   BASELINE_ID,
   compareArms,
   runBattery,
+  EVAL_BATTERY_SOURCE_HASHES,
   rubricHash,
   type BatteryCell,
   type BatteryRubric,
@@ -33,8 +34,8 @@ import {
 } from '@papercusp/eval-battery';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import { computeOwnSourceHash } from '../scout/src-hash';
-import { divergenceSignals, type DivergenceSignals } from './divergence';
-import { cutTranscript, intentFromTranscript, renderTurns } from './transcript';
+import { divergenceSignals, REPLAY_DIVERGENCE_SOURCE_HASH, type DivergenceSignals } from './divergence';
+import { cutTranscript, intentFromTranscript, renderTurns, REPLAY_TRANSCRIPT_SOURCE_HASH } from './transcript';
 import {
   replayCaseRef,
   type ReplayCase,
@@ -177,6 +178,9 @@ export interface ReplayVariantAggregate {
 
 export interface ReplayBatteryResult {
   batteryId: string;
+  /** Modules reported by the battery that actually ran, not its caller's
+   * imported default. A custom battery may omit its execution receipt. */
+  loadedCode?: Readonly<Record<string, string | null>>;
   outcomes: ReplayOutcome[];
   perVariant: ReplayVariantAggregate[];
   /** Baseline-vs-candidates ranking (compareArms semantics); null when the
@@ -424,5 +428,8 @@ export async function runReplayBattery(
         : r.error?.includes('replay budget cap reached') === true)),
     rubricHash: rubricHash(rubric),
     budgetExhausted,
+    loadedCode: { replayBattery: REPLAY_BATTERY_SOURCE_HASH,
+      transcript: REPLAY_TRANSCRIPT_SOURCE_HASH, divergence: REPLAY_DIVERGENCE_SOURCE_HASH,
+      ...EVAL_BATTERY_SOURCE_HASHES },
   };
 }
