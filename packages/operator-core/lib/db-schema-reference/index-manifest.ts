@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-03T10:44:22.361Z",
-  "migrationCountAtGeneration": 1146,
+  "generatedAt": "2026-10-03T12:53:00.758Z",
+  "migrationCountAtGeneration": 1148,
   "indexes": [
     {
       "schema": "audit",
@@ -11778,6 +11778,20 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "hosted_subscriptions",
       "definition": "CREATE UNIQUE INDEX hosted_subscriptions_pkey ON papercusp_auth.hosted_subscriptions USING btree (stripe_subscription_id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_usage_openrouter_generation_binding_uidx",
+      "table": "hosted_usage_receipts",
+      "definition": "CREATE UNIQUE INDEX hosted_usage_openrouter_generation_binding_uidx ON papercusp_auth.hosted_usage_receipts USING btree (provider, usage_id) WHERE (openrouter_credential_ref IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_usage_openrouter_generation_idx",
+      "table": "hosted_usage_receipts",
+      "definition": "CREATE INDEX hosted_usage_openrouter_generation_idx ON papercusp_auth.hosted_usage_receipts USING btree (provider, usage_id) WHERE (provider = 'openrouter'::text)",
+      "constraintBacked": false
     },
     {
       "schema": "papercusp_auth",
