@@ -837,7 +837,7 @@ describe('WI-1999 remote-holder guard', () => {
     await seedItem('F-RH3', 'su-remote-abandoned', 30, 'in_progress'); // taken 30 min ago
     // Abandoned: the row has not changed since the claim either (WI-10005136 — a
     // recently-changed row is a federated sign of life, see the tests below).
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH3'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH3'`;
     // Fallback shrunk to 15 min → the 30-min-old anchor is past it: truly-abandoned rows still free.
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released[0]).toMatchObject({ feature_id: 'F-RH3', reason: 'dead' });
@@ -849,7 +849,7 @@ describe('WI-1999 remote-holder guard', () => {
   // or terminally owns was claimed or changed within the window (those writes federate).
   it('WI-10005136: a never-seen holder past the fallback that CLAIMED another row recently is KEPT', async () => {
     await seedItem('F-RH5', 'su-remote-live-holder', 30, 'in_progress');
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH5'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH5'`;
     await seedItem('F-RH5b', 'su-remote-live-holder', 2, 'in_progress'); // fresh claim, inside grace
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((x) => x.feature_id)).not.toContain('F-RH5');
@@ -858,13 +858,13 @@ describe('WI-1999 remote-holder guard', () => {
 
   it('WI-10005136: a never-seen holder past the fallback that CLOSED a row recently is KEPT', async () => {
     await seedItem('F-RH6', 'su-remote-closer', 30, 'in_progress');
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6'`;
     await seedItem('F-RH6b', null, 0, 'done');
     await sql`UPDATE harness_shared.work_items SET terminal_owner = 'su-remote-closer', updated_ts = ${Date.now() - 60_000} WHERE feature_id = 'F-RH6b'`;
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((x) => x.feature_id)).not.toContain('F-RH6');
     // Control: once that close ages past the window too, the long-held claim frees.
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6b'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6b'`;
     const later = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(later.released[0]).toMatchObject({ feature_id: 'F-RH6', reason: 'dead' });
   });
@@ -872,7 +872,7 @@ describe('WI-1999 remote-holder guard', () => {
   it('WI-10005136: issue reaper parity — a never-seen assignee with a recently-changed held row is KEPT past the fallback', async () => {
     await seedIssue('EI-RH2', 'bug', 'su-remote-issue-live', 30);
     // The held issue row itself is idle, so only the OTHER row can keep it.
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH2'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH2'`;
     await seedItem('F-RH7', 'su-remote-issue-live', 2, 'in_progress'); // live elsewhere: fresh claim
     const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((c) => c.issue_id)).not.toContain('EI-RH2');
@@ -892,8 +892,8 @@ describe('WI-1999 remote-holder guard', () => {
     await seedItem('F-RH8', 'su-peer-parked-holder', 30, 'in_progress');
     await seedItem('F-RH8L', 'su-local-forgotten-holder', 30, 'in_progress');
     const idle = Date.now() - 30 * 60_000;
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle} WHERE feature_id = 'F-RH8L'`;
-    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle} WHERE feature_id = 'F-RH8'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'F-RH8L'`;
+    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'F-RH8'`;
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     const released = r.released.map((x) => x.feature_id);
     expect(released).not.toContain('F-RH8');
@@ -905,8 +905,8 @@ describe('WI-1999 remote-holder guard', () => {
     await seedIssue('EI-RH3', 'bug', 'su-peer-issue-holder', 30);
     await seedIssue('EI-RH3L', 'bug', 'su-local-issue-forgotten', 30);
     const idle = Date.now() - 30 * 60_000;
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle} WHERE feature_id = 'EI-RH3L'`;
-    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle} WHERE feature_id = 'EI-RH3'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'EI-RH3L'`;
+    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'EI-RH3'`;
     const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     const released = r.released.map((c) => c.issue_id);
     expect(released).not.toContain('EI-RH3');
@@ -914,10 +914,27 @@ describe('WI-1999 remote-holder guard', () => {
     expect(released).toContain('EI-RH3L');
   });
 
-  it('a never-seen holder with NULL taken_at anchors the fallback on updated_ts (EI-2534 must not re-strand)', async () => {
+  // WI-10005935: updated_ts is bookkeeping (stamp_local_federated_write, WI-10002882).
+  // Embedding, settlement and admission rewrites advance it with no holder action, which
+  // used to read as "this holder is alive" forever. Only a CONTENT write (fed_ts) counts.
+  it('WI-10005935: a bookkeeping-only touch (updated_ts without fed_ts) is NOT a sign of life', async () => {
+    const idle = Date.now() - 30 * 60_000;
+    await seedItem('F-RH9', 'su-remote-bookkept', 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'F-RH9'`;
+    // A local bookkeeping rewrite touches the held row: updated_ts moves, fed_ts does not.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now()} WHERE feature_id = 'F-RH9'`;
+    const [row] = await sql<{ fed_ts: string }[]>`SELECT fed_ts::text AS fed_ts FROM harness_shared.work_items WHERE feature_id = 'F-RH9'`;
+    expect(Number(row?.fed_ts)).toBe(idle); // the fixture really is bookkeeping-only
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).toContain('F-RH9');
+  });
+
+  it('a never-seen holder with NULL taken_at anchors the fallback on fed_ts (EI-2534 must not re-strand)', async () => {
     await seedItem('F-RH4', 'su-remote-noanchor', 30, 'in_progress');
     await sql`UPDATE harness_shared.harness_features_consolidated
                  SET taken_at = NULL, updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH4'`;
+    // WI-10005935: the anchor is the content clock; age it with the row.
+    await sql`UPDATE harness_shared.work_items SET fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH4'`;
     // Fresh-updated row is skipped…
     expect((await reclaimStaleWorkItemClaims(sql)).released).toHaveLength(0);
     // …but frees once updated_ts is older than the fallback.
@@ -933,7 +950,7 @@ describe('WI-1999 remote-holder guard', () => {
     expect(await assigneeOf('EI-RH1')).toBe('su-remote-issue-holder');
     // Abandoned: its own row (engineer_issues is a view over work_items) has not changed
     // since the claim either — WI-10005136 counts a recently-changed held row as life.
-    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH1'`;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH1'`;
     const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((c) => c.issue_id)).toContain('EI-RH1');
     expect(await assigneeOf('EI-RH1')).toBeNull();
