@@ -12,6 +12,8 @@
  *     --host-id <host-…> --workspace-dir <dir> [--agent <cli>] [--nonce <n>] [--out <evidence.json>]
  *
  * --agent-kind claude|omp (default claude) picks the agent's argv; OMP runs on the host's local inference.
+ * Measured 2026-10-03: OMP on the pinned local model returns a final answer without a tool call, so an
+ * OMP gated task cannot pass on any customer-cloud host today (WI-10005804; R-13 requires Claude only, D-033).
  * --mode task runs ONLY the gated agent task, with no egress block (no --network, no database needed):
  * the agent reads a secret from its gate pipe and writes sha256(secret). It is controller-pushed over
  * SSH, so its evidence is labelled that way (aws-byoc-gcp-parity-2026-10-01 R-13, D-031).
@@ -19,7 +21,8 @@
  * On AWS the drill reaches the host by SSH over SSM and blocks egress with deny entries on the
  * network ACL of the instance's subnet, which it looks up from the instance.
  *
- * --agent is the agent CLI on the host, invoked as `<cli> -p <prompt> --allowedTools Bash,Write`. A
+ * --agent is the agent CLI on the host, invoked with the argv agentTaskInvocation (outage-drill.ts) builds
+ * for --agent-kind (claude: `<cli> -p <prompt> --allowedTools Bash,Write`). A
  * hosted host ships only the local-inference agent (D-250); the customer connects their own model
  * account, so point --agent at a wrapper that runs claude with that account's credential.
  *
