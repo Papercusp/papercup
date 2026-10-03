@@ -6,7 +6,7 @@ import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdi
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -327,14 +327,24 @@ function auditSavedCompilerCaller(report: any) {
 
 // Database/runtime launchers can emit substantial output before the cohort
 // publishes its first report. Do not buffer that output in spawnSync.
-function runCohortWithLog(args: string[], options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }, logPath: string) {
-  const descriptor = openSync(logPath, 'w');
+function runCohortWithLog(args: string[], options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }, logPath: string,
+  archiveDirectory = join(root, '.papercusp', 'logs')) {
+  const descriptor = openSync(logPath, 'w', 0o600);
+  let result: ReturnType<typeof spawnSync>;
   try {
-    const result = spawnSync(process.execPath, args, { ...options, stdio: ['ignore', descriptor, descriptor] });
-    const bytes = readFileSync(logPath);
-    return { ...result, stdout: '', stderr: bytes.subarray(Math.max(0, bytes.length - 4000)).toString('utf8'),
-      log: { path: logPath, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } };
+    result = spawnSync(process.execPath, args, { ...options, stdio: ['ignore', descriptor, descriptor] });
   } finally { closeSync(descriptor); }
+  // Reuse the harness's private log archive. Cohort finally blocks remove the
+  // working log; receipts must name retained, exact bytes instead. Hash-addressed
+  // files avoid overwriting another run, and raw logs stay out of public JSON.
+  const bytes = readFileSync(logPath), sha256 = createHash('sha256').update(bytes).digest('hex');
+  mkdirSync(archiveDirectory, { recursive: true, mode: 0o700 });
+  const archived = join(archiveDirectory, 'cohort-' + sha256 + '.log');
+  try { writeFileSync(archived, bytes, { flag: 'wx', mode: 0o600 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  if (!readFileSync(archived).equals(bytes)) throw Error('Cohort log archive bytes do not match');
+  return { ...result, stdout: '', stderr: bytes.subarray(Math.max(0, bytes.length - 4000)).toString('utf8'),
+    log: { path: relative(root, archived), bytes: bytes.length, sha256 } };
 }
 
 // Build both cohorts from one maintained bundle. The counterfactual restores
@@ -1531,15 +1541,88 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
 
   it('keeps launcher output on disk before the first cohort report exists', () => {
     const directory = mkdtempSync(join(tmpdir(), 'papercusp-cohort-output-'));
+    const archive = mkdtempSync(join(tmpdir(), 'papercusp-cohort-archive-'));
     try {
       const report = join(directory, 'report.json');
       const result = runCohortWithLog(['-e',
         "process.stdout.write('x'.repeat(1024*1024)); require('node:fs').writeFileSync(process.argv[1], JSON.stringify({incomplete:false}));", report],
-      { cwd: root, env: process.env, timeout: 5000 }, join(directory, 'launcher.log'));
+      { cwd: root, env: process.env, timeout: 5000 }, join(directory, 'launcher.log'), archive);
       expect(result.status).toBe(0); expect(result.error).toBeUndefined();
       expect(result.log.bytes).toBe(1024 * 1024);
       expect(JSON.parse(readFileSync(report, 'utf8')).incomplete).toBe(false);
-    } finally { rmSync(directory, { recursive: true, force: true }); }
+      rmSync(directory, { recursive: true, force: true });
+      const retained = readFileSync(resolve(root, result.log.path));
+      expect(retained).toEqual(Buffer.from('x'.repeat(1024 * 1024)));
+      expect(createHash('sha256').update(retained).digest('hex')).toBe(result.log.sha256);
+    } finally {
+      rmSync(directory, { recursive: true, force: true }); rmSync(archive, { recursive: true, force: true });
+    }
+  });
+
+  describe('P-011 cohort log retention guards', () => {
+    it('records a resolvable repository-relative path in the maintained harness log archive', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'papercusp-log-default-'));
+      try {
+        const result = runCohortWithLog(['-e', "process.stdout.write('P011 default archive guard\\n')"],
+          { cwd: root, env: process.env, timeout: 5000 }, join(directory, 'runtime.log'));
+        rmSync(directory, { recursive: true, force: true });
+        expect(result.log.path).toBe(join('.papercusp', 'logs', 'cohort-' + result.log.sha256 + '.log'));
+        expect(readFileSync(resolve(root, result.log.path), 'utf8')).toBe('P011 default archive guard\n');
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+    it.each(['success', 'runner-failure', 'postflight-failure'] as const)('retains exact runtime bytes after %s cleanup', async mode => {
+      const directory = mkdtempSync(join(tmpdir(), 'papercusp-log-retention-'));
+      const archive = mkdtempSync(join(tmpdir(), 'papercusp-log-archive-'));
+      const destination = join(archive, 'report.json');
+      const stdout = 'raw stdout →🙂\n', stderr = 'raw stderr é\n';
+      const original = Buffer.from(stdout + stderr);
+      try {
+        try {
+          const result = runCohortWithLog(['-e',
+            'process.stdout.write(' + JSON.stringify(stdout) + ');process.stderr.write(' + JSON.stringify(stderr) +
+            ');process.exitCode=' + (mode === 'runner-failure' ? '7' : '0')],
+          { cwd: root, env: process.env, timeout: 5000 }, join(directory, 'runtime.log'), archive);
+          const report = readCohortReport(join(directory, 'absent-report.json'), result);
+          report.runtimeLog = result.log;
+          await persistInboxBeforePostflight(report, destination, async () => {
+            if (mode === 'postflight-failure') throw Error('injected final health failure');
+          });
+          if (mode === 'runner-failure') throw Error('injected runner status: ' + result.status);
+        } catch (error) {
+          if (mode === 'success') throw error;
+          expect(String(error)).toContain(mode === 'runner-failure' ? 'runner status: 7' : 'final health failure');
+          const report = JSON.parse(readFileSync(destination, 'utf8'));
+          report.verificationError = String(error);
+          writeFileSync(destination, serializeIdentitySafeJson(report));
+        } finally { rmSync(directory, { recursive: true, force: true }); }
+        const report = JSON.parse(readFileSync(destination, 'utf8'));
+        const retained = readFileSync(resolve(root, report.runtimeLog.path));
+        expect(existsSync(directory)).toBe(false);
+        expect(retained).toEqual(original);
+        expect(report.runtimeLog.bytes).toBe(original.length);
+        expect(report.runtimeLog.sha256).toBe(createHash('sha256').update(original).digest('hex'));
+        expect(report.runner.status).toBe(mode === 'runner-failure' ? 7 : 0);
+        expect(Boolean(report.verificationError)).toBe(mode !== 'success');
+      } finally {
+        rmSync(directory, { recursive: true, force: true }); rmSync(archive, { recursive: true, force: true });
+      }
+    });
+    it('reuses matching archived bytes and refuses a corrupted archive without overwriting it', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'papercusp-log-reuse-'));
+      const archive = mkdtempSync(join(tmpdir(), 'papercusp-log-archive-'));
+      const run = () => runCohortWithLog(['-e', "process.stdout.write('exact bytes')"],
+        { cwd: root, env: process.env, timeout: 5000 }, join(directory, 'runtime.log'), archive);
+      try {
+        const first = run();
+        expect(run().log).toEqual(first.log);
+        const path = resolve(root, first.log.path);
+        writeFileSync(path, 'corrupted archive');
+        expect(run).toThrow('archive bytes do not match');
+        expect(readFileSync(path, 'utf8')).toBe('corrupted archive');
+      } finally {
+        rmSync(directory, { recursive: true, force: true }); rmSync(archive, { recursive: true, force: true });
+      }
+    });
   });
 
   it('attributes exercised content-lint transforms to matched request-host and executable descendant samples', async () => {
