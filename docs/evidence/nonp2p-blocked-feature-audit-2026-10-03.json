@@ -5445,7 +5445,7 @@
    "id": "WI-40668",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "The stored August29 event is superseded; old valid window was August30. D-048 further repoints treatment to successor plan P-008's response-silent regime, now source-done. Qualify that exact deployment/window and writer-side mint/fold/filing predicates before measurement; elapsed calendar time alone is not treatment continuity.",
+   "reason": "D-048/D-016 repoint the measurement to unkeyed response-silent treatment e25857cc514162c58aa56bedf4c9d7794a3897e7, not the historical 51c52/August30 window. Five historical loaded-target deployment receipts now qualify source inclusion; earliest serving snapshot is August27 04:11:49.482577Z, giving only a candidate seven-day maturity of September3 04:11:49.482577Z. Continuous runtime coverage and exact comparable writer populations remain unqualified. Existing WI-40694 was amended and exact-readback verified to gate verdicts on those qualifications; its old broad 1.119 minimum is not automatically transferable to a narrower population. Retain blocked pending that evidence, not merely because an old calendar event has not fired.",
    "source": {
     "plan": "learning-loop-identity-and-consumption-2026-08-08",
     "item": "P-016",
@@ -5468,8 +5468,33 @@
    "claimHold": false,
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
-    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
-    "acceptanceWaived": false
+    "basis": "Source95 D-044/D-048 and successor108 D-016, exact historical treatment/emitter writer reads, bounded deployment and instrument census queries, and WI-40694 amendment/readback in native session 01a101c0-4624-7990-80e2-c35a50a93941. No treatment-effect verdict or cohort-state refresh.",
+    "acceptanceWaived": false,
+    "measurementQualification": {
+     "treatmentCommit": "e25857cc514162c58aa56bedf4c9d7794a3897e7",
+     "qualifiedDeploymentReceiptIds": [
+      292643,
+      297143,
+      298236,
+      298973,
+      325600
+     ],
+     "candidateWindowStart": "2026-08-27T04:11:49.482577Z",
+     "candidateMaturity": "2026-09-03T04:11:49.482577Z",
+     "windowStatus": "continuous-loaded-runtime-coverage-unqualified",
+     "instrumentStatus": "census-executed-exact-treatment-population-unqualified",
+     "remaining": [
+      "Immutable incoming effective lane and normalized-key eligibility, or explicit quantified classification uncertainty",
+      "Same baseline, treatment and unaffected control writer populations",
+      "Complete continuous loaded-runtime coverage for the chosen seven-day treatment window",
+      "Reviewed prospective verdict rule and writer-side re-file behavior"
+     ],
+     "proofRefs": [
+      "WI-10005820#1157401",
+      "WI-40694#1157403",
+      "WI-40694 checkpoint f87813766d0a"
+     ]
+    }
    }
   },
   {
