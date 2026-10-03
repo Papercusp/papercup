@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { auditPublicRepositoryLicenses } from '../../../scripts/source-preview.mjs';
+import { parseOperationalEvidenceArtifact } from './agent-tools/testing/record-run';
 
 const text = 'reviewed license fixture\n';
 const sha256 = createHash('sha256').update(text).digest('hex');
@@ -30,6 +31,13 @@ function fixture(options: { secondPage?: boolean; missing?: string; body?: strin
 }
 
 describe('public repository licensing census', () => {
+  it('produces artifacts accepted by the real operational evidence recorder on both pass and fail', async () => {
+    for (const options of [{}, { missing: 'one' }]) {
+      const result = await auditPublicRepositoryLicenses(fixture(options));
+      expect(parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(result))).exitCode).toBe(result.exitCode);
+    }
+  });
+
   it('checks every page and reads bytes pinned to each actual default-branch commit', async () => {
     const fx = fixture({ secondPage: true });
     const result = await auditPublicRepositoryLicenses(fx);
