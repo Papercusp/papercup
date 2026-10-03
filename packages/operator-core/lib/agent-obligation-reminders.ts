@@ -158,6 +158,7 @@ export async function reconcileAgentObligationReminders(
       deps.listHistory(input.ownerId, AGENT_OBLIGATION_REMINDER_BINDING_KIND),
     ]);
     const activeRows = history.filter(active);
+    await retireUndesiredReminderRows(input, deps, activeRows, desiredByRef, nowMs, receipt);
 
     for (const [ref, desired] of desiredByRef) {
       const episodeRows = history.filter((row) => row.boundTo?.ref === ref);
@@ -200,7 +201,26 @@ export async function reconcileAgentObligationReminders(
       });
       receipt.registered += 1;
     }
+  } catch (error) {
+    receipt.error = error instanceof Error ? error.message : String(error);
+  }
+  return receipt;
+}
 
+/**
+ * Retire pending rows whose obligation wants no reminder now. Runs BEFORE any
+ * new registration: a registration for the same event key retires the old row
+ * itself (registerAwait exact one-shot dedup), so classifying afterwards would
+ * find it already cancelled and drop this measured reason (WI-10005938).
+ */
+async function retireUndesiredReminderRows(
+  input: { ownerId: string; agenda: AgentObligationAgenda },
+  deps: AgentObligationReminderDeps,
+  activeRows: readonly AwaitRow[],
+  desiredByRef: ReadonlyMap<string, DesiredReminder>,
+  nowMs: number,
+  receipt: AgentObligationReminderReceipt,
+): Promise<void> {
     // A pending row whose obligation wants no reminder now is retired only when
     // this turn actually MEASURED that obligation: satisfied/not-applicable is a
     // discharge, any other measured status is a superseded route. An obligation
@@ -229,8 +249,4 @@ export async function reconcileAgentObligationReminders(
       }
       if (await deps.cancel({ awaitId: row.id, subscriberId: input.ownerId, reason })) receipt.cancelled += 1;
     }
-  } catch (error) {
-    receipt.error = error instanceof Error ? error.message : String(error);
-  }
-  return receipt;
 }

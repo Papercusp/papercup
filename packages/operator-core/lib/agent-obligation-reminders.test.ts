@@ -13,6 +13,7 @@ import {
   type AgentObligationReminderDeps,
 } from './agent-obligation-reminders';
 import type { AwaitRow } from './events/await/types';
+import { AWAIT_SUPERSEDED_BY_REGISTRATION } from './events/await/store';
 
 const NOW = Date.parse('2026-09-06T01:00:00.000Z');
 const DEADLINE = '2026-09-06T01:10:00.000Z';
@@ -81,6 +82,7 @@ function fakeStore(seed: AwaitRow[] = []) {
         row.cancelledAt == null
       ) {
         row.cancelledAt = new Date(NOW).toISOString();
+        row.cancelReason = AWAIT_SUPERSEDED_BY_REGISTRATION;
       }
     }
     const row = {
@@ -265,6 +267,36 @@ describe('reconcileAgentObligationReminders', () => {
     expect(receipt.registered).toBe(1);
     expect(store.rows.filter((row) => row.cancelledAt == null)).toHaveLength(1);
     expect(store.rows.find((row) => row.cancelledAt == null)?.boundTo?.ref).toBe(next.id);
+    // WI-10005938: a settled row always says why, so nudge delivery is measurable.
+    const settledRows = store.rows.filter((row) => row.cancelledAt != null);
+    expect(settledRows.length).toBeGreaterThan(0);
+    expect(settledRows.every((row) => row.cancelReason != null)).toBe(true);
+  });
+
+  // WI-10005938 (P-008 W1, goal 60d3a8): 22 superseded obligation watches were
+  // cancelled with no reason because the same-key registration retired them
+  // before the measured classification ran. The measured reason must win.
+  it('stamps the measured discharge on an old same-key episode before registering its replacement', async () => {
+    const old = obligation();
+    const store = fakeStore();
+    await reconcileAgentObligationReminders(
+      { ownerId: 'su-owner', agenda: agenda(old), now: new Date(NOW) },
+      store.deps,
+    );
+    const oldDischarged = obligation({ status: 'not-applicable', changeSignal: undefined });
+    expect(oldDischarged.id).toBe(old.id);
+    const next = obligation({ episode: 'reported:2026-09-06T00:20:00.000Z', sourceGeneration: 'generation-b' });
+    expect(next.id).not.toBe(old.id);
+
+    await reconcileAgentObligationReminders(
+      { ownerId: 'su-owner', agenda: agenda(oldDischarged, next), now: new Date(NOW) },
+      store.deps,
+    );
+
+    const oldRow = store.rows.find((row) => row.boundTo?.ref === old.id);
+    expect(oldRow?.eventKey).toBe(store.rows.find((row) => row.boundTo?.ref === next.id)?.eventKey);
+    expect(oldRow?.cancelReason).toBe('obligation-discharged');
+    expect(store.rows.filter((row) => row.cancelledAt == null).map((row) => row.boundTo?.ref)).toEqual([next.id]);
   });
 
   it('retires a reminder only when its obligation is MEASURED resolved, and does not turn a past deadline into an immediate wake loop', async () => {

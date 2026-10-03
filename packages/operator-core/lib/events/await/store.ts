@@ -337,7 +337,7 @@ export async function registerAwait(input: {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
     const retired = await tx`
       UPDATE harness_shared.event_awaits
-         SET cancelled_at = now()
+         SET cancelled_at = now(), cancel_reason = ${AWAIT_SUPERSEDED_BY_REGISTRATION}
        WHERE workspace_id = ${ws}
          AND subscriber_id = ${input.subscriberId}
          AND event_key = ${input.eventKey}
@@ -377,7 +377,7 @@ export async function registerAwait(input: {
             : tx``;
       const superseded = await tx`
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(), cancel_reason = ${AWAIT_SUPERSEDED_BY_REGISTRATION}
          WHERE workspace_id = ${ws}
            AND subscriber_id = ${input.subscriberId}
            ${eventFilter}
@@ -806,7 +806,17 @@ export type AwaitCancelReason =
   | 'obligation-discharged'
   | 'obligation-superseded'
   | 'obligation-delivered'
-  | 'obligation-unevaluated-expired';
+  | 'obligation-unevaluated-expired'
+  | typeof AWAIT_SUPERSEDED_BY_REGISTRATION;
+
+/**
+ * Stamped by registerAwait itself when a new registration retires a pending
+ * row (exact one-shot dedup or supersedePending). Without it the retired row
+ * reads as an unexplained cancel and a caller's later, more specific
+ * cancelAwait reason is lost because the row is already cancelled
+ * (WI-10005938: 22 agent-obligation watches in one goal-holder window).
+ */
+export const AWAIT_SUPERSEDED_BY_REGISTRATION = 'superseded-by-registration' as const;
 
 /** A user cancellation marker that suppresses a later auto-arm re-registration. */
 export interface OperatorCancelledAwait {
