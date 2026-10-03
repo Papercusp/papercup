@@ -41,7 +41,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -140,6 +140,13 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       expect(normalizer?.resolveId?.(sharedComponent)).toBe(`/@fs${sharedComponent}`);
       expect(normalizer?.resolveId?.(virtualStyleId)).toBe(`/@fs${virtualStyleId}`);
       expect(normalizer?.resolveId?.(`/@fs${virtualStyleId}`)).toBeNull();
+
+      const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
+      const cloneAppRoot = resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs');
+      const virtualRouteQuery = '?astro&type=page';
+      const noncanonicalFilesystemRoute = `/@fs/${relative(cloneAppRoot, sharedRoute)}${virtualRouteQuery}`;
+      expect(noncanonicalFilesystemRoute).toContain('/../');
+      expect(normalizer?.resolveId?.(noncanonicalFilesystemRoute)).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
 
       const localComponent = resolve(repoRoot, 'apps/papercusp-docs/src/components/Local.astro');
       expect(normalizer?.resolveId?.(localComponent)).toBeNull();
