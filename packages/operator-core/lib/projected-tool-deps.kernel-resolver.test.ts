@@ -145,6 +145,10 @@ const PLAIN_ARTIFACT = compileAgentSpecification({
   source: { id: 'kernel-plain', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
   prompt: { role: 'worker', text: 'Plain.' },
 });
+const PREDECESSOR_ARTIFACT = compileAgentSpecification({
+  source: { id: 'kernel-predecessor', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+  prompt: { role: 'worker', text: 'Re-armed predecessor.' },
+});
 const REVISION_A = {
   specificationRevision: PLAIN_ARTIFACT.specificationRevision,
   stateRevision: 'state-a',
@@ -281,6 +285,58 @@ describe('control-anchor kernel resolver (D-030)', () => {
     const anchorSql = (template as readonly string[]).join(' ');
     expect(anchorSql).toContain('OR s.id = ');
     expect(values).toContain(32433);
+  });
+
+  it('distinguishes tools:find preflight on a re-armed predecessor from the verified native incarnation', async () => {
+    const predecessor = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 31595,
+      adv_session_xmin: '901',
+      started_at: '2026-10-03T10:00:00.000Z',
+      ended_at: null,
+      ended_by: null,
+      launch_spec: {
+        workspaceId: 'ws-a',
+        harnessSlug: 'sales',
+        specificationRevision: PREDECESSOR_ARTIFACT.specificationRevision,
+        stateRevision: REVISION_A.stateRevision,
+        specificationArtifact: PREDECESSOR_ARTIFACT,
+      },
+    });
+    const current = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 32433,
+      adv_session_xmin: '902',
+      started_at: '2026-10-03T09:00:00.000Z',
+      ended_at: null,
+      ended_by: null,
+    });
+    const toolsFindPreflight = (advSessionId?: number) => request({
+      toolName: 'tools:find',
+      capabilities: ['agent_tools:read'],
+      args: { query: 'fixture' },
+      ctx: ctx(advSessionId === undefined ? {} : { advSessionId }),
+    });
+
+    // The first row models owner-only ORDER BY choosing the re-armed predecessor,
+    // whose receipt does not match the current applied revision.
+    db.rows.push([predecessor, current]);
+    const ownerOnlyState = await readControlAnchorKernelState(toolsFindPreflight());
+    expect(ownerOnlyState?.identityLaunchRecordVersion).toEqual({ sessionId: '31595', rowVersion: '901' });
+    const [ownerOnlyTemplate] = db.sql.mock.calls[0] as unknown[];
+    expect((ownerOnlyTemplate as readonly string[]).join(' ')).toContain(
+      'ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC',
+    );
+
+    db.rows.push([predecessor, current]);
+    await expect(controlAnchorKernelResolver(toolsFindPreflight())).resolves.toMatchObject({
+      decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+    });
+
+    // A transport-verified native session binds the preflight to the current row.
+    db.rows.push([predecessor, current]);
+    await expect(controlAnchorKernelResolver(toolsFindPreflight(32433))).resolves.toMatchObject({
+      decision: 'allow',
+      serverAudit: { identityLaunchRecord: { advSessionId: '32433', xmin: '902' } },
+    });
   });
 
   it('fails closed when the verified native caller row is missing', async () => {

@@ -182,6 +182,46 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect((parsed.next_cursor as { args: { byte_offset: number } }).args.byte_offset).toBe(decoded.length);
   });
 
+  it('refuses oversized scratch-reference line and raw windows before they spill recursively', async () => {
+    const cases = [
+      {
+        name: 'raw single line',
+        fileName: 'oversized-raw-line.md',
+        original: payload(DOOR_BUDGET_CHARS + 1_024),
+        args: { raw: true },
+      },
+      {
+        name: 'numbered line window',
+        fileName: 'oversized-numbered-lines.md',
+        original: Buffer.from(Array.from({ length: 5 }, () => 'x'.repeat(1_500)).join('\n')),
+        args: {},
+      },
+    ];
+
+    for (const example of cases) {
+      expect(example.original.length).toBeGreaterThan(DOOR_BUDGET_CHARS);
+      const referencePath = join(sandbox, 'scratch', example.fileName);
+      writeScratchReference({
+        filePath: referencePath,
+        payload: example.original,
+        workspaceId: 'ws-1',
+        audience: 'workspace',
+        mediaType: 'text/plain',
+        content: [{ index: 0, type: 'text', byteCount: example.original.length }],
+      });
+
+      const { text, parsed } = await readThroughNestedInvokeDoor(
+        { file_path: referencePath, ...example.args },
+        { workspaceId: 'ws-1' },
+      );
+
+      expect(parsed).toMatchObject({ ok: false, reason: 'scratch_line_window_too_large' });
+      expect(parsed.message).toContain('byte_offset+byte_limit');
+      expect(parsed).not.toHaveProperty('_projection');
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(DOOR_BUDGET_CHARS);
+    }
+  });
+
   it('reports the page it actually returned, and advances by exactly that', async () => {
     const { parsed } = await readThroughDoor({ file_path: filePath, byte_offset: 0, byte_limit: MAX_BYTE_PAGE });
 

@@ -10,11 +10,14 @@ import { getRerankWorkerState, isCoherentTarget } from '@papercusp/rerank';
 import { getWorkerState as getMemoryWorkerState } from '@papercusp/memory';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EmbedDeviceSettingLoad } from './embed-device-setting';
+import { getBuildInfo } from '../build-info';
+import { getBundleStaleness, type BundleStaleness } from '../bundle-staleness';
 import type { AdmissionContext } from '../resource-governor/admission';
 import type { GovernedOperationInput, runGovernedOperation } from '../resource-governor/execution';
 import {
   createEmbedSidecarServer,
   defaultWorkerStates,
+  defaultBuildIdentity,
   embedResponseMeasuredModel,
   EMBED_SIDECAR_CONCURRENCY_ENV,
   resolveWarmModels,
@@ -347,6 +350,43 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
   it('wires each DEFAULT reader to its own package (the production path the injected test cannot see)', () => {
     expect(defaultWorkerStates.embedder).toBe(getMemoryWorkerState);
     expect(defaultWorkerStates.reranker).toBe(getRerankWorkerState);
+  });
+
+  // WI-10005944: /healthz reports the code this process BOOTED, so serving-runtimes
+  // stops inferring it from start time. That inference is false when bundle-host.sh's
+  // rebuild failed and the unit booted the last-known-good bundle (WI-10005936 class).
+  const healthzWithIdentity = async (identity: { sha: string | null; bundleStale: BundleStaleness | null }) => {
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: fakeBuilders,
+      warmAtBoot: false,
+      log: () => {},
+      concurrency: 1,
+      buildIdentity: () => identity,
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    return (await (await fetch(`${baseUrl}/healthz`)).json()) as Record<string, unknown>;
+  };
+
+  it('GET /healthz reports the booted bundle sha and bundleStale when the fallback bundle booted', async () => {
+    const stale = {
+      schema: 'bundle-stale-v1',
+      outfile: 'dist-sidecar/embed-sidecar.mjs',
+      servingBundleMtime: '2026-10-03T08:06:00.000Z',
+    } as unknown as BundleStaleness;
+    const body = await healthzWithIdentity({ sha: 'abc1234', bundleStale: stale });
+    expect(body.sha).toBe('abc1234');
+    expect(body.bundleStale).toEqual(stale);
+  });
+
+  it('GET /healthz omits bundleStale on a healthy build and reports a null sha honestly', async () => {
+    const body = await healthzWithIdentity({ sha: null, bundleStale: null });
+    expect(body).toHaveProperty('sha', null);
+    expect(body).not.toHaveProperty('bundleStale');
+  });
+
+  it('wires the DEFAULT build identity to build-info + bundle-staleness (the production path)', () => {
+    expect(defaultBuildIdentity()).toEqual({ sha: getBuildInfo().sha, bundleStale: getBundleStaleness() });
   });
 
   // EI-21341585960652821. The guard for an outage class this endpoint was

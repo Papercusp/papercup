@@ -183,6 +183,14 @@ export function doorSafePageBytes(
   return Math.min(requestedBytes, fits);
 }
 
+/** Scratch references are returned unchanged by tools:invoke, so an oversized
+ * line view would spill into another scratch reference and repeat the same read.
+ * Leave the same envelope slack used by byte pages before allowing a text window. */
+function scratchLineWindowExceedsDoor(text: string): boolean {
+  const budgetBytes = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+  return Buffer.byteLength(text, 'utf8') > budgetBytes - DOOR_MARGIN_CHARS;
+}
+
 const readPathArgs = {
   file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
   uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
@@ -828,6 +836,12 @@ export default defineTool({
       const endOffset = startOffset + selected.length;
       const hasSourceNewline = text[endOffset] === '\n';
       const rawBody = text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0));
+      if (reference && scratchLineWindowExceedsDoor(rawBody)) {
+        return err(
+          'scratch_line_window_too_large',
+          'This scratch-reference line window is too large for one result. Use a smaller offset/limit/tail window, or byte_offset+byte_limit when a single line is too large.',
+        );
+      }
       return {
         content: [{
           type: 'text' as const,
@@ -853,9 +867,16 @@ export default defineTool({
       ? `\n\n… [${allLines.length - (start + slice.length)} more lines — re-read with offset=${start + slice.length + 1}]`
       : '';
     const head = `${abs} (${allLines.length} lines${start > 0 || more ? `, showing ${start + 1}–${start + slice.length}` : ''})\n`;
+    const displayText = slice.length === 0 ? `${head}(empty)` : head + numbered + footer;
+    if (reference && scratchLineWindowExceedsDoor(displayText)) {
+      return err(
+        'scratch_line_window_too_large',
+        'This scratch-reference line window is too large for one result. Use a smaller offset/limit/tail window, or byte_offset+byte_limit when a single line is too large.',
+      );
+    }
 
     return {
-      content: [{ type: 'text' as const, text: slice.length === 0 ? `${head}(empty)` : head + numbered + footer }],
+      content: [{ type: 'text' as const, text: displayText }],
       // EI-22044192752243601: same silent-primitive-fallback bug as the raw branch
       // above — the ordinary cat -n view is human/model-readable text, not JSON, so
       // a code:run script reading `.content`/`.text` off it got `undefined` with no

@@ -130,7 +130,11 @@ function makeFakes(
       endedBy: 'self',
       live: false,
       advSessionId: 7,
-      binding: null,
+      binding: {
+        coordOwnerId: 'su-expert',
+        sessionId: (opts.source?.sessionId as string | null | undefined) ?? 'sess-1',
+        startedAt: '2026-09-22T00:00:00Z',
+      },
       ...(opts.source ?? {}),
     }),
     checkResumeTranscript: async () => ({ available: true, detail: 'fixture transcript' }),
@@ -246,6 +250,37 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
 });
 
 describe('dispatchConsultResponder — the fork leg', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('reaches all three targets from fresh and ended %s sources under separate answer identities', async (sourceAgent) => {
+    for (const live of [false, true]) {
+      for (const targetAgent of ['claude', 'codex', 'omp'] as const) {
+        const { deps, calls } = makeFakes({
+          loadRanks: async () => [{ rank: 1, agent: targetAgent, model: targetAgent === 'codex' ? 'sol' : 'opus' }],
+        }, { source: { agent: sourceAgent, live, endedAt: live ? null : '2026-09-22T00:00:00Z' } });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(result).toMatchObject({ dispatched: true, answeringOwnerId: 'su-answer-1', agent: targetAgent });
+        expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--owner-id=su-answer-1');
+        expect(calls.spawn[0]!.coordOwnerId).not.toBe(OPTS.sourceOwnerId);
+        expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--launched-by=su-requester');
+        if (result.operation === 'convert') {
+          expect(calls.spawn[0]!.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBe(JSON.stringify({
+            sessionId: 'sess-1', turnIndices: [1], contextTurns: 2,
+          }));
+          expect(calls.spawn[0]!.envelope.greetingCmd).not.toContain('--fork');
+        }
+      }
+    }
+  });
+
+  it.each([null, { coordOwnerId: 'su-other-owner', sessionId: 'sess-1', startedAt: '2026-09-22T00:00:00Z' },
+    { coordOwnerId: 'su-expert', sessionId: 'different-native-session', startedAt: '2026-09-22T00:00:00Z' }])
+  ('refuses an untracked or mismatched source binding before launch (%j)', async (binding) => {
+    const { deps, calls } = makeFakes({}, { source: { binding } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts.every((attempt) => attempt.reason === 'source-session-untracked')).toBe(true);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it('forks a dead claude source under a freshly PRE-PINNED identity', async () => {
     const { deps, calls } = makeFakes();
     const r = await dispatchConsultResponder(OPTS, CTX, deps);
@@ -821,7 +856,7 @@ describe('dispatchConsultResponder — the walk', () => {
   it('an OMP source with no OMP-reachable rank exhausts by SKIP, never by error', async () => {
     const { deps } = makeFakes(
       { loadRanks: async () => [...RANKS, { rank: 3, agent: 'omp', model: 'grok' }] as AllowedExpertModel[] },
-      { source: { agent: 'omp', ompThreadId: 'thr-1', sessionId: null, resumeId: '9' } },
+      { source: { agent: 'omp', ompThreadId: 'thr-1', sessionId: 'thr-1', resumeId: '9' } },
     );
     const r = await dispatchConsultResponder({ ...OPTS, evidence: undefined }, CTX, deps);
     expect(r.dispatched).toBe(false);
@@ -1182,7 +1217,8 @@ describe('consultDispatchBrief', () => {
       summary: 'S',
       body: 'B',
     });
-    expect(brief).toContain('CONVERTED onto another backend');
+    expect(brief).toContain('isolated answering session');
+    expect(brief).toContain('NEW identity');
     expect(brief).not.toContain('FORK of');
   });
 
