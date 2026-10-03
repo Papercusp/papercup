@@ -1825,6 +1825,30 @@ dependency_generation_fs_bytes() {
   printf '%s\n' "$((blocks * size))"
 }
 
+# WI-10005931: the reserve-protected filesystem. The percentage reserve exists
+# so concurrent copies cannot push the filesystem git-sync fetches into under
+# its 2% fetch reserve; that is the filesystem holding the integration root.
+# main records it here. A sourced caller that never sets it keeps the full
+# reserve everywhere (fail-closed).
+DEPENDENCY_GENERATION_RESERVE_FS_PATH="${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-}"
+
+# Succeeds when `dir` is on the reserve-protected filesystem, or when that
+# cannot be established (unset path, stat failure) — unknown means protected.
+# DEPENDENCY_GENERATION_HEADROOM_SAME_FS=0|1 overrides the device comparison
+# (test seam, like the AVAIL/TOTAL byte overrides above).
+dependency_generation_on_reserve_fs() {
+  local dir="$1" protected="${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-}" a b
+  case "${DEPENDENCY_GENERATION_HEADROOM_SAME_FS:-}" in
+    0) return 1 ;;
+    1) return 0 ;;
+  esac
+  [ -n "$protected" ] || return 0
+  a="$(stat -c %d "$dir" 2>/dev/null)" || return 0
+  b="$(stat -c %d "$protected" 2>/dev/null)" || return 0
+  [ -n "$a" ] && [ -n "$b" ] || return 0
+  [ "$a" = "$b" ]
+}
+
 # Looks up a published tree's recorded size from its generation's .tree-bytes
 # sidecar (`rel<TAB>bytes`). The source path is `<generation>/tree/<rel>`.
 # Never walks the tree (WI-474827: materialization must stay walk-free).
@@ -1858,11 +1882,14 @@ dependency_generation_record_tree_bytes() {
 # whose recorded size to use; an unknown size checks only reserve + margin.
 dependency_generation_check_headroom() {
   local size_ref="$1" dest="$2" dir pct margin need size_note total reserve required avail base
+  local cap reserve_scope
   dir="$(dirname "$dest")"
   pct="${DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT:-2}"
   case "$pct" in ''|*[!0-9]*) pct=2 ;; esac
   margin="${DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES:-10737418240}"
   case "$margin" in ''|*[!0-9]*) margin=10737418240 ;; esac
+  cap="${DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES:-21474836480}"
+  case "$cap" in ''|*[!0-9]*) cap=21474836480 ;; esac
   if need="$(dependency_generation_tree_bytes_lookup "$size_ref" 2>/dev/null)"; then
     size_note="size=recorded"
   else
@@ -1875,6 +1902,15 @@ dependency_generation_check_headroom() {
     return 0
   fi
   reserve=$((total * pct / 100))
+  # WI-10005931: 2% of an 8 TB data disk is 160 GB, which refused a 9 GB copy
+  # with 165 GB free. Off the protected filesystem the percentage only guards
+  # against filling the disk, so it is capped; the margin still applies.
+  if dependency_generation_on_reserve_fs "$dir"; then
+    reserve_scope='protected-fs'
+  else
+    reserve_scope='other-fs'
+    [ "$reserve" -le "$cap" ] || reserve="$cap"
+  fi
   required="$(dependency_generation_headroom_required "$need" "$reserve" "$margin")"
   if [ "$avail" -lt "$required" ]; then
     base="${dest%.generation-tmp.*}"
@@ -1884,7 +1920,7 @@ dependency_generation_check_headroom() {
     avail="$(dependency_generation_fs_bytes "$dir" %a)" || avail=0
   fi
   if [ "$avail" -lt "$required" ]; then
-    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=$need avail=$avail reserve=$reserve margin=$margin required=$required $size_note path=$dest"
+    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=$need avail=$avail reserve=$reserve reserve_scope=$reserve_scope margin=$margin required=$required $size_note path=$dest"
     return 77
   fi
   return 0
@@ -3024,6 +3060,9 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   build_root="$integration_root"
+  # WI-10005931: git-sync fetches into the integration checkout, so its
+  # filesystem is the one the percentage headroom reserve protects.
+  DEPENDENCY_GENERATION_RESERVE_FS_PATH="${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-$integration_root}"
   # Preserve an explicit CLI root, then honor the service-level override, then
   # the root that override recorded for this integration root (WI-10005159),
   # before falling back to the integration checkout's local generation store.
