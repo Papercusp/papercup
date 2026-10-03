@@ -46,6 +46,7 @@ import { realAdmissionGit } from '../../release/repair-head-admission';
 // WI-10005223: every admission git sequence below runs on the admission worker thread, never
 // on the operator main thread (a single admit measured up to 61.8s of blocked event loop).
 import { runAdmissionJob } from '../../release/admission-offthread';
+import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
@@ -735,7 +736,17 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    const inspected = await inspectQueue();
+    // WI-10005695: admit/converge report per-step timings (response `timings`) and log a step
+    // that is still running after 30s, so a call whose client gives up is still localizable.
+    const clock =
+      args.op === 'admit' || args.op === 'converge'
+        ? createAdmissionStepClock({
+            context:
+              `op=${args.op} paths=${Array.isArray(args.paths) ? args.paths.length : 0} ` +
+              `dryRun=${args.confirm !== true} wholeBlob=${args.wholeBlob === true}`,
+          })
+        : null;
+    const inspected = clock ? await clock.step('inspect-queue', () => inspectQueue()) : await inspectQueue();
     const compactRead =
       inspected.read.status === 'value'
         ? { status: 'value' as const, schemaVersion: inspected.read.queue.schemaVersion }
@@ -942,6 +953,12 @@ export default defineTool({
         repairQueue: inspected.diagnostic,
         repairQueueRead: compactRead,
         callerAuthorization,
+        // WI-10005695: a GETTER on purpose. Every admit response spreads `...base`, and a
+        // spread reads the getter at that moment, so each response carries the timings of
+        // every step that settled before it was built, with no per-return wiring.
+        get timings() {
+          return clock?.summary() ?? null;
+        },
       };
       if (!queue) {
         return json({
@@ -956,8 +973,13 @@ export default defineTool({
           ...base,
         });
       }
+      // WI-10005695: every slow step below runs through `step`, so the response and the
+      // journal both name where an admit spent its time.
+      const step = <T,>(name: string, run: () => Promise<T>): Promise<T> => (clock ? clock.step(name, run) : run());
       const containmentAt = async (judgedSha: string) =>
-        paths.length ? runAdmissionJob({ kind: 'containment', paths, judgedSha, root, branch }) : null;
+        paths.length
+          ? step('containment', () => runAdmissionJob({ kind: 'containment', paths, judgedSha, root, branch }))
+          : null;
       if (paths.length === 0) {
         return json({
           ok: false,
@@ -1083,12 +1105,14 @@ export default defineTool({
       let ledgerRows: FrozenRepairEditLedgerRow[] = [];
       let ledgerReadError: string | null = null;
       try {
-        ledgerRows = await readFrozenRepairEditLedger(getOrgPg().sql, {
-          workspaceId: inspected.target.workspaceId,
-          installSlug: inspected.target.installSlug,
-          candidate: queue.candidate,
-          paths,
-        });
+        ledgerRows = await step('ledger-read', () =>
+          readFrozenRepairEditLedger(getOrgPg().sql, {
+            workspaceId: inspected.target.workspaceId,
+            installSlug: inspected.target.installSlug,
+            candidate: queue.candidate,
+            paths,
+          }),
+        );
       } catch (err) {
         ledgerReadError = (err as Error).message;
       }
@@ -1097,17 +1121,20 @@ export default defineTool({
       let patch: FrozenRepairAdmission['patch'];
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
       if (args.patchCommit !== undefined) {
-        const built = await runAdmissionJob({
-          kind: 'committed-patch',
-          input: {
-            root,
-            repairHead: queue.repairHead,
-            patchCommit: args.patchCommit,
-            integrationRef: branch,
-            paths,
-            reason: args.reason!,
-          },
-        });
+        const patchCommit = args.patchCommit;
+        const built = await step('committed-patch', () =>
+          runAdmissionJob({
+            kind: 'committed-patch',
+            input: {
+              root,
+              repairHead: queue.repairHead,
+              patchCommit,
+              integrationRef: branch,
+              paths,
+              reason: args.reason!,
+            },
+          }),
+        );
         if (!built.ok) {
           return json({
             ...base,
@@ -1142,11 +1169,14 @@ export default defineTool({
           });
         }
         if (args.sourceCommit !== undefined) {
-          const resolved = await runAdmissionJob({
-            kind: 'git',
-            argv: ['rev-parse', '--verify', `${args.sourceCommit}^{commit}`],
-            cwd: root,
-          });
+          const sourceCommitArg = args.sourceCommit;
+          const resolved = await step('source-commit-resolve', () =>
+            runAdmissionJob({
+              kind: 'git',
+              argv: ['rev-parse', '--verify', `${sourceCommitArg}^{commit}`],
+              cwd: root,
+            }),
+          );
           const resolvedSha = resolved.stdout.trim();
           if (resolved.status !== 0 || !FULL_COMMIT_SHA.test(resolvedSha)) {
             return json({
@@ -1162,11 +1192,13 @@ export default defineTool({
               ...base,
             });
           }
-          const ancestor = await runAdmissionJob({
-            kind: 'git',
-            argv: ['merge-base', '--is-ancestor', resolvedSha, branch],
-            cwd: root,
-          });
+          const ancestor = await step('source-commit-ancestry', () =>
+            runAdmissionJob({
+              kind: 'git',
+              argv: ['merge-base', '--is-ancestor', resolvedSha, branch],
+              cwd: root,
+            }),
+          );
           if (ancestor.status !== 0) {
             return json({
               ok: false,
@@ -1203,19 +1235,21 @@ export default defineTool({
             ...base,
           });
         }
-        const built = await runAdmissionJob({
-          kind: 'hunk-exact',
-          input: {
-            root,
-            candidate: queue.candidate,
-            repairHead: queue.repairHead,
-            paths,
-            ledger: ledgerRows,
-            actor: identity.ownerId,
-            includeHunksFrom,
-            nowMs: Date.now(),
-          },
-        });
+        const built = await step('hunk-exact', () =>
+          runAdmissionJob({
+            kind: 'hunk-exact',
+            input: {
+              root,
+              candidate: queue.candidate,
+              repairHead: queue.repairHead,
+              paths,
+              ledger: ledgerRows,
+              actor: identity.ownerId,
+              includeHunksFrom,
+              nowMs: Date.now(),
+            },
+          }),
+        );
         if (!built.ok) {
           return json({
             ok: false,
@@ -1270,7 +1304,7 @@ export default defineTool({
       }
       const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
       const buildAdmission = (dry: boolean) =>
-        runAdmissionJob({
+        step(dry ? 'build-proof' : 'publish', () => runAdmissionJob({
           kind: 'admit',
           input: {
             root,
@@ -1297,7 +1331,7 @@ export default defineTool({
             probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
             ...(wholeBlob ? { enforceSourceCohort: true as const } : {}),
           },
-        });
+        }));
       // Build the immutable candidate first. Publication is the effect boundary,
       // and must happen only while the condition claim row is locked below.
       let outcome = await buildAdmission(true);
@@ -1306,13 +1340,17 @@ export default defineTool({
       // script now whether that would succeed, so a lock no installed tree can produce is
       // refused here instead of parking verification an hour later. `unknown` never refuses.
       const dependencyPaths = paths.filter(isDependencyInputPath);
+      // A const, so the closure below keeps the narrowing (`outcome` is a reassigned `let`).
+      const provedCommit = outcome.ok ? outcome.commit : null;
       const dependencyGeneration: DependencyGenerationPrediction | null =
-        outcome.ok && dependencyPaths.length > 0
-          ? await predictDependencyGeneration({
-              integrationRoot: resolveCanonicalIntegrationRoot(root),
-              ref: outcome.commit,
-              paths: dependencyPaths,
-            })
+        provedCommit !== null && dependencyPaths.length > 0
+          ? await step('dependency-prediction', () =>
+              predictDependencyGeneration({
+                integrationRoot: resolveCanonicalIntegrationRoot(root),
+                ref: provedCommit,
+                paths: dependencyPaths,
+              }),
+            )
           : null;
       const dependencyNote = dependencyGeneration ? describeDependencyPrediction(dependencyGeneration) : null;
       if (outcome.ok && dependencyGeneration?.verdict === 'refused' && !dryRun && !skipPrecheck) {
@@ -1427,9 +1465,11 @@ export default defineTool({
             updatedAtMs: Math.max(queue.updatedAtMs + 1, startedAtMs),
           };
           try {
-            await writeFrozenCandidateRepairQueue(inspected.target, pendingQueue, {
-              expectedUpdatedAtMs: queue.updatedAtMs,
-            });
+            await step('precheck-marker-write', () =>
+              writeFrozenCandidateRepairQueue(inspected.target, pendingQueue, {
+                expectedUpdatedAtMs: queue.updatedAtMs,
+              }),
+            );
           } catch (err) {
             return json({
               ...base,
