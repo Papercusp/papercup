@@ -275,6 +275,24 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     expect(await rows(s)).toHaveLength(1);
   });
 
+  it('enforces lossless NUMERIC precision at the database boundary without changing integer provider maxima', async () => {
+    const s = await tenant(); const r = request(s, { maximumCostMicros: 1 }); await store().reserve(r);
+    const [column] = await db.adminSql`SELECT data_type, numeric_scale FROM information_schema.columns
+      WHERE table_schema = 'papercusp_auth' AND table_name = 'hosted_budget_receipts' AND column_name = 'cost_micros'`;
+    expect(column).toMatchObject({ data_type: 'numeric', numeric_scale: null });
+    for (const exact of ['-0.1', '9007199254740991.1', '0.' + '0'.repeat(324) + '1']) {
+      const change = { revision: 1, event_id: randomUUID(), cost_source: 'provider-billed', provider_final: true, cost_micros: exact };
+      await expect(db.adminSql`INSERT INTO papercusp_auth.hosted_budget_receipts
+        SELECT (jsonb_populate_record(NULL::papercusp_auth.hosted_budget_receipts, to_jsonb(row) || ${db.adminSql.json(change)})).*
+        FROM papercusp_auth.hosted_budget_receipts row WHERE organization_id = ${s.organizationId}`)
+        .rejects.toThrow(/check constraint/);
+    }
+    expect(await rows(s)).toHaveLength(1);
+    const tiniest = '0.' + '0'.repeat(323) + '1';
+    expect((await store().observe(observation(r, { costMicros: 0, costMicrosExact: tiniest }))).receipt?.costMicrosExact).toBe(tiniest);
+    expect((await store().reserve(request(s, { maximumCostMicros: 100_000 }))).outcome).toBe('refused');
+  });
+
   it('does not hide a final overrun, permit a downgrade, or erase exposure with a new budget key', async () => {
     const s = await tenant(); const r = request(s); await store().reserve(r);
     const result = await store().observe(observation(r, { costMicros: 100_001 }));

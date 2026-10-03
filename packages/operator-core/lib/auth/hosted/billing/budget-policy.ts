@@ -102,8 +102,9 @@ export function evaluateHostedBudget(input: {
   const cap = units[0]! < entitlement ? units[0]! : entitlement;
   const capAmount = splitMicrosDecimal(formatMicrosDecimal(cap, scale));
   const capMicros = capAmount.micros;
-  if (position.unreconciled) return refusal('unreconciled-charge', capMicros);
-  if (position.retainedReserveMicros === null) return refusal('unbounded-retained-cost', capMicros);
+  const capFields = fractional(capAmount.exact) ? { capMicrosExact: capAmount.exact } : {};
+  if (position.unreconciled) return { ...refusal('unreconciled-charge', capMicros), ...capFields };
+  if (position.retainedReserveMicros === null) return { ...refusal('unbounded-retained-cost', capMicros), ...capFields };
   // Aggregate exact liabilities BEFORE projecting available whole micros.
   // Per-receipt flooring loses spend; per-receipt ceiling over-reserves it.
   const committed = units[1]! + (BigInt(position.openReservedMicros) + BigInt(position.retainedReserveMicros)) * divisor;
@@ -111,7 +112,7 @@ export function evaluateHostedBudget(input: {
   const availableMicros = available.micros;
   const requested = BigInt(input.maximumCostMicros) * divisor;
   const warning = (committed + requested) * 10_000n >= cap * BigInt(policy.warningBps);
-  const exactFields = { ...(fractional(capAmount.exact) ? { capMicrosExact: capAmount.exact } : {}),
+  const exactFields = { ...capFields,
     ...(fractional(available.exact) ? { availableMicrosExact: available.exact } : {}) };
   if (committed > cap || requested > cap - committed) return { ...refusal('budget-exhausted', capMicros, availableMicros, warning), ...exactFields };
   return { admitted: true, reason: null, capMicros, availableMicros, reserveMicros: input.maximumCostMicros, warning, ...exactFields };
