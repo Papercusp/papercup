@@ -1299,7 +1299,8 @@ async function main(): Promise<void> {
     process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === "1" ||
     process.env.PAPERCUSP_EMBED_SIDECAR_MODE === "1" ||
     process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1" ||
-    process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === "1";
+    process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === "1" ||
+    process.env.PAPERCUSP_LSP_DAEMON_MODE === "1";
   if (packagedSidecarMode) startSidecarParentDeathWatch();
 
   // PACKAGED substrate-sidecar (P-006): the spawner re-execs THIS bundled
@@ -1310,6 +1311,11 @@ async function main(): Promise<void> {
     const { runSubstrateSidecarServer } =
       await import("@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server");
     runSubstrateSidecarServer();
+    return;
+  }
+  if (process.env.PAPERCUSP_LSP_DAEMON_MODE === "1") {
+    const { runLspDaemonServer } = await import('@papercusp/operator-core/lib/code-intelligence/lsp-daemon-server');
+    runLspDaemonServer();
     return;
   }
   // PACKAGED spawner-sidecar (WI-344 ③): same re-exec divert for the agent-spawn
