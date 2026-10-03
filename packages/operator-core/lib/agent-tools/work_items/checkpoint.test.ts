@@ -686,8 +686,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(hasProbeSchemaRevision(json.properties?.checks)).toBe(true);
     expect(hasProbeSchemaRevision(json.properties?.items?.items)).toBe(true);
     // WI-10005640: 24670 -> 24046 after sharing loop carry fields via $defs; P-025
-    // adds the shared replaces ref exactly once to the checks-row definition.
-    expect(JSON.stringify(json)).toHaveLength(24444);
+    // adds the shared replaces ref. A later call-constraint annotation on retireIdsSpec
+    // adds its published constraint metadata once to the same generated schema.
+    expect(JSON.stringify(json)).toHaveLength(24776);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
