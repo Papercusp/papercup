@@ -619,9 +619,11 @@ export function selectBlindSourceTargets(snapshot: Snapshot, budget: BlindTarget
 }
 
 export async function collectIndependentCohort(opts: { snapshot: string; out: string; llm: LlmCallFn;
-  targetsPerPartition?: BlindTargetBudget; reuseAuthorsFrom?: string; reuseCallsFrom?: string; log?: (message: string) => void }) {
+  targetsPerPartition?: BlindTargetBudget; reuseAuthorsFrom?: string; reuseCallsFrom?: string;
+  reuseSnapshotExpansion?: boolean; log?: (message: string) => void }) {
   const targets = opts.targetsPerPartition ?? 16, log = opts.log ?? (() => {});
   if (opts.reuseAuthorsFrom && opts.reuseCallsFrom) throw new Error('choose authors-only or exact-call recovery, not both');
+  if (opts.reuseSnapshotExpansion && !opts.reuseCallsFrom) throw new Error('snapshot expansion requires exact-call recovery');
   const reuseFrom = opts.reuseCallsFrom ?? opts.reuseAuthorsFrom, reuseAllCalls = !!opts.reuseCallsFrom;
   const root = path.resolve(opts.out), reuseRoot = reuseFrom ? path.resolve(reuseFrom) : undefined;
   if (reuseRoot === root) throw new Error('authors-only recovery requires a new output directory');
@@ -635,11 +637,31 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     if (expected && hashJson(actual) !== hashJson(expected)) throw new Error('invalid authors-only identity fingerprint');
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (hashJson(saved.identity) !== saved.identityHash || saved.identity?.ownerId !== ownerId
-      || saved.identity?.snapshotFingerprint?.sha256 !== snapshotFingerprint.sha256
-      || saved.identity?.snapshotFingerprint?.bytes !== snapshotFingerprint.bytes
       || saved.identity?.contract?.model !== BLIND_COHORT_CONTRACT.model
       || saved.identity?.contract?.author !== BLIND_COHORT_CONTRACT.author) throw new Error('invalid authors-only recovery identity: snapshot/owner/model/author contract mismatch');
-    return { saved, reference: { identity: actual, identityHash: saved.identityHash as string } };
+    const sameSnapshot = saved.identity?.snapshotFingerprint?.sha256 === snapshotFingerprint.sha256
+      && saved.identity?.snapshotFingerprint?.bytes === snapshotFingerprint.bytes;
+    let priorSnapshot = snapshot;
+    if (!sameSnapshot && !opts.reuseSnapshotExpansion) throw new Error('invalid authors-only recovery identity: snapshot/owner/model/author contract mismatch');
+    if (opts.reuseSnapshotExpansion) {
+      // Expansion is explicit and monotone, never a waiver of old source
+      // bytes, provenance, order, partition, seed, or frozen census time.
+      const previous = saved.identity?.snapshotFingerprint;
+      if (!previous?.path || hashJson(await fingerprintFile(previous.path)) !== hashJson(previous)) {
+        throw new Error('invalid snapshot expansion recovery: donor snapshot fingerprint');
+      }
+      priorSnapshot = JSON.parse(fs.readFileSync(previous.path, 'utf8')) as Snapshot;
+      if (priorSnapshot.formatVersion !== snapshot.formatVersion || priorSnapshot.seed !== snapshot.seed
+        || priorSnapshot.snapshotAt !== snapshot.snapshotAt) throw new Error('invalid snapshot expansion recovery: frozen census identity');
+      for (const corpus of ['memory', 'prose'] as const) {
+        const priorEntries = priorSnapshot.suites[corpus].entries;
+        const priorKeys = new Set(priorEntries.map((e) => e.key));
+        const retained = snapshot.suites[corpus].entries.filter((e) => priorKeys.has(e.key));
+        if (hashJson(retained) !== hashJson(priorEntries)) throw new Error('invalid snapshot expansion recovery: retained source content/provenance/order');
+      }
+    }
+    return { saved, snapshot: priorSnapshot, targets: selectBlindSourceTargets(priorSnapshot, saved.identity.targets),
+      reference: { identity: actual, identityHash: saved.identityHash as string } };
   };
   const donor = reuseRoot ? await readAuthorIdentity(path.join(reuseRoot, 'identity.json')) : undefined;
   if (donor) {
@@ -650,7 +672,8 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     }
   }
   const identity = { snapshotFingerprint, sourceFingerprint, ownerId, targets, contract: BLIND_COHORT_CONTRACT,
-    ...(authorReuse ? { authorReuse } : {}), ...(reuseAllCalls ? { callReuse: authorReuse } : {}) };
+    ...(authorReuse ? { authorReuse } : {}), ...(reuseAllCalls ? { callReuse: authorReuse } : {}),
+    ...(opts.reuseSnapshotExpansion ? { snapshotExpansion: true } : {}) };
   const identityHash = hashJson(identity);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const write = (file: string, value: unknown) => fs.writeFileSync(file, JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 });
@@ -671,6 +694,21 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       return saved;
     };
     const isAuthor = system === BLIND_COHORT_CONTRACT.author && /^(memory|prose)-author-/.test(name);
+    const reusable = (prior: NonNullable<typeof donor>) => {
+      if (!opts.reuseSnapshotExpansion) return true;
+      const corpus = name.startsWith('memory-') ? 'memory' : 'prose';
+      if (isAuthor) {
+        const group = [...prior.targets[corpus].groups.keys()]
+          .find((g) => name === `${corpus}-author-${hashJson([corpus, g]).slice(0, 20)}`);
+        return group !== undefined && hashJson({ sources: prior.targets[corpus].groups.get(group)!
+          .map((e) => ({ key: e.key, text: e.text })) }) === hashJson(input);
+      }
+      // A larger corpus changes document chunks; a larger target schedule
+      // changes question batches. Never relabel either old judgment as new.
+      return hashJson(prior.snapshot.suites[corpus].entries) === hashJson(snapshot.suites[corpus].entries)
+        && hashJson(prior.targets[corpus].chosen) === hashJson(sourceTargets[corpus].chosen);
+    };
+    const mayReuseDonor = donor && reusable(donor);
     const validatePayload = (saved: any) => {
       const payload = parseLlmJson(saved.result);
       if (isAuthor) {
@@ -702,6 +740,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       let current = donor, target = origin;
       const seen = new Set<string>(), references = [], identities = new Set<string>();
       for (;;) {
+        if (!reusable(current)) throw new Error('invalid snapshot expansion recovery: changed ancestor call inputs');
         if (identities.has(current.reference.identity.path) || identities.size >= 64) throw new Error('cyclic or excessive recovery identity chain');
         identities.add(current.reference.identity.path);
         const directory = path.dirname(current.reference.identity.path);
@@ -753,7 +792,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     if (fs.existsSync(file)) {
       const saved = await readLocal(file); validatePayload(saved); return saved;
     }
-    let oldAuthorFile = reuseRoot && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, `${name}.json`) : undefined;
+    let oldAuthorFile = reuseRoot && mayReuseDonor && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, `${name}.json`) : undefined;
     if (oldAuthorFile && !fs.existsSync(oldAuthorFile) && reuseAllCalls && isAuthor) {
       let parentRef = donor?.saved.identity.authorReuse;
       const identities = new Set<string>();
@@ -763,7 +802,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
         const parent = await readAuthorIdentity(parentRef.identity.path, parentRef.identity);
         if (parent.reference.identityHash !== parentRef.identityHash) throw new Error('invalid authors-only parent identity');
         const candidate = path.join(path.dirname(parent.reference.identity.path), `${name}.json`);
-        if (fs.existsSync(candidate)) { oldAuthorFile = candidate; break; }
+        if (reusable(parent) && fs.existsSync(candidate)) { oldAuthorFile = candidate; break; }
         parentRef = parent.saved.identity.authorReuse;
       }
     }
@@ -791,7 +830,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       const attemptFile = path.join(root, attemptName);
       if (!fs.existsSync(attemptFile)) {
         const donorAttempt = attemptName === attemptNames[0] && rejectedDonor ? rejectedDonor.origin.path
-          : reuseRoot && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, attemptName) : undefined;
+          : reuseRoot && mayReuseDonor && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, attemptName) : undefined;
         if (donorAttempt && fs.existsSync(donorAttempt)) {
           const origin = await fingerprintFile(donorAttempt), saved = await recoverAuthor(origin);
           write(attemptFile, { kind: isAuthor ? 'reused-author' : 'reused-call', identityHash,
