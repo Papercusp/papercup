@@ -1003,48 +1003,41 @@ describe('getFeedbackCore — routed', () => {
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
     const result = asOk(await getFeedbackCore(baseReq, deps));
     const sql = deps.getSql();
-    const sinceMs = Date.now() - 60_000;
+    const sinceMs = NOW.getTime() - 60_000;
+    const untilMs = NOW.getTime() + 10_000;
+    const asOf = '2026-08-16T00:00:00.123456Z';
     await sql`
       UPDATE harness_shared.consult_state
-         SET state = 'expired', cascade_digest = '[]'::jsonb
+         SET state = 'expired', cascade_digest = '[]'::jsonb, created_at = ${NOW.toISOString()}::timestamptz
        WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id}
     `;
     await sql`
-      INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
-      VALUES (${WS}, 910001, ${result.conversation_id}, ${baseReq.requesterId}, 'new_fact')
+      INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind, created_at)
+      VALUES (${WS}, 910001, ${result.conversation_id}, ${baseReq.requesterId}, 'new_fact', '2026-08-16T00:00:00.123450Z')
     `;
-    const read = async () => {
-      // PG timestamps retain sub-millisecond precision. Use the database's
-      // post-commit cut instead of rounding a just-written post out of a JS cut.
-      const [clock] = await sql<{ as_of: string }[]>`SELECT clock_timestamp()::text AS as_of`;
-      return readRoutingHealthRows(sql, WS, new Date(sinceMs).toISOString(), new Date(Date.now() + 10_000).toISOString(), 5000, clock.as_of);
-    };
+    const read = () => readRoutingHealthRows(sql, WS, new Date(sinceMs).toISOString(), new Date(untilMs).toISOString(), 5000, asOf);
     expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(false);
     await sql`
-      INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
-      VALUES (${WS}, 910002, ${result.conversation_id}, 'agent-a-fork', 'answer')
+      INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind, created_at)
+      VALUES (${WS}, 910002, ${result.conversation_id}, 'agent-a-fork', 'answer', '2026-08-16T00:00:00.123457Z')
     `;
-    await sql`UPDATE harness_shared.consult_post_meta SET created_at = clock_timestamp() + interval '1 day' WHERE workspace_id = ${WS} AND post_id = 910002`;
     expect((await read()).rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback).toBe(false);
-    await sql`UPDATE harness_shared.consult_post_meta SET created_at = clock_timestamp() WHERE workspace_id = ${WS} AND post_id = 910002`;
+    await sql`UPDATE harness_shared.consult_post_meta SET created_at = '2026-08-16T00:00:00.123455Z' WHERE workspace_id = ${WS} AND post_id = 910002`;
     const { rows, truncated } = await read();
-    const metadata = await sql`
-      SELECT cs.requester_id, pm.author_id, pm.kind, pm.created_at,
-             clock_timestamp() AS database_now,
-             pm.workspace_id = cs.workspace_id AS workspace_matches,
-             pm.conversation_id = cs.conversation_id AS conversation_matches,
-             pm.author_id <> cs.requester_id AS responder_authored,
-             pm.kind IN ('answer', 'new_fact') AS substantive_kind,
-             pm.created_at <= clock_timestamp() AS before_snapshot
-        FROM harness_shared.consult_state cs
-        JOIN harness_shared.consult_post_meta pm
-          ON pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id
-       WHERE cs.workspace_id = ${WS} AND cs.conversation_id = ${result.conversation_id}
+    // Prepared timestamptz parameters are serialized through a JS Date by
+    // postgres.js. A text parameter preserves the database's microsecond cut.
+    const [cuts] = await sql`
+      SELECT ${asOf}::timestamptz::text AS inferred_cut,
+             ${asOf}::text::timestamptz::text AS exact_cut,
+             '2026-08-16T00:00:00.123455Z'::timestamptz <= ${asOf}::timestamptz AS inferred_includes,
+             '2026-08-16T00:00:00.123455Z'::timestamptz <= ${asOf}::text::timestamptz AS exact_includes
     `;
+    expect(cuts.inferred_includes).toBe(false);
+    expect(cuts.exact_includes).toBe(true);
     expect(rows.find((row) => row.conversation_id === result.conversation_id)?.has_feedback,
-      JSON.stringify({ metadata, selectedRow: rows.find((row) => row.conversation_id === result.conversation_id), requester: baseReq.requesterId, applicationNow: new Date().toISOString() }),
+      JSON.stringify({ cuts, asOf, selectedRow: rows.find((row) => row.conversation_id === result.conversation_id) }),
     ).toBe(true);
-    const health = routingHealthFromRows(rows, { sinceMs, untilMs: Date.now() + 10_000, nowMs: Date.now(), truncatedByLimit: truncated });
+    const health = routingHealthFromRows(rows, { sinceMs, untilMs, nowMs: Date.parse(asOf), truncatedByLimit: truncated });
     expect(health.requestCohort.totals.outcomes.received).toBe(1);
     expect(health.requestCohort.totals.outcomes.failed).toBe(0);
   });
