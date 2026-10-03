@@ -101,6 +101,16 @@ afterAll(async () => {
 
 describe('learning.retainFeed + summary — real Postgres P-007 contract', () => {
   it('finds the only match beyond the first 500 retained rows and returns exact scoped facets', async () => {
+    const firstFiveHundred: string[] = [];
+    let cursor: string | null = null;
+    for (let pageNo = 0; pageNo < 5; pageNo += 1) {
+      const page = await readRetainFeed(sql, workspaceId, deps, scoped({ tab: 'wi', limit: 100, cursor }));
+      firstFiveHundred.push(...page.rows.map((row) => row.id));
+      cursor = page.nextCursor;
+    }
+    expect(firstFiveHundred).toHaveLength(500);
+    expect(firstFiveHundred).not.toContain(deepId);
+
     const opts = scoped({
       tab: 'wi',
       q: 'deep-only-retain-match',
@@ -118,6 +128,7 @@ describe('learning.retainFeed + summary — real Postgres P-007 contract', () =>
     });
     expect(page.rows.map((row) => row.id)).toEqual([deepId]);
     expect(summary).toMatchObject({ total: ROWS / 2, matched: 1 });
+    expect(summary.total).toBeGreaterThan(500);
     expect(summary.facets.find((facet) => facet.key === 'status')?.values).toContainEqual(
       expect.objectContaining({ value: 'done', count: 1 }),
     );
