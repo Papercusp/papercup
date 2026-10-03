@@ -556,12 +556,17 @@ export async function readWorkspaceHostDestroyTarget(
       throw new Error(`Workspace host '${hostId}' has no recorded desired spec`);
     }
 
+    // An identity is registered iff its LATEST row says it exists. A resource confirmed absent on a
+    // different row than the one that registered it would otherwise stay registered forever: an
+    // AWS upgrade terminates the original instance on its own step row, under a different logical
+    // key than the provision row that recorded it (WI-10005971). GCP's same-name re-insert is the
+    // newest row for its identity, so it stays registered.
     const rows = (await query`
-      SELECT target, kind, provider_id, parent_provider_id, region, zone, updated_at
+      SELECT target, kind, provider_id, parent_provider_id, region, zone, state, updated_at
       FROM harness_shared.workspace_host_resources
       WHERE workspace_id = ${workspaceId}
         AND host_id = ${hostId}
-        AND state IN ('applied', 'unchanged')
+        AND state IN ('applied', 'unchanged', 'absent')
         AND target IS NOT NULL
         AND kind IS NOT NULL
         AND provider_id IS NOT NULL
@@ -573,6 +578,7 @@ export async function readWorkspaceHostDestroyTarget(
       parent_provider_id: string | null;
       region: string | null;
       zone: string | null;
+      state: string;
       updated_at: Date | string;
     }>;
     const seen = new Set<string>();
@@ -581,6 +587,7 @@ export async function readWorkspaceHostDestroyTarget(
       const key = `${row.target}:${row.kind}:${row.provider_id}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      if (row.state === 'absent') continue;
       resources.push({
         resource: {
           target: row.target,

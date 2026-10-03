@@ -1077,36 +1077,47 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     const hostId = request.host.hostId;
     const key = `${request.idempotencyKey}:upgrade:${instance.providerId}`;
     const runRequest = runInstancesRequest(desired, settings, tags, `${key}:instance`, imageId);
+    // Step ids name the instance being replaced. The controller keys each step's resource row by
+    // step id, and recording a plan resets that row to `planned`; ids shared with provision or an
+    // earlier upgrade would therefore un-register the running instance until this upgrade's own
+    // step re-applied it. Per-replacement ids leave every earlier row, and its registration, intact.
+    const original = instance.providerId;
+    const ids = {
+      quiesce: `quiesce-runtime-instance:${original}`,
+      detach: `detach-data-volume:${original}`,
+      launch: `launch-replacement-instance:${original}`,
+      attach: `attach-replacement-volume:${original}`,
+      retire: `retire-runtime-instance:${original}`,
+    };
     return [
       {
-        id: 'quiesce-runtime-instance',
+        id: ids.quiesce,
         action: 'upgrade',
         resourceKind: AWS_INSTANCE_RESOURCE_KIND,
         dependsOn: [],
         idempotencyKey: `${key}:quiesce`,
         destructive: false,
-        input: { op: 'stop-instance', instanceId: instance.providerId, hostId } satisfies AwsStepInput,
+        input: { op: 'stop-instance', instanceId: original, hostId } satisfies AwsStepInput,
       },
       {
-        id: 'detach-data-volume',
+        id: ids.detach,
         action: 'upgrade',
         resourceKind: 'attachment',
-        dependsOn: ['quiesce-runtime-instance'],
+        dependsOn: [ids.quiesce],
         idempotencyKey: `${key}:detach-data-volume`,
         destructive: true,
         input: {
           op: 'detach-data-volume',
           volumeId: volume.providerId,
-          instanceId: instance.providerId,
+          instanceId: original,
           hostId,
         } satisfies AwsStepInput,
       },
       {
-        // The provision step's id, so the replacement takes over the original's registration row.
-        id: 'run-instance',
+        id: ids.launch,
         action: 'upgrade',
         resourceKind: AWS_INSTANCE_RESOURCE_KIND,
-        dependsOn: ['detach-data-volume'],
+        dependsOn: [ids.detach],
         idempotencyKey: `${key}:instance`,
         destructive: false,
         input: { op: 'run-instance', request: runRequest, hostId, vpcId: settings.vpcId } satisfies AwsStepInput,
@@ -1122,22 +1133,22 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         },
       },
       {
-        id: 'attach-data-volume',
+        id: ids.attach,
         action: 'upgrade',
         resourceKind: 'attachment',
-        dependsOn: ['detach-data-volume', 'run-instance'],
+        dependsOn: [ids.detach, ids.launch],
         idempotencyKey: `${key}:attach-data-volume`,
         destructive: false,
         input: {
           op: 'attach-data-volume',
           device: settings.dataDeviceName,
           hostId,
-          replacesInstanceId: instance.providerId,
+          replacesInstanceId: original,
         } satisfies AwsStepInput,
       },
-      hostBootstrapStep(ctx, 'upgrade', hostId, `${key}:host-bootstrap`, ['attach-data-volume'], instance.providerId),
+      hostBootstrapStep(ctx, 'upgrade', hostId, `${key}:host-bootstrap`, [ids.attach], original),
       {
-        id: 'retire-runtime-instance',
+        id: ids.retire,
         action: 'upgrade',
         resourceKind: AWS_INSTANCE_RESOURCE_KIND,
         dependsOn: ['start-host-bootstrap'],
@@ -1145,9 +1156,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         destructive: true,
         input: {
           op: 'terminate-instance',
-          instanceId: instance.providerId,
+          instanceId: original,
           hostId,
-          resourceName: instance.providerId,
+          resourceName: original,
         } satisfies AwsStepInput,
       },
     ];

@@ -602,12 +602,41 @@ function matchingExistingResource(
     .find((resource) => resource.kind === step.resourceKind && (!providerId || resource.providerId === providerId));
 }
 
+/**
+ * The host's population once this operation's steps have taken effect: the registered resources,
+ * then each checkpoint in plan order (a step's rollback leg right after the step), where an
+ * applied/unchanged resource joins and a confirmed-absent one leaves. Order matters because one
+ * identity can be both: GCP's upgrade deletes then re-inserts the SAME VM name, while an AWS
+ * upgrade stops, then terminates, the original instance after launching its replacement under a
+ * new id (WI-10005971). Observing the start-of-turn list instead would read the terminated
+ * original and record the upgraded host as absent.
+ */
+function populationAfterOperation(
+  target: StoredWorkspaceHostDestroyTarget,
+  checkpoints: readonly WorkspaceHostResourceCheckpoint[],
+  plan: WorkspaceHostPlan,
+): WorkspaceHostResourceRef[] {
+  const identity = (resource: WorkspaceHostResourceRef) => `${resource.target}:${resource.kind}:${resource.providerId}`;
+  const live = new Map<string, WorkspaceHostResourceRef>();
+  for (const { resource } of target.resources) live.set(identity(resource), resource);
+  const byKey = new Map(checkpoints.map((entry) => [entry.logicalKey, entry]));
+  for (const key of plan.steps.flatMap((step) => [step.id, rollbackLogicalKey(step)])) {
+    const checkpoint = byKey.get(key);
+    const resource = checkpoint?.providerResource;
+    if (!checkpoint || !resource) continue;
+    if (checkpoint.state === 'applied' || checkpoint.state === 'unchanged') live.set(identity(resource), resource);
+    else if (checkpoint.state === 'absent') live.delete(identity(resource));
+  }
+  return [...live.values()];
+}
+
 async function observe(
   input: RunWorkspaceHostLifecycleInput,
   target: StoredWorkspaceHostDestroyTarget,
   store: WorkspaceHostLifecycleStore,
   context: WorkspaceHostProviderContext,
   checkpoints: readonly WorkspaceHostResourceCheckpoint[],
+  plan?: WorkspaceHostPlan,
 ): Promise<WorkspaceHostObservation | undefined> {
   try {
     const observation = await input.provider.observe(
@@ -623,7 +652,11 @@ async function observe(
         : {
             hostId: input.hostId,
             target: target.desired.target,
-            resources: target.resources.map((entry) => entry.resource),
+            // An upgrade may replace resources; every other action leaves the population as registered.
+            resources:
+              input.action === 'upgrade' && plan
+                ? populationAfterOperation(target, checkpoints, plan)
+                : target.resources.map((entry) => entry.resource),
           },
       context,
     );
@@ -711,7 +744,7 @@ async function runRollbackLeg(leg: RollbackLeg): Promise<WorkspaceHostLifecycleR
   for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
     const recovery = workspaceHostRecoveryAction(current, MAX_APPLY_ATTEMPTS);
     if (recovery === 'none') {
-      await observe(input, leg.target, store, context, leg.checkpoints);
+      await observe(input, leg.target, store, context, withCurrent(), plan);
       // The instance now boots the rollback image; without this the host row would keep naming the
       // image the failed upgrade never delivered (WI-10002494's defect, reached from the other side).
       if (leg.rollbackImage) await store.recordImage({ workspaceId, hostId, image: leg.rollbackImage });
@@ -1258,7 +1291,7 @@ export async function runWorkspaceHostLifecycle(
     }
 
     if (action.kind === 'complete' && action.status === 'succeeded') {
-      await observe(input, target, store, context, checkpoints);
+      await observe(input, target, store, context, checkpoints, plan);
       if (input.action === 'snapshot') {
         // WI-10002470: without this the host kept reading "No recovery point recorded" right after
         // a successful snapshot — false, and it argues the user out of the restore they can do.
