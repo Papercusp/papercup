@@ -19,15 +19,15 @@ const cloneStarlightRoot = fileURLToPath(new URL('../../node_modules/@astrojs/st
 export default defineConfig({
   site: 'https://app.papercusp.com',
   base: '/docs',
-  // lint:as-committed links dependencies to the shared install. Astro treats raw absolute
-  // paths outside its root as root-relative, but strips Vite's /@fs prefix to the real path.
-  // Use that prefix on Starlight's virtual requests so they share the main module's metadata key.
+  // lint:as-committed links dependencies to the shared install. With preserveSymlinks enabled,
+  // Vite keeps Starlight's clone-local symlink path, so alias that spelling to the shared realpath.
+  // Astro strips Vite's /@fs prefix from virtual requests so they share the main module's metadata key.
   ...(isLintAsCommittedClone
     ? {
         vite: {
           resolve: {
             preserveSymlinks: true,
-            alias: [{ find: sharedStarlightRoot, replacement: `/@fs${sharedStarlightRoot}` }],
+            alias: [{ find: cloneStarlightRoot, replacement: `/@fs${sharedStarlightRoot}` }],
           },
         },
       }

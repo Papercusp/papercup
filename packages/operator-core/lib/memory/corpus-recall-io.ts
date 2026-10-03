@@ -30,7 +30,12 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, type SearchHit, type SearchLegs } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
-import { buildQueryEmbedder } from '../agent-tools/search/embedder';
+import {
+  buildQueryEmbedder,
+  embedderModeOf,
+  embedderProfileIdOf,
+} from '../agent-tools/search/embedder';
+import { stampEmbedderMode } from '../search/embedder-mode-registry';
 import { rerankRows } from '../agent-tools/search/rerank';
 import { createMemoryWorkDeadline, MemoryTimeoutError } from './op-deadline';
 import {
@@ -623,6 +628,22 @@ async function recallCorpusContextInner(
       const embedder = built
         ? (t: string, signal?: AbortSignal) => (embedP ??= built(t, signal))
         : built;
+      if (built && embedder) {
+        const mode = embedderModeOf(built);
+        const profileId = embedderProfileIdOf(built);
+        if (mode) stampEmbedderMode(embedder, mode, profileId);
+        // Search's storage-space filter and score policy key off the exact
+        // embedder function object. Memoizing it above creates a new function,
+        // so preserve that identity before handing the wrapper to the engine.
+        // Otherwise the semantic SQL fails closed with zero candidates while
+        // the call still reports that both semantic sources ran.
+        if (
+          embedderModeOf(embedder) !== mode ||
+          embedderProfileIdOf(embedder) !== profileId
+        ) {
+          throw new Error('corpus recall memo wrapper lost embedder profile provenance');
+        }
+      }
 
       // Stage 2's query is derived SEPARATELY from stage 1's — see
       // CORPUS_GRADED_QUERY_MAX_TERMS. Stage 1 ANDs, so two terms is a
