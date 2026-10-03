@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { RecordScoutTickInput } from '../../scout/tick-ledger';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { GOAL_DAY_MIN_CANDIDATES, goalDayIdeationYield } from '../../goal-planning-review';
 import {
   ideatePassRecordArgs,
   runIdeatePassRecord,
@@ -286,6 +287,50 @@ describe('goal review → routed-idea ledger feedback (P-009)', () => {
     );
     await runIdeatePassRecord({ ideasFiled: 1 }, { harnessSlug: 'papercusp' }, noRefs.deps);
     expect(unused).not.toHaveBeenCalled();
+  });
+});
+
+describe('goal-day ideation yield on the receipt (P-004 / D-001)', () => {
+  const goalDay = (plansNew: number, ideasFiled: number) =>
+    vi.fn(async () => ({ since: '2026-09-22T06:00:00.000Z', plansNew, ideasFiled }));
+
+  it('reports owed:true when the goal-day has no candidate, this zero-idea pass included', async () => {
+    const readGoalDayCandidates = goalDay(0, 0);
+    const { deps } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(readGoalDayCandidates).toHaveBeenCalledWith({ workspaceId: 'ws-1', goalId: 'goal-1', at: expect.any(Date) });
+    expect(out).toMatchObject({ ok: true, ideationYield: { goalId: 'goal-1', candidates: 0, owed: true } });
+    expect(out.ok && out.ideationYield?.message).toMatch(/owes at least 1 per goal-day/);
+  });
+
+  it("adds this pass's ideas, which the ledger does not hold yet, so one filed idea discharges the day", async () => {
+    const { deps } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates: goalDay(0, 0) });
+    const out = await runIdeatePassRecord({ ideasFiled: 1, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(out).toMatchObject({ ok: true, ideationYield: { ideasFiled: 1, candidates: 1, owed: false } });
+  });
+
+  it('counts a plan proposed for the goal earlier in the goal-day as a candidate', async () => {
+    const { deps } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates: goalDay(1, 0) });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(out).toMatchObject({ ok: true, ideationYield: { plansNew: 1, candidates: 1, owed: false } });
+  });
+
+  it('omits ideationYield when the count cannot be read, and never reads it for an ordinary pass', async () => {
+    const failing = vi.fn(async () => { throw new Error('pg down'); });
+    const withGoal = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates: failing });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, withGoal.deps);
+    expect(out.ok).toBe(true);
+    expect(out).not.toHaveProperty('ideationYield');
+    const plain = goalDay(0, 0);
+    const ordinary = makeDeps({ readGoalDayCandidates: plain });
+    await runIdeatePassRecord({ ideasFiled: 0 }, { harnessSlug: 'papercusp' }, ordinary.deps);
+    expect(plain).not.toHaveBeenCalled();
+  });
+
+  it('shares the WOE threshold and never counts a negative or fractional input as a candidate', () => {
+    expect(GOAL_DAY_MIN_CANDIDATES).toBe(1);
+    const y = goalDayIdeationYield({ goalId: 'g', since: 's', plansNew: -2, priorIdeasFiled: 0.5, thisPassIdeasFiled: -1 });
+    expect(y).toMatchObject({ plansNew: 0, ideasFiled: 0, candidates: 0, owed: true });
   });
 });
 

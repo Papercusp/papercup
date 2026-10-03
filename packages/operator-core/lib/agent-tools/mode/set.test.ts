@@ -199,7 +199,7 @@ describe('mode:set registration', () => {
     expect(body.contract).not.toMatch(/emits a scorecard\s+\(improvements:capture/);
   });
 
-  it('delivers the scoped GOAL gap-review contract instead of a feature quota', async () => {
+  it('delivers the scoped GOAL gap-review contract with its goal-day candidate yield', async () => {
     const body = parse(await run({ mode: 'goal', subject: 'goal-1', reason: 'manage goal-local planning' }));
     expect(body.ok).toBe(true);
     const text = String(body.contract).replace(/\s+/g, ' ');
@@ -209,7 +209,8 @@ describe('mode:set registration', () => {
     expect(text.includes('adopt or revise a suitable existing plan')).toBe(true);
     expect(text.includes('goalReview')).toBe(true);
     expect(text.includes('existing-plans-sufficient')).toBe(true);
-    expect(/no minimum new-idea or feature count/i.test(text)).toBe(true);
+    expect(/no minimum new-idea or feature count/i.test(text)).toBe(false);
+    expect(text.includes('at least one evaluated new candidate per goal per goal-day')).toBe(true);
     expect(text.includes('a review is not a worker claim')).toBe(true);
   });
 });
