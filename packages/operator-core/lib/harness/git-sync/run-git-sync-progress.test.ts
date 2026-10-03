@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -115,18 +116,26 @@ describe('local Git cancellation lifetime', () => {
 
 describe('local Git output-idle guard', () => {
   it('reads queued child progress before expiring an idle timer after a parent-loop stall', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'local-git-progress-'));
+    const release = join(dir, 'release');
     fixture.script = [
       "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      // Emit for a wall-clock span, not a fixed count: under gate load the parent can
-      // read 'ready' hundreds of ms late, and a 10-write burst (~400ms) then finished
-      // before the stall began, so zero writes landed inside it (b8eb76cc red).
-      "const end = Date.now() + 1500; send('ready'); const timer = setInterval(() => { send('progress'); if (Date.now() >= end) clearInterval(timer); }, 40);",
+      // End only after the parent has read the progress written during its stall.
+      // A fixed burst also tests an unrelated silent interval before child exit.
+      `send('ready'); const timer = setInterval(() => { send('progress'); if (require('node:fs').existsSync(${JSON.stringify(release)})) { clearInterval(timer); process.stderr.write(JSON.stringify({ phase: 'ack', at: Date.now() }) + '\\n', () => process.exit(0)); } }, 40);`,
     ].join(' ');
     let queued = false;
     let blockedFrom = 0;
     let blockedUntil = 0;
     fixture.onOutput = () => {
-      if (queued) return;
+      if (queued) {
+        if (blockedUntil === 0) return;
+        const writes = fixture.output.split('\n').slice(0, -1).filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
+        if (writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length >= 3) {
+          writeFileSync(release, 'done');
+        }
+        return;
+      }
       queued = true;
       setImmediate(() => {
         blockedFrom = Date.now();
@@ -135,11 +144,31 @@ describe('local Git output-idle guard', () => {
       });
     };
     vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '3000');
+    const controller = new AbortController();
+    const pending = runGitBounded(['fetch'], tmpdir(), 150, { signal: controller.signal });
+    try {
+      const result = await pending;
+      const writes = result.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
+      expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
+      expect(writes.some((entry) => entry.phase === 'ack')).toBe(true);
+      expect(result.stderr).not.toContain('no output progress');
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      writeFileSync(release, 'done');
+      controller.abort();
+      await pending;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('expires a resident child when a finite progress burst ends', async () => {
+    fixture.script = "process.stderr.write('ready\\n'); let n = 0; const timer = setInterval(() => { process.stderr.write('progress\\n'); if (++n === 3) { clearInterval(timer); setInterval(() => {}, 1000); } }, 40);";
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '3000');
     const result = await runGitBounded(['fetch'], tmpdir(), 150);
-    const writes = result.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
-    expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
-    expect(result.stderr).not.toContain('no output progress');
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr.match(/progress\n/g)).toHaveLength(3);
+    expect(result.stderr).toContain('made no output progress for 150ms');
+    expect(result.stderr).not.toContain('hard ceiling');
+    expect(result.code).toBe(-1);
   });
 
   it('still enforces the hard deadline despite continuous output', async () => {
