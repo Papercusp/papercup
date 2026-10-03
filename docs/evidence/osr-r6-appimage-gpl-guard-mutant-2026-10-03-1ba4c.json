@@ -2,8 +2,11 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "R-6: current AppImage GPL guard counterexample",
-  "framework": "node:test",
-  "command": "Copy the existing appimage-gpl-guard.test.js and build-appimage.sh into a temporary test/bin tree; replace if [ -n \"$_gpl_hits\" ]; then with if false; then in the copied script; node --test the unchanged copied test file.",
+  "framework": "node",
+  "command": [
+    "python3: shutil.copy existing appimage-gpl-guard.test.js and build-appimage.sh into a temporary test/bin tree, then replace only if [ -n \"$_gpl_hits\" ]; then with if false; then in the copied script",
+    "node --test /tmp/osr-20261003-r6-ha698lit/test/appimage-gpl-guard.test.js"
+  ],
   "exitCode": 1,
   "startedAt": "2026-10-03T04:52:23.032655+00:00",
   "finishedAt": "2026-10-03T04:52:23.366293+00:00",
