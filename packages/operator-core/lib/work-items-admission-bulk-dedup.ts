@@ -1259,6 +1259,9 @@ async function failBulkStage(
   const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
   const failure = classifyBulkModelFailure(error);
   const guardPersistence = error instanceof BulkAdmissionMergeGuardBlockedError ? error.persistence : null;
+  // A protected-only prescreen exits before model/persistence, so its zero
+  // writes are measured; they are not the unknown rollback of a model failure.
+  const prescreenNoMutation = failure.class === 'prescreen_all_pairs_protected';
   const status =
     failure.kind === 'capacity' || failure.kind === 'quality' || failure.kind === 'guard' ? 'blocked' : 'failed';
   const allowCompletedQualityDisposition = failure.kind === 'quality';
@@ -1266,6 +1269,7 @@ async function failBulkStage(
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
            held = CASE
+             WHEN ${prescreenNoMutation} THEN 0
              WHEN ${guardPersistence !== null} THEN ${guardPersistence?.guardRefusals.length ?? 0}
              ELSE held
            END,
@@ -1280,13 +1284,13 @@ async function failBulkStage(
                       outcome: {
                         unit: 'pairs',
                         attempted,
-                        successful: guardPersistence ? 0 : null,
+                        successful: guardPersistence || prescreenNoMutation ? 0 : null,
                         // A failed stage is transactionally rolled back; the
                         // exact number of writes is unknowable when the error
                         // occurs during model/protocol handling.
-                        rolledBack: guardPersistence ? guardPersistence.uniqueRowsChanged : null,
-                        unchanged: guardPersistence ? attempted : null,
-                        uniqueRowsChanged: guardPersistence ? 0 : null,
+                        rolledBack: prescreenNoMutation ? 0 : guardPersistence ? guardPersistence.uniqueRowsChanged : null,
+                        unchanged: guardPersistence || prescreenNoMutation ? attempted : null,
+                        uniqueRowsChanged: guardPersistence || prescreenNoMutation ? 0 : null,
                         failureReason: status === 'failed' ? message : null,
                         blockedReason: status === 'blocked' ? message : null,
                       } satisfies AdmissionRunOutcome,
