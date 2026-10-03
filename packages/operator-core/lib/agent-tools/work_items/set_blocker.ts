@@ -54,6 +54,8 @@ const BLOCKER_KIND = z.enum([
 const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
 type BlockerKindInput = z.infer<typeof BLOCKER_KIND>;
 type BlockerCapabilityInput = z.infer<typeof BLOCKER_CAPABILITY>;
+const SET_BLOCKER_CALL_CONSTRAINT =
+  "When setting a strict human owner-capability blocker (capability: credential, physical-device, external-service-action, or product-decision), provide a nonblank defaultIfUnanswered. For items:[...], this applies to each entry. A reassertion may omit it only when that work-item already has an active human blocker with the same ref and a nonblank defaultIfUnanswered. Clear-only calls and non-human blockers do not require it. The legacy kind shorthands credential, physical-device, external-service-action, and product-decision are treated as human capabilities.";
 type BlockerInput = {
   id: string;
   kind?: BlockerKindInput;
@@ -365,7 +367,8 @@ export default defineTool({
           });
         }
       }
-    }),
+    })
+    .meta({ 'x-papercusp-call-constraint': SET_BLOCKER_CALL_CONSTRAINT }),
   result: z
     .object({
       rel: z.string().optional(),
