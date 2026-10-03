@@ -501,7 +501,7 @@ export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned })
  * Forward the launched role as an admission hint for bounded judge calls;
  * signed principal verification remains the authorization boundary.
  */
-export function buildMcpSessionQuery({ client, workspace, harness, role, origin, allWorkspaces = false }) {
+export function buildMcpSessionQuery({ client, workspace, harness, role, origin, allWorkspaces = false, env = process.env }) {
   const qs = new URLSearchParams({
     superuser: '1',
     client,
@@ -511,6 +511,12 @@ export function buildMcpSessionQuery({ client, workspace, harness, role, origin,
   if (harness) qs.set('harness', harness);
   if (role) qs.set('role', role);
   if (origin) qs.set('origin', origin);
+  // Match the native Codex MCP transport: select this verified incarnation,
+  // not whichever predecessor of a retained owner was most recently rearmed.
+  const nativeSession = String(env.CODEX_SESSION_ID ?? '').trim();
+  if (nativeSession && client === String(env.PAPERCUSP_SID ?? '').trim()) {
+    qs.set('native_session', nativeSession);
+  }
   return qs;
 }
 

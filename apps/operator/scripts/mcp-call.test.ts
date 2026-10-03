@@ -370,6 +370,29 @@ describe('mcp-call result-format contract', () => {
     });
   });
 
+  it('preserves the current Codex incarnation when the fallback reuses an owner id', () => {
+    const client = 'su-retained-owner';
+    for (const nativeSession of ['native-predecessor', 'native-successor']) {
+      const query = buildMcpSessionQuery({
+        client, workspace: 'papercusp-workspace',
+        env: { PAPERCUSP_SID: client, CODEX_SESSION_ID: nativeSession },
+      });
+      expect(query.get('client')).toBe(client);
+      expect(query.get('native_session')).toBe(nativeSession);
+    }
+  });
+
+  it('does not attach the current native session to another or legacy client', () => {
+    expect(buildMcpSessionQuery({
+      client: 'su-other', workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: 'su-current', CODEX_SESSION_ID: 'native-current' },
+    }).has('native_session')).toBe(false);
+    expect(buildMcpSessionQuery({
+      client: 'su-current', workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: 'su-current' },
+    }).has('native_session')).toBe(false);
+  });
+
   it('maps --all-workspaces to the unscoped workspace wildcard', () => {
     const query = buildMcpSessionQuery({
       client: 'vm-rig-probe',
