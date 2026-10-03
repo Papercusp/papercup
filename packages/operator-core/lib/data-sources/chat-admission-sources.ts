@@ -33,6 +33,7 @@
  * Deleted messages (provider tombstones) are refused; a deleted message is not a request anymore.
  */
 import { normalizePersonalSource } from '../personal-vault/store';
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   DEFAULT_FIELD_AUTHORITY,
   registerAdmissionSource,
@@ -297,7 +298,13 @@ export function createChatThreadAdmissionSource(): AdmissionSourceResolver<ChatT
 }
 
 /** The process-wide registrations. Idempotent across module re-imports (same objects). */
-export const chatMessageAdmissionSource = createChatMessageAdmissionSource();
-export const chatThreadAdmissionSource = createChatThreadAdmissionSource();
+export const chatMessageAdmissionSource = pinModuleState(
+  '@papercusp/operator-core.data-sources.chat-message-admission-source',
+  () => createChatMessageAdmissionSource(),
+);
+export const chatThreadAdmissionSource = pinModuleState(
+  '@papercusp/operator-core.data-sources.chat-thread-admission-source',
+  () => createChatThreadAdmissionSource(),
+);
 registerAdmissionSource(chatMessageAdmissionSource);
 registerAdmissionSource(chatThreadAdmissionSource);
