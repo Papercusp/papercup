@@ -142,6 +142,7 @@ export async function exportSeedUuidIdempotencySource(inp: {
 }): Promise<{
   sourceKeyHex: string; sourceLength: number; rowCount: number; rowsPath: string; rowsSha256: string;
   sourceBlocksRead: number; sourceBlocksJsonSha256: string;
+  privacyProjectionContext: { schema: 'papercusp-seed-privacy-projection-v1'; literalsSha256: string; excludedTablesSha256: string };
 }> {
   if (!/^[0-9a-f]{64}$/.test(inp.sourceKeyHex) || !Number.isSafeInteger(inp.sourceLength)
       || inp.sourceLength <= 0 || !/^segment-[0-9]{6}\.(?:blob|log)$/.test(inp.segment)) {
@@ -198,7 +199,10 @@ export async function exportSeedUuidIdempotencySource(inp: {
   await file.close();
   return { sourceKeyHex: inp.sourceKeyHex, sourceLength: inp.sourceLength,
     rowCount: rows.length, rowsPath: path, rowsSha256: digest.digest('hex'),
-    sourceBlocksRead: inp.sourceLength, sourceBlocksJsonSha256: blocks.digest('hex') };
+    sourceBlocksRead: inp.sourceLength, sourceBlocksJsonSha256: blocks.digest('hex'),
+    privacyProjectionContext: { schema: 'papercusp-seed-privacy-projection-v1',
+      literalsSha256: createHash('sha256').update(JSON.stringify(inp.redactValues ?? SEED_BUILD_IDENTITY_LITERALS)).digest('hex'),
+      excludedTablesSha256: createHash('sha256').update(JSON.stringify([...SEED_EXCLUDED_TABLES].sort())).digest('hex') } };
 }
 
 /** Producer evidence only. The final validator must independently check class coverage and source auth. */

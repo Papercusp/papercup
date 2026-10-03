@@ -114,7 +114,7 @@ import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SEED_REA
 export { mergeReleaseSeedRedactionValues } from './seed-identity-guard.js';
 import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, realpath } from 'node:fs/promises';
 import Corestore from 'corestore';
-import { exportSeedUuidIdempotencySource } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
+import { exportSeedUuidIdempotencySource, SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -324,7 +324,7 @@ export async function readSeedFindingRedactions(
  * Hash/shape checks are preflight; the provider checks the actual source rows and lengths.
  * This reader does not establish census completeness, source authentication or candidate GO. */
 export async function readSeedUuidIdempotencyDropPlans(
-  file: string, sha256: string,
+  file: string, sha256: string, redactValues?: readonly string[],
 ): Promise<NonNullable<CorestoreCutSpec['uuidIdempotencyDropPlans']>> {
   const refused = () => new Error('UUID row-drop plan input invalid (values omitted)');
   try {
@@ -340,6 +340,15 @@ export async function readSeedUuidIdempotencyDropPlans(
         || !Array.isArray(value.plans) || value.sourceAuthentication !== 'original-envelope-aead'
         || value.sourceSignatureAndCoverage !== 'requires-independent-hypercore-export-validation'
         || !value.privateSourceBindings || !value.counts) throw refused();
+    if (redactValues) {
+      const literalsSha256 = createHash('sha256').update(JSON.stringify(redactValues)).digest('hex');
+      const excludedTablesSha256 = createHash('sha256').update(JSON.stringify([...SEED_EXCLUDED_TABLES].sort())).digest('hex');
+      const sources = value.privateSourceBindings.sources;
+      if (!Array.isArray(sources) || !sources.length || sources.some(source =>
+        source.privacyProjectionContext?.schema !== 'papercusp-seed-privacy-projection-v1'
+        || source.privacyProjectionContext.literalsSha256 !== literalsSha256
+        || source.privacyProjectionContext.excludedTablesSha256 !== excludedTablesSha256)) throw refused();
+    }
     const keys = new Set<string>();
     for (const plan of value.plans) {
       if (plan?.schema !== 'papercusp-uuid-idempotency-row-drop-plan-v1'
@@ -1526,7 +1535,7 @@ async function main(): Promise<void> {
       manifestPath: str(args, 'uuid-source-manifest')!, manifestSha256: str(args, 'uuid-source-manifest-sha256')!,
       epochKeysPath: str(args, 'uuid-epoch-keys')!, epochKeysSha256: str(args, 'uuid-epoch-keys-sha256')!,
       outputDir: str(args, 'export-uuid-idempotency-census')!,
-      redactValues: releaseSeedRedactionValues(resolve(str(args, 'root') ?? process.cwd())) });
+      redactValues: releaseSeedRedactionValues(resolveWorkspaceRoot()) });
     console.log(JSON.stringify({ schema: 'papercusp-uuid-idempotency-source-export-v1', configPath: config }));
     return;
   }
@@ -1537,6 +1546,7 @@ async function main(): Promise<void> {
     throw new Error('seed finding export redaction is unsupported for sealed content; correct the authorized source and cut a fresh corestore');
   }
   let uuidIdempotencyDropPlans: CorestoreCutSpec['uuidIdempotencyDropPlans'];
+  let uuidPlanInput: { file: string; hash: string } | undefined;
   if ('uuid-idempotency-drop-plans' in args || 'uuid-idempotency-drop-plans-sha256' in args) {
     const file = str(args, 'uuid-idempotency-drop-plans');
     const hash = str(args, 'uuid-idempotency-drop-plans-sha256');
@@ -1544,7 +1554,7 @@ async function main(): Promise<void> {
         || 'reuse-corestore' in args || args['no-corestore'] === true) {
       throw new Error('UUID row-drop plans require an exact private file/hash and a fresh cut with --skip-corestore-refresh');
     }
-    uuidIdempotencyDropPlans = await readSeedUuidIdempotencyDropPlans(file, hash);
+    uuidPlanInput = { file, hash };
   }
   const root = resolveWorkspaceRoot();
   const hive = str(args, 'hive') ?? DEFAULT_HIVE;
@@ -1568,6 +1578,8 @@ async function main(): Promise<void> {
     ...(reuseCorestoreDir ? { reuseCorestoreDir } : {}),
     load: () => releaseSeedRedactionValues(root),
   })];
+  if (uuidPlanInput) uuidIdempotencyDropPlans = await readSeedUuidIdempotencyDropPlans(
+    uuidPlanInput.file, uuidPlanInput.hash, releaseRedactionValues);
   const asJson = args['json'] === true;
 
   // P-004 sparse cut: ship only [snapshotIndex,len) of each core (drops the ~2GB history

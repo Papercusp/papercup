@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import Corestore from 'corestore';
 import { openOwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { cutHiveSeed } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
+import { SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-excluded-tables';
 import { fileURLToPath } from 'node:url';
 import {
   parseGitDepth,
@@ -55,21 +56,26 @@ describe('D166 private row-drop plan transport', () => {
       const own = await openOwnLog(store);
       await own.append({ type: 'put', table: 'harness_plans', hbKey: 'row', value: { public: 'unchanged' },
         ts: 1, schema_version: 1, author_pubkey: '' });
+      await own.append({ type: 'put', table: 'harness_plans', hbKey: 'z-private', value: { body: 'private-fixture-owner' },
+        ts: 2, schema_version: 1, author_pubkey: '' });
       const seed = await cutHiveSeed({ potId: 'fixture-pot', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
         outDir: join(dir, 'seed'), git: null, corestore: { sourceStore: store, coreKeys: [own.keyHex] } });
       const censusDir = join(dir, 'census'); await mkdir(censusDir, { mode: 0o700 });
       const manifestBytes = await readFile(seed.manifestPath);
       const inputs = { storeDir: join(dir, 'seed', 'corestore'), manifestPath: seed.manifestPath,
         manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
-        epochKeysPath: join(dir, 'unused-private-keys.json'), epochKeysSha256: 'b'.repeat(64), outputDir: censusDir };
+        epochKeysPath: join(dir, 'unused-private-keys.json'), epochKeysSha256: 'b'.repeat(64), outputDir: censusDir,
+        redactValues: ['private-fixture-owner'] };
       const configPath = await exportSeedUuidIdempotencyCensus(inputs);
       const config = JSON.parse(await readFile(configPath, 'utf8'));
       expect(config.potId).toBe('fixture-pot'); expect(config.sources).toHaveLength(1);
-      expect(config.sources[0]).toMatchObject({ sourceKeyHex: own.keyHex, sourceLength: 1,
-        sourceBlocksRead: 1, rowCount: 1 });
-      const row = JSON.parse((await readFile(config.sources[0].rowsPath, 'utf8')).trim());
+      expect(config.sources[0]).toMatchObject({ sourceKeyHex: own.keyHex, sourceLength: 2,
+        sourceBlocksRead: 2, rowCount: 2 });
+      const rows = (await readFile(config.sources[0].rowsPath, 'utf8')).trim().split('\n').map(text => JSON.parse(text));
+      const row = rows[0];
       expect(row).toMatchObject({ table: 'harness_plans', hbKey: 'row', author_pubkey: '', value: { public: 'unchanged' } });
-      expect(own.length).toBe(1);
+      expect(rows[1]).toMatchObject({ hbKey: 'z-private', privacyProjection: { disposition: 'drop' } });
+      expect(own.length).toBe(2);
       await expect(exportSeedUuidIdempotencyCensus({ ...inputs, manifestSha256: '0'.repeat(64) })).rejects.toThrow('binding changed');
       await expect(exportSeedUuidIdempotencyCensus(inputs)).rejects.toThrow('EEXIST');
     } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
@@ -94,6 +100,15 @@ describe('D166 private row-drop plan transport', () => {
     try {
       const hash = await save(value);
       expect(await readSeedUuidIdempotencyDropPlans(file, hash)).toEqual(plans);
+      await expect(readSeedUuidIdempotencyDropPlans(file, hash, [])).rejects.toThrow('input invalid');
+      const literals = ['fixture-owner'];
+      const bound = await save({ ...value, privateSourceBindings: { sources: [{ privacyProjectionContext: {
+        schema: 'papercusp-seed-privacy-projection-v1',
+        literalsSha256: createHash('sha256').update(JSON.stringify(literals)).digest('hex'),
+        excludedTablesSha256: createHash('sha256').update(JSON.stringify([...SEED_EXCLUDED_TABLES].sort())).digest('hex'),
+      } }] } });
+      expect(await readSeedUuidIdempotencyDropPlans(file, bound, literals)).toEqual(plans);
+      await expect(readSeedUuidIdempotencyDropPlans(file, bound, ['other-owner'])).rejects.toThrow('input invalid');
       await expect(readSeedUuidIdempotencyDropPlans(file, '0'.repeat(64))).rejects.toThrow('input invalid');
       const duplicate = await save({ ...value, plans: [...plans, ...plans] });
       await expect(readSeedUuidIdempotencyDropPlans(file, duplicate)).rejects.toThrow('input invalid');
