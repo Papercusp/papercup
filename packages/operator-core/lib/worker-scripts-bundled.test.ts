@@ -32,7 +32,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -199,18 +199,23 @@ function siblingExecutable(file: string): string {
 
 describe('shared worker recipe executes in the bundled plain-node runtime', () => {
   let output: string;
+  let gateMeta: string;
   const recipe = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
-  const build = (extraEnv: NodeJS.ProcessEnv = {}) => spawnSync('bash', [
-    '-c', 'source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', recipe, REPO_ROOT, output,
+  const build = (extraEnv: NodeJS.ProcessEnv = {}, subject = recipe, destination = output) => spawnSync('bash', [
+    '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', subject, REPO_ROOT, destination,
   ], {
     cwd: REPO_ROOT,
-    env: { ...process.env, PAPERCUSP_EMBED_WORKER_SCRIPT: '', ...extraEnv },
+    env: { ...process.env, PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: gateMeta, ...extraEnv },
     encoding: 'utf8',
     timeout: 30_000,
   });
 
   beforeAll(() => {
     output = mkdtempSync(join(tmpdir(), 'bundled-workers-'));
+    // EI-24917607035361603: the real staging caller set this path without
+    // creating it. Exercise that boundary in the same real worker build.
+    gateMeta = join(output, 'missing-gate-meta');
+    expect(existsSync(gateMeta)).toBe(false);
     symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
     const result = build();
     expect(result.status, result.stdout + result.stderr).toBe(0);
@@ -218,6 +223,55 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
 
   afterAll(() => {
     if (output) rmSync(output, { recursive: true, force: true });
+  });
+
+  it('creates missing gate metadata and records every copied and bundled worker input', () => {
+    const common = readFileSync(recipe, 'utf8');
+    const copied = [...common.matchAll(/\$repo_root\/([^"\s}]+\.script\.mjs)/g)]
+      .map(match => join(REPO_ROOT, match[1]!));
+    const bundled = [...common.matchAll(/"\$repo_root\/([^"]+\.worker\.ts)"/g)]
+      .map(match => join(REPO_ROOT, match[1]!));
+    expect(copied.length).toBeGreaterThan(0);
+    expect(bundled.length).toBeGreaterThan(0);
+    expect(readFileSync(join(gateMeta, 'copied-sources.txt'), 'utf8').trim().split('\n')).toEqual(copied);
+    const metafiles = readdirSync(gateMeta).filter(name => name.endsWith('.meta.json'));
+    expect(metafiles).toHaveLength(bundled.length);
+    const inputs = metafiles.flatMap(name => Object.keys(JSON.parse(readFileSync(join(gateMeta, name), 'utf8')).inputs))
+      .map(path => resolve(REPO_ROOT, path));
+    for (const source of bundled) expect(inputs).toContain(source);
+  });
+
+  it('names a gate metadata directory that cannot be created before publishing workers', () => {
+    const blocked = join(output, 'gate-meta-blocked-by-file');
+    writeFileSync(blocked, 'not a directory');
+    const result = build({ BUNDLE_HOST_GATE_META_DIR: join(blocked, 'meta') });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`FATAL: cannot create the restricted-hold gate meta dir ${join(blocked, 'meta')}`);
+  });
+
+  it('names the copied source when gate bookkeeping cannot be written', () => {
+    const blocked = join(output, 'gate-meta-append-blocked');
+    mkdirSync(join(blocked, 'copied-sources.txt'), { recursive: true });
+    const result = build({ BUNDLE_HOST_GATE_META_DIR: blocked });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`FATAL: cannot record ${join(REPO_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')}`);
+    expect(result.stderr).toContain(`${join(blocked, 'copied-sources.txt')} for the restricted-hold gate`);
+  });
+
+  it('control: omitting only metadata directory creation reproduces the first-worker failure', () => {
+    const original = readFileSync(recipe, 'utf8');
+    const mkdir = '! mkdir -p "$BUNDLE_HOST_GATE_META_DIR"';
+    expect(original.split(mkdir)).toHaveLength(2);
+    const subject = join(output, 'recipe-without-gate-mkdir.sh');
+    writeFileSync(subject, original.replace(mkdir, '! true'));
+    const destination = join(output, 'first-worker-control');
+    const meta = join(output, 'absent-control-meta');
+    const result = build({ BUNDLE_HOST_GATE_META_DIR: meta }, subject, destination);
+    expect(result.status).toBe(1);
+    expect(existsSync(join(destination, 'local-embedder-worker.script.mjs'))).toBe(true);
+    expect(existsSync(join(destination, 'cpu-task-worker.script.mjs'))).toBe(false);
+    expect(result.stderr).toContain(`FATAL: cannot record ${join(REPO_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')}`);
+    expect(existsSync(meta)).toBe(false);
   });
 
   it('runs snapshot compaction in the emitted worker without a TypeScript loader', async () => {
