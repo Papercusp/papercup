@@ -115,8 +115,9 @@ describe('D-166 source-bound UUID output row drops', () => {
       expect(own.length).toBe(before);
       expect(JSON.stringify(await own.get(0))).toBe(firstBlock);
       expect(minted.projection.uuidIdempotencyRedaction?.droppedRows).toBe(1);
-      const replica = target.get({ key: Buffer.from(minted.keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore;
+      const replica = target.get({ key: Buffer.from(minted.keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore & { writable: boolean };
       await replica.ready();
+      expect(replica.writable).toBe(false);
       let output = '';
       for (let i = 0; i < replica.length; i++) output += JSON.stringify(await replica.get(i, { wait: false }));
       expect(output).toContain('keep-this');
@@ -125,6 +126,43 @@ describe('D-166 source-bound UUID output row drops', () => {
       expect(output).not.toContain(value.ciphertext);
     });
   }
+
+  it('carries the value-free redaction report through the maintained provider manifest', async () => {
+    const source = makeStore(tmpDir('seed-d166-provider-source-'));
+    await source.ready();
+    const own = await openOwnLog(source);
+    const original: PeerLogOp = { type: 'put', table: 'coord-messages', hbKey: 'message-1', value,
+      ts: 1, schema_version: 1, author_pubkey: own.keyHex };
+    await own.append(original);
+    await own.append({ ...original, hbKey: 'message-2', value: { body: 'keep-this' } });
+    const result = await createCorestoreSeedProvider().cut({ sourceStore: source,
+      stagingDir: tmpDir('seed-d166-provider-output-'), coreKeys: [own.keyHex], filtered: true,
+      redactValues: [], onProjection: () => {}, uuidIdempotencyDropPlans: [
+        { ...plan(), sourceKeyHex: own.keyHex, sourceLength: own.length },
+      ] } as never);
+    const reports = result.entry.meta?.uuidIdempotencyRedactions;
+    expect(reports).toEqual([expect.objectContaining({ occurrenceCount: 1, droppedRows: 1,
+      authenticationDisposition: 'dropped' })]);
+    expect(JSON.stringify(reports)).not.toContain(valueHash(value));
+    expect(JSON.stringify(reports)).not.toContain(value.originalSignature);
+    expect(own.length).toBe(2);
+  });
+
+  it('refuses missing planned rows before replicating a partially certified output', async () => {
+    const source = makeStore(tmpDir('seed-d166-missing-source-'));
+    const target = makeStore(tmpDir('seed-d166-missing-target-'));
+    await source.ready(); await target.ready();
+    const own = await openOwnLog(source);
+    await own.append({ type: 'put', table: 'coord-messages', hbKey: 'different-row', value,
+      ts: 1, schema_version: 1, author_pubkey: own.keyHex });
+    const onProjection = vi.fn();
+    await expect(mintFilteredSeedContentCore({ sourceStore: source, stagingStore: target,
+      ownerKeyHex: own.keyHex, redactValues: [], onProjection,
+      uuidIdempotencyDropPlan: { ...plan(), sourceKeyHex: own.keyHex, sourceLength: own.length } }))
+      .rejects.toThrow('missing targets');
+    expect(onProjection).not.toHaveBeenCalled();
+    expect(own.length).toBe(1);
+  });
 });
 
 afterEach(async () => {

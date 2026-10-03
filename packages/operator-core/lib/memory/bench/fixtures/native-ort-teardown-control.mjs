@@ -398,6 +398,7 @@ async function debugCapture(root, config, debuggerConfig) {
   }
   const invocation = { binary: fingerprint(debuggerConfig.binary), commands: fingerprint(debuggerConfig.commands),
     source: fingerprint(file), node: fingerprint(process.execPath), configuration: config,
+    nativeOwnership: debuggerConfig.nativeOwnership === true,
     observation: observedProcessEnvironment(),
     scope: 'small native teardown control only; debugger changes observation', embeddingModelInferencePerformed: false };
   writeFileSync(join(root, 'debugger-invocation.json'), JSON.stringify(invocation, null, 2) + '\n', { flag: 'wx', mode: 0o600 });

@@ -1070,6 +1070,7 @@ export interface PromoteFleetLeaderIfMissingInput {
   fleetSlug: string;
   expectedLeaderOwnerId: string | null;
   expectedLeaderMissingSinceMs: number;
+  expectedUpdatedAtMs: number;
   replacementLeaderOwnerId: string;
   nowMs: number;
   graceMs: number;
@@ -1085,6 +1086,7 @@ export async function promoteFleetLeaderIfMissing(
   sql?: Sql,
 ): Promise<AgentFleetRecord | null> {
   if (!Number.isSafeInteger(input.expectedLeaderMissingSinceMs) ||
+      !Number.isSafeInteger(input.expectedUpdatedAtMs) ||
       !Number.isSafeInteger(input.nowMs) ||
       !Number.isSafeInteger(input.graceMs) || input.graceMs < 0) {
     throw new RangeError('fleet leader succession requires safe epoch milliseconds and a non-negative grace period');
@@ -1096,9 +1098,11 @@ export async function promoteFleetLeaderIfMissing(
         AND leader_owner_id IS NOT DISTINCT FROM $3::text
         AND leader_missing_since_ms = $6::bigint
         AND leader_missing_since_ms <= $5::bigint - $7::bigint
+        AND updated_at = $8::bigint
       RETURNING ${COLS}`,
     [input.workspaceId, input.fleetSlug, input.expectedLeaderOwnerId,
-      input.replacementLeaderOwnerId, input.nowMs, input.expectedLeaderMissingSinceMs, input.graceMs],
+      input.replacementLeaderOwnerId, input.nowMs, input.expectedLeaderMissingSinceMs, input.graceMs,
+      input.expectedUpdatedAtMs],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(input.workspaceId, input.fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;

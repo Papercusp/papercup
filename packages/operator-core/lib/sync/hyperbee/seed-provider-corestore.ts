@@ -1107,6 +1107,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
           // `seed-projection-meta.ts` for why the mapping, and not a bare boolean.
           const coreProjectedFrom: Record<string, string> = {};
           const uuidRedactions: SeedUuidIdempotencyRedactionReport[] = [];
+          const uuidOccurrenceIds = new Set<string>();
           try {
             for (const ownerKeyHex of coreKeys) {
               const minted = await mintFilteredSeedContentCore({
@@ -1120,7 +1121,17 @@ export function createCorestoreSeedProvider(): SeedProvider {
                 onProjection,
                 uuidIdempotencyDropPlan: uuidPlans.get(ownerKeyHex),
               });
-              if (minted.projection.uuidIdempotencyRedaction) uuidRedactions.push(minted.projection.uuidIdempotencyRedaction);
+              if (minted.projection.uuidIdempotencyRedaction) {
+                const report = minted.projection.uuidIdempotencyRedaction;
+                for (const occurrence of report.occurrences) {
+                  const id = JSON.stringify(occurrence);
+                  if (uuidOccurrenceIds.has(id)) {
+                    throw new Error('[seed:corestore] duplicate UUID redaction occurrence across source cores');
+                  }
+                  uuidOccurrenceIds.add(id);
+                }
+                uuidRedactions.push(report);
+              }
               filteredCoreKeys.push(minted.keyHex);
               coreLengths[minted.keyHex] = minted.length;
               coreProjectedFrom[minted.keyHex] = ownerKeyHex;

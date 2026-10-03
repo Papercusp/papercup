@@ -207,6 +207,7 @@ describe('leader-missing timestamp and succession (migration 1348)', () => {
       fleetSlug: 'leader-missing-cas',
       expectedLeaderOwnerId: 'leader-a',
       expectedLeaderMissingSinceMs: nextFirstSeen,
+      expectedUpdatedAtMs: remapped!.updatedAt,
       replacementLeaderOwnerId: 'successor-b',
       graceMs: LEADER_MISSING_GRACE_MS,
     };
@@ -215,9 +216,23 @@ describe('leader-missing timestamp and succession (migration 1348)', () => {
       nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS - 1,
     }, rootSql)).resolves.toBeNull();
 
+    // A registry mutation after the roster snapshot invalidates promotion even
+    // when the leader id and absence clock themselves have not changed.
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET updated_at = updated_at + 1
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'leader-missing-cas'],
+    );
+    await expect(promoteFleetLeaderIfMissing({
+      ...promotion,
+      nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS,
+    }, rootSql)).resolves.toBeNull();
+    const currentVersion = (await getFleet(WS, 'leader-missing-cas', rootSql))!.updatedAt;
+
     const results = await Promise.all([
-      promoteFleetLeaderIfMissing({ ...promotion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
-      promoteFleetLeaderIfMissing({ ...promotion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
+      promoteFleetLeaderIfMissing({ ...promotion, expectedUpdatedAtMs: currentVersion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
+      promoteFleetLeaderIfMissing({ ...promotion, expectedUpdatedAtMs: currentVersion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
     ]);
     expect(results.filter(Boolean)).toHaveLength(1);
     expect(results.find(Boolean)).toMatchObject({

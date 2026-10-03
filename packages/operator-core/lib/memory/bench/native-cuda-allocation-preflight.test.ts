@@ -177,6 +177,79 @@ describe('small native ORT teardown control', () => {
       signal: null, signalDelivered: true }), terminal)).toMatchObject({ exitCode: 1, signal: null, hostBacktraceCaptured: false });
   });
 
+  it('qualifies native ownership observer boundaries and rejects foreign, duplicated or cross-thread returns', async () => {
+    const { inspectNativeOwnershipCapture: inspect } = await import('./fixtures/native-ort-teardown-control.mjs');
+    const operations = ['initializer', 'singleton-create', 'session-dispose', 'session-finalize',
+      'instance-finalize', 'singleton-destroy'];
+    const symbols = Object.fromEntries(operations.map(key => [key, 'qualified-' + key]));
+    const binding = { path: '/fixture/onnxruntime_binding.node', bytes: 384040, sha256: 'a'.repeat(64) };
+    const event = (row: object) => 'PC_NATIVE_DEBUGGER\t' + JSON.stringify(row) + '\n';
+    const host = event({ event: 'start', processId: 123 }) + event({ event: 'exit', processId: 123,
+      exitCode: 1, signal: null, signalDelivered: true });
+    const terminal = { eof: true, exitCode: 0, signal: null };
+    const row = (operation: string, callId: number, phase: string, sequence: number) => ({
+      operation, callId, event: phase, sequence, processId: 123, nativeThreadId: 124,
+      symbol: symbols[operation], programCounter: '0x1234', binding,
+    });
+    // The singleton constructor is nested inside InitOrtOnce. A main-thread
+    // finalizer may run after worker-owned initialization and disposal.
+    const rows = [row('initializer', 1, 'enter', 1), row('singleton-create', 2, 'enter', 2),
+      row('singleton-create', 2, 'return', 3), row('initializer', 1, 'return', 4),
+      ...operations.slice(2).flatMap((op, i) => [row(op, i + 3, 'enter', i * 2 + 5),
+        row(op, i + 3, 'return', i * 2 + 6)])];
+    const encode = (values = rows) => host + values.map(value => 'PC_NATIVE_OWNERSHIP\t' + JSON.stringify(value) + '\n').join('');
+    const expected = { symbols, binding };
+    expect(inspect(encode(), terminal, expected)).toMatchObject({ completeOwnershipBoundariesObserved: true,
+      initializerNativeThreadId: 124, missingOperations: [], heapCorruptionRootCauseConfirmed: false });
+    for (const changed of [
+      rows.map((value, i) => i === 3 ? { ...value, nativeThreadId: 125 } : value),
+      rows.map((value, i) => i === 3 ? { ...value, processId: 999 } : value),
+      rows.map((value, i) => i === 3 ? { ...value, symbol: 'foreign' } : value),
+      rows.map((value, i) => i === 3 ? { ...value, binding: { ...binding, sha256: 'b'.repeat(64) } } : value),
+      rows.map((value, i) => i === 3 ? { ...value, binding: { ...binding, bytes: 1 } } : value),
+      rows.map((value, i) => i === 3 ? { ...value, programCounter: '0x9999' } : value),
+      rows.map((value, i) => i === 3 ? { ...value, sequence: 1 } : value),
+      rows.map((value, i) => i === 4 ? { ...value, callId: 1 } : value),
+      rows.map((value, i) => i === 3 ? { ...value, event: 'error' } : value),
+      [...rows, { ...rows.at(-1)!, sequence: rows.length + 1 }],
+    ]) expect(() => inspect(encode(changed), terminal, expected)).toThrow(/native ownership/);
+    expect(() => inspect(host, terminal, expected)).toThrow(/native ownership/);
+    expect(() => inspect(encode(), { ...terminal, eof: false }, expected)).toThrow(/native debugger/);
+    expect(() => inspect(encode(), terminal, { ...expected, symbols: {} })).toThrow(/native ownership/);
+    const mainFinalizer = rows.map(value => value.operation === 'singleton-destroy'
+      ? { ...value, nativeThreadId: 123 } : value);
+    expect(inspect(encode(mainFinalizer), terminal, expected).completeOwnershipBoundariesObserved).toBe(true);
+  });
+
+  it('keeps native ownership observer gaps and unwinds explicit without declaring a corruption cause', async () => {
+    const { inspectNativeOwnershipCapture: inspect } = await import('./fixtures/native-ort-teardown-control.mjs');
+    const operations = ['initializer', 'singleton-create', 'singleton-destroy', 'session-dispose',
+      'session-finalize', 'instance-finalize'];
+    const symbols = Object.fromEntries(operations.map(key => [key, 'qualified-' + key]));
+    const binding = { path: '/fixture/onnxruntime_binding.node', bytes: 384040, sha256: 'a'.repeat(64) };
+    const prefix = 'PC_NATIVE_DEBUGGER\t' + JSON.stringify({ event: 'start', processId: 123 }) + '\n';
+    const exit = 'PC_NATIVE_DEBUGGER\t' + JSON.stringify({ event: 'exit', processId: 123,
+      exitCode: 0, signal: null, signalDelivered: true }) + '\n';
+    const rows = ['enter', 'return'].map((event, i) => ({ event, sequence: i + 1, processId: 123,
+      nativeThreadId: 124, callId: 1, operation: 'singleton-create', symbol: symbols['singleton-create'],
+      programCounter: '0x1234', binding }));
+    const encode = (values = rows) => prefix + values.map(value => 'PC_NATIVE_OWNERSHIP\t' + JSON.stringify(value) + '\n').join('') + exit;
+    const terminal = { eof: true, exitCode: 0, signal: null };
+    const expected = { binding, symbols };
+    const partial = inspect(encode(), terminal, expected);
+    expect(partial.completeOwnershipBoundariesObserved).toBe(false);
+    expect(partial.missingOperations).toContain('singleton-destroy');
+    expect(partial.heapCorruptionRootCauseConfirmed).toBe(false);
+    const unwound = inspect(encode([rows[0], { ...rows[1], event: 'unwound' }]), terminal, expected);
+    expect(unwound.calls[0]).toMatchObject({ returnedAt: null, unwoundAt: 2 });
+    expect(unwound.completeOwnershipBoundariesObserved).toBe(false);
+    const duplicate = [...rows, ...rows.map(value => ({ ...value, sequence: value.sequence + 2, callId: 2 }))];
+    expect(() => inspect(encode(duplicate), terminal, expected)).toThrow(/singleton lifetime/);
+    const destroyBeforeReturn = [rows[0], { ...rows[0], sequence: 2, callId: 2,
+      operation: 'singleton-destroy', symbol: symbols['singleton-destroy'] }];
+    expect(() => inspect(encode(destroyBeforeReturn), terminal, expected)).toThrow(/singleton lifetime/);
+  });
+
   it.each(['success', 'shape-error'] as const)('captures exact FILE-worker %s and process EOF after explicit release', outcome => {
     const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
     const child = spawnSync(process.execPath, [controlFixture, 'capture', root,
