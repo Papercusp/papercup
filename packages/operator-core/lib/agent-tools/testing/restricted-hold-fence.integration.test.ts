@@ -6,7 +6,7 @@
  * "refused from execution" are proven to read the same thing.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,6 +173,17 @@ describe('restricted-write fence on the production census (real Postgres + git)'
     expect(output).not.toMatch(/Tests\s+\d+ passed/);
   }, 120_000);
 
+  // WI-10005745 acceptance falsifier: bg-host's ExecStartPre bundles the LIVE tree and runs it with
+  // the network. The real gate helper bundle-host.sh calls (snapshot → build → gate) must refuse a
+  // bundle whose esbuild metafile lists the held repo file, and put the last-known-good bytes back.
+  it('the host-bundle gate refuses a bundle that consumed a held restricted write and restores last-known-good', () => {
+    const result = bundleGate([HELD_REPO_TEST, 'packages/operator-core/lib/agent-tools/testing/restricted-hold-fence.ts']);
+    expect(result.output).toContain('BUNDLE_RESTRICTED_HOLD_REFUSED error=restricted_write_held published=last-known-good');
+    expect(result.output).toContain(`${HELD_REPO_TEST} is a bundle input and a held restricted write`);
+    expect(result.status).toBe(3);
+    expect(result.host).toBe('last-known-good host');
+  }, 120_000);
+
   it('admits both once the disclosure is released', async () => {
     await sql`
       UPDATE harness_shared.personal_disclosures
@@ -197,7 +208,48 @@ describe('restricted-write fence on the production census (real Postgres + git)'
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/Tests\s+\d+ passed/);
     expect(result.status).toBe(0);
   }, 120_000);
+
+  // Calibration for the bundle-gate falsifier: the identical inputs publish once released.
+  it('the host-bundle gate admits the same bundle once the disclosure is released', () => {
+    const result = bundleGate([HELD_REPO_TEST, 'packages/operator-core/lib/agent-tools/testing/restricted-hold-fence.ts']);
+    expect(result.output).toContain('none is a held restricted write');
+    expect(result.status).toBe(0);
+    expect(result.host).toBe('fresh host');
+  }, 120_000);
 });
+
+/**
+ * Run bin/bundle-restricted-hold-gate.mjs exactly as bundle-host.sh does: snapshot the published
+ * artifact, "build" over it (tmp + rename), then gate with a metafile naming `inputs` (repo-relative,
+ * the way esbuild records them against its working dir).
+ */
+function bundleGate(inputs: string[]): { status: number | null; output: string; host: string } {
+  const gateHelper = join(REPO, 'apps/operator/bin/bundle-restricted-hold-gate.mjs');
+  const work = mkdtempSync(join(tmpdir(), 'bundle-gate-int-'));
+  try {
+    const outdir = join(work, 'dist-host');
+    const snapshotDir = join(outdir, '.restricted-lkg.test');
+    mkdirSync(outdir, { recursive: true });
+    writeFileSync(join(outdir, 'hono-host.mjs'), 'last-known-good host');
+    const snap = spawnSync(process.execPath, [gateHelper, 'snapshot', '--outdir', outdir, '--snapshot-dir', snapshotDir, '--artifact', 'hono-host.mjs'], {
+      cwd: REPO,
+      encoding: 'utf8',
+    });
+    expect(snap.status).toBe(0);
+    writeFileSync(join(outdir, 'hono-host.mjs.tmp'), 'fresh host');
+    renameSync(join(outdir, 'hono-host.mjs.tmp'), join(outdir, 'hono-host.mjs'));
+    const metafile = join(work, 'hono-host.mjs.meta.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: Object.fromEntries(inputs.map((input) => [input, { bytes: 1, imports: [] }])) }));
+    const result = spawnSync(
+      process.execPath,
+      [gateHelper, 'gate', '--root', REPO, '--base-dir', REPO, '--outdir', outdir, '--snapshot-dir', snapshotDir, '--metafile', metafile],
+      { cwd: REPO, env: routerEnv(), encoding: 'utf8', timeout: 110_000 },
+    );
+    return { status: result.status, output: `${result.stdout}\n${result.stderr}`, host: readFileSync(join(outdir, 'hono-host.mjs'), 'utf8') };
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
 
 /** `vitest run <held test>` from its own workspace, as an unrestricted top-level caller. */
 function directVitest() {

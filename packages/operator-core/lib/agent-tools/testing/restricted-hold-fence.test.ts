@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RestrictedEditHolding } from '../../personal-vault/git-sync-hold';
-import { restrictedHoldRefusal, TEST_ROUTER_PATH } from './restricted-hold-fence';
+import { restrictedHoldBundleRefusal, restrictedHoldRefusal, TEST_ROUTER_PATH } from './restricted-hold-fence';
 
 let root: string;
 
@@ -110,5 +110,46 @@ describe('restrictedHoldRefusal — fail closed', () => {
   it('refuses a requested test that cannot be resolved while writes are held', async () => {
     const refusal = await restrictedHoldRefusal(root, ['tests/missing.test.ts'], { holdings: hold('src/held.ts') });
     expect(refusal?.hint).toContain('tests/missing.test.ts could not be resolved');
+  });
+});
+
+// WI-10005745 — the host bundle door: an exact intersection with what the bundle consumed.
+describe('restrictedHoldBundleRefusal', () => {
+  const abs = (rel: string) => join(root, rel);
+
+  it('admits when nothing is held, or when the held write is not a bundle input (calibration)', async () => {
+    const inputs = { files: [abs('src/clean.ts'), abs('src/runner.ts')], dirs: [] };
+    expect(await restrictedHoldBundleRefusal(root, inputs, { holdings: hold() })).toBeNull();
+    expect(await restrictedHoldBundleRefusal(root, inputs, { holdings: hold('src/held.ts') })).toBeNull();
+  });
+
+  it('refuses a held write that esbuild recorded as a bundle input', async () => {
+    const refusal = await restrictedHoldBundleRefusal(root, { files: [abs('src/clean.ts'), abs('src/held.ts')], dirs: [] }, { holdings: hold('src/held.ts') });
+    expect(refusal?.error).toBe('restricted_write_held');
+    expect(refusal?.hint).toContain('src/held.ts is a bundle input and a held restricted write');
+    expect(refusal?.hint).toContain('last-known-good');
+  });
+
+  it('refuses a held file inside a directory the bundler copies verbatim', async () => {
+    const refusal = await restrictedHoldBundleRefusal(root, { files: [], dirs: [abs('scripts')] }, { holdings: hold('scripts/deploy.sh') });
+    expect(refusal?.hint).toContain('scripts/deploy.sh is a bundle input');
+    // A sibling directory that merely shares the prefix is not the copied directory.
+    expect(await restrictedHoldBundleRefusal(root, { files: [], dirs: [abs('scr')] }, { holdings: hold('scripts/deploy.sh') })).toBeNull();
+  });
+
+  it('ignores holds in a different checkout', async () => {
+    const elsewhere = async (): Promise<RestrictedEditHolding[]> => [
+      { path: 'src/held.ts', owner: 'su-restricted', intent: 'restricted-disclosure hold (D-006/P-014): fixture', coordinationDomain: '/some/other/repo' },
+    ];
+    expect(await restrictedHoldBundleRefusal(root, { files: [abs('src/held.ts')], dirs: [] }, { holdings: elsewhere })).toBeNull();
+  });
+
+  it('fails closed when the census cannot be read', async () => {
+    const broken = async (): Promise<RestrictedEditHolding[]> => {
+      throw new Error('census offline');
+    };
+    const refusal = await restrictedHoldBundleRefusal(root, { files: [abs('src/clean.ts')], dirs: [] }, { holdings: broken });
+    expect(refusal?.error).toBe('restricted_hold_state_unknown');
+    expect(refusal?.hint).toContain('census offline');
   });
 });
