@@ -95,23 +95,26 @@ export interface ProducerObservationInput {
   /** Actual producer evaluation, including partial/unknown pins. It remains
    * evidence on an observation and never implies contract acceptance. */
   evaluation?: unknown;
+  /** Supplied only by a producer's evaluated decision path. */
+  contract?: LearningContract;
 }
 
 export interface ProducerLifecycleObservation {
   receiptVersion: '1';
-  stage: 'observation';
+  stage: 'observation' | 'decision';
   producer: LearningProducer;
   workspaceId: string;
   sourceRef: string;
   sourceHash: string;
   source: Record<string, unknown>;
   recordedAt: string;
-  contract: null;
-  promotionAllowed: false;
+  contract: LearningContract | null;
+  promotionAllowed: boolean;
+  validation?: ReturnType<typeof validateLearningContract>;
   /** Added on read; an unadapted later source update is visibly stale. */
   sourceCurrent?: boolean;
   /** Missing full-contract sections; no synthetic pins, actors or zero-dollar spend. */
-  missing: readonly ['candidate', 'experiment', 'evidence', 'spend', 'decision'];
+  missing: readonly string[];
   evaluation?: unknown;
   evaluationSourceHash?: string;
   evaluationCurrent?: boolean;
@@ -139,12 +142,19 @@ function adaptProducerObservation(producer: LearningProducer, input: ProducerObs
     ? previousValue as Partial<ProducerLifecycleObservation> : undefined;
   const evaluation = input.evaluation === undefined ? previous?.evaluation : input.evaluation;
   const evaluationSourceHash = input.evaluation === undefined ? previous?.evaluationSourceHash : sourceHash;
+  const contract = input.contract ?? null;
+  const validation = contract ? validateLearningContract(contract) : undefined;
+  const bound = contract?.candidate.potScope.workspaceId === input.workspaceId &&
+    contract.evidence.some((item) => item.artifactRefs.includes(input.sourceRef));
   return {
-    receiptVersion: '1', stage: 'observation', producer,
+    receiptVersion: '1', stage: contract ? 'decision' : 'observation', producer,
     workspaceId: input.workspaceId, sourceRef: input.sourceRef,
     sourceHash,
-    source, recordedAt: input.recordedAt, contract: null, promotionAllowed: false,
-    missing: ['candidate', 'experiment', 'evidence', 'spend', 'decision'],
+    source, recordedAt: input.recordedAt, contract,
+    promotionAllowed: !!(validation?.ok && bound && contract?.decision.verdict === 'accepted' &&
+      contract.spend.unsettledUsd === 0 && contract.spend.settledAt),
+    ...(validation ? { validation } : {}),
+    missing: contract ? [] : ['candidate', 'experiment', 'evidence', 'spend', 'decision'],
     ...(evaluation === undefined ? {} : { evaluation, evaluationSourceHash, evaluationCurrent: evaluationSourceHash === sourceHash }),
   };
 }
