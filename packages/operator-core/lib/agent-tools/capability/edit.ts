@@ -111,7 +111,13 @@ export default defineTool({
       // grant handler, which is the ordinary edit-attribution writer. Capture
       // this successful write directly so nested dispatches retain the child
       // dispatcher id and the exact normalized file key.
-      if (lock.coordinated && lock.coordinationDomain && lock.ownerId && lock.paths.length > 0) {
+      if (
+        (ctx.codeMode || ctx.indirectDispatch)
+        && lock.coordinated
+        && lock.coordinationDomain
+        && lock.ownerId
+        && lock.paths.length > 0
+      ) {
         void recordEditAttribution({
           repoRoot: lock.coordinationDomain,
           files: lock.paths,
