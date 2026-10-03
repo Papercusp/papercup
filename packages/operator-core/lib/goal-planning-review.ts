@@ -22,6 +22,52 @@ export const GOAL_PLANNING_DISPOSITIONS = [
  */
 export const GOAL_REVIEW_CLUSTER_MIN_ITEMS = 3;
 export const GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS = ['existing-plans-sufficient', 'no-eligible-work'] as const;
+
+/**
+ * P-004 / D-001 (goal-holder-plans-ideation-truthful-reports-2026-10-03). A GOAL's
+ * ideation must YIELD: at least this many evaluated new candidates (an idea filed
+ * through Blender, or a plan proposed for the goal) per goal-day. One pass may file
+ * zero; the goal-day may not. The WOE `ideation-yield` grade and the review receipt
+ * share this threshold so the holder is told exactly what the grader will count.
+ */
+export const GOAL_DAY_MIN_CANDIDATES = 1;
+
+/** The goal-day candidate count returned on a recorded goal review (P-004). */
+export interface GoalDayIdeationYield {
+  goalId: string;
+  /** Start of the goal-day: the 24h ending when the review was recorded. */
+  since: string;
+  /** Plans proposed for this goal in the goal-day (plans:new stamped with its goal). */
+  plansNew: number;
+  /** Ideas this goal's reviews report filing in the goal-day, this pass included. */
+  ideasFiled: number;
+  candidates: number;
+  /** True while the goal-day still has fewer than GOAL_DAY_MIN_CANDIDATES candidates. */
+  owed: boolean;
+  message: string;
+}
+
+export function goalDayIdeationYield(input: {
+  goalId: string;
+  since: string;
+  plansNew: number;
+  /** Ideas reported by reviews already in the ledger (the current call is not yet). */
+  priorIdeasFiled: number;
+  thisPassIdeasFiled: number;
+}): GoalDayIdeationYield {
+  const plansNew = Math.max(0, Math.floor(input.plansNew));
+  const ideasFiled = Math.max(0, Math.floor(input.priorIdeasFiled)) + Math.max(0, Math.floor(input.thisPassIdeasFiled));
+  const candidates = plansNew + ideasFiled;
+  const owed = candidates < GOAL_DAY_MIN_CANDIDATES;
+  const message = owed
+    ? `${candidates} evaluated new candidate(s) for goal ${input.goalId} in the goal-day since ${input.since}; ` +
+      `a GOAL owes at least ${GOAL_DAY_MIN_CANDIDATES} per goal-day. File an idea (improvements:capture or ` +
+      'blender:route-idea) or propose a plan (plans:new), grounded in curation:state-of-pot, rubrics:trend and ' +
+      "blender:ideation-feedback { scope:'mine' }, then record it."
+    : `${candidates} evaluated candidate(s) for goal ${input.goalId} in the goal-day since ${input.since} ` +
+      `(plans ${plansNew}, ideas ${ideasFiled}).`;
+  return { goalId: input.goalId, since: input.since, plansNew, ideasFiled, candidates, owed, message };
+}
 const PLAN_REF = /^plan:[^/\s]+\/\S+$/;
 
 export const goalReviewCoverageEntrySchema = z.object({
