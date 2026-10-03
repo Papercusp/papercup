@@ -32,6 +32,7 @@ import {
   ASSUMPTIONS_REQUIRED_MESSAGE,
   ASSUMPTIONS_SHAPE_HINT,
   TERMINAL_CLOSE_RECOVERY_HINT,
+  type AssumptionDeclaration,
 } from './_assumptions';
 import {
   completionRefAliasFields,
@@ -124,7 +125,7 @@ function nonTerminalAliasSchemaError(input: unknown): string | undefined {
     if (typeof candidate !== 'object' || candidate === null) continue;
     const row = candidate as Record<string, unknown>;
     const alias = suppliedAlias(row as CompletionRefAliasBearing);
-    if (!alias || isTerminalStateInput(row.state)) continue;
+    if (!alias || (typeof row.state === 'string' && isTerminalStateInput(row.state))) continue;
     const state = String(row.state ?? '');
     const isBlocked = state.trim().toLowerCase() === 'blocked';
     return (
@@ -294,6 +295,23 @@ const setStateArgs = z.union(
   [itemsBatch, terminalSingle, terminalMany, nonTerminalSingle, nonTerminalMany],
   { error: aliasAwareUnionError },
 );
+type SetStateArgs = z.infer<typeof setStateArgs>;
+
+function inlineTerminalEvidence(input: unknown): {
+  completionRef: string | undefined;
+  assumptions: AssumptionDeclaration | undefined;
+} {
+  const row = typeof input === 'object' && input !== null
+    ? input as Record<string, unknown>
+    : {};
+  if (!('completionRef' in row || 'reason' in row || 'note' in row)) {
+    return { completionRef: undefined, assumptions: undefined };
+  }
+  return {
+    completionRef: resolveCompletionRefAlias(row as CompletionRefAliasBearing),
+    assumptions: 'assumptions' in row ? row.assumptions as AssumptionDeclaration : undefined,
+  };
+}
 
 export default defineTool({
   name: 'work_items:set_state',
@@ -323,28 +341,45 @@ export default defineTool({
     // P-005: itemSpec is now a UNION (terminal carries a required completionRef;
     // non-terminal has no such field at all), so flatten to one uniform shape here
     // — every downstream reader keeps its single `it.completionRef` access.
-    const list = input.items?.length
-      ? input.items.map((it) => ({
-          id: it.id,
-          state: it.state as string,
-          harness: it.harness,
-          decision: it.decision,
-          force: it.force,
-          // EI-19961538712475843: resolve the alias HERE, at the one place the three
-          // spellings collapse into the single value every downstream reader consumes —
-          // so `it.completionRef` keeps meaning exactly what it meant before. The fields
-          // are now listed explicitly rather than spread: `...it` would carry `reason`
-          // and `note` PAST this point, leaving two live spellings of a field that has
-          // already been resolved, and it made this branch's shape diverge from the
-          // ids[] / inline ones below.
-          completionRef: resolveCompletionRefAlias(it),
-          // P-008 (d): flattened exactly like `completionRef` above — the union's
-          // terminal arm carries it, the non-terminal arm has no such field.
-          assumptions: 'assumptions' in it ? it.assumptions : undefined,
-        }))
-        : input.ids?.length
-        ? input.ids.map((id) => ({ id, state: input.state as string, harness: input.harness, decision: input.decision, completionRef: resolveCompletionRefAlias(input), assumptions: input.assumptions, force: input.force }))
-        : [{ id: input.id as string, state: input.state as string, harness: input.harness, decision: input.decision, completionRef: resolveCompletionRefAlias(input), assumptions: input.assumptions, force: input.force }];
+    const list = 'items' in input
+      ? input.items.map((it) => {
+          const terminalEvidence = inlineTerminalEvidence(it);
+          return {
+            id: it.id,
+            state: it.state as string,
+            harness: it.harness,
+            decision: it.decision,
+            force: it.force,
+            // EI-19961538712475843: resolve the alias HERE, at the one place the three
+            // spellings collapse into the single value every downstream reader consumes —
+            // so `it.completionRef` keeps meaning exactly what it meant before. The fields
+            // are now listed explicitly rather than spread: `...it` would carry `reason`
+            // and `note` PAST this point, leaving two live spellings of a field that has
+            // already been resolved, and it made this branch's shape diverge from the
+            // ids[] / inline ones below.
+            completionRef: terminalEvidence.completionRef,
+            // P-008 (d): flattened exactly like `completionRef` above — the union's
+            // terminal arm carries it, the non-terminal arm has no such field.
+            assumptions: terminalEvidence.assumptions,
+          };
+        })
+      : 'ids' in input
+        ? input.ids.map((id) => ({
+            id,
+            state: input.state as string,
+            harness: input.harness,
+            decision: input.decision,
+            ...inlineTerminalEvidence(input),
+            force: input.force,
+          }))
+        : [{
+            id: input.id,
+            state: input.state as string,
+            harness: input.harness,
+            decision: input.decision,
+            ...inlineTerminalEvidence(input),
+            force: input.force,
+          }];
     const env = await runBulk(
       list,
       async (it) => {
