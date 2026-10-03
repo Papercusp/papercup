@@ -2990,6 +2990,23 @@ export default defineTool({
     // Leaderless is the only state that is TRUE at this point, so it is the one to write.
     const wantsSpawnedLeader = args.leader === 'spawn';
     const spawnedLeaderOwnerId = wantsSpawnedLeader ? `su-${randomUUID()}` : null;
+    // A GOAL holder stewards the portfolio and DELEGATES execution; it is never a participant in
+    // a fleet it launches. resolveGoalFleetLeadership() already enforces that on the ARGUMENT
+    // (it forces leader:'spawn' for every holder and REFUSES leader:'caller'), but the argument
+    // alone did not keep the holder out of the fleet when the spawn was ignored because an
+    // existing fleet still had a live leader — see the join site below (WI-10005698).
+    const callerIsPortfolioSteward = goalHolderSubject != null;
+    // Deferred caller-enrollment writes. Set only when the caller genuinely joins, and applied
+    // after the live-member deficit guard so that a suppressed no-op mutates nothing. It RETURNS
+    // its outcomes instead of assigning the outer leaderControl/leaderReseed from inside the
+    // closure: TypeScript does not re-widen a variable from an assignment it cannot prove runs,
+    // so closure-mutation would narrow both to `null` at their later read sites.
+    let applyCallerFleetMembership:
+      | (() => Promise<{
+          leaderControl: LeaderControlOutcome | null;
+          leaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>>;
+        }>)
+      | null = null;
     // Set when 'spawn' was asked for but the fleet already has a confirmed-live leader:
     // installing a second one is a coup, so preserve the historical ignored/top-up path.
     let leaderSpawnSkipped: string | null = null;
@@ -3067,32 +3084,54 @@ export default defineTool({
       // label, no leader compaction re-seed, no window recolor. The caller is the delegator,
       // not a participant — labelling it here is exactly the "you are leading a fleet you
       // asked not to lead" state this mode exists to prevent. Skipped only when a leader was
-      // actually spawned; the ignored case above falls through to the normal join.
-      if ((wantsSpawnedLeader && created) || delegatedSpawnRetry || delegatedSpawnReplacement) {
+      // actually spawned, which left two holes that WI-10005698 (from EI-24837081637498361)
+      // closes — one about WHO is excluded, one about WHEN the exclusion is decided:
+      //   1. WHO: a GOAL holder topping up an EXISTING fleet whose leader is live reports
+      //      leaderSpawnIgnored, and used to fall through to the ordinary join — enrolling the
+      //      portfolio steward into the very fleet it paid a delegation to stay out of, and
+      //      flipping its mission to execute-fleet-plan-only. The steward exclusion is
+      //      unconditional; it is never contingent on a leader actually being spawned.
+      //   2. WHEN: enrolling here is a MUTATION performed before the live-member deficit guard
+      //      below has decided whether this call opens anything at all. A suppressed no-op must
+      //      not move the caller's membership or mission — the same rule that already defers the
+      //      claim-spec write past that guard. So the writes are CAPTURED here and applied at
+      //      that same boundary; callerMembership reports enrolled:false until they actually
+      //      run, which keeps the reported shape honest on every early return in between.
+      if (
+        (wantsSpawnedLeader && created) ||
+        delegatedSpawnRetry ||
+        delegatedSpawnReplacement ||
+        callerIsPortfolioSteward
+      ) {
         leaderRole = 'delegator';
       } else {
-        await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
-        if (leaderRole === 'leader') {
-          leaderControl = await ensureFleetLeaderControl({
-            workspaceId,
-            ownerId,
-            fleetSlug,
-            harnessSlug: harness,
-            planSlug,
-            carry: args.carry ?? 'warm',
-          });
-        }
-        // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
-        // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
-        // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
-        // exactly at the member cap (an established leader stays put). Best-effort inside the helper.
-        if (leaderRole === 'leader') leaderReseed = await reseedLeaderCompactionLimit(ownerId);
-        // Recolor the caller's live window to the fleet's bound scheme — every other
-        // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
-        // does this; a leader whose window keeps its old color while the members open
-        // in the fleet scheme is the bug, not a variant. Best-effort: a no-op for
-        // non-psu-hosted callers, never throws.
-        await recolorCallerTerminal(ownerId, record);
+        applyCallerFleetMembership = async () => {
+          let joinedLeaderControl: LeaderControlOutcome | null = null;
+          let joinedLeaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>> = null;
+          await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
+          if (leaderRole === 'leader') {
+            joinedLeaderControl = await ensureFleetLeaderControl({
+              workspaceId,
+              ownerId,
+              fleetSlug,
+              harnessSlug: harness,
+              planSlug,
+              carry: args.carry ?? 'warm',
+            });
+          }
+          // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
+          // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
+          // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
+          // exactly at the member cap (an established leader stays put). Best-effort inside the helper.
+          if (leaderRole === 'leader') joinedLeaderReseed = await reseedLeaderCompactionLimit(ownerId);
+          // Recolor the caller's live window to the fleet's bound scheme — every other
+          // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
+          // does this; a leader whose window keeps its old color while the members open
+          // in the fleet scheme is the bug, not a variant. Best-effort: a no-op for
+          // non-psu-hosted callers, never throws.
+          await recolorCallerTerminal(ownerId, record);
+          return { leaderControl: joinedLeaderControl, leaderReseed: joinedLeaderReseed };
+        };
       }
     } catch (e: any) {
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
@@ -3100,12 +3139,25 @@ export default defineTool({
     // True only when this call must actually open a leader terminal (asked for, and the
     // fleet was newly created rather than joined).
     const spawningLeader = wantsSpawnedLeader && (freshFleetCreated || delegatedSpawnReplacement);
+    // Deliberately NARROW: this predicate drives the DELEGATION narrative downstream (the
+    // goal↔leader coupling edge, and the "this fleet is led by a launched agent, not by you"
+    // brief), and both of those need a spawned or recorded leader they can name. Being a
+    // portfolio steward is a SEPARATE reason the caller stays out of the fleet, so it gets its
+    // own term below rather than widening this one and silently changing those two messages.
     const callerExcludedFromFleet = spawningLeader || delegatedSpawnRetry;
-    const callerMembership = {
-      enrolled: !callerExcludedFromFleet,
-      role: callerExcludedFromFleet ? 'delegator' : leaderRole,
-      reason: callerExcludedFromFleet ? 'leader-spawn-caller-excluded' : null,
-    } as const;
+    const callerStaysOutsideFleet = callerExcludedFromFleet || callerIsPortfolioSteward;
+    // enrolled:false until the deferred writes captured above actually run, which happens only
+    // once the live-member deficit guard admits a real wave. Every early return between here and
+    // there therefore reports the truth: this call joined the caller to nothing.
+    let callerMembership: { enrolled: boolean; role: string; reason: string | null } = {
+      enrolled: false,
+      role: callerStaysOutsideFleet ? 'delegator' : leaderRole,
+      reason: callerStaysOutsideFleet
+        ? callerExcludedFromFleet
+          ? 'leader-spawn-caller-excluded'
+          : 'goal-holder-portfolio-steward'
+        : 'launch-suppressed-before-enrollment',
+    };
 
     // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
     // regardless of timing. The rate window alone cannot stop a doom-looping leader that re-fires
@@ -3187,6 +3239,21 @@ export default defineTool({
         relaunchSuppressed: true,
         message: lines.join('\n'),
       });
+    }
+
+    // WI-10005698: a real launch wave is admitted, so the caller's OWN membership may now be
+    // written. This sits at the same boundary as the claim-spec write below, for the same
+    // reason: every return above this line opened nothing, and a call that opens nothing must
+    // leave the caller's fleet label, leader control, compaction seed and window colour alone.
+    if (applyCallerFleetMembership) {
+      try {
+        const joined = await applyCallerFleetMembership();
+        leaderControl = joined.leaderControl;
+        leaderReseed = joined.leaderReseed;
+      } catch (e: any) {
+        return err(`Failed to join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
+      }
+      callerMembership = { enrolled: true, role: leaderRole, reason: null };
     }
 
     // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671 + EI-10409: set the
