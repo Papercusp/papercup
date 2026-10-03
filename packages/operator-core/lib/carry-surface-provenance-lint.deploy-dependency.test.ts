@@ -24,6 +24,7 @@ describe('unprobed-deploy-dependency', () => {
     'blocked on green main — resume after release:deployed',
     'Acceptance is pending deployment; nothing else to do',
     "can't grade R-3 until it lands on main",
+    'R-3 needs the fix to be deployed before it can be graded',
   ])('flags: %s', (line) => {
     expect(kinds(line)).toContain('unprobed-deploy-dependency');
   });
@@ -43,6 +44,11 @@ describe('unprobed-deploy-dependency', () => {
     'the main risk is the parser; fix it first',
     'merged the main loop refactor',
   ])('does not flag: %s', (line) => {
+    expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
+  });
+
+  it('does not mistake a deployed-artifact code task for a release dependency', () => {
+    const line = 'AgenticMail and VirtualBox remediation sources are outside this repo; Kopia backup-lock/RPO work remains on WI-10004971. Do not attribute any of these failed services to the host freeze. Need implement a Papercusp-side deployed model-path prerequisite check with a recurrence guard; the unrelated host artifacts remain unresolved.';
     expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
   });
 

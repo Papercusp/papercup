@@ -72,7 +72,7 @@ describe('staging-first activation guard', () => {
     },
   );
 
-  it.each(['Prepare', 'Configure', 'Inventory'])(
+  it.each(['Prepare', 'Configure', 'Inventory', 'Audit', 'Review', 'Inspect', 'Document', 'Map'])(
     'allows %s of a self-hosted media deployment as a source prerequisite',
     (action) => {
       const parsed = plan([
@@ -80,6 +80,29 @@ describe('staging-first activation guard', () => {
         '- **P-002** `todo` Implement current-build recovery tests and alerts. blocked-by: P-001',
       ]);
       expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it('allows a hosted-readiness audit before building the pilot price sheet', () => {
+    const parsed = plan([
+      '- **P-002** `todo` Audit current hosted readiness and reuse boundaries. Verify assumptions about WorkOS, deployment, customer-content access, credentials, teardown and recovery.',
+      '- **P-003** `todo` Build the pilot unit-economics and price sheet from measured compute and support costs. blocked-by: P-002',
+    ]);
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it.each(['Audit', 'Review', 'Inspect', 'Document', 'Map'])(
+    'retains real release prerequisites in a %s item',
+    (action) => {
+      for (const releasePlane of ['main promotion', 'final deployment', ':3070', 'production']) {
+        const parsed = plan([
+          `- **P-001** \`todo\` ${action} the deployment after ${releasePlane}.`,
+          '- **P-002** `todo` Implement current-build recovery tests and alerts. blocked-by: P-001',
+        ]);
+        expect(stagingFirstActivationProblems(parsed), releasePlane).toEqual([
+          expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+        ]);
+      }
     },
   );
 
