@@ -124,7 +124,10 @@ RUN set -eux; \
       'enabled=0' \
       'gpgcheck=1' \
       'repo_gpgcheck=0' \
-      'gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg' \
+      'gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key-v10.gpg' \
+      `# EL10's rpm (sequoia) rejects rpm-package-key.gpg (F09C394C3E1BA8D5): its only binding` \
+      `# signature is SHA-1, so dnf failed "Key import failed (code 3)" on google-guest-agent` \
+      `# (WI-10005910 chain4, 2026-10-03). The el10 repo is signed by the v10 key (b64936f9).` \
       > /etc/yum.repos.d/google-cloud.repo; \
     dnf -y install --setopt=install_weak_deps=False epel-release; \
     `# Upgrade the BASE before installing (WI-10005681). dnf install never touches a package` \

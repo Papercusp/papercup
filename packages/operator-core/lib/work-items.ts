@@ -3280,7 +3280,13 @@ async function isStaleHoldOpenAndCleared(
         `Reason was: ${heldOpen.reason ?? '(none)'}`,
     );
     return true;
-  } catch {
+  } catch (e: unknown) {
+    // Still fails closed, but never silently: a liveness check that cannot run looks
+    // exactly like a LIVE holder, so say why the dead-hold lift was skipped.
+    console.warn(
+      `[hold-open] liveness check for ${id} (holder ${heldOpen.by}) could not run; hold stays enforced: ` +
+        (e instanceof Error ? e.message : String(e)),
+    );
     return false;
   }
 }

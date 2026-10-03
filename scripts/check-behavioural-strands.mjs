@@ -132,6 +132,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * JS as-is.
  */
 const SOURCE_RE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/;
 const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 /** Type declarations (.d.ts / .d.mts / .d.cts) have no call sites, so no seam to count. */
 const DECLARATION_RE = /\.d\.[cm]?ts$/;
@@ -148,6 +149,7 @@ const INJECTED_TYPE_NAME_RE =
 
 /**
  * Why a repo-relative path is NOT a candidate for this guard, or `null` when it is.
+ * Package manifests are candidates for their scripts.<name> output values; ordinary JSON is not.
  *
  * The ONE definition of the candidate set. The CLI's declared mode and its tree-diff mode
  * both use it, and the PostToolUse nudge hook mirrors it (the hook is installed detached
@@ -159,6 +161,7 @@ const INJECTED_TYPE_NAME_RE =
  * @returns {null | 'not-source' | 'declaration' | 'test-file' | 'excluded-path'}
  */
 export function candidateSkipReason(file) {
+  if (PACKAGE_JSON_RE.test(file)) return keepPath(file) ? null : 'excluded-path';
   if (!SOURCE_RE.test(file)) return 'not-source';
   if (DECLARATION_RE.test(file)) return 'declaration';
   if (TEST_RE.test(file)) return 'test-file';
@@ -172,6 +175,7 @@ const SKIP_REASON_TEXT = {
   declaration: 'type declaration — no runtime call sites',
   'test-file': 'test file — a consumer of seams, not a shared seam',
   'excluded-path': 'generated/vendored path (dist, build, node_modules, .papercusp, …)',
+  'invalid-package-json': 'package.json could not be parsed — script values were not checked',
   'new-file': 'no version at the base — a new file cannot strand an existing assertion',
   deleted: 'deleted since the base — nothing left to compare',
   'not-found': 'NOT FOUND in the working tree or at the base — check the path',
@@ -184,7 +188,7 @@ const SKIP_REASON_TEXT = {
  * guard exists to prevent. The other reasons are outside the guard's domain by design, and
  * are disclosed rather than counted against the run.
  */
-const UNEXAMINED_REASONS = new Set(['not-found']);
+const UNEXAMINED_REASONS = new Set(['not-found', 'invalid-package-json']);
 
 /**
  * Exit status for a no-findings run, given the declared files that were not examined.
@@ -1947,6 +1951,38 @@ export function diffOutputValues(beforeText, afterText, fileName = 'file.ts') {
 export const changedOutputValues = diffOutputValues;
 export const diffPersistedOutputValues = diffOutputValues;
 
+/**
+ * Changed package-manager script values are observable contracts too: tests may pin the
+ * command string even though package.json is not an importable JS/TS seam.
+ * Returns null when either manifest is invalid, so the CLI can report NOT CHECKED.
+ */
+export function diffPackageScriptValues(beforeText, afterText) {
+  const readScripts = (text) => {
+    let manifest;
+    try {
+      manifest = JSON.parse(String(text));
+    } catch {
+      return null;
+    }
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return null;
+    if (manifest.scripts === undefined || manifest.scripts === null) return new Map();
+    if (typeof manifest.scripts !== 'object' || Array.isArray(manifest.scripts)) return null;
+    return new Map(Object.entries(manifest.scripts));
+  };
+
+  const before = readScripts(beforeText);
+  const after = readScripts(afterText);
+  if (!before || !after) return null;
+  const names = [...new Set([...before.keys(), ...after.keys()])].sort();
+  return names.flatMap((property) => {
+    const hasBefore = before.has(property);
+    const hasAfter = after.has(property);
+    const beforeValue = hasBefore ? JSON.stringify(before.get(property)) : '<missing>';
+    const afterValue = hasAfter ? JSON.stringify(after.get(property)) : '<missing>';
+    return beforeValue === afterValue ? [] : [{ property, before: beforeValue, after: afterValue }];
+  });
+}
+
 /** Does an AST node contain a property read/fixture key matching one of the changed outputs? */
 function nodeMentionsOutputProperty(node, wanted, sourceFile) {
   let found = false;
@@ -2037,6 +2073,66 @@ export function hasValueAssertion(text, properties, fileName = 'test.ts') {
 }
 
 export const hasOutputValueAssertion = hasValueAssertion;
+
+function isScriptsObject(node) {
+  if (ts.isIdentifier(node)) return node.text === 'scripts';
+  if (ts.isPropertyAccessExpression(node)) return node.name.text === 'scripts';
+  return (
+    ts.isElementAccessExpression(node) &&
+    (ts.isStringLiteral(node.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(node.argumentExpression)) &&
+    node.argumentExpression.text === 'scripts'
+  );
+}
+
+function packageScriptAccessName(node) {
+  if (ts.isPropertyAccessExpression(node) && isScriptsObject(node.expression)) return node.name.text;
+  if (
+    ts.isElementAccessExpression(node) &&
+    isScriptsObject(node.expression) &&
+    (ts.isStringLiteral(node.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(node.argumentExpression))
+  ) {
+    return node.argumentExpression.text;
+  }
+  return null;
+}
+
+function nodeMentionsPackageScript(node, wanted) {
+  let found = false;
+  const visit = (current) => {
+    if (found) return;
+    const name = packageScriptAccessName(current);
+    if (name !== null && wanted.has(name)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+/** Does an assertion read one of the changed scripts.<name> values? */
+export function hasPackageScriptAssertion(text, scriptNames, fileName = 'test.ts') {
+  const wanted = new Set((scriptNames ?? []).filter((name) => typeof name === 'string' && name.length > 0));
+  if (wanted.size === 0 || !String(text).includes('scripts')) return false;
+  let sourceFile;
+  try {
+    sourceFile = ts.createSourceFile(fileName, String(text), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    return false;
+  }
+  let found = false;
+  const visit = (node) => {
+    if (found) return;
+    if (isAssertionCall(node, sourceFile) && nodeMentionsPackageScript(node, wanted)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return found;
+}
 
 // ── the blast radius: downstream assertions in OTHER workspaces ─────────────────────────
 
@@ -2157,6 +2253,10 @@ export function mentionsSeamMember(text, members) {
 
 const CLIP = 25;
 
+function packageScriptAccess(property) {
+  return `scripts[${JSON.stringify(property)}]`;
+}
+
 function formatFindings({
   triggers,
   tests,
@@ -2165,6 +2265,7 @@ function formatFindings({
   injectionBand = [],
   members,
   valueProperties,
+  scriptProperties = [],
   usedWide,
   clipped,
   baseNote,
@@ -2174,9 +2275,14 @@ function formatFindings({
   const hasCallTriggers = triggers.some((t) => (t.seams ?? []).length > 0);
   const hasControlFlowTriggers = triggers.some((t) => (t.controlFlow ?? []).length > 0);
   const hasValueTriggers = triggers.some((t) => (t.values ?? []).length > 0);
+  const hasScriptTriggers = triggers.some((t) => (t.scriptValues ?? []).length > 0);
   const hasInjectionTriggers = triggers.some((t) => (t.injections ?? []).length > 0);
+  const scriptOnly =
+    hasScriptTriggers && !hasCallTriggers && !hasControlFlowTriggers && !hasValueTriggers && !hasInjectionTriggers;
   lines.push(
-    hasInjectionTriggers && !hasCallTriggers && !hasControlFlowTriggers && !hasValueTriggers
+    scriptOnly
+      ? '⚠ PACKAGE-SCRIPT STRAND RISK — a package.json scripts.<name> value changed.'
+      : hasInjectionTriggers && !hasCallTriggers && !hasControlFlowTriggers && !hasValueTriggers && !hasScriptTriggers
       ? '⚠ INJECTED-MEMBER STRAND RISK — an injected dependency member gained an invoker.'
       : (hasCallTriggers || hasControlFlowTriggers) && hasValueTriggers
       ? '⚠ BEHAVIOURAL STRAND RISK — a shared seam invocation contract and a writer output value changed.'
@@ -2199,6 +2305,9 @@ function formatFindings({
     }
     for (const v of t.values ?? []) {
       lines.push(`    output ${v.property}: ${v.before} -> ${v.after}`);
+    }
+    for (const value of t.scriptValues ?? []) {
+      lines.push(`    package script ${packageScriptAccess(value.property)}: ${value.before} -> ${value.after}`);
     }
     for (const inj of t.injections ?? []) {
       lines.push(
@@ -2233,25 +2342,44 @@ function formatFindings({
     );
     lines.push('`test:affected` cannot prove that a runtime value contract stayed compatible.');
   }
+  if (hasScriptTriggers) {
+    lines.push(
+      'A test may pin a package command through scripts["<name>"] or scripts.<name>.',
+      'Changed script keys are joined to assertions that read those values, including same-workspace tests.',
+    );
+  }
   lines.push('');
   const runList = [...new Set([...tests, ...injectionBand.map((entry) => entry.file)])];
   if (tests.length === 0) {
+    const noTests = hasScriptTriggers
+      ? 'No tracked test assertion reads a changed package script key.'
+      : 'No downstream call-count/order or output-value assertions reachable from this change.';
     lines.push(
       runList.length === 0
-        ? 'No downstream call-count/order or output-value assertions reachable from this change. Nothing to run.'
-        : 'No downstream call-count/order or output-value assertions reachable from this change.',
+        ? `${noTests} Nothing to run.`
+        : noTests,
     );
   } else {
+    const anchorNames = [
+      ...members,
+      ...valueProperties,
+      ...scriptProperties.map((property) => packageScriptAccess(property)),
+    ];
+    const bandDescription = hasScriptTriggers
+      ? `Test files selected for changed package-script assertions and other matched behavioral contracts: ${wider.length}`
+      : `Reachable test files in other workspaces asserting on call count/order or changed output values: ${wider.length}`;
     lines.push(
-      `Reachable test files in other workspaces asserting on call count/order or changed output values: ${wider.length}` +
-        (members.length > 0 || valueProperties.length > 0
-          ? `; of those, ${narrow.length} also name a relevant anchor (${[...members, ...valueProperties].join(', ')}).`
+      bandDescription +
+        (anchorNames.length > 0
+          ? `; of those, ${narrow.length} also name a relevant anchor (${anchorNames.join(', ')}).`
           : '.'),
     );
     lines.push(
       usedWide
         ? narrow.length === 0
-          ? 'No test names a seam member, so the WIDER band is named below — a narrow set is a ranking, never a reason to report less.'
+          ? hasScriptTriggers
+            ? 'No test names a changed script key or other focused anchor, so the WIDER band is named below — a narrow set is a ranking, never a reason to report less.'
+            : 'No test names a seam member, so the WIDER band is named below — a narrow set is a ranking, never a reason to report less.'
           : 'Naming the WIDER band (--wide).'
         : 'Naming the narrowed set. The wider band is still real — an aliased mock can carry a stale count without naming the seam; --wide names it.',
     );
@@ -2385,12 +2513,18 @@ function main() {
       identical.push(file);
       continue;
     }
-    const seams = increasedSeams(beforeText, afterText, file);
-    const controlFlow = changedSeamControlFlow(beforeText, afterText, file);
-    const values = diffOutputValues(beforeText, afterText, file);
-    const injections = invokedInjectedMembers(beforeText, afterText, file);
-    if (seams.length > 0 || controlFlow.length > 0 || values.length > 0 || injections.length > 0) {
-      triggers.push({ file, seams, controlFlow, values, injections });
+    const isPackageManifest = PACKAGE_JSON_RE.test(file);
+    const scriptValues = isPackageManifest ? diffPackageScriptValues(beforeText, afterText) : [];
+    if (scriptValues === null) {
+      skipped.push({ file, reason: 'invalid-package-json' });
+      continue;
+    }
+    const seams = isPackageManifest ? [] : increasedSeams(beforeText, afterText, file);
+    const controlFlow = isPackageManifest ? [] : changedSeamControlFlow(beforeText, afterText, file);
+    const values = isPackageManifest ? [] : diffOutputValues(beforeText, afterText, file);
+    const injections = isPackageManifest ? [] : invokedInjectedMembers(beforeText, afterText, file);
+    if (seams.length > 0 || controlFlow.length > 0 || values.length > 0 || injections.length > 0 || scriptValues.length > 0) {
+      triggers.push({ file, seams, controlFlow, values, injections, scriptValues });
     }
   }
 
@@ -2406,7 +2540,9 @@ function main() {
       : '';
 
   if (triggers.length === 0) {
-    const exit = exitForDeclaredRun({ examinedFiles: examined, identicalFiles: identical, declared, skipped });
+    const exit = unexamined.length > 0
+      ? EXIT_NOT_CHECKED
+      : exitForDeclaredRun({ examinedFiles: examined, identicalFiles: identical, declared, skipped });
     const notChecked = exit === EXIT_NOT_CHECKED;
     const text = !notChecked
       ? `✓ no behavioural seam or output value changed (${examined.length} changed source file(s) examined vs '${requestedBase}')`
@@ -2453,13 +2589,19 @@ function main() {
   const changedWorkspaces = new Set(seeds.map((f) => workspaceOf(f, packageDirs)));
   const members = seamMemberNames(triggers);
   const valueProperties = outputPropertyNames(triggers);
+  const scriptProperties = [...new Set(triggers.flatMap((t) => (t.scriptValues ?? []).map((value) => value.property)))];
 
   // An injection-only trigger (a new invoked Deps member, no call-count/order/value change) has
   // no count-assertion band: naming every reachable count assertion for it would be pure noise.
   const needsCountBand = triggers.some(
-    (t) => (t.seams?.length ?? 0) + (t.controlFlow?.length ?? 0) + (t.values?.length ?? 0) > 0,
+    (t) =>
+      (t.seams?.length ?? 0) +
+        (t.controlFlow?.length ?? 0) +
+        (t.values?.length ?? 0) +
+        (t.scriptValues?.length ?? 0) >
+      0,
   );
-  const wider = needsCountBand
+  const reachableTests = needsCountBand
     ? [...reachable]
         .filter((f) => TEST_RE.test(f))
         .filter((f) => !changedWorkspaces.has(workspaceOf(f, packageDirs)))
@@ -2470,6 +2612,13 @@ function main() {
         )
         .sort()
     : [];
+  const scriptTests =
+    scriptProperties.length > 0
+      ? allFiles
+          .filter((f) => TEST_RE.test(f))
+          .filter((f) => hasPackageScriptAssertion(readFile(f), scriptProperties, f))
+      : [];
+  const wider = [...new Set([...reachableTests, ...scriptTests])].sort();
   // Partial-injection fixtures: any reachable test file, the changed workspace INCLUDED.
   const injections = triggers.flatMap((t) => t.injections ?? []);
   const injectionBand = partialInjectionFixtures({
@@ -2482,7 +2631,8 @@ function main() {
   const narrow = wider.filter(
     (f) =>
       (members.length > 0 && mentionsSeamMember(readFile(f), members)) ||
-      (valueProperties.length > 0 && hasValueAssertion(readFile(f), valueProperties, f)),
+      (valueProperties.length > 0 && hasValueAssertion(readFile(f), valueProperties, f)) ||
+      (scriptProperties.length > 0 && hasPackageScriptAssertion(readFile(f), scriptProperties, f)),
   );
   // The narrow set is a ranking, not a filter that may hide work: when it comes out empty
   // the wider band is what gets named, so this can never print "nothing to run" while
@@ -2522,6 +2672,7 @@ function main() {
           triggers,
           seamMembers: members,
           outputProperties: valueProperties,
+          packageScriptProperties: scriptProperties,
           tests,
           narrow,
           wider,
@@ -2544,6 +2695,7 @@ function main() {
         injectionBand,
         members,
         valueProperties,
+        scriptProperties,
         usedWide,
         clipped: !wantAll,
         baseNote: [skippedNote, baseNote].filter(Boolean).join('\n'),

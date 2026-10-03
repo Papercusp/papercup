@@ -6288,6 +6288,50 @@ describe("psu-launcher arg parsing", () => {
     expect(choices.find((choice) => choice.value === "fresh")?.disabled).toBe(false);
   });
 
+  it("accountPickerChoices blocks auto when a different-provider allow-list excludes the selected provider", () => {
+    for (const provider of ["claude", "codex"]) {
+      const other = provider === "claude" ? "codex" : "claude";
+      const choices = accountPickerChoices({
+        gatewayOn: true,
+        provider,
+        pool: [`${provider}-main`],
+        forcedAccounts: [`${other}-main`],
+      });
+      expect(choices.find((choice) => choice.value === "auto")?.disabled)
+        .toContain(`no allowed ${provider} accounts`);
+      expect(choices.find((choice) => choice.value === `${provider}-main`)?.disabled)
+        .toBe("(blocked by session-override)");
+      expect(choices.some((choice) => choice.value === `${other}-main`)).toBe(false);
+      expect(choices[0].value).toBe("system");
+    }
+  });
+
+  it("accountPickerChoices applies exclusions to auto and re-enables it when an allowed account remains", () => {
+    const base = {
+      gatewayOn: true,
+      provider: "claude",
+      pool: ["claude-one", "claude-two"],
+      forcedAccounts: ["claude-one", "claude-two"],
+    };
+    expect(accountPickerChoices({ ...base, excludeAccounts: base.pool })
+      .find((choice) => choice.value === "auto")?.disabled)
+      .toContain("no allowed claude accounts");
+    expect(accountPickerChoices({ ...base, excludeAccounts: ["claude-one"] })
+      .find((choice) => choice.value === "auto")?.disabled).toBe(false);
+  });
+
+  it("accountPickerChoices leaves quota and credit eligibility to live preflight, not account restrictions", () => {
+    const choices = accountPickerChoices({
+      gatewayOn: true,
+      provider: "codex",
+      pool: ["codex-main"],
+      accountStates: { "codex-main": "unavailable" },
+    });
+    expect(choices.find((choice) => choice.value === "auto")?.disabled).toBe(false);
+    expect(accountPickerChoices({ gatewayOn: false, provider: "codex", pool: ["codex-main"] })
+      .some((choice) => choice.value === "auto")).toBe(false);
+  });
+
   it("accountPickerChoices omits auto without a usable supported-provider pool", () => {
     expect(
       accountPickerChoices({ pool: [], provider: "codex" }).map(

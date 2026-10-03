@@ -22,8 +22,10 @@ import {
   decideQuotaWakeRecovery,
   quotaRecoveryPickupConfirmed,
   quotaRecoveryReceiptForDelivery,
+  withClaudeResumeEffortClamp,
   type ExecuteWakeDeps,
 } from './wake-executor';
+import { readClaudeLaunchSettings as realReadClaudeLaunchSettings } from '../../model-context-budget.mjs';
 import { CRASH_RESUME_ADVISORY_MARKER } from './crash-resume-advisory';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -282,6 +284,10 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     write: vi.fn(() => true) as never,
     spawnManagedPty: vi.fn(() => ({ id: 'pty-1' })) as never,
     spawnDetached: vi.fn(() => 1234),
+    // WI-10005900: hermetic by default — the production reader opens the
+    // settings.json the resumed claude would read, which falls back to the
+    // runner's real ~/.claude. No settings ⇒ the resume argv is unchanged.
+    readClaudeLaunchSettings: vi.fn(() => null),
     presence: vi.fn(async () => livePresence) as never,
     getSessionLifecycle: vi.fn(async () => null),
     // EI-22449230917085417: keep ordinary wake tests hermetic; the production
@@ -2140,6 +2146,59 @@ describe('dead-session wake re-home on a walled account (P-013 part A)', () => {
   });
 });
 
+describe('withClaudeResumeEffortClamp (WI-10005900)', () => {
+  const base = ['--settings', '{}', '--resume', 'sid-1', '-p', '--dangerously-skip-permissions', 'WAKE'];
+
+  it('inserts the clamped --effort before --resume when the inherited Opus 5 effort is xhigh', () => {
+    const out = withClaudeResumeEffortClamp(base, { model: 'opus[1m]', effortLevel: 'xhigh' });
+    expect(out).toEqual(['--settings', '{}', '--effort', 'max', '--resume', 'sid-1', '-p', '--dangerously-skip-permissions', 'WAKE']);
+    expect(base).not.toContain('--effort'); // input untouched
+  });
+
+  it('clamps a full Opus 5 model id too', () => {
+    expect(withClaudeResumeEffortClamp(base, { model: 'claude-opus-5-5', effortLevel: 'XHIGH' })).toContain('max');
+  });
+
+  it('returns the SAME array when there is nothing to clamp', () => {
+    for (const settings of [
+      null,
+      { model: 'opus[1m]', effortLevel: 'high' },
+      { model: 'opus', effortLevel: 'max' },
+      { model: 'claude-sonnet-4-5', effortLevel: 'xhigh' },
+      // Known limitation: no model anywhere ⇒ the CLI default is unknown ⇒ no clamp.
+      { effortLevel: 'xhigh' },
+      { model: 'opus', effortLevel: 7 },
+    ]) {
+      expect(withClaudeResumeEffortClamp(base, settings)).toBe(base);
+    }
+  });
+
+  it('leaves an argv that already names an effort, or has no --resume, alone', () => {
+    const settings = { model: 'opus', effortLevel: 'xhigh' };
+    const named = ['--effort', 'high', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(named, settings)).toBe(named);
+    const namedEq = ['--effort=high', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(namedEq, settings)).toBe(namedEq);
+    const fresh = ['-p', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(fresh, settings)).toBe(fresh);
+  });
+
+  it('judges the argv --model over the settings model', () => {
+    const opusArgv = ['--model', 'opus', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(opusArgv, { model: 'claude-sonnet-4-5', effortLevel: 'xhigh' })).toEqual([
+      '--model',
+      'opus',
+      '--effort',
+      'max',
+      '--resume',
+      'sid',
+      'WAKE',
+    ]);
+    const sonnetArgv = ['--model', 'claude-sonnet-4-5', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(sonnetArgv, { model: 'opus', effortLevel: 'xhigh' })).toBe(sonnetArgv);
+  });
+});
+
 describe('resumeCommandFor', () => {
   it('claude: exact-session resume with the prompt as positional arg', () => {
     const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }, 'WAKE');
@@ -3244,6 +3303,73 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       else process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = prevTok;
       rmSync(claudeRoot, { recursive: true, force: true });
       rmSync(tokenDir, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-10005900: claude resume clamps the effort inherited from the isolated settings.json the CHILD will read', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pjoin } = await import('node:path');
+    const claudeRoot = mkdtempSync(pjoin(tmpdir(), 'wake-claude-effort-'));
+    const prevCfg = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    const prevModel = process.env.ANTHROPIC_MODEL;
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = claudeRoot;
+    // The child would honour ANTHROPIC_MODEL over settings.model; keep the
+    // runner's own value out of this fixture.
+    delete process.env.ANTHROPIC_MODEL;
+    try {
+      // The per-session settings Claude Code wrote while Opus 5 offered xhigh.
+      const cfgDir = pjoin(claudeRoot, 'su-owner-9');
+      mkdirSync(cfgDir, { recursive: true });
+      writeFileSync(pjoin(cfgDir, 'settings.json'), JSON.stringify({ model: 'opus[1m]', effortLevel: 'xhigh' }));
+
+      const read = vi.fn((env: Record<string, string | undefined>) => realReadClaudeLaunchSettings(env));
+      const spawnDetached = vi.fn(() => 4321);
+      const out = await executeWake(
+        work({ wakeHandle: advHandle() }),
+        deps({
+          alive: vi.fn(() => false), // exited → resume
+          getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: 'su-owner-9' })) as never,
+          readClaudeLaunchSettings: read,
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      // Read with the child's env (its isolated config dir), not the operator's.
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read.mock.calls[0][0].CLAUDE_CONFIG_DIR).toBe(cfgDir);
+      const [bin, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+      expect(bin).toBe('claude');
+      const at = args.indexOf('--effort');
+      expect(at).toBeGreaterThan(-1);
+      expect(args[at + 1]).toBe('max');
+      expect(at).toBeLessThan(args.indexOf('--resume'));
+      // The wake text stays the positional last arg.
+      expect(args[args.length - 1]).not.toBe('max');
+      expect(args.filter((a) => a === '--effort')).toHaveLength(1);
+    } finally {
+      if (prevCfg === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+      else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = prevCfg;
+      if (prevModel !== undefined) process.env.ANTHROPIC_MODEL = prevModel;
+      rmSync(claudeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-10005900: claude resume argv is unchanged when the inherited effort is supported or absent', async () => {
+    for (const settings of [null, { model: 'opus[1m]', effortLevel: 'high' }, { model: 'opus', effortLevel: 'max' }]) {
+      const spawnDetached = vi.fn(() => 4321);
+      const out = await executeWake(
+        work({ wakeHandle: advHandle() }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () => session({ agent: 'claude' })) as never,
+          readClaudeLaunchSettings: vi.fn(() => settings),
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+      expect(args.some((a) => a === '--effort' || a.startsWith('--effort='))).toBe(false);
     }
   });
 

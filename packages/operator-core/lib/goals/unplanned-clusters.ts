@@ -9,7 +9,7 @@
  * holder's whole portfolio was loose singletons the drain fleet picked in arbitrary order.
  *
  * This module is the platform half of that contract. It finds clusters DETERMINISTICALLY —
- * no model call — from four signals the ledger already records:
+ * no model call — from five signals the ledger already records:
  *
  *   1. an explicit link edge between two of the goal's open unplanned items
  *      (caused-by / duplicates / relates / blocks / fixes / investigates / about / revises);
@@ -19,7 +19,13 @@
  *   3. a shared cited repository path (`packages/…/x.ts`) in the title or summary — two
  *      items naming the same file are the same subsystem;
  *   4. a shared bracketed title prefix (`[Truthful reports] …`), the fleet's own grouping
- *      convention.
+ *      convention;
+ *   5. a shared tool-failure CLASS: the failure family + error code from the canonical
+ *      `payload.toolFailureSignature.signatureKey` that automatic tool-failure capture
+ *      stamps. `coord:glance … (authorization_denied)` and `flags:get … (authorization_denied)`
+ *      are one kernel refusal seen through two verbs; they cite no path and carry no
+ *      prefix, so signals 1-4 missed a 4-item cluster of exactly this shape
+ *      (WI-10005920). Catch-all codes that name no root cause are not a key.
  *
  * Signals are unioned (union-find), so A–B by a link and B–C by a shared path make one
  * cluster A–B–C. A cluster is REPORTABLE once it has `minSize` members and it FORMED (its
@@ -36,6 +42,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 
 import { IMPROVEMENT_TOPIC } from '../agent-tools/coordination/topics-core';
+import { parseToolFailureSignatureKey } from '../harness/improvements/tool-error-classifier';
 import { createWorkItem, TERMINAL_WORK_ITEM_STATES } from '../work-items';
 import { stampPromotedGoal } from './provenance-stamp';
 
@@ -64,6 +71,20 @@ export const CLUSTER_LINK_RELS: readonly string[] = [
  *  the constant `improvements:capture` actually stamps, not a hand-copied string. */
 export const PROVENANCE_TOPICS: readonly string[] = [IMPROVEMENT_TOPIC];
 
+/** Error codes that name no root cause, so two failures sharing one are not one subject:
+ *  the classifier's own unknown fallback, and `handler_error`, the wrapper around ANY
+ *  exception a handler threw. Curated, not derived: whether a code is diagnostic is a
+ *  judgment no registry records. */
+export const NON_DIAGNOSTIC_ERROR_CODES: readonly string[] = ['error-code-unknown', 'handler_error'];
+
+/** The tool-failure class attribute (`failure:<family>:<errorCode>`) for one signature
+ *  key, or null when the key is absent, unparseable, or carries a catch-all code. */
+export function failureClassAttr(signatureKey: string | null | undefined): string | null {
+  const parsed = parseToolFailureSignatureKey(signatureKey);
+  if (!parsed || NON_DIAGNOSTIC_ERROR_CODES.includes(parsed.errorCode)) return null;
+  return `failure:${parsed.failureFamily}:${parsed.errorCode}`;
+}
+
 export interface ClusterCandidateItem {
   id: string;
   title: string;
@@ -72,6 +93,8 @@ export interface ClusterCandidateItem {
   harness?: string | null;
   /** Topic tags (coord_links rel='tagged', dst_kind='topic'). */
   topics?: readonly string[];
+  /** `payload.toolFailureSignature.signatureKey`, when automatic tool-failure capture filed it. */
+  failureSignatureKey?: string | null;
 }
 
 export interface ClusterEdge {
@@ -169,6 +192,8 @@ export function findUnplannedClusters(
     for (const p of citedPaths(`${it.title}\n${it.summary ?? ''}`)) addAttr(`path:${p}`, it.id);
     const prefix = titlePrefix(it.title);
     if (prefix) addAttr(`prefix:[${prefix}]`, it.id);
+    const failure = failureClassAttr(it.failureSignatureKey);
+    if (failure) addAttr(failure, it.id);
   }
   for (const ids of attrMembers.values()) {
     const arr = [...ids];
@@ -255,9 +280,17 @@ export async function readUnplannedGoalClusters(
       ? sql`w.status <> ALL(${[...TERMINAL_WORK_ITEM_STATES]}::text[])`
       : sql`w.created_ts <= ${args.asOfMs} AND (w.closed_ts IS NULL OR w.closed_ts > ${args.asOfMs})`;
   const rows = await sql<
-    Array<{ feature_id: string; harness_slug: string | null; title: string | null; summary: string | null; created_ts: string | number }>
+    Array<{
+      feature_id: string;
+      harness_slug: string | null;
+      title: string | null;
+      summary: string | null;
+      created_ts: string | number;
+      failure_signature_key: string | null;
+    }>
   >`
-    SELECT w.feature_id, w.harness_slug, w.title, w.summary, w.created_ts
+    SELECT w.feature_id, w.harness_slug, w.title, w.summary, w.created_ts,
+           w.payload->'toolFailureSignature'->>'signatureKey' AS failure_signature_key
       FROM harness_shared.work_items w
      WHERE w.workspace_id = ${args.workspaceId}
        AND w.goal_id = ${args.goalId}
@@ -300,6 +333,7 @@ export async function readUnplannedGoalClusters(
     createdAtMs: Number(r.created_ts),
     harness: r.harness_slug,
     topics: topics.get(r.feature_id) ?? [],
+    failureSignatureKey: r.failure_signature_key,
   }));
   return {
     clusters: findUnplannedClusters(`${args.workspaceId}:${args.goalId}`, items, edges),

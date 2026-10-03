@@ -1125,6 +1125,19 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
           ? { all: true as const }
           : { ids: stubCompletionEvidenceIds };
 
+    // A clipped prior-attempt brief has a different recovery route from the
+    // tier-relative clips this shaper creates. payloadTier:'full' widens the
+    // latter, but prior-attempt text is recovered through priorAttemptRefs.
+    const clippedPriorAttemptText = [...dropped].some(
+      (field) => field.startsWith("priorAttempts.") && field.endsWith("(text clipped)"),
+    );
+    const otherDropsNeedFullTier = [...dropped].some(
+      (field) => !(field.startsWith("priorAttempts.") && field.endsWith("(text clipped)")),
+    );
+    const tierRecoveryGuidance = otherDropsNeedFullTier
+      ? `Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`
+      : "";
+
     out = {
       ...d,
       results: projected,
@@ -1174,7 +1187,11 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
                   )
                   ? "⚠ COMPLETION EVIDENCE EXISTS but its body was clipped or reduced at this tier; `hasCompletionEvidence` (or `_shapeNote.stubbed.completionEvidence` for stub rows) remains authoritative. Re-read with payloadTier:'full' before treating the item as evidence-free. "
                   : ""
-              }Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
+              }${
+                clippedPriorAttemptText
+                  ? "Prior-attempt record text marked `textTruncated` was clipped before payload-tier shaping. Re-read with its `rawRef` in `priorAttemptRefs`; `payloadTier:'full'` does not expand that brief. "
+                  : ""
+              }${tierRecoveryGuidance}`,
             },
           }
         : {}),

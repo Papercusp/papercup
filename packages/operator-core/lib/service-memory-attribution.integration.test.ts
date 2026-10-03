@@ -2,7 +2,7 @@
  * This measures one request-only host, not the production six-worker/background cohort.
  * Allocation samples and completed query bytes do not prove a retained-state owner.
  */
-import { closeSync, cpSync, existsSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -346,6 +346,91 @@ function restoreFullInboxKey(bundle: string) {
   const replacement = match[1];
   return { bundle: bundle.slice(0, match.index) + replacement + bundle.slice(match.index! + match[0].length),
     intervention: { offset: match.index, before: match[0], after: replacement } };
+}
+
+// Extend the compiler cohort's serving-generation copy seam. Freeze executable
+// and data companions, not mutable build logs/locks; this is not a source graph.
+function inboxArtifactManifest(directory: string) {
+  const rows: { path: string; bytes: number; sha256: string }[] = [];
+  const visit = (prefix: string) => {
+    for (const entry of readdirSync(join(directory, prefix), { withFileTypes: true })) {
+      const path = prefix ? prefix + '/' + entry.name : entry.name;
+      if (entry.isSymbolicLink()) throw Error('Serving inbox artifact symlink requires an explicit copy contract');
+      if (entry.isDirectory()) { visit(path); continue; }
+      if (!entry.isFile() || !/\.(?:mjs|json|sql)$/.test(path)) continue;
+      if (rows.length >= 4096) throw Error('Serving inbox artifact manifest exceeded bound');
+      const bytes = readFileSync(join(directory, path));
+      rows.push({ path, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+    }
+  };
+  visit('');
+  for (const required of ['hono-host.mjs', 'mutation-probe-closure.worker.mjs', 'spawner-sidecar.mjs']) {
+    if (!rows.some(row => row.path === required)) throw Error('Serving inbox companion missing: ' + required);
+  }
+  return rows.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+// Same PID/start-time/executable and socket fences as the maintained baseline.
+// Resolve a relative argv entry in the serving process's cwd, not the test cwd.
+function servingInboxProcess(pid: number, directory: string) {
+  if (!Number.isInteger(pid) || pid <= 0) throw Error('Serving inbox requires a positive PID');
+  const prefix = '/proc/' + pid;
+  const stat = readFileSync(prefix + '/stat', 'utf8');
+  const startTicks = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+  const argv = readFileSync(prefix + '/cmdline', 'utf8').split('\0').filter(Boolean);
+  const entry = realpathSync(join(directory, 'hono-host.mjs'));
+  // Only the first non-option argument may identify the entry. This rejects
+  // a script which merely passes the host bundle as a data argument.
+  let index = 1;
+  while (argv[index]?.startsWith('--inspect=')) index++;
+  if (!argv[index] || realpathSync(resolve(readlinkSync(prefix + '/cwd'), argv[index])) !== entry)
+    throw Error('Serving inbox PID entry does not identify the candidate');
+  const inodes = new Set(readdirSync(prefix + '/fd').flatMap(fd => {
+    try { return [readlinkSync(prefix + '/fd/' + fd).match(/^socket:\[(\d+)\]$/)?.[1]]; }
+    catch { return []; }
+  }).filter(Boolean));
+  const ownsStagingSocket = ['tcp', 'tcp6'].some(kind => readFileSync(prefix + '/net/' + kind, 'utf8')
+    .trim().split('\n').slice(1).some(line => {
+      const fields = line.trim().split(/\s+/);
+      return fields[3] === '0A' && inodes.has(fields[9]) && parseInt(fields[1].split(':').at(-1)!, 16) === 3170;
+    }));
+  if (!ownsStagingSocket) throw Error('Serving inbox PID does not own the staging socket');
+  return { pid, startTicks, entry, executableSha256: createHash('sha256')
+    .update(readFileSync(prefix + '/exe')).digest('hex'), ownsStagingSocket };
+}
+
+type ServingInboxPin = { health: { sha: string; version: string }; process: ReturnType<typeof servingInboxProcess>;
+  artifacts: ReturnType<typeof inboxArtifactManifest> };
+
+function servingInboxHealth(health: any, expectedBuild: string) {
+  if (!/^[a-f0-9]{10,64}$/.test(expectedBuild) || health?.ok !== true || health.service !== 'papercusp-operator' ||
+      health.sha !== expectedBuild || typeof health.version !== 'string' || health.bundleStale !== undefined)
+    throw Error('Serving inbox loaded health identity mismatch');
+  return { sha: health.sha as string, version: health.version as string };
+}
+
+function assertServingInboxPin(before: ServingInboxPin, after: ServingInboxPin) {
+  if (JSON.stringify(before) !== JSON.stringify(after)) throw Error('Serving inbox generation identity or artifact drift');
+}
+
+async function readServingInboxPin(directory: string, expectedBuild: string, pid: number): Promise<ServingInboxPin> {
+  if (!/^[a-f0-9]{10,64}$/.test(expectedBuild)) throw Error('Serving inbox requires an explicit build SHA');
+  const before = servingInboxProcess(pid, directory);
+  const response = await fetch('http://127.0.0.1:3170/api/health', { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw Error('Serving inbox health HTTP failure: ' + response.status);
+  const health = servingInboxHealth(await response.json(), expectedBuild);
+  const artifacts = inboxArtifactManifest(directory);
+  if (JSON.stringify(before) !== JSON.stringify(servingInboxProcess(pid, directory)))
+    throw Error('Serving inbox process changed during preflight');
+  return { health, process: before, artifacts };
+}
+
+function assertInboxArtifactCopy(source: ReturnType<typeof inboxArtifactManifest>, candidate: ReturnType<typeof inboxArtifactManifest>,
+  baseline: ReturnType<typeof inboxArtifactManifest>, restoredBundle: string) {
+  if (JSON.stringify(source) !== JSON.stringify(candidate)) throw Error('Serving inbox candidate copy drift');
+  const expected = candidate.map(row => row.path === 'hono-host.mjs' ? { ...row,
+    bytes: Buffer.byteLength(restoredBundle), sha256: createHash('sha256').update(restoredBundle).digest('hex') } : row);
+  if (JSON.stringify(expected) !== JSON.stringify(baseline)) throw Error('Serving inbox baseline companion or intervention drift');
 }
 
 // Closed helper also runs in CDP. Validate the actual library shape before
@@ -888,6 +973,66 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     expect(() => preparePairCache({ cache, cacheLayerOn: false })).toThrow('API/owner');
   });
 
+  describe('P-011 serving inbox copy guards', () => {
+    const fixture = () => ({ health: { sha: 'a'.repeat(10), version: '0.0.0' },
+      process: { pid: 7, startTicks: '11', entry: '/private/hono-host.mjs', executableSha256: 'b'.repeat(64), ownsStagingSocket: true },
+      artifacts: ['hono-host.mjs', 'mutation-probe-closure.worker.mjs', 'spawner-sidecar.mjs'].map(path =>
+        ({ path, bytes: 3, sha256: 'c'.repeat(64) })) });
+    it('keeps loaded health identity separate from artifact and process identity', () => {
+      expect(() => assertServingInboxPin(fixture(), structuredClone(fixture()))).not.toThrow();
+      expect(servingInboxHealth({ ok: true, service: 'papercusp-operator', sha: 'a'.repeat(10), version: '0.0.0' }, 'a'.repeat(10)))
+        .toEqual(fixture().health);
+    });
+    it.each([
+      ['unknown SHA', { sha: null }], ['other SHA', { sha: 'd'.repeat(10) }],
+      ['missing version', { version: undefined }], ['wrong service', { service: 'other' }],
+      ['failed response', { ok: false }], ['stale bundle', { bundleStale: { reason: 'old' } }],
+    ] as const)('rejects %s health before copy', (_name, change) => {
+      expect(() => servingInboxHealth({ ok: true, service: 'papercusp-operator', sha: 'a'.repeat(10), version: '0.0.0', ...change }, 'a'.repeat(10)))
+        .toThrow('loaded health identity');
+    });
+    it.each([
+      ['build', (pin: ServingInboxPin) => { pin.health.sha = 'd'.repeat(10); }],
+      ['version', (pin: ServingInboxPin) => { pin.health.version = 'next'; }],
+      ['PID', (pin: ServingInboxPin) => { pin.process.pid++; }],
+      ['start time', (pin: ServingInboxPin) => { pin.process.startTicks = '12'; }],
+      ['executable', (pin: ServingInboxPin) => { pin.process.executableSha256 = 'd'.repeat(64); }],
+      ['entry', (pin: ServingInboxPin) => { pin.process.entry = '/other/hono-host.mjs'; }],
+      ['socket', (pin: ServingInboxPin) => { pin.process.ownsStagingSocket = false; }],
+      ['candidate', (pin: ServingInboxPin) => { pin.artifacts[0].sha256 = 'd'.repeat(64); }],
+      ['companion', (pin: ServingInboxPin) => { pin.artifacts[1].sha256 = 'd'.repeat(64); }],
+      ['missing companion', (pin: ServingInboxPin) => { pin.artifacts.pop(); }],
+    ] as const)('rejects %s drift before a resource cohort', (_name, change) => {
+      const altered = fixture(); change(altered);
+      expect(() => assertServingInboxPin(fixture(), altered)).toThrow('identity or artifact drift');
+    });
+    it('reads actual copied bytes and rejects a changed worker or extra intervention', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'papercusp-inbox-copy-guard-'));
+      const candidate = join(directory, 'candidate'), baseline = join(directory, 'baseline');
+      const key = '...boundedInbox ? { limit, ambient: includeAmbient, intents: !!args.include_intents } : {}';
+      try {
+        // cpSync materializes the directory through the same copy seam as a cohort.
+        const seed = join(directory, 'seed');
+        mkdirSync(seed);
+        for (const name of ['hono-host.mjs', 'mutation-probe-closure.worker.mjs', 'spawner-sidecar.mjs'])
+          writeFileSync(join(seed, name), name === 'hono-host.mjs' ? key : 'worker');
+        cpSync(seed, candidate, { recursive: true }); cpSync(seed, baseline, { recursive: true });
+        const source = inboxArtifactManifest(seed), restored = restoreFullInboxKey(key);
+        writeFileSync(join(baseline, 'hono-host.mjs'), restored.bundle);
+        expect(() => assertInboxArtifactCopy(source, inboxArtifactManifest(candidate), inboxArtifactManifest(baseline), restored.bundle)).not.toThrow();
+        writeFileSync(join(baseline, 'mutation-probe-closure.worker.mjs'), 'changed');
+        expect(() => assertInboxArtifactCopy(source, inboxArtifactManifest(candidate), inboxArtifactManifest(baseline), restored.bundle)).toThrow('companion or intervention');
+        writeFileSync(join(baseline, 'mutation-probe-closure.worker.mjs'), 'worker');
+        writeFileSync(join(baseline, 'hono-host.mjs'), restored.bundle + ';extraChange()');
+        expect(() => assertInboxArtifactCopy(source, inboxArtifactManifest(candidate), inboxArtifactManifest(baseline), restored.bundle)).toThrow('companion or intervention');
+        writeFileSync(join(candidate, 'spawner-sidecar.mjs'), 'changed');
+        expect(() => assertInboxArtifactCopy(source, inboxArtifactManifest(candidate), inboxArtifactManifest(baseline), restored.bundle)).toThrow('candidate copy');
+        rmSync(join(seed, 'spawner-sidecar.mjs'));
+        expect(() => inboxArtifactManifest(seed)).toThrow('companion missing');
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+  });
+
   it('selects only the real cachedRead inbox namespace before a paired runtime', async () => {
     const cache = createCache();
     const useful = [{ msg_id: 'useful', body: 'preserved context' }];
@@ -971,11 +1116,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const inboxPairEntries = ${inboxPairEntries.toString()};
       const e = process.env, wait = ms => new Promise(r => setTimeout(r, ms));
       const hash = value => createHash('sha256').update(value).digest('hex');
-      const report = { schemaVersion: 2, plane: 'isolated-current-build-operator-api', incomplete: true,
+      const report = { schemaVersion: 2, plane: e.TEST_SOURCE_DIRECTORY ? 'isolated-serving-generation-operator-api' : 'isolated-current-build-operator-api', incomplete: true,
         workload: { population: 256, bodyCodeUnits: 32768, variants: 8, windows: 3, idleMs: 1000, concurrency: 8 },
         cohorts: [], limitations: [
           'Independent private request-only hosts; no production worker, background or historical recovery claim.',
-          'Baseline is the same emitted bundle with one guarded historical cache-key intervention.',
+          'Baseline is the same candidate bundle with one guarded historical cache-key intervention.',
           'Unforced heap/PSS windows include transient allocations; no GC, profiler or total native residual estimate.',
           'Eight controlled full-read display variants are a counterexample workload, not measured production frequency.',
           'Exact raw-cache content fingerprints are inspected after the resource windows.'
@@ -1005,6 +1150,13 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         const { createCdpClient, readProcessMemory } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
         sql = postgres(e.HARNESS_ADMIN_DATABASE_URL, { max: 1 });
         report.database = (await sql.unsafe('select current_database() as database'))[0].database;
+        const databaseUrl = new URL(e.HARNESS_ADMIN_DATABASE_URL);
+        if (!['127.0.0.1', 'localhost', '[::1]'].includes(databaseUrl.hostname) ||
+            ['3070', '3170'].includes(new URL(e.PAPERCUSP_OPERATOR_URL).port) ||
+            !fs.realpathSync(e.HOME).startsWith(fs.realpathSync(e.TEST_PRIVATE_PARENT) + path.sep))
+          throw Error('Private inbox database/runtime containment failed');
+        report.privateContainment = { workspace: e.PAPERCUSP_WORKSPACE_ID, backgroundWorkers: 0,
+          loopbackDatabase: true, disposableHome: true, ambientOperatorPortsExcluded: true };
         report.schema = (await sql.unsafe('select filename, sha256 from harness_shared.schema_migrations order by applied_at desc limit 1'))[0];
         const variants = Array.from({ length: 8 }, (_, i) => ({ directed: true, limit: i + 1,
           include_ambient: Boolean(i & 1), include_intents: Boolean(i & 2), max_body_chars: 1 }));
@@ -1124,15 +1276,28 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     `;
     let phase = 'bundle-preflight';
     const preflight: Record<string, unknown> = {};
+    const sourceDirectory = process.env.PAPERCUSP_P011_SERVING_HOST_DIRECTORY;
+    let servingPin: ServingInboxPin | undefined;
     try {
       expect(() => new Function(probe)).not.toThrow();
       expect(preparePairCache({ cache: createCache(), cacheLayerOn: true })).toEqual({ enabled: true, entries: 0 });
       symlinkSync(resolve(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
-      const build = runCohortWithLog([resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
-        '--exec-under-lock', '--', resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', current],
-      { cwd: root, env: process.env, timeout: 180000 }, join(directory, 'build.log'));
-      preflight.build = { ...build.log, tail: build.stderr };
-      expect(build.status, build.stderr).toBe(0);
+      let build: Record<string, unknown>;
+      if (sourceDirectory) {
+        const expectedBuild = process.env.PAPERCUSP_P011_SERVING_BUILD_SHA ?? '';
+        servingPin = await readServingInboxPin(sourceDirectory, expectedBuild, Number(process.env.PAPERCUSP_P011_LIVE_PID));
+        preflight.servingBefore = servingPin;
+        cpSync(sourceDirectory, dirname(current), { recursive: true });
+        assertServingInboxPin(servingPin, await readServingInboxPin(sourceDirectory, expectedBuild, servingPin.process.pid));
+        build = { route: 'immutable-serving-generation-copy', loadedBuild: expectedBuild };
+      } else {
+        const built = runCohortWithLog([resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
+          '--exec-under-lock', '--', resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', current],
+        { cwd: root, env: process.env, timeout: 180000 }, join(directory, 'build.log'));
+        preflight.build = { ...built.log, tail: built.stderr };
+        expect(built.status, built.stderr).toBe(0);
+        build = built.log;
+      }
       cpSync(dirname(current), dirname(baseline), { recursive: true });
       phase = 'counterfactual-preflight';
       const emitted = readFileSync(current, 'utf8');
@@ -1141,15 +1306,30 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       preflight.emittedKey = keyOffset < 0 ? null : emitted.slice(keyOffset, keyOffset + 850);
       const restored = restoreFullInboxKey(emitted);
       writeFileSync(baseline, restored.bundle);
+      const copiedArtifacts = inboxArtifactManifest(dirname(current));
+      assertInboxArtifactCopy(servingPin?.artifacts ?? copiedArtifacts, copiedArtifacts,
+        inboxArtifactManifest(dirname(baseline)), restored.bundle);
+      preflight.artifacts = copiedArtifacts;
       phase = 'runtime-cohorts';
       const result = runCohortWithLog([resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--', process.execPath, '-e', probe],
         { cwd: root, timeout: 360000, env: { ...process.env, TEST_CURRENT_PATH: current, TEST_BASELINE_PATH: baseline,
-          TEST_REPORT_PATH: rawReport, TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } },
+          TEST_REPORT_PATH: rawReport, TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX,
+          TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_PRIVATE_PARENT: tmpdir() } },
         join(directory, 'runtime.log'));
       const report = readCohortReport(rawReport, result);
       phase = 'report-verification';
       report.sources = { before: beforeSources, after: sources(), fullGraph: 'unknown' };
-      report.build = build.log; report.runtimeLog = result.log; report.intervention = restored.intervention;
+      report.build = build; report.runtimeLog = result.log; report.intervention = restored.intervention;
+      report.preflight = preflight;
+      if (servingPin && sourceDirectory) {
+        phase = 'serving-generation-postflight';
+        const after = await readServingInboxPin(sourceDirectory, servingPin.health.sha, servingPin.process.pid);
+        preflight.servingAfter = after;
+        assertServingInboxPin(servingPin, after);
+        assertInboxArtifactCopy(servingPin.artifacts, inboxArtifactManifest(dirname(current)),
+          inboxArtifactManifest(dirname(baseline)), restored.bundle);
+        report.limitations.push('Staging health/socket/build and read-only artifact identity are separate from the private resource cohorts; production request allocation and full source graph remain unknown.');
+      }
       writeFileSync(destination, serializeIdentitySafeJson(report));
       expect(result.status, report.error ?? result.stderr).toBe(0);
       expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(4);

@@ -175,6 +175,11 @@ import {
   isMissingClaudeToolReferenceError,
   neutralizeResumeNativeToolReferences,
 } from '../../claude-resume-tool-references.mjs';
+import {
+  claudeInheritedEffortOverride,
+  readClaudeLaunchSettings,
+  type ClaudeLaunchSettings,
+} from '../../model-context-budget.mjs';
 import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
 import type { ResumeTurnContext, ResumeTurnExitRaw } from './resume-turn-outcome';
@@ -2166,6 +2171,27 @@ export async function degradeToInboxOrDrop(
   }
 }
 
+/**
+ * WI-10005900: `claude --resume` names no effort, so the resumed CLI falls back
+ * to the effortLevel in its settings.json — a key Claude Code writes itself. A
+ * session whose settings were written while Opus 5 offered `xhigh` then resumes
+ * with `xhigh` and 400s on its first request. The gateway clamps that on the
+ * `auto`/pinned routes, but the `default` route skips the gateway, so the resume
+ * argv carries the clamped level explicitly (the same rule psu-launcher applies
+ * to its own launches). Returns `args` itself when nothing needs clamping, the
+ * argv already names an effort, or it has no `--resume`.
+ */
+export function withClaudeResumeEffortClamp(args: string[], settings: ClaudeLaunchSettings): string[] {
+  if (args.some((a) => a === '--effort' || a.startsWith('--effort='))) return args;
+  const at = args.indexOf('--resume');
+  if (at < 0) return args;
+  const modelAt = args.indexOf('--model');
+  const model = modelAt >= 0 && modelAt + 1 < args.length ? args[modelAt + 1] : null;
+  const level = claudeInheritedEffortOverride({ model, settings });
+  if (!level) return args;
+  return [...args.slice(0, at), '--effort', level, ...args.slice(at)];
+}
+
 /** Per-client resume invocation (mirrors psu-launcher resumeArgsFor, headless-
  *  capable). Returns null when the session is not safely resumable. */
 export function resumeCommandFor(
@@ -2486,6 +2512,9 @@ export interface ExecuteWakeDeps {
   findPty?: typeof findPtyByPid;
   write?: typeof writePty;
   spawnManagedPty?: typeof spawnPty;
+  /** WI-10005900: reads the settings.json a resumed claude child falls back to
+   *  for its model + effort, given the env that child will run with. */
+  readClaudeLaunchSettings?: (env: Record<string, string | undefined>) => ClaudeLaunchSettings;
   spawnDetached?: (
     bin: string,
     args: string[],
@@ -4529,6 +4558,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // per-session CODEX_HOME — point the resumed `codex exec resume` at it
     // (turn-lifecycle-control P-009).
     if (codexHome) env.CODEX_HOME = codexHome;
+
+    // WI-10005900: clamp the effort the resumed claude would inherit from the
+    // settings.json it will actually read. Read it with the CHILD's env (the
+    // isolated CLAUDE_CONFIG_DIR set above), never the operator's own.
+    if (resumeAgent === 'claude') {
+      const childEnv = { ...sanitizeInheritedWakeEnv(process.env), ...env };
+      resume.args = withClaudeResumeEffortClamp(
+        resume.args,
+        (deps.readClaudeLaunchSettings ?? readClaudeLaunchSettings)(childEnv),
+      );
+    }
 
     const spawnDetached = deps.spawnDetached ?? defaultSpawnDetached;
 

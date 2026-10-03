@@ -544,6 +544,32 @@ export function toolFailureSignatureKey(
   return `tool-failure-signature:${tool}:${failureFamily}:${errorCode}:${fieldPath}`;
 }
 
+const TOOL_FAILURE_SIGNATURE_PREFIX = 'tool-failure-signature:';
+const TOOL_ERROR_CLASS_VALUES: readonly ToolErrorClass[] = ['structural', 'transient', 'caller', 'rate-limit'];
+
+/**
+ * Inverse of {@link toolFailureSignatureKey}. Tool names and field paths may themselves
+ * contain `:` (`coord:glance`), so the key is split on its ONE enumerated segment, the
+ * failure family, never by position. Returns null for anything the builder cannot emit.
+ */
+export function parseToolFailureSignatureKey(
+  key: string | null | undefined,
+): { toolName: string; failureFamily: ToolErrorClass; errorCode: string; fieldPath: string } | null {
+  if (!key || !key.startsWith(TOOL_FAILURE_SIGNATURE_PREFIX)) return null;
+  const rest = key.slice(TOOL_FAILURE_SIGNATURE_PREFIX.length);
+  let best: { at: number; family: ToolErrorClass } | null = null;
+  for (const family of TOOL_ERROR_CLASS_VALUES) {
+    const at = rest.indexOf(`:${family}:`);
+    if (at > 0 && (best === null || at < best.at)) best = { at, family };
+  }
+  if (!best) return null;
+  const toolName = rest.slice(0, best.at);
+  const tail = rest.slice(best.at + best.family.length + 2);
+  const sep = tail.indexOf(':');
+  if (sep <= 0 || sep === tail.length - 1) return null;
+  return { toolName, failureFamily: best.family, errorCode: tail.slice(0, sep), fieldPath: tail.slice(sep + 1) };
+}
+
 /** Convenience key builder used by callers that already know the failure family. */
 export function toolFailureClassKey(
   input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,

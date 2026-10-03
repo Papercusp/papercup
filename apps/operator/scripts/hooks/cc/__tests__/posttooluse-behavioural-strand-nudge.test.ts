@@ -25,6 +25,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // __dirname = <repo>/apps/operator/scripts/hooks/cc/__tests__ — six levels down.
@@ -35,6 +36,7 @@ const DETECTOR = resolve(ROOT, 'scripts/check-behavioural-strands.mjs');
 type Seam = { seam: string; before: number; after: number };
 type ControlFlow = { seam: string; function: string; reason: string };
 type OutputValue = { property: string; before: string; after: string; reason?: string };
+type PackageScriptValue = { property: string; before: string; after: string };
 type Injection = {
   member: string;
   owner: string;
@@ -48,6 +50,8 @@ type Detector = {
   increasedSeams: (before: string, after: string, file?: string) => Seam[];
   changedSeamControlFlow: (before: string, after: string, file?: string) => ControlFlow[];
   diffOutputValues: (before: string, after: string, file?: string) => OutputValue[];
+  diffPackageScriptValues: (before: string, after: string) => PackageScriptValue[] | null;
+  hasPackageScriptAssertion: (text: string, names: string[], fileName?: string) => boolean;
   repoForPath: (rel: string, subs: string[]) => { submodule: string | null; cwd: string; relPath: string };
   submodulePaths: () => string[];
   candidateSkipReason: (rel: string) => string | null;
@@ -59,7 +63,13 @@ type Hook = {
     rel: string,
     seamsOrTriggers:
       | Seam[]
-      | { seams?: Seam[]; controlFlow?: ControlFlow[]; values?: OutputValue[]; injections?: Injection[] },
+      | {
+          seams?: Seam[];
+          controlFlow?: ControlFlow[];
+          values?: OutputValue[];
+          scriptValues?: PackageScriptValue[];
+          injections?: Injection[];
+        },
     opts?: { baseSha?: string | null; submodule?: string | null },
   ) => string;
   isDirectCliInvocation: (entryPath?: string) => boolean;
@@ -212,6 +222,23 @@ describe('behavioural-strand nudge — fires on the real trap', () => {
     expect(out).toContain('spentCents');
     expect(out).toContain('rollup.potCents');
     expect(out).toContain('toHaveProperty');
+  });
+
+  it('FIRES when a package script string changes, naming its stable key and anchored detector command', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'package.json');
+    const before = JSON.stringify({ scripts: { 'test:file': 'node old-runner.mjs' } });
+    const after = JSON.stringify({ scripts: { 'test:file': 'node new-runner.mjs' } });
+    const { deps } = await depsFor(abs, before, after);
+    const out = await hook.nudgeFor(abs, deps);
+    expect(out).not.toBeNull();
+    expect(out).toContain('PACKAGE-SCRIPT STRAND RISK');
+    expect(out).toContain('scripts["test:file"]');
+    expect(out).toContain('node old-runner.mjs');
+    expect(out).toContain('node new-runner.mjs');
+    expect(out).toContain('--files=package.json');
+    expect(out).toContain('regex assertion');
+    expect(out).not.toContain('ANOTHER workspace');
   });
 
   it('FIRES when an OPTIONAL Deps member gains an invoker, naming the member and its siblings (EI-23824032487848760)', async () => {
@@ -373,7 +400,9 @@ describe('behavioural-strand nudge — candidate filter', () => {
   it('excludes a non-source file outright', async () => {
     const hook = await loadHook();
     expect(hook.isCandidateFile('README.md')).toBe(false);
-    expect(hook.isCandidateFile('package.json')).toBe(false);
+    expect(hook.isCandidateFile('package.json')).toBe(true);
+    expect(hook.isCandidateFile('packages/x/package.json')).toBe(true);
+    expect(hook.isCandidateFile('node_modules/pkg/package.json')).toBe(false);
   });
 
   it('accepts JavaScript sources — scripts/*.mjs and hooks hold shared seams too (WI-10004906)', async () => {
@@ -413,6 +442,8 @@ describe('behavioural-strand nudge — candidate filter', () => {
       'papercup-release/apps/x.ts',
       'README.md',
       'package.json',
+      'packages/x/package.json',
+      'node_modules/pkg/package.json',
       'scripts/run.sh',
     ];
     for (const p of paths) {
@@ -426,6 +457,12 @@ describe('behavioural-strand nudge — candidate filter', () => {
     // nothing in the gate ran it. The required-field sibling already pins its own this way.
     const out = execFileSync(process.execPath, [HOOK, '--self-test'], { encoding: 'utf8' });
     expect(out).toContain('self-test passed');
+  });
+
+  it('the measured regex assertion reads the script key the detector joins on', async () => {
+    const detector = await loadDetector();
+    const source = readFileSync(resolve(ROOT, 'scripts/npm-install-safe.test.mjs'), 'utf8');
+    expect(detector.hasPackageScriptAssertion(source, ['test:file'], 'scripts/npm-install-safe.test.mjs')).toBe(true);
   });
 });
 

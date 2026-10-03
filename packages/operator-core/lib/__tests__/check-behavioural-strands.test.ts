@@ -25,7 +25,9 @@ import {
   changedSeamControlFlow,
   collectOutputPropertyValues,
   diffOutputValues,
+  diffPackageScriptValues,
   hasValueAssertion,
+  hasPackageScriptAssertion,
   hasCountOrOrderAssertion,
   mentionsSeamMember,
   seamMemberNames,
@@ -41,9 +43,9 @@ import {
   // @ts-expect-error — .mjs guard script, no type declarations by design
 } from '../../../../scripts/check-behavioural-strands.mjs';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -639,13 +641,15 @@ describe('the candidate set includes JavaScript, and declared files are never dr
 
   it('names WHY a declared file is out of scope', () => {
     expect(candidateSkipReason('README.md')).toBe('not-source');
-    expect(candidateSkipReason('package.json')).toBe('not-source');
+    expect(candidateSkipReason('package.json')).toBeNull();
+    expect(candidateSkipReason('packages/x/package.json')).toBeNull();
     expect(candidateSkipReason('scripts/lib/not-checked.d.mts')).toBe('declaration');
     expect(candidateSkipReason('packages/x/index.d.ts')).toBe('declaration');
     expect(candidateSkipReason('scripts/__tests__/a.test.mjs')).toBe('test-file');
     expect(candidateSkipReason('packages/x/lib/a.spec.cjs')).toBe('test-file');
     expect(candidateSkipReason('packages/x/dist/index.mjs')).toBe('excluded-path');
     expect(candidateSkipReason('node_modules/pkg/index.js')).toBe('excluded-path');
+    expect(candidateSkipReason('node_modules/pkg/package.json')).toBe('excluded-path');
   });
 
   it('counts a seam in plain JS: an imported binding gains a call', () => {
@@ -720,6 +724,130 @@ describe('the candidate set includes JavaScript, and declared files are never dr
       expect(report.skipped).toContainEqual({ file: 'README.md', reason: 'not-source' });
       expect(report.notChecked).toBe(true);
       expect(proc.status).toBe(EXIT_NOT_CHECKED);
+    },
+    120_000,
+  );
+});
+
+describe('package-script strands are joined to tests that assert on the script value', () => {
+  it('diffs scripts.<name> values without treating unrelated manifest changes as triggers', () => {
+    const before = JSON.stringify({ version: '1.0.0', scripts: { 'test:file': 'node old.mjs', lint: 'eslint .' } });
+    const after = JSON.stringify({ version: '1.0.1', scripts: { 'test:file': 'node new.mjs', lint: 'eslint .' } });
+    expect(diffPackageScriptValues(before, after)).toEqual([
+      { property: 'test:file', before: '"node old.mjs"', after: '"node new.mjs"' },
+    ]);
+    expect(diffPackageScriptValues('{ invalid json', after)).toBeNull();
+  });
+
+  it('finds regex and matcher assertions that read the changed script value', () => {
+    const measuredTest = readFileSync(resolve(REPO_ROOT, 'scripts/npm-install-safe.test.mjs'), 'utf8');
+    expect(hasPackageScriptAssertion(measuredTest, ['test:file'], 'scripts/npm-install-safe.test.mjs')).toBe(true);
+    expect(
+      hasPackageScriptAssertion(
+        'assert.match(packageJson.scripts["test:file"], /runner/); expect(packageJson.scripts.build).toMatch(/build/);',
+        ['test:file', 'build'],
+      ),
+    ).toBe(true);
+    expect(
+      hasPackageScriptAssertion(
+        'const command = packageJson.scripts["test:file"]; assert.match(command, /runner/);',
+        ['test:file'],
+      ),
+    ).toBe(false);
+    expect(hasPackageScriptAssertion('assert.match(packageJson.scripts.build, /build/);', ['test:file'])).toBe(false);
+  });
+
+  it(
+    'END TO END: a package.json script change names the tracked regex-pinning test',
+    () => {
+      const root = mkdtempSync(join(tmpdir(), 'behavioural-strands-package-script-'));
+      const fixtureDetector = join(root, 'scripts/check-behavioural-strands.mjs');
+      const binDir = join(root, 'bin');
+      const fakeGit = join(binDir, 'git');
+      const testPath = 'scripts/package-script.test.mjs';
+      const manifestPath = join(root, 'package.json');
+      const beforeManifestPath = join(root, '.before-package.json');
+      const manifest = {
+        name: 'package-script-strand-fixture',
+        type: 'module',
+        scripts: { 'test:file': 'node old-runner.mjs' },
+      };
+      const env = () => ({
+        ...process.env,
+        FIXTURE_ROOT: root,
+        PATH: [binDir, process.env.PATH].filter(Boolean).join(delimiter),
+      });
+      try {
+        mkdirSync(join(root, 'scripts'), { recursive: true });
+        mkdirSync(binDir, { recursive: true });
+        cpSync(DETECTOR_CLI, fixtureDetector);
+        symlinkSync(resolve(REPO_ROOT, 'scripts/lib'), join(root, 'scripts/lib'), 'dir');
+        symlinkSync(resolve(REPO_ROOT, 'node_modules'), join(root, 'node_modules'), 'dir');
+        writeFileSync(beforeManifestPath, JSON.stringify(manifest, null, 2));
+        writeFileSync(
+          join(root, testPath),
+          'import assert from "node:assert/strict";\nconst packageJson = { scripts: { "test:file": "node old-runner.mjs" } };\nassert.match(packageJson.scripts["test:file"], /old-runner/);\n',
+        );
+        manifest.scripts['test:file'] = 'node new-runner.mjs';
+        writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+        writeFileSync(
+          fakeGit,
+          [
+            '#!/bin/sh',
+            'case "$1" in',
+            '  config) exit 1 ;;',
+            '  rev-parse) printf "fixture-base\\n"; exit 0 ;;',
+            '  show)',
+            '    if [ "$2" = "HEAD:package.json" ]; then cat "$FIXTURE_ROOT/.before-package.json"; exit 0; fi',
+            '    exit 1 ;;',
+            '  ls-files) printf "package.json\\nscripts/package-script.test.mjs\\n"; exit 0 ;;',
+            '  *) exit 1 ;;',
+            'esac',
+            '',
+          ].join('\n'),
+        );
+        chmodSync(fakeGit, 0o755);
+
+        const jsonProc = spawnSync(process.execPath, [fixtureDetector, '--base', 'HEAD', '--files=package.json', '--json'], {
+          cwd: root,
+          env: env(),
+          encoding: 'utf8',
+          timeout: 90_000,
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        expect(jsonProc.error).toBeUndefined();
+        expect(jsonProc.status, jsonProc.stderr).toBe(0);
+        const report = JSON.parse(jsonProc.stdout) as {
+          packageScriptProperties: string[];
+          tests: string[];
+          narrow: string[];
+          triggers: Array<{ file: string; scriptValues: Array<{ property: string }> }>;
+        };
+        expect(report.packageScriptProperties).toEqual(['test:file']);
+        expect(report.triggers).toEqual([
+          expect.objectContaining({
+            file: 'package.json',
+            scriptValues: [expect.objectContaining({ property: 'test:file' })],
+          }),
+        ]);
+        expect(report.tests).toContain(testPath);
+        expect(report.narrow).toContain(testPath);
+
+        const textProc = spawnSync(process.execPath, [fixtureDetector, '--base', 'HEAD', '--files=package.json'], {
+          cwd: root,
+          env: env(),
+          encoding: 'utf8',
+          timeout: 90_000,
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        expect(textProc.error).toBeUndefined();
+        expect(textProc.status, textProc.stderr).toBe(0);
+        expect(textProc.stdout).toContain('PACKAGE-SCRIPT STRAND RISK');
+        expect(textProc.stdout).toContain('scripts["test:file"]');
+        expect(textProc.stdout).toContain(testPath);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     },
     120_000,
   );

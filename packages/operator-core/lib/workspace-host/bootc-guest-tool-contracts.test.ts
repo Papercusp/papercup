@@ -195,6 +195,33 @@ describe('bootc image carries the apt host contract (WI-10005779)', () => {
   });
 });
 
+describe('bootc Google guest repo matches the base and its signing key (WI-10005910)', () => {
+  const containerfile = readFileSync(CONTAINERFILE, 'utf8');
+  const base = /^FROM quay\.io\/centos-bootc\/centos-bootc:stream(\d+) AS workspace-host-os$/m.exec(containerfile);
+  const repo = /'baseurl=https:\/\/packages\.cloud\.google\.com\/yum\/repos\/google-compute-engine-el(\d+)-x86_64-stable'/.exec(
+    containerfile,
+  );
+  const gpgkey = /'gpgkey=([^']*)'/.exec(containerfile);
+
+  it('installs the Google repo for the same EL major as the bootc base', () => {
+    expect(base, 'FROM centos-bootc:streamN not found').not.toBeNull();
+    expect(repo, 'google-compute-engine-elN baseurl not found').not.toBeNull();
+    expect(repo![1]).toBe(base![1]);
+  });
+
+  it('verifies an EL10+ Google repo with the v10 key, not the SHA-1-bound legacy keys', () => {
+    // EL10's rpm (sequoia) refuses rpm-package-key.gpg: its only binding signature is SHA-1, so
+    // chain4's build died at "Key import failed (code 3)" on google-guest-agent. Measured: the v10
+    // key installs google-guest-agent, google-compute-engine and -oslogin with gpgcheck=1.
+    expect(gpgkey, 'gpgkey= not found').not.toBeNull();
+    const keys = gpgkey![1].split(/\s+/).filter(Boolean);
+    if (Number(repo?.[1] ?? 0) >= 10) {
+      expect(keys).toEqual(['https://packages.cloud.google.com/yum/doc/rpm-package-key-v10.gpg']);
+    }
+    expect(containerfile).toMatch(/^\s+'gpgcheck=1' \\$/m);
+  });
+});
+
 describe('bootc base package freshness (WI-10005681)', () => {
   const containerfile = readFileSync(CONTAINERFILE, 'utf8');
   // Drop the inline `# ...` backtick comments so a comment that merely MENTIONS the command

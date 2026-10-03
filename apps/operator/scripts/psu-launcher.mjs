@@ -142,7 +142,12 @@ import {
   resolveCodexModelSelection,
   normalizeClaudeModelEffortSpec,
   claudeInheritedEffortOverride,
+  effectiveClaudeSettingsPath,
+  readClaudeLaunchSettings,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
+// Shared with the wake executor's resume leg (WI-10005900); re-exported for the
+// launcher's existing callers and tests.
+export { readClaudeLaunchSettings };
 // D-002: the argv allowlist the workspace host applies to a psu it starts for a customer.
 import {
   isHostedPsuCustomer,
@@ -1635,9 +1640,7 @@ export function inheritFreshCodexConfiguredModel(
 }
 
 /**
- * The settings a claude child falls back to for its model and effort
- * (readClaudeLaunchSettings); null when unknown.
- * @typedef {{ model?: unknown, effortLevel?: unknown } | null} ClaudeLaunchSettings
+ * @typedef {import("../../../packages/operator-core/lib/model-context-budget.mjs").ClaudeLaunchSettings} ClaudeLaunchSettings
  */
 
 /**
@@ -1655,36 +1658,7 @@ export function claudeInheritedEffortArgs(model, claudeSettings) {
   return level ? ["--effort", level] : [];
 }
 
-/**
- * The `{ model, effortLevel }` a claude child falls back to when its argv names
- * no effort: the effective settings.json (the per-session isolated
- * CLAUDE_CONFIG_DIR when set, else ~/.claude), with `ANTHROPIC_MODEL` taking
- * precedence over settings.model as it does in the CLI. Fail-open to null — a
- * missing or unreadable file must never fail a launch. `readFile` for tests.
- * @param {Record<string, string | undefined>} [env]
- * @param {{ home?: string, readFile?: (p: string) => string }} [options]
- * @returns {ClaudeLaunchSettings}
- */
-export function readClaudeLaunchSettings(
-  env = process.env,
-  { home = homedir(), readFile = (p) => readFileSync(p, "utf8") } = {},
-) {
-  let cfg;
-  try {
-    cfg = JSON.parse(readFile(effectiveClaudeSettingsPath(env, home)));
-  } catch (error) {
-    // An absent/unreadable/malformed file is "no settings"; a programming error
-    // (a missing import) must not masquerade as one.
-    if (error instanceof ReferenceError) throw error;
-    return null;
-  }
-  if (!cfg || typeof cfg !== "object") return null;
-  const envModel = String(env?.ANTHROPIC_MODEL ?? "").trim();
-  return {
-    model: envModel || cfg.model,
-    effortLevel: cfg.effortLevel,
-  };
-}
+// readClaudeLaunchSettings lives in model-context-budget.mjs (imported above).
 
 // No default on claudeSettings: a defaulted destructured property becomes the
 // ONLY member of the inferred options type, so every other key a caller passes
@@ -8809,7 +8783,14 @@ export function accountPickerChoices(accounts) {
   // against their model's underlying Claude/Codex provider before reaching here.
   const provider = accounts?.provider ?? "claude";
   const showAuto =
+    accounts?.gatewayOn &&
     pool.length > 0 && (provider === "claude" || provider === "codex");
+  // Share the pin admission predicate: a populated provider pool can still
+  // contain ZERO allowed accounts (for example a Codex-only workspace steer
+  // while Claude is selected). Explain that before bootstrap, never switch
+  // providers or silently fall back to the system credential. Usage snapshots
+  // are not this policy check; live gateway preflight owns capacity/credits.
+  const autoAllowed = pool.some((id) => accountPinnable(accounts, id));
   return [
     // ⚠ The value MUST be the LITERAL `system` escape hatch — NEVER null/'' (default-deploy-account
     // -2026-08-08 P-004 D-002). The server's resolveAccountPin reads an UNSPECIFIED account as
@@ -8831,6 +8812,9 @@ export function accountPickerChoices(accounts) {
           {
             name: "· auto — route via the inference gateway (nominated default account first, then failover)",
             value: "auto",
+            disabled: autoAllowed
+              ? false
+              : `(no allowed ${provider} accounts — check workspace account restrictions)`,
           },
         ]
       : []),
@@ -9543,13 +9527,6 @@ export function claimTtyOwnership(ttyPath, sid, { dir } = {}) {
   } catch {
     /* cosmetic guard — never fail a launch over a claim-file write */
   }
-}
-
-/** The settings.json a claude launch will actually read: the per-session isolated
- *  CLAUDE_CONFIG_DIR when psu pinned one (EI-155), else the shared user-level dir. */
-function effectiveClaudeSettingsPath(env, home = homedir()) {
-  const dir = (env.CLAUDE_CONFIG_DIR ?? "").trim();
-  return join(dir || join(home, ".claude"), "settings.json");
 }
 
 /**

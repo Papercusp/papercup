@@ -321,9 +321,7 @@ export function inheritFreshCodexConfiguredModel(agent: string, args: any, { hom
     readConfig?: (path: string, encoding: string) => string;
 }): any;
 /**
- * The settings a claude child falls back to for its model and effort
- * (readClaudeLaunchSettings); null when unknown.
- * @typedef {{ model?: unknown, effortLevel?: unknown } | null} ClaudeLaunchSettings
+ * @typedef {import("../../../packages/operator-core/lib/model-context-budget.mjs").ClaudeLaunchSettings} ClaudeLaunchSettings
  */
 /**
  * `--effort <level>` for a claude argv that names no effort of its own, when the
@@ -335,20 +333,6 @@ export function inheritFreshCodexConfiguredModel(agent: string, args: any, { hom
  * @returns {string[]}
  */
 export function claudeInheritedEffortArgs(model: string | null | undefined, claudeSettings: ClaudeLaunchSettings | undefined): string[];
-/**
- * The `{ model, effortLevel }` a claude child falls back to when its argv names
- * no effort: the effective settings.json (the per-session isolated
- * CLAUDE_CONFIG_DIR when set, else ~/.claude), with `ANTHROPIC_MODEL` taking
- * precedence over settings.model as it does in the CLI. Fail-open to null — a
- * missing or unreadable file must never fail a launch. `readFile` for tests.
- * @param {Record<string, string | undefined>} [env]
- * @param {{ home?: string, readFile?: (p: string) => string }} [options]
- * @returns {ClaudeLaunchSettings}
- */
-export function readClaudeLaunchSettings(env?: Record<string, string | undefined>, { home, readFile }?: {
-    home?: string;
-    readFile?: (p: string) => string;
-}): ClaudeLaunchSettings;
 export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {}): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
@@ -3999,6 +3983,7 @@ export function setupReminderLines(stage: any): string[] | null;
  * preflight refusal into an exception so launchSessionPort can finalize the
  * already-prepared row before the process exits. */
 export function sessionPortLaunchAbortError(args: any, failure: any, stage: any): Error | null;
+export { readClaudeLaunchSettings };
 export const AGENTS: string[];
 /** The caller/origin marker used when PUI invokes the real PSU picker. */
 export const PUI_TUI_ORIGIN: "pui";
@@ -4560,14 +4545,7 @@ export namespace AGENT_LABELS {
     let codex: string;
     let omp: string;
 }
-/**
- * The settings a claude child falls back to for its model and effort
- * (readClaudeLaunchSettings); null when unknown.
- */
-export type ClaudeLaunchSettings = {
-    model?: unknown;
-    effortLevel?: unknown;
-} | null;
+export type ClaudeLaunchSettings = import("../../../packages/operator-core/lib/model-context-budget.mjs").ClaudeLaunchSettings;
 export type SessionEndReportOptions = {
     fetchImpl?: ((input: any, init?: any) => Promise<any>) | undefined;
     operatorUrl?: string | undefined;
@@ -4737,4 +4715,4 @@ declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchFreshSu(selections: any, args: any, { brain }?: {
     brain?: boolean | undefined;
 }): Promise<void>;
-export {};
+import { readClaudeLaunchSettings } from "../../../packages/operator-core/lib/model-context-budget.mjs";

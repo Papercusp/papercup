@@ -1395,6 +1395,21 @@ describe("shapeWorkItemsGet — priorAttempts survives, and says what it cut", (
     expect(out._shapeNote?.dropped).toEqual(
       expect.arrayContaining(["priorAttempts.attempts(text clipped)"]),
     );
+    expect(out._shapeNote?.next).toContain("priorAttemptRefs");
+    expect(out._shapeNote?.next).toContain("rawRef");
+    expect(out._shapeNote?.next).not.toContain("payloadTier:'full'");
+  });
+
+  it("names both recovery routes when prior-attempt text and a tier-shaped field are clipped", () => {
+    const out = shapeWorkItemsGet(
+      envelope([briefRow({ checkpoint: "C".repeat(40_000) }, 1, 5_000)]),
+      "trimmed",
+    ) as Envelope;
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["priorAttempts.attempts(text clipped)", "checkpoint(clipped)"]),
+    );
+    expect(out._shapeNote?.next).toContain("priorAttemptRefs");
+    expect(out._shapeNote?.next).toContain("payloadTier:'full'");
   });
 
   it("keeps the OMISSION accounting whole while cutting records — the qualifier outlives what it qualifies", () => {

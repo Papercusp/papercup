@@ -8,7 +8,14 @@ import { describe, expect, it } from 'vitest';
 
 import { IMPROVEMENT_TOPIC } from '../agent-tools/coordination/topics-core';
 import {
+  parseToolFailureSignatureKey,
+  toolFailureSignatureKey,
+  type ToolErrorClass,
+} from '../harness/improvements/tool-error-classifier';
+import {
+  NON_DIAGNOSTIC_ERROR_CODES,
   PROVENANCE_TOPICS,
+  failureClassAttr,
   UNPLANNED_CLUSTER_AGE_CYCLES,
   UNPLANNED_CLUSTER_MIN_SIZE,
   citedPaths,
@@ -24,6 +31,12 @@ const T0 = Date.parse('2026-10-03T00:00:00Z');
 
 function item(id: string, minutesAfterT0: number, over: Partial<ClusterCandidateItem> = {}): ClusterCandidateItem {
   return { id, title: `item ${id}`, summary: null, createdAtMs: T0 + minutesAfterT0 * 60_000, harness: 'papercusp', ...over };
+}
+
+/** Signature keys come from the REAL builder, so a change to its format breaks these tests
+ *  rather than leaving the parser silently matching nothing. */
+function sig(toolName: string, family: ToolErrorClass, errorCode: string | null, fieldPath: string | null = null): string {
+  return toolFailureSignatureKey({ toolName, errorCode, fieldPath }, family);
 }
 
 describe('the contract thresholds', () => {
@@ -121,6 +134,56 @@ describe('findUnplannedClusters', () => {
       item('B3', 4, { topics: ['b'] }),
     ];
     expect(findUnplannedClusters(GOAL, items, []).map((c) => c.anchorId)).toEqual(['B1', 'A1']);
+  });
+
+  it('clusters tool failures that share a failure class across DIFFERENT verbs (the witnessed authorization_denied shape)', () => {
+    // EI-24066270900881566 / EI-24066275230511680 / EI-24067193234186312: one kernel
+    // refusal seen through three verbs, with no shared path, prefix, topic or link.
+    const items = [
+      item('EI-glance', 0, { title: 'coord:glance tool-call failure (authorization_denied)', topics: [IMPROVEMENT_TOPIC], failureSignatureKey: sig('coord:glance', 'structural', 'authorization_denied') }),
+      item('EI-report', 1, { title: 'activity:report tool-call failure (authorization_denied)', topics: [IMPROVEMENT_TOPIC], failureSignatureKey: sig('activity:report', 'structural', 'authorization_denied') }),
+      item('EI-flags', 14, { title: 'flags:get tool-call failure (authorization_denied)', topics: [IMPROVEMENT_TOPIC], failureSignatureKey: sig('flags:get', 'structural', 'authorization_denied', 'args.key') }),
+      item('EI-other', 2, { title: 'issues:list tool-call failure (invalid_input)', topics: [IMPROVEMENT_TOPIC], failureSignatureKey: sig('issues:list', 'caller', 'invalid_input') }),
+    ];
+    const clusters = findUnplannedClusters(GOAL, items, []);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].memberIds).toEqual(['EI-glance', 'EI-report', 'EI-flags']);
+    expect(clusters[0].reasons).toEqual(['failure:structural:authorization_denied']);
+    // CALIBRATION: with the signature stripped, the same items make no cluster, so the
+    // result above is the failure-class signal and not some other attribute.
+    expect(findUnplannedClusters(GOAL, items.map((i) => ({ ...i, failureSignatureKey: null })), [])).toEqual([]);
+  });
+
+  it('never clusters on a catch-all code that names no root cause', () => {
+    const items = ['a:x', 'b:y', 'c:z'].map((tool, i) =>
+      item(`H${i}`, i, { failureSignatureKey: sig(tool, 'structural', i === 2 ? null : 'handler_error') }),
+    );
+    expect(findUnplannedClusters(GOAL, items, [])).toEqual([]);
+    expect(NON_DIAGNOSTIC_ERROR_CODES).toEqual(expect.arrayContaining(['handler_error', 'error-code-unknown']));
+  });
+});
+
+describe('parseToolFailureSignatureKey / failureClassAttr', () => {
+  it('round-trips the builder, including colon-bearing tool names and field paths', () => {
+    expect(parseToolFailureSignatureKey(toolFailureSignatureKey({ toolName: 'coord:glance', errorCode: 'authorization_denied', fieldPath: 'args.a:b' }, 'structural'))).toEqual({
+      toolName: 'coord:glance',
+      failureFamily: 'structural',
+      errorCode: 'authorization_denied',
+      fieldPath: 'args.a:b',
+    });
+    // An error code that spells another family name is still read as the error code.
+    expect(parseToolFailureSignatureKey(toolFailureSignatureKey({ toolName: 'x:y', errorCode: 'caller', fieldPath: null }, 'rate-limit'))).toMatchObject({
+      failureFamily: 'rate-limit',
+      errorCode: 'caller',
+    });
+  });
+
+  it('rejects anything the builder cannot emit', () => {
+    for (const bad of [null, '', 'watchdog:x', 'tool-failure-signature:', 'tool-failure-signature:t:bogus:code:f', 'tool-failure-signature:t:caller:code']) {
+      expect(parseToolFailureSignatureKey(bad)).toBeNull();
+    }
+    expect(failureClassAttr('tool-failure-signature:t:caller:code')).toBeNull();
+    expect(failureClassAttr(sig('t:u', 'transient', 'timeout'))).toBe('failure:transient:timeout');
   });
 });
 

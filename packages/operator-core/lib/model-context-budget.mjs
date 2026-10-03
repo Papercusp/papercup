@@ -167,6 +167,57 @@ export function claudeInheritedEffortOverride({ model, settings } = {}) {
   return normalized.slice(normalized.lastIndexOf(':') + 1);
 }
 
+/**
+ * The settings a claude child falls back to for its model and effort
+ * (readClaudeLaunchSettings); null when unknown.
+ * @typedef {{ model?: unknown, effortLevel?: unknown } | null} ClaudeLaunchSettings
+ */
+
+/**
+ * The settings.json a claude launch will actually read: the per-session isolated
+ * CLAUDE_CONFIG_DIR when one is set (EI-155), else the shared user-level dir.
+ * @param {Record<string, string | undefined>} env
+ * @param {string} [home]
+ * @returns {string}
+ */
+export function effectiveClaudeSettingsPath(env, home = homedir()) {
+  const dir = String(env?.CLAUDE_CONFIG_DIR ?? '').trim();
+  return join(dir || join(home, '.claude'), 'settings.json');
+}
+
+/**
+ * The `{ model, effortLevel }` a claude child falls back to when its argv names
+ * no effort: the effective settings.json (the per-session isolated
+ * CLAUDE_CONFIG_DIR when set, else ~/.claude), with `ANTHROPIC_MODEL` taking
+ * precedence over settings.model as it does in the CLI. Pass the env the CHILD
+ * will run with, not the parent's. Fail-open to null — a missing or unreadable
+ * file must never fail a launch or a wake. `readFile` for tests. Shared by the
+ * psu launcher and the wake executor's resume leg (WI-10005900).
+ * @param {Record<string, string | undefined>} [env]
+ * @param {{ home?: string, readFile?: (p: string) => string }} [options]
+ * @returns {ClaudeLaunchSettings}
+ */
+export function readClaudeLaunchSettings(
+  env = process.env,
+  { home = homedir(), readFile = (p) => readFileSync(p, 'utf8') } = {},
+) {
+  let cfg;
+  try {
+    cfg = JSON.parse(readFile(effectiveClaudeSettingsPath(env, home)));
+  } catch (error) {
+    // An absent/unreadable/malformed file is "no settings"; a programming error
+    // (a missing import) must not masquerade as one.
+    if (error instanceof ReferenceError) throw error;
+    return null;
+  }
+  if (!cfg || typeof cfg !== 'object') return null;
+  const envModel = String(env?.ANTHROPIC_MODEL ?? '').trim();
+  return {
+    model: envModel || cfg.model,
+    effortLevel: cfg.effortLevel,
+  };
+}
+
 /** Alias with an assertion-oriented name for request-boundary callers. */
 export const assertCodexModelAllowed = resolveCodexModel;
 
