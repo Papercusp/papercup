@@ -556,6 +556,14 @@ export async function runGovernedTestProcess(options, run) {
  * @param {{ timeoutMs: number, maxBuffer: number, namespace: string, workspaceId?: string, owner?: string, env?: NodeJS.ProcessEnv, executionApi?: any }} options
  * @returns {Promise<{status: number|null, signal: NodeJS.Signals|null, stdout: string, stderr: string, error?: {code: string}, actualDemand: any}>}
  */
+export function selectGovernedByteProcessFailure(execError, inputError, inputByteLength, exitCode) {
+  if (execError) return execError;
+  // A command that consumes no input may close stdin before the empty write
+  // finishes. Its EPIPE says nothing about a successful child result.
+  if (inputByteLength === 0 && exitCode === 0 && inputError?.code === 'EPIPE') return undefined;
+  return inputError;
+}
+
 export async function executeGovernedByteProcess(executable, args, input, options) {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 ||
       !Number.isSafeInteger(options.maxBuffer) || options.maxBuffer < 1)
@@ -575,7 +583,7 @@ export async function executeGovernedByteProcess(executable, args, input, option
     const child = execFile(executable, args, {
       env: childEnv, encoding: 'utf8', timeout: options.timeoutMs, maxBuffer: options.maxBuffer,
     }, (error, stdout, stderr) => {
-      const failure = error ?? inputError;
+      const failure = selectGovernedByteProcessFailure(error, inputError, input.byteLength, child.exitCode);
       resolveResult({ status: child.exitCode, signal: child.signalCode, stdout, stderr,
         error: failure && typeof failure.code === 'string' ? { code: failure.code } : undefined,
         actualDemand: sampler.stop() });
