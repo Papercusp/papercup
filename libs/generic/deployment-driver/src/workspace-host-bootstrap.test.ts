@@ -20,6 +20,8 @@ import {
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH,
+  WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET,
+  WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL,
   WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX,
   WORKSPACE_HOST_UPDATE_MODE_BY_MODEL,
   workspaceHostBootstrapChecks,
@@ -2321,6 +2323,81 @@ describe('workspace-host bootstrap attestation', () => {
       expect(writes).toContain(
         'setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
       );
+    });
+
+    // WI-10005830: on the bootc base `/usr/local` is a real directory inside the read-only `/usr`,
+    // so the first AWS bootc clean room past install-runtime died in configure-service:
+    //   install: cannot create regular file '/usr/local/bin/papercusp-workspace-host-initialize': Read-only file system
+    // The image now links `/usr/local` to machine-local storage. Every OTHER `/usr` path is still
+    // read-only, so the render may write under `/usr/local` (directly or through a conduit
+    // variable) only after asserting that link, and may write nothing else under `/usr`.
+    // `--shell /usr/sbin/nologin` names an existing program; it writes nothing.
+    const usrWrites = (script: string): string[] => {
+      const writer =
+        /(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+|\belse\s+|\|\|\s*)'?(?:install|setfacl|chown|chmod|chgrp|mkdir|ln|rm|mv|cp|tar|touch|tee|useradd)\s/;
+      return script
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('#'))
+        .filter((line) => writer.test(line))
+        .filter((line) => line.replaceAll('--shell /usr/sbin/nologin', '').includes('/usr/'))
+        .map((line) => line.trim());
+    };
+    const outsideUsrLocal = (lines: string[]): string[] =>
+      lines.filter((line) =>
+        (line.replaceAll('--shell /usr/sbin/nologin', '').match(/\/usr\/[^\s"';)]*/g) ?? []).some(
+          (path) => path !== '/usr/local' && !path.startsWith('/usr/local/'),
+        ),
+      );
+    // Everything a bootc host can be asked to install: all three agent runtimes (OMP brings the
+    // ollama runtime, its service account and the customer OMP copy) plus the hosted connector.
+    const fullBootcRender = () =>
+      buildWorkspaceHostBootstrap(
+        bootcInput({
+          agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS],
+          hostedConnector: { controlPlaneOrigin: 'https://app.papercusp.com' },
+        }),
+      );
+    const USR_LOCAL_ASSERTION = `[[ -L /usr/local && "$(readlink -f /usr/local)" == '${WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET}' ]]`;
+
+    it('writes nothing under read-only /usr except through the machine-local /usr/local link (WI-10005830)', () => {
+      const script = fullBootcRender();
+      expect(outsideUsrLocal(usrWrites(script))).toEqual([]);
+      // The ollama account's home is machine-local on this model: `--create-home` under
+      // /usr/share would die on EROFS exactly like the conduit did.
+      expect(script).toContain(`--home-dir ${WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL['bootc-image']} --create-home`);
+      expect(script).not.toContain(WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL['ubuntu-release-bundle']);
+    });
+
+    it('asserts the /usr/local link in validate-host, before its first write through /usr/local (WI-10005830)', () => {
+      const script = fullBootcRender();
+      const assertion = script.indexOf(USR_LOCAL_ASSERTION);
+      expect(assertion).toBeGreaterThan(script.indexOf(`phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[0]}'`));
+      expect(assertion).toBeLessThan(script.indexOf(`phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[1]}'`));
+      // The conduits are written through shell variables, so find the first write either way.
+      const firstWrite = Math.min(
+        ...[
+          'install -o root -g root -m 0755 /dev/null "$REMOTE_INITIALIZER_CONDUIT"',
+          'install -m 0755 -o root -g root -- "$AGENT_RUNTIME_OMP" /usr/local/bin/omp',
+          '-C /usr/local --exclude=',
+        ].map((needle) => {
+          const at = script.indexOf(needle);
+          expect(at, `render no longer contains: ${needle}`).toBeGreaterThan(-1);
+          return at;
+        }),
+      );
+      expect(assertion).toBeLessThan(firstWrite);
+      expect(script).toContain('install -d -o root -g root -m 0755 /usr/local/bin /usr/local/sbin /usr/local/lib /usr/local/libexec');
+    });
+
+    // Calibration: the bundle model has a writable /usr, so it keeps the upstream ollama home and
+    // never asserts the bootc link, and the SAME detector must see that write. If this ever comes
+    // back empty the detector is blind, and the bootc assertion above passes vacuously.
+    it('keeps /usr/share/ollama on the bundle model, and the detector sees it (WI-10005830)', () => {
+      const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+      const flagged = outsideUsrLocal(usrWrites(script));
+      expect(flagged).toHaveLength(1);
+      expect(flagged[0]).toContain(`--home-dir ${WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL['ubuntu-release-bundle']} --create-home`);
+      expect(script).not.toContain(USR_LOCAL_ASSERTION);
     });
 
     it('preserves an explicit registry port and checks the baked namespace policy pin', () => {

@@ -12,7 +12,10 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET,
+  WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
+} from '@papercusp/deployment-driver';
 
 import { AWS_AMI_REQUIRED_GUEST_TOOLS } from './aws-ami-release';
 import { AZURE_COMPUTE_GALLERY_REQUIRED_GUEST_TOOLS } from './azure-compute-gallery-release';
@@ -87,6 +90,32 @@ describe('bootc guest-tool contracts (WI-10005618)', () => {
     expect(installedByName(containerfile, 'google-guest')).toBe(false);
     expect(installedByName('         ufw-extra \\\n', 'ufw')).toBe(false);
     expect(installedByName('         ufw \\\n', 'ufw')).toBe(true);
+  });
+
+  // WI-10005830: the base keeps /usr/local inside the read-only /usr, so every runtime install the
+  // bootstrap makes there died with EROFS on a booted host. The image links it to machine-local
+  // storage, and the bootstrap's validate-host asserts the link against the SAME constant.
+  it('links /usr/local to the machine-local root the bootstrap asserts, and refuses to drop image content doing it', () => {
+    const link = containerfile.indexOf('ln -s ../var/usrlocal /usr/local');
+    expect(link, 'workspace-host.Containerfile no longer links /usr/local').toBeGreaterThan(-1);
+    // The relative link resolves from /usr, exactly as readlink -f does on the host.
+    expect(join('/usr', '../var/usrlocal')).toBe(WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET);
+    const guard = containerfile.indexOf('find /usr/local -mindepth 1 -not -type d -print -quit');
+    expect(guard, 'the link no longer refuses a /usr/local that carries files').toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(link);
+    expect(link).toBeLessThan(containerfile.indexOf('RUN bootc container lint'));
+  });
+
+  it('ships the tmpfiles dropin that creates the /usr/local subdirectories the bootstrap installs into', () => {
+    const dropIn = join(BOOTC_DIR, 'papercusp-usrlocal.tmpfiles.conf');
+    expect(existsSync(dropIn)).toBe(true);
+    const body = readFileSync(dropIn, 'utf8');
+    for (const sub of ['bin', 'sbin', 'lib', 'libexec']) {
+      expect(body).toMatch(new RegExp(`^d ${WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET}/${sub} 0755 root root -$`, 'm'));
+    }
+    expect(containerfile).toMatch(
+      /^COPY papercusp-usrlocal\.tmpfiles\.conf \/usr\/lib\/tmpfiles\.d\/papercusp-usrlocal\.conf$/m,
+    );
   });
 
   it('google-guest-agent is installed but skipped off GCE, like amazon-ssm-agent off EC2', () => {

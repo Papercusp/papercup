@@ -13,7 +13,7 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -2188,11 +2188,19 @@ function defaultKillOwnedProcess(child, signal, ownsProcessGroup) {
 /**
  * Can `systemd-run --user` reach the caller's user manager from this child env? It connects over
  * the session bus, which systemd locates through XDG_RUNTIME_DIR (`$XDG_RUNTIME_DIR/bus`) or an
- * explicit DBUS_SESSION_BUS_ADDRESS. With neither present it exits 1 BEFORE the command runs —
+ * explicit DBUS_SESSION_BUS_ADDRESS. A private XDG runtime directory alone is not a bus:
+ * isolated background tests deliberately create one without exposing the live user session.
+ * With neither a bus socket nor an explicit address it exits 1 BEFORE the command runs —
  * indistinguishable from the test file failing, and with no output at all.
  */
 export function userBusReachable(env = process.env) {
-  return Boolean(env && (env.XDG_RUNTIME_DIR || env.DBUS_SESSION_BUS_ADDRESS));
+  if (env?.DBUS_SESSION_BUS_ADDRESS) return true;
+  if (!env?.XDG_RUNTIME_DIR) return false;
+  try {
+    return statSync(join(env.XDG_RUNTIME_DIR, 'bus')).isSocket();
+  } catch {
+    return false;
+  }
 }
 
 /**
