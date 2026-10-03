@@ -105,6 +105,7 @@ const ledFleet = (fleetSlug: string): AgentFleetRecord => ({
   description: null,
   owner: null,
   leaderOwnerId: 'su-leader',
+  leaderMissingSinceMs: null,
   colorScheme: null,
   controlState: 'active',
   fleetType: 'single',

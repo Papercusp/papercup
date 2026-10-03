@@ -24,6 +24,18 @@ function setup() {
   return { call, answer, speech };
 }
 describe('hosted lesson assistance boundary', () => {
+  it('accepts v2 public recovery and blocks private category/diagnostic input before both providers', async () => {
+    const { call, answer, speech } = setup();
+    const context = { step: 'practice', status: 'error', version: 2, recoveryCategory: 'unknown' };
+    expect((await call({ ...input, context })).status).toBe(200);
+    expect(answer.mock.calls[0][0].context).toEqual(context);
+    answer.mockClear();
+    for (const extra of [{ recoveryCategory: 'private-provider-id' }, { rawError: 'private token' }, { transcript: 'private chat' }]) {
+      expect((await call({ ...input, context: { ...context, ...extra } })).status).toBe(400);
+      expect((await call({ ...input, context: { ...context, ...extra }, engine: 'openai' }, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH })).status).toBe(400);
+    }
+    expect(answer).not.toHaveBeenCalled(); expect(speech).not.toHaveBeenCalled();
+  });
   it('passes only authorized minimal context to existing brain and leaves domain state untouched', async () => {
     const { call, answer } = setup(); const state = createTutorialState(scope);
     const response = await call();

@@ -6,21 +6,23 @@ type Properties = { lesson_id: string; lesson_version: number; action: Event; st
 type Capture = (event: string, properties: Properties) => unknown;
 const needsRecovery = new Set<StepStatus>(['waiting', 'delayed', 'error', 'blocked', 'missing-target']);
 
-function emit(capture: Capture, action: Event, step?: TutorialStepId, status?: StepStatus) {
+function emit(capture: Capture, action: Event, step?: TutorialStepId, status?: StepStatus, version = CLOUD_TUTORIAL_VERSION) {
   // Construct an allowlisted payload; never spread state, task or chat objects.
-  const properties: Properties = { lesson_id: CLOUD_TUTORIAL_ID, lesson_version: CLOUD_TUTORIAL_VERSION, action,
+  const properties: Properties = { lesson_id: CLOUD_TUTORIAL_ID, lesson_version: version, action,
     ...(step ? { step } : {}), ...(status ? { status } : {}) };
   try { void Promise.resolve(capture('cloud_tutorial', properties)).catch(() => {}); } catch { /* optional diagnostics */ }
 }
 
-export function recordTutorialHelpRequest(step: TutorialStepId, status: StepStatus) {
-  emit(captureBrowserTelemetry, 'help_requested', step, status);
+export function recordTutorialHelpRequest(step: TutorialStepId, status: StepStatus, version = CLOUD_TUTORIAL_VERSION) {
+  emit(captureBrowserTelemetry, 'help_requested', step, status, version);
 }
 
 /** Observe the controller's confirmed state, never intent clicks or AI answers.
  * The per-mount cursor prevents render/StrictMode duplicates and resets on scope
  * changes without placing tenant/user/workspace identifiers in telemetry. */
-export function createTutorialAnalytics(capture: Capture = captureBrowserTelemetry) {
+export function createTutorialAnalytics(sink: Capture = captureBrowserTelemetry) {
+  let version = CLOUD_TUTORIAL_VERSION;
+  const capture: Capture = (event, properties) => sink(event, { ...properties, lesson_version: version });
   let previous: TutorialState | null = null;
   let displayed: TutorialStepId | undefined;
   const confirmed = new Set<TutorialStepId>();
@@ -29,7 +31,8 @@ export function createTutorialAnalytics(capture: Capture = captureBrowserTelemet
   return {
     action(action: 'replay' | 'check_again', step?: TutorialStepId) { emit(capture, action, step); },
     update(state: TutorialState, displayedStep = currentTutorialStep(state)?.id) {
-      if (previous && !sameTutorialScope(previous.scope, state.scope)) {
+      version = state.version;
+      if (previous && (previous.version !== state.version || !sameTutorialScope(previous.scope, state.scope))) {
         previous = null; displayed = undefined; confirmed.clear(); started = false; completed = false;
       }
       const status = tutorialStepStatus(state);

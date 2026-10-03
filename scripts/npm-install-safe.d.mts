@@ -224,13 +224,17 @@ export function publishDependencyGeneration({ repoRoot, runPublisher, env, }?: {
 export function parseCliArgs(argv?: string[], { cwd }?: {
     cwd?: string | undefined;
 }): {
+    help: boolean;
+} | {
     offlineSafe?: boolean | undefined;
     repoRoot: string;
     commandArgs: string[];
+    help?: undefined;
 } | {
     offlineSafe?: boolean | undefined;
     repoRoot: string;
     npmArgs: any;
+    help?: undefined;
 };
 /**
  * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
@@ -259,5 +263,7 @@ export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand,
 export function main(argv?: string[]): Promise<any>;
 /** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */
 export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT: 30000;
+/** Printed for `--help` / `-h`; never takes the install mutex. */
+export const USAGE: "Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)\n       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]\n\nSerializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every\ndeclared dependency landed on disk. Arguments that start with \"-\" get an implicit `install`\nprepended, so `-- --legacy-peer-deps` means `npm install --legacy-peer-deps`.\n--help / -h is recognised only as the first argument; use `install --help` for npm's own help.\n";
 import { spawnSync } from "node:child_process";
 import { withFsMutex } from "./lib/fs-mutex.mjs";

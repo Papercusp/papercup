@@ -9,6 +9,18 @@ const observation: ProductObservation = { scope, revision: 1, access: 'allowed',
   agent: { id: 'private-agent', workspaceId: scope.workspaceId, launchedByUser: true, available: true },
   task: { id: 'private-task', sessionId: 'private-agent', sampleTask: true, submittedByUser: true, status: 'succeeded', resultId: 'private-result' } };
 describe('tutorial measurement follows confirmed state', () => {
+  it('records the beginner version while dropping private diagnostics and transcript content at the telemetry sink', () => {
+    const capture = vi.fn(); const analytics = createTutorialAnalytics(capture);
+    const privateObservation = { ...observation, transcript: 'private transcript', providerError: 'private provider diagnostic',
+      attempt: { step: 'practice' as const, status: 'failed' as const, rawError: 'private token' } };
+    analytics.update(tutorialReducer(createTutorialState(scope, undefined, 2), { type: 'observe', observation: privateObservation }));
+    const serialized = JSON.stringify(capture.mock.calls);
+    for (const value of [...Object.values(scope), 'private transcript', 'private provider diagnostic', 'private token', 'private-agent', 'private-task']) expect(serialized).not.toContain(value);
+    for (const [, properties] of capture.mock.calls) {
+      expect(properties.lesson_version).toBe(2);
+      expect(Object.keys(properties).every(key => ['lesson_id', 'lesson_version', 'action', 'step', 'status'].includes(key))).toBe(true);
+    }
+  });
   it('deduplicates repeated renders and never records click intent as success', () => {
     const capture = vi.fn(); const analytics = createTutorialAnalytics(capture);
     let state = createTutorialState(scope); analytics.update(state); analytics.update(state);
