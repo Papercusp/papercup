@@ -6,6 +6,7 @@ import consultReply from './consult/reply';
 import fleetLaunchOnPlan from './fleet_registry/launch-on-plan';
 import gradeIdea from './scout/grade-idea';
 import scorecardsEmit from './scorecards/emit';
+import workItemsCreate from './work_items/create';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -29,6 +30,8 @@ const LATE_RETURN_MUTATORS = {
   'fleet:launch-on-plan': fleetLaunchOnPlan,
   'capability:launch-agent': launchAgent,
   'scorecards:emit': scorecardsEmit,
+  // WI-10005718: the INSERT precedes the response; a late return lost the id + downgrade notice.
+  'work_items:create': workItemsCreate,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */
