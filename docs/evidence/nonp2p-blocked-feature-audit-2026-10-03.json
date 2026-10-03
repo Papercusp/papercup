@@ -14,7 +14,8 @@
   "canonicalDependencies": "2026-10-03T08:46:22.401400+00:00",
   "dispositionReadback": "2026-10-03T08:43:07.339265Z",
   "macReopenReadback": "2026-10-03T09:06:55.129Z",
-  "cutoverDuplicateReadback": "2026-10-03T09:12:18.393Z"
+  "cutoverDuplicateReadback": "2026-10-03T09:12:18.393Z",
+  "fullCohortReadback": "2026-10-03T09:22:23.436Z"
  },
  "verifiedDispositionCounts": {
   "reopened": 9,
@@ -22,13 +23,18 @@
   "duplicateFeaturesDropped": 1,
   "totalDropped": 3,
   "stillBlocked": 160,
-  "pendingTerminalAuthority": ["WI-1591"]
+  "pendingTerminalAuthority": [
+   "WI-1591",
+   "WI-2146529",
+   "WI-341"
+  ]
  },
  "limitations": [
   "Unresolved canonical dependencies are current evidence; an external blocker excerpt may still be stale.",
   "Retained-for-qualification is not a verified justified block.",
   "Rows do not claim implementation completion, acceptance waiver or shipment.",
-  "Every remaining root prerequisite and hold still needs evidenced final disposition."
+  "Every remaining root prerequisite and hold still needs evidenced final disposition.",
+  "All three dropped rows have proposed terminal authority in the 09:22Z exact172 readback; verified lifecycle disposition is not committed completion."
  ],
  "rows": [
   {
@@ -69,7 +75,7 @@
    "id": "WI-10000407",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Ratified R-006 requires the sole sanctioned BYOC deployed receipt chain and literal 24-hour soak. Current structured P-018, P-024 and P-025 are all dropped. Revive those producers or obtain an explicit acceptance rescope; the audit cannot substitute synthetic receipts.",
    "source": {
     "plan": "byoc-delivery-acceleration-2026-09-06",
     "item": "P-009",
@@ -93,13 +99,18 @@
      "summary": "P-009's final bar R-006 is UNSATISFIABLE: its sole sanctioned producer chain is dropped. R-006 needs deployed receipts incl. a literal 24-hour soak and customer acceptance; the committed matrix names producer plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 seq P-305/P-018/P-317/P-024/P-025 and forbids any parallel or synthetic receipt chain. Measured 2026-09-24: P-018 DROPPED (real GCP canary), P-024 DROPPED (chaos drills), P-025 DROPPED (private-beta gate carrying the 24h soak). NEEDED: revive those producers, re-scope R-006, or accept P-009 through R-005 with R-006 explicitly deferred."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10000699",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "The preserved affected-test attempt ended without a terminal passing marker and recorded eight failures. Remaining work is current-source verification and diagnosis of those failures; the old attempt alone does not prove a present external block. Qualify the current test route and failure residues before reopening.",
    "source": {
     "plan": "plan-popup-full-window-control-2026-09-08",
     "item": "P-003",
@@ -117,13 +128,18 @@
      "summary": "Fresh terminal passing affected-test run required; 2026-09-26 run ended without result and recorded eight failing tasks."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10001169",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source P-009 is done and source plan revision53 is shipped, while this mirror retains an older deployed-control blocker. Current shipReadiness skips evaluation because already shipped; that is not fresh acceptance proof. Reconcile the canonical shipment/closure receipt before disposing this mirror.",
    "source": {
     "plan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
     "item": "P-009",
@@ -141,13 +157,18 @@
      "summary": "Narrow deployed-only property: R-8's deployed-control verification and actual shipment. Every other outcome (R-1..R-7) stays on staging/current-build and is NOT blocked by this."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10002037",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "D-002 makes extension conditional on deployed advisory-fire and population-retraction measurements. The hold says the instrument was unreadable, rather than a negative result. Recheck the actual writers and comparable live window; do not treat a zero caused by absent instrumentation as evidence.",
    "source": {
     "plan": "dry-run-for-claims-preview-a-predicate-partition-null-traps-2026-09-20",
     "item": "P-005",
@@ -164,13 +185,18 @@
     }
    ],
    "claimHold": true,
-   "holdReason": "P-005 is gated on a deployed-only instrumentation signal that is currently UNREADABLE rather than unfavourable (D-002). Do not self-select: the zero a drainer will measure (pg_query_advisory_fires count(*)=0) reports the writer's absence, not the trigger's breadth, and invites both wrong moves — building anyway on the owner's *4 grade of the sibling idea, or dropping the plan as falsified."
+   "holdReason": "P-005 is gated on a deployed-only instrumentation signal that is currently UNREADABLE rather than unfavourable (D-002). Do not self-select: the zero a drainer will measure (pg_query_advisory_fires count(*)=0) reports the writer's absence, not the trigger's breadth, and invites both wrong moves — building anyway on the owner's *4 grade of the sibling idea, or dropping the plan as falsified.",
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10002216",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source P-006 is done and source plan revision249 is shipped, but the mirror still holds an old AUTO-BAR-R-2-P-006@3 adequacy refusal. Resolve the exact terminal receipt/current clause relationship before dropping the mirror or claiming accepted completion.",
    "source": {
     "plan": "turn-start-memory-two-class-2026-09-21",
     "item": "P-006",
@@ -190,7 +216,12 @@
     }
    ],
    "claimHold": true,
-   "holdReason": "terminal completion refused by the linked plan-item gate"
+   "holdReason": "terminal completion refused by the linked plan-item gate",
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10002828",
@@ -224,7 +255,7 @@
    "id": "WI-10002830",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Current checkpoint preserves measured shared-block read time but still lacks a retained per-call mechanism for the historical long UPDATE and the user-facing Portal watchdog trace required by R-8. Preserve the live peer lane; qualify which remaining evidence can still be obtained.",
    "source": {
     "plan": "papercusp-log-performance-remediation-2026-09-23",
     "item": "P-008",
@@ -240,7 +271,12 @@
      "summary": "R-8 live operational evidence is absent: the loaded owner-map repair is verified, but neither the October 1 long UPDATE's full wait mechanism nor its user-facing impact is recoverable from retained per-call logs; Portal watchdog driver remains outside this worker's owned route."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10002831",
@@ -339,7 +375,7 @@
    "id": "WI-10003332",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "The attached carry-plan goal is recorded killed and the source continuation explicitly requires a replacement goal/budget. Remaining acceptance-only proof must not silently revive that contract. Qualify current goal authority and the existing source-preservation evidence.",
    "source": {
     "plan": "finish-session-2893b033-residue-2026-09-26",
     "item": "P-001",
@@ -355,13 +391,18 @@
      "summary": "Attached goal remains killed; source continuation contract explicitly needs replacement goal/budget. Leader routing needed before reviving acceptance-only residue."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10003333",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Saved tests pass, but the caught L4 mutation, current adequacy card and rubric-vetting contract remain unfinished; a prior mutation snapshot refused the probe. Qualify whether that snapshot and the killed-goal budget still constrain this lane before rerunning or reopening.",
    "source": {
     "plan": "finish-session-2893b033-residue-2026-09-26",
     "item": "P-002",
@@ -372,7 +413,12 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10003335",
@@ -423,7 +469,7 @@
    "id": "WI-10003659",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source P-005 explicitly requires Avi to review the private papercusp-preview contents and approve them or name removals. This owner decision precedes invitations. Generic AUTO permission is not evidence that this review occurred.",
    "source": {
     "plan": "dhh-source-preview-2026-09-28",
     "item": "P-005",
@@ -441,7 +487,12 @@
      "summary": "plan lane dhh-source-preview-2026-09-28#P-005 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10003660",
@@ -481,7 +532,7 @@
    "id": "WI-10003945",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Live peer owns final acceptance and deployed R-36 remeasurement. Its checkpoint distinguishes the actual registry blob from a convergence deploy that would not contain it. Preserve the peer claim and request/use exact owner evidence; do not operate or monitor their live gate.",
    "source": {
     "plan": "generic-rag-chunking-2026-09-29",
     "item": "P-016",
@@ -495,13 +546,18 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004280",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Implementation tests and final typecheck were still unfinished in the saved receipt; the source item is todo with no unresolved canonical edge. Qualify current test outcomes and completion-contract residue. A checkpoint describing unfinished verification is not itself a demonstrated external dependency.",
    "source": {
     "plan": "agent-economy-flywheel-2026-08-30",
     "item": "P-016",
@@ -519,7 +575,12 @@
      "summary": "Last P-016 door (SU persona refresh) edits su-persona-render.ts + bootstrap-su-persona-refresh.ts, which su-b0451bbf's P-008 evidence fingerprints. They stay untouched until P-008 ships and su-b0451bbf releases them. Launch/switch/rebind/codex-repair doors are done and green (uncommitted only because git-sync is disk-held, WI-10004397)."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004282",
@@ -649,7 +710,7 @@
    "id": "WI-10004288",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Requires actual external paid-pilot participation plus public execution/listing setup. Inspected software and passing canonical tests cannot establish a genuine sale or supporting payment/discovery protocol. Preserve this external-input condition.",
    "source": {
     "plan": "agent-economy-flywheel-2026-08-30",
     "item": "P-004",
@@ -665,7 +726,12 @@
      "summary": "Requires genuine external paid-pilot participation and public execution/listing setup; none of the candidates has a pilot endpoint/protocol/seller offer yet."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004290",
@@ -1251,7 +1317,7 @@
    "id": "WI-10004575",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Final R-12/R-38/R-39/R-40 require evidence on the exact deployed artifact. The saved blocker cites an older repair queue/build and must be refreshed from the legitimate owner evidence before it is called current. Independent current-build tests remain preparatory work.",
    "source": {
     "plan": "observation-candidate-acceptance-promotion-2026-09-30",
     "item": "P-012",
@@ -1275,7 +1341,12 @@
      "summary": "P-012 bars R-12/R-38/R-39/R-40 need deployed-plane evidence. The release-operator (:3070) still serves f52b2457ba, which lacks the plan-1 code. main is held by the frozen repair queue (candidate d4946901998c, repairHead c0c038ca); its gate run is in flight."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004736",
@@ -1491,7 +1562,7 @@
    "id": "WI-10004757",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Remaining release-population proof depends on Avi's Portal-access decision and an authorized current source. Provider, physical-microphone and final-artifact acceptance remain separate. Qualify the precise current source/access condition rather than repeating stale credential prose.",
    "source": {
     "plan": "voice-final-public-release-2026-10-01",
     "item": "P-001",
@@ -1507,7 +1578,12 @@
      "summary": "plan lane voice-final-public-release-2026-10-01#P-001 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004758",
@@ -2131,7 +2207,7 @@
    "id": "WI-10004885",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Needs an actual Server .deb carrying the doc-vector seed before fresh-install VM verification can test first-boot NULL count and idle CPU. The saved 0.0.26/0.0.27 artifact exclusions are dated; qualify the current candidate artifact instead of assuming today's release still lacks the seed.",
    "source": {
     "plan": "ship-precomputed-doc-vectors-2026-10-01",
     "item": "P-003",
@@ -2147,13 +2223,18 @@
      "summary": "Needs a Server .deb cut from a source carrying the doc-vector seed (superproject >=49f6d06dcf, desktop >=5e54b97d); 0.0.26 and the 0.0.27 tag 163b61ef84 lack it."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004984",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Approved public WSS/TURN hostnames, TCP443 frontend, certificate renewal and ICE/RTP routing inputs are missing from the retained contract. Real authenticated bidirectional audio on external and UDP-blocked networks remains unproved; local isolated software evidence does not satisfy it.",
    "source": {
     "plan": "phone-public-telephone-service-2026-10-01",
     "item": "P-002",
@@ -2175,7 +2256,12 @@
      "summary": "plan lane phone-public-telephone-service-2026-10-01#P-002 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004986",
@@ -2241,7 +2327,7 @@
    "id": "WI-10004988",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "D-018 places the software foundation before P-004 provisioning. Existing provider-heavy blocker prose must not gate expressly pre-provision work. Preserve peer9080's claim and qualify the independent foundation review and unproved R55/R56 billing evidence; final carrier/legal acceptance belongs to later lanes.",
    "source": {
     "plan": "phone-public-telephone-service-2026-10-01",
     "item": "P-010",
@@ -2264,7 +2350,12 @@
      "summary": "plan lane phone-public-telephone-service-2026-10-01#P-010 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004990",
@@ -2600,7 +2691,7 @@
    "id": "WI-10005024",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Requires a measured multi-hour fleet run on plan-2 code and frozen outcome targets. The saved deployed-only runtime rationale and source accounting prerequisites require current qualification; this audit does not authorize another worker wave or claim the prior fleet run accepted.",
    "source": {
     "plan": "feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01",
     "item": "P-006",
@@ -2625,7 +2716,12 @@
      "summary": "Deployed-only property: a multi-hour run of 5 long-lived fleet member sessions on plan-2 code. Staging/current-build cannot host it because fleet:launch-on-plan has no operator selector (all member MCP goes :9071 -> :3070) and :3170 restarts many times a day, which the project rule forbids for long-lived MCP sessions. :3070 serves main f52b2457ba, without P-001/P-002/P-004/P-007. The gate (held by su-3ee17ad9) is converging frozen candidate d4946901; plan-2 paths are only in the next candidate e6584ff8. P-002 (WI-10005020) must also finish."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10005851",
@@ -3646,7 +3742,7 @@
    "id": "WI-1044557",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Portal plan completion retains customer/original-desktop and BYOC acceptance requirements from the source decisions. Its old r30 operation/checkpoint and plan-lane human marker do not establish today's runnable route. Qualify the current authoritative dependencies and owner contract before unpark.",
    "source": {
     "plan": "unified-web-portal-2026-08-29",
     "item": "P-015",
@@ -3667,13 +3763,18 @@
      "summary": "plan lane unified-web-portal-2026-08-29#P-015 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-1074216",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Independent post-repair review is preserved, but exact shipped artifact/runtime/path containment and final scorecard remain open. Preserve its explicit R5/R6 contract and obtain the canonical release receipt from the single live owner without taking their gate lane.",
    "source": {
     "plan": "work-on-everything-stewardship-remediation-2026-08-30",
     "item": "P-006",
@@ -3695,13 +3796,18 @@
     }
    ],
    "claimHold": true,
-   "holdReason": "P-006 checkpoint preserves verified staging evidence and unresolved release proof. Release my only concurrent claim slot while the exact deployed-only event await #222906 remains armed; re-claim P-006 on shipment receipt."
+   "holdReason": "P-006 checkpoint preserves verified staging evidence and unresolved release proof. Release my only concurrent claim slot while the exact deployed-only event await #222906 remains armed; re-claim P-006 on shipment receipt.",
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-1439",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "The criterion explicitly requires Avi speaking at the physical microphone for desktop and TUI v/V acceptance. Preserve that owner action. The saved ElevenLabs convai_write failure is dated and must not be presented as today's credential state without a current read.",
    "source": {
     "plan": "voice-unified-sentinel-pipeline-2026-07-01",
     "item": "P-016",
@@ -3721,13 +3827,18 @@
     }
    ],
    "claimHold": true,
-   "holdReason": "Cannot be executed by an agent: this item's acceptance criterion IS the owner human speaking at a microphone (desktop voice round-trip + TUI `v` PTT / `V` session). No agent can substitute for owner human acceptance, so claiming it can only ever waste a cycle. AUTO mode lifts permission gates, not physical capability.\n\nclaimHold:true (not a plain release) is deliberate: this is at least the THIRD agent claim in ~6h. Two codex sessions (5h and 6h ago) each recorded the identical outcome — claimed"
+   "holdReason": "Cannot be executed by an agent: this item's acceptance criterion IS the owner human speaking at a microphone (desktop voice round-trip + TUI `v` PTT / `V` session). No agent can substitute for owner human acceptance, so claiming it can only ever waste a cycle. AUTO mode lifts permission gates, not physical capability.\n\nclaimHold:true (not a plain release) is deliberate: this is at least the THIRD agent claim in ~6h. Two codex sessions (5h and 6h ago) each recorded the identical outcome — claimed",
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-149547",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "The generated meeting-prep run/source linkage is not fully present in the saved plan population. Qualify the exact meeting run, authorized personal-data source and current event relevance; a plan-lane blocker alone does not explain or validate it.",
    "source": {
     "plan": "meeting-prep-brief-2026-08-22@run-390401638231068526",
     "item": "P-002",
@@ -3747,7 +3858,12 @@
      "summary": "plan lane meeting-prep-brief-2026-08-22#P-002 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-149550",
@@ -3829,7 +3945,7 @@
    "source": {
     "plan": "local-concurrent-inference-2026-07-02",
     "item": "P-002",
-    "version": 89,
+    "version": 90,
     "planState": "ready",
     "itemState": "dropped",
     "directDependencies": []
@@ -3850,7 +3966,7 @@
    "id": "WI-1597",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source P-008 remains gated on the GPU/model provisioning window and real vLLM/AWQ comparison. The saved checkpoint proposes an alternate model but still requires stopping/restoring a shared inference service. Do not infer present VRAM availability or execute the window from old measurements.",
    "source": {
     "plan": "local-concurrent-inference-2026-07-02",
     "item": "P-008",
@@ -3868,13 +3984,18 @@
      "summary": "plan lane local-concurrent-inference-2026-07-02#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-1775",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Current source version60 explicitly hard-defers W5 to an owner-attended staging session. The old peer-drill/FD-leak checkpoint is not the current authority; the attended-session contract is. Preserve it without attributing a current resource bottleneck.",
    "source": {
     "plan": "backend-reliability-100pct-2026-07-03",
     "item": "P-004",
@@ -3885,13 +4006,18 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2092046",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Retiring legacy governor rows requires a cutover seal over every independently deployed admission writer. The old WI-212675 readiness item is now done, so its historical wait is stale; that alone does not prove all deployed writers are ledger-only today.",
    "source": {
     "plan": "resource-governor-admission-ledger-2026-09-01",
     "item": "P-005",
@@ -3904,13 +4030,18 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2092048",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Final acceptance depends on the deployed governor cutover seal, not merely staging tests or a done old gate item. Qualify the actual writer population and source D-012 seal evidence; complete independent current-tree preparation where possible.",
    "source": {
     "plan": "resource-governor-admission-ledger-2026-09-01",
     "item": "P-007",
@@ -3928,7 +4059,12 @@
      "summary": "Narrow deployed-only property, not a general wait-for-green-main. The cutover seal in admission-cutover-store.ts asserts 'Every independently deployed resource-governor writer is ledger-only' — a claim quantified over DEPLOYED writers, which staging cannot establish because it cannot speak for what :3070 is executing. Until the seal fires, the dual-write path keeps emitting legacy work_items rows by design, so P-005's cleanup cannot converge. All deploy-INDEPENDENT acceptance is already complete and recorded on staging — do not re-run it."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2139953",
@@ -4632,7 +4768,7 @@
    "id": "WI-2140920",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Composed Portal Plans/Inbox acceptance is tied to the release-origin bundle in the saved contract. Qualify whether the current Portal provides an authorized current-build route and whether the exact two-pane code is already shipped. Do not treat an old gate-red marker as a current verdict.",
    "source": {
     "plan": "portal-work-two-pane-2026-09-01",
     "item": "P-005",
@@ -4651,7 +4787,12 @@
      "summary": "Narrow deployed-only property: the two-pane Plans/Inbox layout as composed INSIDE the portal frame at :3081, whose bundle hardcodes the 127.0.0.1:3070 origin (the release checkout tracking main). No staging/current-build surface serves that origin, so only this composed view waits on the deploy."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2140921",
@@ -4691,7 +4832,7 @@
    "id": "WI-2141381",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Current P-005 producer WI-2141380 is done with committed authority. P-006 still explicitly measures the fleet-wide pg_stat_statements effect of the serving recall writer. Qualify its deployed treatment and writer units; the missing source edge is not an unresolved implementation producer.",
    "source": {
     "plan": "memory-vector-entity-index-split-2026-09-02",
     "item": "P-006",
@@ -4713,13 +4854,18 @@
      "summary": "plan lane memory-vector-entity-index-split-2026-09-02#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2144607",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "The later owner directive lifts the blanket learning pause while preserving named exceptions. Remaining final acceptance depends on owned producer-integration gap EI-24932377195872399 and current generation/rubric/drill evidence. Do not retain the superseded blanket pause or interfere with the live producer owner.",
    "source": {
     "plan": "blender-evidence-driven-learning-redesign-2026-09-04",
     "item": "P-012",
@@ -4737,13 +4883,18 @@
      "summary": "plan lane blender-evidence-driven-learning-redesign-2026-09-04#P-012 is awaiting a human decision — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2144784",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source P-012 requires complete current cross-lane verification, scale replay, rubric/independent review and lifecycle/audit closure. Qualify its exact remaining external capability or evidence dependency from current source; a generic plan-lane blocked status is insufficient.",
    "source": {
     "plan": "fleet-friction-remediation-2026-08-21",
     "item": "P-012",
@@ -4770,7 +4921,12 @@
      "summary": "plan lane fleet-friction-remediation-2026-08-21#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2144785",
@@ -4810,7 +4966,7 @@
    "id": "WI-2146349",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Corpus/claimability proof is preserved, while final deployed acceptance cites an old live-gate dependency. Qualify current exact-artifact proof from the legitimate owner; do not re-run saved matrices solely to reconstruct already stored evidence.",
    "source": {
     "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
     "item": "P-005",
@@ -4828,13 +4984,18 @@
      "summary": "P-005 deployed-only acceptance depends on the live gate holder promoting the staging candidate."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2146515",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Explicit owner 'Later' gate retains physical mic acceptance on the canonical voice plan before the PUI closeout. Preserve the owner action and reuse WI-1439's canonical evidence once recorded; the older convai_write failure needs current qualification.",
    "source": {
     "plan": "pui-tui-next-wave-2026-09-05",
     "item": "P-001",
@@ -4854,7 +5015,12 @@
      "summary": "P-001 voice-plan closeout is blocked on the configured ElevenLabs key lacking convai_write."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-2146529",
@@ -4894,7 +5060,8 @@
     }
    ],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "completionAuthority": "proposed"
   },
   {
    "id": "WI-3133",
@@ -4944,13 +5111,14 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "completionAuthority": "proposed"
   },
   {
    "id": "WI-3475",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Historical updater verification retains a Mac GUI login/click acceptance gap and potential pre-fix artifact. Qualify relevance of the named 0.0.5/0.0.7 cut and later canonical updater evidence before keeping it indefinitely or disposing it as obsolete.",
    "source": {
     "plan": "desktop-auto-update-operational-2026-07-09",
     "item": "P-007",
@@ -4966,13 +5134,18 @@
      "summary": "plan lane desktop-auto-update-operational-2026-07-09#P-007 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-356",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source D-004/P-008/P-009 require the owner-run quiescent physical-rename window. Protected tunnel/federation/remote acceptance and a current full-suite receipt remain explicit. Do not perform a fleet-wide identity switch during this audit.",
    "source": {
     "plan": "papercup-physical-rename-phase5-2026-06-20",
     "item": "P-006",
@@ -4991,13 +5164,18 @@
      "summary": "D-007 local source repairs are verified. Final acceptance lacks an exact current-source full-suite green receipt and remains in the protected plan route for tunnel/federation/remote/window-dependent acceptance; fleet leader owns that route."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-360",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "The remaining alias/test cleanup is gated by the source's owner-run quiescent migration window, whose documented failure mode is unknown-project resolution across the fleet. Qualify current source completion before clearing that window; safe already-finished subparts do not authorize the rest.",
    "source": {
     "plan": "papercup-to-papercusp-migration-2026-06-20",
     "item": "P-006",
@@ -5008,13 +5186,18 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-371",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Actual cohort ramp remains owner-approved at every step and requires dark-launch operation samples. Source plan version4 is draft. The built recommender is not evidence that a live cohort ramp or sustained parity window was authorized or measured.",
    "source": {
     "plan": "worker-chunk-loop-operator-hosted-2026-06-14",
     "item": "P-021",
@@ -5025,7 +5208,12 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-372",
@@ -5221,7 +5409,7 @@
    "id": "WI-40563",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Requires the canonical dump writer loaded and two consecutive real post-change dump/snapshot cycles with bounded upload delta. Its old deployed acceptance-gate blocker may be stale. Qualify the current backup writer and saved cycle evidence without running a backup/storage mutation in this audit.",
    "source": {
     "plan": "serialize-and-slow-kopia-backups-2026-08-20",
     "item": "P-007",
@@ -5240,13 +5428,18 @@
      "summary": "Deployed a2d69 completion gate lacks the landed plan_slug identity predicate and falsely imports foreign P-007 VALs; target a29ccc214 contains fix c87a294a9922."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-40668",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "The stored August29 event is superseded; old valid window was August30. D-048 further repoints treatment to successor plan P-008's response-silent regime, now source-done. Qualify that exact deployment/window and writer-side mint/fold/filing predicates before measurement; elapsed calendar time alone is not treatment continuity.",
    "source": {
     "plan": "learning-loop-identity-and-consumption-2026-08-08",
     "item": "P-016",
@@ -5266,7 +5459,12 @@
      "summary": "Await seven full days of live post-P-013 filing data; earliest valid measurement is 2026-08-29T23:03:09-04:00."
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-41086",
@@ -5374,7 +5572,7 @@
    "id": "WI-41093",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Current LSP D-009 expressly preserves P-010's independent owner/legal bundling-policy gate after quiescence was cleared for eight other lanes. Fetch-not-bundle and notice preparation remain defined; this audit does not decide licensing exceptions.",
    "source": {
     "plan": "lsp-fleet-scale-all-languages-2026-08-21",
     "item": "P-010",
@@ -5391,7 +5589,12 @@
     }
    ],
    "claimHold": true,
-   "holdReason": "verify"
+   "holdReason": "verify",
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-41094",
@@ -5465,7 +5668,7 @@
    "id": "WI-42424",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Needs actual source P-007 pilot results before encoding tier gates. Current structured P-007 is still todo; its saved protocol cites fail-open corroboration and exact deployed-treatment requirements. Missing canonical coverage in the narrow lookup does not make pilot evidence exist.",
    "source": {
     "plan": "directed-pair-work-items-2026-08-25",
     "item": "P-008",
@@ -5483,7 +5686,12 @@
      "summary": "plan lane directed-pair-work-items-2026-08-25#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-42425",
@@ -5546,7 +5754,7 @@
    "id": "WI-4630",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source targets a flag-gated warm Queen/rebirth pilot from the retired management tier. Qualify relevance against the current supported su/fleet continuity system and preserve the owner measurement goal before deciding supersession. A generic plan-lane marker is not enough to re-run the retired mechanism.",
    "source": {
     "plan": "autonomous-loop-prod-audit-2026-07-02",
     "item": "P-010",
@@ -5562,13 +5770,18 @@
      "summary": "plan lane autonomous-loop-prod-audit-2026-07-02#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-5088",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Needs a coordinated Mac/Windows base-image snapshot window. Historical peer custody is stale and current Mac lock was unheld, but shutdown/snapshot authority and current guest health were not exercised. Do not power off or snapshot protected live rigs from this audit.",
    "source": {
     "plan": "desktop-build-speed-2026-07-16",
     "item": "P-009",
@@ -5584,13 +5797,18 @@
      "summary": "plan lane desktop-build-speed-2026-07-16#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-5311",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source plan version19 is shipped and describes the status-card renderer as built, but indexed P-003 remains todo and its old owner-review block was not reconciled. Qualify the exact closure/renderer requirement evidence before dropping this mirror; shipped status alone does not repair the inconsistent item.",
    "source": {
     "plan": "deterministic-status-cards-2026-07-17",
     "item": "P-003",
@@ -5601,13 +5819,18 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-5312",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source plan is shipped with P-004 still indexed todo and a historical owner 'go' checkpoint. Qualify the compact-rollup implementation and canonical closure decision before duplicate disposition; do not silently revive a closed plan or infer owner review from source status.",
    "source": {
     "plan": "deterministic-status-cards-2026-07-17",
     "item": "P-004",
@@ -5618,13 +5841,18 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-6289",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source requires an explicit implement-worker budget/runner configuration and a real fitness cycle. The saved premise was corrected from seeded-dark to unregistered, and owner pause semantics may have later changed. Qualify current registry/budget and named remaining learning exceptions before arming anything.",
    "source": {
     "plan": "gym-real-fitness-signal-2026-07-27",
     "item": "P-004",
@@ -5640,7 +5868,12 @@
      "summary": "plan lane gym-real-fitness-signal-2026-07-27#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-6290",
@@ -5714,7 +5947,7 @@
    "id": "WI-6294",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Saved work diagnosed intake routing and left the actual idea-to-gym default change unfinished under the source pause. Qualify later owner exceptions and the current triage writer; incomplete implementation is not itself a proven external block.",
    "source": {
     "plan": "gym-real-fitness-signal-2026-07-27",
     "item": "P-009",
@@ -5730,7 +5963,12 @@
      "summary": "plan lane gym-real-fitness-signal-2026-07-27#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-6295",
@@ -5770,7 +6008,7 @@
    "id": "WI-6629",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source P-020 remains blocked in a plan with many refuted/superseded transport mechanisms. Re-read the exact governing P-020 decisions and the current inference callers before deciding implementation, retirement or unpark; generic IPC-plan status and old logs are insufficient.",
    "source": {
     "plan": "no-http-anywhere-2026-07-28",
     "item": "P-020",
@@ -5786,13 +6024,18 @@
      "summary": "plan lane no-http-anywhere-2026-07-28#P-020 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-6711",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Producer WI-2145698 is now done with committed authority. The hold also requires the wake-pump repair actually deployed before reaction-latency leg B; older wake-count leg A is settled. Qualify containment of that specific repair, not just equality with today's later source blob.",
    "source": {
     "plan": "fleet-leadership-continuity-and-actuation-2026-08-01",
     "item": "P-011",
@@ -5806,13 +6049,18 @@
    "canonicalUnresolved": [],
    "externalConditions": [],
    "claimHold": true,
-   "holdReason": "UNPARK WHEN: WI-2145698 (wake-delivery pump attempts-tier starvation) is fixed and deployed. Then re-measure leg (B) reaction latency ONLY — leg (A), the ~4x wake-count win, is already measured and settled (see WI-6711 checkpoint + plan decision D-012). Parked so no peer burns a claim on an item that cannot progress until that fix lands."
+   "holdReason": "UNPARK WHEN: WI-2145698 (wake-delivery pump attempts-tier starvation) is fixed and deployed. Then re-measure leg (B) reaction latency ONLY — leg (A), the ~4x wake-count win, is already measured and settled (see WI-6711 checkpoint + plan decision D-012). Parked so no peer burns a claim on an item that cannot progress until that fix lands.",
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-6884",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Current source D-004 explicitly owner-defers P-005/P-006/P-007. P-005's later done measurement does not revoke the owner's deferral of the mandate. Keep P-006 held until an explicit revised direction.",
    "source": {
     "plan": "agent-context-firewall-and-output-spill-2026-08-02",
     "item": "P-006",
@@ -5830,13 +6078,18 @@
      "summary": "plan lane agent-context-firewall-and-output-spill-2026-08-02#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-8488",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Stored block needs current history and prerequisite qualification.",
+   "reason": "Source Now requires WI-37480 to make head snapshots survivable within server timeout and memory. Previous failure was actually measured; do not re-run the expensive sparse cut unchanged. Qualify that producer's current resolution and deployed repair first.",
    "source": {
     "plan": "memory-corpus-hygiene-and-release-distribution-2026-08-03",
     "item": "P-014",
@@ -5847,7 +6100,17 @@
    },
    "canonicalUnresolved": [],
    "externalConditions": [],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "source-condition-identified-feasibility-not-final",
+    "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "acceptanceWaived": false
+   }
   }
- ]
+ ],
+ "blockedPartition": {
+  "withCanonicalUnresolved": 109,
+  "withoutCanonicalUnresolved": 51,
+  "meaning": "Partition of current BLOCKED subset; frozen unresolved-edge population110 also includes already-dropped WI-2146529"
+ }
 }
