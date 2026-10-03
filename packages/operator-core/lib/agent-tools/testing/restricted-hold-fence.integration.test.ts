@@ -307,7 +307,7 @@ function standaloneVitest() {
 
 /** papercusp-desktop's node:test invocation (its package.json shape) on the held suite. */
 function desktopNodeTest() {
-  const env = { ...routerEnv(), NO_COLOR: '1', FORCE_COLOR: '0' };
+  const env: NodeJS.ProcessEnv = { ...routerEnv(), NO_COLOR: '1', FORCE_COLOR: '0' };
   delete env.NODE_TEST_CONTEXT;
   return spawnSync(
     process.execPath,
