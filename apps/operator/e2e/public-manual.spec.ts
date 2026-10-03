@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_egress';
 
 // Uses the owning Playwright profile. For exact production proof, set
 // OPERATOR_E2E_BASE_URL and OPERATOR_E2E_REUSE_SERVER=1; do not silently
