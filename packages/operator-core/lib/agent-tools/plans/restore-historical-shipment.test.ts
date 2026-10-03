@@ -31,7 +31,7 @@ function transactionalRig(concurrentVersion = request.expectedVersion) {
   }]);
   vi.spyOn(db, 'withWorkspace').mockImplementation(async (_ws, callback) => callback(read as never));
   vi.spyOn(source, 'resolvePlanScope').mockResolvedValue(scope);
-  const receipt = vi.fn(async () => []);
+  const receipt = vi.fn(async (_sql: TemplateStringsArray, ..._values: unknown[]) => []);
   const revision = vi.fn(async () => undefined);
   const emitted = vi.spyOn(events, 'emitPlanEventForCaller').mockResolvedValue(undefined);
   vi.spyOn(revisions, 'planRevisionCapture').mockReturnValue({
