@@ -12,7 +12,9 @@
  *
  * stripe-subscription-signup-2026-10-01 P-005.
  */
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import type { HostedUsageRecord } from '../auth/hosted/billing/usage-statement';
 import { createHostedPrincipal, type HostedPermission } from '../auth/hosted-principal';
 import type { HostedPrincipalResolution, HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import type {
@@ -219,6 +221,34 @@ const activeSnapshot = (status: HostedSubscriptionSnapshot['status'] = 'active')
   canceledAt: null,
   livemode: false,
   latestInvoiceStatus: 'paid',
+});
+
+describe('hosted usage production collector composition', () => {
+  it('uses durable server generation bindings and the bound key through authenticated usage routes, without publishing binding metadata', async () => {
+    const records: HostedUsageRecord[] = [];
+    const readOpenRouterBindings = vi.fn(async (input) => [{
+      scope: { ...input.scope, customerWorkspaceId: 'customer-bound' }, generationId: 'gen-runtime-recorded',
+      payer: 'consumption' as const, isByok: false, credentialRef: 'env:EXECUTION_OPENROUTER_KEY',
+      credentialSha256: createHash('sha256').update('runtime-key').digest('hex'),
+      revision: 2, occurredAtMs: NOW.getTime() - 1000, observedAtMs: NOW.getTime(), evidenceRef: 'execution:metadata-read',
+    }]);
+    const usageStore = { readOpenRouterBindings, readRecords: vi.fn(async () => records),
+      append: vi.fn(async (r: HostedUsageRecord) => { records.push(r); return 'recorded' as const; }) };
+    const resolveSecret = vi.fn(async () => 'runtime-key');
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response('{"data":{"id":"gen-runtime-recorded","is_byok":false,"total_cost":0.0000001,"prompt":"private"}}'));
+    const { app } = await runtime({ config: { stripeSecretKeyRef: null, stripeWebhookSecretRef: null },
+      deps: { usageStore, resolveSecret, fetchImpl } });
+    expect((await app.request('/api/hosted/billing/usage?month=2026-10', get())).status).toBe(401);
+    expect(readOpenRouterBindings).not.toHaveBeenCalled(); expect(resolveSecret).not.toHaveBeenCalled();
+    const response = await app.request('/api/hosted/billing/usage?month=2026-10', get('owner'));
+    expect(response.status).toBe(200);
+    expect(readOpenRouterBindings).toHaveBeenCalledTimes(1);
+    expect(resolveSecret).toHaveBeenCalledWith('env:EXECUTION_OPENROUTER_KEY');
+    expect(usageStore.append).toHaveBeenCalledTimes(1);
+    const body = await response.text();
+    expect(body).toContain('"reportedMicrosExact":"0.1"'); expect(body).toContain('"settlementEligible":false');
+    expect(body).not.toMatch(/credential|sha256|runtime-key|private|EXECUTION_OPENROUTER/);
+  });
 });
 
 // ── configuration ───────────────────────────────────────────────────────────
