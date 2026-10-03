@@ -122,6 +122,99 @@ describe('blind label collection through the injected stateless transport', () =
     };
     return { root, snapshot, llm, get calls() { return calls; } };
   }
+  function smallerMemorySnapshot(f: ReturnType<typeof fixture>, perPartition: number, name: string) {
+    const snapshot = JSON.parse(fs.readFileSync(f.snapshot, 'utf8'));
+    snapshot.suites.memory.entries = snapshot.suites.memory.entries.filter((e: CorpusEntry, index: number) =>
+      index % (snapshot.suites.prose.entries.length / 2) < perPartition);
+    const file = path.join(f.root, `${name}.json`);
+    fs.writeFileSync(file, JSON.stringify(snapshot));
+    return file;
+  }
+  it('expands memory without repaying unchanged prose or exact author prompts, including reference-bearing ancestry', async () => {
+    const f = fixture(3);
+    try {
+      const firstSnapshot = smallerMemorySnapshot(f, 1, 'first-snapshot');
+      const secondSnapshot = smallerMemorySnapshot(f, 2, 'second-snapshot');
+      const first = path.join(f.root, 'first'), second = path.join(f.root, 'second'), final = path.join(f.root, 'final');
+      await collectIndependentCohort({ snapshot: firstSnapshot, out: first, llm: f.llm, targetsPerPartition: 'all' });
+      expect(f.calls).toBe(12); // Two memory authors, six prose authors, four judges.
+      const originals = fs.readdirSync(first).map((name) => ({ name, bytes: fs.readFileSync(path.join(first, name)) }));
+      const prosePasses = [1, 2].map((pass) => JSON.parse(fs.readFileSync(path.join(first, `prose-judge-${pass}-pass.json`), 'utf8')));
+      let donor = first;
+      for (const [snapshot, out] of [[secondSnapshot, second], [f.snapshot, final]]) {
+        const before = f.calls;
+        const receipt = await collectIndependentCohort({ snapshot, out, llm: f.llm, targetsPerPartition: 'all',
+          reuseCallsFrom: donor, reuseSnapshotExpansion: true });
+        expect(f.calls - before).toBe(4); // Two new memory authors and two fresh memory judge passes, nothing else.
+        const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
+        expect(labels.prose).toHaveLength(24);
+        expect(labels.memory).toHaveLength(out === second ? 16 : 24);
+        for (const [index, pass] of [1, 2].entries()) {
+          const reused = JSON.parse(fs.readFileSync(path.join(out, `prose-judge-${pass}-pass.json`), 'utf8'));
+          expect(reused.calls.map((c: { invocationId: string }) => c.invocationId))
+            .toEqual(prosePasses[index].calls.map((c: { invocationId: string }) => c.invocationId));
+          const memory = JSON.parse(fs.readFileSync(path.join(out, `memory-judge-${pass}-0.json`), 'utf8'));
+          expect(memory.kind).toBe('selected-call');
+        }
+        donor = out;
+      }
+      for (const { name, bytes } of originals) expect(fs.readFileSync(path.join(first, name))).toEqual(bytes);
+      const noCalls: LlmCallFn = vi.fn(async () => { throw new Error('unexpected paid replay'); });
+      await collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'audit'), llm: noCalls,
+        targetsPerPartition: 'all', reuseCallsFrom: final, reuseSnapshotExpansion: true });
+      expect(noCalls).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('reauthors only a source whose prompt grows and does not reuse that changed corpus judges', async () => {
+    const f = fixture();
+    try {
+      const donor = path.join(f.root, 'donor');
+      await collectIndependentCohort({ snapshot: f.snapshot, out: donor, llm: f.llm, targetsPerPartition: 'all' });
+      const snapshot = JSON.parse(fs.readFileSync(f.snapshot, 'utf8'));
+      const entry = snapshot.suites.memory.entries[0];
+      snapshot.suites.memory.entries.push({ ...entry, key: `${entry.key}-extra` });
+      const expanded = path.join(f.root, 'expanded.json');
+      fs.writeFileSync(expanded, JSON.stringify(snapshot));
+      const before = f.calls;
+      await collectIndependentCohort({ snapshot: expanded, out: path.join(f.root, 'expanded'), llm: f.llm,
+        targetsPerPartition: 'all', reuseCallsFrom: donor, reuseSnapshotExpansion: true });
+      expect(f.calls - before).toBe(3); // One changed author prompt + two new memory judges; prose costs zero.
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['missing-opt-in', 'text', 'metadata', 'removed', 'order', 'seed', 'date', 'donor-bytes', 'budget'])
+    ('refuses %s snapshot expansion before any paid call or output creation', async (failure) => {
+      const f = fixture(2);
+      try {
+        const small = smallerMemorySnapshot(f, 1, 'small'), donor = path.join(f.root, 'donor');
+        await collectIndependentCohort({ snapshot: small, out: donor, llm: f.llm, targetsPerPartition: 'all' });
+        const snapshot = JSON.parse(fs.readFileSync(f.snapshot, 'utf8'));
+        if (failure === 'text') snapshot.suites.memory.entries[0].text += ' changed';
+        if (failure === 'metadata') snapshot.suites.memory.entries[0].metadata.textSha256 = 'changed';
+        if (failure === 'removed') snapshot.suites.memory.entries.splice(0, 1);
+        if (failure === 'order') snapshot.suites.memory.entries.reverse();
+        if (failure === 'seed') snapshot.seed += ' changed';
+        if (failure === 'date') snapshot.snapshotAt = '2026-01-02T00:00:00.000Z';
+        if (failure === 'donor-bytes') fs.appendFileSync(small, '\n');
+        const expanded = path.join(f.root, 'expanded.json');
+        fs.writeFileSync(expanded, JSON.stringify(snapshot));
+        const noCalls: LlmCallFn = vi.fn(f.llm), out = path.join(f.root, 'refused');
+        await expect(collectIndependentCohort({ snapshot: expanded, out, llm: noCalls,
+          targetsPerPartition: failure === 'budget' ? 1 : 'all', reuseCallsFrom: donor,
+          ...(failure === 'missing-opt-in' ? {} : { reuseSnapshotExpansion: true }) }))
+          .rejects.toThrow(/recovery|partition/);
+        expect(noCalls).not.toHaveBeenCalled();
+        expect(fs.existsSync(out)).toBe(false);
+      } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+    });
+  it('requires exact-call recovery for the snapshot expansion opt-in', async () => {
+    const f = fixture();
+    try {
+      const out = path.join(f.root, 'refused');
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: f.llm,
+        reuseSnapshotExpansion: true })).rejects.toThrow('expansion requires exact-call recovery');
+      expect(f.calls).toBe(0); expect(fs.existsSync(out)).toBe(false);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
   it('handles fenced blind replies after prose with earlier JSON-like braces without rewriting raw receipts', async () => {
     const f = fixture();
     try {

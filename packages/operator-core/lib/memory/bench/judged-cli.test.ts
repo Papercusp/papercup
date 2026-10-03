@@ -53,4 +53,12 @@ describe('blind collector CLI gateway entry (WI-10005666)', () => {
     expect(state.order).toEqual(['store', 'flag', 'tier']);
     expect(state.route).toEqual({ sdk: 'http://127.0.0.1:18788', cli: 'http://127.0.0.1:18788' });
   });
+  it('forwards snapshot expansion only through the explicit exact-call recovery option', async () => {
+    process.argv.push('--reuse-calls-from', 'immutable-donor', '--reuse-snapshot-expansion', '--targets-per-partition', 'all');
+    await enter();
+    const { collectIndependentCohort } = await import('./judged');
+    expect(collectIndependentCohort).toHaveBeenLastCalledWith(expect.objectContaining({
+      reuseCallsFrom: 'immutable-donor', reuseSnapshotExpansion: true, targetsPerPartition: 'all',
+    }));
+  });
 });
