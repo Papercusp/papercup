@@ -261,6 +261,7 @@ export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand,
     env?: NodeJS.ProcessEnv;
 }): Promise<number>;
 export function main(argv?: string[]): Promise<any>;
+export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 /** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */
 export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT: 30000;
 /** Printed for `--help` / `-h`; never takes the install mutex. */

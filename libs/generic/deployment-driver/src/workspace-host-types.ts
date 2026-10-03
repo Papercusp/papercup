@@ -372,6 +372,12 @@ export type WorkspaceHostPlanRequest =
       host: WorkspaceHostRef;
       image: WorkspaceHostImageRef;
       rollbackImage?: WorkspaceHostImageRef;
+      /**
+       * The host's recorded desired spec. A provider whose upgrade launches a REPLACEMENT instance
+       * (AWS: a new EC2 instance id) rebuilds its launch settings from this; a provider that
+       * re-reads the live instance (GCP's recreateInput) ignores it.
+       */
+      desired?: WorkspaceHostDesiredSpec;
     })
   | (WorkspaceHostOperationBase & {
       action: "destroy";

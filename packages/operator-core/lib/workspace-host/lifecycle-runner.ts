@@ -576,6 +576,8 @@ function planRequest(
       action: input.action,
       image: input.image,
       ...(rollbackImage ? { rollbackImage } : {}),
+      // WI-10005971: an AWS upgrade launches a replacement instance from the recorded launch spec.
+      desired: target.desired,
     };
   }
   if (input.action === 'restore') {
