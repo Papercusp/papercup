@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
+import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { inspectGovernorSource } from '../../../../scripts/check-resource-governor-enforcement.mjs';
+import { buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, scheduleR11Timers, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
 
 const at = '2026-10-03T03:00:00.000Z';
 const snapshot = (stage: R11Snapshot['stage'], offsetMs: number, rows: Array<{ key: string; stale: boolean }>): R11Snapshot => ({
@@ -9,6 +11,67 @@ const snapshot = (stage: R11Snapshot['stage'], offsetMs: number, rows: Array<{ k
 });
 const cut = (24 * 60 - 10) * 60_000;
 const end = 24 * 60 * 60_000;
+
+describe('R-11 admitted timer commands', () => {
+  const specs = buildR11TimerSpecs(snapshot('T0', 0, []));
+  const paths = { t0: '/evidence/t0.json.gz', cut: '/evidence/cut.json.gz', t1: '/evidence/t1.json.gz' };
+  const runtime = { repoRoot: '/repo', tsx: '/repo/node_modules/.bin/tsx', script: '/repo/scripts/r11-window-snapshot.mts' };
+  const success = { status: 0, signal: null, stdout: '', stderr: '', actualDemand: {} };
+  const active = (index: number) => ({ ...success, stdout: `ActiveState=active\nUnit=${specs[index]!.unit}.service\n` });
+
+  it('awaits the admitted start and verification for each timer', async () => {
+    const execute = vi.fn().mockResolvedValueOnce(success).mockResolvedValueOnce(active(0))
+      .mockResolvedValueOnce(success).mockResolvedValueOnce(active(1));
+    const timers = await scheduleR11Timers(specs, paths, runtime, false, execute);
+    expect(timers.map(({ show }) => show)).toEqual([active(0).stdout, active(1).stdout]);
+    expect(execute.mock.calls.map(([command]) => command)).toEqual(['systemd-run', 'systemctl', 'systemd-run', 'systemctl']);
+    expect(execute).toHaveBeenNthCalledWith(1, 'systemd-run', buildR11SystemdRunArgs(specs[0], paths, runtime),
+      new Uint8Array(), { namespace: 'r11-window-snapshot', timeoutMs: 30_000, maxBuffer: 1024 * 1024 });
+    expect(execute.mock.calls[1]![1]).toContain(`${specs[0].unit}.timer`);
+  });
+
+  it('starts no process for a dry run', async () => {
+    const execute = vi.fn();
+    expect(await scheduleR11Timers(specs, paths, runtime, true, execute)).toEqual(
+      specs.map((spec) => ({ ...spec, command: buildR11SystemdRunArgs(spec, paths, runtime) })),
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('does not continue after admission refuses the first start', async () => {
+    const execute = vi.fn().mockRejectedValue(new Error('admission refused'));
+    await expect(scheduleR11Timers(specs, paths, runtime, false, execute)).rejects.toThrow('admission refused');
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops every successfully started timer after bad verification, preserving the first error', async () => {
+    const execute = vi.fn().mockResolvedValueOnce(success).mockResolvedValueOnce(active(0))
+      .mockResolvedValueOnce(success).mockResolvedValueOnce({ ...success, stdout: 'ActiveState=failed' })
+      .mockRejectedValueOnce(new Error('stop refused')).mockResolvedValueOnce(success);
+    await expect(scheduleR11Timers(specs, paths, runtime, false, execute)).rejects.toThrow(`Timer ${specs[1].unit} was not armed`);
+    expect(execute.mock.calls.slice(4).map(([command, args]) => ({ command, args }))).toEqual(
+      specs.map((spec) => ({ command: 'systemctl', args: ['--user', 'stop', `${spec.unit}.timer`] })),
+    );
+  });
+
+  it.each([
+    { ...success, status: 1, stderr: 'start failed' },
+    { ...success, status: null, signal: 'SIGTERM' as const },
+    { ...success, error: { code: 'ENOENT' } },
+  ])('refuses unsuccessful process outcomes without arming the next timer', async (failure) => {
+    const execute = vi.fn().mockResolvedValue(failure);
+    await expect(scheduleR11Timers(specs, paths, runtime, false, execute)).rejects.toThrow('systemd-run failed');
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the canonical CLI free of unadmitted starts and detects a reintroduced start', () => {
+    const source = readFileSync(new URL('../../../../scripts/r11-window-snapshot.mts', import.meta.url), 'utf8');
+    expect(source).toContain('await scheduleR11Timers(');
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(inspectGovernorSource(source + "\nexecFileSync('systemd-run', []);"))
+      .toContain('resource-start-outside-admission');
+  });
+});
 
 describe('R-11 prospective snapshot', () => {
   it('uses shared sweep predicates and binds mode, exact profile and recipe', () => {

@@ -1,14 +1,13 @@
 #!/usr/bin/env tsx
 /** One-shot R-11 evidence capture. Example: npx tsx scripts/r11-window-snapshot.mts T0 /absolute/output.json */
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { openSync, closeSync, writeFileSync, linkSync, unlinkSync, readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveBackfillEmbedder } from '../packages/operator-core/lib/search/embed-backfill.ts';
-import { buildR11SystemdRunArgs, buildR11TimerSpecs, captureR11Snapshot, evaluateR11Snapshots, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
+import { buildR11TimerSpecs, captureR11Snapshot, evaluateR11Snapshots, scheduleR11Timers, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
 
 const [stage, path, arg3, arg4, arg5] = process.argv.slice(2);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -38,31 +37,8 @@ try {
     }
     const script = fileURLToPath(import.meta.url);
     const tsx = resolve(repoRoot, 'node_modules/.bin/tsx');
-    const armed: string[] = [];
-    const timers = [];
-    try {
-      for (const spec of specs) {
-        const command = buildR11SystemdRunArgs(spec, { t0: path, cut: arg3, t1: arg4 },
-          { repoRoot, tsx, script });
-        if (arg5 !== '--dry-run') {
-          execFileSync('systemd-run', command, { encoding: 'utf8' });
-          armed.push(`${spec.unit}.timer`);
-          const show = execFileSync('systemctl', ['--user', 'show', `${spec.unit}.timer`,
-            '-p', 'ActiveState', '-p', 'NextElapseUSecRealtime', '-p', 'Unit'], { encoding: 'utf8' });
-          if (!show.includes('ActiveState=active') || !show.includes(`Unit=${spec.unit}.service`)) {
-            throw new Error(`Timer ${spec.unit} was not armed: ${show}`);
-          }
-          timers.push({ ...spec, show });
-        } else {
-          timers.push({ ...spec, command });
-        }
-      }
-    } catch (error) {
-      for (const unit of armed) {
-        try { execFileSync('systemctl', ['--user', 'stop', unit]); } catch { /* preserve the first error */ }
-      }
-      throw error;
-    }
+    const timers = await scheduleR11Timers(specs, { t0: path, cut: arg3, t1: arg4 },
+      { repoRoot, tsx, script }, arg5 === '--dry-run');
     const t0Bytes = readFileSync(path);
     process.stdout.write(`${JSON.stringify({ t0: { path, capturedAt: t0.capturedAt,
       bytes: t0Bytes.length, sha256: sha256(t0Bytes) }, timers, dryRun: arg5 === '--dry-run' })}\n`);

@@ -1,5 +1,6 @@
 /** Read-only, repeatable-read evidence capture for plan shared-vector-search-libraries P-008 R-11. */
 import { createHash } from 'node:crypto';
+import { executeGovernedByteProcess } from '../../../../scripts/lib/governed-test-process.mjs';
 import type { getOrgPg } from '@papercusp/db-org';
 import {
   TARGETS,
@@ -64,6 +65,50 @@ export function buildR11TimerSpecs(t0: R11Snapshot): [R11TimerSpec, R11TimerSpec
     { stage: 'Tcut', unit: `r11-p008-tcut-${stamp}`, at: format((24 * 60 - 10) * 60_000) },
     { stage: 'T1', unit: `r11-p008-t1-${stamp}`, at: format(24 * 60 * 60_000) },
   ];
+}
+
+/** Arm each frozen timer through the maintained process receipt and roll back on failure. */
+export async function scheduleR11Timers(
+  specs: readonly R11TimerSpec[],
+  paths: Parameters<typeof buildR11SystemdRunArgs>[1],
+  runtime: Parameters<typeof buildR11SystemdRunArgs>[2],
+  dryRun = false,
+  executeProcess: typeof executeGovernedByteProcess = executeGovernedByteProcess,
+) {
+  const armed: string[] = [];
+  const timers: Array<R11TimerSpec & { show?: string; command?: string[] }> = [];
+  const run = async (executable: string, args: string[]) => {
+    const result = await executeProcess(executable, args, new Uint8Array(), {
+      namespace: 'r11-window-snapshot', timeoutMs: 30_000, maxBuffer: 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) {
+      throw new Error(`${executable} failed (${result.error?.code ?? result.signal ?? result.status}): ${result.stderr}`);
+    }
+    return result.stdout;
+  };
+  try {
+    for (const spec of specs) {
+      const command = buildR11SystemdRunArgs(spec, paths, runtime);
+      if (dryRun) {
+        timers.push({ ...spec, command });
+        continue;
+      }
+      await run('systemd-run', command);
+      armed.push(`${spec.unit}.timer`);
+      const show = await run('systemctl', ['--user', 'show', `${spec.unit}.timer`,
+        '-p', 'ActiveState', '-p', 'NextElapseUSecRealtime', '-p', 'Unit']);
+      if (!show.includes('ActiveState=active') || !show.includes(`Unit=${spec.unit}.service`)) {
+        throw new Error(`Timer ${spec.unit} was not armed: ${show}`);
+      }
+      timers.push({ ...spec, show });
+    }
+  } catch (error) {
+    for (const unit of armed) {
+      try { await run('systemctl', ['--user', 'stop', unit]); } catch { /* preserve the first error */ }
+    }
+    throw error;
+  }
+  return timers;
 }
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
