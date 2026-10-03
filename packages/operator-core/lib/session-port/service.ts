@@ -59,6 +59,20 @@ export interface SessionPortTarget {
   availableInputTokens: number;
   contextSize: 'full' | 'trimmed' | 'steward' | null;
   launchContextHash: string;
+  /** Bind an isolated answering owner; omission preserves source continuation. */
+  ownerId?: string;
+}
+
+/** The preparation owns this choice, never the later launcher request. */
+export function resolveSessionPortTargetOwner(sourceOwnerId: string, targetOwnerId?: unknown): string {
+  if (!sourceOwnerId) throw new Error('prepared session port is missing its source coordination identity');
+  if (targetOwnerId === undefined) return sourceOwnerId;
+  if (typeof targetOwnerId !== 'string' ||
+      !/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(targetOwnerId) ||
+      targetOwnerId === sourceOwnerId) {
+    throw new Error('isolated target owner must be a valid distinct su coordination identity');
+  }
+  return targetOwnerId;
 }
 
 export interface SessionPortInspection {
@@ -85,7 +99,7 @@ export interface SessionPortInspection {
   disclosure: {
     newTargetSession: true;
     sourceUntouched: true;
-    authorityCarried: true;
+    authorityCarried: boolean;
     targetEgress: string;
     summarizerEgress: string | null;
   };
@@ -365,6 +379,7 @@ export function inspectAcquiredSessionPort(input: {
   if (!['claude', 'codex', 'omp'].includes(sourceRow.agent ?? '') || sourceRow.role != null || !sourceRow.sessionId || !sourceRow.cwd || !sourceRow.coordOwnerId) {
     throw new Error('session ports require a tracked plain SU source');
   }
+  const targetOwnerId = resolveSessionPortTargetOwner(sourceRow.coordOwnerId, target.ownerId);
   if (!Number.isFinite(target.availableInputTokens) || target.availableInputTokens <= 0) {
     throw new Error('target launch has no available input budget');
   }
@@ -423,7 +438,7 @@ export function inspectAcquiredSessionPort(input: {
     disclosure: {
       newTargetSession: true,
       sourceUntouched: true,
-      authorityCarried: true,
+      authorityCarried: targetOwnerId === sourceRow.coordOwnerId,
       targetEgress: `${target.provider}/${target.account}`,
       summarizerEgress: fullPayloadEstimatedTokens > target.availableInputTokens
         ? (input.summarizerProvider ?? 'papercusp inference gateway')
