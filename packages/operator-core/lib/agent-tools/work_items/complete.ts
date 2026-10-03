@@ -3086,19 +3086,42 @@ const SELF_REVIEW_UNCLAIMED_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  */
 async function latestTestingRunForOwner(
   ownerId: string,
+  workItemId: string,
   workspaceId: string | null,
   harnessSlug: string | null,
 ): Promise<TestingRunInvocation | null | undefined> {
   try {
     if (!ownerId) return null;
+    if (!workItemId.trim()) return undefined;
     const { sql } = getOrgPg();
     const cutoff = new Date(Date.now() - MAX_TEST_BINDING_LOOKBACK_MS);
-    const rows = await sql<Array<{ invoked_at: Date; duration_ms: number | null; files: unknown }>>`
-      SELECT invoked_at, duration_ms, args_json->'files' AS files
+    const rows = await sql<Array<{
+      invoked_at: Date;
+      duration_ms: number | null;
+      files: unknown;
+      work_item_id: string | null;
+    }>>`
+      SELECT invoked_at, duration_ms, args_json->'files' AS files,
+             COALESCE(
+               NULLIF(args_json->>'work_item_id', ''),
+               NULLIF(args_json #>> '{evidence,workItemId}', '')
+             ) AS work_item_id
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ${ownerId}
          AND invoked_at >= ${cutoff}
          AND tool_name = 'testing:run'
+         AND (
+           NULLIF(args_json->>'work_item_id', '') = ${workItemId}
+           OR NULLIF(args_json #>> '{evidence,workItemId}', '') = ${workItemId}
+         )
+         AND (
+           NULLIF(args_json->>'work_item_id', '') IS NULL
+           OR NULLIF(args_json->>'work_item_id', '') = ${workItemId}
+         )
+         AND (
+           NULLIF(args_json #>> '{evidence,workItemId}', '') IS NULL
+           OR NULLIF(args_json #>> '{evidence,workItemId}', '') = ${workItemId}
+         )
          AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
          AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
        ORDER BY invoked_at DESC
@@ -3107,7 +3130,12 @@ async function latestTestingRunForOwner(
     const row = rows[0];
     if (!row) return null;
     const files = Array.isArray(row.files) ? row.files.filter((f): f is string => typeof f === 'string') : [];
-    return { invokedAt: new Date(row.invoked_at), durationMs: row.duration_ms ?? null, files };
+    return {
+      invokedAt: new Date(row.invoked_at),
+      durationMs: row.duration_ms ?? null,
+      workItemId: row.work_item_id ?? null,
+      files,
+    };
   } catch {
     return undefined;
   }
@@ -4193,9 +4221,14 @@ async function completeOne(
   // gating discipline as the fabricated-path probe above.
   const testRunContradiction =
     authorityByEvidence === 'committed'
-      ? await testResultContradictedByRun(completionEvidenceForGate, {
-          latestTestingRun: () =>
-            latestTestingRunForOwner(ident.ownerId, ctx.workspaceId ?? null, it.harness ?? existing.harness ?? null),
+      ? await testResultContradictedByRun(completionEvidenceForGate, it.id, {
+          latestTestingRun: (workItemId) =>
+            latestTestingRunForOwner(
+              ident.ownerId,
+              workItemId,
+              ctx.workspaceId ?? null,
+              it.harness ?? existing.harness ?? null,
+            ),
           ledgerRowsInWindow: (paths, from, to) => testRunLedgerRowsInWindow(paths, from, to),
         })
       : undefined;
@@ -4356,15 +4389,15 @@ async function completeOne(
   // the verdict checkable — the agent can re-read that exact run rather than take the
   // server's word — and naming what is silent stops it reading as a general accusation.
   const testRunContradictionWarning = testRunContradiction
-    ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': your most recent ` +
+    ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': your latest run explicitly tied to work item ${it.id} ` +
       `\`testing:run\` (run group ${testRunContradiction.runGroupId}) is recorded in the test_runs ledger ` +
       `with ${testRunContradiction.failingFiles.length} of ${testRunContradiction.filesInRun} file(s) ` +
       `FAILING: ${testRunContradiction.failingFiles.join(', ')}. The declared \`testResult\` is therefore ` +
       `contradicted by a real run — before this check, any non-empty string satisfied the gate, so the ` +
       `literal "3 failed" earned 'committed'. This is NOT triggered by an earlier red you already fixed ` +
-      `(only your LATEST run is read), by a run another agent made (a window resolving to more than one ` +
+      `(only the latest run explicitly tied to this item is read), by a run without item attribution, by a run tied to another item, or by a run another agent made (a window resolving to more than one ` +
       `run group is refused outright), or by \`skip\`/\`cancelled\`/\`running\` rows, all of which are ` +
-      `silent. To fix: make those files pass, re-run them with testing:run, and re-call ` +
+      `silent. To fix: make those files pass, re-run with work-item attribution matching ${it.id} (work_item_id or evidence.workItemId), then re-call ` +
       `work_items:complete — the newer green run then supersedes this one.`
     : undefined;
 

@@ -6785,6 +6785,43 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.authorityWarning).toBeUndefined();
     });
 
+    it('binds the latest testing:run lookup to the exact closing work-item', async () => {
+      const closingItemId = 'WI-test-run-attribution';
+      const closingItem = {
+        ...item,
+        id: closingItemId,
+        kind: 'change',
+        family: 'issue',
+        state: 'open',
+        harness: 'papercup',
+      };
+      getWorkItem.mockResolvedValue(closingItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...closingItem, state: 'resolved' }));
+
+      let invocationQuery: { text: string; values: unknown[] } | undefined;
+      dbMocks.planItemStatusRows.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('');
+        if (text.includes('FROM harness_shared.tool_invocations')) {
+          invocationQuery = { text, values };
+          return [];
+        }
+        return text.includes('SELECT 1 AS one FROM harness_shared.work_items wi') ? [] : [{ status: 'done' }];
+      });
+
+      const result = await one({
+        id: closingItemId,
+        harness: 'papercup',
+        state: 'resolved',
+        completion: { summary: 'closed with focused verification', verifiedHow: 'unit', testResult: 'green' },
+      });
+
+      expect(result.completionAuthority).toBe('committed');
+      expect(invocationQuery).toBeDefined();
+      expect(invocationQuery?.text).toContain("args_json->>'work_item_id'");
+      expect(invocationQuery?.text).toContain("args_json #>> '{evidence,workItemId}'");
+      expect(invocationQuery?.values).toContain(closingItemId);
+    });
+
     it('does not call an authority-changing replay idempotent', async () => {
       const replayed = { ...item, id: 'WI-1', family: 'issue', state: 'open', completionAuthority: 'committed' };
       getWorkItem.mockResolvedValue(replayed);
