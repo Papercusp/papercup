@@ -33,6 +33,7 @@ import {
   buildJsonTextSearchAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
+  buildJsonNullArrowAdvisory,
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
   buildNonSummingPartitionAdvisory,
@@ -665,6 +666,7 @@ export default defineTool({
     // the answer is wrong for EVERY row and looks like a clean "none".
     const nullPathAdvisory = advisoryOf(() => buildSilentNullPathAdvisory(sql));
     const jsonbTypeofAdvisory = advisoryOf(() => buildJsonbTypeofNegationAdvisory(sql));
+    const jsonNullArrowAdvisory = advisoryOf(() => buildJsonNullArrowAdvisory(sql));
     // EI-20261038811991822: a CTE defined but never joined. The sibling of the
     // advisories above in kind — the query SUCCEEDS and returns well-formed
     // rows from the WRONG population, so nothing in the result distinguishes it
@@ -763,6 +765,7 @@ export default defineTool({
       eventFireWindowAdvisory,
       nullPathAdvisory,
       jsonbTypeofAdvisory,
+      jsonNullArrowAdvisory,
       unusedCteAdvisory,
       populationNarrowingAdvisory,
       // The sibling of populationNarrowing above: that one warns a ZERO cannot
