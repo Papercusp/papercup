@@ -10,9 +10,15 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  RESTRICTED_HOLD_PREFLIGHT_EXIT,
+  RESTRICTED_HOLD_PREFLIGHT_MARKER,
+  interpretRestrictedHoldPreflight,
+  runBundleRestrictedHoldPreflight,
+} from '../../../scripts/lib/restricted-hold-preflight.mjs';
 import {
   GATE_EXIT,
   collectBundleInputs,
@@ -224,5 +230,69 @@ describe('bundle-host.sh wiring', () => {
     expect(common).toContain('meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")');
     expect(common).toContain('"${meta_args[@]}"; then');
     expect(common).toContain('>> "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt"');
+  });
+});
+
+/**
+ * WI-10005770: bundle-host.sh runs from apps/operator, so with the default OUTFILE
+ * (dist-host/hono-host.mjs) the gate's snapshot dir is RELATIVE to that cwd, while the census
+ * child runs with cwd = repo root. The injected-preflight tests above never cross that spawn
+ * boundary, which is how a relative inputs path refused every default build (ENOENT) unnoticed.
+ */
+describe('runGate through the real census spawn boundary (WI-10005770)', () => {
+  type ChildResult = { status: number; stdout: string; stderr: string; signal: null };
+  /** Stands in for restricted-hold-preflight-cli.ts: it opens --bundle-inputs from ITS OWN cwd. */
+  function childCensus(seen: { cwd?: string; inputsArg?: string }) {
+    return (_cmd: string, args: readonly string[], opts: { cwd?: string }): ChildResult => {
+      const inputsArg = args[args.indexOf('--bundle-inputs') + 1];
+      seen.cwd = opts.cwd;
+      seen.inputsArg = inputsArg;
+      try {
+        readFileSync(resolve(opts.cwd ?? '.', inputsArg), 'utf8');
+      } catch (error) {
+        return { status: 1, stdout: '', stderr: `restricted-hold preflight crashed (${(error as Error).message})`, signal: null };
+      }
+      const verdict = `${RESTRICTED_HOLD_PREFLIGHT_MARKER} ${JSON.stringify({ verdict: 'admit' })}\n`;
+      return { status: RESTRICTED_HOLD_PREFLIGHT_EXIT.admit, stdout: verdict, stderr: '', signal: null };
+    };
+  }
+
+  it('admits a build whose snapshot dir is relative to the caller while the census child runs at the repo root', () => {
+    // A repo root deeper than any test cwd, so `..` segments cannot clamp at `/` and land on
+    // the right file by accident: from here the caller-relative path must NOT resolve.
+    const repoRoot = join(work, ...Array.from({ length: 40 }, () => 'r'));
+    mkdirSync(repoRoot, { recursive: true });
+    const relativeSnapshot = relative(process.cwd(), snapshotDir);
+    expect(isAbsolute(relativeSnapshot)).toBe(false);
+    expect(resolve(repoRoot, relativeSnapshot)).not.toBe(resolve(relativeSnapshot));
+
+    snapshotArtifacts({ outdir, snapshotDir: relativeSnapshot, artifacts: ['hono-host.mjs', 'blueprints', 'sql'] });
+    rebuild();
+    const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
+
+    // Control: the stand-in child really is cwd-sensitive, so the admit below is earned by the
+    // fix (the path is absolutized before the cwd changes), not by a lenient fake.
+    const control = interpretRestrictedHoldPreflight(
+      childCensus({})('node', ['--bundle-inputs', relative(process.cwd(), main)], { cwd: repoRoot }),
+    );
+    expect(control).toMatchObject({ verdict: 'refuse', error: 'restricted_hold_state_unknown' });
+
+    const seen: { cwd?: string; inputsArg?: string } = {};
+    const lines: string[] = [];
+    const code = runGate({
+      root: repoRoot,
+      baseDir,
+      outdir,
+      snapshotDir: relativeSnapshot,
+      metafiles: [main],
+      preflight: ({ repoRoot: root, inputsFile }) =>
+        runBundleRestrictedHoldPreflight({ repoRoot: root, inputsFile, spawn: childCensus(seen) as never }),
+      log: (line) => lines.push(line),
+    });
+    expect(seen.cwd).toBe(repoRoot);
+    expect(isAbsolute(seen.inputsArg ?? '')).toBe(true);
+    expect(lines.join('\n')).not.toMatch(/BUNDLE_RESTRICTED_HOLD_REFUSED/);
+    expect(code).toBe(GATE_EXIT.admit);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('new host');
   });
 });
