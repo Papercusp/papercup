@@ -68,7 +68,11 @@ import {
 } from '../memory/configure';
 import type { EmbedFn, EmbedderProfileSpec, ResolvedEmbedder } from '@papercusp/memory';
 import { SIDECAR_MAX_TEXT_CHARS, sidecarEmbedBatch, sidecarBatchTimeoutMs } from '@papercusp/memory';
-import { buildSidecarAwareEmbedder, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
+import {
+  buildDeferredSidecarAwareEmbedder,
+  processSidecarConfigured,
+  resolveProcessSidecarUrl,
+} from '../memory/embed-sidecar-wiring';
 import { EMBED_SIDECAR_CAP_EMBED } from '../memory/embed-sidecar-server';
 // The prose column width contract — ONE source, not a restated `384`
 // (D-005 §5). `fitsProseColumns` is the dims guard; `modeTargetDims` is what a
@@ -197,30 +201,33 @@ async function resolveBatchEmbed(mode: ResolvedMode): Promise<EmbedManyFn | null
   // batched call would take ONE slot for N texts, silently defeating the cost
   // governor the cost-audit added.
   if (mode !== 'gemma' && mode !== 'local' && mode !== 'harrier') return null;
-  try {
+  // D-049: decide batch capability WITHOUT ensuring the sidecar. This runs on every
+  // 5-min sweep, including the drained ones that embed nothing, and resolving the
+  // URL here ENSURED the sidecar (spawned it when down), so its idle exit never
+  // held (P-532c). The URL is now resolved per batch, i.e. only once there are rows
+  // to embed. A batch that finds no sidecar throws, and the drain falls back to the
+  // per-row path, the same outcome the old null return produced.
+  if (!processSidecarConfigured()) return null;
+  return async (texts: string[]) => {
     const url = await resolveProcessSidecarUrl(undefined, [EMBED_SIDECAR_CAP_EMBED]);
-    if (!url) return null;
-    return async (texts: string[]) => {
-      // Prose backfill is STORAGE — the same 'document' side the per-row embedders
-      // above resolve to. Asymmetric models embed a document differently from a
-      // query, so this MUST match or the batch path would write vectors from a
-      // different space than the per-row fallback (WI-3616's whole failure mode).
-      // EXPLICIT, batch-scaled budget. Omitting it inherited the SINGLE-embed
-      // default (15s) for the whole batch, which aborted every sweep on a
-      // server-tier box (BATCH_SIZE 128 × ~0.22s/text ≈ 28s) — see
-      // EI-19464574865993243. Derived from the shared helper so the outer
-      // withEmbedTimeout race below cannot pick a different number.
-      const res = await sidecarEmbedBatch(url, {
-        model: mode,
-        kind: 'document',
-        texts,
-        timeoutMs: sidecarBatchTimeoutMs(texts.length),
-      });
-      return res.vectors;
-    };
-  } catch {
-    return null;
-  }
+    if (!url) throw new Error('no embed sidecar for this process; the drain uses the per-row path');
+    // Prose backfill is STORAGE — the same 'document' side the per-row embedders
+    // above resolve to. Asymmetric models embed a document differently from a
+    // query, so this MUST match or the batch path would write vectors from a
+    // different space than the per-row fallback (WI-3616's whole failure mode).
+    // EXPLICIT, batch-scaled budget. Omitting it inherited the SINGLE-embed
+    // default (15s) for the whole batch, which aborted every sweep on a
+    // server-tier box (BATCH_SIZE 128 × ~0.22s/text ≈ 28s) — see
+    // EI-19464574865993243. Derived from the shared helper so the outer
+    // withEmbedTimeout race below cannot pick a different number.
+    const res = await sidecarEmbedBatch(url, {
+      model: mode,
+      kind: 'document',
+      texts,
+      timeoutMs: sidecarBatchTimeoutMs(texts.length),
+    });
+    return res.vectors;
+  };
 }
 
 function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
@@ -289,9 +296,11 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
     // Sidecar-first local legs (P-004): shared warm model when the host runs
     // the embed sidecar, bit-identical in-process fallback otherwise.
-    buildLocal: () => buildSidecarAwareEmbedder('local', 'document'),
+    // D-049: DEFERRED builders. This resolver runs on every 5-min sweep, and an
+    // eager build ensures (spawns) the sidecar even when there is nothing to embed.
+    buildLocal: async () => buildDeferredSidecarAwareEmbedder('local', 'document'),
     // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.
-    buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
+    buildGemma: async () => buildDeferredSidecarAwareEmbedder('gemma', 'document'),
     // Required by the cascade seam since P-014 made harrier selectable; the
     // sweep itself never STORES harrier vectors (native 1024 ≠ PROSE_VECTOR_DIMS
     // — the dims guard in runBackfillSweep skips the whole sweep), but an
@@ -301,7 +310,7 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     // as "harrier is excluded because it is not 384" — true of the old width and
     // wrong about the reason. Harrier is excluded because 1024 ≠ the prose width,
     // whatever that width currently is.
-    buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'document'),
+    buildHarrier: async () => buildDeferredSidecarAwareEmbedder('harrier', 'document'),
   });
 }
 

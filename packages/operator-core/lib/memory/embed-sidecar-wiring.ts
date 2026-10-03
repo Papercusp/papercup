@@ -330,3 +330,46 @@ export async function buildSidecarAwareReranker(
     onTransition: reportSidecarTransition(`[sidecar-reranker] ${model}`),
   });
 }
+
+/**
+ * Whether THIS process has an embed-sidecar story at all (an explicit URL, or the
+ * spawn-locally opt-in), decided WITHOUT ensuring it. `resolveProcessSidecarUrl`
+ * answers by ENSURING the sidecar, which spawns the child when it is down. A
+ * background caller must not do that just to learn it has nothing to embed (D-049).
+ */
+export function processSidecarConfigured(deps: Pick<SidecarWiringDeps, 'resolveUrl'> = defaultDeps): boolean {
+  return Boolean(deps.resolveUrl()) || embedSidecarEnabled();
+}
+
+/**
+ * `buildSidecarAwareEmbedder`, with the sidecar resolution (and so any spawn)
+ * deferred to the first real embed call (D-049, P-532c).
+ *
+ * This is for BACKGROUND callers that rebuild on a cadence. The 5-min embed
+ * backfill sweep re-resolves its embedder every tick. Built eagerly, each
+ * resolution ensured the sidecar, so a fully drained Server respawned its ~2 GB
+ * embed child on every sweep and the idle exit never held (cap-p532c: the
+ * sidecar was up about 5 min of every 10 with zero real embeds). Interactive
+ * callers keep the eager builder, because their warm-up exists to pay the spawn
+ * before a user is waiting.
+ *
+ * A failed first build is not cached; the next call retries it.
+ */
+export function buildDeferredSidecarAwareEmbedder(
+  model: 'gemma' | 'local' | 'harrier',
+  kind: GemmaEmbedKind,
+  deps: SidecarWiringDeps = defaultDeps,
+): EmbedFn {
+  let built: Promise<EmbedFn> | null = null;
+  return async (text: string, signal?: AbortSignal): Promise<number[]> => {
+    signal?.throwIfAborted();
+    if (!built) {
+      built = buildSidecarAwareEmbedder(model, kind, deps).catch((e: unknown) => {
+        built = null;
+        throw e;
+      });
+    }
+    const embed = await built;
+    return embed(text, signal);
+  };
+}
