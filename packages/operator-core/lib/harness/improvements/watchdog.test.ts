@@ -3140,6 +3140,23 @@ describe('red-test SAME-SHA verdict flip (WI-10929)', () => {
     expect(s.body).toContain('Last PASS in window: 2026-08-04T01:10:41.000Z (ed37db59c8)');
   });
 
+  it('reports the pass/fail intersection SHA instead of attributing the flip to the newest pass', () => {
+    const s = redTestSignalsFromRows(
+      rows({
+        fail_shas: ['dfa9f1289f'],
+        pass_shas: ['dfa9f1289f', 'b87b04aab0'],
+        last_pass_sha: 'b87b04aab0',
+        last_pass_at: '2026-10-03T09:00:00Z',
+      }),
+      6,
+    )[0];
+
+    expect(s.body).toContain('Last PASS in window: 2026-10-03T09:00:00.000Z (b87b04aab0)');
+    expect(s.body).toContain('SAME-SHA VERDICT FLIP: dfa9f1289f both PASSED and FAILED');
+    expect(s.body).not.toContain('SAME-SHA VERDICT FLIP: b87b04aab0');
+    expect(s.redTest?.sameShaFlipSha).toBe('dfa9f1289f');
+  });
+
   it('CONTROL — a pass on a DIFFERENT sha keeps the ancestry line and is NOT flagged as a flip', () => {
     const s = redTestSignalsFromRows(
       rows({ fail_shas: ['ed37db59c8'], last_pass_sha: 'd384a993f3', last_pass_at: '2026-08-04T01:10:41Z' }),
