@@ -316,7 +316,8 @@ function auditExactOwners(r: any, additionalIds: number[] = []) {
     r.profilerOperations?.includes('v8.writeHeapSnapshot (forced GC/synchronous pause)') &&
     r.profilerOperations.includes('HeapProfiler.enable (object IDs)') &&
     r.profilerOperations.includes('HeapProfiler.disable (object IDs)'), 'qualified intervention and cleanup');
-  return { processIdentity, recordedBuildSha: r.buildSha, snapshotSha256: snapshot.sha256, owners, verifiedNodes,
+  return { processIdentity, recordedBuildSha: r.buildSha, snapshotSha256: snapshot.sha256, owners,
+    verifiedNodes: verifiedNodes.sort((a: any, b: any) => a.id - b.id),
     scope: 'Historical private snapshot; no new runtime measurement.',
     definition: 'Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.',
     nativePhysicalOwnership: 'unknown', productionSavings: 'unmeasured', loadedBuildIdentity: 'unknown' };
