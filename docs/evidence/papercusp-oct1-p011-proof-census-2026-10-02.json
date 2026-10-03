@@ -153,6 +153,21 @@
         "finalCumulativeV8AllocationReductionBytes": 1061171864
       }
     ],
+    "independentOracleAcceptance": {
+      "workItem": "WI-10005787",
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-resource-oracle-r1-2026-10-03.json",
+      "bytes": 2863,
+      "sha256": "a41cc615d8699d325fe1730c3770536bd731cc292cfa6564b9b117151e798603",
+      "testRun": 20611983,
+      "binding": 23100,
+      "bindingKind": "test",
+      "oracleSha256": "5dd62aa8debd3e352f033adc1747356373e0cf40f911e9711ae880f00111167f",
+      "outcome": "Exact saved final-safe receipt accepted; sixteen data-corruption counterexamples rejected. Canonical focused assertion suite17PASS/19filteredSKIP, focused typecheck0errors.",
+      "method": "Independent raw PID/start-bound kernel PSS and cumulative V8 allocation arithmetic, exact phase/IPC outcome populations, actual concurrency timestamps, allocator/artifact identity and cleanup checks. The oracle does not import the cohort writer or trust its reduction/concurrency headlines.",
+      "counterexamples": "RSS-only, missing/reset allocation, reused PID, wrong inspector, allocator mismatch, omitted/changed workload, false concurrency label, omitted idle phase, source/artifact drift, unreaped child, forced cleanup, one-pair-only PSS/allocation reduction.",
+      "bindingQualification": "Ordinary passing test evidence with server-derived run facts and scoped L4 metadata. It is not a failed mutation-probe run; both refused counterexample/caller-outcome bindings created no row. No older evidence or false oracle/L4 metadata was changed or retracted.",
+      "limits": "Audit of immutable historical private receipt only. No runtime replay, live paired savings, retained/native attribution or complete executed-source proof. Other selected sources, parent fulfillment, independent plan grading and shipment remain open."
+    },
     "definitions": "PSS is kernel smaps_rollup Pss kB multiplied by 1024 for one identified PID; allocation is cumulative V8 total_allocated_bytes, not retained or native allocation. GC events were not recorded.",
     "provenance": "Ten named sources were stable before/after each run. The original ledger local-dirty and unknown full source/router graph qualifications remain intact even after commit settlement.",
     "actualStandaloneBaseline": {
