@@ -489,11 +489,14 @@ export async function reclaimStaleWorkItemClaims(
              -- claim back to stop reclaim churn until its beat ages past that window.
              AND NOT EXISTS (SELECT 1 FROM parked_holder p WHERE p.alias = f.taken_by)
              AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = f.taken_by)
-                   -- Fallback anchor: taken_at, or updated_ts for a NULL-anchor claim
-                   -- (EI-2534 class) — an actively-driven remote item keeps refreshing
-                   -- updated_ts via federation, deferring the fallback; a truly
-                   -- abandoned one frees once the horizon lapses.
-                   OR ( (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
+                   -- Fallback anchor: taken_at, or fed_ts for a NULL-anchor claim
+                   -- (EI-2534 class) — an actively-driven item keeps advancing its
+                   -- content clock, deferring the fallback; a truly abandoned one frees
+                   -- once the horizon lapses. WI-10005935: fed_ts, not updated_ts —
+                   -- stamp_local_federated_write treats updated_ts as bookkeeping
+                   -- (WI-10002882), so embedding/settlement/admission rewrites advance it
+                   -- with no holder action at all.
+                   OR ( (now() - COALESCE(f.taken_at, to_timestamp(f.fed_ts / 1000.0)))
                           > make_interval(secs => ${unknownFallbackSec})
                         -- WI-10005928: only the node that last wrote the row judges a
                         -- never-seen holder. A holder's real liveness (presence) never
@@ -512,7 +515,9 @@ export async function reclaimStaleWorkItemClaims(
                           SELECT 1 FROM harness_shared.work_items w
                            WHERE w.workspace_id = f.workspace_id
                              AND (w.taken_by = f.taken_by OR w.terminal_owner = f.taken_by)
-                             AND GREATEST(w.taken_at, to_timestamp(w.updated_ts / 1000.0))
+                             -- WI-10005935: a CONTENT write (fed_ts) is a sign of life; a
+                             -- bookkeeping touch (updated_ts alone) is not.
+                             AND GREATEST(w.taken_at, to_timestamp(w.fed_ts / 1000.0))
                                    > now() - make_interval(secs => ${unknownFallbackSec}) ) ) ) )
            -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
            OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)
@@ -773,7 +778,8 @@ export async function reclaimStaleIssueClaims(
                       SELECT 1 FROM harness_shared.work_items w
                        WHERE w.workspace_id = e.workspace_id
                          AND (w.taken_by = e.assignee OR w.terminal_owner = e.assignee)
-                         AND GREATEST(w.taken_at, to_timestamp(w.updated_ts / 1000.0))
+                         -- WI-10005935: content clock (fed_ts), not bookkeeping updated_ts.
+                         AND GREATEST(w.taken_at, to_timestamp(w.fed_ts / 1000.0))
                                > now() - make_interval(secs => ${unknownFallbackSec}) ) ) )
          FOR UPDATE OF e SKIP LOCKED
     )
