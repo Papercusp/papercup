@@ -128,6 +128,150 @@ function auditSpawnerResourcePair(report: any) {
   });
 }
 
+// Saved-data oracles deliberately do not call the emitters or their summaries.
+// Each returns only the conclusions its persisted counters can establish.
+function auditSavedInboxPair(report: any) {
+  const check = (condition: unknown, reason: string) => {
+    if (!condition) throw Error('P011 inbox acceptance: ' + reason);
+  };
+  const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0;
+  check(report.incomplete === false && report.runner.status === 0 && !report.error, 'incomplete run');
+  check(report.cohorts.length === 2 && report.cohorts.map((c: any) => c.mode).join(',') === 'baseline,shared', 'paired hosts');
+  check(report.sources.before.length > 0 && JSON.stringify(report.sources.before) === JSON.stringify(report.sources.after), 'source drift');
+  const bodies = Array.from({ length: 256 }, (_, i) => ({ id: 'p011-' + (i + 1),
+    body: ('useful-context-' + (i + 1) + ' ').repeat(32768).slice(0, 32768) }));
+  bodies.sort((a, b) => a.id.localeCompare(b.id));
+  const digest = createHash('sha256');
+  for (const row of bodies) digest.update(JSON.stringify([row.id, row.body]));
+  const expectedContent = { rows: 256, stringCodeUnits: 8388608, sha256: digest.digest('hex') };
+  const phases = ['before', ...Array.from({ length: 3 }, (_, w) =>
+    ['idle-' + w + '-start', 'idle-' + w + '-end', 'workload-' + w + '-end']).flat(), 'completion-idle'];
+  check(report.variants.length === 8 && report.variants.every((v: any, i: number) =>
+    v.directed === true && v.limit === i + 1 && v.include_ambient === Boolean(i % 2) &&
+    v.include_intents === Boolean(Math.floor(i / 2) % 2) && v.max_body_chars === 1), 'display variant contract');
+  check(report.cohorts[0].pid !== report.cohorts[1].pid, 'independent process identity');
+  for (const [arm, c] of report.cohorts.entries()) {
+    check(positive(c.pid) && c.pid === c.identity.pid && /^\d+$/.test(c.identity.startTicks), 'process identity');
+    check(c.pauses === 0 && c.reaped === true && c.unreaped.length === 0 && c.descendants.length === 0, 'cleanup or debugger pause');
+    check(c.cachePreflight.enabled === true && c.cachePreflight.entries === 0, 'cold cache');
+    check(JSON.stringify(c.fixture) === JSON.stringify(expectedContent), 'independently regenerated raw context');
+    check(c.content.length === (arm === 0 ? 8 : 1) && c.content.every((row: any) =>
+      row.rows === expectedContent.rows && row.stringCodeUnits === expectedContent.stringCodeUnits &&
+      row.sha256 === expectedContent.sha256), 'complete raw content and sharing');
+    check(c.samples.map((s: any) => s.phase).join(',') === phases.join(','), 'matched phases');
+    let at = 0, allocated = 0;
+    for (const s of c.samples) {
+      check(s.pid === c.pid && s.os.pid === c.pid && s.os.startTicks === c.identity.startTicks, 'sample identity');
+      check(positive(s.os.pssBytes), 'PSS required');
+      check(positive(s.heap.total_allocated_bytes) && s.heap.total_allocated_bytes >= allocated, 'cumulative V8 allocation required');
+      check(positive(s.at) && s.at > at && s.descendants.length === 0 && s.cache.enabled === true, 'sample sequence');
+      const copies = s.phase === 'before' || s.phase.startsWith('idle-0-') ? 0 : arm === 0 ? 8 : 1;
+      check(s.cache.entries === copies && s.cache.rows.length === copies &&
+        s.cache.rows.every((n: number) => n === 256), 'observed sharing population');
+      at = s.at; allocated = s.heap.total_allocated_bytes;
+    }
+    check(c.windows.length === 3, 'window population');
+    for (const [w, window] of c.windows.entries()) {
+      check(window.window === w && window.outcomes.length === 8, 'response population');
+      for (const [i, outcome] of window.outcomes.entries()) {
+        const expected = Array.from({ length: i + 1 }, (_, j) => ({ id: 'p011-' + (256 - j), summary: 'P' }));
+        check(outcome.variant === i && outcome.total === 256 && outcome.returned === i + 1 &&
+          JSON.stringify(outcome.entries) === JSON.stringify(expected), 'useful response parity');
+      }
+    }
+  }
+  const growth = (c: any, key: 'pssBytes' | 'total_allocated_bytes') => key === 'pssBytes' ?
+    c.samples.at(-1).os[key] - c.samples[0].os[key] : c.samples.at(-1).heap[key] - c.samples[0].heap[key];
+  const pssGrowthDifferenceBytes = growth(report.cohorts[0], 'pssBytes') - growth(report.cohorts[1], 'pssBytes');
+  const cumulativeV8AllocationGrowthDifferenceBytes = growth(report.cohorts[0], 'total_allocated_bytes') - growth(report.cohorts[1], 'total_allocated_bytes');
+  check(pssGrowthDifferenceBytes > 0 && cumulativeV8AllocationGrowthDifferenceBytes > 0, 'paired resource observation');
+  return { pssGrowthDifferenceBytes, cumulativeV8AllocationGrowthDifferenceBytes,
+    rawCopies: [8, 1], preservedBodyCodeUnits: expectedContent.stringCodeUnits, responsesPerHost: 24,
+    actualConcurrency: 'unmeasured: per-request start/end timestamps absent', productionSavings: 'unmeasured' };
+}
+
+function auditSavedExpiryPair(report: any) {
+  const check = (condition: unknown, reason: string) => {
+    if (!condition) throw Error('P011 expiry acceptance: ' + reason);
+  };
+  const { control, current } = report.measurements;
+  check(report.fixture.entries === 1042 && report.fixture.hardExpired === 438 && report.fixture.useful === 604, 'fixture population');
+  check(control.pid !== current.pid && control.node === current.node && control.control === true && current.control === false &&
+    control.sourceHashes.generationStore === current.sourceHashes.generationStore, 'matched arms');
+  for (const c of [control, current]) {
+    check(c.expiredIdle.entries === 1042 && c.expiredIdle.reachable === 438 && c.reclamation.reads === 32, 'expiry and ordinary-read phases');
+    check(c.cleared.entries === 0 && c.cleared.reachable === 0, 'cleanup roots');
+    for (const m of [c.empty, c.populated, c.expiredIdle.memory, c.ordinary.memory]) {
+      check(Number.isFinite(m.heapUsed) && m.heapUsed > 0 && Number.isFinite(m.pssBytes) && m.pssBytes > 0, 'separate heap and PSS counters');
+    }
+  }
+  check(control.ordinary.entries === 1042 && control.ordinary.reachable === 438 &&
+    current.ordinary.entries === 604 && current.ordinary.reachable === 0, 'expired roots removed; useful entry count preserved');
+  check(control.stats.hits === current.stats.hits && control.stats.misses === current.stats.misses &&
+    control.stats.builds === current.stats.builds && current.stats.staleServed === 0, 'cache outcomes');
+  const heapUsedDifferenceBytes = control.ordinary.memory.heapUsed - current.ordinary.memory.heapUsed;
+  check(heapUsedDifferenceBytes > 0, 'heap reclamation');
+  const pssDifferenceBytes = control.ordinary.memory.pssBytes - current.ordinary.memory.pssBytes;
+  return { expiredReachable: [control.ordinary.reachable, current.ordinary.reachable], usefulEntries: 604,
+    heapUsedDifferenceBytes, pssDifferenceBytes, physicalPssReductionObserved: pssDifferenceBytes > 0,
+    cumulativeV8Allocation: 'unmeasured', usefulContentParity: 'unmeasured: saved entry counts and cache statistics only',
+    processStartTicks: 'unmeasured', productionSavings: 'unmeasured' };
+}
+
+function auditSavedCompilerCaller(report: any) {
+  const check = (condition: unknown, reason: string) => {
+    if (!condition) throw Error('P011 compiler acceptance: ' + reason);
+  };
+  const nativeSha = 'fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c';
+  check(report.incomplete === false && report.runner.status === 0 && !report.error, 'incomplete run');
+  check(report.cohorts.length === 2 && report.cohorts.map((c: any) => c.mode).join(',') === 'control,compiler', 'paired caller arms');
+  const [control, compiler] = report.cohorts;
+  check(control.identity.pid !== compiler.identity.pid && control.identity.bundleSha256 === report.bundleSha256 &&
+    compiler.identity.bundleSha256 === report.bundleSha256, 'serving artifact identity');
+  const phases = ['preflight', 'window-0', 'window-1', 'window-2', 'bounded-idle'];
+  for (const c of report.cohorts) {
+    check(c.reaped === true && c.unreaped.length === 0 && c.pauses === 0 && c.leaseRelease.ok === true, 'cleanup or pause');
+    check(c.samples.map((s: any) => s.phase).join(',') === phases.join(','), 'matched resource phases');
+    let at = 0, allocated = 0;
+    for (const s of c.samples) {
+      check(s.pid === c.identity.pid && s.os.pid === s.pid && s.os.startTicks === c.identity.startTicks, 'sample identity');
+      check(Number.isFinite(s.os.pssKiB) && s.os.pssKiB > 0 && Number.isFinite(s.heap.total_allocated_bytes) &&
+        s.heap.total_allocated_bytes >= allocated, 'PSS and cumulative V8 counters');
+      check(s.at > at, 'sample ordering'); at = s.at; allocated = s.heap.total_allocated_bytes;
+    }
+    check(c.samples.at(-1).descendants.length === 0, 'post-request descendants');
+    check(c.requests.length === 3, 'request population');
+    for (const [w, request] of c.requests.entries()) {
+      check(request.window === w && request.value.ok === false && request.value.error === 'mutation_probe_active' &&
+        request.value.testRunIds.length === 0 && request.value.phaseTimingsMs.routerExecutionMs === null, 'real refused preflight');
+      check(request.requestSha256 === control.requests[w].requestSha256 && request.requestBytes === control.requests[w].requestBytes,
+        'matched HTTP inputs');
+      check(c.mode === 'compiler' ? request.value.hint.includes('may observe it: imports ') :
+        request.value.hint.includes('not a code module'), 'distinguishing caller path');
+    }
+    check(c.trace.pid === c.identity.pid && c.trace.limited === false, 'trace identity and coverage');
+  }
+  check(control.trace.calls.fork.calls === 0 && compiler.trace.calls.fork.calls === 3 &&
+    compiler.trace.calls.fork.stacks.some((s: string) => s.includes('at testImportClosures ')), 'actual compiler caller');
+  const native = compiler.descendants.filter((d: any) => d.executableSha256 === nativeSha);
+  check(control.descendants.every((d: any) => d.executableSha256 !== nativeSha) && native.length === 3, 'executable-identified population');
+  const identities = new Set<string>();
+  for (const d of native) {
+    const parent = compiler.descendants.find((p: any) => p.pid === d.parent);
+    const identity = d.pid + ':' + d.startTicks;
+    check(/^\d+$/.test(d.startTicks) && !identities.has(identity) && parent && parent.parent === compiler.identity.pid &&
+      parent.executableSha256 === compiler.samples[0].os.executableSha256, 'native descendant ancestry');
+    check(d.samples > 0 && d.pssKiB > 0 && d.peakPssKiB >= d.pssKiB, 'native resource observation');
+    identities.add(identity);
+  }
+  return { tracedForks: [0, 3], nativeDescendants: native.length, nativeExecutableSha256: nativeSha,
+    nativeSampleCounts: native.map((d: any) => d.samples), hostResourceSamples: [5, 5],
+    scope: 'Historical private refused preflight caller and final cleanup only',
+    pairedPssReduction: 'unmeasured: these arms distinguish invocation, not an optimization',
+    namedSourceCurrentness: 'unmeasured in raw receipt; separate historical qualification required',
+    historicalGigabyteRecovery: 'unmeasured', productionSavings: 'unmeasured' };
+}
+
 // Database/runtime launchers can emit substantial output before the cohort
 // publishes its first report. Do not buffer that output in spawnSync.
 function runCohortWithLog(args: string[], options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }, logPath: string) {
@@ -524,6 +668,152 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         limits: ['Cumulative V8 allocation is not retained or native allocation.', 'Unforced counters include transient state; GC events were not recorded.',
           'Historical named-source scope and full executed graph unknown are preserved.',
           'Other selected sources, live paired savings, parent fulfillment, independent plan grading and shipment remain open.'] }));
+    });
+  });
+
+  describe('P-011 selected saved-source acceptance counterexamples', () => {
+    type Corruption = [string, string, (report: any) => void];
+    const suites: { id: string; path: string; sha256: string; audit: (report: any) => any;
+      expected: any; cases: Corruption[] }[] = [
+      { id: 'inbox', path: 'docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json',
+        sha256: '8da0585c8cd1155c563aed2dc092a7413ff90b5a0fc7095873b7dcdde0c4ae58', audit: auditSavedInboxPair,
+        expected: { pssGrowthDifferenceBytes: 210301952, cumulativeV8AllocationGrowthDifferenceBytes: 288349304,
+          rawCopies: [8, 1], preservedBodyCodeUnits: 8388608, responsesPerHost: 24,
+          actualConcurrency: 'unmeasured: per-request start/end timestamps absent', productionSavings: 'unmeasured' },
+        cases: [
+          ['incomplete', 'incomplete run', r => { r.incomplete = true; }],
+          ['source-drift', 'source drift', r => { r.sources.after[0].sha256 = '0'.repeat(64); }],
+          ['pid-reused', 'sample identity', r => { r.cohorts[1].samples.at(-1).os.startTicks = '1'; }],
+          ['rss-only', 'PSS required', r => { delete r.cohorts[1].samples[0].os.pssBytes; }],
+          ['allocation-reset', 'cumulative V8 allocation required', r => { r.cohorts[1].samples.at(-1).heap.total_allocated_bytes = 1; }],
+          ['missing-idle', 'matched phases', r => { r.cohorts[1].samples.splice(2, 1); }],
+          ['paused', 'cleanup or debugger pause', r => { r.cohorts[1].pauses = 1; }],
+          ['unreaped', 'cleanup or debugger pause', r => { r.cohorts[1].reaped = false; }],
+          ['warm-cache', 'cold cache', r => { r.cohorts[1].cachePreflight.entries = 1; }],
+          ['fixture-and-digest-forged', 'independently regenerated raw context', r => {
+            for (const c of r.cohorts) { c.fixture.sha256 = '0'.repeat(64); for (const row of c.content) row.sha256 = c.fixture.sha256; }
+          }],
+          ['body-truncated', 'complete raw content and sharing', r => { r.cohorts[1].content[0].stringCodeUnits--; }],
+          ['duplicate-raw-copy', 'complete raw content and sharing', r => { r.cohorts[1].content.push(r.cohorts[1].content[0]); }],
+          ['observed-copy-mismatch', 'observed sharing population', r => { r.cohorts[1].samples.at(-1).cache.entries = 8; }],
+          ['response-omitted', 'response population', r => { r.cohorts[1].windows[0].outcomes.pop(); }],
+          ['both-arms-lose-context', 'useful response parity', r => {
+            for (const c of r.cohorts) c.windows[0].outcomes[0].entries[0].id = 'p011-wrong';
+          }],
+          ['display-variant-changed', 'display variant contract', r => { r.variants[0].limit = 2; }],
+          ['pss-no-reduction', 'paired resource observation', r => {
+            const c = r.cohorts[1], b = r.cohorts[0];
+            c.samples.at(-1).os.pssBytes = c.samples[0].os.pssBytes + b.samples.at(-1).os.pssBytes - b.samples[0].os.pssBytes;
+          }],
+          ['allocation-no-reduction', 'paired resource observation', r => {
+            const c = r.cohorts[1], b = r.cohorts[0];
+            c.samples.at(-1).heap.total_allocated_bytes = c.samples[0].heap.total_allocated_bytes +
+              b.samples.at(-1).heap.total_allocated_bytes - b.samples[0].heap.total_allocated_bytes;
+          }],
+        ] },
+      { id: 'expiry', path: 'docs/evidence/papercusp-oct1-p011-cache-resource-comparison-r10-2026-10-01.json',
+        sha256: '07672507519848b146e761652372f82584222c4e9c20b05e8e607e5ca49d1df5', audit: auditSavedExpiryPair,
+        expected: { expiredReachable: [438, 0], usefulEntries: 604, heapUsedDifferenceBytes: 163653752,
+          pssDifferenceBytes: -17983488, physicalPssReductionObserved: false, cumulativeV8Allocation: 'unmeasured',
+          usefulContentParity: 'unmeasured: saved entry counts and cache statistics only',
+          processStartTicks: 'unmeasured', productionSavings: 'unmeasured' },
+        cases: [
+          ['fixture-count', 'fixture population', r => { r.fixture.useful--; }],
+          ['same-process', 'matched arms', r => { r.measurements.current.pid = r.measurements.control.pid; }],
+          ['different-node', 'matched arms', r => { r.measurements.current.node = 'different'; }],
+          ['different-generation', 'matched arms', r => { r.measurements.current.sourceHashes.generationStore = '0'.repeat(64); }],
+          ['wrong-expiry-phase', 'expiry and ordinary-read phases', r => { r.measurements.current.expiredIdle.reachable = 0; }],
+          ['missing-ordinary-reads', 'expiry and ordinary-read phases', r => { r.measurements.current.reclamation.reads = 0; }],
+          ['rss-only', 'separate heap and PSS counters', r => { delete r.measurements.current.ordinary.memory.pssBytes; }],
+          ['expired-root-left', 'expired roots removed', r => { r.measurements.current.ordinary.reachable = 1; }],
+          ['useful-entry-lost', 'expired roots removed', r => { r.measurements.current.ordinary.entries--; }],
+          ['miss-regression', 'cache outcomes', r => { r.measurements.current.stats.misses++; }],
+          ['heap-no-reclamation', 'heap reclamation', r => {
+            r.measurements.current.ordinary.memory.heapUsed = r.measurements.control.ordinary.memory.heapUsed;
+          }],
+          ['cleanup-root-left', 'cleanup roots', r => { r.measurements.current.cleared.reachable = 1; }],
+        ] },
+      { id: 'compiler', path: 'docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json',
+        sha256: 'd3929023e6b7586ff35b382989a266594cd0da41a6d201ab03bfb3a056ee3ead', audit: auditSavedCompilerCaller,
+        expected: { tracedForks: [0, 3], nativeDescendants: 3,
+          nativeExecutableSha256: 'fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c',
+          nativeSampleCounts: [3, 4, 4], hostResourceSamples: [5, 5],
+          scope: 'Historical private refused preflight caller and final cleanup only',
+          pairedPssReduction: 'unmeasured: these arms distinguish invocation, not an optimization',
+          namedSourceCurrentness: 'unmeasured in raw receipt; separate historical qualification required',
+          historicalGigabyteRecovery: 'unmeasured', productionSavings: 'unmeasured' },
+        cases: [
+          ['incomplete', 'incomplete run', r => { r.incomplete = true; }],
+          ['bundle-drift', 'serving artifact identity', r => { r.cohorts[1].identity.bundleSha256 = '0'.repeat(64); }],
+          ['pid-reused', 'sample identity', r => { r.cohorts[1].samples.at(-1).os.startTicks = '1'; }],
+          ['rss-only', 'PSS and cumulative V8 counters', r => { delete r.cohorts[1].samples[0].os.pssKiB; }],
+          ['allocation-reset', 'PSS and cumulative V8 counters', r => { r.cohorts[1].samples.at(-1).heap.total_allocated_bytes = 1; }],
+          ['request-omitted', 'request population', r => { r.cohorts[1].requests.pop(); }],
+          ['request-mismatch', 'matched HTTP inputs', r => { r.cohorts[1].requests[0].requestSha256 = '0'.repeat(64); }],
+          ['test-process-started', 'real refused preflight', r => { r.cohorts[1].requests[0].value.testRunIds.push(1); }],
+          ['wrong-caller-path', 'distinguishing caller path', r => { r.cohorts[1].requests[0].value.hint = 'not a code module'; }],
+          ['wrong-trace-target', 'trace identity and coverage', r => { r.cohorts[1].trace.pid++; }],
+          ['wrong-fork-caller', 'actual compiler caller', r => { r.cohorts[1].trace.calls.fork.stacks = ['different']; }],
+          ['basename-only', 'executable-identified population', r => {
+            for (const d of r.cohorts[1].descendants) if (d.executable.endsWith('/esbuild')) d.executableSha256 = '0'.repeat(64);
+          }],
+          ['wrong-parent', 'native descendant ancestry', r => {
+            r.cohorts[1].descendants.find((d: any) => d.executable.endsWith('/esbuild')).parent = 1;
+          }],
+          ['native-no-samples', 'native resource observation', r => {
+            r.cohorts[1].descendants.find((d: any) => d.executable.endsWith('/esbuild')).samples = 0;
+          }],
+          ['post-request-child', 'post-request descendants', r => { r.cohorts[1].samples.at(-1).descendants.push(r.cohorts[1].descendants[0]); }],
+          ['unreaped-child', 'cleanup or pause', r => { r.cohorts[1].unreaped.push(r.cohorts[1].descendants[0]); }],
+        ] },
+    ];
+    const startedAt = new Date().toISOString();
+    const results: any[] = [];
+    for (const suite of suites) {
+      describe(suite.id, () => {
+        const result = { id: suite.id, fixture: { path: suite.path, sha256: suite.sha256 }, accepted: false,
+          headlineIgnored: false, measured: null as any, expectedCounterexamples: suite.cases.length,
+          counterexamples: [] as { id: string; rejection: string }[] };
+        results.push(result);
+        const fixture = () => {
+          const bytes = readFileSync(join(root, suite.path));
+          expect(createHash('sha256').update(bytes).digest('hex')).toBe(suite.sha256);
+          return JSON.parse(bytes.toString('utf8'));
+        };
+        it('accepts exact raw counters and preserves unmeasured conclusions', () => {
+          result.measured = suite.audit(fixture());
+          expect(result.measured).toEqual(suite.expected);
+          result.accepted = true;
+        });
+        it('ignores a fabricated resource and acceptance headline', () => {
+          const report = fixture();
+          report.summary = { physicalPssReductionObserved: true, productionSavingsBytes: 1e12, acceptance: 'passed' };
+          expect(suite.audit(report)).toEqual(suite.expected);
+          result.headlineIgnored = true;
+        });
+        it.each(suite.cases)('rejects %s from raw evidence', (id, rejection, change) => {
+          const report = fixture(); change(report);
+          expect(() => suite.audit(report)).toThrow(rejection);
+          result.counterexamples.push({ id, rejection });
+        });
+      });
+    }
+    afterAll(() => {
+      const destination = evidenceDestination(process.env.PAPERCUSP_P011_SELECTED_ORACLE_REPORT);
+      if (!destination) return;
+      writeFileSync(destination, serializeIdentitySafeJson({ schemaVersion: 'p011-selected-resource-oracles-v1',
+        spec: { id: 'PERF-OCT1-P011-MEMORY', revision: 2,
+          fingerprint: '6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010' },
+        startedAt, endedAt: new Date().toISOString(), results,
+        incomplete: results.some(r => !r.accepted || !r.headlineIgnored || r.counterexamples.length !== r.expectedCounterexamples),
+        oracle: { path: 'packages/operator-core/lib/service-memory-attribution.integration.test.ts',
+          sha256: createHash('sha256').update(readFileSync(__filename)).digest('hex'),
+          independentOf: 'No cohort emitter or summary used; raw counters, regenerated input and response expectations, caller/ancestry evidence determine scoped conclusions.' },
+        scope: 'Saved historical private data acceptance and targeted data-corruption controls; no runtime cohort replay.',
+        limits: ['Expiry heap reclamation does not establish PSS reduction or cumulative allocation.',
+          'Inbox concurrent batch outcomes are preserved; actual overlap timestamps are absent.',
+          'Compiler receipt distinguishes invocation and cleanup, not paired optimization or historical recovery.',
+          'Named-source and executed-graph limits, live paired savings, parent acceptance and shipment remain open.'] }));
     });
   });
 
