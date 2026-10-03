@@ -413,6 +413,8 @@ export async function advanceCascade(
   const digest = [...digestFromRow(params.digest), params.event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
   const nextIdx = params.cascadeCursor + 1;
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
+  const clearFailedAnsweringOwner = params.event.kind === 'dispatch_failed';
+  const failedAnsweringCursor = String(params.cascadeCursor);
   // EI-24351703367365896: a refused dispatch cannot leave an unstaffed slot
   // awaiting a fresh TTL. Reuse this same finite menu/refill walk, guarded by
   // the slot we just wrote. A concurrent reply/expiry refresh wins the CAS.
@@ -572,7 +574,11 @@ export async function advanceCascade(
                  expires_at = ${expiresAt}::timestamptz,
                  wakes_used = wakes_used + ${willAttempt ? 1 : 0},
                  cascade_digest = ${sql.json(digest as never)},
-                 routing = ${sql.json(updatedSnap as never)},
+                 routing = CASE
+                   WHEN ${clearFailedAnsweringOwner}::boolean
+                     THEN ${sql.json(updatedSnap as never)} #- ARRAY['selection', 'selected', ${failedAnsweringCursor}, 'answeringOwnerId']
+                   ELSE ${sql.json(updatedSnap as never)}
+                 END,
                  updated_at = ${params.nowIso}::timestamptz
            WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
              AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
@@ -593,17 +599,13 @@ export async function advanceCascade(
             digest,
             extension: 'min-answers refill',
           });
-          let announcedOwner: string | undefined;
           const r = await dispatch({
             responder: first.ownerId,
             conversationId: params.conversationId,
             summary: copy.summary,
             body: copy.body,
             ...(first.evidence ? { evidence: first.evidence } : {}),
-            onAnsweringOwner: async (owner) => {
-              await stampAnsweringOwner(sql, params, cursorIdx, owner);
-              announcedOwner = owner;
-            },
+            onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, cursorIdx, owner),
           });
           woke = r.woke;
           // Backstop for a dispatcher that does not call the hook. Stamped on
@@ -612,7 +614,11 @@ export async function advanceCascade(
           // keyboard, and without the stamp its first reply is refused
           // not_a_participant. stampAnsweringOwner no-ops on absent.
           await stampAnsweringOwner(sql, params, cursorIdx, r.answeringOwnerId);
-          if (woke === 0 && !r.answeringOwnerId && !announcedOwner) {
+          // The callback reserves participant identity before spawn so a fast
+          // first reply is accepted. It does not prove launch: only the
+          // dispatch result can distinguish that reservation from a failed
+          // spawn. A failed slot is cleared by the next CAS below.
+          if (woke === 0 && !r.answeringOwnerId) {
             const result = await skipUndispatched(first.ownerId, cursorIdx, updatedSnap, expiresAt);
             return { ...result, ...(sel.refill ? {} : { refilled: true }) };
           }
@@ -649,7 +655,11 @@ export async function advanceCascade(
       const wroteTerminal = ((await sql`
             UPDATE harness_shared.consult_state
                SET cascade_digest = ${sql.json(digest as never)},
-                   routing = ${sql.json(terminalSnap as never)},
+                   routing = CASE
+                     WHEN ${clearFailedAnsweringOwner}::boolean
+                       THEN ${sql.json(terminalSnap as never)} #- ARRAY['selection', 'selected', ${failedAnsweringCursor}, 'answeringOwnerId']
+                     ELSE ${sql.json(terminalSnap as never)}
+                   END,
                    updated_at = ${params.nowIso}::timestamptz
              WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
                AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
@@ -693,6 +703,14 @@ export async function advanceCascade(
            expires_at = ${expiresAt}::timestamptz,
            wakes_used = wakes_used + ${willAttempt ? 1 : 0},
            cascade_digest = ${sql.json(digest as never)},
+           routing = CASE
+             WHEN ${clearFailedAnsweringOwner}::boolean THEN
+               (CASE WHEN jsonb_typeof(routing) = 'string'
+                 THEN (routing #>> '{}')::jsonb
+                 ELSE routing
+               END) #- ARRAY['selection', 'selected', ${failedAnsweringCursor}, 'answeringOwnerId']
+             ELSE routing
+           END,
            updated_at = ${params.nowIso}::timestamptz
      WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
        AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
@@ -712,22 +730,18 @@ export async function advanceCascade(
       next,
       digest,
     });
-    let announcedOwner: string | undefined;
     const r = await dispatch({
       responder: next.ownerId,
       conversationId: params.conversationId,
       summary: copy.summary,
       body: copy.body,
       ...(next.evidence ? { evidence: next.evidence } : {}),
-      onAnsweringOwner: async (owner) => {
-        await stampAnsweringOwner(sql, params, nextIdx, owner);
-        announcedOwner = owner;
-      },
+      onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, nextIdx, owner),
     });
     woke = r.woke;
     // Backstop, on the answering identity and never on `woke` — as above.
     await stampAnsweringOwner(sql, params, nextIdx, r.answeringOwnerId);
-    if (woke === 0 && !r.answeringOwnerId && !announcedOwner) {
+    if (woke === 0 && !r.answeringOwnerId) {
       return skipUndispatched(next.ownerId, nextIdx, params.routing, expiresAt);
     }
   }
