@@ -109,9 +109,23 @@ describe('acquireInstallBoundaryLease (real fs-mutex)', () => {
   });
 
   it('skips the lease when nested inside an install-safe reader, or with no root', async () => {
-    expect((await acquireInstallBoundaryLease(repoRoot, { env: { PAPERCUSP_INSTALL_MUTEX_HELD: '1' } })).outcome).toBe('nested');
+    expect((await acquireInstallBoundaryLease(repoRoot, { env: { PAPERCUSP_INSTALL_MUTEX_HELD: installLockNameForRoot(repoRoot) } })).outcome).toBe('nested');
     expect((await acquireInstallBoundaryLease(null)).outcome).toBe('no-root');
     expect(installBoundaryNote({ outcome: 'acquired', waitedMs: 0, release: () => {} })).toBe('');
+  });
+
+  it.each(['1', 'npm-install-000000000000'])('acquires its own root lease for an unrelated marker %s', async (marker) => {
+    const names: string[] = [];
+    const readLease = async <T,>(name: string, fn: () => Promise<T>) => {
+      names.push(name);
+      return fn();
+    };
+    const lease = await acquireInstallBoundaryLease(repoRoot, {
+      env: { PAPERCUSP_INSTALL_MUTEX_HELD: marker }, readLease,
+    });
+    expect(lease.outcome).toBe('acquired');
+    expect(names).toEqual([installLockNameForRoot(repoRoot)]);
+    lease.release();
   });
 });
 

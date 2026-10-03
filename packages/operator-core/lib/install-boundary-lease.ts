@@ -23,7 +23,7 @@
 import { existsSync } from 'node:fs';
 import { withFsMutexRead } from '../../../scripts/lib/fs-mutex.mjs';
 // @ts-expect-error -- same buildless plain-JS module family, no declaration file.
-import { installLockNameForRoot } from '../../../scripts/lib/install-lock-name.mjs';
+import { installLockNameForRoot, installMutexIsHeld } from '../../../scripts/lib/install-lock-name.mjs';
 
 /** How long a launch waits for an in-flight install before launching anyway. */
 export const INSTALL_BOUNDARY_WAIT_MS = 5 * 60_000;
@@ -76,8 +76,8 @@ type ReadLease = <T>(
 
 export interface AcquireInstallBoundaryLeaseOpts {
   timeoutMs?: number;
-  /** The env of the launching process; `PAPERCUSP_INSTALL_MUTEX_HELD=1` means
-   *  we already run inside an install-safe reader (or the writer), so taking
+  /** The env of the launching process names the repository locks already held.
+   *  For that same repository, taking
    *  another reader would self-deadlock under a writer we are nested in. */
   env?: Record<string, string | undefined>;
   readLease?: ReadLease;
@@ -93,15 +93,15 @@ export async function acquireInstallBoundaryLease(
 ): Promise<InstallBoundaryLease> {
   if (!root) return { outcome: 'no-root', waitedMs: 0, release: noop };
   const env = opts.env ?? process.env;
-  if (env.PAPERCUSP_INSTALL_MUTEX_HELD === '1') {
-    return { outcome: 'nested', waitedMs: 0, release: noop };
-  }
   const now = opts.now ?? Date.now;
   let lockName: string;
   try {
     lockName = (opts.lockName ?? installLockNameForRoot)(root);
   } catch (error) {
     return { outcome: 'error', waitedMs: 0, detail: errorMessage(error), release: noop };
+  }
+  if (installMutexIsHeld(lockName, env)) {
+    return { outcome: 'nested', lockName, waitedMs: 0, release: noop };
   }
 
   const readLease: ReadLease = opts.readLease ?? (withFsMutexRead as ReadLease);
