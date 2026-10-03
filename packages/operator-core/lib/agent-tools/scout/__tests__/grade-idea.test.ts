@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import gradeIdeaTool, {
+  bareIdBehindAgentReviewKey,
+  candidateWorkItemId,
   deriveGradedBy,
   gradeIdeaArgs,
   runGradeIdea,
@@ -405,6 +407,104 @@ describe('EI-15389: bare work-item id keyed as ideaId resolves to the ledger PK'
       });
     }
     expect(getWorkItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-24742538368325488: an `agent-review:<id>` ideaId falls back to the bare work-item id', () => {
+  const WI = 'EI-22451127204495357';
+  const PREFIXED = `agent-review:${WI}`;
+  /** A ledger that only knows the BARE id — the common case: enrollment prefixes the PK only on a collision. */
+  const bareOnlyLedger = () => vi.fn(async (key: string) => (key === WI ? WI : null));
+
+  it('grades the bare-keyed ledger row after the exact prefixed lookup misses (the reported repro)', async () => {
+    const deps = fakeDeps({ resolveIdeaIdFromKey: bareOnlyLedger() });
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 3, feedback: 'needs work' }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({ applied: true, ideaId: WI });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenNthCalledWith(1, PREFIXED); // exact form first
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenNthCalledWith(2, WI);
+    expect(deps.findAgentReviewLedgerCollision).toHaveBeenCalledWith(WI); // same guard a bare id gets
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ ideaId: WI, grade: 3 }));
+  });
+
+  it('an exact prefixed ledger row WINS — no fallback, no collision probe, the prefixed row is the one graded', async () => {
+    const deps = fakeDeps(); // default resolver is identity: the prefixed key IS a ledger PK
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 4 }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({ applied: true, ideaId: PREFIXED });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenCalledTimes(1);
+    expect(deps.findAgentReviewLedgerCollision).not.toHaveBeenCalled();
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ ideaId: PREFIXED }));
+  });
+
+  it('refuses with the canonical ledger id when the bare id collides with a historical row, never grading it by accident', async () => {
+    const deps = fakeDeps({
+      resolveIdeaIdFromKey: vi.fn(async () => null),
+      findAgentReviewLedgerCollision: vi.fn(async (workItemId: string) => ({
+        workItemId,
+        ledgerIdeaId: 'scout-1:scout-idea-x',
+      })),
+    });
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 4 }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'agent-review-ledger-id-required',
+      gradeWith: { ideaId: 'scout-1:scout-idea-x' },
+    });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenCalledTimes(1); // the bare lookup is never reached
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('a total miss reports BOTH key forms and probes the work item behind the prefix (was status:not-attempted)', async () => {
+    const candidate: WorkItemExistenceProbeResult = { id: WI, family: 'issue', kind: 'bug' };
+    const getWorkItem = vi.fn(async () => candidate);
+    const deps = fakeDeps({ resolveIdeaIdFromKey: vi.fn(async () => null), getWorkItem });
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 3 }, undefined, deps);
+
+    expect(getWorkItem).toHaveBeenCalledWith(WI);
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'not-routed',
+      ideaId: null,
+      diagnostic: {
+        code: 'ledger-resolution-miss',
+        attempted: { ideaId: [PREFIXED, WI] },
+        workItem: { candidateId: WI, status: 'found', family: 'issue' },
+        remedy: 'blender:route-idea',
+      },
+    });
+    expect(out.diagnostic?.attempted.routedRef).toEqual(
+      expect.arrayContaining([PREFIXED, `wi:${PREFIXED}`, `gym:${PREFIXED}`, WI, `wi:${WI}`, `gym:${WI}`]),
+    );
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('a prefix whose remainder is not work-item-shaped gets no fallback (single lookup, single attempted form)', async () => {
+    const deps = fakeDeps({ resolveIdeaIdFromKey: vi.fn(async () => null) });
+
+    const out = await runGradeIdea({ ideaId: 'agent-review:not-a-work-item', grade: 2 }, undefined, deps);
+
+    expect(out).toMatchObject({
+      reason: 'not-found',
+      diagnostic: { attempted: { ideaId: ['agent-review:not-a-work-item'] }, workItem: { status: 'not-attempted' } },
+    });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenCalledTimes(1);
+    expect(deps.findAgentReviewLedgerCollision).not.toHaveBeenCalled();
+  });
+
+  it('bareIdBehindAgentReviewKey / candidateWorkItemId strip only a work-item-shaped agent-review: prefix', () => {
+    expect(bareIdBehindAgentReviewKey(PREFIXED)).toBe(WI);
+    expect(bareIdBehindAgentReviewKey('AGENT-REVIEW:WI-7')).toBe('WI-7');
+    expect(bareIdBehindAgentReviewKey(WI)).toBeNull(); // a bare id has nothing to strip
+    expect(bareIdBehindAgentReviewKey('agent-review:')).toBeNull();
+    expect(bareIdBehindAgentReviewKey('agent-review:plan-x')).toBeNull();
+    expect(candidateWorkItemId({ ideaId: PREFIXED, grade: 3 } as never)).toBe(WI);
+    expect(candidateWorkItemId({ ideaId: 'agent-review:plan-x', grade: 3 } as never)).toBeNull();
   });
 });
 
