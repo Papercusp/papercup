@@ -71,7 +71,9 @@ export interface PriorRespawn {
    * delivery; none = this session has no respawn history. */
   outcome: PriorRespawnOutcome;
   /** The host's own reason string on a drop (busy-gate-expired / carry-stale /
-   *  superseded / rearm-error), when it recorded one. */
+   *  rearm-error / turn-start-unverified), when it recorded one. `superseded` never
+   *  appears here: the host writes it to RETIRE a moot request, which is not a drop
+   *  verdict (see RESPAWN_RETIRED_REASON). */
   reason?: string;
   /** ISO timestamp of the deciding row. */
   ts?: string;
@@ -118,6 +120,10 @@ export function deriveLastRespawnOutcome(
     else if (kind === 'respawned' && row.mode === 'carry-respawn') outcome = 'pending';
     else if (RESPAWN_IN_FLIGHT.has(kind)) outcome = 'pending';
     if (!outcome) continue;
+    if (retiringInFlight) {
+      if (RESPAWN_IN_FLIGHT.has(kind)) continue;
+      retiringInFlight = false;
+    }
     const ts = typeof row.ts === 'string' ? row.ts : undefined;
     const parsed = ts ? Date.parse(ts) : NaN;
     const capMs = typeof row.capMs === 'number' && Number.isFinite(row.capMs) ? row.capMs : null;
