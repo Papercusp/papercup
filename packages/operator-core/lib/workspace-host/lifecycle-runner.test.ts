@@ -463,6 +463,77 @@ describe('runWorkspaceHostLifecycle', () => {
     });
   });
 
+  it('observes an upgrade that REPLACED its instance with the replacement, not the retired original', async () => {
+    // WI-10005971: an AWS upgrade launches a replacement under a NEW instance id and terminates the
+    // original last. Observing the start-of-turn population read the terminated original and
+    // recorded the freshly upgraded host as absent.
+    const { store } = storeHarness();
+    const { provider, apply, planProvider } = providerHarness();
+    const replacement = { ...vm, providerId: `${vm.providerId}-replacement` };
+    planProvider.mockResolvedValue({
+      planId: 'plan-upgrade-replace',
+      operationId: 'op-1',
+      target: 'gcp',
+      hostId: 'host-1',
+      generatedAt: '2026-08-27T00:00:00Z',
+      steps: [
+        {
+          id: 'launch-replacement',
+          action: 'upgrade',
+          resourceKind: 'vm',
+          dependsOn: [],
+          idempotencyKey: 'launch-key',
+          destructive: false,
+          input: { op: 'run-instance' },
+        },
+        {
+          id: 'retire-original',
+          action: 'upgrade',
+          resourceKind: 'vm',
+          dependsOn: ['launch-replacement'],
+          idempotencyKey: 'retire-key',
+          destructive: true,
+          input: { op: 'terminate-instance', resourceName: vm.providerId },
+        },
+      ],
+      warnings: [],
+    });
+    apply.mockImplementation(async ({ step }) =>
+      step.id === 'launch-replacement'
+        ? { operationId: 'op-1', stepId: step.id, state: 'applied', observedAt: '2026-08-27T00:00:05Z', resource: replacement }
+        : {
+            operationId: 'op-1',
+            stepId: step.id,
+            state: 'destroyed',
+            observedAt: '2026-08-27T00:00:06Z',
+            confirmation: {
+              hostId: 'host-1',
+              providerResourceId: vm.providerId,
+              confirmedAbsentAt: '2026-08-27T00:00:06Z',
+              source: 'provider-read',
+            },
+          },
+    );
+
+    await expect(
+      runWorkspaceHostLifecycle({
+        ...input(provider, store),
+        action: 'upgrade',
+        image: { id: 'projects/images/global/images/papercusp-v2' },
+      }),
+    ).resolves.toMatchObject({ status: 'succeeded' });
+
+    expect(provider.observe).toHaveBeenLastCalledWith(
+      expect.objectContaining({ hostId: 'host-1', resources: [replacement] }),
+      expect.anything(),
+    );
+    // The plan request carries the recorded desired spec a replacing provider launches from.
+    expect(planProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'upgrade', desired }),
+      expect.anything(),
+    );
+  });
+
   it('records the runtime release an upgrade installed beside its image', async () => {
     // WI-10002798: host-560adc ran only r42 after its upgrade while its row still read r41, so the
     // UI and the release journal named a runtime the machine no longer had.

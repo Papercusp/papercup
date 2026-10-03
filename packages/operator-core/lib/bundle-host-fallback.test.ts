@@ -154,7 +154,8 @@ describe('bundle-host.sh last-known-good fallback', () => {
     const esbuildIdx = src.indexOf('npx --yes esbuild@0.25.0');
 
     expect(guardIdx).toBeGreaterThan(-1);
-    expect(src).toContain('PAPERCUSP_INSTALL_MUTEX_HELD');
+    expect(src).toContain('installMutexIsHeld(installLockNameForRoot(process.argv[2]))');
+    expect(src).toContain('"file://$REPO_ROOT/scripts/lib/install-lock-name.mjs" "$REPO_ROOT"');
     expect(guardIdx).toBeLessThan(commonInputsIdx);
     expect(guardIdx).toBeLessThan(esbuildIdx);
   });

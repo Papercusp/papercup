@@ -2864,11 +2864,12 @@ table and is missing the exact new column, not on every fixture that happens to 
 that's normal, not drift). `npm run lint:migration-fixture-drift` runs it by hand.
 
 Schema/migration edits (`libs/papercusp/libs/db/**`) → `npm run
-test:all:integration` (the dependency graph won't catch them). Don't run
-`npm run test:all` for routine edits. Each app/lib ships a `TESTING.md` — read it
+test:integration-only` (integration suites only; the graph won't catch them).
+Don't run `npm run test:all` for routine edits. Each app/lib ships a `TESTING.md` — read it
 before adding tests. Infra (Vitest 4, testcontainers PG, Docker required, CI,
 property tests, knip, quarantine, secrets):
 [repo-conventions § test infrastructure](/internal/docs/system/repo-conventions).
+
 
 **npm only — never `pnpm`/`yarn` in this repo, even for a single-package test
 run.** This is an **npm workspaces** monorepo (root `package.json`'s

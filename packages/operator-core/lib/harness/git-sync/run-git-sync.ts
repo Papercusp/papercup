@@ -3918,7 +3918,14 @@ export async function commitAttributedGroups(
   let committedCount = 0;
   for (const g of groups) {
     if (g.agent === null || g.files.length === 0) continue; // catch-all handled by the caller's add -A
-    await runGit(['add', '--', ...g.files], repoPath);
+    const add = await runGit(['add', '--', ...g.files], repoPath);
+    if (add.code !== 0) {
+      return {
+        committedAny,
+        committedCount,
+        error: `attributed add failed: ${gitFailureDetail(add)}`,
+      };
+    }
     if (opts.beforeCommit) {
       const guard = await opts.beforeCommit();
       if (!guard.ok) return { committedAny, committedCount, error: guard.error };

@@ -2616,6 +2616,43 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('STRANDING GUARD: a FAILED attributed add must fall through to the catch-all — the group and remainder still commit', async () => {
+    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed → cup-7
+    writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
+
+    const realGit: RunGit = async (args, cwd) => {
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    };
+    let attributedAddFailed = false;
+    const runGit: RunGit = async (args, cwd) => {
+      if (args[0] === 'add' && args[1] === '--' && args.includes('mine.txt') && !attributedAddFailed) {
+        attributedAddFailed = true;
+        return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };
+      }
+      return realGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] },
+      ],
+      runGit,
+    });
+
+    expect(attributedAddFailed).toBe(true);
+    expect(out.status).toBe('synced');
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('mine.txt');
+    expect(originFiles).toContain('other.txt');
+    const subjects = originLog();
+    expect(subjects).not.toMatch(/wire the parser/);
+    expect(subjects).toMatch(/auto-commit test/);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('returns "nothing" on a clean, up-to-date tree', async () => {
     const out = await runGitSync('test', { repoPath: repo, config: cfg });
     expect(out.status).toBe('nothing');

@@ -97,7 +97,7 @@ describe('affected-tests after-ready publication boundary (EI-21361599312981776)
 
 describe('once-only package wiring', () => {
   it('scopes every affected-test entry point to this harness before nested test routers run', () => {
-    for (const name of ['test', 'test:affected', 'test:related', 'test:affected:integration', 'test:all', 'test:all:integration']) {
+    for (const name of ['test', 'test:affected', 'test:related', 'test:affected:integration', 'test:all', 'test:all:integration', 'test:integration-only']) {
       expect(PACKAGE_JSON.scripts?.[name], `${name} would produce unbindable test runs and trigger an unscoped-router warning`)
         .toMatch(/^PAPERCUSP_TEST_RUN_HARNESS=papercusp /);
     }
@@ -124,7 +124,7 @@ describe('once-only package wiring', () => {
   });
 
   it('does not silently widen the barrier to related or all-workspace sweeps', () => {
-    for (const name of ['test:related', 'test:all', 'test:all:integration']) {
+    for (const name of ['test:related', 'test:all', 'test:all:integration', 'test:integration-only']) {
       expect(PACKAGE_JSON.scripts?.[name]).not.toContain('PC_HEAVY_PREEMPT_AFTER_READY=1');
       expect(PACKAGE_JSON.scripts?.[name]).not.toContain('PC_HEAVY_RETRY_PREEMPTIONS=3');
       expect(PACKAGE_JSON.scripts?.[name]).not.toContain('AFFECTED_TASK_VERDICT_RESUME=1');

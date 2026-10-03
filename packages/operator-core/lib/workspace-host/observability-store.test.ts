@@ -191,7 +191,7 @@ describe('workspace-host observability store', () => {
         desired_spec: { hostId: 'host-1', target: 'gcp', region: 'us-central1' },
       },
     ]);
-    H.rows.set("state IN ('applied', 'unchanged')", [
+    H.rows.set("state IN ('applied', 'unchanged', 'absent')", [
       {
         target: 'gcp',
         kind: 'vm',
@@ -227,6 +227,42 @@ describe('workspace-host observability store', () => {
         },
       ],
     });
+  });
+
+  it('un-registers a resource whose LATEST row confirms it absent, even when an older row registered it', async () => {
+    // WI-10005971: an AWS upgrade terminates the original instance on its own step row; the
+    // provision row that registered it stays `applied`. The newest row per identity decides.
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [
+      {
+        id: 'host-1',
+        name: 'Canary host',
+        connection_id: 'connection-1',
+        target: 'aws',
+        observed_state: 'running',
+        desired_spec: { hostId: 'host-1', target: 'aws', region: 'us-east-1' },
+      },
+    ]);
+    const row = (providerId: string, kind: string, state: string, updatedAt: string) => ({
+      target: 'aws',
+      kind,
+      provider_id: providerId,
+      parent_provider_id: null,
+      region: 'us-east-1',
+      zone: null,
+      state,
+      updated_at: updatedAt,
+    });
+    // ORDER BY updated_at DESC, as the query returns them.
+    H.rows.set("state IN ('applied', 'unchanged', 'absent')", [
+      row('i-original', 'vm', 'absent', '2026-10-03T00:06:00Z'),
+      row('i-replacement', 'vm', 'applied', '2026-10-03T00:05:00Z'),
+      row('i-original', 'vm', 'applied', '2026-10-03T00:01:00Z'),
+      row('vol-data', 'disk', 'applied', '2026-10-01T00:00:00Z'),
+      row('i-original', 'vm', 'applied', '2026-10-01T00:00:00Z'),
+    ]);
+
+    const target = await readWorkspaceHostDestroyTarget('ws-1', 'host-1');
+    expect(target?.resources.map((entry) => entry.resource.providerId)).toEqual(['i-replacement', 'vol-data']);
   });
 
   it('projects the latest operation, resource ids, health, signals, logs, and timeline', async () => {

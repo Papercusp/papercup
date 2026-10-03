@@ -10,6 +10,12 @@
 //
 // Flags:
 //   --integration   also run `npm run test:integration` where defined
+//   --integration-only
+//                   run ONLY `test:integration` tasks (implies --integration): no unit
+//                   lanes, no lint:el-tools. The bounded schema/migration verification
+//                   (`npm run test:integration-only` = `--all --integration-only`) —
+//                   EI-24955492938994792: `--all --integration` queued every unit suite too
+//                   and starved behind gate-sized admission.
 //   --all           ignore git diff; run every workspace's tests
 //   --dry           print what would run, don't run
 //
@@ -955,7 +961,10 @@ if (resolvedBase.source === "watermark") {
   errSync(baseSourceLine(resolvedBase));
 }
 const base = resolvedBase.base;
-const runIntegration = has("--integration");
+// EI-24955492938994792: `--integration-only` narrows the task set to `test:integration`
+// tasks. It IMPLIES --integration so the integration task is never dropped by omission.
+const integrationOnly = has("--integration-only");
+const runIntegration = has("--integration") || integrationOnly;
 const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
 // git, rsync, kubectl all use it) and this repo's own agent guidance points
@@ -1128,6 +1137,7 @@ const excludes = new Set(excludeArg.split(",").filter(Boolean));
 const KNOWN_FLAGS = [
   "--base",
   "--integration",
+  "--integration-only",
   "--all",
   "--dry",
   "--dry-run",
@@ -5022,7 +5032,9 @@ for (const ws of affected) {
     outSync(`(excluded ${ws.name})`);
     continue;
   }
-  if (ws.scripts.test) {
+  // --integration-only (EI-24955492938994792) skips the unit lanes and lint:el-tools: the
+  // caller asked for integration fixtures alone, and unit coverage is test:affected's job.
+  if (ws.scripts.test && !integrationOnly) {
     if (hasLaneSplit(ws))
       for (const script of LANE_SCRIPTS) tasks.push({ ws, script });
     else tasks.push({ ws, script: "test" });
@@ -5030,8 +5042,9 @@ for (const ws of affected) {
   // Static drift check between el-agent-sync TOOLS list and the
   // commands registry. Cheap (no network), catches the runtime crash
   // class that hit us yesterday ("Client tool not defined on client").
-  // Always runs when present — no integration flag gate.
-  if (ws.scripts["lint:el-tools"]) tasks.push({ ws, script: "lint:el-tools" });
+  // Runs whenever present, except under --integration-only.
+  if (ws.scripts["lint:el-tools"] && !integrationOnly)
+    tasks.push({ ws, script: "lint:el-tools" });
   if (runIntegration && ws.scripts["test:integration"])
     tasks.push({ ws, script: "test:integration" });
   // EL Conv AI behavior suite. Hits the live agent; expensive (a few

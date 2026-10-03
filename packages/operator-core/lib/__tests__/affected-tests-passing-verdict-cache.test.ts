@@ -731,7 +731,7 @@ describe('D-007 root `npm test` local cross-run reuse', () => {
   it('keeps D-007 scope: related/all sweeps and direct file runs stay fresh', () => {
     // D-007 scopes reuse to the root affected-tests command ONLY. These have different selection
     // or execution semantics, so a proof taken under one is not a proof for another.
-    for (const name of ['test:related', 'test:all', 'test:all:integration', 'test:file']) {
+    for (const name of ['test:related', 'test:all', 'test:all:integration', 'test:integration-only', 'test:file']) {
       expect(PACKAGE_JSON.scripts?.[name]).not.toContain('AFFECTED_TASK_VERDICT_RESUME=1');
     }
   });

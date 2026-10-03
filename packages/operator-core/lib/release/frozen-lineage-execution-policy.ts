@@ -452,6 +452,7 @@ function canonicalRootTestCwd(atom: string, cwd: string | null): string | null |
     'test:affected:integration',
     'test:all',
     'test:all:integration',
+    'test:integration-only',
   ]);
   return canonicalScripts.has(script) ? effectiveCwd : undefined;
 }

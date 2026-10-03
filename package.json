@@ -194,6 +194,7 @@
     "test:affected:integration": "PAPERCUSP_TEST_RUN_HARNESS=papercusp AFFECTED_TASK_VERDICT_RESUME=1 PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --integration",
     "test:all": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --all",
     "test:all:integration": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --all --integration",
+    "test:integration-only": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --all --integration-only",
     "coverage:merge": "tsx scripts/merge-coverage.ts",
     "gate:patch-coverage": "tsx scripts/patch-coverage.ts",
     "gate:cover-loop": "tsx scripts/cover-loop.ts",

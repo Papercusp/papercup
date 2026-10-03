@@ -7,15 +7,21 @@ type RunGit = (args: string[], cwd: string) => Promise<GitResult>;
 
 function fakeGit(opts: {
   porcelain?: string;
+  addResults?: Array<Partial<GitResult>>;
   commitResults?: Array<Partial<GitResult>>;
   /** WI-38594: stdout for the per-group `git diff --cached --numstat` read. */
   numstat?: string;
 }): { runGit: RunGit; calls: string[][] } {
   const calls: string[][] = [];
+  let addIdx = 0;
   let commitIdx = 0;
   const runGit: RunGit = async (args) => {
     calls.push(args);
     if (args[0] === 'status') return { code: 0, stdout: opts.porcelain ?? '', stderr: '' };
+    if (args[0] === 'add') {
+      const r = opts.addResults?.[addIdx++] ?? { code: 0 };
+      return { code: r.code ?? 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    }
     if (args[0] === 'diff' && args.includes('--numstat')) {
       return { code: 0, stdout: opts.numstat ?? '', stderr: '' };
     }
@@ -88,6 +94,22 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     const res = await commitAttributedGroups(runGit, '/repo', new Map(), [], MSG);
     expect(res).toEqual({ committedAny: false, committedCount: 0 });
     expect(calls.some((c) => c[0] === 'add' || c.includes('commit'))).toBe(false);
+  });
+
+  it('returns an error when an attributed add fails and does not commit the unstaged group', async () => {
+    const { runGit, calls } = fakeGit({
+      porcelain: ' M a.ts\0 M b.ts\0',
+      addResults: [{ code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" }],
+    });
+    const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'fix a' }]]);
+
+    const res = await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
+
+    expect(res.committedAny).toBe(false);
+    expect(res.committedCount).toBe(0);
+    expect(res.error).toMatch(/attributed add failed:.*index\.lock/);
+    expect(calls.find((c) => c[0] === 'add')).toEqual(['add', '--', 'a.ts']);
+    expect(calls.some((c) => c[0] === 'diff' || c.includes('commit'))).toBe(false);
   });
 
   it('skips excluded (oversized/content) files even when attributed', async () => {
