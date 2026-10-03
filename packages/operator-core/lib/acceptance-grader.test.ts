@@ -24,6 +24,7 @@ import {
   CONSULT_EXPIRY_REVIEW_AUTHOR,
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
+import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
 
 describe('answeringOwnerAtCursor (WI-10003786)', () => {
   const routing = {
@@ -685,6 +686,7 @@ describe('launchAcceptanceGrader', () => {
     expect(brief).toContain('git rev-parse <superproject-ref>:<nested-path>');
     expect(brief).toContain('not evidence of a fabricated citation');
     expect(brief).toContain('follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED');
+    expect(brief).toContain(ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE);
     expect(brief).toContain('frozenIdentity.planVersion/planContentHash');
     expect(brief.length).toBeLessThan(8_000);
   });

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   GITNEXUS_ANALYZE_STACK_KB,
+  GITNEXUS_ANALYZE_TIMEOUT_MS,
   GITNEXUS_LBUG_BUFFER_POOL_BYTES,
   GITNEXUS_LBUG_MAX_DB_BYTES,
   GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX,
@@ -127,6 +128,7 @@ describe('gitnexus bench arm spawns analyze under the production analyze environ
       for (const c of calls) {
         expect(pinViolations({ cmd: c.cmd, args: c.args, env: c.opts.env })).toEqual([]);
         expect(c.opts.cwd).toBe('/scratch/tree');
+        expect(c.opts.timeoutMs).toBe(GITNEXUS_ANALYZE_TIMEOUT_MS);
         expect(c.opts.env?.HOME).toBe(home);
         expect(Number(c.opts.env?.GITNEXUS_LBUG_MAX_DB_SIZE)).toBeGreaterThan(VENDOR_DEFAULT_MAX_DB_BYTES);
         expect(c.args).toContain('--skip-agents-md');

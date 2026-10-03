@@ -73,9 +73,10 @@ export { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES };
  * WI-10005102: sources with a SOURCE-LEVEL closing route, which is what the census read
  * (`listOpen`) selects on. That is the absence-close allowlist PLUS 'red-test'. 'red-test' is
  * deliberately absent from AUTO_CLOSE_ELIGIBLE_SOURCES (a quiet tick must never close it), but
- * the positive green-run resolution below still needs to see it. The other two routes,
- * positive tool-failure repair and duplicate close, are row-level and are selected by
- * `ListIssuesFilter.watchdogCloseRoutes` itself.
+ * the positive green-run resolution below still needs to see it. Positive tool-failure
+ * repair is the row-level route selected by `ListIssuesFilter.watchdogCloseRoutes`.
+ * Watchdog-key duplicate closing is intentionally absent: work_items_watchdog_identity_uq
+ * already forbids duplicate open rows with an exact harness/key/origin/lane identity.
  */
 export const AUTO_CLOSE_CENSUS_SOURCES: readonly string[] = [...AUTO_CLOSE_ELIGIBLE_SOURCES, 'red-test'];
 
@@ -206,25 +207,6 @@ export interface AutoCloseOutcome {
   reason: string;
 }
 
-interface CanonicalWatchdogIssue {
-  id: string;
-  watchdogKey: string;
-  updatedAtMs: number;
-  createdAtMs: number;
-}
-
-function watchdogIdentityKey(issue: EngineerIssue, watchdogKey: string): string {
-  const payload = issue.payload && typeof issue.payload === 'object'
-    ? issue.payload as Record<string, unknown>
-    : {};
-  return JSON.stringify([
-    issue.scope,
-    watchdogKey,
-    issue.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN,
-    typeof payload.lane === 'string' ? payload.lane : 'improvement',
-  ]);
-}
-
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 export interface AutoCloseDeps {
@@ -273,16 +255,6 @@ const watchdogKeyOfIssue = (i: EngineerIssue): string => {
   return typeof p.watchdogKey === 'string' ? p.watchdogKey : '';
 };
 
-const issueUpdatedAtMs = (i: EngineerIssue): number => {
-  const ms = Date.parse(i.updatedAt ?? '');
-  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
-};
-
-const issueCreatedAtMs = (i: EngineerIssue): number => {
-  const ms = Date.parse(i.createdAt ?? '');
-  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
-};
-
 function toolFailureRepairFieldsOf(issue: EngineerIssue): {
   classKey?: string;
   contractFingerprint?: string;
@@ -299,50 +271,6 @@ function toolFailureRepairFieldsOf(issue: EngineerIssue): {
     ...(typeof probation.contractFingerprint === 'string' ? { contractFingerprint: probation.contractFingerprint } : {}),
     ...(typeof probation.deployedRevision === 'string' ? { deployedRevision: probation.deployedRevision } : {}),
   };
-}
-
-function selectCanonicalOpenIssues(open: EngineerIssue[]): {
-  canonicalByIdentity: Map<string, CanonicalWatchdogIssue>;
-  duplicates: Array<{ issueId: string; watchdogKey: string; keepId: string }>;
-} {
-  const canonicalByIdentity = new Map<string, CanonicalWatchdogIssue>();
-  const duplicates: Array<{ issueId: string; watchdogKey: string; keepId: string }> = [];
-
-  for (const issue of open) {
-    const watchdogKey = watchdogKeyOfIssue(issue);
-    if (!watchdogKey) continue;
-    // Match work_items_watchdog_identity_uq: listOpen is already scoped to one
-    // workspace, while scope distinguishes its harness_slug; signal origin and
-    // lane are the remaining indexed identity components. Grouping by the bare
-    // watchdog key can retire the observation-lane/drill/harness sibling of a
-    // distinct improvement item even though the database accepts both rows.
-    const identityKey = watchdogIdentityKey(issue, watchdogKey);
-    const candidate: CanonicalWatchdogIssue = {
-      id: issue.id,
-      watchdogKey,
-      updatedAtMs: issueUpdatedAtMs(issue),
-      createdAtMs: issueCreatedAtMs(issue),
-    };
-    const existing = canonicalByIdentity.get(identityKey);
-    if (!existing) {
-      canonicalByIdentity.set(identityKey, candidate);
-      continue;
-    }
-    const replace =
-      candidate.updatedAtMs > existing.updatedAtMs
-      || (candidate.updatedAtMs === existing.updatedAtMs && candidate.createdAtMs > existing.createdAtMs)
-      || (candidate.updatedAtMs === existing.updatedAtMs
-        && candidate.createdAtMs === existing.createdAtMs
-        && candidate.id > existing.id);
-    if (replace) {
-      duplicates.push({ issueId: existing.id, watchdogKey, keepId: candidate.id });
-      canonicalByIdentity.set(identityKey, candidate);
-    } else {
-      duplicates.push({ issueId: candidate.id, watchdogKey, keepId: existing.id });
-    }
-  }
-
-  return { canonicalByIdentity, duplicates };
 }
 
 /** Default deps: the real PG-backed reads + close. */
@@ -525,44 +453,27 @@ export async function processAutoClose(
   if (keyed.length === 0) return [];
   const out: AutoCloseOutcome[] = [];
 
-  const { canonicalByIdentity, duplicates } = selectCanonicalOpenIssues(keyed);
-  for (const dup of duplicates) {
-    try {
-      const reason = `duplicate of ${dup.keepId} — canonical open watchdog item retained for \`${dup.watchdogKey}\``;
-      await d.close(dup.issueId, dup.watchdogKey, reason);
-      out.push({ issueId: dup.issueId, watchdogKey: dup.watchdogKey, reason });
-    } catch (e) {
-      console.warn(`[watchdog-auto-close] duplicate close failed for ${dup.issueId}:`, e instanceof Error ? e.message : e);
-    }
-  }
-
-  const canonical = keyed.filter((i) => {
-    const watchdogKey = watchdogKeyOfIssue(i);
-    if (!watchdogKey) return false;
-    const identityKey = watchdogIdentityKey(i, watchdogKey);
-    return canonicalByIdentity.get(identityKey)?.id === i.id;
-  });
-  const inFlight = await d.inFlightDispatchIds(canonical.map((i) => i.id));
+  const inFlight = await d.inFlightDispatchIds(keyed.map((i) => i.id));
 
   // ── P-007: POSITIVE green-run resolution ────────────────────────────────────────────
   // Runs BEFORE (and independent of) the absence path, and does NOT need ran-tick history:
   // it resolves a red-test EI whose named test verifiably passes NOW (N consecutive greens
   // in test_runs), attaching that as real completion evidence. A green-resolved item is
   // then skipped by the absence loop below.
-  const greenResolved = await resolveProvenGreenRedTests(canonical, inFlight, d, opts, out);
+  const greenResolved = await resolveProvenGreenRedTests(keyed, inFlight, d, opts, out);
 
   // ── Positive repeated-tool-error repair resolution ──────────────────────────────────
   // Unlike the absence path, this path needs no quiet-tick history: an exact class/key
   // contract change or passing probe is affirmative evidence that the rejected call was
   // repaired. The source remains absent from AUTO_CLOSE_ELIGIBLE_SOURCES, so this is the
   // only route by which repeated-tool-error can close.
-  const toolFailureResolved = await resolveProvenToolFailureRepairs(canonical, inFlight, d, out);
+  const toolFailureResolved = await resolveProvenToolFailureRepairs(keyed, inFlight, d, out);
 
-  // ── Absence-based dedup close (needs enough ran-tick history) ───────────────────────
+  // ── Absence-based close (needs enough ran-tick history) ────────────────────────────
   const { seenKeys, ranTickCount, unobservedTicksBySource } = await d.recentRanTickKeys(minTicks);
   if (ranTickCount >= minTicks) {
     const nowMs = d.nowMs();
-    for (const i of canonical) {
+    for (const i of keyed) {
       if (greenResolved.has(i.id) || toolFailureResolved.has(i.id)) continue; // already resolved positively
       const watchdogKey = watchdogKeyOfIssue(i);
       const candidate: AutoCloseCandidate = {

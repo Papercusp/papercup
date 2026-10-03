@@ -291,45 +291,7 @@ describe('processAutoClose — flag gate + orchestration', () => {
     expect(closed).toEqual([]);
   });
 
-  it('keeps one canonical open EI per watchdog key and closes older duplicates first', async () => {
-    process.env[FLAG_ENV] = '1';
-    const closed: Array<{ id: string; key: string; reason: string }> = [];
-    const deps: AutoCloseDeps = {
-      listOpen: async () => [
-        mkIssue({
-          id: 'EI-old',
-          watchdogKey: 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog',
-          createdAt: new Date(THREE_H_AGO - 60_000).toISOString(),
-          updatedAt: new Date(THREE_H_AGO - 60_000).toISOString(),
-        }),
-        mkIssue({
-          id: 'EI-new',
-          watchdogKey: 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog',
-          createdAt: new Date(THREE_H_AGO).toISOString(),
-          updatedAt: new Date(NOW - 30_000).toISOString(),
-        }),
-      ],
-      recentRanTickKeys: async () => ({
-        seenKeys: new Set(['unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog']),
-        ranTickCount: 6,
-      }),
-      inFlightDispatchIds: async () => new Set(),
-      close: async (id, key, reason) => { closed.push({ id, key, reason }); },
-      nowMs: () => NOW,
-    };
-
-    const out = await processAutoClose('ws', {}, deps);
-    expect(closed).toEqual([
-      {
-        id: 'EI-old',
-        key: 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog',
-        reason: 'duplicate of EI-new — canonical open watchdog item retained for `unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog`',
-      },
-    ]);
-    expect(out).toEqual(closed.map(({ id: issueId, key: watchdogKey, reason }) => ({ issueId, watchdogKey, reason })));
-  });
-
-  it('does not dedupe rows across harness, signal-origin, or lane identity components', async () => {
+  it('does not close same-key rows across harness, signal-origin, or lane identity components', async () => {
     process.env[FLAG_ENV] = '1';
     const key = 'unresolved-escalation:escalation:shared-watchdog';
     const closed: string[] = [];
@@ -351,22 +313,22 @@ describe('processAutoClose — flag gate + orchestration', () => {
     expect(out).toEqual([]);
   });
 
-  it('when the signal disappears, closes only the canonical item after duplicate reconciliation', async () => {
+  it('when the signal disappears, independently closes same-key rows with distinct identities', async () => {
     process.env[FLAG_ENV] = '1';
     const closed: Array<{ id: string; key: string; reason: string }> = [];
+    const key = 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog';
     const deps: AutoCloseDeps = {
       listOpen: async () => [
         mkIssue({
-          id: 'EI-old',
-          watchdogKey: 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog',
-          createdAt: new Date(THREE_H_AGO - 60_000).toISOString(),
-          updatedAt: new Date(THREE_H_AGO - 60_000).toISOString(),
+          id: 'EI-harness-a',
+          scope: 'harness:alpha',
+          watchdogKey: key,
         }),
         mkIssue({
-          id: 'EI-new',
-          watchdogKey: 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog',
-          createdAt: new Date(THREE_H_AGO).toISOString(),
-          updatedAt: new Date(NOW - 30_000).toISOString(),
+          id: 'EI-observation',
+          scope: 'harness:alpha',
+          watchdogKey: key,
+          payload: { watchdogKey: key, lane: 'observation' },
         }),
       ],
       recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
@@ -378,13 +340,13 @@ describe('processAutoClose — flag gate + orchestration', () => {
     const out = await processAutoClose('ws', {}, deps);
     expect(closed).toEqual([
       {
-        id: 'EI-old',
-        key: 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog',
-        reason: 'duplicate of EI-new — canonical open watchdog item retained for `unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog`',
+        id: 'EI-harness-a',
+        key,
+        reason: 'signal absent from known-open keys for ≥6 ran-ticks — evidence cleared',
       },
       {
-        id: 'EI-new',
-        key: 'unresolved-escalation:escalation:papercusp:green-checkpoint-watchdog',
+        id: 'EI-observation',
+        key,
         reason: 'signal absent from known-open keys for ≥6 ran-ticks — evidence cleared',
       },
     ]);

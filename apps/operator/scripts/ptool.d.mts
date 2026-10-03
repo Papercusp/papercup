@@ -33,6 +33,8 @@ export function resolvePtoolOperatorCandidates(env?: EnvironmentMap, explicitUrl
  * callers can then explicitly pin that host with --url for a subsequent call.
  */
 export function resolvePtoolInvocationCandidates(args?: {}, env?: NodeJS.ProcessEnv): string[];
+/** A changed operator is safe for dispatch only when the catalog marks the tool read-only. */
+export function canDispatchOnFallbackOperator(tool: any, fallbackUsed: any): boolean;
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
@@ -625,7 +627,7 @@ export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: objec
  */
 export function connectWithOperatorCandidates<T>(connectOnce: (url: string, scope: object, options?: {
     timeoutMs: number;
-}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, ...retryOptions }?: Record<string, any> & {
+}) => Promise<T>, operatorUrls: string[], scope: object, { primaryAttemptOptions, onFallback, allowHttpNotFoundFallback, ...retryOptions }?: Record<string, any> & {
     primaryAttemptOptions?: object;
     onFallback?: ((url: string, error: unknown) => void) | null;
 }): Promise<{

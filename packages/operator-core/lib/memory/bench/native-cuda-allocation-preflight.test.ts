@@ -277,7 +277,7 @@ describe('corruption-specific native allocator detector control', () => {
     const compilation = spawnSync('cc', ['-O0', '-fPIC', '-shared', '-I', headers, nativeSource, '-o', binding],
       { encoding: 'utf8', timeout: 10000 });
     expect(compilation.status, compilation.stderr).toBe(0);
-    const env = { ...process.env, GLIBC_TUNABLES: 'glibc.malloc.tcache_count=0:glibc.malloc.perturb=165:glibc.malloc.check=3',
+    const env: NodeJS.ProcessEnv = { ...process.env, GLIBC_TUNABLES: 'glibc.malloc.tcache_count=0:glibc.malloc.perturb=165:glibc.malloc.check=3',
       MALLOC_CHECK_: '3', MALLOC_PERTURB_: '165', LD_PRELOAD: debugAllocator };
     const child = spawnSync(process.execPath, [controlFixture, 'capture', root,
       JSON.stringify({ allocatorControl: { binding, fault } })], { env, encoding: 'utf8', timeout: 10000 });

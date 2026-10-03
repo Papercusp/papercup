@@ -26,6 +26,7 @@ import type { CascadeSelectionEntry, CascadeWakeContext } from './cascade-core';
 import {
   ACCEPTANCE_GRADING_NO_CLAIM_FACT,
   ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE,
+  ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
   buildAssignedAcceptanceGraderBrief,
   buildMinimumFillAcceptanceGraderBrief,
   gradingCascadeWakeCopy,
@@ -178,6 +179,27 @@ describe('acceptance-grading no-claim guidance (EI-20249725405239230)', () => {
     // Guards the vacuity case directly: an empty FACT would make the line above
     // fail, but state it outright so the reason is legible at the failure site.
     expect(ACCEPTANCE_GRADING_NO_CLAIM_FACT.trim().length).toBeGreaterThan(40);
+  });
+});
+
+describe('acceptance-grading BAR evidence scope guidance (EI-24820671809444052)', () => {
+  it('uses the criterion plane and scope, and pins the tree-positive/deployed-denial case', () => {
+    expect(ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE).toContain('`evidencePlane` and `requiredScope`');
+    expect(ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE).toContain('specific declared scope dimension and evidence plane');
+    expect(ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE).toContain(
+      'for a tree-plane R-3 requiring the current-build portal, a current-build tree positive with a deployed-only 403 remains healthy',
+    );
+    expect(ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE).toContain('unless deployed proof is explicitly required');
+  });
+
+  it('reaches assigned, minimum-fill, and cascade-woken graders', () => {
+    expect(buildAssignedAcceptanceGraderBrief(META.planSlug, META.harnessSlug, META.rubricId)).toContain(
+      ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
+    );
+    expect(buildMinimumFillAcceptanceGraderBrief(META.planSlug, META.harnessSlug, META.rubricId)).toContain(
+      ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
+    );
+    expect(gradingCascadeWakeCopy(META)(wakeCtx()).body).toContain(ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE);
   });
 });
 

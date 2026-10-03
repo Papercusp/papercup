@@ -174,6 +174,8 @@ const h = vi.hoisted(() => {
     workspaceForCoordOwner: vi.fn(async (_sid: string): Promise<string | null> => null),
     /** Ambient presence seam for transport harness-scope inheritance tests. */
     getPresence: vi.fn(async (_ownerId: string): Promise<Record<string, unknown> | null> => null),
+    /** Presence transport-clamp tests must not launch host liveness/process probes. */
+    assemblePresenceSnapshot: vi.fn(),
     /** Durable session-brief harness fallback seam for resumed SU sessions. */
     getSessionBrief: vi.fn(
       async (_query: { ownerId?: string | null }): Promise<{ harnessSlug?: string | null } | null> => null,
@@ -361,6 +363,15 @@ vi.mock('../../adv-sessions', async (importOriginal) => {
 vi.mock('../../agent-tools/coordination/presence', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getPresence: h.getPresence };
+});
+// This suite verifies MCP transport authorization, not the host's process
+// liveness. The real snapshot can probe desktop windows and the spawner sidecar;
+// this PG-free fixture would then report every task-ledger INSERT as a duplicate
+// because its SQL double returns no rows. Keep scope resolution real, but stop
+// at the snapshot boundary so ambient process state cannot red-pin the clamp test.
+vi.mock('../../agent-tools/coordination/presence-snapshot', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, assemblePresenceSnapshot: h.assemblePresenceSnapshot };
 });
 vi.mock('../../session-brief', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -1730,6 +1741,22 @@ beforeEach(() => {
   h.nativeSessionCalls.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
+  h.assemblePresenceSnapshot.mockResolvedValue({
+    as_of: '2026-01-01T00:00:00.000Z',
+    scope: 'workspace',
+    summary: {
+      active: 0,
+      stale: 0,
+      federated: 0,
+      wakeable: 0,
+      onDesktop: 0,
+      viewerAttached: 0,
+      byState: { live: 0, parked: 0, ended: 0, recorded: 0 },
+      byContextPressure: { high: 0, critical: 0 },
+    },
+    active: [],
+    etag: 'gating-matrix-empty-presence',
+  });
   h.rubricGet.mockResolvedValue(null);
   h.pluginHostWarm.mockResolvedValue({});
   h.commitFailure = null;
@@ -3577,17 +3604,20 @@ describe('scoped-superuser hive clamp', () => {
     const res = await callTool('coord:presence', { scope: 'workspace' }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('hive_forbidden');
+    expect(h.assemblePresenceSnapshot).not.toHaveBeenCalled();
   });
 
   it('flag ON: allows targeted coord:presence scope:\'workspace\' (same scope as its owner default)', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool(
       'coord:presence',
-      { scope: 'workspace', workspace: 'ws-1', owner: 'su-known-peer' },
+      { scope: 'workspace', workspace: 'ws-1', owner: 'su-known-peer', include_coupling: false },
       hiveScoped(),
     );
     expect(res.isError).not.toBe(true);
     expect(textOf(res)).not.toContain('hive_forbidden');
+    expect(h.assemblePresenceSnapshot).toHaveBeenCalledTimes(1);
+    expect(h.assemblePresenceSnapshot.mock.calls[0]?.[1]).toMatchObject({ owner: 'su-known-peer' });
   });
 
   it.each([
@@ -3598,7 +3628,7 @@ describe('scoped-superuser hive clamp', () => {
     h.scopedClampFlag.value = true;
     const res = await callTool(
       'coord:presence',
-      { scope: 'workspace', workspace: 'ws-1', ...selector },
+      { scope: 'workspace', workspace: 'ws-1', ...selector, include_coupling: false },
       hiveScoped(),
     );
     expect(res.isError).not.toBe(true);

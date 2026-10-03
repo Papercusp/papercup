@@ -195,6 +195,15 @@ export const ACCEPTANCE_GRADING_NO_CLAIM_FACT =
  */
 export const ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE = `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Emit the card directly.`;
 
+/**
+ * The criterion's declared evidence plane and scope define what the grader must
+ * prove. A missing signal on another plane cannot lower the rating, and a
+ * degraded/unknown explanation must identify the exact declared requirement
+ * that could not be verified.
+ */
+export const ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE =
+  "For each rubric criterion, use its own structured `evidencePlane` and `requiredScope` as the authority for what evidence is required. Judge only those declared requirements. Do not mark a criterion degraded or unknown because evidence from an undeclared plane or scope is missing, denied, or unavailable. For a degraded or unknown rating, name the specific declared scope dimension and evidence plane that remains unproven, plus the read that failed. Example: for a tree-plane R-3 requiring the current-build portal, a current-build tree positive with a deployed-only 403 remains healthy; the production denial does not negate the tree criterion unless deployed proof is explicitly required.";
+
 /** The reads a grader has to do, rendered with the subject harness pinned. */
 function graderReadingInstructions(
   planSlug: string,
@@ -210,7 +219,7 @@ function graderReadingInstructions(
     `Because your session may be in a different hive, keep the plan harness explicit: read the plan ` +
     `(${planRead}) + the acceptance rubric '${rubricId}' + the completion evidence, then emit ONE complete ` +
     `scorecard: scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
-    `with concrete evidence per rating. ${ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE} The targetHive makes ` +
+    `with concrete evidence per rating. ${ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE} ${ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE} The targetHive makes ` +
     `deterministic checks run against the subject ` +
     `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} ` +
     `${acceptanceReviewReservationGuidance(reservation)} The verdict is YOURS — ` +

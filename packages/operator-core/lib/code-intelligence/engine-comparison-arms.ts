@@ -18,7 +18,11 @@ import { realpathSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { analyzeEnv, GITNEXUS_ANALYZE_STACK_KB } from '../harness/routines/gitnexus-reindex-action';
+import {
+  analyzeEnv,
+  GITNEXUS_ANALYZE_STACK_KB,
+  GITNEXUS_ANALYZE_TIMEOUT_MS,
+} from '../harness/routines/gitnexus-reindex-action';
 import { classifyAnalyzeFailure, describeAnalyzeFailure } from './gitnexus-analyze-failure';
 import type { CorpusCase } from './acceptance-corpus';
 import type { EngineArm, EngineQueryResult, PhaseCost } from './engine-comparison';
@@ -283,7 +287,7 @@ export function createGitnexusArm(
   // production analyze environment. Query commands keep the plain one-shot invocation.
   const run = (args: readonly string[]) => {
     const inv = gitnexusAnalyzeInvocation(cfg, args);
-    return exec(inv.cmd, inv.args, { cwd: cfg.treeRoot, env: inv.env, timeoutMs: cfg.timeoutMs ?? 1_800_000 });
+    return exec(inv.cmd, inv.args, { cwd: cfg.treeRoot, env: inv.env, timeoutMs: cfg.timeoutMs ?? GITNEXUS_ANALYZE_TIMEOUT_MS });
   };
   return {
     id: cfg.id,
