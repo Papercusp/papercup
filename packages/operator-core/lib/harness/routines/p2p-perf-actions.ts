@@ -573,7 +573,8 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
 }
 
 // Nightly Tier-1 — 30 min bound (ci profile measures ~10-15 min on the dev box).
-registerSystemAction('p2p-perf-tier1', (ctx) => runTier(ctx, '--tier1', 30 * 60_000));
+// WI-10005745: both tiers run tsx <root>/packages/operator-core/lib/sync/hyperbee/perf/runner.ts.
+registerSystemAction('p2p-perf-tier1', (ctx) => runTier(ctx, '--tier1', 30 * 60_000), { executesIntegrationTreeCode: true });
 
 // Weekly Tier-2 — netem cells are deliberately slow under impairment; 60 min bound.
-registerSystemAction('p2p-perf-tier2', (ctx) => runTier(ctx, '--tier2', 60 * 60_000));
+registerSystemAction('p2p-perf-tier2', (ctx) => runTier(ctx, '--tier2', 60 * 60_000), { executesIntegrationTreeCode: true });
