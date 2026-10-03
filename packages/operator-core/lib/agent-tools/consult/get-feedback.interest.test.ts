@@ -184,4 +184,15 @@ describe('consult:get_feedback requester guidance', () => {
     expect((tool as any).description).toContain('does not wake the expert’s live session');
     expect((tool as any).guidance.chaining).toContain('dispatcher already walks allowed model ranks');
   });
+
+  it('requires requester follow-through without inferring usefulness from delivery', () => {
+    expect((tool as any).guidance.chaining).toContain('read the reply');
+    expect((tool as any).guidance.chaining).toContain('compare it with the decision');
+    expect((tool as any).guidance.chaining).toContain('consult:reconcile');
+    expect((tool as any).guidance.chaining).toContain('confirmed/rescoped/reversed/moot');
+    expect((tool as any).guidance.chaining).toContain('substantive note');
+    expect((tool as any).guidance.chaining).toContain('Receipt or silence does not prove usefulness');
+    expect((tool as any).guidance.chaining).toContain('retrieval-only');
+    expect((tool as any).guidance.notWhen).toContain('Do not consult to meet a quota');
+  });
 });

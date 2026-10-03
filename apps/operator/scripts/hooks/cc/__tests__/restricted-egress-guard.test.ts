@@ -112,7 +112,7 @@ describe('decideEgress', () => {
         expect(result.reason).toContain('masks `/run/user/<uid>`');
         expect(result.reason).toContain('zero count would be misleading');
         expect(result.reason).toContain('ps -eo pid,user,unit,args');
-        expect(result.reason).toContain('/proc/<pid>/cgroup');
+        expect(result.reason).toContain('the process’s procfs cgroup entry');
       }
     });
 

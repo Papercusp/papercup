@@ -274,7 +274,7 @@ export async function decideEgress({ toolName, toolInput, cwd, env = process.env
         reason:
           'This restricted shell masks `/run/user/<uid>` to prevent host-side egress, including the user systemd/D-Bus sockets. ' +
           '`systemctl --user` cannot report host unit state here, so an empty list or zero count would be misleading. ' +
-          'For process liveness, inspect `ps -eo pid,user,unit,args` or `/proc/<pid>/cgroup`; use Papercusp service tools for registered units.',
+          'For process liveness, inspect `ps -eo pid,user,unit,args` or the process’s procfs cgroup entry; use Papercusp service tools for registered units.',
       };
     }
     if (wrapped) return { decision: 'rewrite', updatedInput: { ...input, command: wrapped } };

@@ -43,7 +43,7 @@
  * off the machine). With no unreleased disclosure this half costs one query.
  */
 
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -288,6 +288,78 @@ export async function readRestrictedWindowHoldings(deps: RestrictedWindowDeps): 
     if (!accounted) out.push({ path: c.path, owner: RESTRICTED_WINDOW_OWNER, intent: RESTRICTED_WINDOW_INTENT, coordinationDomain: c.root });
   }
   return out;
+}
+
+export type RestrictedSourceHoldState = 'held' | 'clear' | 'unknown';
+
+export interface RestrictedSourceHoldDeps {
+  /** Override the attributed edit census. */
+  readAttributed?: () => Promise<RestrictedEditHolding[]>;
+  /** Override the dirty-window census for a canonical integration root. */
+  readWindow?: (realRoot: string) => Promise<RestrictedEditHolding[]>;
+}
+
+function pathIsUnder(root: string, target: string): boolean {
+  const absoluteRoot = path.resolve(root);
+  const absoluteTarget = path.resolve(target);
+  return absoluteTarget === absoluteRoot || absoluteTarget.startsWith(absoluteRoot + path.sep);
+}
+
+async function holdingTouchesRoot(realRoot: string, holding: RestrictedEditHolding): Promise<boolean> {
+  let domain = realRoot;
+  if (holding.coordinationDomain) {
+    const candidate = holding.coordinationDomain.trim();
+    if (!path.isAbsolute(candidate)) throw new Error('restricted hold coordination domain is not absolute');
+    domain = await realpath(candidate).catch(() => path.resolve(candidate));
+  }
+  const absolute = path.resolve(path.isAbsolute(holding.path) ? holding.path : path.resolve(domain, holding.path));
+  const real = await realpath(absolute).catch(() => absolute);
+  return pathIsUnder(realRoot, absolute) || pathIsUnder(realRoot, real);
+}
+
+async function runRestrictedSourceGit(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  // Keep the source census on git-sync's bounded runner so its dirty-window view
+  // has the same timeout, locale, and dispatch behavior as the writer's census.
+  const { gitTimeoutMsFor, runGitBounded } = await import('../harness/git-sync/run-git-sync');
+  return runGitBounded(args, cwd, gitTimeoutMsFor(args));
+}
+
+/**
+ * Read the source hold for the explicitly configured canonical integration tree.
+ * The answer is fail-closed: no configured/resolvable root or a failed attributed
+ * or dirty-window census is unknown, never clear. The window half uses git-sync's
+ * recursive superproject/submodule census, so shell writes stay visible too.
+ */
+export async function readRestrictedSourceHoldState(
+  integrationRoot: string | null | undefined = process.env.PAPERCUSP_INTEGRATION_ROOT,
+  deps: RestrictedSourceHoldDeps = {},
+): Promise<RestrictedSourceHoldState> {
+  const configuredRoot = integrationRoot?.trim();
+  if (!configuredRoot) return 'unknown';
+
+  let realRoot: string;
+  try {
+    realRoot = await realpath(configuredRoot);
+  } catch {
+    return 'unknown';
+  }
+
+  try {
+    const readAttributed = deps.readAttributed ?? (() => readRestrictedEditHoldings());
+    const readWindow =
+      deps.readWindow ??
+      ((root: string) =>
+        readRestrictedWindowHoldings({
+          listDirtyFiles: () => listDirtyFilesRecursive(runRestrictedSourceGit, root),
+        }));
+    const [attributed, window] = await Promise.all([readAttributed(), readWindow(realRoot)]);
+    for (const holding of [...attributed, ...window]) {
+      if (await holdingTouchesRoot(realRoot, holding)) return 'held';
+    }
+    return 'clear';
+  } catch {
+    return 'unknown';
+  }
 }
 
 /**

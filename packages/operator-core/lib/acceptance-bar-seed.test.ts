@@ -494,6 +494,24 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
     expect(manual.ok).toBe(true);
   });
 
+  it.each(['tree', 'deployed', 'live'] as const)('projects explicit manual %s review without an automated clause class', (plane) => {
+    const manual = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block({
+        ...completeSections,
+        acceptance: { condition: 'The reviewed offer has explicit cancellation terms.', falsifier: 'Cancellation terms are missing.' },
+        verification: { method: 'Read the offer and retain the actual demonstration receipt.', check: { kind: 'instrument', instrumentKey: 'none' } },
+      }), map: `| R-1 | P-001 | ${plane} |` }),
+      requireContractCompleteness: true,
+    });
+    expect(manual.ok).toBe(true);
+    if (!manual.ok) throw new Error(manual.message);
+    expect(manual.projections).toHaveLength(1);
+    expect(manual.projections[0]).toMatchObject({ behaviorClass: 'non-automated', mutationRequired: undefined });
+    expect(manual.projections[0]?.requiredTestLayers ?? []).toEqual([]);
+    expect(manual.criteria[0]?.method).toContain('actual demonstration receipt');
+  });
+
   it('judges only fresh post-epoch BARs: opt-out, legacy backfill and unchanged priors are untouched', () => {
     expect(buildAcceptanceBarSeed({ ...input, planContent: plan() }).ok).toBe(true);
     expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), cohort: 'legacy-backfilled',
