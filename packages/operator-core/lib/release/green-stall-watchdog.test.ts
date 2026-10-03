@@ -88,6 +88,7 @@ import {
   lastReleaseTriggerPauseOwner,
   evaluateReleaseTriggerFireStale,
   evaluateStrandedRepairQueue,
+  evaluateQuietLiveFixer,
   type StrandedRepairQueueSnapshot,
   checkReleaseTriggerFireStale,
   attributeVerdictStale,
@@ -3526,5 +3527,46 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
     const starter = src.slice(src.indexOf('export function startGreenStallWatchdog('));
     expect(starter.length).toBeGreaterThan(0);
     expect(starter).toMatch(/\n\s*void checkStrandedRepairQueue\(sql\);/);
+  });
+});
+
+describe('evaluateQuietLiveFixer advisory (EI-24932471671159980)', () => {
+  const tenMinutes = 10 * 60_000;
+  const base = (over: Partial<Parameters<typeof evaluateQuietLiveFixer>[0]> = {}) =>
+    evaluateQuietLiveFixer({
+      phase: 'awaiting-fixer',
+      fixerSpawnId: 'spawn-1',
+      fixerAlive: true,
+      lastOutputAtMs: 1_000,
+      nowMs: 1_000 + tenMinutes,
+      ...over,
+    });
+
+  it('nudges only after the shared 10-minute stream-silence threshold', () => {
+    expect(base()).toEqual({ state: 'silent', silentMs: tenMinutes });
+    expect(base({ nowMs: 1_000 + tenMinutes - 1 })).toEqual({
+      state: 'active',
+      silentMs: tenMinutes - 1,
+    });
+  });
+
+  it('missing output or uncertain liveness is unknown, never a stale-fixer verdict', () => {
+    expect(base({ lastOutputAtMs: null })).toEqual({ state: 'unknown', silentMs: null });
+    expect(base({ fixerAlive: null })).toEqual({ state: 'unknown', silentMs: null });
+  });
+
+  it('does not classify a changed phase, missing fixer, or dead fixer as a quiet live fixer', () => {
+    expect(base({ phase: 'ready-to-verify' }).state).toBe('not-applicable');
+    expect(base({ fixerSpawnId: null }).state).toBe('not-applicable');
+    expect(base({ fixerAlive: false }).state).toBe('not-applicable');
+  });
+
+  it('the production queue watchdog invokes the advisory classifier', async () => {
+    const { readFileSync } = await import('node:fs');
+    const subject = process.env.STRANDED_WIRING_SUBJECT ?? new URL('./green-stall-watchdog.ts', import.meta.url);
+    const src = readFileSync(subject, 'utf8');
+    const check = src.slice(src.indexOf('export async function checkStrandedRepairQueue('));
+    expect(check).toContain('evaluateQuietLiveFixer(');
+    expect(check).toContain('STRANDED_REPAIR_FIXER_SILENCE_PHASE');
   });
 });

@@ -45,6 +45,7 @@ import { execFileSync } from 'node:child_process';
 import { recordWatchdogPassOutcome } from './watchdog-health';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
+import { WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
 import {
   isCheckpointRunLockHeldCheap,
@@ -3445,6 +3446,32 @@ export async function checkReleaseTriggerFireStale(
 // documented as "a fixer must name the paths by hand" — admittable, not unreachable — so alarming
 // on it would fire on healthy queues. Manifest counts are REPORTED in the alarm text only.
 const STRANDED_REPAIR_QUEUE_PHASE = 'stranded-repair-queue-watchdog';
+const STRANDED_REPAIR_FIXER_SILENCE_PHASE = 'stranded-repair-fixer-silence-watchdog';
+
+type QuietLiveFixerState = 'not-applicable' | 'unknown' | 'active' | 'silent';
+
+/** Output silence is advisory; it never changes fixer liveness or queue ownership. */
+export function evaluateQuietLiveFixer(input: {
+  phase: string;
+  fixerSpawnId: string | null;
+  fixerAlive: boolean | null;
+  lastOutputAtMs: number | null;
+  nowMs: number;
+}): { state: QuietLiveFixerState; silentMs: number | null } {
+  if (input.phase !== 'awaiting-fixer' || !input.fixerSpawnId || input.fixerAlive === false) {
+    return { state: 'not-applicable', silentMs: null };
+  }
+  if (
+    input.fixerAlive !== true ||
+    input.lastOutputAtMs === null ||
+    !Number.isFinite(input.lastOutputAtMs) ||
+    !Number.isFinite(input.nowMs)
+  ) {
+    return { state: 'unknown', silentMs: null };
+  }
+  const silentMs = Math.max(0, input.nowMs - input.lastOutputAtMs);
+  return { state: silentMs >= WEDGE_SILENT_MS ? 'silent' : 'active', silentMs };
+}
 
 export interface StrandedRepairQueueSnapshot {
   candidate: string;
@@ -3577,6 +3604,118 @@ export async function checkStrandedRepairQueue(
           }
         : null,
     );
+
+    // A live fixer that has stopped streaming gets an independent advisory nudge before the
+    // 8h age rung. Missing output is UNKNOWN (never streamed is not evidence); this path never
+    // changes releaseFixerSpawnAlive, the frozen candidate, or dispatch ownership.
+    try {
+      let lastOutputAtMs: number | null = null;
+      if (diag?.fixerSpawnId) {
+        const activityRows = await sql<{ last_output_at: Date | string | null }[]>`
+          SELECT last_output_at
+            FROM harness_shared.spawned_agents
+           WHERE workspace_id = ${workspaceId} AND spawn_id = ${diag.fixerSpawnId}
+           LIMIT 1`;
+        const rawLastOutputAt = activityRows[0]?.last_output_at;
+        const parsedLastOutputAt = rawLastOutputAt instanceof Date
+          ? rawLastOutputAt.getTime()
+          : typeof rawLastOutputAt === 'string'
+            ? Date.parse(rawLastOutputAt)
+            : null;
+        lastOutputAtMs = parsedLastOutputAt !== null && Number.isFinite(parsedLastOutputAt)
+          ? parsedLastOutputAt
+          : null;
+      }
+      const fixerActivity = evaluateQuietLiveFixer({
+        phase: queue?.phase ?? '',
+        fixerSpawnId: diag?.fixerSpawnId ?? null,
+        fixerAlive,
+        lastOutputAtMs,
+        nowMs: now,
+      });
+      const quietRows = await sql<{
+        escalation: { candidate?: string; fixerSpawnId?: string | null } | null;
+      }[]>`
+        SELECT escalation FROM harness_shared.harness_escalations
+         WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_FIXER_SILENCE_PHASE}`;
+      const priorQuiet = quietRows[0]?.escalation ?? null;
+      const sameQuietFixer = Boolean(
+        priorQuiet &&
+        diag &&
+        priorQuiet.candidate === diag.candidate &&
+        priorQuiet.fixerSpawnId === diag.fixerSpawnId,
+      );
+      const quietConditionKey = 'stranded-repair-fixer-silence:' + installSlug;
+
+      if (priorQuiet && (!sameQuietFixer || fixerActivity.state === 'active' || fixerActivity.state === 'not-applicable')) {
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = NULL, mtime_ms = ${now}
+           WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_FIXER_SILENCE_PHASE}`;
+        await broadcastSevereEventResolved({
+          conditionKey: quietConditionKey,
+          summary: 'Release fixer ' + (priorQuiet.fixerSpawnId ?? '') + ' on ' + installSlug + ' is no longer stream-silent.',
+        });
+        out.recovered = true;
+      }
+
+      if (fixerActivity.state === 'silent' && diag && !sameQuietFixer) {
+        const silentMs = fixerActivity.silentMs ?? 0;
+        const minutes = Math.round(silentMs / 60_000);
+        const title = 'Release fixer silent ~' + minutes + 'm — still live; frozen candidate unchanged';
+        const body =
+          'Release fixer ' + diag.fixerSpawnId + ' for frozen candidate ' + diag.candidate.slice(0, 12) +
+          ' is still live, but spawned_agents.last_output_at shows no stdout/stderr for ~' + minutes +
+          ' minutes. This is advisory only: it does not release or reassign the fixer or change the candidate. ' +
+          "Inspect release:repair-queue { op:'status' } before taking action.";
+        try {
+          const { notifyAttention } = await import('../attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            title,
+            body,
+            importance: 'normal',
+            workspaceId,
+            data: {
+              candidate: diag.candidate,
+              fixerSpawnId: diag.fixerSpawnId,
+              lastOutputAtMs,
+              silentMs,
+              advisory: true,
+            },
+          });
+        } catch (e) {
+          console.warn('[stranded-repair-queue-watchdog] fixer-silence notify failed: ' + (e instanceof Error ? e.message : e));
+        }
+        await broadcastSevereEvent({
+          summary: title + ' on ' + installSlug + '.',
+          body,
+          category: 'severe-event',
+          conditionKey: quietConditionKey,
+          oneShot: true,
+        });
+        await sql`
+          INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+          VALUES (${installSlug}, ${STRANDED_REPAIR_FIXER_SILENCE_PHASE}, ${JSON.stringify({
+            kind: STRANDED_REPAIR_FIXER_SILENCE_PHASE,
+            harness_slug: installSlug,
+            candidate: diag.candidate,
+            fixerSpawnId: diag.fixerSpawnId,
+            lastOutputAtMs,
+            silentMs,
+            thresholdMs: WEDGE_SILENT_MS,
+            advisory: true,
+            emitted_at: now,
+          })}, ${now}, ${workspaceId})
+          ON CONFLICT (harness_slug, phase)
+          DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+        out.alarmed = true;
+        console.warn('[stranded-repair-queue-watchdog] FIXER SILENT ' + installSlug + ': ' + body);
+      }
+    } catch (e) {
+      // Failure in the optional activity signal must not suppress the independent age alarm.
+      console.warn('[stranded-repair-queue-watchdog] fixer-silence pass failed (non-fatal): ' + (e instanceof Error ? e.message : String(e)));
+    }
 
     const existing = await sql<{ escalation: { candidate?: string; rung?: number; stranded?: boolean } | null }[]>`
       SELECT escalation FROM harness_shared.harness_escalations

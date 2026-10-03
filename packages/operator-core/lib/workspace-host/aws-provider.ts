@@ -59,6 +59,14 @@ export interface AwsTag {
 
 export interface AwsRunInstancesInput {
   ClientToken: string;
+  /**
+   * The AMI the instance boots: `desired.image.id` (WI-10005971). Always explicit. The customer
+   * launch template carries only metadata options, so an omitted ImageId leaves EC2 with no image
+   * at all, and an upgrade must be able to name a different AMI than the one the host first ran.
+   */
+  ImageId: string;
+  /** `desired.size`. Explicit for the same reason: the launch template does not pin a type. */
+  InstanceType: string;
   MinCount: 1;
   MaxCount: 1;
   LaunchTemplate: {
@@ -142,6 +150,8 @@ export interface AwsCreateVolumeInput {
   KmsKeyId: string;
   Size: number;
   VolumeType: string;
+  /** Restore only: the data volume is created from this EBS snapshot of the source host. */
+  SnapshotId?: string;
   TagSpecifications: readonly [{ ResourceType: 'volume'; Tags: readonly AwsTag[] }];
 }
 
@@ -216,6 +226,12 @@ export interface AwsSnapshotObservation {
   snapshotId: string;
   state: 'pending' | 'completed' | 'error' | 'deleted';
   observedAt: string;
+}
+
+/** A fresh DescribeSnapshots read of one snapshot, with what a restore must verify before it plans. */
+export interface AwsSnapshotDescription extends AwsSnapshotObservation {
+  tags: Readonly<Record<string, string>>;
+  volumeSizeGiB?: number;
 }
 
 /** One security group's inbound surface, as EC2 reports it (P-005). */
@@ -305,6 +321,8 @@ export interface AwsWorkspaceHostSdkClient {
     signal?: AbortSignal,
   ): Promise<AwsInstanceObservation | undefined>;
   attachVolume(input: { InstanceId: string; VolumeId: string; Device: string }): Promise<AwsProviderMutationResult>;
+  /** Detach a data volume from a STOPPED instance (an upgrade moves it to the replacement instance). */
+  detachVolume(input: { InstanceId: string; VolumeId: string }): Promise<AwsProviderMutationResult>;
   startInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult>;
   stopInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult>;
   rebootInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult>;
@@ -319,6 +337,8 @@ export interface AwsWorkspaceHostSdkClient {
   createSnapshot(input: AwsCreateSnapshotInput): Promise<AwsCreatedSnapshot>;
   findSnapshotByClientToken(clientToken: string): Promise<AwsSnapshotObservation | undefined>;
   waitForSnapshotCompleted(snapshotId: string, signal?: AbortSignal): Promise<AwsSnapshotObservation>;
+  /** One snapshot owned by this account, or undefined when EC2 does not return it. */
+  describeSnapshot(snapshotId: string): Promise<AwsSnapshotDescription | undefined>;
   /**
    * Controller-independent inventory of one workspace's Papercusp-managed EC2 instances, EBS
    * volumes and EBS snapshots, by managed-tag filter (aws-byoc-gcp-parity-2026-10-01 P-003).
@@ -374,12 +394,21 @@ export interface AwsWorkspaceHostDesiredProviderSettings {
   provisioningModel: AwsWorkspaceHostProvisioningModel;
 }
 
+/**
+ * `replacesInstanceId` is set only on an upgrade's post-launch steps: the host then has TWO known
+ * instances (the stopped original and its replacement), and these steps must act on the
+ * replacement. Absent, the host's single instance is used.
+ */
 type AwsStepInput =
   | { op: 'create-data-volume'; request: AwsCreateVolumeInput; hostId: string; region: string }
   | { op: 'run-instance'; request: AwsRunInstancesInput; hostId: string; vpcId: string }
-  | { op: 'attach-data-volume'; device: string; hostId: string }
+  | { op: 'attach-data-volume'; device: string; hostId: string; replacesInstanceId?: string }
   // D-013: the controller-rendered bootstrap, pushed over SSM once the data volume is attached.
-  | { op: 'start-host-bootstrap'; hostId: string; script: string }
+  | { op: 'start-host-bootstrap'; hostId: string; script: string; replacesInstanceId?: string }
+  // Upgrade (WI-10005971): move the data volume off the stopped original instance.
+  | { op: 'detach-data-volume'; volumeId: string; instanceId: string; hostId: string }
+  // Upgrade rollback: put the data volume back on the original instance and start it.
+  | { op: 'reinstate-instance'; instanceId: string; volumeId: string; device: string; hostId: string }
   | {
       op: 'start-instance' | 'stop-instance' | 'reboot-instance' | 'repair-instance';
       instanceId: string;
@@ -415,8 +444,10 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     stop: true,
     restart: true,
     snapshot: true,
-    restore: false,
-    upgrade: false,
+    // WI-10005971: restore builds a distinct host whose data volume comes from the snapshot;
+    // upgrade replaces the instance from the target AMI and moves the data volume across.
+    restore: true,
+    upgrade: true,
     repair: true,
     confirmedDestroy: true,
     // D-013: provision and repair push the controller-rendered bootstrap over SSM Run Command
@@ -428,7 +459,8 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
   constraints: [
     'Launch Template, subnet, security groups, IAM instance profile, and customer KMS key are required',
     'Nitro-based instance types only: the data volume is located by its NVMe volume id',
-    'Restore and in-place image upgrades are not yet supported',
+    'An image upgrade replaces the EC2 instance (it gets a new instance id) and moves the data volume to it',
+    'Restore creates a distinct host in the same account from a completed snapshot of the source host',
   ],
 };
 
@@ -545,8 +577,23 @@ function resource(
 }
 
 function hostIdFor(request: WorkspaceHostPlanRequest): string {
-  return request.action === 'provision' ? request.desired.hostId : request.host.hostId;
+  return request.action === 'provision' || request.action === 'restore' ? request.desired.hostId : request.host.hostId;
 }
+
+/**
+ * An AMI id, never an alias. EC2 also accepts `resolve:ssm:<parameter>` in ImageId, which names
+ * whatever the parameter points at WHEN the instance launches; a host must boot the exact image
+ * its desired spec, the release manifest and the upgrade record all name.
+ */
+function requireAwsAmiId(value: unknown, label: string): string {
+  const id = requireString(value, label);
+  if (!/^ami-[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*$/.test(id)) {
+    throw new Error(`${label} must be an EC2 AMI id (ami-...), not '${id}'`);
+  }
+  return id;
+}
+
+type AwsBootstrapAction = 'provision' | 'repair' | 'restore' | 'upgrade';
 
 /**
  * The `start-host-bootstrap` step (D-013). Fails closed when the controller supplied no bootstrap:
@@ -555,10 +602,11 @@ function hostIdFor(request: WorkspaceHostPlanRequest): string {
  */
 function hostBootstrapStep(
   ctx: WorkspaceHostProviderContext,
-  action: 'provision' | 'repair',
+  action: AwsBootstrapAction,
   hostId: string,
   idempotencyKey: string,
   dependsOn: readonly string[],
+  replacesInstanceId?: string,
 ): WorkspaceHostPlanStep {
   const script = ctx.hostBootstrapScript;
   if (!script?.trim()) {
@@ -571,8 +619,60 @@ function hostBootstrapStep(
     dependsOn: [...dependsOn],
     idempotencyKey,
     destructive: false,
-    input: { op: 'start-host-bootstrap', hostId, script } satisfies AwsStepInput,
+    input: {
+      op: 'start-host-bootstrap',
+      hostId,
+      script,
+      ...(replacesInstanceId ? { replacesInstanceId } : {}),
+    } satisfies AwsStepInput,
   };
+}
+
+/**
+ * The instance a step acts on. Ordinarily the host's single known instance. During an upgrade the
+ * stopped original is still known beside its replacement, so a post-launch step names the
+ * original and acts on the one other instance; anything but exactly one is refused rather than
+ * guessed, because attaching the data volume or pushing the bootstrap to the wrong instance
+ * cannot be undone by a retry.
+ */
+function requireStepInstance(
+  resources: readonly WorkspaceHostResourceRef[],
+  stepId: string,
+  replacesInstanceId: string | undefined,
+): WorkspaceHostResourceRef {
+  if (!replacesInstanceId) return requireKnownResource(resources, AWS_INSTANCE_RESOURCE_KIND, stepId);
+  const candidates = resources.filter(
+    (candidate) =>
+      candidate.target === AWS_WORKSPACE_HOST_TARGET &&
+      candidate.kind === AWS_INSTANCE_RESOURCE_KIND &&
+      candidate.providerId !== replacesInstanceId,
+  );
+  const distinct = [...new Map(candidates.map((candidate) => [candidate.providerId, candidate])).values()];
+  if (distinct.length !== 1) {
+    throw new Error(
+      `AWS step '${stepId}' needs exactly one replacement instance for ${replacesInstanceId}; found ${distinct.length}`,
+    );
+  }
+  return distinct[0];
+}
+
+/** Exactly one registered resource of a kind; an upgrade refuses an ambiguous host rather than guess. */
+function requireSingleResource(
+  resources: readonly WorkspaceHostResourceRef[],
+  kind: typeof AWS_INSTANCE_RESOURCE_KIND | typeof AWS_VOLUME_RESOURCE_KIND,
+  action: string,
+): WorkspaceHostResourceRef {
+  const matches = [
+    ...new Map(
+      resources
+        .filter((candidate) => candidate.target === AWS_WORKSPACE_HOST_TARGET && candidate.kind === kind)
+        .map((candidate) => [candidate.providerId, candidate]),
+    ).values(),
+  ];
+  if (matches.length !== 1) {
+    throw new Error(`AWS ${action} needs exactly one registered ${kind}; the host has ${matches.length}`);
+  }
+  return matches[0];
 }
 
 function stepInput(step: WorkspaceHostPlanStep): AwsStepInput {
@@ -672,7 +772,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     if (request.action !== 'provision' && request.host.target !== AWS_WORKSPACE_HOST_TARGET) {
       throw new Error(`AWS provider cannot plan host target '${request.host.target}'`);
     }
-    const steps = this.planSteps(request, ctx);
+    const steps = await this.planSteps(request, ctx);
     return {
       planId: `aws:${awsWorkspaceHostClientToken(`${request.operationId}:plan`)}`,
       operationId: request.operationId,
@@ -684,15 +784,16 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     };
   }
 
-  private planSteps(
+  private async planSteps(
     request: WorkspaceHostPlanRequest,
     ctx: WorkspaceHostProviderContext,
-  ): readonly WorkspaceHostPlanStep[] {
-    if (request.action === 'provision') return this.planProvision(request, ctx);
-    if (request.action === 'destroy') return this.planDestroy(request, ctx);
-    if (request.action === 'restore' || request.action === 'upgrade') {
-      throw new Error(`AWS workspace-host action '${request.action}' is not supported`);
+  ): Promise<readonly WorkspaceHostPlanStep[]> {
+    if (request.action === 'provision') {
+      return this.planProvision(request.desired, request.idempotencyKey, ctx, { action: 'provision' });
     }
+    if (request.action === 'destroy') return this.planDestroy(request, ctx);
+    if (request.action === 'restore') return this.planRestore(request, ctx);
+    if (request.action === 'upgrade') return this.planUpgrade(request, ctx);
 
     const instance = requireKnownResource(request.host.resources, AWS_INSTANCE_RESOURCE_KIND, request.action);
     const idempotencyKey = `${request.idempotencyKey}:${request.action}:${instance.providerId}`;

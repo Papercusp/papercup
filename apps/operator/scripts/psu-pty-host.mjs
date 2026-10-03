@@ -12418,7 +12418,12 @@ export function hostThroughPty(o) {
             appendHostEvent(
               ownerId,
               healed.route === 'staging-proxy' ? 'operator-pin-routed' : 'operator-pin-healed',
-              { ...healed, mode: respawnMode },
+              {
+                from: operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: healed.from }),
+                to: operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: healed.to }),
+                ...(healed.route === 'staging-proxy' ? { route: 'staging-proxy' } : {}),
+                mode: respawnMode,
+              },
             );
           }
         } catch {
