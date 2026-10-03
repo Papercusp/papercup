@@ -109,24 +109,19 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
     expect(parent).toEqual({ NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' });
   });
 
-  it('uses Vite filesystem IDs for clone Starlight virtual modules', async () => {
+  it('keeps Vite realpath resolution for clone Starlight virtual modules', async () => {
     const envKey = 'PAPERCUSP_LINT_AS_COMMITTED_CLONE';
     const before = process.env[envKey];
     const configPath = resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs');
     const readConfig = async (tag: string) => (await import(`${configPath}?${tag}`)).default as {
       vite?: { resolve?: { preserveSymlinks?: boolean; alias?: Array<{ find: string; replacement: string }> } };
     };
-    const logicalRoot = resolve(repoRoot, 'node_modules/@astrojs/starlight');
-    const realRoot = realpathSync(logicalRoot);
-
     try {
       delete process.env[envKey];
       expect((await readConfig('normal')).vite?.resolve?.preserveSymlinks).toBeUndefined();
       process.env[envKey] = '1';
       const cloneVite = (await readConfig('clone')).vite?.resolve;
-      expect(cloneVite?.preserveSymlinks).toBe(true);
-      expect(cloneVite?.alias?.map(({ find, replacement }) => ({ find: resolve(find), replacement })))
-        .toEqual([{ find: logicalRoot, replacement: `/@fs${realRoot}` }]);
+      expect(cloneVite?.preserveSymlinks).toBe(false);
     } finally {
       if (before === undefined) delete process.env[envKey];
       else process.env[envKey] = before;
