@@ -47,7 +47,7 @@ import {
   writeFileSync,
   type Dirent,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { resolveInheritedOperatorBaseUrl } from '../../mcp-base-url';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
@@ -93,7 +93,7 @@ import {
   type FreshContextDeps,
 } from './wake-executor-fresh-context';
 import { appendCrashResumeAdvisory } from './crash-resume-advisory';
-import { getPresence } from '../../agent-tools/coordination/presence';
+import { getPresence, touchHeartbeat } from '../../agent-tools/coordination/presence';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
@@ -447,9 +447,25 @@ export function defaultAccountHeadlessResumeTurn(input: HeadlessResumeTurnInput)
     input.pid,
     { workspaceId: input.sessionWorkspaceId ?? input.deliveryWorkspaceId },
   );
+  // WI-10005725: a resume-headless turn has no psu launcher, so no supervisor
+  // beat ever reports its pid. Without this stamp the presence row keeps the
+  // DEAD launcher pid of the session being resumed, the liveness oracle's ESRCH
+  // probe outranks the turn's own fresh activity, and the working turn reads
+  // `ended` (a goal-holder respawner then replaces it). Stamp the child's
+  // pid/host so the probe describes the process actually running; once the
+  // child exits, the same probe correctly reads it gone. Best-effort like the
+  // adv write: the spawn never waits on it, a failure never rejects
+  // `pidRecorded`, and touchHeartbeat is a no-op without a presence row.
+  const presenceStamped = touchHeartbeat(input.coordOwnerId, {
+    pid: input.pid,
+    host: hostname(),
+  }).catch(() => undefined);
   let finished = false;
   return {
-    pidRecorded: setAdvSessionPid(input.advSessionId, input.pid, undefined, input.sessionWorkspaceId),
+    pidRecorded: Promise.all([
+      setAdvSessionPid(input.advSessionId, input.pid, undefined, input.sessionWorkspaceId),
+      presenceStamped,
+    ]).then(() => undefined),
     finish: (exit) => {
       if (finished) return;
       finished = true;
