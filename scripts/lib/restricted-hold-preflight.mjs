@@ -97,8 +97,23 @@ export function interpretRestrictedHoldPreflight(result) {
 export function restrictedHoldPreflightSkipReason(env) {
   const upstream = admittedUpstream(env);
   if (upstream) return upstream;
+  if (isReleaseGate(env)) return 'release-gate';
   if (env.VITEST) return 'nested-in-vitest';
   return null;
+}
+
+/**
+ * The green-checkpoint gate runs COMMITTED code in its own isolated checkout, and D-011 holds a
+ * restricted session's writes out of every commit, so no held restricted write can exist where the
+ * gate runs. Without this skip every vitest process the gate starts would pay a census spawn and
+ * take a fail-closed Postgres dependency, so one database hiccup would turn the fleet's gate red
+ * while fencing nothing. Keyed on BOTH gate markers: GREEN_CHECKPOINT=1 alone is exported by hand
+ * to reproduce the gate's skip-set, PC_HEAVY_RELEASE_GATE=1 is set by nothing but the gate (WI-6140),
+ * and proc-guard reads the same pair as the gate's identity.
+ * @param {NodeJS.ProcessEnv} env
+ */
+function isReleaseGate(env) {
+  return env.PC_HEAVY_RELEASE_GATE === '1' && env.GREEN_CHECKPOINT === '1';
 }
 
 /** @param {NodeJS.ProcessEnv} env @returns {'testing-run' | 'admitted-upstream' | null} */

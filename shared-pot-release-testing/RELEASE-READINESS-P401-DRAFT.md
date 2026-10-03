@@ -113,8 +113,8 @@ Legend: 🟢 evidenced · 🟡 shipped with a named limitation · ⏩ post-GO by
 
 ### Post-GO (do not gate GO or 0.0.28 publication; `remaining-lanes#D-158` (3), `#D-117`, `#D-132`)
 | P-501 | Canary soak, hive-canary (`#D-041`) | ⏩ non-blocking | `#D-132`: no soak duration and no P-501 completion holds 0.0.28-alpha publication (supersedes `#D-128`). Observation may still run once 0.0.28 is on the canary. |
-| P-502 | Leg-G owner-freeze chaos drill | ⏩ | Needs P-517. Per `#D-132` it must not wait on a P-501 soak. A current-build rehearsal is staged on WI-10004688 (rehearsal only, not evidence). |
-| P-503 | Default hiveGit.mode decision | ⏩ | Post-GO. Per `#D-132` it must not wait on a P-501 soak either. |
+| P-502 | Leg-G owner-freeze chaos drill | ⏩ | `#D-155`: typed deps moved from [P-501, P-517] to [P-401, P-517]. Never a 0.0.28 publication dependency (`#D-132`/`#D-153`). A current-build rehearsal is staged on WI-10004688 (rehearsal only, never evidence, per `#D-152`). |
+| P-503 | Default hiveGit.mode decision | ⏩ | `#D-155`: blockedBy moved from [P-501] to [P-401]. Its "72h canary evidence" wording now reads "P-501 observation evidence exists, no minimum duration". |
 
 ## 3. The P-521 row — ⟦to be filled at signing⟧
 

@@ -129,7 +129,7 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
       }
     }
 
-    const signals = await collectToolErrorSignals(sql);
+    const signals = await collectToolErrorSignals(sql, { toolLatencyBudgets: SEED_LATENCY_BUDGETS });
     expect(Array.isArray(signals)).toBe(true);
     const keys = signals.map((s) => s.key);
     // the two caller modes split into distinct fingerprinted keys (P-012)…
@@ -174,8 +174,89 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     // fires despite the raised count bar. Counting wrapper errors yields 5/16
     // and crosses only the count bar; counting wrapper successes alone dilutes
     // the real rate below 50% and suppresses the signal.
-    const signals = await collectToolErrorSignals(sql, { structuralMinCount: 5 });
+    const signals = await collectToolErrorSignals(sql, {
+      structuralMinCount: 5,
+      toolLatencyBudgets: SEED_LATENCY_BUDGETS,
+    });
     const signal = signals.find((s) => s.key.startsWith('tools:invoke:structural'));
     expect(signal?.body).toContain('3× (75% of 4 calls)');
+  });
+});
+
+// A non-empty registry stand-in. The collector WARNS when the live registry yields no write
+// tools (a blind detector must be a logged fact), and these fixtures run without the tool
+// catalog loaded, so the cases above seed one inert write tool through the documented seam.
+const SEED_LATENCY_BUDGETS = new Map([['x:never-invoked-write', { timeoutSec: null, effect: 'write' }]]);
+
+describe('tool-latency-budget against real PG (WI-10005730)', () => {
+  const seedCalls = async (tool: string, durationsMs: number[], status = 'ok') => {
+    const sql = db.adminSql;
+    for (const duration of durationsMs) {
+      await sql`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+           status, duration_ms, invoked_at)
+        VALUES ('*', '', '', ${tool}, 'su', '', '', ${status}, ${duration}, now())`;
+    }
+  };
+  // 25 calls: 24 fast + 1 at `slow`. percentile_cont(0.95) sits at position 0.95×24 = 22.8
+  // (0-based), i.e. between the 23rd and 24th sorted values — both fast — so one outlier
+  // cannot move p95. That is the property that makes p95 (not max) the right statistic.
+  const tail = (fast: number, slow: number) => [...Array(24).fill(fast), slow];
+
+  it('flags only the write tool whose measured p95 crosses 80% of its budget', async () => {
+    const sql = db.adminSql;
+    await sql`DELETE FROM harness_shared.tool_invocations`;
+    await seedCalls('x:slow-write', Array(25).fill(55_000)); // p95 55s of 60s default ⇒ 92%
+    await seedCalls('x:fast-write', Array(25).fill(5_000)); // 8%
+    await seedCalls('x:slow-read', Array(25).fill(55_000)); // slow but read-only ⇒ never judged
+    await seedCalls('x:thin-write', Array(5).fill(59_000)); // too few samples
+    await seedCalls('x:declared-long-write', Array(25).fill(55_000)); // 55s of a 600s budget ⇒ 9%
+    await seedCalls('x:edge-write', Array(25).fill(48_000)); // exactly 80% ⇒ STRICT, quiet
+    await seedCalls('x:timeouts-write', Array(25).fill(60_000), 'timeout'); // aborted tail counts, ⇒ major
+
+    const budgets = new Map([
+      ['x:slow-write', { timeoutSec: null, effect: 'write' }],
+      ['x:fast-write', { timeoutSec: null, effect: 'write' }],
+      ['x:slow-read', { timeoutSec: null, effect: 'read' }],
+      ['x:thin-write', { timeoutSec: null, effect: 'write' }],
+      ['x:declared-long-write', { timeoutSec: 600, effect: 'write' }],
+      ['x:edge-write', { timeoutSec: null, effect: 'write' }],
+      ['x:timeouts-write', { timeoutSec: null, effect: 'write' }],
+    ]);
+    const signals = await collectToolErrorSignals(sql, { toolLatencyBudgets: budgets });
+    const latency = signals.filter((s) => s.findingClass === 'tool-latency-budget');
+    expect(latency.map((s) => s.key).sort()).toEqual([
+      'tool-latency-budget:x:slow-write',
+      'tool-latency-budget:x:timeouts-write',
+    ]);
+    const bySeverity = Object.fromEntries(latency.map((s) => [s.key, s.severity]));
+    expect(bySeverity['tool-latency-budget:x:slow-write']).toBe('minor'); // 92%: approaching
+    expect(bySeverity['tool-latency-budget:x:timeouts-write']).toBe('major'); // at budget: being aborted
+  });
+
+  it('a lone slow outlier among fast calls does not move p95 over the line', async () => {
+    const sql = db.adminSql;
+    await sql`DELETE FROM harness_shared.tool_invocations`;
+    await seedCalls('x:outlier-write', tail(2_000, 59_000));
+    const budgets = new Map([['x:outlier-write', { timeoutSec: null, effect: 'write' }]]);
+    const signals = await collectToolErrorSignals(sql, { toolLatencyBudgets: budgets });
+    expect(signals.filter((s) => s.findingClass === 'tool-latency-budget')).toEqual([]);
+  });
+
+  it('excludes marked dispatch-wrapper rows, like the rest of the tool-error sweep', async () => {
+    const sql = db.adminSql;
+    await sql`DELETE FROM harness_shared.tool_invocations`;
+    for (let i = 0; i < 25; i++) {
+      await sql`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+           status, duration_ms, invoked_at, metadata_json)
+        VALUES ('*', '', '', 'x:wrapped-write', 'su', '', '', 'ok', 58000, now(),
+                ${sql.json({ dispatchWrapper: true, dispatchedTool: 'x:inner' })})`;
+    }
+    const budgets = new Map([['x:wrapped-write', { timeoutSec: null, effect: 'write' }]]);
+    const signals = await collectToolErrorSignals(sql, { toolLatencyBudgets: budgets });
+    expect(signals.filter((s) => s.findingClass === 'tool-latency-budget')).toEqual([]);
   });
 });

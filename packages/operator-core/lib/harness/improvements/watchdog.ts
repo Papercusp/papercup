@@ -2156,6 +2156,17 @@ export function toolErrorSignalsFromRows(
  * tick scoped to workspace W no longer counts another workspace's errors, without
  * going dark on the unscoped traffic where most signal lives.
  */
+/**
+ * Live projected-tool registry → `{tool name → timeoutSec, effect}` for the tool-latency-budget
+ * check. Read from the registry the dispatcher itself resolves budgets from (never a hand-kept
+ * copy that could drift). Imported lazily so merely loading the watchdog does not pull the
+ * whole tool catalog into every consumer.
+ */
+async function loadProjectedToolLatencyBudgets(): Promise<Map<string, ToolLatencyBudget>> {
+  const { listAllProjectedTools } = await import('@papercusp/agent-mcp');
+  return toolLatencyBudgetsFromProjected(listAllProjectedTools());
+}
+
 export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}, workspaceId?: string): Promise<WatchdogSignal[]> {
   const windowHours = opts.toolErrorWindowHours ?? 24;
   const scopes = workspaceId ? [...new Set([workspaceId, '*', DEFAULT_COORD_WORKSPACE])] : null;

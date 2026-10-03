@@ -35,6 +35,7 @@ import {
   parseVerifiedProvenance,
   ostreeObjectIndex,
   rpmOwnedPaths,
+  signedBaseImage,
   VENDOR_MIN_AVAILABLE_PACKAGES,
   vendorShipsNothingNewer,
 } from "./bootc-image-release-request-cli";
@@ -88,7 +89,16 @@ const ostreeObjectsRecord = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const HEX = "9".repeat(64);
+// WI-10005711: the image digest IS the hash of its manifest, which carries buildah's base annotations.
+const BASE_HEX = "8".repeat(64);
+const imageManifest = (annotations: Record<string, string>) =>
+  JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json", annotations });
+const IMAGE_MANIFEST = imageManifest({
+  "org.opencontainers.image.base.name": WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  "org.opencontainers.image.base.digest": `sha256:${BASE_HEX}`,
+});
+const IMAGE_MANIFEST_B64 = Buffer.from(IMAGE_MANIFEST).toString("base64");
+const HEX = createHash("sha256").update(IMAGE_MANIFEST).digest("hex");
 const DIGEST = `sha256:${HEX}`;
 const REPO = "127.0.0.1:5096/papercusp/workspace-host";
 const TAG = "papercusp-workspace-host-aws-test";
@@ -292,7 +302,9 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function fixture(overrides: { sbomDigest?: string; containerfileDrift?: boolean } = {}) {
+  function fixture(
+    overrides: { sbomDigest?: string; containerfileDrift?: boolean; sbomManifest?: string; inputBaseSha256?: string } = {},
+  ) {
     const root = mkdtempSync(join(tmpdir(), "bootc-release-request-"));
     dirs.push(root);
     const repo = join(root, "repo");
@@ -323,7 +335,10 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
     writeFileSync(join(sc, "verify-sig.log"), cosignLog(DIGEST));
     writeFileSync(join(sc, "sbom.syft.json"), JSON.stringify({
       descriptor: { name: "syft", version: "1.30.0" },
-      source: { type: "image", metadata: { manifestDigest: overrides.sbomDigest ?? DIGEST, imageSize: 2_000_000_000 } },
+      source: {
+        type: "image",
+        metadata: { manifestDigest: overrides.sbomDigest ?? DIGEST, imageSize: 2_000_000_000, manifest: overrides.sbomManifest ?? IMAGE_MANIFEST_B64 },
+      },
       artifacts: [{ name: "bash" }, { name: "glibc" }, { name: "openssl-libs" }],
     }));
     writeFileSync(join(sc, "vulns.json"), JSON.stringify({
@@ -372,7 +387,7 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       bakeManifest: "out/bake-manifest.json",
       cosignPublicKey: "cosign.pub",
       publicationManifest: "publication.json",
-      baseImage: { architecture: "x86_64", sha256: "d".repeat(64) },
+      baseImage: { architecture: "x86_64", ...(overrides.inputBaseSha256 ? { sha256: overrides.inputBaseSha256 } : {}) },
       builder: { version: "latest" },
       publishedAt,
       aws: {
@@ -410,7 +425,7 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       const sc = join(f.root, "out", "supply-chain");
       writeFileSync(join(sc, "sbom.syft.json"), JSON.stringify({
         descriptor: { name: "syft", version: "1.30.0" },
-        source: { type: "image", metadata: { manifestDigest: DIGEST, imageSize: 2_000_000_000 } },
+        source: { type: "image", metadata: { manifestDigest: DIGEST, imageSize: 2_000_000_000, manifest: IMAGE_MANIFEST_B64 } },
         artifacts: [...vendorSbomArtifacts, { name: "bash" }],
       }));
       writeFileSync(join(sc, "vulns.json"), JSON.stringify({
@@ -501,6 +516,56 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
   it("refuses when the Containerfile moved since the bake's recorded revision", async () => {
     const f = fixture({ containerfileDrift: true });
     await expect(buildBootcImageArtifact({ inputFile: f.inputFile, repoRoot: f.repo, emit: "artifact" }, NOW)).rejects.toThrow(/differs from its blob/);
+  });
+
+  describe("base image digest is read from the signed image manifest (WI-10005711)", () => {
+    const build = (f: ReturnType<typeof fixture>) =>
+      buildBootcImageArtifact({ inputFile: f.inputFile, repoRoot: f.repo, emit: "artifact" }, NOW);
+
+    it("attests the base digest buildah recorded on the signed manifest", async () => {
+      const { artifact } = await build(fixture());
+      expect(artifact.buildManifest.baseImage).toEqual({
+        reference: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        architecture: "x86_64",
+        sha256: BASE_HEX,
+      });
+    });
+
+    it("refuses a hand-supplied baseImage.sha256, even one that matches", async () => {
+      await expect(build(fixture({ inputBaseSha256: BASE_HEX }))).rejects.toThrow(/baseImage\.sha256 must not be supplied/);
+    });
+
+    it("refuses an embedded manifest that does not hash to the signed digest", async () => {
+      const forged = Buffer.from(imageManifest({
+        "org.opencontainers.image.base.name": WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        "org.opencontainers.image.base.digest": `sha256:${"0".repeat(64)}`,
+      })).toString("base64");
+      await expect(build(fixture({ sbomManifest: forged }))).rejects.toThrow(/embedded image manifest hashes to .*not the signed digest/);
+    });
+
+    // Parser-level: the artifact fixture's digest is fixed to IMAGE_MANIFEST, so a manifest naming
+    // another base (or none) cannot also carry that digest; signedBaseImage is the seam that reads it.
+    const sbomWith = (manifest: string) => ({ source: { metadata: { manifest: Buffer.from(manifest).toString("base64") } } });
+    const digestOfManifest = (manifest: string) => `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+
+    it("returns the base reference and digest the manifest names, without the sha256: prefix", () => {
+      const other = imageManifest({
+        "org.opencontainers.image.base.name": "quay.io/fedora/fedora-bootc:42",
+        "org.opencontainers.image.base.digest": `sha256:${BASE_HEX}`,
+      });
+      expect(signedBaseImage(sbomWith(other), digestOfManifest(other))).toEqual({ reference: "quay.io/fedora/fedora-bootc:42", sha256: BASE_HEX });
+    });
+
+    it("reads nothing from an SBOM without an embedded manifest, or a manifest without base annotations", () => {
+      expect(signedBaseImage({ source: { metadata: {} } }, DIGEST)).toBeNull();
+      const bare = imageManifest({ "containers.bootc": "1" });
+      expect(signedBaseImage(sbomWith(bare), digestOfManifest(bare))).toBeNull();
+    });
+
+    it("refuses a malformed base digest annotation", () => {
+      const bad = imageManifest({ "org.opencontainers.image.base.name": WORKSPACE_HOST_BOOTC_BASE_IMAGE, "org.opencontainers.image.base.digest": "latest" });
+      expect(() => signedBaseImage(sbomWith(bad), digestOfManifest(bad))).toThrow(/must be a sha256 digest/);
+    });
   });
 
   it("refuses source verification when process admission is refused", async () => {
