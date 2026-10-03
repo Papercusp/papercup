@@ -82,6 +82,7 @@ interface Fakes {
   calls: {
     spawn: Array<{
       envelope: { env: Record<string, string>; greetingCmd: string; cwd: string };
+      writeMcpJson?: boolean;
       coordOwnerId?: string | null;
       label?: string | null;
     }>;
@@ -280,6 +281,7 @@ describe('dispatchConsultResponder — the fork leg', () => {
     expect(calls.spawn[0]!.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('EXACT TRANSCRIPT EVIDENCE: sess-1#1');
     expect(calls.spawn[0]!.envelope.env.BASE).toBe('1');
     expect(calls.spawn[0]!.envelope.cwd).toBe('/recorded/cwd');
+    expect(calls.spawn[0]!.writeMcpJson).toBe(true);
     expect(calls.spawn[0]!.coordOwnerId).toBe('su-answer-1');
     // Verification polls the ANSWERING identity — the pre-pin is what makes that
     // possible for a fork at all.

@@ -615,8 +615,9 @@ export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: objec
 }): Promise<any>;
 /**
  * Connect to the first reachable operator candidate. Later candidates are
- * used only for pre-dispatch transport failures, so authentication and HTTP
- * failures do not silently route a caller to another operator.
+ * used only for pre-dispatch transport failures, plus an opted-in HTTP 404
+ * from an implicit endpoint route; authenticated and other HTTP failures do
+ * not silently route a caller to another operator.
  *
  * @template T
  * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce

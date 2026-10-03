@@ -1335,6 +1335,10 @@ async function launchAnsweringSession(
       greetingCmd: cmd,
       cwd: target.cwd ?? envelope.cwd,
     },
+    // The envelope contains the superuser MCP door, but spawnHeadless only
+    // materializes it in the fork's cwd when explicitly enabled. The answer
+    // session must be able to call consult:reply from its first turn.
+    writeMcpJson: true,
     label: `consult-${operation} · ${answeringOwnerId.slice(0, 16)}`,
     logDir: join(papercuspPathForWorkspace(ctx.workspaceId), 'fleet-logs'),
     launchedBy: ctx.launchedBy ?? undefined,

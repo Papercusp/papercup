@@ -27,6 +27,7 @@ import {
   resolvePtoolOperatorBase,
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
+  canDispatchOnFallbackOperator,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -315,17 +316,21 @@ describe('ptool operator routing', () => {
     ]);
   });
 
-  it('pins named calls to their selected operator while catalog browsing may recover', () => {
+  it('keeps implicit fallback candidates available for named calls, while explicit URLs stay pinned', () => {
     const env = {
       PAPERCUSP_HONO_PORT: '3271',
       PAPERCUSP_OPERATOR_URL: 'http://localhost:3271',
     };
     expect(resolvePtoolInvocationCandidates({ tool: 'plans:get-spec-evidence' }, env))
-      .toEqual(['http://127.0.0.1:3271']);
+      .toEqual(['http://127.0.0.1:3271', 'http://127.0.0.1:3070']);
     expect(resolvePtoolInvocationCandidates({ list: true }, env))
       .toEqual(['http://127.0.0.1:3271', 'http://127.0.0.1:3070']);
     expect(resolvePtoolInvocationCandidates({ tool: 'plans:get-spec-evidence', url: 'http://127.0.0.1:3170' }, env))
       .toEqual(['http://127.0.0.1:3170']);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: true } }, true)).toBe(true);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
+    expect(canDispatchOnFallbackOperator({}, true)).toBe(false);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: true } }, false)).toBe(true);
   });
 
   it('does not add a fallback for an explicit URL or the proxy-backed canonical host', () => {
@@ -2022,6 +2027,40 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
       {},
       { primaryAttemptOptions: { maxAttempts: 1 }, sleep: async () => {} },
     )).rejects.toBe(authError);
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers an implicit named call from a pre-dispatch HTTP 404, leaving dispatch safety to tool metadata', async () => {
+    const primaryError = Object.assign(new Error('POST /api/mcp returned 404'), { code: 404 });
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn().mockRejectedValueOnce(primaryError).mockResolvedValueOnce(client);
+    const onFallback = vi.fn();
+
+    await expect(connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3880', 'http://127.0.0.1:3070'],
+      {},
+      { allowHttpNotFoundFallback: true, primaryAttemptOptions: { maxAttempts: 1 }, onFallback },
+    )).resolves.toEqual({ client, operatorUrl: 'http://127.0.0.1:3070' });
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:3880',
+      'http://127.0.0.1:3070',
+    ]);
+    expect(onFallback).toHaveBeenCalledWith('http://127.0.0.1:3070', primaryError);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: true } }, true)).toBe(true);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
+  });
+
+  it('does not route an implicit HTTP 404 to a fallback unless the caller enabled the safe pre-dispatch recovery', async () => {
+    const notFound = Object.assign(new Error('POST /api/mcp returned 404'), { code: 404 });
+    const connectOnce = vi.fn().mockRejectedValue(notFound);
+
+    await expect(connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3880', 'http://127.0.0.1:3070'],
+      {},
+      { primaryAttemptOptions: { maxAttempts: 1 } },
+    )).rejects.toBe(notFound);
     expect(connectOnce).toHaveBeenCalledTimes(1);
   });
 

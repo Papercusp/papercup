@@ -97,6 +97,47 @@ describe('decideEgress', () => {
       });
     });
 
+    it('denies user-systemd probes when bwrap masks the host runtime directory', async () => {
+      const command = 'systemctl --user list-units --type=service --state=running --no-legend | wc -l';
+      const result = await decideEgress({
+        toolName: 'Bash',
+        toolInput: { command },
+        env: ENV,
+        fetchImpl: restricted(),
+        sandbox: (c) => `'/usr/bin/bwrap' '--dev-bind' '/' '/' '--unshare-net' '--tmpfs' '/run/user/1000' '--' '/bin/bash' '-c' ${JSON.stringify(c)}`,
+      });
+
+      expect(result).toMatchObject({ decision: 'deny' });
+      if (result.decision === 'deny') {
+        expect(result.reason).toContain('masks `/run/user/<uid>`');
+        expect(result.reason).toContain('zero count would be misleading');
+        expect(result.reason).toContain('ps -eo pid,user,unit,args');
+        expect(result.reason).toContain('/proc/<pid>/cgroup');
+      }
+    });
+
+    it('keeps user-systemd probes available with the unshare fallback, and ignores quoted mentions', async () => {
+      const fetchImpl = restricted();
+      const unshare = (command: string) => `'/usr/bin/unshare' '--user' '--map-current-user' '--net' '--' '/bin/bash' '-c' ${JSON.stringify(command)}`;
+      const query = await decideEgress({
+        toolName: 'Bash',
+        toolInput: { command: 'systemctl --user list-units --no-legend' },
+        env: ENV,
+        fetchImpl,
+        sandbox: unshare,
+      });
+      expect(query.decision).toBe('rewrite');
+
+      const quoted = await decideEgress({
+        toolName: 'Bash',
+        toolInput: { command: `printf '%s\\n' 'systemctl --user list-units'` },
+        env: ENV,
+        fetchImpl,
+        sandbox: (command) => `'/usr/bin/bwrap' '--unshare-net' '--tmpfs' '/run/user/1000' '--' '/bin/bash' '-c' ${JSON.stringify(command)}`,
+      });
+      expect(quoted.decision).toBe('rewrite');
+    });
+
     it('is denied Bash when no network sandbox exists on the host', async () => {
       const result = await decideEgress({ toolName: 'Bash', toolInput: { command: 'ls' }, env: ENV, fetchImpl: restricted(), sandbox: () => null });
       expect(result).toMatchObject({ decision: 'deny' });

@@ -97,6 +97,30 @@ function isForeignMcp(toolName) {
 }
 
 /**
+ * A restricted bwrap shell mounts the caller's `/run/user/<uid>` as tmpfs so a
+ * command cannot route around the network boundary through the host user bus.
+ * Recognize direct `systemctl --user` command forms so they fail before an
+ * empty/piped result can be mistaken for the host's unit state. This is a
+ * deliberately command-boundary matcher: mentioning the command in quoted text
+ * is not an invocation.
+ * @param {string} command
+ */
+function invokesUserSystemctl(command) {
+  return /(?:^|[\n;&|][ \t]*|\$\(|<\(|`)(?:(?:if|then|else|elif|do|time|exec|command|sudo|env)[ \t]+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+[ \t]+)*systemctl(?:[ \t]+--[A-Za-z0-9][A-Za-z0-9_-]*(?:=\S+)?)*[ \t]+--user(?:[ \t]|$)/m.test(command);
+}
+
+/**
+ * True only for the bwrap form that hides the current user's runtime directory.
+ * The `unshare --net` fallback leaves filesystem mounts alone, so user-manager
+ * queries remain possible there when the bus is available.
+ * @param {string} wrappedCommand
+ */
+function masksUserRuntime(wrappedCommand) {
+  const argv = wrappedCommand.split(" '--' ", 1)[0];
+  return /(?:^| )'--tmpfs' '\/run\/user\/[^']+'(?: |$)/.test(argv);
+}
+
+/**
  * Files the agent CLI itself executes or loads tools from. A restricted session
  * that could write one would run code (a hook, an MCP server, a git hook run by
  * git-sync) outside the shell sandbox.
@@ -244,6 +268,15 @@ export async function decideEgress({ toolName, toolInput, cwd, env = process.env
       : `the operator could not confirm this session is unrestricted (${detail}), so it is treated as restricted`;
   if (toolName === 'Bash' && typeof input.command === 'string') {
     const wrapped = (sandbox ?? ((command) => sandboxedBashCommand(command, { env, cwd: where })))(input.command);
+    if (wrapped && invokesUserSystemctl(input.command) && masksUserRuntime(wrapped)) {
+      return {
+        decision: 'deny',
+        reason:
+          'This restricted shell masks `/run/user/<uid>` to prevent host-side egress, including the user systemd/D-Bus sockets. ' +
+          '`systemctl --user` cannot report host unit state here, so an empty list or zero count would be misleading. ' +
+          'For process liveness, inspect `ps -eo pid,user,unit,args` or `/proc/<pid>/cgroup`; use Papercusp service tools for registered units.',
+      };
+    }
     if (wrapped) return { decision: 'rewrite', updatedInput: { ...input, command: wrapped } };
     return {
       decision: 'deny',

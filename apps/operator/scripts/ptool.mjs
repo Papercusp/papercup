@@ -137,8 +137,17 @@ export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = 
  * callers can then explicitly pin that host with --url for a subsequent call.
  */
 export function resolvePtoolInvocationCandidates(args = {}, env = process.env) {
-  const candidates = resolvePtoolOperatorCandidates(env, args.url);
-  return args.tool ? candidates.slice(0, 1) : candidates;
+  // Keep the implicit self-host fallback available for named calls too. A
+  // candidate is only selected when the initial MCP handshake cannot reach
+  // the primary route; main() then requires readOnlyHint before dispatching a
+  // call on a different operator. Explicit --url remains a single pinned
+  // candidate.
+  return resolvePtoolOperatorCandidates(env, args.url);
+}
+
+/** A changed operator is safe for dispatch only when the catalog marks the tool read-only. */
+export function canDispatchOnFallbackOperator(tool, fallbackUsed) {
+  return !fallbackUsed || tool?.annotations?.readOnlyHint === true;
 }
 
 const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
@@ -2655,8 +2664,9 @@ export async function connectWithLocalRetry(
 
 /**
  * Connect to the first reachable operator candidate. Later candidates are
- * used only for pre-dispatch transport failures, so authentication and HTTP
- * failures do not silently route a caller to another operator.
+ * used only for pre-dispatch transport failures, plus an opted-in HTTP 404
+ * from an implicit endpoint route; authenticated and other HTTP failures do
+ * not silently route a caller to another operator.
  *
  * @template T
  * @param {(url: string, scope: object, options?: {timeoutMs: number}) => Promise<T>} connectOnce
@@ -2672,6 +2682,7 @@ export async function connectWithOperatorCandidates(
   {
     primaryAttemptOptions = {},
     onFallback = null,
+    allowHttpNotFoundFallback = false,
     ...retryOptions
   } = {},
 ) {
@@ -2711,8 +2722,14 @@ export async function connectWithOperatorCandidates(
       lastError = error;
       const explicitHttpFailure = isExplicitHttpConnectFailure(error)
         && !isRetryableLocalHttpConnectFailure(error);
+      const isHttpNotFound = connectHttpStatusOf(error) === 404;
       const timedOutLocalAttempt = /^local operator connection attempt timed out/.test(errorDetail(error));
-      if (index === candidates.length - 1 || explicitHttpFailure || (!isTransportFailure(error) && !timedOutLocalAttempt)) {
+      const permittedNotFoundFallback = allowHttpNotFoundFallback && isHttpNotFound;
+      if (
+        index === candidates.length - 1 ||
+        (explicitHttpFailure && !permittedNotFoundFallback) ||
+        (!explicitHttpFailure && !isTransportFailure(error) && !timedOutLocalAttempt)
+      ) {
         throw error;
       }
     }
@@ -3351,6 +3368,9 @@ async function main() {
 
   let operatorUrl = args.url || OPERATOR_URL;
   let operatorCandidates = resolvePtoolInvocationCandidates(args, process.env);
+  const initiallySelectedOperatorUrl = operatorCandidates[0];
+  let operatorFallbackUsed = false;
+  let operatorFallbackUrl = null;
   const workspace = resolveWorkspaceScope({ workspace: args.workspace, allWorkspaces: args.allWorkspaces });
   const harness = resolveHarnessScope({
     harness: args.harness,
@@ -3372,6 +3392,7 @@ async function main() {
     const connectionScope = tokenFile ? { ...scope, tokenFile } : scope;
     const connected = await connectWithOperatorCandidates(connect, candidates, connectionScope, {
       ...retryOptions,
+      allowHttpNotFoundFallback: !args.url && candidates.length > 1,
       rediscover,
       primaryAttemptOptions: candidates.length > 1 ? { maxAttempts: 1 } : {},
       onRebase: (freshBase) => {
@@ -3385,6 +3406,10 @@ async function main() {
       },
     });
     operatorUrl = connected.operatorUrl;
+    if (connected.operatorUrl !== initiallySelectedOperatorUrl) {
+      operatorFallbackUsed = true;
+      operatorFallbackUrl = connected.operatorUrl;
+    }
     // A reconnect should prefer the last known-good route instead of spending
     // another direct attempt on the same stale self-port.
     operatorCandidates = [
@@ -3420,6 +3445,14 @@ async function main() {
       tools = discovery.tools;
     } catch (error) {
       if (canDispatchWithoutCatalog(args.tool, inputKind)) {
+        if (operatorFallbackUsed) {
+          console.error(
+            `ptool: refusing to dispatch ${args.tool} on fallback operator ${operatorFallbackUrl} ` +
+              'because its read-only metadata could not be verified. Pass --url=<intended operator> to pin the call.',
+          );
+          process.exitCode = 1;
+          return;
+        }
         const callArgs = mergeDispatchProjection(inputArgs, projection);
         const idempotencyKey = args.idempotencyKey || randomUUID();
         console.error(formatToolCatalogBypass(args.tool, error));
@@ -3468,6 +3501,15 @@ async function main() {
     if (!tool) {
       console.error(`ptool: no tool named "${toolName}". Try \`ptool --list ${serviceOf(toolName)}\`.`);
       process.exit(1);
+    }
+    if (!canDispatchOnFallbackOperator(tool, operatorFallbackUsed)) {
+      console.error(
+        `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
+          `because the call began at ${initiallySelectedOperatorUrl} and this tool is not marked read-only. ` +
+          'Pass --url=<intended operator> to pin the call.',
+      );
+      process.exitCode = 1;
+      return;
     }
     if (scriptKind != null && toolName !== 'code:run') {
       console.error('ptool: --script/--script-file can only be used with code:run');
