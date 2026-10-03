@@ -7,7 +7,7 @@ import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sideca
 import { resolveLspDaemonSocketPath, reapOrphanedLspDaemonSockets } from './lsp-daemon-socket.ts';
 import { resolveLspDaemonDispatchContext, type LspDaemonRequest } from './lsp-daemon-protocol.ts';
 import { runLspAdmission } from './lsp-admission.ts';
-import { lspDaemonFacade } from './lsp-facade.ts';
+import { lspDaemonFacade } from './lsp-daemon-facade.ts';
 import { activeWorkspaceId } from '../workspace-registry.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 

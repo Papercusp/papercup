@@ -41,7 +41,7 @@ import {
   lspFacadeOpSpec,
   lspHealth,
   type LspFacadeOp,
-} from './lsp-facade.ts';
+} from './lsp-daemon-facade.ts';
 import { DEFAULT_RESOURCE_BUDGET, isTrustworthyEmpty } from './contracts.ts';
 import {
   LSP_VENDOR_DIR,
