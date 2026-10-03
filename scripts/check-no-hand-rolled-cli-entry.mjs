@@ -54,7 +54,6 @@ const SKIP_DIRS = new Set([
  */
 export const ALLOW_COUNTS = new Map([
   ['apps/operator/bin/serve.ts|path-to-file-url', 2],
-  ['apps/operator/bin/spawner-sidecar.ts|path-to-file-url', 2],
   ['apps/operator/bin/substrate-sidecar.ts|path-to-file-url', 2],
   ['apps/operator/scripts/hooks/cc/pretooluse-schedule-wakeup-provenance.mjs|file-template', 1],
   ['apps/operator/scripts/onboard-launcher.mjs|file-url-to-path', 1],
