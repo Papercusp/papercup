@@ -1957,6 +1957,21 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(readback?.selection.bindingIds).toEqual([]);
   });
 
+  it('pins an empty evidence population when a clause has no bindings', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [],
+      harness: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+    });
+    const recipe = result.scorecardDraft.rerunRecipe;
+
+    // Empty means "the grade saw no bindings", not "select every binding added later".
+    expect(recipe.args.bindingIds).toEqual([]);
+    expect(recipe.selection.bindingIds).toEqual([]);
+    expect(evaluatorArgsSchema.parse(recipe.args).bindingIds).toEqual([]);
+  });
+
   function recipeFor(classRef: 'plan-class-feature-ship' | 'plan-class-bugfix' = 'plan-class-feature-ship') {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
