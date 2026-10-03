@@ -1,4 +1,74 @@
 {
+  "nativeOwnershipCpuObserver": {
+    "status": "Exact native ownership observer qualified on two retained-R6 CPU processes; historical heap cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-cpu-v3",
+      "artifact": "completion.json",
+      "bytes": 21552,
+      "sha256": "543c8946e6e0b394ffdd74045eace2e2718d0e37de101e7690efdd0f0b7cbac0"
+    },
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-preparation-v3",
+      "artifact": "cpu-assessment.json",
+      "bytes": 5482,
+      "sha256": "499f56b63e7597203d7eab0993aff339224a76fccb2ea765b3c252622545bd35"
+    },
+    "task": "0mus838ec1yqlqmcu6x",
+    "actualTerminal": {
+      "status": "completed",
+      "exitCode": 0
+    },
+    "reuse": "Existing small Mul fixture, governed process bridge, GDB event transport and version-matched retained native binary. Extended its reader and opt-in observer.",
+    "sourceQualification": {
+      "version": "1.24.3",
+      "upstreamCommit": "3a728b75062256951b6e19ce718907cf1a1d4cf0",
+      "retainedBackendAndBindingTypescriptByteEqual": true,
+      "bindingBuildId": "88762a8393dbfbd6d8f6ba78affbe36a8b3c1fe7",
+      "binaryBuildReproducibilityClaimed": false
+    },
+    "observerRepair": {
+      "v1": "Named destructor breakpoint hit D0 while labelling D2; diagnostic only",
+      "v2": "Exact D2 never hit; census incomplete and finite driver stopped before CUDA",
+      "v3": "Exact-address D0 observer with measured map-relative entry-PC guard qualifies both CPU cells"
+    },
+    "controls": [
+      {
+        "cell": "worker-first",
+        "processId": 2229086,
+        "nativeCalls": 7,
+        "singletonInitializerNativeThreadId": 2229593,
+        "complete": true
+      },
+      {
+        "cell": "parent-first-warning",
+        "processId": 2230710,
+        "nativeCalls": 10,
+        "singletonInitializerNativeThreadId": 2230710,
+        "complete": true
+      }
+    ],
+    "observed": "In both observed CPU processes, per-worker session/D0 and N-API instance cleanup return before one process-wide singleton destructor on the main LWP. Parent-warning first initializer and worker-first initializer differ as explicitly observed.",
+    "verification": {
+      "rawArtifactPinsVerified": 18,
+      "canonicalTestRunIds": [
+        20675280
+      ],
+      "passed": 2,
+      "failed": 0,
+      "excludedByNameFilter": 34,
+      "scope": "Only new ownership reader guards. Old positive controls and completed model probes were not replayed.",
+      "scopedCompilerNamedFiles": 2,
+      "scopedCompilerErrors": 0
+    },
+    "embeddingModelInferencePerformed": false,
+    "cudaCells": 0,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "next": "Prepare a finite native/instrumented CUDA observer comparison using qualified exact-symbol lifetime boundaries; keep all historical controls and heap defect open."
+  },
   "nativeLifecycleCapture": {
     "status": "Bounded retained-runtime lifecycle observation completed; historical heap corruption remains unresolved",
     "workItem": "WI-10005599",
