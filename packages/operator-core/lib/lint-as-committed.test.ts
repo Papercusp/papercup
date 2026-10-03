@@ -119,7 +119,7 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
         plugins?: Array<{
           name: string;
           enforce?: string;
-          resolveId?: (id: string, importer?: string) => string | null;
+          resolveId?: (this: unknown, id: string, importer?: string) => string | null | { id: string } | Promise<string | null | { id: string }>;
         }>;
       };
     };
@@ -147,6 +147,25 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       expect(normalizedVirtualStyleId).toBe(`/@fs${virtualStyleId}`);
       expect(normalizer?.resolveId?.(`/@fs${virtualStyleId}`)).toBe(`/@fs${virtualStyleId}`);
       expect(normalizeFilename(normalizedVirtualStyleId?.split('?', 1)[0] ?? '', cloneRootUrl)).toBe(mainComponentId);
+
+      const sharedScript = realpathSync(resolve(dirname(sharedComponent), '../components-internals/SidebarPersistState.ts'));
+      const delegatedResolutions: Array<{ id: string; importer: string; options: { skipSelf: boolean } }> = [];
+      const resolvedScript = await normalizer?.resolveId?.call(
+        {
+          resolve: async (id: string, importer: string, options: { skipSelf: boolean }) => {
+            delegatedResolutions.push({ id, importer, options });
+            return { id: sharedScript };
+          },
+        },
+        '../components-internals/SidebarPersistState',
+        `${sharedComponent}?astro&type=script&index=0&lang.ts`,
+      );
+      expect(resolvedScript).toEqual({ id: sharedScript });
+      expect(delegatedResolutions).toEqual([{
+        id: '../components-internals/SidebarPersistState',
+        importer: sharedComponent,
+        options: { skipSelf: true },
+      }]);
 
       const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
       const sharedCommon = realpathSync(resolve(dirname(sharedRoute), '../common.astro'));
