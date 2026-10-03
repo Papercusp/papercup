@@ -25,6 +25,49 @@
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
   "spawnerEntryComparison": {
+    "harnessScopedLoadedBuildBaseline": {
+      "workItem": "WI-10005776",
+      "status": "supporting-partial-live-proof-bound-parent-acceptance-open",
+      "purpose": "New necessary harness-scoped acceptance window, not replay or reattribution of completed WI-10005751.",
+      "raw": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r2-2026-10-03.json",
+        "bytes": 90667,
+        "sha256": "815683d4ead0586284e6589759e368201d29218c3d8ffdc82aee76ab72966495",
+        "startedAt": "2026-10-03T02:25:08.807Z",
+        "endedAt": "2026-10-03T02:25:16.932Z"
+      },
+      "qualification": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r2-qualification-2026-10-03.json",
+        "bytes": 5707,
+        "sha256": "9d7fa375bf61c5d974071f6b22ac6f0376d29fd9f00eb43f8687c1cb680d8d4e"
+      },
+      "testRun": 20610426,
+      "ledgerHarness": "papercusp",
+      "ledgerWorkspace": "papercusp-workspace",
+      "ledgerTestLayer": "integration",
+      "ledgerScope": "Local-dirty execution with explicit PAPERCUSP_TEST_RUN_HARNESS=papercusp; named test clean and stamped at 9430f04e7a72, eight named source paths stable, full imported graph unknown.",
+      "specBinding": 23099,
+      "bindingFingerprint": "4b9bd085d3e3a606e9aaa18e5d74bd2aa7aa79dfa3226cf986e3e86b7a508f61",
+      "bindingDisposition": "Append-only operational/live supporting evidence at P011 revision 2. No older binding superseded; L3/L4 and oracleIndependent remain false.",
+      "identity": {
+        "mainPid": 874325,
+        "mainStartTicks": "4121617",
+        "spawnerPid": 1030026,
+        "spawnerStartTicks": "4146224",
+        "expectedMainHealthSha": "ea48489b8d",
+        "expectedSiblingBakedShaReadFromDisk": "ea48489b8d",
+        "advertisedSpawnerSha": "ea48489b8d",
+        "source": "PID-bound loaded server cancellation capability",
+        "serverGeneration": "53b56bec-2faa-4f49-b20c-2688e69004dc",
+        "connectionId": "94412751-6aaf-4a18-b131-ac0c033234e9",
+        "siblingDiskSha256": "ce0377ab0e2c2e42e6042794b0cd86c9262e2189ba16dc9dc348269b507b41a4",
+        "diskIsLoadedProof": false
+      },
+      "coverage": "Focused maintained integration test 1PASS/12filteredSKIP; nine counter samples, three ambient idle/ordinary windows and 24 read requests.",
+      "cleanup": "Inspector closed; main/counter identities preserved. Shared staging lease and raw/qualification file locks released.",
+      "preservedProof": "Original R1 raw be2f3fad, qualification cda3fc14, NULL-harness run20609442 and completed WI-10005751 stay unchanged. Existing binding23004 and all older source dispositions remain separate.",
+      "scope": "Loaded identity and harness-scoped binding verified only for this new window. No matched live counterfactual, retained/native ownership, historical identity or recovery, full graph, parent clause fulfillment, independent acceptance or shipment."
+    },
     "loadedBuildIdentityGuards": {
       "workItem": "WI-10005751",
       "status": "source-unit-verified-live-acceptance-open",
