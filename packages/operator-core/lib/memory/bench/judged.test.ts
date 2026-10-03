@@ -166,6 +166,68 @@ describe('blind label collection through the injected stateless transport', () =
       expect(noCalls).not.toHaveBeenCalled();
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
+  it('recovers unchanged prose judges through an interrupted memory expansion without new prose calls', async () => {
+    const f = fixture(2);
+    try {
+      const firstSnapshot = smallerMemorySnapshot(f, 1, 'first-snapshot');
+      const original = path.join(f.root, 'original'), partial = path.join(f.root, 'partial'), final = path.join(f.root, 'final');
+      const first = await collectIndependentCohort({ snapshot: firstSnapshot, out: original, llm: f.llm, targetsPerPartition: 'all' });
+      const originalFiles = fs.readdirSync(original).map(name => ({ name, bytes: fs.readFileSync(path.join(original, name)) }));
+      let freshJudges = 0;
+      const paused: LlmCallFn = async opts => {
+        if (JSON.parse(opts.messages[0].content).questions && ++freshJudges === 2) throw new Error('fixture expansion interrupted');
+        return f.llm(opts);
+      };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: partial, llm: paused,
+        targetsPerPartition: 'all', reuseCallsFrom: original, reuseSnapshotExpansion: true }))
+        .rejects.toThrow('fixture expansion interrupted');
+      expect(fs.readdirSync(partial).some(name => name.startsWith('prose-'))).toBe(false);
+      const calls: unknown[] = [];
+      const llm: LlmCallFn = async opts => {
+        calls.push(JSON.parse(opts.messages[0].content));
+        return f.llm(opts);
+      };
+      const result = await collectIndependentCohort({ snapshot: f.snapshot, out: final, llm,
+        targetsPerPartition: 'all', reuseCallsFrom: partial, reuseSnapshotExpansion: true });
+      expect(calls).toHaveLength(1); // Only the interrupted second memory judge, no authors or prose.
+      for (const pass of [1, 2]) {
+        const before = JSON.parse(fs.readFileSync(path.join(original, `prose-judge-${pass}-pass.json`), 'utf8'));
+        const after = JSON.parse(fs.readFileSync(path.join(final, `prose-judge-${pass}-pass.json`), 'utf8'));
+        expect(after.votes).toEqual(before.votes);
+        expect(after.calls.map((c: { invocationId: string }) => c.invocationId))
+          .toEqual(before.calls.map((c: { invocationId: string }) => c.invocationId));
+      }
+      expect(JSON.parse(fs.readFileSync(result.labels.path, 'utf8')).prose)
+        .toEqual(JSON.parse(fs.readFileSync(first.labels.path, 'utf8')).prose);
+      for (const { name, bytes } of originalFiles) expect(fs.readFileSync(path.join(original, name))).toEqual(bytes);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('refuses a changed judge contract in a partial donor ancestor before generating', async () => {
+    const f = fixture();
+    try {
+      const original = path.join(f.root, 'original'), partial = path.join(f.root, 'partial');
+      await collectIndependentCohort({ snapshot: f.snapshot, out: original, llm: f.llm, targetsPerPartition: 1 });
+      const identityFile = path.join(original, 'identity.json');
+      const ancestor = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
+      ancestor.identity.contract.judge += ' altered';
+      ancestor.identityHash = hashJson(ancestor.identity);
+      fs.writeFileSync(identityFile, JSON.stringify(ancestor));
+      // Authors-only recovery is permitted across judge-contract changes;
+      // exact-call recovery must not widen that permission at a later hop.
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: partial,
+        llm: async () => { throw new Error('fixture pause'); }, reuseAuthorsFrom: original, targetsPerPartition: 1 }))
+        .rejects.toThrow('fixture pause');
+      const file = path.join(partial, 'identity.json'), saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      saved.identity.callReuse = saved.identity.authorReuse;
+      saved.identityHash = hashJson(saved.identity);
+      fs.writeFileSync(file, JSON.stringify(saved));
+      // No paid call is allowed while testing the missing-judge ancestry branch.
+      const llm: LlmCallFn = vi.fn(async () => { throw new Error('unexpected generation'); });
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'final'),
+        llm, reuseCallsFrom: partial, targetsPerPartition: 1 })).rejects.toThrow('ancestor judge contract');
+      expect(llm).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
   it('reauthors only a source whose prompt grows and does not reuse that changed corpus judges', async () => {
     const f = fixture();
     try {

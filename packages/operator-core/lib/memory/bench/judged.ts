@@ -740,16 +740,19 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       let current = donor, target = origin;
       const seen = new Set<string>(), references = [], identities = new Set<string>();
       for (;;) {
+        if (!isAuthor && hashJson(current.saved.identity.contract) !== hashJson(BLIND_COHORT_CONTRACT)) {
+          throw new Error('invalid exact-call recovery ancestor judge contract');
+        }
         if (!reusable(current)) throw new Error('invalid snapshot expansion recovery: changed ancestor call inputs');
         if (identities.has(current.reference.identity.path) || identities.size >= 64) throw new Error('cyclic or excessive recovery identity chain');
         identities.add(current.reference.identity.path);
         const directory = path.dirname(current.reference.identity.path);
         if (path.dirname(target.path) !== directory) {
-          // A partial donor may not yet have reached the prose author phase.
-          // Follow its hash-pinned author ancestry, never a guessed file path
-          // or judge ancestry with a different source/question population.
-          const parentRef = current.saved.identity.authorReuse;
-          if (!reuseAllCalls || !isAuthor || !parentRef) throw new Error('invalid authors-only raw reference path');
+          // A partial donor may not yet have reached unchanged prose calls.
+          // Judge reuse follows exact-call ancestry, subject to the full
+          // contract and unchanged source/question population at every hop.
+          const parentRef = current.saved.identity[isAuthor ? 'authorReuse' : 'callReuse'];
+          if (!reuseAllCalls || !parentRef) throw new Error('invalid authors-only raw reference path');
           const parent = await readAuthorIdentity(parentRef.identity.path, parentRef.identity);
           if (parent.reference.identityHash !== parentRef.identityHash) throw new Error('invalid authors-only parent identity');
           current = parent; continue;
@@ -793,17 +796,21 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       const saved = await readLocal(file); validatePayload(saved); return saved;
     }
     let oldAuthorFile = reuseRoot && mayReuseDonor && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, `${name}.json`) : undefined;
-    if (oldAuthorFile && !fs.existsSync(oldAuthorFile) && reuseAllCalls && isAuthor) {
-      let parentRef = donor?.saved.identity.authorReuse;
+    if (oldAuthorFile && !fs.existsSync(oldAuthorFile) && reuseAllCalls) {
+      const ancestryKey = isAuthor ? 'authorReuse' : 'callReuse';
+      let parentRef = donor?.saved.identity[ancestryKey];
       const identities = new Set<string>();
       while (parentRef) {
         if (identities.has(parentRef.identity.path) || identities.size >= 64) throw new Error('cyclic or excessive recovery identity chain');
         identities.add(parentRef.identity.path);
         const parent = await readAuthorIdentity(parentRef.identity.path, parentRef.identity);
         if (parent.reference.identityHash !== parentRef.identityHash) throw new Error('invalid authors-only parent identity');
+        if (!isAuthor && hashJson(parent.saved.identity.contract) !== hashJson(BLIND_COHORT_CONTRACT)) {
+          throw new Error('invalid exact-call recovery ancestor judge contract');
+        }
         const candidate = path.join(path.dirname(parent.reference.identity.path), `${name}.json`);
         if (reusable(parent) && fs.existsSync(candidate)) { oldAuthorFile = candidate; break; }
-        parentRef = parent.saved.identity.authorReuse;
+        parentRef = parent.saved.identity[ancestryKey];
       }
     }
     let rejectedDonor: { origin: Awaited<ReturnType<typeof fingerprintFile>>; saved: any } | undefined;
