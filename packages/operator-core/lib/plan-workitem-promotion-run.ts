@@ -43,6 +43,7 @@ import {
   type WorkItemDesignStatus,
 } from './work-items';
 import { upsertConditionWorkItem } from './coord/condition-upsert';
+import { resolvePlanPromotionGoal, stampPromotedGoal } from './goals/provenance-stamp';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import {
   findConvertedWorkItemByStamp,
@@ -93,6 +94,13 @@ export interface PromotePlanResult {
       workItemId: string;
     }
   >;
+  /**
+   * WI-10005696: the goal this promotion attributed its lanes to (`goalId`), how many rows
+   * actually gained a `work_items.goal_id` (`stamped` — a never-clobber re-run stamps 0), and
+   * any per-row stamp failures (`errors`, fail-soft but never silent). Omitted when the
+   * promotion served no goal and nothing failed — the common non-goal case.
+   */
+  goalStamp?: { goalId: string | null; stamped: number; errors: string[] };
   /** true when the flag is OFF — promotion was a no-op */
   flagOff?: boolean;
   /**
@@ -699,6 +707,32 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     };
   };
   let promoted = 0;
+  /**
+   * WI-10005696: stamp every minted OR adopted lane with the goal this promotion serves, so a
+   * goal-fenced drain claim spec (`goal` matches positively — a NULL row is invisible) sees the
+   * work its own plan just created. Resolved lazily ONCE per call (plan goal, else the
+   * promoter's session goal — see `resolvePlanPromotionGoal`), and fail-soft per row: a
+   * promotion that succeeded must not be failed for lack of provenance, but the failure is
+   * RECORDED on the result (`goalStamp.errors`) instead of swallowed (EI-20075667133396690 —
+   * an empty catch made a stamp that THREW indistinguishable from one that declined).
+   */
+  const goalStamp = { goalId: null as string | null, stamped: 0, errors: [] as string[] };
+  let goalIdPending: Promise<string | null> | undefined;
+  const stampPromotedLaneGoal = async (workItemId: string, harness: string | null | undefined): Promise<void> => {
+    try {
+      goalIdPending ??= resolvePlanPromotionGoal({
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        planSlug: opts.planSlug,
+        ownerId: opts.createdBy,
+      });
+      const goalId = await goalIdPending;
+      goalStamp.goalId = goalId;
+      if (await stampPromotedGoal({ id: workItemId, harness }, opts.workspaceId, goalId)) goalStamp.stamped++;
+    } catch (err) {
+      goalStamp.errors.push(`${workItemId}:${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   const laneGateFailures: NonNullable<PromotePlanResult['laneGateFailures']> = [];
   /**
    * P-006 PASS 1 — mint every item first, recording `planItemId → workItemId`.
@@ -785,6 +819,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     // the created row's own `wi.harness` for exactly that reason.
     const wi = (await getWorkItem(minted.id, spec.harness)) ?? (await getWorkItem(minted.id));
     const winnerHarness = wi?.harness ?? spec.harness;
+    await stampPromotedLaneGoal(minted.id, winnerHarness);
     await linkWorkItem(minted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, itemId) }, IMPLEMENTS_REL, {
       harness: winnerHarness ?? undefined,
       by: opts.createdBy,
@@ -908,7 +943,8 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
       newlyPromotedPlanItemIds.add(item.id);
     }
     const wi = (await getWorkItem(adopted.id, spec.harness)) ?? (await getWorkItem(adopted.id));
-    await linkWorkItem(adopted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) }, IMPLEMENTS_REL, {
+    await stampPromotedLaneGoal(adopted.id, wi?.harness ?? spec.harness);
+    await linkWorkItem(adopted.id,{ kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) }, IMPLEMENTS_REL, {
       harness: wi?.harness ?? spec.harness,
       by: opts.createdBy,
     });
@@ -960,6 +996,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     specQuality,
     reservationsRebound,
     ...(laneGateFailures.length > 0 ? { laneGateFailures } : {}),
+    ...(goalStamp.goalId || goalStamp.errors.length > 0 ? { goalStamp } : {}),
   };
 }
 
