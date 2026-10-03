@@ -89,6 +89,62 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
+it('defers an already-admitted wake at mutex dequeue when carry becomes pending', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-queued-carry-'));
+  const ownerId = uniqueOwner('QUEUED-CARRY');
+  const sock = socketPathFor(ownerId);
+  const log = eventLogPathForOwner(ownerId);
+  const { io, captured } = fakeIo();
+  let carryAttempts = 0;
+  const childCode = [
+    "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+    "let line='';process.stdin.on('data',data=>{for(const c of data){",
+    "if(c==='\\u0004'){process.exit(0);return;}",
+    "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+    'setTimeout(()=>process.exit(0),12000);',
+  ].join('');
+  const done = hostThroughPty({
+    command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+    bridgeTty: false, onExit: () => {},
+    env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', CLAUDE_CONFIG_DIR: root,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
+      PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1000',
+      // First wake's acknowledged submit verifier owns the mutex during this
+      // interval. Observe its actual echo before admitting the queued wake.
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '1500',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+    }),
+    // Exercise the real carry queue without spawning any model CLI. A reached
+    // carry action is positive proof that deferring the wake released its lock.
+    mintCarryRespawnArgs: () => { carryAttempts += 1; throw new Error('fixture carry argv unavailable'); },
+  });
+  try {
+    expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
+      data: 'HOLD_INJECT', deliveryId: 'queued-carry-holder' })).toMatchObject({ ok: true, reason: 'accepted' });
+    expect(await waitForOutput(captured, 'ECHO:HOLD_INJECT')).toBe(true);
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
+      data: 'QUEUED_WAKE', deliveryId: 'queued-before-carry' })).toMatchObject({ ok: true, reason: 'accepted' });
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+      data: 'fixture carry', deliveryId: 'carry-after-wake' })).toMatchObject({ ok: true, reason: 'accepted' });
+    const deadline = Date.now() + 6500;
+    while (carryAttempts === 0 && Date.now() < deadline) await sleep(15);
+    expect(carryAttempts).toBe(1);
+    expect(captured()).not.toContain('ECHO:QUEUED_WAKE');
+    const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'wake-turn-deferred-for-pending-respawn', phase: 'mutex-dequeue',
+    }));
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(log, { force: true });
+  }
+}, 15_000);
+
 it('re-armed wake uses its verified native boundary without a second busy-gate wait', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pty-rearm-boundary-'));
   const sessions = join(root, 'sessions', '2026', '09', '24');
