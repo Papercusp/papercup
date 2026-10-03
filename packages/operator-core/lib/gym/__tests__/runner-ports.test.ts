@@ -209,10 +209,36 @@ describe('createGymRunnerPorts', () => {
       expect(pre.implementation).toEqual({ path: 'impl.mjs', before: digest(implementation), after: digest(implementation) });
       expect(post.implementation).toEqual({ path: 'impl.mjs', before: digest(changedImplementation), after: digest(changedImplementation) });
       expect(pre.sourceHashes).toEqual(post.sourceHashes);
+      expect(pre.execution).toMatchObject({ exitCode: 0, signal: null });
+      expect(post.execution).toMatchObject({ exitCode: 1, signal: null });
       expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
       expect(JSON.parse(post.execution!.report).testResults[0].assertionResults[0].status).toBe('failed');
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   }, 30_000);
+
+  it.each(['exit', 'signal', 'spawn'] as const)('retains a report without hiding the test command %s failure', async (failure) => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-command-'));
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      writeFileSync(join(clonePath, 'impl.js'), 'implementation');
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        if (cmd === 'git') return { stdout: 'oracle', stderr: '' };
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({ testResults: [
+          { assertionResults: [{ fullName: 't', status: 'passed' }] },
+        ] }));
+        throw Object.assign(new Error('oracle command failed'), {
+          code: failure === 'exit' ? 7 : failure === 'spawn' ? 'ENOENT' : null,
+          signal: failure === 'signal' ? 'SIGTERM' : null,
+        });
+      } });
+      const input = { clonePath, testPath: 'oracle.test.js', implPath: 'impl.js', pinCommit: 'a'.repeat(40) };
+      expect(await createGymRunnerPorts(config).runOracle!(input)).toMatchObject({
+        results: [{ name: 't', passed: true }],
+        execution: { exitCode: failure === 'exit' ? 7 : null, signal: failure === 'signal' ? 'SIGTERM' : null },
+      });
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
 
   it('retains file collection failures and handles malformed reports as unmeasured', () => {
     expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ name: 'broken.test.ts', assertionResults: [] }] })))

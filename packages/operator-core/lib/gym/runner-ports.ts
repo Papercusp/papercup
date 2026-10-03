@@ -293,14 +293,22 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       const implementationBefore = implPath ? fileHash(implPath) : null;
       const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
       const command = ['npm', 'run', 'test:file', '--', testPath, '--', '--reporter=json', `--outputFile=${reportPath}`];
+      let exitCode: number | null = null;
+      let signal: string | null = null;
       try {
         await execCapture(
           command[0], command.slice(1),
           { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
         );
-      } catch {
+        exitCode = 0;
+      } catch (error) {
         // A failing oracle still writes a JSON report; parse it below. If it did
-        // not, the caller records deterministic evidence as not measured.
+        // not, the caller records deterministic evidence as not measured. Keep
+        // command failure separate from the assertion report's statuses.
+        if (error !== null && typeof error === 'object') {
+          if ('code' in error && typeof error.code === 'number' && Number.isInteger(error.code)) exitCode = error.code;
+          if ('signal' in error && typeof error.signal === 'string') signal = error.signal;
+        }
       }
       try {
         const report = readFileSync(reportPath, 'utf8');
@@ -309,7 +317,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         return pinCommit ? { results, testPath, pinCommit,
           sourceHashes: { pinned, before, after: fileHash(testPath) },
           implementation: implPath ? { path: implPath, before: implementationBefore, after: fileHash(implPath) } : null,
-          execution: { command, cwd: clonePath, report,
+          execution: { command, cwd: clonePath, report, exitCode, signal,
             unresolved: ['oracle-imported-dependencies', 'test-command-runtime', 'pipeline-runtime'] },
         } : results;
       } catch {

@@ -27,7 +27,8 @@ export interface GymOracleRun {
   /** Principal implementation bytes measured around this test process. This
    * does not identify imported code, the runner, or the remote pipeline. */
   implementation?: { path: string; before: string | null; after: string | null } | null;
-  execution?: { command: string[]; cwd: string; report: string; unresolved: string[] };
+  execution?: { command: string[]; cwd: string; report: string; unresolved: string[];
+    exitCode: number | null; signal: string | null };
 }
 
 export interface GymOracleSpec {
@@ -224,16 +225,24 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
             /^[a-f0-9]{64}$/.test(impl.before) && impl.before === impl.after;
         });
         const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
+        // A JSON report may exist even when the command is killed or fails after
+        // writing it. Retain witnessed failures, but require a successful process
+        // outcome before using that report to claim success.
+        const executionCompleted = [preOracle, postOracle].every((receipt) => receipt?.execution?.signal === null &&
+          (receipt.execution.exitCode === 0 || (receipt.execution.exitCode === 1 &&
+            receipt.results.some((test) => test.executed !== false && !test.passed))));
+        const taskPassed = post.every((t) => t.passed);
         const regressionPopulation = pre.filter((t) => t.executed !== false && t.passed).length;
         deterministicSignals = {
           executionInput,
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
-            sourceCurrent, implementationCurrent, populationComplete, regressionPopulation },
-          ...(regression === true || (regression === false && populationComplete && regressionPopulation > 0)
+            sourceCurrent, implementationCurrent, executionCompleted, populationComplete, regressionPopulation },
+          ...(regression === true || (regression === false && executionCompleted && populationComplete && regressionPopulation > 0)
             ? { regressions: regression } : {}),
-          ...(sourceCurrent && implementationCurrent && populationComplete ? { taskPassed: post.every((t) => t.passed) } : {}),
+          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || executionCompleted)
+            ? { taskPassed } : {}),
         };
       }
       return {
