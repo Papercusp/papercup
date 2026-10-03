@@ -192,6 +192,45 @@ export function runBundleRestrictedHoldPreflight({ repoRoot, inputsFile, env = p
   return spawnCensus({ repoRoot, files: [], env, timeoutMs, spawn, leading: ['--bundle-inputs', resolve(inputsFile)] });
 }
 
+/**
+ * Why a TREE door (WI-10005763) needs no census of its own, or null when it does.
+ * - An enclosing door already admitted this process tree (testing:run, the router, a vitest root).
+ * - The green-checkpoint gate's isolated checkout cannot hold a restricted write (see isReleaseGate).
+ * - GitHub Actions runners host no Papercusp operator, so no restricted session and no census exist.
+ * - Nested inside a test runner (`VITEST`, or `NODE_TEST_CONTEXT`, which node:test sets on every
+ *   test-file process): the papercusp-desktop shell suites drive the REAL tauri-guarded with a
+ *   throwaway HOME, where a census could only fail closed. Same root-not-every-hop rule as the
+ *   router's nested-in-vitest skip.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {'testing-run' | 'admitted-upstream' | 'release-gate' | 'github-actions' | 'nested-in-test-runner' | null}
+ */
+export function treeDoorPreflightSkipReason(env) {
+  const upstream = admittedUpstream(env);
+  if (upstream) return upstream;
+  if (isReleaseGate(env)) return 'release-gate';
+  if (env.GITHUB_ACTIONS === 'true') return 'github-actions';
+  if (env.VITEST || env.NODE_TEST_CONTEXT) return 'nested-in-test-runner';
+  return null;
+}
+
+/**
+ * The tree door (WI-10005763): papercusp-desktop/bin/tauri-guarded `dev` (the chokepoint every
+ * `npm run dev` / `dev:hmr` / verifier launch passes) and scripts/verify-tauri-headless.sh boot the
+ * app FROM the live shared tree with network — cargo build.rs, the operator sidecar, the host
+ * bundle — so there is no import graph to walk. Like the routine door, ANY held restricted write
+ * under `roots` refuses. Roots are resolved here, in the caller's frame, before the census child's
+ * cwd change (the WI-10005770 lesson). Same census child and fail-closed table as the router.
+ * @param {{ roots: string[], env?: NodeJS.ProcessEnv, timeoutMs?: number, spawn?: typeof spawnSync }} opts
+ * @returns {{ verdict: 'admit' } | { verdict: 'skipped', reason: string } | { verdict: 'refuse', error: string, hint: string }}
+ */
+export function runTreeRestrictedHoldPreflight({ roots, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
+  if (!Array.isArray(roots) || roots.length === 0) return unknownState('tree preflight was given no checkout root');
+  const skip = treeDoorPreflightSkipReason(env);
+  if (skip) return { verdict: 'skipped', reason: skip };
+  const absolute = roots.map((root) => resolve(root));
+  return spawnCensus({ repoRoot: absolute[0], files: absolute.slice(1), env, timeoutMs, spawn, leading: ['--tree'] });
+}
+
 function spawnCensus({ repoRoot, files, env, timeoutMs, spawn, leading = [] }) {
   const result = spawn(process.execPath, ['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, ...leading, repoRoot, ...files], {
     cwd: repoRoot,
@@ -211,6 +250,11 @@ export function formatRestrictedHoldRefusal(refusal) {
 /** The vitest-root door's refusal line (vitest prints it as the globalSetup error). */
 export function formatVitestRestrictedHoldRefusal(refusal) {
   return `VITEST_RESTRICTED_HOLD_REFUSED error=${refusal.error} measured=none ${refusal.hint}`;
+}
+
+/** A tree door's refusal line: greppable, names the door, and states that nothing was booted. */
+export function formatTreeRestrictedHoldRefusal(door, refusal) {
+  return `RESTRICTED_HOLD_REFUSED door=${door} error=${refusal.error} booted=none ${refusal.hint}`;
 }
 
 /** The host-bundle door's refusal line (bundle-host.sh prints it, then falls back to last-known-good). */

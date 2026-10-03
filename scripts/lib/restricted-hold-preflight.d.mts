@@ -61,3 +61,21 @@ export declare function runBundleRestrictedHoldPreflight(opts: {
 }): { verdict: 'admit' } | RestrictedHoldPreflightRefusal;
 
 export declare function formatBundleRestrictedHoldRefusal(refusal: { error: string; hint: string }): string;
+
+export type TreeDoorPreflightSkipReason =
+  | 'testing-run'
+  | 'admitted-upstream'
+  | 'release-gate'
+  | 'github-actions'
+  | 'nested-in-test-runner';
+
+export declare function treeDoorPreflightSkipReason(env: NodeJS.ProcessEnv): TreeDoorPreflightSkipReason | null;
+
+export declare function runTreeRestrictedHoldPreflight(opts: {
+  roots: string[];
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  spawn?: typeof spawnSync;
+}): { verdict: 'admit' } | { verdict: 'skipped'; reason: TreeDoorPreflightSkipReason } | RestrictedHoldPreflightRefusal;
+
+export declare function formatTreeRestrictedHoldRefusal(door: string, refusal: { error: string; hint: string }): string;
