@@ -2878,7 +2878,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       console.warn(`${orchestratorStdoutTag()} flake history failed: ${e instanceof Error ? e.message : e}`),
     );
   }
-});
+  // WI-10005745: the orchestrator is tsx <integrationRoot>/apps/operator/lib/release/green-checkpoint.ts —
+  // live-tree code even though the suite it runs judges a committed candidate.
+}, { executesIntegrationTreeCode: true });
 
 /** P-004 thresholds: a gate held this many consecutive hourly checkpoints — or
  *  with no green for this long — is STALLED and worth an urgent, one-shot alert. */
@@ -7270,4 +7272,5 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
       resolve();
     });
   });
-});
+  // WI-10005745: the deploy is tsx <integrationRoot>/apps/operator/lib/release/deploy-cli.ts (live-tree code).
+}, { executesIntegrationTreeCode: true });
