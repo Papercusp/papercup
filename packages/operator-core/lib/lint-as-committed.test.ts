@@ -148,7 +148,7 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       expect(noncanonicalFilesystemRoute).toContain('/../');
       expect(normalizer?.resolveId?.(noncanonicalFilesystemRoute)).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
 
-      const relativeTraversalRoute = `${relative(cloneAppRoot, sharedRoute)}${virtualRouteQuery}`;
+      const relativeTraversalRoute = `${relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute)}${virtualRouteQuery}`;
       expect(relativeTraversalRoute).toContain('../');
       expect(normalizer?.resolveId?.(relativeTraversalRoute)).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
 
