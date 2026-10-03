@@ -1,7 +1,7 @@
 /** Real canonical replay gates with controlled policy I/O; no live datastore. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { KernelEnforcementRequest, UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const h = vi.hoisted(() => ({
   state: {} as Record<string, unknown>, auditMode: false, audit: vi.fn(),
@@ -29,7 +29,7 @@ vi.mock('@papercusp/flags/server', async (original) => ({
 import {
   admissionCredentialDigest, admissionReplayContext, authorizeAdmissionReplay, bindAdmissionAuthority,
 } from './work-item-admission-authority';
-import { installControlAnchorKernelResolver, setKernelEnforcementResolver } from './projected-tool-deps';
+import { installControlAnchorKernelResolver, readControlAnchorKernelState, setKernelEnforcementResolver } from './projected-tool-deps';
 import { setSessionConfinementResolver } from './capability-envelope/session-confinement-port';
 
 const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'current-a' };
@@ -79,7 +79,19 @@ beforeEach(() => {
       'su-policy', 'ws-policy',
       h.expectedAdvSessionId, h.expectedAdvSessionId,
     ]);
-    return [{ control_state: h.state, control_generation: 7, workspace_id: 'ws-policy' }];
+    return [{
+      control_state: h.state, control_generation: 7, workspace_id: 'ws-policy',
+      ...(h.expectedAdvSessionId !== null ? {
+        adv_session_id: h.expectedAdvSessionId,
+        adv_session_xmin: '4200',
+        launch_header_known: false,
+        launch_spec_type: 'object',
+        launch_spec_workspace_id: 'ws-policy',
+        launch_spec_harness_slug: 'original-harness',
+        launch_spec_has_accepted_operation: false,
+        launch_spec_accepted_operation: null,
+      } : {}),
+    }];
   });
   installControlAnchorKernelResolver(); // same installation as events/index at tool bootstrap
   setSessionConfinementResolver(() => null);
@@ -133,10 +145,16 @@ describe('admission replay policy fidelity', () => {
     expect(replay.advSessionId).toBe(advSessionId);
 
     h.expectedAdvSessionId = advSessionId;
-    await expect(authorize(authority)).resolves.toBeUndefined();
-    const anchorReads = h.sql.mock.calls.filter(([parts]) =>
-      Array.isArray(parts) && parts.join('?').includes('FROM harness_shared.session_briefs'));
-    expect(anchorReads).toHaveLength(4);
+    const request = {
+      phase: 'enforce',
+      boundary: 'dispatch',
+      toolName: 'work_items:claim',
+      capabilities: [],
+      args: { row: 'WI-original,su-reviewer,papercusp' },
+      ctx: replay,
+    } satisfies KernelEnforcementRequest;
+    const state = await readControlAnchorKernelState(request);
+    expect(state?.identityLaunchRecordVersion).toEqual({ sessionId: '42', rowVersion: '4200' });
   });
 
   it.each([
