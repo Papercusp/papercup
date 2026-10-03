@@ -100,6 +100,7 @@ const criterionOf = (barKey: string): Criterion => {
 /** The clause as the store wrote it at rubric revision 3 under an OLDER bar set. */
 function storedClause(barKey: string, planItemId: string, overrides: {
   barHash?: string; rubricSlug?: string; storedSetHash?: string | null; storedRubricRevision?: number | null;
+  behaviorClass?: SpecClauseWrite['behaviorClass']; mutationRequired?: boolean; requiredTestLayers?: string[];
 } = {}) {
   const criterion = criterionOf(barKey);
   const specId = `AUTO-BAR-${barKey}-${planItemId}`;
@@ -111,11 +112,11 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     source_bar_hash: overrides.barHash ?? criterion.barHash!,
     plan_item_id: planItemId,
     behavior: `Reviewed atomic behavior for ${barKey}.`,
-    behavior_class: 'happy-path' as const,
+    behavior_class: overrides.behaviorClass ?? 'happy-path',
     falsifier: null,
     required_evidence: ['tree'],
-    required_test_layers: [] as string[],
-    mutation_required: false,
+    required_test_layers: overrides.requiredTestLayers ?? [],
+    mutation_required: overrides.mutationRequired ?? false,
     lifecycle_status: 'active' as const,
     supersedes_spec_id: null,
     supersedes_revision: null,
@@ -128,7 +129,7 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     planSlug: 'subject-plan', specId, expectedRevision: 4, planItemId,
     behavior: row.behavior, behaviorClass: row.behavior_class,
     requiredEvidence: row.required_evidence, requiredTestLayers: row.required_test_layers,
-    mutationRequired: false, lifecycleStatus: 'active', exemption: null, supersedes: null, falsifier: null,
+    mutationRequired: row.mutation_required, lifecycleStatus: 'active', exemption: null, supersedes: null, falsifier: null,
     acceptanceRef: row.acceptance_ref,
     sourceBar: {
       barKey, barHash: row.source_bar_hash, barSetHash: OLD_SET_HASH,
@@ -198,6 +199,30 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     expect(h.setSpecClause.mock.calls.find(([write]) => write.specId === row.spec_id)?.[0]).toMatchObject({
       behaviorClass: 'non-automated', behavior: row.behavior, requiredTestLayers: [], mutationRequired: false,
     });
+  });
+
+  it.each([
+    { behaviorClass: 'concurrency' as const },
+    { mutationRequired: true },
+    { requiredTestLayers: ['integration'] },
+  ])('retains a stronger authored obligation beside manual intent: %j', async (obligation) => {
+    const criteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const manual = { ...criterion, check: { kind: 'instrument' as const, instrumentKey: 'none' } };
+      return { ...manual, barHash: computeAcceptanceBarHash(manual) };
+    });
+    const row = storedClause('R-1', 'P-001', { barHash: criteria[0]!.barHash, ...obligation });
+    // The changed sibling is the positive control: the mechanism must still
+    // perform real projection work while retaining R-1's stronger obligation.
+    const rows = [row, storedClause('R-2', 'P-002', { barHash: 'b'.repeat(64) })];
+    const manualTemplate = { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
+    const revisions = await synchronizeAcceptanceBarRevision(sqlStub(rows) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: manualTemplate, previousTemplateData: manualTemplate, actorId: 'amender',
+    });
+    expect(revisions.get(row.spec_id)).toBe(row.current_revision);
+    expect(writtenSpecIds()).toEqual(['AUTO-BAR-R-2-P-002']);
+    expect(revisions.get('AUTO-BAR-R-2-P-002')).toBe(6);
   });
 
   it('keeps every unchanged-bar clause at its revision: no write, no new revision', async () => {
