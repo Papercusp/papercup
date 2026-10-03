@@ -10,15 +10,28 @@ import {
   residualPathsForCommit,
   type CompletionSettlementReconcilerDeps,
 } from './completion-settlement-reconciler';
-import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
+import {
+  CompletionSettlementManifestSchema,
+  TERMINAL_COMPLETION_EVIDENCE_KEY,
+} from '../../coord-lifecycle/records';
 import {
   completionBlobHistoryContains,
-  completionHeadBlobMap,
+  completionHeadBlobMap as completionHeadBlobMapWithSidecar,
   createCompletionBlobHistoryReader,
   createCompletionHistorySearchMemo,
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
 import { isCompletionSettled } from '../../work-item-completion-authority';
+
+// These fixtures own real temporary Git repositories. Keep them on local Git so they do not
+// depend on (or start) the process-wide spawner sidecar; its routing and fallback are covered by
+// untouched-paths-sidecar-route.test.ts.
+const completionHeadBlobMap: typeof completionHeadBlobMapWithSidecar = (
+  repoRoot,
+  headSha,
+  paths,
+  opts = {},
+) => completionHeadBlobMapWithSidecar(repoRoot, headSha, paths, { ...opts, gitBinary: 'git' });
 
 const SHA = 'a'.repeat(40);
 const TEMP_ROOTS: string[] = [];
@@ -1707,9 +1720,10 @@ describe('reconcileProposedCompletionsAtCommit — sibling checkouts', () => {
       repositoryRoot: roots[0]!, headSha: heads[0]!, normalizedPaths: [path, path],
       contentIdentity: roots.map((repositoryRoot, index) => ({
         path, repositoryRoot, headSha: heads[index]!,
-        workingTreeBlobSha: blobs[index]!, headBlobSha: 'a'.repeat(40 + index),
+        workingTreeBlobSha: blobs[index]!, headBlobSha: index === 0 ? 'a'.repeat(40) : 'b'.repeat(40),
       })),
     };
+    expect(CompletionSettlementManifestSchema.safeParse(multiManifest).success).toBe(true);
     let payload: Record<string, unknown> = {
       [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
         filesChanged: [path],
