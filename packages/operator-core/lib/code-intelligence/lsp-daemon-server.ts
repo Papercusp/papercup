@@ -5,13 +5,48 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket.ts';
 import { resolveLspDaemonSocketPath, reapOrphanedLspDaemonSockets } from './lsp-daemon-socket.ts';
-import { resolveLspDaemonDispatchContext, type LspDaemonRequest } from './lsp-daemon-protocol.ts';
-import { runLspAdmission } from './lsp-admission.ts';
+import { resolveLspDaemonDispatchContext, type LspDaemonRequest, type LspDaemonApplyRequest } from './lsp-daemon-protocol.ts';
+import { lspAdmissionController, runLspAdmission } from './lsp-admission.ts';
 import { lspDaemonFacade } from './lsp-daemon-facade.ts';
+import { languageForFile, resolveProjectRoot, lspRenameWorkspaceEdit, lspDiagnostics, lspResyncDocument } from './lsp-adapter.ts';
+import { isTrustworthyEmpty } from './contracts.ts';
 import { activeWorkspaceId } from '../workspace-registry.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 
-interface RpcRequest { jsonrpc: '2.0'; id: string; method: 'lsp:query' | 'lsp:cancel'; params: LspDaemonRequest | { requestId: string } }
+interface RpcRequest { jsonrpc: '2.0'; id: string; method: 'lsp:query' | 'lsp:cancel' | 'lsp:admission' | 'lsp:rename' | 'lsp:diagnostic-count' | 'lsp:resync'; params: LspDaemonRequest | LspDaemonApplyRequest | { requestId: string } | { workspaceId: string } }
+
+export async function dispatchLspDaemonApply(
+  method: 'lsp:rename' | 'lsp:diagnostic-count' | 'lsp:resync',
+  request: LspDaemonApplyRequest,
+  requestId: string,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const { file, rootPath, workspaceId } = request;
+  if (!workspaceId || !file || !rootPath) throw new Error('LSP apply request requires workspaceId, file and rootPath');
+  if (method === 'lsp:resync') {
+    if (typeof request.newText !== 'string') throw new Error('LSP resync requires newText');
+    return lspResyncDocument(file, rootPath, request.newText);
+  }
+  const language = languageForFile(file);
+  const project = language ? resolveProjectRoot(language, file, rootPath) : null;
+  const task = async () => {
+    if (method === 'lsp:rename') {
+      if (!Number.isInteger(request.line1) || !Number.isInteger(request.character) || !request.newName)
+        throw new Error('LSP rename requires line1, character and newName');
+      return lspRenameWorkspaceEdit({ file, rootPath, line1: request.line1!, character: request.character!, newName: request.newName });
+    }
+    const answer = await lspDiagnostics({ file, rootPath });
+    if (answer.error) return null;
+    if (answer.sites.length === 0) return isTrustworthyEmpty(answer) ? 0 : null;
+    return answer.sites.length;
+  };
+  if (!language || !project || project.error) return task();
+  return lspAdmissionController(workspaceId).run({
+    workspaceId, requestId, language, projectRoot: project.root, op: method,
+    actor: request.actorId, deadlineAtMs: request.deadlineAtMs ?? Date.now() + 90_000,
+    signal, queryKey: file,
+  }, task);
+}
 
 export async function dispatchLspDaemonRequest(
   request: LspDaemonRequest,
@@ -39,6 +74,7 @@ export async function dispatchLspDaemonRequest(
 /** Start once per host; all cluster workers address the primary's pinned socket. */
 export function runLspDaemonServer(
   execute: typeof dispatchLspDaemonRequest = dispatchLspDaemonRequest,
+  executeApply: typeof dispatchLspDaemonApply = dispatchLspDaemonApply,
 ): Server {
   const socketPath = resolveLspDaemonSocketPath();
   mkdirSync(dirname(socketPath), { recursive: true });
@@ -52,7 +88,7 @@ export function runLspDaemonServer(
     socket.setEncoding('utf8');
     socket.on('data', (chunk: string) => {
       buffer += chunk;
-      if (buffer.length > 1_048_576) { socket.destroy(); return; }
+      if (buffer.length > 16_777_216) { socket.destroy(); return; }
       for (;;) {
         const end = buffer.indexOf('\n');
         if (end < 0) break;
@@ -68,6 +104,27 @@ export function runLspDaemonServer(
           const target = (frame.params as { requestId?: string })?.requestId;
           if (target) controllers.get(target)?.abort();
           send({ jsonrpc: '2.0', id: frame.id, result: { cancelled: Boolean(target && controllers.has(target)) } });
+          continue;
+        }
+        if (frame.method === 'lsp:admission') {
+          const workspaceId = (frame.params as { workspaceId?: unknown })?.workspaceId;
+          if (typeof workspaceId !== 'string' || !workspaceId.trim()) {
+            send({ jsonrpc: '2.0', id: frame.id, error: { code: -32602, message: 'workspaceId is required' } });
+          } else {
+            send({ jsonrpc: '2.0', id: frame.id, result: lspAdmissionController(workspaceId).snapshot() });
+          }
+          continue;
+        }
+        if (frame.method === 'lsp:rename' || frame.method === 'lsp:diagnostic-count' || frame.method === 'lsp:resync') {
+          if (controllers.has(frame.id)) {
+            send({ jsonrpc: '2.0', id: frame.id, error: { code: -32600, message: 'Duplicate request id' } }); continue;
+          }
+          const controller = new AbortController();
+          controllers.set(frame.id, controller);
+          void executeApply(frame.method, frame.params as LspDaemonApplyRequest, frame.id, controller.signal).then(
+            (result) => send({ jsonrpc: '2.0', id: frame.id, result }),
+            (error) => send({ jsonrpc: '2.0', id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }),
+          ).finally(() => controllers.delete(frame.id));
           continue;
         }
         if (frame.method !== 'lsp:query' || !frame.params || typeof (frame.params as LspDaemonRequest).op !== 'string') {

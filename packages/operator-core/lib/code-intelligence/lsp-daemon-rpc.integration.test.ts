@@ -4,9 +4,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
-import { callLspDaemonRpc } from './lsp-daemon-client.ts';
+import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client.ts';
 import { runLspDaemonServer } from './lsp-daemon-server.ts';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket.ts';
+import { lspAdmissionController } from './lsp-admission.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'papercusp-lsp-rpc-'));
@@ -21,6 +22,20 @@ afterEach(async () => {
 });
 
 describe('LSP daemon process boundary', () => {
+  it('reads the daemon-owned admission snapshot through the same socket', async () => {
+    process.env[LSP_DAEMON_SOCKET_ENV] = path;
+    server = runLspDaemonServer();
+    await once(server, 'listening');
+    const workspaceId = `lsp-rpc-test-${Date.now()}`;
+    const snapshot = await readLspDaemonAdmission(workspaceId);
+    expect(snapshot).toMatchObject({
+      generation: lspAdmissionController(workspaceId).snapshot().generation,
+      queued: 0, inFlight: 0, classes: [], settlementFailures: [],
+    });
+    expect(snapshot.measured).toBe(true);
+    expect(snapshot.assessment).toBe('idle');
+  });
+
   it('round-trips the closed request and aborts abandoned work without forging an empty answer', async () => {
     process.env[LSP_DAEMON_SOCKET_ENV] = path;
     const requests: Array<{ op: string; root?: string; aborted: boolean }> = [];

@@ -10,6 +10,7 @@ import { probeUnixSocketAlive } from '../sidecar-socket/pid-keyed-socket.ts';
 import { LSP_DAEMON_SOCKET_ENV, resolveLspDaemonSocketPath } from './lsp-daemon-socket.ts';
 import type { LspDaemonRequest } from './lsp-daemon-protocol.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
+import type { LspAdmissionSnapshot } from './lsp-admission.ts';
 
 let starting: Promise<void> | null = null;
 
@@ -66,17 +67,19 @@ async function ensureLspDaemon(): Promise<void> {
 }
 
 /** One request per socket. A dropped connection cancels its daemon request. */
-export async function callLspDaemonRpc(
+async function callLspDaemonFrame<T>(
   socketPath: string,
-  request: LspDaemonRequest,
-  timeoutMs = 90_000,
-): Promise<CodeIntelAnswer> {
+  method: 'lsp:query' | 'lsp:admission',
+  params: LspDaemonRequest | { workspaceId: string },
+  valid: (result: unknown) => result is T,
+  timeoutMs: number,
+): Promise<T> {
   const id = randomUUID();
-  return new Promise<CodeIntelAnswer>((resolveAnswer, reject) => {
+  return new Promise<T>((resolveAnswer, reject) => {
     const socket = connect(socketPath);
     let settled = false;
     let data = '';
-    const finish = (error?: Error, answer?: CodeIntelAnswer) => {
+    const finish = (error?: Error, answer?: T) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -86,23 +89,42 @@ export async function callLspDaemonRpc(
     };
     const timer = setTimeout(() => finish(new Error('LSP daemon RPC deadline elapsed')), timeoutMs);
     socket.setEncoding('utf8');
-    socket.once('connect', () => socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method: 'lsp:query', params: request })}\n`));
+    socket.once('connect', () => socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`));
     socket.on('data', (chunk: string) => {
       data += chunk;
       if (data.length > 8_388_608) { finish(new Error('LSP daemon response exceeded 8 MiB')); return; }
       const end = data.indexOf('\n');
       if (end < 0) return;
       try {
-        const reply = JSON.parse(data.slice(0, end)) as { id?: string; result?: CodeIntelAnswer; error?: { message?: string } };
+        const reply = JSON.parse(data.slice(0, end)) as { id?: string; result?: unknown; error?: { message?: string } };
         if (reply.id !== id) throw new Error('LSP daemon response id mismatch');
         if (reply.error) throw new Error(reply.error.message || 'LSP daemon error');
-        if (!reply.result || !Array.isArray(reply.result.sites) || !reply.result.freshness) throw new Error('Invalid LSP daemon answer');
+        if (!valid(reply.result)) throw new Error(`Invalid LSP daemon ${method} response`);
         finish(undefined, reply.result);
       } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
     });
     socket.once('error', (error) => finish(error));
     socket.once('close', () => { if (!settled) finish(new Error('LSP daemon closed without an answer')); });
   });
+}
+
+export function callLspDaemonRpc(socketPath: string, request: LspDaemonRequest, timeoutMs = 90_000): Promise<CodeIntelAnswer> {
+  return callLspDaemonFrame(socketPath, 'lsp:query', request,
+    (result): result is CodeIntelAnswer => !!result && typeof result === 'object' &&
+      Array.isArray((result as CodeIntelAnswer).sites) && !!(result as CodeIntelAnswer).freshness,
+    timeoutMs);
+}
+
+/** The operator observes the daemon's live controller, never its own singleton. */
+export async function readLspDaemonAdmission(workspaceId: string): Promise<LspAdmissionSnapshot> {
+  if (!workspaceId) throw new Error('LSP admission workspaceId is required');
+  await ensureLspDaemon();
+  return callLspDaemonFrame(resolveLspDaemonSocketPath(), 'lsp:admission', { workspaceId },
+    (result): result is LspAdmissionSnapshot => !!result && typeof result === 'object' &&
+      (result as LspAdmissionSnapshot).measured === true &&
+      Number.isFinite((result as LspAdmissionSnapshot).sampledAtMs) &&
+      Array.isArray((result as LspAdmissionSnapshot).classes),
+    5_000);
 }
 
 export async function queryLspDaemon(request: LspDaemonRequest): Promise<CodeIntelAnswer> {
