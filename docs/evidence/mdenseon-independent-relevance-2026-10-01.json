@@ -6,6 +6,12 @@
     "reuse": "Extended the existing retained relevance receipt and shared merge validation. Explicit reuseSnapshotExpansion preserves old source bytes, metadata, relative order, partition and census time; population seeds compare with population seeds, while measurement seeds compare separately. Only missing documents or exact new query identities are embedded. Default whole-snapshot refusal remains unchanged.",
     "canonicalGuardTests": { "runs": [20622430, 20622431], "passed": 179, "failed": 0, "skipped": 0 },
     "seedCounterexample": { "testRunId": 20622429, "failedBeforeFix": 1, "distinction": "The real frozen population seed and measurement-order seed differ while each remains unchanged. The old cross-domain equality refuses; separate same-domain comparisons pass." },
+    "sourceFiles": [
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "sha256": "4895cedd75665c6c1f1d27af15a1686f47b2ae42c63f4f40817abf46ec60e5c3", "bytes": 68914 },
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "sha256": "2324dd54a88554a00e6baeab5601524b080dfaa9c3b1e7d7784aed9a80097ec4", "bytes": 59644 },
+      { "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts", "sha256": "f80e39208facc1a757656bc866679f9651c9fbfadaa130f839cf452b55298028", "bytes": 51668 }
+    ],
+    "scopedCompiler": { "task": "0muruntz01yg5rk3zay", "exitCode": 0, "namedFiles": 3, "checkedFilesIncludingDirectTypeReferences": 15, "errors": 0, "scope": "Shared compiler's named-file/importer check, not a project-wide typecheck." },
     "canonicalCliStartup": {
       "task": "0muru50agktgetsm3dg", "exitCode": 0,
       "scope": "Actual three-file framework run passed 151 then-current manifest tests, 27 candidate tests and one CLI startup integration test with zero skips. The router marked Git-HEAD provenance unknown as background sync advanced during the run; this is not full frozen-source acceptance. Later 152-test manifest run 20622430 qualifies the corrected seed-domain source separately."
