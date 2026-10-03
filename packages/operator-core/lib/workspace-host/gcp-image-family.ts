@@ -21,7 +21,7 @@ export const GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION = 'papercusp-gcp-image-fa
 
 /**
  * Guest capabilities that must survive the provider-specific image build, named by the RPM
- * the CentOS Stream 9 bootc image (infra/images/bootc/workspace-host.Containerfile)
+ * the CentOS Stream 10 bootc image (infra/images/bootc/workspace-host.Containerfile)
  * installs. The GCE disk is rendered from that same image (bake-cloud-images.sh), so each
  * name must be checkable with `rpm -q` against it. The Ubuntu-era names never existed
  * there: ufw maps to nftables and unattended-upgrades to dnf-automatic (RPM-EQUIVALENCE.md;

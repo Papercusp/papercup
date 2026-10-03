@@ -24,7 +24,7 @@ export const AZURE_COMPUTE_GALLERY_VERSION_MANIFEST_SCHEMA_VERSION = 1;
 
 /**
  * Common host prerequisites plus the Azure Linux Agent transport, named by the RPM the
- * CentOS Stream 9 bootc image installs (the Azure VHD is rendered from that same image by
+ * CentOS Stream 10 bootc image installs (the Azure VHD is rendered from that same image by
  * bake-cloud-images.sh). The Ubuntu-era names never existed there: ufw maps to nftables,
  * unattended-upgrades to dnf-automatic, and the Debian `walinuxagent` package is the RPM
  * `WALinuxAgent` (WI-10005618, the Azure twin of WI-10005605).

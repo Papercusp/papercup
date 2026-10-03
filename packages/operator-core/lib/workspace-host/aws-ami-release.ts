@@ -67,7 +67,7 @@ export function parseAwsAmiReleaseDescription(
 
 /**
  * Host prerequisites from the common bootstrap contract plus AWS transport, named by the
- * RPM the CentOS Stream 9 bootc image (infra/images/bootc/workspace-host.Containerfile)
+ * RPM the CentOS Stream 10 bootc image (infra/images/bootc/workspace-host.Containerfile)
  * actually installs. These are package names, so each one can be checked with `rpm -q`
  * against the baked image (WI-10005605). The Ubuntu-era names did not exist on that image:
  * ufw maps to nftables and unattended-upgrades to dnf-automatic (RPM-EQUIVALENCE.md), and

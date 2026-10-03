@@ -256,11 +256,11 @@ else
     || { tail -5 "$OUTDIR/grype.log"; die "grype"; }
 
   TOTAL=$(jq '.matches | length' "$OUTDIR/vulns.json")
-  # EL9 kernels are vendor-maintained RPMs. An `nvd:cpe` match against one of those RPMs
+  # EL (el9, el10, ...) kernels are vendor-maintained RPMs. An `nvd:cpe` match against one of those RPMs
   # compares its vendor version with an upstream kernel fixed version and therefore cannot
   # establish that the vendor package is vulnerable: the fix may already be backported. Keep
   # vendor-namespace matches actionable, but exclude only this unsupported generic-CPE shape.
-  # The package/type/EL9 guard prevents an unrelated artifact whose name happens to contain
+  # The package/type/elN guard prevents an unrelated artifact whose name happens to contain
   # "kernel" from silently leaving the gate population.
   # The vendor kernel reaches grype as TWO artifact types: `rpm` (kernel, kernel-core, ...) and
   # `linux-kernel` — syft's binary cataloger reading usr/lib/modules/<release>/vmlinuz
@@ -268,7 +268,8 @@ else
   # the same .el9 release and is matched ONLY by upstream NVD CPE; the RPMs stay matched in the
   # vendor namespace. Measured on the P-012 AWS bake: 2,226 of 2,328 "actionable" were the
   # linux-kernel artifact while this filter accepted rpm only (WI-10005674). Mirrored exactly by
-  # isGenericEl9KernelCpe in apps/operator/lib/release/bootc-image-release-request-cli.ts.
+  # isGenericElKernelCpe in apps/operator/lib/release/bootc-image-release-request-cli.ts.
+  # The release tag is matched as el<major>, not el9: the base moved to EL10 (D-035, WI-10005910).
   #
   # D-027 (WI-10005719) — VENDOR-PENDING. A fixed Critical/High finding stays ACTIONABLE unless
   # BOTH hold: (a) the vendor owns it — every file it sits in is listed by an INSTALLED RPM in the
@@ -289,7 +290,7 @@ else
     def generic_kernel_cpe:
       ((.artifact.name // "") | ascii_downcase | test("(^|-)kernel($|-)"))
       and (((.artifact.type // "") | ascii_downcase) as $t | $t == "rpm" or $t == "linux-kernel")
-      and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el9([._-]|$)"))
+      and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el[0-9]+([._-]|$)"))
       and ((.vulnerability.namespace // "") | ascii_downcase) == "nvd:cpe";
     def fixed_crit_high:
       .vulnerability.fix.state == "fixed"
@@ -435,7 +436,7 @@ SH
   # dominating component beside the total so the number is never quoted bare.
   echo "GRYPE_MATCHES_RAW=$TOTAL   (matches, NOT distinct vulnerabilities — do not quote bare)"
   echo "GRYPE_TOP_COMPONENT=$(jq -r '.matches | group_by(.artifact.name) | max_by(length) | "\(.[0].artifact.name)=\(length)"' "$OUTDIR/vulns.json")"
-  echo "GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=$GENERIC_KERNEL_CPE_EXCLUDED   (EL9 upstream CPE matches; vendor namespaces remain actionable)"
+  echo "GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=$GENERIC_KERNEL_CPE_EXCLUDED   (EL upstream CPE matches; vendor namespaces remain actionable)"
   echo "GRYPE_VENDOR_PENDING=$VENDOR_PENDING   (of $VENDOR_CANDIDATES RPM-owned; vendor check: $VENDOR_CHECK; listed in vendor-pending.json — D-027)"
   echo "GRYPE_STALE_BASE_OBJECTS=$STALE_OBJECTS   (base-layer ostree objects with no live copy in the image; listed in stale-base-objects.json — D-029)"
   case "$VENDOR_CHECK" in

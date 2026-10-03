@@ -306,6 +306,32 @@ describe('release supply-chain vulnerability gate', () => {
     expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
   });
 
+  it('applies the same exception to an EL10 kernel RPM and vmlinuz artifact (D-035, WI-10005910)', () => {
+    // The base moved to centos-bootc:stream10, so the kernel release is .el10 (.el10_0 on a point
+    // release). Mirrors isGenericElKernelCpe in bootc-image-release-request-cli.ts.
+    const result = runGate([
+      { ...genericKernelCpe, artifact: { ...genericKernelCpe.artifact, version: '6.12.0-124.el10' } },
+      {
+        ...genericKernelImageCpe,
+        artifact: { ...genericKernelImageCpe.artifact, version: '6.12.0-55.9.1.el10_0.x86_64' },
+      },
+    ]);
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain('GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=2');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=0');
+  });
+
+  it('does not treat a release tag with no EL major (".elx") as an EL kernel', () => {
+    const result = runGate([
+      { ...genericKernelCpe, artifact: { ...genericKernelCpe.artifact, version: '6.12.0-124.elx' } },
+    ]);
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=0');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
+  });
+
   it('does not apply the EL9 exception to a non-EL9 kernel package', () => {
     const result = runGate([
       {

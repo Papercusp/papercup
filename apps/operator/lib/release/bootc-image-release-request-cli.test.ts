@@ -176,6 +176,29 @@ describe("bootc release request evidence readers", () => {
     expect(narrowed.excludedGenericKernelCpe).toBe(1);
   });
 
+  it("drops the same generic-kernel NVD CPE shape on an EL10 kernel, not only EL9 (D-035, WI-10005910)", () => {
+    // The base moved to centos-bootc:stream10, whose kernel release is .el10 (and .el10_0 on a
+    // point release). The filter keys on el<major>; a version with no EL major stays actionable.
+    const nvdKernel = (name: string, type: string, version: string, id: string) => ({
+      artifact: { name, type, version },
+      vulnerability: { id, severity: "High", namespace: "nvd:cpe", fix: { state: "fixed", versions: ["6.13"] } },
+    });
+    const narrowed = actionableGrypeReport({
+      descriptor: { name: "grype", version: "0.117.0" },
+      matches: [
+        nvdKernel("kernel-core", "rpm", "6.12.0-124.el10", "CVE-10"),
+        nvdKernel("linux-kernel", "linux-kernel", "6.12.0-124.el10.x86_64", "CVE-11"),
+        nvdKernel("kernel", "rpm", "6.12.0-55.9.1.el10_0", "CVE-12"),
+        // Controls: no EL major in the release, so these must stay in the gate population.
+        nvdKernel("kernel-core", "rpm", "6.12.0-124.elx", "CVE-13"),
+        nvdKernel("linux-kernel", "linux-kernel", "6.12.0-124-generic", "CVE-14"),
+        { artifact: { name: "kernel-core", type: "rpm", version: "6.12.0-124.el10" }, vulnerability: { id: "RHSA-15", severity: "High", namespace: "redhat:distro", fix: { state: "fixed" } } },
+      ],
+    });
+    expect((narrowed.report.matches as { vulnerability: { id: string } }[]).map((match) => match.vulnerability.id)).toEqual(["CVE-13", "CVE-14", "RHSA-15"]);
+    expect(narrowed.excludedGenericKernelCpe).toBe(3);
+  });
+
   it("moves only vendor-owned fixed Critical/High findings out when the vendor ships nothing newer (D-027)", () => {
     const report = {
       descriptor: { name: "grype", version: "0.117.0" },
