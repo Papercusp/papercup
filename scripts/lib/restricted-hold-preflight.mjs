@@ -11,6 +11,7 @@
 // entry (restricted-hold-preflight-cli.ts) that runs the exact `restrictedHoldRefusal` testing:run
 // uses. It fails CLOSED: no marker line, bad JSON, a crash or a timeout all refuse.
 import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** stdout marker the CLI prints exactly once, followed by a JSON verdict. */
@@ -184,7 +185,11 @@ export function runVitestRootPreflight({ repoRoot, files, env = process.env, tim
  * @returns {{ verdict: 'admit' } | { verdict: 'refuse', error: string, hint: string }}
  */
 export function runBundleRestrictedHoldPreflight({ repoRoot, inputsFile, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
-  return spawnCensus({ repoRoot, files: [], env, timeoutMs, spawn, leading: ['--bundle-inputs', inputsFile] });
+  // WI-10005770: the census child runs with cwd=repoRoot, but bundle-host.sh hands the gate a
+  // snapshot dir relative to apps/operator (the default OUTFILE is dist-host/hono-host.mjs). A
+  // relative path crossing that cwd change made every default build fail closed with ENOENT, so
+  // resolve it here, in the caller's frame, before the cwd changes.
+  return spawnCensus({ repoRoot, files: [], env, timeoutMs, spawn, leading: ['--bundle-inputs', resolve(inputsFile)] });
 }
 
 function spawnCensus({ repoRoot, files, env, timeoutMs, spawn, leading = [] }) {
