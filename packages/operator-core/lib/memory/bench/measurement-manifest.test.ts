@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, alignRetainedRelevanceDocuments, embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, hashJson, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, alignRetainedRelevanceDocuments, embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, hashJson, validateIndependentCohort, writeMeasurementCell, failMeasurementCell, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
 import type { WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
@@ -336,6 +336,76 @@ function prepared(): PreparedMeasurement {
   const cell = manifest.cells.find((c) => c.bar === 'relevance')!;
   return { manifest, cell, arm: manifest.arms[0], manifestSha256: 'a'.repeat(64), rawOutput: path.join(dir, 'out.json'), claimPath: path.join(dir, 'out.running') };
 }
+describe('immutable measurement receipt publication', () => {
+  const attempt = () => {
+    const p = prepared();
+    fs.writeFileSync(p.claimPath, JSON.stringify({ ownerId: p.manifest.ownerId, pid: process.pid,
+      manifestSha256: p.manifestSha256, cellId: p.cell.id }));
+    return p;
+  };
+  for (const kind of ['success', 'failure'] as const) {
+    const destination = (p: PreparedMeasurement) => kind === 'success' ? p.rawOutput : `${p.rawOutput}.failure.json`;
+    const publish = (p: PreparedMeasurement) => kind === 'success' ? writeMeasurementCell(p, { result: 'complete' })
+      : failMeasurementCell(p, new Error('measured failure', { cause: new Error('retained cause') }));
+    it.each(['write', 'flush'])(`keeps interrupted ${kind} %s out of the final namespace and retains its claim`, phase => {
+      const p = attempt(), file = destination(p), claim = fs.readFileSync(p.claimPath), originalWrite = fs.writeFileSync;
+      const interrupted = new Error('interrupted receipt publication');
+      const fault = phase === 'write' ? vi.spyOn(fs, 'writeFileSync').mockImplementation((target, data, options) => {
+        if (typeof target === 'number') {
+          originalWrite(target, '{');
+          expect(fs.existsSync(file)).toBe(false);
+          throw interrupted;
+        }
+        return originalWrite(target, data, options);
+      }) : vi.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+        expect(fs.existsSync(file)).toBe(false); throw interrupted;
+      });
+      try {
+        expect(() => publish(p)).toThrow(interrupted);
+        expect(fs.existsSync(file)).toBe(false);
+        expect(fs.readFileSync(p.claimPath)).toEqual(claim);
+        expect(fs.readdirSync(path.dirname(file)).filter(name => name.endsWith('.pending'))).toEqual([]);
+        fault.mockRestore();
+        publish(p);
+        expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ cellId: p.cell.id, manifestSha256: p.manifestSha256 });
+        expect(fs.existsSync(p.claimPath)).toBe(false);
+      } finally { fault.mockRestore(); }
+    });
+    it(`preserves a competing complete ${kind} receipt and retains its claim`, () => {
+      const p = attempt(), file = destination(p), claim = fs.readFileSync(p.claimPath), originalLink = fs.linkSync;
+      const winner = JSON.stringify({ owner: 'other', result: 'winner' });
+      const fault = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+        fs.writeFileSync(file, winner, { flag: 'wx' });
+        return originalLink(from, to);
+      });
+      try {
+        expect(() => publish(p)).toThrow(/EEXIST/);
+        expect(fs.readFileSync(file, 'utf8')).toBe(winner);
+        expect(fs.readFileSync(p.claimPath)).toEqual(claim);
+        expect(fs.readdirSync(path.dirname(file)).filter(name => name.endsWith('.pending'))).toEqual([]);
+      } finally { fault.mockRestore(); }
+    });
+    it(`publishes a complete ${kind} envelope before releasing its claim`, () => {
+      const p = attempt(), file = destination(p), originalUnlink = fs.unlinkSync;
+      const release = vi.spyOn(fs, 'unlinkSync').mockImplementation(target => {
+        if (target === p.claimPath) expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({
+          ownerId: p.manifest.ownerId, cellId: p.cell.id, manifestSha256: p.manifestSha256 });
+        return originalUnlink(target);
+      });
+      try {
+        const outcome = publish(p), bytes = fs.readFileSync(file), receipt = JSON.parse(bytes.toString());
+        if (kind === 'success') {
+          expect(receipt).toMatchObject({ armId: p.arm.id, report: { result: 'complete' } });
+          expect(outcome).toMatchObject({ status: 'measured', artifacts: [{ path: file, bytes: bytes.length,
+            sha256: crypto.createHash('sha256').update(bytes).digest('hex') }] });
+        } else expect(receipt.error).toMatchObject({ message: 'measured failure', cause: { message: 'retained cause' } });
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+        expect(fs.existsSync(p.claimPath)).toBe(false);
+        expect(fs.readdirSync(path.dirname(file)).filter(name => name.endsWith('.pending'))).toEqual([]);
+      } finally { release.mockRestore(); }
+    });
+  }
+});
 describe('independent relevance evaluator inputs', () => {
   it('retains abstention diagnostics only for ambiguous excluded queries', () => {
     const { entries, queries, proof } = independentCohortFixture();

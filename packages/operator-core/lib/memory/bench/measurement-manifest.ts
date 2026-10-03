@@ -935,14 +935,31 @@ export async function verifyMeasurementCoverage(m: MeasurementManifest, manifest
   }
 }
 
+/** Publish complete bytes exclusively, preserving a competing receipt. The
+ * blind collector uses the same staging/link protocol; rename would overwrite. */
+function writeMeasurementReceipt(file: string, value: unknown): void {
+  const pending = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.pending`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(pending, 'wx', 0o600);
+    fs.writeFileSync(descriptor, JSON.stringify(value, null, 2));
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor); descriptor = undefined;
+    fs.linkSync(pending, file);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    fs.rmSync(pending, { force: true });
+  }
+}
+
 export function writeMeasurementCell(prepared: PreparedMeasurement, report: unknown): CellOutcome {
   const { rawOutput, manifestSha256, cell, arm } = prepared;
   const owner = JSON.parse(fs.readFileSync(prepared.claimPath, 'utf8'));
   if (owner.ownerId !== prepared.manifest.ownerId || owner.pid !== process.pid || owner.manifestSha256 !== manifestSha256
     || owner.cellId !== cell.id) throw new Error('cell output claim identity mismatch');
   fs.mkdirSync(path.dirname(rawOutput), { recursive: true });
-  fs.writeFileSync(rawOutput, JSON.stringify({ formatVersion: 1, manifestSha256, cellId: cell.id,
-    armId: arm.id, ownerId: prepared.manifest.ownerId, measuredAt: new Date().toISOString(), report }, null, 2), { flag: 'wx', mode: 0o600 });
+  writeMeasurementReceipt(rawOutput, { formatVersion: 1, manifestSha256, cellId: cell.id,
+    armId: arm.id, ownerId: prepared.manifest.ownerId, measuredAt: new Date().toISOString(), report });
   fs.unlinkSync(prepared.claimPath);
   const bytes = fs.readFileSync(rawOutput);
   return { cellId: cell.id, manifestSha256, status: 'measured', artifacts: [{ path: rawOutput,
@@ -970,9 +987,8 @@ function measurementFailure(error: unknown, depth = 0, seen = new WeakSet<object
 
 export function failMeasurementCell(prepared: PreparedMeasurement, error: unknown): void {
   if (!fs.existsSync(prepared.claimPath)) return;
-  fs.writeFileSync(`${prepared.rawOutput}.failure.json`, JSON.stringify({ formatVersion: 1,
+  writeMeasurementReceipt(`${prepared.rawOutput}.failure.json`, { formatVersion: 1,
     manifestSha256: prepared.manifestSha256, cellId: prepared.cell.id, ownerId: prepared.manifest.ownerId,
-    failedAt: new Date().toISOString(), error: measurementFailure(error) }, null, 2),
-  { flag: 'wx', mode: 0o600 });
+    failedAt: new Date().toISOString(), error: measurementFailure(error) });
   fs.unlinkSync(prepared.claimPath);
 }
