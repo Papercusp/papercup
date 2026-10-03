@@ -2404,6 +2404,39 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', answeringOwnerId: 'dead-x-fork' });
   });
 
+  it('clears early answering-owner reservations when dispatch fails after the callback', async () => {
+    const second = cand('expert-b', { score: 0.65 });
+    const third = cand('expert-c', { score: 0.6 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second, third]));
+    deps.reach = async (o) => {
+      reached.push(o);
+      const answeringOwnerId = o.responder + '-fork';
+      // The identity is stamped before launch; a failed dispatch must not make
+      // this reservation look like a session that can answer.
+      await o.onAnsweringOwner?.(answeringOwnerId);
+      if (o.responder !== 'expert-c') {
+        return { queued: 0, woke: 0, pickupConfirmed: false, answeringOwnerId: null };
+      }
+      return { queued: 1, woke: 1, pickupConfirmed: false, answeringOwnerId };
+    };
+
+    const res = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 3 }, deps));
+
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'expert-b', 'expert-c']);
+    expect(res.verdict).toBe('routed');
+    expect(res.responder?.ownerId).toBe('expert-c');
+    const row = await stateRow(res.conversation_id);
+    expect(row).toMatchObject({ state: 'awaiting_responder', responder_id: 'expert-c', cascade_cursor: 2 });
+    const selected = (row.routing as { selection: { selected: Array<Record<string, unknown>> } }).selection.selected;
+    expect(selected[0]?.answeringOwnerId).toBeUndefined();
+    expect(selected[1]?.answeringOwnerId).toBeUndefined();
+    expect(selected[2]?.answeringOwnerId).toBe('expert-c-fork');
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: 'dead-x', kind: 'dispatch_failed' },
+      { ownerId: 'expert-b', kind: 'dispatch_failed' },
+    ]);
+  });
+
   it('an expert whose whole allowlist is exhausted fails over to the next selectee, digesting dispatch_failed', async () => {
     // Two QUALIFIED experts, so the menu has a second seat to fail over into.
     // Call 1 (the head) launches nobody; call 2 (the failover) launches.
