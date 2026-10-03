@@ -2086,6 +2086,7 @@ export const bootstrapSu = defineTool({
       row: import('../../../session-port/store').SessionPortRow;
       seed: string;
       requestHash: string;
+      targetOwnerId: string;
     } | null = null;
     const portToken = body.session_port_token?.trim() || null;
     const portProtocol = body.session_port_protocol;
@@ -2165,14 +2166,20 @@ export const bootstrapSu = defineTool({
       }
       const sourceCoordOwnerId =
         typeof row.metadata.sourceCoordOwnerId === 'string' ? row.metadata.sourceCoordOwnerId.trim() : '';
+      let targetOwnerId: string;
+      try {
+        targetOwnerId = service.resolveSessionPortTargetOwner(sourceCoordOwnerId, summary?.target?.ownerId);
+      } catch (error) {
+        return jsonRes({ status: 'error', error: error instanceof Error ? error.message : String(error) }, 409);
+      }
       const requestedOwnerId = body.owner_id?.trim() || '';
-      if (!sourceCoordOwnerId || requestedOwnerId !== sourceCoordOwnerId) {
+      if (requestedOwnerId !== targetOwnerId) {
         return jsonRes(
           {
             status: 'error',
-            error: sourceCoordOwnerId
-              ? `session port must continue source coordination identity ${sourceCoordOwnerId}; got ${requestedOwnerId || 'none'}`
-              : 'prepared session port is missing its source coordination identity; inspect again with the current launcher/operator',
+            error: summary?.target?.ownerId === undefined
+              ? `session port must continue source coordination identity ${targetOwnerId}; got ${requestedOwnerId || 'none'}`
+              : `session port must use prepared isolated target owner ${targetOwnerId}; got ${requestedOwnerId || 'none'}`,
           },
           409,
         );
@@ -2182,10 +2189,10 @@ export const bootstrapSu = defineTool({
         logicalRequestHash: row.idempotencyKey,
         workspaceId: workspace,
         sourceAdvSessionId: row.sourceAdvSessionId,
-        ownerId: sourceCoordOwnerId,
+        ownerId: targetOwnerId,
         target: {
           ...summary.target,
-          backend: row.targetBackend === 'omp' ? 'omp' : 'codex',
+          backend: row.targetBackend,
         },
         cwd,
         planSlug,
@@ -2252,7 +2259,7 @@ export const bootstrapSu = defineTool({
           error: `prepared session port no longer fits the target launch budget (${estimatedTokens} > ${previewBudget.availableInputTokens}); inspect again`,
         }, 409);
       }
-      sessionPortContext = { row, seed, requestHash };
+      sessionPortContext = { row, seed, requestHash, targetOwnerId };
     }
 
     // WI-41363: claim before the first session/fleet/account write. A replay
@@ -2313,17 +2320,11 @@ export const bootstrapSu = defineTool({
     let adoptableStartingRowId: number | null = null;
     const requestedSid = body.owner_id?.trim() || null;
     if (sessionPortContext) {
-        const sourceCoordOwnerId =
-          typeof sessionPortContext.row.metadata.sourceCoordOwnerId === 'string'
-        ? sessionPortContext.row.metadata.sourceCoordOwnerId.trim()
-        : '';
-      if (!sourceCoordOwnerId || requestedSid !== sourceCoordOwnerId) {
+      if (requestedSid !== sessionPortContext.targetOwnerId) {
         return jsonRes(
           {
             status: 'error',
-            error: sourceCoordOwnerId
-              ? `session port must continue source coordination identity ${sourceCoordOwnerId}; got ${requestedSid ?? 'none'}`
-              : 'prepared session port is missing its source coordination identity; inspect again with the current launcher/operator',
+            error: `session port must use its prepared target coordination identity ${sessionPortContext.targetOwnerId}; got ${requestedSid ?? 'none'}`,
           },
           409,
         );

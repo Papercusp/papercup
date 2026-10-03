@@ -992,18 +992,28 @@ describe('bootstrap-su', () => {
       systemPromptAddendum: 'Test-only persisted system carry addendum.',
     };
     consumePendingCarryRespawnMock.mockResolvedValueOnce(slot);
-    recordAdvSessionMock.mockRejectedValueOnce(new Error('session write failed'));
+    compileLaunchSpecificationArtifactMock.mockRejectedValueOnce(new Error('artifact compile failed'));
 
-    await expect(callPost({
+    const response = await callPost({
       agent: 'claude',
       harness_slug: 'papercup',
       owner_id: 'su-carry-restore',
-    })).rejects.toThrow('session write failed');
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('artifact compile failed') });
 
     expect(restorePendingCarryRespawnMock).toHaveBeenCalledWith('su-carry-restore', 'default', slot);
     expect(restorePendingCarryRespawnMock.mock.invocationCallOrder[0]).toBeGreaterThan(
-      recordAdvSessionMock.mock.invocationCallOrder[0],
+      consumePendingCarryRespawnMock.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('leaves an unconsumed carry pending when session creation fails first', async () => {
+    recordAdvSessionMock.mockRejectedValueOnce(new Error('session write failed'));
+    await expect(callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-carry-early-fail' }))
+      .rejects.toThrow('session write failed');
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
+    expect(restorePendingCarryRespawnMock).not.toHaveBeenCalled();
   });
 
   it('EI-155: claude gets a per-session CLAUDE_CONFIG_DIR keyed by the minted sid', async () => {
@@ -1179,6 +1189,29 @@ describe('bootstrap-su', () => {
     expect(res.status).toBe(409);
     expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an already-live isolated answer owner blocking without reclaiming it', async () => {
+    const port = sessionPortRow();
+    port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    dbState.advRows = [{ id: '777', display: 'terminal', has_session: true }];
+    resolveSessionStatesMock.mockResolvedValueOnce(new Map([['su-answer-owner', { sessionState: 'live' }]]));
+    try {
+      const res = await callPost({
+        agent: 'codex', model: 'gpt-5.5', owner_id: 'su-answer-owner',
+        bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+        session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+        session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+        session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: expect.stringContaining('already bound to live adv session 777') });
+      expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+    } finally {
+      dbState.advRows = [];
+    }
   });
 
   it('refuses an old launcher missing the transform handshake before creating a target row', async () => {
