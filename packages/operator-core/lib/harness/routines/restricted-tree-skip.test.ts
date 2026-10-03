@@ -92,7 +92,6 @@ const JUSTIFIED: Record<string, string> = {
   'harness/routines/dead-citation-sweep-action.ts': 'git ls-files plus file reads; executes nothing',
   'harness/routines/gitnexus-reindex-action.ts': 'tree-sitter parses tree files; never executes them',
   'harness/routines/frozen-candidate-drift-sweep-action.ts': 'git log / rev-parse only',
-  'harness/routines/nightly-release-cut-action.ts': 'cuts from a committed sha via git; D-011 keeps restricted writes out of every commit',
 };
 
 function sourceFiles(dir: string): string[] {
@@ -147,6 +146,9 @@ describe('classification guard (derived from source)', () => {
       'harness/routines/sync-batch-delta-check-action.ts',
       'harness/routines/gate-fire-drill-action.ts',
       'harness/routines/release-actions.ts',
+      // Runs release-local.sh and setup-release-checkout.sh from the LIVE tree before it moves
+      // into the pinned release checkout; a committed source sha does not cover those scripts.
+      'harness/routines/nightly-release-cut-action.ts',
     ];
     for (const rel of declared) expect(readFileSync(join(LIB, rel), 'utf8'), rel).toContain('executesIntegrationTreeCode: true');
   });
