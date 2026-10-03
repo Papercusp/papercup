@@ -1265,9 +1265,19 @@ export async function buildLaunchSpec(input: BuildLaunchSpecInput): Promise<Laun
 }
 
 export class SuInstancePromptDriftError extends Error {
-  constructor(message: string) {
+  /** Why the check refused. Only `'differs'` carries a readable, non-empty `source`
+   *  and is therefore the only reason `reconcilePapercuspSuInstanceOverride` may heal. */
+  readonly reason: 'source-unavailable' | 'differs' | 'reseed-failed';
+  /** The canonical source text, present only for `reason: 'differs'`. */
+  readonly source: string | null;
+  constructor(
+    message: string,
+    details: { reason?: 'source-unavailable' | 'differs' | 'reseed-failed'; source?: string | null } = {},
+  ) {
     super(message);
     this.name = 'SuInstancePromptDriftError';
+    this.reason = details.reason ?? 'source-unavailable';
+    this.source = details.source ?? null;
   }
 }
 
@@ -1298,7 +1308,59 @@ export function verifyPapercuspSuInstanceOverride(input: {
   if (input.storedOverride !== source) {
     throw new SuInstancePromptDriftError(
       `Papercusp su override differs from ${sourcePath}; re-seed promptOverride.su for papercusp before launching an su session`,
+      { reason: 'differs', source },
     );
+  }
+}
+
+/**
+ * Launch-time reconcile for the Papercusp su instance override (WI-10005774).
+ *
+ * The version-controlled source (`papercup-pot.su.md`) is canonical; the stored
+ * `promptOverride.su` is a cache of it. `verifyPapercuspSuInstanceOverride` stays strict
+ * (the launch must never read a persona that differs from the source), but REFUSING is the
+ * wrong response to a cache that is merely behind: the only edit-time re-seed is a
+ * Claude-only PostToolUse hook, so any other way the file changes (a Codex/OMP edit, a
+ * `sed`, a git merge, another machine) left every fresh su launch refused until someone
+ * re-seeded by hand (WI-10004556, again 2026-10-03 ~01:33Z). This is the one chokepoint
+ * every launch passes, so it is the layer-independent place to restore the invariant.
+ *
+ * Heals ONLY `reason: 'differs'` with a non-blank source: an unreadable source, a blank
+ * source (never clear the override implicitly) or a failed re-seed all still fail closed.
+ * Returns the override text the launch must use.
+ */
+export async function reconcilePapercuspSuInstanceOverride(input: {
+  workspaceId: string;
+  potSlug: string;
+  promptsDirectory: string | undefined;
+  storedOverride: string | null;
+  reseed: (source: string) => Promise<void>;
+  onHeal?: (detail: string) => void;
+}): Promise<string | null> {
+  try {
+    verifyPapercuspSuInstanceOverride(input);
+    return input.storedOverride;
+  } catch (error) {
+    if (
+      !(error instanceof SuInstancePromptDriftError) ||
+      error.reason !== 'differs' ||
+      error.source === null ||
+      error.source.trim().length === 0
+    ) {
+      throw error;
+    }
+    try {
+      await input.reseed(error.source);
+    } catch (reseedError) {
+      throw new SuInstancePromptDriftError(
+        `${error.message} (launch-time self-heal re-seed FAILED: ${reseedError instanceof Error ? reseedError.message : String(reseedError)})`,
+        { reason: 'reseed-failed' },
+      );
+    }
+    input.onHeal?.(
+      `stored promptOverride.su was stale vs its source (${input.storedOverride?.length ?? 0} -> ${error.source.length} chars); re-seeded at launch`,
+    );
+    return error.source;
   }
 }
 
@@ -1571,15 +1633,19 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   if (suBaseSource && harnessSlug) {
     try {
       const { potHomeSlugForHarness } = await import('./hive-federation');
-      const { getHiveInstancePromptOverride } = await import('./hive-settings-store');
+      const { getHiveInstancePromptOverride, setHiveInstancePromptOverride } = await import('./hive-settings-store');
       const potSlug = await potHomeSlugForHarness(input.workspaceId, harnessSlug);
       if (potSlug) {
-        const inst = await getHiveInstancePromptOverride(input.workspaceId, potSlug, 'su');
-        verifyPapercuspSuInstanceOverride({
+        const stored = await getHiveInstancePromptOverride(input.workspaceId, potSlug, 'su');
+        // Self-heals a store that is merely behind the canonical source (WI-10005774);
+        // still throws SuInstancePromptDriftError (fail-closed) when it cannot.
+        const inst = await reconcilePapercuspSuInstanceOverride({
           workspaceId: input.workspaceId,
           potSlug,
           promptsDirectory: suOverlayDir,
-          storedOverride: inst,
+          storedOverride: stored,
+          reseed: (source) => setHiveInstancePromptOverride(input.workspaceId, potSlug, 'su', source),
+          onHeal: (detail) => console.warn(`[role-launch-spec] su-instance-override self-heal: ${detail}`),
         });
         if (inst) suPersonaText = `${suPersonaText.replace(/\n+$/, '')}\n\n${inst}`;
       }
