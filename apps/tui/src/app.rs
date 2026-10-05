@@ -6917,6 +6917,68 @@ impl App {
     /// what went wrong and the single next step. The raw text can carry
     /// session ids, reconciliation states and operator addresses, so it stays
     /// behind Ctrl-O.
+    /// pui-chat-first-ux P-024: the line under the transcript while a turn
+    /// runs, shaped like Claude Code's: a moving spinner, what the engine is
+    /// doing, how long it has taken, roughly how much it has written, and how
+    /// to stop it. Repainted on every idle tick (`on_tick`).
+    pub fn chat_working_line(&self, now: std::time::Instant) -> String {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let elapsed = self
+            .chat_turn_started
+            .map(|started| now.saturating_duration_since(started))
+            .unwrap_or_default();
+        let frame = FRAMES[(elapsed.as_millis() / 250) as usize % FRAMES.len()];
+        let engine = self.chat_engine_label();
+        let reply = self
+            .chat_messages
+            .last()
+            .filter(|m| m.role == "assistant" && m.streaming);
+        let written = reply.map_or(0, |m| m.content.chars().count() + m.reasoning.chars().count());
+        let tools = reply.map_or(0, |m| m.tools.len());
+        let awaiting_approval = reply.is_some_and(|m| m.tools.iter().any(|t| t.needs_approval));
+        let starting = match self.su_session.as_ref() {
+            Some(session) => matches!(
+                session.lifecycle,
+                crate::su_session::SuSessionLifecycleState::Starting
+                    | crate::su_session::SuSessionLifecycleState::Resuming
+            ),
+            // The engine is still being launched for this message.
+            None => self.su_pending_turn.is_some(),
+        };
+        let phase = if awaiting_approval {
+            "Waiting for your approval".to_string()
+        } else if starting && elapsed.as_secs() >= 5 {
+            format!("Still starting {engine}; your message will send when it is ready")
+        } else if starting {
+            format!("Starting {engine}")
+        } else if written == 0 && tools == 0 {
+            "Thinking".to_string()
+        } else {
+            "Working".to_string()
+        };
+        let secs = elapsed.as_secs();
+        let mut detail = if secs < 60 {
+            format!("{secs}s")
+        } else {
+            format!("{}m {:02}s", secs / 60, secs % 60)
+        };
+        if tools > 0 {
+            detail.push_str(&format!(" · {tools} tool{}", if tools == 1 { "" } else { "s" }));
+        }
+        if written > 0 {
+            // Characters / 4 is the usual English estimate; "~" says it is one.
+            let tokens = written.div_ceil(4);
+            let shown = if tokens >= 1000 {
+                format!("{:.1}k", tokens as f64 / 1000.0)
+            } else {
+                tokens.to_string()
+            };
+            detail.push_str(&format!(" · ↓ ~{shown} tokens"));
+        }
+        let key = if self.chat_composing { "Esc" } else { "Ctrl+X" };
+        format!("{frame} {phase}… ({detail} · {key} to interrupt)")
+    }
+
     pub fn chat_failure_sentence(&self) -> Option<String> {
         let raw = self.chat_raw_failure()?.to_ascii_lowercase();
         let engine = self.chat_engine_label();
@@ -6929,6 +6991,19 @@ impl App {
         if pending.is_some_and(|turn| turn.uncertain) {
             return Some(format!(
                 "It is not clear whether {engine} received your message; press Enter to check."
+            ));
+        }
+        // P-024: the bounded send waits (main.rs await_su_send_readiness) name
+        // what was slow; they must not fall through to "stopped before it was
+        // ready", which claims the engine died when it may still be starting.
+        if raw.contains("did not become ready within") {
+            return Some(format!(
+                "{engine} is taking too long to start; your message is kept, {retry}."
+            ));
+        }
+        if raw.contains("operator did not answer within") {
+            return Some(format!(
+                "Papercusp is not answering; check that it is running, then {retry}."
             ));
         }
         let sentence = if raw.contains("/login")
@@ -8451,12 +8526,19 @@ impl App {
         if let Some(action) = self.drain_queued_turn() {
             return action;
         }
+        // P-024: a running turn's working line moves (spinner frame, elapsed
+        // seconds), so each idle tick repaints while a turn is in flight.
+        let idle = if self.chat_streaming {
+            Action::Render
+        } else {
+            Action::None
+        };
         let Some(refresh) = self.session_browser.launch_refresh.as_mut() else {
-            return Action::None;
+            return idle;
         };
         if refresh.ticks_until_next > 0 {
             refresh.ticks_until_next -= 1;
-            return Action::None;
+            return idle;
         }
         refresh.step += 1;
         match LaunchRefresh::GAPS.get(refresh.step) {
@@ -18447,6 +18529,33 @@ mod tests {
     /// pui-chat-first-ux P-003: an engine that dies while starting (the
     /// stream-error path) reads as one plain sentence with the retry step; the
     /// raw "SU-session: …" text is kept for the details view only.
+    /// P-024: the bounded send waits name what was slow instead of claiming
+    /// the engine stopped (P-023's "Claude stopped before it was ready").
+    #[test]
+    fn chat_first_slow_send_failures_say_what_was_slow() {
+        for (raw, expected) in [
+            (
+                "Session did not become ready within 60s. Draft retained.",
+                "Claude is taking too long to start; your message is kept, press Enter to send your message again.",
+            ),
+            (
+                "The operator did not answer within 5s. Draft retained.",
+                "Papercusp is not answering; check that it is running, then press Enter to send your message again.",
+            ),
+        ] {
+            let mut a = chat_first_app();
+            a.chat_input = "hello".into();
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+            a.update(Event::SuSessionOpened(su_binding()));
+            a.agent_chat_id = Some("chat-1".into());
+            a.update(Event::SuSessionStreamError {
+                chat_id: "chat-1".into(),
+                message: raw.into(),
+            });
+            assert_eq!(a.chat_failure_sentence().as_deref(), Some(expected), "{raw}");
+        }
+    }
+
     #[test]
     fn chat_first_startup_failure_is_one_plain_sentence() {
         let mut a = chat_first_app();

@@ -3422,10 +3422,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     if inline {
         f.render_widget(Paragraph::new(lines).scroll((top, 0)), transcript_area);
         if let Some(row) = running_row {
-            let key = if app.chat_composing { "Esc" } else { "Ctrl+X" };
+            // P-024: spinner, phase, elapsed, output and the stop key.
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    format!("{} Running · {key} to interrupt", crate::glyph::status::WIP),
+                    app.chat_working_line(std::time::Instant::now()),
                     Theme::notify(),
                 ))),
                 row,
@@ -10109,10 +10109,64 @@ mod tests {
         let text = rows.join("\n");
         let running = rows
             .iter()
-            .position(|r| r.contains("Running · Esc to interrupt"))
+            .position(|r| r.contains("Thinking… (0s · Esc to interrupt)"))
             .unwrap_or_else(|| panic!("{text}"));
         assert!(rows[running + 1].trim_end().ends_with('─'), "{text}");
         assert!(!text.contains("Agent Chat"), "{text}");
+    }
+
+    /// P-024: the working line moves and says what is happening, the way
+    /// Claude Code's does: elapsed time from the turn's start, roughly how much
+    /// has been written, and a starting phase that turns plain after 5s.
+    #[test]
+    fn chat_first_working_line_counts_time_and_output() {
+        let mut app = chat_first_bound_app();
+        app.chat_streaming = true;
+        let start = std::time::Instant::now();
+        app.chat_turn_started = Some(start);
+        app.chat_messages
+            .push(crate::models::ChatMessage::streaming_assistant());
+        let at = |secs| start + std::time::Duration::from_secs(secs);
+        let first = app.chat_working_line(at(3));
+        assert!(first.contains("Thinking… (3s · Esc to interrupt)"), "{first}");
+        app.chat_messages.last_mut().unwrap().content = "x".repeat(4_400);
+        let later = app.chat_working_line(at(75));
+        assert!(later.contains("Working… (1m 15s · ↓ ~1.1k tokens · Esc to interrupt)"), "{later}");
+        // The spinner frame advances with time, so consecutive ticks differ.
+        let frame = |line: String| line.chars().next().unwrap();
+        assert_ne!(
+            frame(app.chat_working_line(start + std::time::Duration::from_millis(250))),
+            frame(app.chat_working_line(start + std::time::Duration::from_millis(500)))
+        );
+        // Each idle tick repaints while the turn runs.
+        assert_eq!(app.update(crate::event::Event::Tick), crate::app::Action::Render);
+    }
+
+    /// P-024 / P-023: a message sent while the engine launches says so, and
+    /// after 5s says plainly that it is still starting rather than going quiet.
+    #[test]
+    fn chat_first_working_line_names_a_slow_start() {
+        let mut app = chat_first_bound_app();
+        app.chat_streaming = true;
+        let start = std::time::Instant::now();
+        app.chat_turn_started = Some(start);
+        app.su_session = None;
+        app.su_pending_turn = Some(crate::app::PendingSuTurn {
+            command_id: "c1".into(),
+            content: "hi".into(),
+            draft: "hi".into(),
+            attachment_references: Vec::new(),
+            command: None,
+            uncertain: false,
+            error: None,
+        });
+        let at = |secs| start + std::time::Duration::from_secs(secs);
+        assert!(app.chat_working_line(at(2)).contains("Starting Claude… (2s"));
+        let slow = app.chat_working_line(at(6));
+        assert!(
+            slow.contains("Still starting Claude; your message will send when it is ready… (6s"),
+            "{slow}"
+        );
     }
 
     #[test]

@@ -6323,6 +6323,68 @@ async fn recover_detached_runtime(
 const SU_TURN_ACCEPT_ATTEMPT: Duration = Duration::from_secs(30);
 const SU_TURN_ACCEPT_ATTEMPTS: u32 = 4;
 
+/// pui-chat-first-ux P-024: how long a send may wait on each part of the path
+/// before PUI says so in plain words. The HTTP client bounds only the connect,
+/// so without `operator` a hung operator would leave the owner looking at a
+/// spinner forever.
+#[derive(Clone, Copy, Debug)]
+struct SuSendBudgets {
+    /// One readiness read from the operator.
+    operator: Duration,
+    /// A message typed while the engine is still starting waits this long for it.
+    ready: Duration,
+    /// Gap between readiness reads while the engine starts.
+    poll: Duration,
+}
+
+impl SuSendBudgets {
+    const LIVE: Self = Self {
+        operator: Duration::from_secs(5),
+        ready: Duration::from_secs(60),
+        poll: Duration::from_millis(250),
+    };
+}
+
+/// P-024: a message sent while the engine is still starting waits for it (the
+/// working line shows that it is starting) instead of being refused, which is
+/// what made "hi" fail with "Claude stopped before it was ready" (P-023). Every
+/// way this can fail ends in a plain error within a bounded time, never silence.
+async fn await_su_send_readiness<F, Fut>(
+    mut read: F,
+    budgets: SuSendBudgets,
+) -> std::result::Result<crate::su_session::SuSessionSnapshot, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<crate::su_session::SuSessionSnapshot>>,
+{
+    let started = tokio::time::Instant::now();
+    loop {
+        let snapshot = match tokio::time::timeout(budgets.operator, read()).await {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(error)) => return Err(format!("Cannot read session readiness: {error}")),
+            Err(_) => {
+                return Err(format!(
+                    "The operator did not answer within {}s. Draft retained.",
+                    budgets.operator.as_secs().max(1)
+                ))
+            }
+        };
+        if snapshot.terminal {
+            return Err("Session has ended. Draft retained; reconnect to retry.".into());
+        }
+        if snapshot.executor_attached && snapshot.stream_ready {
+            return Ok(snapshot);
+        }
+        if started.elapsed() >= budgets.ready {
+            return Err(format!(
+                "Session did not become ready within {}s. Draft retained.",
+                budgets.ready.as_secs().max(1)
+            ));
+        }
+        tokio::time::sleep(budgets.poll).await;
+    }
+}
+
 async fn send_su_turn_with_client(
     client: &OperatorClient,
     harness: &str,
@@ -6341,22 +6403,20 @@ async fn send_su_turn_with_client(
     let command = if let Some(command) = pending.command.clone() {
         command // Retry the exact committed payload, including its original timestamp.
     } else {
-        let snapshot = match client.su_session_snapshot(harness, chat_id).await {
+        // A connected engine remains usable while waiting for its next owner
+        // turn or after interruption; readiness is separate from that lifecycle.
+        let snapshot = match await_su_send_readiness(
+            || client.su_session_snapshot(harness, chat_id),
+            SuSendBudgets::LIVE,
+        )
+        .await
+        {
             Ok(snapshot) => snapshot,
-            Err(error) => {
-                fail(format!("Cannot read session readiness: {error}"), false);
+            Err(message) => {
+                fail(message, false);
                 return;
             }
         };
-        // A connected engine remains usable while waiting for its next owner
-        // turn or after interruption; readiness is separate from that lifecycle.
-        if !snapshot.executor_attached || !snapshot.stream_ready || snapshot.terminal {
-            fail(
-                "Session is not ready. Draft retained; reconnect to retry.".into(),
-                false,
-            );
-            return;
-        }
         let identity = snapshot.descriptor.identity;
         if !su_turn_target_matches(binding, &identity, harness, chat_id) {
             fail(
@@ -8063,6 +8123,114 @@ mod tests {
 
     #[test]
     fn initial_turn_snapshot_requires_a_ready_matching_native_runtime() {
+        initial_turn_snapshot_requires_a_ready_matching_native_runtime_body();
+    }
+
+    /// P-024 fixture: a snapshot in the given readiness state.
+    fn readiness_snapshot(
+        attached: bool,
+        ready: bool,
+        terminal: bool,
+    ) -> crate::su_session::SuSessionSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "descriptor": {
+                "identity": {
+                    "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+                    "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1",
+                    "harnessSlug":"papercup"
+                },
+                "lifecycle": if attached { "ready" } else { "starting" },
+                "runtimeGeneration": 0,
+                "role": "su",
+                "carry": "warm",
+                "modes": [],
+                "capabilities": {"commands": {}, "features": {}},
+                "backendExtension": {"backend": "claude", "configDir": null, "configDirSource": null}
+            },
+            "floorSequence": 1,
+            "lastSequence": 1,
+            "terminal": terminal,
+            "executorAttached": attached,
+            "streamReady": ready
+        }))
+        .unwrap()
+    }
+
+    const FAST: SuSendBudgets = SuSendBudgets {
+        operator: Duration::from_millis(60),
+        ready: Duration::from_millis(200),
+        poll: Duration::from_millis(10),
+    };
+
+    /// P-023 / P-024: "hi" typed while Claude is still starting must wait for
+    /// it, not be refused with "Session is not ready".
+    #[tokio::test]
+    async fn a_send_waits_for_a_starting_engine_then_goes() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counter = reads.clone();
+        let outcome = await_su_send_readiness(
+            move || {
+                let n = counter.get() + 1;
+                counter.set(n);
+                async move { Ok(readiness_snapshot(n >= 3, true, false)) }
+            },
+            FAST,
+        )
+        .await;
+        assert!(outcome.is_ok_and(|s| s.executor_attached));
+        assert_eq!(reads.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_hung_operator_is_reported_within_its_budget() {
+        let started = std::time::Instant::now();
+        let outcome = await_su_send_readiness(
+            || std::future::pending::<Result<crate::su_session::SuSessionSnapshot>>(),
+            FAST,
+        )
+        .await;
+        let message = outcome.expect_err("a hung operator must not be waited on");
+        assert!(message.contains("operator did not answer within"), "{message}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn an_engine_that_never_gets_ready_ends_in_a_plain_error() {
+        let message = await_su_send_readiness(
+            || async { Ok(readiness_snapshot(false, true, false)) },
+            FAST,
+        )
+        .await
+        .expect_err("readiness is bounded");
+        assert!(message.contains("did not become ready within"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn an_ended_session_or_an_operator_error_is_not_retried() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counter = reads.clone();
+        let ended = await_su_send_readiness(
+            move || {
+                counter.set(counter.get() + 1);
+                async { Ok(readiness_snapshot(false, false, true)) }
+            },
+            FAST,
+        )
+        .await
+        .expect_err("an ended session cannot take a turn");
+        assert!(ended.contains("Session has ended"), "{ended}");
+        assert_eq!(reads.get(), 1);
+        let refused = await_su_send_readiness(
+            || async { Err(anyhow::anyhow!("connection refused")) },
+            FAST,
+        )
+        .await
+        .expect_err("an unreachable operator fails at once");
+        assert!(refused.contains("Cannot read session readiness: connection refused"), "{refused}");
+    }
+
+    fn initial_turn_snapshot_requires_a_ready_matching_native_runtime_body() {
         let mut binding: crate::su_session::SuSessionBinding =
             serde_json::from_value(serde_json::json!({
                 "operation":"created", "backend":"claude", "advSessionId":7,
