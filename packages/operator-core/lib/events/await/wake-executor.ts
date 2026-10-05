@@ -165,6 +165,12 @@ import {
  *  ledger write must not block the event loop); hermetic test stubs may stay
  *  sync, so callers always await the result. */
 export type WakeTurnTagger = (args: Parameters<typeof tagTurnForInjection>[0]) => TaggedTurn | Promise<TaggedTurn>;
+
+// Text accepted by the lower-level injector only after tagWakeText has written
+// its provenance ledger entry and prefixed the envelope. The brand lets the
+// source guard preserve that proof through the nested warm-wake closure.
+declare const ENROLLED_WAKE_TEXT: unique symbol;
+type EnrolledWakeText = string & { readonly [ENROLLED_WAKE_TEXT]: true };
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import {
   readOwnerChatTurnText,
@@ -2053,7 +2059,7 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
  * ledger write still returns deliverable tagged text (the turn then shows as
  * UNVERIFIED at the hook — visible, never a dropped wake).
  */
-async function tagWakeText(d: DeliveryWork, text: string, tag: WakeTurnTagger): Promise<string> {
+async function tagWakeText(d: DeliveryWork, text: string, tag: WakeTurnTagger): Promise<EnrolledWakeText> {
   const origin = readLoopDeliveryMarker(d.payload)
     ? 'loop-fire'
     : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
@@ -2072,14 +2078,14 @@ async function tagWakeText(d: DeliveryWork, text: string, tag: WakeTurnTagger): 
       ? OWNER_CHAT_TURN_ORIGIN
       : 'wake-pump';
   try {
-    return (await tag({ sid: d.subscriberId, origin, text })).taggedText;
+    return (await tag({ sid: d.subscriberId, origin, text })).taggedText as EnrolledWakeText;
   } catch {
     // The wake itself is fail-soft, but returning it without an envelope turns a
     // machine prompt into affirmative owner speech in every transcript reader.
     // Keep delivery moving with a syntactically valid, unverified envelope; the
     // prompt hook can classify it as unverified (there is no ledger row), while
     // owner-visible readers still fail closed on the non-owner origin.
-    return `${formatEnvelope(origin, mintNonce())}\n${text}`;
+    return `${formatEnvelope(origin, mintNonce())}\n${text}` as EnrolledWakeText;
   }
 }
 
@@ -2891,7 +2897,7 @@ export function parkOnHostDeferral(
 async function injectPsuHostWake(
   d: DeliveryWork,
   host: PsuInjectHostView,
-  warmText: string,
+  warmText: EnrolledWakeText,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
   capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
@@ -3328,7 +3334,7 @@ async function injectPsuHostWake(
  */
 async function injectPsuHostWakeWithReverify(
   d: DeliveryWork,
-  warmText: string,
+  warmText: EnrolledWakeText,
   findPsuHost: (ownerId: string) => PsuInjectHostView | null,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,

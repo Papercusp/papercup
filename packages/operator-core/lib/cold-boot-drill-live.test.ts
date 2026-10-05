@@ -64,6 +64,13 @@ function startHarness(seed: ColdBootDrillLedgerEvent[] = []) {
         injected.push({ sock, msg });
         return true;
       },
+      tagTurn: async ({ sid, origin, text }: { sid: string; origin: string; text: string }) => ({
+        taggedText: `⟦turn-origin:${origin} nonce:0123456789abcdef⟧\n${text}`,
+        envelope: `⟦turn-origin:${origin} nonce:0123456789abcdef⟧`,
+        nonce: '0123456789abcdef',
+        origin: 'watchdog',
+        ledgerWritten: true,
+      }),
       readLedger: async () => ledger,
       appendLedger: async (event: ColdBootDrillLedgerEvent) => {
         ledger.push(event);
@@ -94,6 +101,7 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
       },
     });
     expect(String(h.injected[0].msg.data)).toContain('⟦carry-drill:drill-1⟧');
+    expect(String(h.injected[0].msg.data)).toMatch(/^⟦turn-origin:watchdog nonce:[a-f0-9]{16}⟧\n/);
     expect(String(h.injected[0].msg.data)).toContain('⟦post-compaction-recovery⟧');
     expect(String(h.injected[0].msg.data)).toContain('do not call coord:orient');
     expect(String(h.injected[0].msg.data)).toContain('coord:declare-intent { intent, current_plan_slug, items }');

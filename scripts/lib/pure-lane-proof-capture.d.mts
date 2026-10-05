@@ -92,6 +92,31 @@ export function buildCaptureEnv(env: any, { resultFile, runGroupId, sha }: {
 /** The repo-relative pure-lane files of `wsAbsDir`, whatever form the include list uses. */
 export function repoRelativeLaneFiles(root: any, wsAbsDir: any, include: any): any;
 /**
+ * Read the proofs THIS capture slice actually persisted, with its source=local test row.
+ * The proof table is mutable: retain these names now, before another run replaces them.
+ * No cap or aggregate may stand in for the named population.
+ * @param {{ client: { query: Function }, sha: string, runGroupId: string, files: string[], sinceMs: number }} o
+ * @returns {Promise<Array<{ file: string, testRunId: string, recordedAtMs: number,
+ *   runnerIdentity: string, runContext: string, runGroupId: string, source: string }> >}
+ */
+export function loadCapturedProofRows({ client, sha, runGroupId, files, sinceMs }: {
+    client: {
+        query: Function;
+    };
+    sha: string;
+    runGroupId: string;
+    files: string[];
+    sinceMs: number;
+}): Promise<Array<{
+    file: string;
+    testRunId: string;
+    recordedAtMs: number;
+    runnerIdentity: string;
+    runContext: string;
+    runGroupId: string;
+    source: string;
+}>>;
+/**
  * Run the capture phase once, in the clean checkpoint checkout `root`, at its HEAD.
  *
  * @param {object} o
@@ -104,7 +129,9 @@ export function repoRelativeLaneFiles(root: any, wsAbsDir: any, include: any): a
  * @param {Partial<typeof defaultDeps>} [o.deps]
  * @returns {Promise<{ state: string, reason: string | null, sha: string | null, slices: number,
  *   files: number, rows: number, retired: number, failed: number, isolatedFail: number,
- *   remaining: number, stoppedBy: string | null, lines: string[] }>}
+ *   remaining: number, stoppedBy: string | null, evidence: { version: 1, runGroupId: string,
+ *   startedAtMs: number, completedAtMs: number, clean: boolean | null,
+ *   proofs: Awaited<ReturnType<typeof loadCapturedProofRows>> | null }, lines: string[] }>}
  */
 export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceMs, deps, }: {
     root: string;
@@ -121,6 +148,7 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceM
         loadShaOutcomes: typeof defaultLoadShaOutcomes;
         loadLatestLaneSha: typeof defaultLoadLatestLaneSha;
         loadSliceFailures: typeof defaultLoadSliceFailures;
+        loadCapturedProofRows: typeof loadCapturedProofRows;
         readResults: (file: any) => import("./executed-source-map.mjs").ExecutedMapResultRead;
         runSlice: typeof defaultRunSlice;
         /** @returns {Promise<number | null>} epoch ms of the next scheduled gate fire, null = unknown */
@@ -142,6 +170,14 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceM
     isolatedFail: number;
     remaining: number;
     stoppedBy: string | null;
+    evidence: {
+        version: 1;
+        runGroupId: string;
+        startedAtMs: number;
+        completedAtMs: number;
+        clean: boolean | null;
+        proofs: Awaited<ReturnType<typeof loadCapturedProofRows>> | null;
+    };
     lines: string[];
 }>;
 export const PURE_PROOF_CAPTURE_ENV: "PC_PURE_PROOF_CAPTURE";

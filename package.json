@@ -255,6 +255,7 @@
     "scan:retirement-surface": "node scripts/scan-retirement-surface.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:no-unenrolled-spawn": "node scripts/check-no-unenrolled-detached-spawn.mjs",
+    "lint:no-unenrolled-injector": "node scripts/check-no-unenrolled-injector.mjs",
     "lint:no-unbounded-inbox-read": "node scripts/check-unbounded-inbox-read.mjs",
     "lint:no-unenrolled-mjs-imports": "node scripts/check-unenrolled-mjs-imports.mjs",
     "lint:no-unenrolled-detached-import": "node scripts/check-no-unenrolled-detached-import.mjs",

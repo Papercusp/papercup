@@ -1,7 +1,7 @@
 /** Regression guard for the source-level machine-turn enrollment checker. */
 import { describe, expect, it } from 'vitest';
 // @ts-ignore — pure JS lint module; imported for its source predicate.
-import { findTurnInjectionSites } from '../../../../scripts/check-no-unenrolled-injector.mjs';
+import { ALLOWLIST, findTurnInjectionSites } from '../../../../scripts/check-no-unenrolled-injector.mjs';
 
 function sites(source: string) {
   return findTurnInjectionSites(source, 'subject.ts') as Array<{
@@ -49,6 +49,50 @@ describe('no-unenrolled-injector guard predicate (EI-21903660573830465)', () => 
 
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ enrolled: true, mode: 'carry-respawn' });
+  });
+
+  it('recognizes enrollment carried through a branded helper parameter and nested closure', () => {
+    const found = sites(`
+      declare const enrolled: unique symbol;
+      type EnrolledWakeText = string & { readonly [enrolled]: true };
+      function injectWake(warmText: EnrolledWakeText) {
+        const injectWarm = () => injectIntoHost(sock, { mode: 'turn', data: warmText });
+        return injectWarm();
+      }
+    `);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ enrolled: true, dataText: 'warmText' });
+  });
+
+  it('does not trust a raw string parameter just because it crosses the same helper boundary', () => {
+    const found = sites(`
+      function injectWake(warmText: string) {
+        const injectWarm = () => injectIntoHost(sock, { mode: 'turn', data: warmText });
+        return injectWarm();
+      }
+    `);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.enrolled).toBe(false);
+  });
+
+  it('resolves shorthand data after the local variable is enrolled', () => {
+    const found = sites(`
+      async function send(raw: string) {
+        let data = raw;
+        data = (await tagTurnForInjection({ sid: owner, origin: 'wake-pump', text: raw })).taggedText;
+        await injectIntoHost(sock, { mode: 'turn', data });
+      }
+    `);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ enrolled: true, dataText: 'data' });
+  });
+
+  it('keeps only exact, reasoned owner-authored pass-through exceptions', () => {
+    expect(ALLOWLIST.size).toBe(3);
+    for (const reason of ALLOWLIST.values()) expect(reason.trim().length).toBeGreaterThan(0);
   });
 
   it('ignores non-prompt transport modes', () => {

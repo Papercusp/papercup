@@ -28,6 +28,7 @@ import {
   type RecoveryLookup,
 } from './cold-boot-drill';
 import { resolveModelSpecForOwner } from './compaction-usage';
+import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import { runFlushGate, type FlushGateOutcome } from './enforcement-gate-io';
 import {
   PSU_PTY_DIR,
@@ -272,6 +273,7 @@ export interface StartColdBootDrillDeps {
     input: Parameters<typeof buildOwnerRespawnLaunchSpec>[1],
   ) => Promise<RespawnLaunchSpec | null>;
   inject: typeof injectIntoHost;
+  tagTurn: typeof tagTurnForInjection;
   readLedger: () => Promise<ColdBootDrillLedgerEvent[]>;
   appendLedger: (event: ColdBootDrillLedgerEvent) => Promise<boolean>;
 }
@@ -289,6 +291,7 @@ function startDeps(overrides: Partial<StartColdBootDrillDeps>): StartColdBootDri
     flushGate: runFlushGate,
     buildSpec: buildOwnerRespawnLaunchSpec,
     inject: injectIntoHost,
+    tagTurn: tagTurnForInjection,
     readLedger: readColdBootDrillLedger,
     appendLedger: appendColdBootDrillLedgerEvent,
     ...overrides,
@@ -438,9 +441,14 @@ export async function startColdBootDrill(
     'Do not search/read your prior self session unless the carry is actually insufficient; ordinary source reads are fine.',
     `At the next clean boundary call session:carry-drill { op: "grade", drillId: "${drillId}" } exactly once.`,
   ].join('\n');
+  const taggedFirstPrompt = (await deps.tagTurn({
+    sid: ownerId,
+    origin: 'watchdog',
+    text: firstPrompt,
+  })).taggedText;
   const injected = await deps.inject(host.sock, {
     mode: 'carry-respawn',
-    data: firstPrompt,
+    data: taggedFirstPrompt,
     // EI-153 addressing: a carry-respawn RE-EXECS the receiving CLI on someone
     // else's carry document, so an UNADDRESSED one is the highest-severity
     // unowned write in this path — the host guard is predicated on `ownerId`

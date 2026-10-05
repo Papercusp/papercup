@@ -298,6 +298,38 @@ async function defaultLoadSliceFailures({ client, runGroupId, files }) {
 }
 
 /**
+ * Read the proofs THIS capture slice actually persisted, with its source=local test row.
+ * The proof table is mutable: retain these names now, before another run replaces them.
+ * No cap or aggregate may stand in for the named population.
+ * @param {{ client: { query: Function }, sha: string, runGroupId: string, files: string[], sinceMs: number }} o
+ * @returns {Promise<Array<{ file: string, testRunId: string, recordedAtMs: number,
+ *   runnerIdentity: string, runContext: string, runGroupId: string, source: string }> >}
+ */
+export async function loadCapturedProofRows({ client, sha, runGroupId, files, sinceMs }) {
+  const { rows } = await client.query(
+    `SELECT p.test_file AS file, t.id::text AS test_run_id, p.recorded_at,
+            p.runner_identity, p.run_context, p.run_group_id, t.source
+       FROM harness_shared.test_executed_sources p
+       JOIN LATERAL (
+         SELECT id, source FROM harness_shared.test_runs
+          WHERE file_path = p.test_file AND commit_sha = p.recorded_sha
+            AND run_group_id = p.run_group_id AND source = 'local'
+            AND status = 'pass' AND worktree_dirty = false
+            AND finished_at >= to_timestamp($4::double precision / 1000)
+          ORDER BY finished_at DESC, id DESC LIMIT 1
+       ) t ON true
+      WHERE p.workspace_name = $1 AND p.recorded_sha = $2 AND p.run_group_id = $3
+        AND p.run_context = 'green-checkpoint' AND p.test_file = ANY($5::text[])
+        AND p.recorded_at >= to_timestamp($4::double precision / 1000)
+      ORDER BY p.test_file`,
+    [PURE_PROOF_CAPTURE_WORKSPACE.name, sha, runGroupId, sinceMs, files],
+  );
+  return rows.map((r) => ({ file: r.file, testRunId: r.test_run_id,
+    recordedAtMs: new Date(r.recorded_at).getTime(), runnerIdentity: r.runner_identity,
+    runContext: r.run_context, runGroupId: r.run_group_id, source: r.source }));
+}
+
+/**
  * Run one slice through the SAME governed launcher each `test:lane-pure` shard uses
  * (runVitestProcess → runGovernedTestProcess): inside the gate run it forwards the run's inherited
  * process receipt, so capture adds no second admission. The spawn seam adds what that launcher
@@ -349,6 +381,7 @@ const defaultDeps = {
   loadShaOutcomes: defaultLoadShaOutcomes,
   loadLatestLaneSha: defaultLoadLatestLaneSha,
   loadSliceFailures: defaultLoadSliceFailures,
+  loadCapturedProofRows,
   readResults: (file) => readExecutedMapResults(file),
   runSlice: defaultRunSlice,
   /** @returns {Promise<number | null>} epoch ms of the next scheduled gate fire, null = unknown */
@@ -387,7 +420,9 @@ async function withClient(d, env, fn) {
  * @param {Partial<typeof defaultDeps>} [o.deps]
  * @returns {Promise<{ state: string, reason: string | null, sha: string | null, slices: number,
  *   files: number, rows: number, retired: number, failed: number, isolatedFail: number,
- *   remaining: number, stoppedBy: string | null, lines: string[] }>}
+ *   remaining: number, stoppedBy: string | null, evidence: { version: 1, runGroupId: string,
+ *   startedAtMs: number, completedAtMs: number, clean: boolean | null,
+ *   proofs: Awaited<ReturnType<typeof loadCapturedProofRows>> | null }, lines: string[] }>}
  */
 export async function runPureLaneProofCapture({
   root,
@@ -421,10 +456,19 @@ export async function runPureLaneProofCapture({
     remaining: 0,
     stoppedBy: null,
   };
+  /** @type {{ version: 1, runGroupId: string, startedAtMs: number, completedAtMs: number,
+   *   clean: boolean | null, proofs: Awaited<ReturnType<typeof loadCapturedProofRows>> | null }} */
+  const evidence = { version: 1, runGroupId, startedAtMs: d.now(), completedAtMs: d.now(),
+    clean: null, proofs: null };
+  const finish = () => {
+    evidence.completedAtMs = d.now();
+    emit(`_RESULT ${JSON.stringify({ ...summary, evidence })}`);
+    return { ...summary, evidence, lines };
+  };
   const skip = (reason) => {
     summary.reason = reason;
     emit(` state=skipped reason=${reason}`);
-    return { ...summary, lines };
+    return finish();
   };
 
   if (!pureProofCaptureEnabled(env)) return skip("disabled-by-env");
@@ -438,6 +482,7 @@ export async function runPureLaneProofCapture({
   if (status == null) return skip("checkout-status-unknown");
   const dirty = status.split("\n").filter((l) => l.trim().length > 0).length;
   if (dirty > 0) return skip(`dirty-checkout(${dirty})`);
+  evidence.clean = true;
 
   const wsAbsDir = path.join(root, PURE_PROOF_CAPTURE_WORKSPACE.dir);
   let laneFiles;
@@ -511,8 +556,10 @@ export async function runPureLaneProofCapture({
     summary.state = "done";
     summary.stoppedBy = "nothing-to-capture";
     emit(` state=done sha=${sha.slice(0, 12)} slices=0 files=0 remaining=0 stoppedBy=nothing-to-capture`);
-    return { ...summary, lines };
+    return finish();
   }
+
+  evidence.proofs = [];
 
   const bin = path.join(root, "node_modules", ".bin", process.platform === "win32" ? "vitest.cmd" : "vitest");
   const startedAtMs = d.now();
@@ -573,6 +620,29 @@ export async function runPureLaneProofCapture({
       }
       for (const l of formatExecutedMapResultLines(label, read)) emit(`_${l}`);
 
+      if (evidence.proofs !== null) {
+        try {
+          const named = await withClient(d, env, (client) => d.loadCapturedProofRows({
+            client, sha, runGroupId, files: slice, sinceMs: sliceStart,
+          }));
+          const written = (read.results ?? []).reduce((n, r) => n + r.rows, 0);
+          const seen = new Set(evidence.proofs.map((p) => p.file));
+          const qualified = read.status === "reported" && read.malformed === 0 && read.results.length > 0 &&
+            read.results.every((r) => r.outcome === "written" && r.sha === sha && r.dirty === false) &&
+            Number.isSafeInteger(written) && written === named.length && named.every((p) => {
+              if (seen.has(p.file)) return false;
+              seen.add(p.file);
+              return slice.includes(p.file) && typeof p.testRunId === "string" && /^\d+$/.test(p.testRunId) &&
+                p.source === "local" && p.runContext === PURE_PROOF_CAPTURE_RUN_CONTEXT &&
+                p.runGroupId === runGroupId && p.runnerIdentity === d.runnerIdentity(root, env) &&
+                Number.isSafeInteger(p.recordedAtMs) && p.recordedAtMs >= sliceStart && p.recordedAtMs <= d.now();
+            });
+          evidence.proofs = qualified ? [...evidence.proofs, ...named] : null;
+        } catch {
+          evidence.proofs = null;
+        }
+      }
+
       let failures = null;
       try {
         failures = await withClient(d, env, (client) => d.loadSliceFailures({ client, runGroupId, files: slice }));
@@ -617,5 +687,5 @@ export async function runPureLaneProofCapture({
       `retired=${summary.retired} failed=${summary.failed} isolatedFail=${summary.isolatedFail} ` +
       `remaining=${summary.remaining} stoppedBy=${summary.stoppedBy}`,
   );
-  return { ...summary, lines };
+  return finish();
 }
