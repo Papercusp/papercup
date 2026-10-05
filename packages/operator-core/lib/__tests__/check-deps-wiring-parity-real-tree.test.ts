@@ -88,10 +88,32 @@ describe('lint:deps-wiring-parity over the real tree (blocking wiring)', () => {
         'packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts',
     ]);
     const report = JSON.parse(stdout);
+    // This scope contains an actually stale row. JSON.parse must succeed even
+    // when plain output would append a human-readable stale-baseline warning.
+    expect(report.staleBaseline.length).toBeGreaterThan(0);
     const drill = report.findings.find((finding: { file: string; interface: string }) =>
       finding.file.endsWith('/physical-drill-phase-i.ts') && finding.interface === 'RunGitSyncOpts');
     // Calibrate on the real omission: a scan that missed the drill cannot prove its exemption.
     expect(drill?.missing).toContain('loadMigrationFenceRoster');
+    expect(report.newFindings, stdout).toEqual([]);
+    expect(exitCode, stdout).toBe(0);
+  });
+
+  it('keeps goal-report persistence and fleet-cue body rendering scoped to their producers', () => {
+    const { stdout, exitCode } = runGuard([
+      '--fail', '--json',
+      '--files=packages/operator-core/lib/agent-tools/coordination/messages.ts,' +
+        'packages/operator-core/lib/agent-tools/coordination/tools/send.ts,' +
+        'packages/operator-core/lib/agent-tools/fleet_registry/control-core.ts',
+    ]);
+    const report = JSON.parse(stdout);
+    const send = report.findings.find((finding: { file: string; interface: string }) =>
+      finding.file.endsWith('/coordination/tools/send.ts') && finding.interface === 'SendOptions');
+    const cue = report.findings.find((finding: { file: string; interface: string }) =>
+      finding.file.endsWith('/fleet_registry/control-core.ts') && finding.interface === 'SendOptions');
+    // Preserve the measured asymmetry; a scan that sees neither caller is not proof.
+    expect(send?.missing).toEqual(['bodyWithMsgId']);
+    expect(cue?.missing).toEqual(['persistEnvelope']);
     expect(report.newFindings, stdout).toEqual([]);
     expect(exitCode, stdout).toBe(0);
   });

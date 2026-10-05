@@ -852,6 +852,14 @@ const PHASE_I_FENCE_FIXTURE =
   'adjudicated 2026-09-30: phase-I drill runs git-sync on a disposable temp clone to prove the beforePush ' +
   'owner-challenge fence; fleet roster attribution, managed migration-fence attribution and peer live-lock refresh cannot apply there';
 
+// WI-10006015: these are message-specific overrides, not shared prerequisites.
+// messages.ts uses the supplied body without bodyWithMsgId, and the ordinary
+// coord log append without persistEnvelope. The goal-reference producer needs
+// transactional persistence; fleet cues need their freshly minted id in prose.
+const SEND_MESSAGE_SPECIFIC_OVERRIDES =
+  'adjudicated WI-10006015: ordinary coord sends supply body directly; fleet cues use the default coord-log ' +
+  'append rather than the goal-reference transaction; each callback applies only to its producer';
+
 const PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK =
   'inTransaction runs INSIDE the plan write transaction and exists for applyPlanDrainTransition ' +
   'alone (plans/plan-drain-transition.ts:151), which must atomically ensure an acceptance-drain ' +
@@ -971,6 +979,8 @@ const FAIL_BASELINE = new Map([
   ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|loadRoster', PHASE_I_FENCE_FIXTURE],
   ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|loadMigrationFenceRoster', PHASE_I_FENCE_FIXTURE],
   ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|refreshLiveLockHoldings', PHASE_I_FENCE_FIXTURE],
+  ['SendOptions|packages/operator-core/lib/agent-tools/coordination/tools/send.ts|bodyWithMsgId', SEND_MESSAGE_SPECIFIC_OVERRIDES],
+  ['SendOptions|packages/operator-core/lib/agent-tools/fleet_registry/control-core.ts|persistEnvelope', SEND_MESSAGE_SPECIFIC_OVERRIDES],
   ['DesktopAuditDeps|packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts|now', OVERRIDE_WITH_REAL_DEFAULT],
   // 2026-09-30 — WI-10004167 added the control-plane relay copy (hosted-handler.ts), which
   // injects workspaceId and takes the Date.now default for `now` (desktop-audit.ts `deps.now ?? Date.now`).
