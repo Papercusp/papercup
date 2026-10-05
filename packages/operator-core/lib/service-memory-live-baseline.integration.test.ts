@@ -11,6 +11,7 @@ import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, va
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import { requestOnlyHost } from './background-workers';
 import { SpawnerIpcClient } from './fleet/spawner-ipc-client';
+import { pgDiagnosticIdentity, recordPgResult, setBuildStampResolver } from '@papercusp/db-org';
 
 const root = resolve(__dirname, '../../..');
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
@@ -234,6 +235,91 @@ function assertCacheSelection(cache: any, digests: string[]) {
   }
 }
 
+// Closed over no observer state: execute the same metadata-only reader in the
+// selected target. Never dereference diagnostic WeakRefs or copy query bodies.
+function requestWorkerSnapshot(requestIds: string[]) {
+  const slots = (globalThis as any)[Symbol.for('@papercusp/module-singleton.slots')];
+  const registry = slots?.get('@papercusp/db-org.acquire-registry')?.value;
+  const processInstanceId = slots?.get('@papercusp/db-org.diagnostic-identity')?.value;
+  const resolver = slots?.get('@papercusp/db-org.build-stamp')?.value?.resolver;
+  const buildSha = typeof resolver === 'function' ? resolver() : null;
+  if (!(registry?.pools instanceof Map) || typeof processInstanceId !== 'string' ||
+      typeof buildSha !== 'string' || !/^[a-f0-9]{7,64}$/i.test(buildSha)) {
+    return { status: 'unknown' as const, pid: process.pid, reason: 'Loaded diagnostic identity, registry or build unavailable' };
+  }
+  if (registry.pools.size > 64) throw Error('Request-worker pool observation cap');
+  const results: any[] = [];
+  for (const [pool, state] of registry.pools) {
+    const rows = state.pgResults ?? [];
+    if (!Array.isArray(rows) || rows.length > 32) throw Error('Request-worker diagnostic ring cap');
+    for (const row of rows) {
+      if (row.correlationState !== 'linked' || row.correlation?.operation !== 'workItems.byHarness' ||
+          !requestIds.includes(row.correlation.requestId)) continue;
+      results.push({ pool, source: { processInstanceId: row.source.processInstanceId,
+        buildSha: row.source.buildSha, poolInstanceId: row.source.poolInstanceId },
+      connectionId: row.connectionId, queryId: row.queryId, status: row.status,
+      correlation: { processInstanceId: row.correlation.processInstanceId,
+        buildSha: row.correlation.buildSha, requestId: row.correlation.requestId,
+        operation: row.correlation.operation } });
+      if (results.length > 64) throw Error('Request-worker selected relation cap');
+    }
+  }
+  return { status: 'observed' as const, pid: process.pid, processInstanceId, buildSha, results };
+}
+
+// The inspector PID and OS lifetime fence join the writer's pinned process UUID
+// to the server-created HTTP UUID. Missing bounded-ring rows remain unknown.
+function auditRequestWorkerAssignments(requestIds: (string | null)[], observations: {
+  before: ResourceRow; after: ResourceRow; role: ReturnType<typeof configuredHostRole>;
+  snapshot: ReturnType<typeof requestWorkerSnapshot>;
+}[], expectedBuild: string) {
+  const uuid = (value: unknown) => typeof value === 'string' && /^[a-f0-9-]{36}$/i.test(value);
+  if (!requestIds.length || requestIds.length > 32)
+    throw Error('Request-worker request population');
+  if (requestIds.some(id => !uuid(id))) return { status: 'unknown', reason: 'Server HTTP request identity unavailable',
+    requested: requestIds.length, assignments: [], unresolvedRequestIds: requestIds };
+  if (new Set(requestIds).size !== requestIds.length) throw Error('Request-worker duplicate HTTP identity');
+  const matched = new Map<string, { pid: number; startTicks: string; processInstanceId: string; queryTuples: string[] }>();
+  const processes = new Set<string>();
+  const pids = new Set<number>();
+  for (const observation of observations) {
+    const { before, after, role, snapshot } = observation;
+    assertIdentity(before, after);
+    if (snapshot.pid !== before.pid || pids.has(before.pid)) throw Error('Request-worker inspector PID or duplicate observation');
+    pids.add(before.pid);
+    if (role.configuredSidecar !== null || !role.requestOnly) throw Error('Request-worker serving role');
+    if (snapshot.status === 'unknown') continue;
+    if (!uuid(snapshot.processInstanceId) || processes.has(snapshot.processInstanceId) ||
+        snapshot.buildSha !== expectedBuild) throw Error('Request-worker loaded process/build identity');
+    processes.add(snapshot.processInstanceId);
+    const tuples = new Set<string>();
+    for (const row of snapshot.results) {
+      if (!requestIds.includes(row.correlation.requestId) || row.correlation.operation !== 'workItems.byHarness' ||
+          row.source.processInstanceId !== snapshot.processInstanceId ||
+          row.correlation.processInstanceId !== snapshot.processInstanceId ||
+          row.source.buildSha !== expectedBuild || row.correlation.buildSha !== expectedBuild ||
+          !uuid(row.source.poolInstanceId) || typeof row.pool !== 'string' || !row.pool || row.status !== 'ok' ||
+          !Number.isSafeInteger(row.connectionId) || row.connectionId < 0 ||
+          !Number.isSafeInteger(row.queryId) || row.queryId < 0) throw Error('Request-worker query identity');
+      const tuple = JSON.stringify([row.correlation.requestId, row.pool, row.source.processInstanceId,
+        row.source.buildSha, row.source.poolInstanceId, row.connectionId, row.queryId]);
+      if (tuples.has(tuple)) throw Error('Request-worker duplicate query tuple');
+      tuples.add(tuple);
+      const prior = matched.get(row.correlation.requestId);
+      if (prior && prior.processInstanceId !== snapshot.processInstanceId) throw Error('Request-worker cross-process assignment');
+      const assignment = prior ?? { pid: before.pid, startTicks: before.startTicks,
+        processInstanceId: snapshot.processInstanceId, queryTuples: [] };
+      assignment.queryTuples.push(tuple); matched.set(row.correlation.requestId, assignment);
+    }
+  }
+  const unresolvedRequestIds = requestIds.filter(id => !matched.has(id!));
+  return { status: unresolvedRequestIds.length ? 'partial' : 'observed', requested: requestIds.length,
+    assignments: requestIds.flatMap(requestId => matched.has(requestId!) ? [{ requestId, ...matched.get(requestId!)! }] : []),
+    unresolvedRequestIds,
+    definition: 'Exact HTTP/query/process joins within observed terminal rings; missing rows do not identify another worker.',
+    queryRelationCoverage: 'Bounded terminal records, not a complete query census or retained/native ownership proof' };
+}
+
 function listenerPorts(pid: number) {
   const inodes = new Set(readdirSync(`/proc/${pid}/fd`).flatMap(fd => {
     try { return [readlinkSync(`/proc/${pid}/fd/${fd}`).match(/^socket:\[(\d+)\]$/)?.[1]]; }
@@ -247,6 +333,97 @@ function listenerPorts(pid: number) {
 }
 
 describe('actual current-build operator memory baseline', () => {
+  describe('exact request-worker assignment', () => {
+    const build = 'abcdef1234';
+    const request = '11111111-1111-4111-8111-111111111111';
+    const other = '22222222-2222-4222-8222-222222222222';
+    const processId = '33333333-3333-4333-8333-333333333333';
+    const poolId = '44444444-4444-4444-8444-444444444444';
+    const fixture = () => {
+      const os = { pid: 71, startTicks: '123', executableSha256: 'a'.repeat(64) } as ResourceRow;
+      return { before: os, after: { ...os }, role: { clusterRole: 'worker', requestOnly: true,
+        configuredSidecar: null, requestAssignment: 'unknown', allocationOwner: 'unknown' },
+      snapshot: { status: 'observed' as const, pid: 71, processInstanceId: processId, buildSha: build,
+        results: [1, 2].map(queryId => ({ pool: 'org-app', source: { processInstanceId: processId,
+          buildSha: build, poolInstanceId: poolId }, connectionId: 1, queryId, status: 'ok',
+          correlation: { processInstanceId: processId, buildSha: build, requestId: request, operation: 'workItems.byHarness' } })) } };
+    };
+    it('conserves one-to-many tuples and remains independent of observation and query order', () => {
+      const a = fixture(), b = fixture();
+      b.before = { ...b.before, pid: 72 }; b.after = { ...b.before }; b.snapshot.pid = 72;
+      b.snapshot.processInstanceId = other;
+      for (const row of b.snapshot.results) {
+        row.source.processInstanceId = other; row.correlation.processInstanceId = other; row.correlation.requestId = other;
+      }
+      const result = auditRequestWorkerAssignments([request, other], [a, b], build);
+      expect(result.status).toBe('observed'); expect(result.assignments.map(row => row.pid)).toEqual([71, 72]);
+      expect(result.assignments.map(row => row.queryTuples.length)).toEqual([2, 2]);
+      for (const row of [a, b]) row.snapshot.results.reverse();
+      expect(auditRequestWorkerAssignments([request, other], [b, a], build).assignments.map(row =>
+        ({ ...row, queryTuples: row.queryTuples.sort() }))).toEqual(result.assignments.map(row =>
+        ({ ...row, queryTuples: row.queryTuples.sort() })));
+    });
+    it('marks evicted or unsampled requests partial rather than assigning them by count or time', () => {
+      const result = auditRequestWorkerAssignments([request, other], [fixture()], build);
+      expect(result.status).toBe('partial'); expect(result.unresolvedRequestIds).toEqual([other]);
+      expect(result.assignments).toHaveLength(1);
+      expect(auditRequestWorkerAssignments([null, null], [fixture()], build).status).toBe('unknown');
+    });
+    const corruptions: [string, (value: ReturnType<typeof fixture>) => void][] = [
+      ['PID reuse', r => { r.after.startTicks = '124'; }],
+      ['inspector PID', r => { r.snapshot.pid++; }],
+      ['loaded build', r => { r.snapshot.buildSha = '0123456789'; }],
+      ['query build', r => { r.snapshot.results[0].source.buildSha = '0123456789'; }],
+      ['operation build', r => { r.snapshot.results[0].correlation.buildSha = '0123456789'; }],
+      ['query process', r => { r.snapshot.results[0].source.processInstanceId = other; }],
+      ['operation process', r => { r.snapshot.results[0].correlation.processInstanceId = other; }],
+      ['pool identity', r => { r.snapshot.results[0].source.poolInstanceId = 'unknown'; }],
+      ['duplicate tuple', r => { r.snapshot.results.push(r.snapshot.results[0]); }],
+      ['unrequested UUID', r => { r.snapshot.results[0].correlation.requestId = other; }],
+      ['wrong operation', r => { r.snapshot.results[0].correlation.operation = 'workItems.other'; }],
+      ['invalid query ID', r => { r.snapshot.results[0].queryId = -1; }],
+      ['changed executable', r => { r.after.executableSha256 = 'b'.repeat(64); }],
+      ['sidecar role', r => { r.role.configuredSidecar = 'spawner' as any; }],
+      ['failed query', r => { r.snapshot.results[0].status = 'error'; }],
+    ];
+    it.each(corruptions)('rejects %s before attributing measured workload', (_name, corrupt) => {
+      const value = fixture(); corrupt(value);
+      expect(() => auditRequestWorkerAssignments([request], [value], build)).toThrow();
+    });
+    it('rejects the same HTTP UUID appearing under two independently observed processes', () => {
+      const a = fixture(), b = fixture();
+      b.before = { ...b.before, pid: 72 }; b.after = { ...b.before }; b.snapshot.pid = 72;
+      b.snapshot.processInstanceId = other;
+      for (const row of b.snapshot.results) { row.source.processInstanceId = other; row.correlation.processInstanceId = other; }
+      expect(() => auditRequestWorkerAssignments([request], [a, b], build)).toThrow('cross-process');
+    });
+    it('reads the actual bounded PG writer without retaining rows or copying unrelated diagnostics', () => {
+      const pool = 'p011-worker-assignment-' + request;
+      const state = (globalThis as any)[Symbol.for('@papercusp/module-singleton.slots')];
+      const previousResolver = state.get('@papercusp/db-org.build-stamp').value.resolver;
+      try {
+        setBuildStampResolver(() => build);
+        const identity = pgDiagnosticIdentity();
+        for (const queryId of [1, 2]) recordPgResult(pool, { connectionId: 1, queryId, backendPid: null,
+          query: 'select * from harness_shared.spawned_agents', rowCount: 1, wireBytes: 1, status: 'ok',
+          result: [{ privateBody: 'must not cross the inspector boundary' }], context: { state: 'linked', correlation: {
+            ...identity, attemptId: other, rowId: null, hopId: null, stage: null, boundary: 'await',
+            requestId: request, operation: 'workItems.byHarness' } } }, { ...identity, poolInstanceId: poolId });
+        const snapshot = requestWorkerSnapshot([request]);
+        expect(snapshot.status).toBe('observed');
+        if (snapshot.status !== 'observed') throw Error('Actual writer identity unavailable');
+        expect(snapshot.pid).toBe(process.pid); expect(snapshot.processInstanceId).toBe(identity.processInstanceId);
+        expect(snapshot.results.filter(row => row.pool === pool)).toHaveLength(2);
+        expect(JSON.stringify(snapshot)).not.toContain('privateBody');
+        expect(JSON.stringify(snapshot)).not.toContain('spawned_agents');
+        expect(requestWorkerSnapshot([other]).status).toBe('observed');
+        expect((requestWorkerSnapshot([other]) as any).results).toEqual([]);
+      } finally {
+        state.get('@papercusp/db-org.acquire-registry').value.pools.delete(pool);
+        setBuildStampResolver(previousResolver);
+      }
+    });
+  });
   it('binds advertised spawner build to its PID and connection without borrowing disk or main identity', () => {
     const capability = { processExecIdentity: { pid: 7, buildInfo: { sha: 'loaded-source', version: '1.0.0' } },
       processExecFence: { serverGeneration: 'server', connectionId: 'connection' } };
@@ -493,7 +670,7 @@ describe('actual current-build operator memory baseline', () => {
         observerMs: 'wall time for inspector counter read and proc descendant census' },
       limits: { windows: 3, idleMs: 2000, requestsPerWindow: 8, concurrency: 2, descendantsPerSample: 64 },
       pinnedOwners, pinnedLimits, operatorCacheEntries,
-      limitations: ['Counters cover one explicitly selected main/descendant PID; HTTP request assignment remains unknown.',
+      limitations: ['Counters cover one explicitly selected main/descendant PID; request assignment requires exact bounded diagnostic matches.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
         'Sibling build identity is read from its PID-bound server capability when available; missing advertisements stay unknown.',
@@ -660,9 +837,28 @@ describe('actual current-build operator memory baseline', () => {
           const body = JSON.parse(bytes.toString());
           expect(Array.isArray(body.rows)).toBe(true); expect(body.rows.length).toBeLessThanOrEqual(32);
           report.requests.push({ window, pair, index, status: response.status, rows: body.rows.length,
+            requestId: response.headers.get('x-papercusp-request-id'),
             responseBytes: bytes.length, responseSha256: hash(bytes), elapsedMs: performance.now() - started });
         }));
         await sample(`ordinary-${window}-end`);
+        const requestIds = report.requests.filter((row: any) => row.window === window).map((row: any) => row.requestId);
+        const ordinary = report.samples.at(-1);
+        const assignmentStarted = performance.now();
+        let assignment;
+        if (ordinary.configuredHostRole.configuredSidecar !== null) {
+          assignment = { status: 'unknown', reason: 'Selected counter target is a sidecar, not a request worker',
+            requested: requestIds.length, assignments: [], unresolvedRequestIds: requestIds };
+        } else {
+          const assignmentBefore = processSample(counterPid); assertIdentity(counterBefore, assignmentBefore);
+          const assignmentRead = await client!.evaluate('(' + requestWorkerSnapshot.toString() + ')(' +
+            JSON.stringify(requestIds.filter((id: unknown) => typeof id === 'string')) + ')', { returnByValue: true });
+          if (!assignmentRead?.result?.value) throw Error('Request-worker inspector snapshot unavailable');
+          assignment = auditRequestWorkerAssignments(requestIds, [{ before: assignmentBefore,
+            after: processSample(counterPid), role: ordinary.configuredHostRole,
+            snapshot: assignmentRead.result.value }], expectedBuild!);
+        }
+        (report.requestWorkerAssignments ??= []).push({ window, ...assignment,
+          observerMs: performance.now() - assignmentStarted });
         report.windows.push({ window, startedAt, endedAt: new Date().toISOString() }); publish();
         await health();
       }
