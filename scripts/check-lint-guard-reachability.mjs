@@ -791,9 +791,26 @@ function callExpressionName(expression) {
 function staticStringValues(node, constants) {
   if (!node) return [];
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
+  if (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isTypeAssertionExpression(node) ||
+    ts.isSatisfiesExpression(node)
+  ) {
+    return staticStringValues(node.expression, constants);
+  }
   if (ts.isIdentifier(node)) return constants.get(node.text) ?? [];
   if (ts.isArrayLiteralExpression(node)) {
     return node.elements.flatMap((element) => staticStringValues(element, constants));
+  }
+  if (
+    ts.isBinaryExpression(node) &&
+    [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken].includes(node.operatorToken.kind)
+  ) {
+    return [
+      ...staticStringValues(node.left, constants),
+      ...staticStringValues(node.right, constants),
+    ];
   }
   if (ts.isCallExpression(node) && ['join', 'resolve'].includes(callExpressionName(node.expression))) {
     // `resolve(ROOT, 'scripts/check-x.mjs')` is still a statically-distinguishing
@@ -879,7 +896,7 @@ function recordShellInvocation(command, evidence) {
 }
 
 /** Extract only guard names/paths supplied to real execution calls in a test AST. */
-function extractTestExecutionEvidence(sourceText) {
+export function extractTestExecutionEvidence(sourceText, testFilePath = null) {
   const source = ts.createSourceFile(
     'guard-test-corpus.tsx',
     String(sourceText ?? ''),
@@ -889,6 +906,29 @@ function extractTestExecutionEvidence(sourceText) {
   );
   const constants = new Map();
   const evidence = { scriptNames: new Set(), implementationPaths: new Set() };
+  const scannerImports = new Map();
+
+  const collectScannerImports = (node) => {
+    if (
+      testFilePath &&
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.importClause &&
+      node.importClause.namedBindings &&
+      ts.isNamedImports(node.importClause.namedBindings)
+    ) {
+      const modulePath = relative(
+        ROOT,
+        resolve(dirname(resolve(ROOT, testFilePath)), node.moduleSpecifier.text),
+      ).split(sep).join('/');
+      for (const element of node.importClause.namedBindings.elements) {
+        const imported = element.propertyName?.text ?? element.name.text;
+        if (imported === 'scanTree') scannerImports.set(element.name.text, modulePath);
+      }
+    }
+    ts.forEachChild(node, collectScannerImports);
+  };
+  collectScannerImports(source);
 
   const collectConstants = (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
@@ -902,6 +942,8 @@ function extractTestExecutionEvidence(sourceText) {
   const visit = (node) => {
     if (ts.isCallExpression(node)) {
       const name = callExpressionName(node.expression);
+      const importedScannerPath = name ? scannerImports.get(name) : null;
+      if (importedScannerPath) evidence.implementationPaths.add(importedScannerPath);
       if (name && TEST_PROCESS_CALLS.has(name)) {
         const args = node.arguments;
         if (name === 'exec' || name === 'execSync') {
@@ -1373,8 +1415,8 @@ function buildCorpora() {
   // Parse each file independently so constants and identifiers keep their file-local
   // meaning instead of allowing a declaration in one suite to vouch for another.
   const testExecutionEvidence = { scriptNames: new Set(), implementationPaths: new Set() };
-  for (const { text } of enforcingTests) {
-    const evidence = extractTestExecutionEvidence(text);
+  for (const { path, text } of enforcingTests) {
+    const evidence = extractTestExecutionEvidence(text, path);
     for (const name of evidence.scriptNames) testExecutionEvidence.scriptNames.add(name);
     for (const path of evidence.implementationPaths) testExecutionEvidence.implementationPaths.add(path);
   }

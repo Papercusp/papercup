@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildReachabilityCensus,
   classifyGuard,
+  extractTestExecutionEvidence,
   resolveImplementationPaths,
   selectGuardScripts,
   ACKNOWLEDGED_UNREACHABLE,
@@ -154,6 +155,26 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
       corpora: corpora({ test: "runGuardScript('node', ['scripts/check-x.mjs'], { cwd: REPO_ROOT })" }),
     });
     expect(r.tiers).toContain('test');
+  });
+
+  it('binds an imported scanTree call to the guard module it actually scans', () => {
+    const evidence = extractTestExecutionEvidence(
+      `import { scanTree as runScan } from '../../../../scripts/check-x.mjs'; runScan();`,
+      'packages/operator-core/lib/__tests__/x.test.ts',
+    );
+    expect(evidence.implementationPaths).toContain('scripts/check-x.mjs');
+  });
+
+  it('resolves a guard path assigned through a nullish fallback before executing it', () => {
+    const evidence = extractTestExecutionEvidence(
+      `
+        const GUARD_REL = 'scripts/check-x.mjs';
+        const GUARD = process.env.GUARD_UNDER_TEST ?? join(ROOT, GUARD_REL);
+        execFileSync('node', [GUARD, '--list']);
+      `,
+      'packages/operator-core/lib/__tests__/x.test.ts',
+    );
+    expect(evidence.implementationPaths).toContain('scripts/check-x.mjs');
   });
 
   it('does not let a LONGER guard name credit its own prefix', () => {
