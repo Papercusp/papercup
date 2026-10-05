@@ -1,7 +1,7 @@
 /** Regression guard for the source-level machine-turn enrollment checker. */
 import { describe, expect, it } from 'vitest';
 // @ts-ignore — pure JS lint module; imported for its source predicate.
-import { ALLOWLIST, findTurnInjectionSites } from '../../../../scripts/check-no-unenrolled-injector.mjs';
+import { ALLOWLIST, findTurnInjectionSites, isExcluded } from '../../../../scripts/check-no-unenrolled-injector.mjs';
 
 function sites(source: string) {
   return findTurnInjectionSites(source, 'subject.ts') as Array<{
@@ -152,5 +152,25 @@ describe('no-unenrolled-injector guard predicate (EI-21903660573830465)', () => 
       }
     `);
     expect(found[0]?.enrolled).toBe(false);
+  });
+
+  it('does not count the PTY transport wrapper that forwards a constructed message', () => {
+    const found = findTurnInjectionSites(`
+      export function injectIntoHost(
+        sock: string,
+        msg: Parameters<typeof injectIntoHostWithConfirmation>[1],
+        timeoutMs = 2000,
+      ) {
+        return injectIntoHostWithConfirmation(sock, msg, timeoutMs).then((result) => result.ok);
+      }
+    `, 'packages/operator-core/lib/events/await/psu-pty-discovery.ts');
+
+    expect(found).toEqual([]);
+  });
+
+  it('excludes test-support and generated sidecar sources while retaining runtime sources', () => {
+    expect(isExcluded('packages/operator-core/test/_multi-session-testbed.ts')).toBe(true);
+    expect(isExcluded('papercusp-desktop/src-tauri/env-sidecars/host.mjs')).toBe(true);
+    expect(isExcluded('packages/operator-core/lib/events/await/wake-executor.ts')).toBe(false);
   });
 });

@@ -1125,6 +1125,32 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
           ? { all: true as const }
           : { ids: stubCompletionEvidenceIds };
 
+    // `read` is written by the source handler before this shaper runs. Preserve
+    // its requested/availability counts, then add how many available rows this
+    // tier leaves detailed versus id-only. Each id-only stub retains its own ID
+    // as the reread handle; the later result-door must preserve those IDs ahead
+    // of these aggregate counts.
+    const readInfo =
+      d.read && typeof d.read === "object" && !Array.isArray(d.read)
+        ? (d.read as Row)
+        : null;
+    const availableRows = rows.flatMap((sourceRow, index) => {
+      const shapedRow = projected[index];
+      return sourceRow.ok === true && sourceRow.availability === "available" && shapedRow
+        ? [{ sourceRow, shapedRow }]
+        : [];
+    });
+    const detailRows = availableRows.filter(({ shapedRow }) => {
+      const w = shapedRow.workItem;
+      return shapedRow._stub !== true && w !== null && typeof w === "object";
+    }).length;
+    const existingStubRows = rows.filter((r) => r._stub === true).length;
+    const availableCount =
+      typeof readInfo?.available === "number"
+        ? readInfo.available
+        : availableRows.length + existingStubRows;
+    const stubbedRows = Math.max(existingStubRows, availableCount - detailRows);
+
     // A clipped prior-attempt brief has a different recovery route from other
     // tier-relative clips. Its work_items:get contract exposes the full source
     // through priorAttemptRefs using the record's rawRef.
@@ -1140,6 +1166,15 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
 
     out = {
       ...d,
+      ...(readInfo
+        ? {
+            read: {
+              ...readInfo,
+              detailRows,
+              stubbedRows,
+            },
+          }
+        : {}),
       results: projected,
       ...(dropped.size > 0
         ? {

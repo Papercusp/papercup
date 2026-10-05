@@ -1560,6 +1560,28 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'coverage.linkedCount',
           ]
         : []),
+      // work_items:get reports the selected/checked source set before its own
+      // tier shaper, then appends a stage-labeled detail count and bounded
+      // omitted-ID handles. Preserve those qualifiers through this later,
+      // independent projection. Row ids/stub markers stay selectable too, so a
+      // caller can reconcile inline rows or follow the spill cursor for rows
+      // this door could not render.
+      ...(opts.toolName === 'work_items:get'
+        ? [
+            'results[].id',
+            'results[].ok',
+            'results[].availability',
+            'results[]._stub',
+            'read.requested',
+            'read.available',
+            'read.absent',
+            'read.unavailable',
+            'read.detailRows',
+            'read.stubbedRows',
+            '_shapeNote.stubbed.count',
+            '_shapeNote.dropped',
+          ]
+        : []),
       // work_items:complete writes these fields before its bulky echoes, and its
       // tier shaper deliberately spreads them through unchanged. The generic
       // result-door is a later, independent projection seam, though: without an

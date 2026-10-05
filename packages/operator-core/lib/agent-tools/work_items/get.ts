@@ -617,6 +617,8 @@ const workItemsGetReadSchema = z.object({
   baseReadMaxMs: z.number().int().nonnegative().nullable(),
   enrichmentMaxMs: z.number().int().nonnegative().nullable(),
   outerStageAttribution: z.literal('tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time'),
+  detailRows: z.number().int().nonnegative().optional(),
+  stubbedRows: z.number().int().nonnegative().optional(),
 });
 
 export default defineTool({
