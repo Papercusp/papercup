@@ -1644,8 +1644,42 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(marker).toContain(`observedNonzeroExits=${sample.observedNonzeroExits}`);
     expect(marker).toContain(`testsExecuted=${sample.completedTasks * 3}`);
     expect(output.join('\n')).not.toContain('never got to run its tasks');
+    expect(output.join('\n')).not.toContain('refused before running anything');
     if (sample.observedNonzeroExits) expect(marker).toContain('TALLY-UNDERCOUNT');
     else expect(marker).not.toContain('TALLY-UNDERCOUNT');
+  });
+
+  it('counts known initial settlements before persistence while leaving unreadable outcomes undetermined', () => {
+    const runAt = AFFECTED_TESTS_SRC.indexOf('initialPool = await runBudgetedTaskShards');
+    const callbackAt = AFFECTED_TESTS_SRC.indexOf('onTaskSettled: (scheduled) => {', runAt);
+    const bodyAt = callbackAt + 'onTaskSettled: (scheduled) => {'.length;
+    const endAt = AFFECTED_TESTS_SRC.indexOf('\n  },', bodyAt);
+    expect(callbackAt).toBeGreaterThan(runAt);
+    expect(endAt).toBeGreaterThan(bodyAt);
+    const countsSeenByCoverage: number[] = [];
+    const context = {
+      observedCompletedTasks: 0,
+      foldSettledTaskCoverage: () => countsSeenByCoverage.push(context.observedCompletedTasks),
+      persistCleanFirstPassTaskVerdict: () => {},
+    };
+    const settle = new Script(`(scheduled) => {${AFFECTED_TESTS_SRC.slice(bodyAt, endAt)}}`).runInNewContext(context);
+    for (const value of [
+      { status: 0 }, { status: 1 }, { status: null, signal: 'SIGTERM' },
+      { status: null }, { status: Number.NaN },
+    ]) settle({ value });
+    expect(context.observedCompletedTasks).toBe(3);
+    expect(countsSeenByCoverage).toEqual([1, 2, 3, 3, 3]);
+    // The refusal boundary reads the observation, not the later aggregate tally.
+    const counterAt = AFFECTED_TESTS_SRC.lastIndexOf('readTerminalCounters = () => ({', runAt);
+    const counterEnd = AFFECTED_TESTS_SRC.indexOf('\n});', counterAt) + '\n});'.length;
+    expect(counterAt).toBeGreaterThan(-1);
+    expect(counterEnd).toBeGreaterThan(counterAt);
+    const readCounters = new Script(AFFECTED_TESTS_SRC.slice(counterAt, counterEnd)).runInNewContext({
+      ...context, tasks: Array.from({ length: 5 }), failed: 0,
+      quarantinedFailed: 0, timedOutTasks: 0, undeterminedTasks: 0,
+      observedNonzeroExits: 1, observedAdmissionErrors: 0,
+    });
+    expect(readCounters()).toMatchObject({ tasks: 5, completedTasks: 3, observedNonzeroExits: 1 });
   });
 
   describe('WI-1746759: the release gate rides its own admission lane', () => {

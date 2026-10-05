@@ -31,7 +31,7 @@ import { Client } from 'pg';
 import { afterAll, describe, expect, it } from 'vitest';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { appServiceAuthHeader } from './app-auth';
-import { appRowFromSourceRecord, buildAppSyncBatch, sourceRefForApp } from './app-rows';
+import { appRowFromSourceRecord, appRowId, buildAppSyncBatch, DATATYPE_FOR_APP, sourceRefForApp } from './app-rows';
 import type { ProducerSourceRecord } from './app-rows';
 import { deliverAppSyncBatch } from './live-sink';
 import type { ProducerApp } from './owner-mapping';
@@ -96,6 +96,7 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
         const occurredAt = new Date().toISOString();
         const mapped = appRowFromSourceRecord({
           source: c.source,
+          datatypeId: DATATYPE_FOR_APP[c.app],
           kind: c.app === 'email' ? 'message' : 'event',
           externalId,
           occurredAt,
@@ -107,7 +108,7 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
             ? { from: 'p008@example.com', to: ['owner@example.com'] }
             : { calendarId: 'primary', start: { dateTime: occurredAt }, end: { dateTime: occurredAt } },
         });
-        expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
+        expect(mapped, `the ${c.app} datatype must map to an app`).not.toBeNull();
         expect(mapped!.app).toBe(c.app);
 
         const batch = buildAppSyncBatch(c.app, [mapped!.row], { cursor: null });
@@ -151,6 +152,7 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
           const occurredAt = new Date().toISOString();
           const mapped = appRowFromSourceRecord({
             source: c.source,
+            datatypeId: DATATYPE_FOR_APP[c.app],
             kind: 'message',
             externalId: triggerExternalId,
             occurredAt,
@@ -158,7 +160,7 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
             text: 'Posted straight at the app trigger door; must mint no work item.',
             metadata: { from: 'p012@example.com', to: ['owner@example.com'] },
           });
-          expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
+          expect(mapped, `the ${c.app} datatype must map to an app`).not.toBeNull();
 
           const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
           const res = await fetch(`${c.baseUrl}/api/triggers/gmail`, {
@@ -253,25 +255,26 @@ const REAL_GOOGLE_ENABLED = process.env.APP_LIVE_REAL_GOOGLE_E2E === '1';
  * `ProducerSourceRecord` the production producer builds. Returns null when the
  * vault holds none, so the caller can fail with a specific reason.
  */
-async function readRealSourceRecord(source: string): Promise<ProducerSourceRecord | null> {
+async function readRealSourceRecord(datatypeId: string): Promise<ProducerSourceRecord | null> {
   const client = new Client({ connectionString: getHarnessAdminUrl() });
   await client.connect();
   try {
     const { rows } = await client.query(
-      `SELECT source, kind, external_id, occurred_at, title, text, metadata,
+      `SELECT source, datatype_id, kind, external_id, occurred_at, title, text, metadata,
               source_id, provider_account_id
          FROM harness_shared.documents
-        WHERE source = $1
+        WHERE datatype_id = $1
           AND external_id IS NOT NULL
           AND btrim(external_id) <> ''
         ORDER BY occurred_at DESC NULLS LAST
         LIMIT 1`,
-      [source],
+      [datatypeId],
     );
     const row = rows[0];
     if (!row) return null;
     return {
       source: row.source,
+      datatypeId: row.datatype_id,
       kind: row.kind,
       externalId: row.external_id,
       occurredAt: row.occurred_at,
@@ -294,7 +297,7 @@ describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
         const ownerId = `wi933686-live-test-${randomUUID()}`;
 
         it('delivers a REAL vault record through the production path and the app serves it back', async () => {
-          const record = await readRealSourceRecord(c.source);
+          const record = await readRealSourceRecord(DATATYPE_FOR_APP[c.app]);
 
           // Loud rather than vacuous: opting in asserts real data IS present.
           expect(
@@ -315,10 +318,12 @@ describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
           ).toBeTruthy();
 
           const mapped = appRowFromSourceRecord(record!);
-          expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
+          expect(mapped, `the ${c.app} datatype must map to an app`).not.toBeNull();
           expect(mapped!.app).toBe(c.app);
-          // The mapper keys the app row by the REAL provider id.
-          expect(mapped!.row.id).toBe(externalId);
+          // The mapper keys the app row by source id + REAL provider id (D-010).
+          const rowId = appRowId(externalId, record!.sourceId);
+          expect(mapped!.row.id).toBe(rowId);
+          expect(mapped!.row.nativeId).toBe(externalId);
 
           const batch = buildAppSyncBatch(c.app, [mapped!.row], { cursor: null });
           const result = await deliverAppSyncBatch(batch, ownerId, {
@@ -330,7 +335,7 @@ describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
 
           // RECEIVING END: the app's own read path, under a production-minted token.
           const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
-          const path = c.app === 'email' ? `/api/threads/${externalId}` : `/api/events/${externalId}`;
+          const path = c.app === 'email' ? `/api/threads/${encodeURIComponent(rowId)}` : `/api/events/${encodeURIComponent(rowId)}`;
           const res = await fetch(`${c.baseUrl}${path}`, {
             headers: { authorization },
             signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -342,14 +347,14 @@ describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
           };
 
           const servedId = c.app === 'email'
-            ? body.messages?.find((m) => m.id === externalId)?.id
+            ? body.messages?.find((m) => m.id === rowId)?.id
             : body.event?.id;
           // THE ASSERTION THIS BLOCK EXISTS FOR: data that actually came from
           // Google traversed the app's own run path, and the app served it back.
           expect(
             servedId,
             `the ${c.app} app must serve back the REAL ${c.source} record it was sent`,
-          ).toBe(externalId);
+          ).toBe(rowId);
         });
       });
     }

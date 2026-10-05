@@ -20,12 +20,13 @@
  */
 
 import { spawn } from 'node:child_process';
-import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { serviceUnitForTask, TASK_ROOT_SLICE } from './task-manager/types';
+import { execFileViaSidecar } from './fleet/git-via-sidecar';
 
 /** Transient systemd unit for the detached cut. Distinct from DEPLOY_UNIT /
  *  the checkpoint unit — a cut, a deploy and a green-checkpoint touch different trees and
@@ -684,12 +685,20 @@ export function defaultIsUnitActive(unit: string): boolean {
  * for every state except active, and still prints the state, so stdout is read
  * on both paths.
  */
-export function readUnitActiveStateAsync(unit: string): Promise<string> {
-  return new Promise((resolve) => {
-    execFile('systemctl', ['--user', 'is-active', unit], { encoding: 'utf8', timeout: 5000 }, (_err, stdout) => {
-      resolve(typeof stdout === 'string' ? stdout.trim() : '');
-    });
-  });
+export async function readUnitActiveStateAsync(unit: string): Promise<string> {
+  try {
+    const { stdout } = await execFileViaSidecar(
+      'systemctl',
+      ['--user', 'is-active', unit],
+      { timeoutMs: 5000, subsystem: 'release-cut-launch' },
+    );
+    return stdout.trim();
+  } catch (err) {
+    // `is-active` exits non-zero for inactive/failed states but prints ActiveState
+    // to stdout. execFileViaSidecar preserves that stdout on its rejection shape.
+    const stdout = (err as { stdout?: unknown } | null)?.stdout;
+    return typeof stdout === 'string' ? stdout.trim() : '';
+  }
 }
 
 /** Async {@link defaultIsUnitActive}: true only for active/activating. */

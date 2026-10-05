@@ -122,7 +122,7 @@
  * looks stuck again, run the cross-check by hand — and if you ADD a streak to another emitter,
  * this is the property to preserve.
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
@@ -143,6 +143,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { readActiveAnnouncedQuiesce, type AnnouncedQuiesceEvidence } from './announced-quiesce';
+import { execFileViaSidecar } from '../fleet/git-via-sidecar';
 
 /** The `announced-quiesce` subject this guard reads — see announced-quiesce.ts. Any agent
  *  registers under this exact subject via `supervision:announce-quiesce { subject: 'bg-host' }`. */
@@ -295,18 +296,21 @@ export async function readD026QuiescenceEvidenceAsync(
 }
 
 /** Async {@link readBackgroundPrimaryLoadState}. */
-export function readBackgroundPrimaryLoadStateAsync(
+export async function readBackgroundPrimaryLoadStateAsync(
   unit = process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT ?? 'papercusp-bg-host.service',
 ): Promise<string | null> {
-  if (!unit.trim()) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    execFile(
+  if (!unit.trim()) return null;
+  try {
+    const { stdout } = await execFileViaSidecar(
       'systemctl',
       ['--user', 'show', unit, '-p', 'LoadState', '--value'],
-      { encoding: 'utf8', timeout: 5000 },
-      (err, stdout) => resolve(err ? null : stdout.trim() || null),
+      { timeoutMs: 5000, subsystem: 'single-primary-check' },
     );
-  });
+    return stdout.trim() || null;
+  } catch (err) {
+    const stdout = (err as { stdout?: unknown } | null)?.stdout;
+    return typeof stdout === 'string' ? stdout.trim() || null : null;
+  }
 }
 
 export function readBackgroundPrimaryLoadState(
