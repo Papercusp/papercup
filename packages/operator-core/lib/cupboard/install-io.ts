@@ -221,7 +221,16 @@ export function buildInstallPluginDeps(): InstallPluginCoreDeps {
 
 export type InstallPluginFromCupboardResult =
   | { ok: true; result: InstallPluginCoreResult }
-  | { ok: false; status: number; error: string; detail?: string };
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      detail?: string;
+      /** Stable refusal code (e.g. `provider_install_consent_required`). */
+      code?: string;
+      /** Structured refusal payload — for a provider consent refusal, `{ review }`. */
+      data?: Record<string, unknown>;
+    };
 
 /**
  * The ONE orchestrated path that installs a plugin/pack from the Cupboard by
@@ -238,6 +247,12 @@ export async function installPluginFromCupboard(input: {
   listingRef?: string;
   harness?: string;
   acceptCapabilities?: boolean;
+  /**
+   * The provider review the caller consented to — echo back the `data.review`
+   * from a `provider_install_consent_required` refusal. The core refuses with
+   * `plugin_review_changed` if the cloned manifest no longer matches it.
+   */
+  expectedReview?: InstallPluginManifestReview;
 }): Promise<InstallPluginFromCupboardResult> {
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
@@ -255,6 +270,7 @@ export async function installPluginFromCupboard(input: {
     listingRef,
     harness: typeof input.harness === 'string' ? input.harness.trim() : undefined,
     acceptCapabilities: input.acceptCapabilities === true,
+    ...(input.expectedReview ? { expectedReview: input.expectedReview } : {}),
   };
 
   try {
