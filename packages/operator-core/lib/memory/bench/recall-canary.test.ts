@@ -63,7 +63,7 @@ function stubDeps(over: Partial<RecallCanaryDeps> = {}): {
     sql: {} as never,
     backend: { name: 'hybrid', search: async () => [] },
     sample: async () => candidates(30),
-    verifyTargets: async (_sql, ids) => new Set(ids),
+    verifyTargets: async (_sql, ids) => new Map(ids.map((id) => [id, 'pool-a'])),
     loadSet: async () => null,
     saveSet: async () => ({ id: 9, version: 4 }),
     record: async (_sql, _ws, m) => {
@@ -416,7 +416,7 @@ describe('runRecallCanary', () => {
     const { deps, notified } = stubDeps({
       loadSet: async () => frozenSet(pairs, 0.9),
       // 2 targets gone (under the decay threshold); the other 8 all hit
-      verifyTargets: async (_sql, ids) => new Set(ids.slice(2)),
+      verifyTargets: async (_sql, ids) => new Map(ids.slice(2).map((id) => [id, 'pool-a'])),
       backend: { name: 'hybrid', search: async (q: string) => [entry(`mem-${q.split(' ')[1]}`)] },
     });
     const out = await runRecallCanary(INPUT, deps);
@@ -429,11 +429,29 @@ describe('runRecallCanary', () => {
     expect(notified).toEqual([]);
   });
 
+  it('invalidates and reseeds without alert when an active target moves recall scope', async () => {
+    const pairs = pairsOf(10);
+    const { deps, recorded, notified } = stubDeps({
+      loadSet: async () => frozenSet(pairs, 0.9),
+      // One moved target is enough to make the set incomparable to its frozen baseline.
+      verifyTargets: async (_sql, ids) => new Map(ids.map((id) => [id, id === 'mem-3' ? 'pool-b' : 'pool-a'])),
+    });
+    const out = await runRecallCanary(INPUT, deps);
+    expect(out.ran && out.status).toBe('decayed');
+    if (out.ran) {
+      expect(out.metrics.pairsScored).toBe(0);
+      expect(out.metrics.pairsMissing).toBe(0);
+      expect(out.metrics.notes).toContain('1/10 active targets changed scope');
+    }
+    expect(recorded).toEqual([{ status: 'decayed' }]);
+    expect(notified).toEqual([]);
+  });
+
   it('reseeds (status decayed, no alert) when too many targets are gone', async () => {
     const pairs = pairsOf(10);
     const { deps, recorded, notified } = stubDeps({
       loadSet: async () => frozenSet(pairs, 0.9),
-      verifyTargets: async () => new Set(['mem-0', 'mem-1']), // 8/10 gone
+      verifyTargets: async () => new Map([['mem-0', 'pool-a'], ['mem-1', 'pool-a']]), // 8/10 gone
       backend: { name: 'hybrid', search: async () => [] },
     });
     const out = await runRecallCanary(INPUT, deps);
