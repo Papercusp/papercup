@@ -157,9 +157,10 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
     let received: { id: number; clientConnectionId: string } | undefined;
     const stalledServer = net.createServer((socket) => {
       let buffer = '';
+      socket.setEncoding('utf8');
       socket.on('error', () => {});
-      socket.on('data', (chunk) => {
-        buffer += chunk.toString('utf8');
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
         const newline = buffer.indexOf('\n');
         if (newline < 0) return;
         received = JSON.parse(buffer.slice(0, newline)) as { id: number; clientConnectionId: string };

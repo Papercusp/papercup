@@ -25,6 +25,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { collectChildOutput } from '../../child-output';
 import { runGitSync, type GitSyncConfig, type RunGit } from './run-git-sync';
 import {
   applyIntegrationPushTarget,
@@ -41,12 +42,9 @@ const testRunGit: RunGit = (args, cwd) =>
     const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
     delete env.GIT_CONFIG;
     const child = spawn('git', ['-c', 'core.hooksPath=/nonexistent', ...args], { cwd, env });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => (stdout += String(d)));
-    child.stderr.on('data', (d) => (stderr += String(d)));
-    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    const output = collectChildOutput(child);
+    child.on('error', (e) => resolve({ code: -1, stdout: output.stdout.text(), stderr: output.stderr.text() + String(e) }));
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout: output.stdout.text(), stderr: output.stderr.text() }));
   });
 
 async function git(args: string[], cwd: string): Promise<string> {
