@@ -295,6 +295,20 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0].completionAssertionWarning).toBeUndefined();
   });
 
+  it('still recognizes explicit item completion after a bounded activity in the same clause', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-item-complete-after-observation',
+        ts: '2026-10-03T13:32:00.000Z',
+        from: 'me',
+        summary: `${ITEM} observation is complete, and ${ITEM} is complete.`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toMatch(/msg-item-complete-after-observation/);
+  });
+
   it('recognizes an explicit structured completion premise for the item', async () => {
     outboxM.mockResolvedValue([
       {

@@ -287,6 +287,7 @@ export function validateLearningContract(contract: LearningContract): LearningCo
       errors.push(`evidence ${evidence.id} measured coverage cannot exceed required coverage`);
     }
     if (evidence.artifactRefs.length === 0) errors.push(`evidence ${evidence.id} needs an artifact reference`);
+    for (const ref of evidence.artifactRefs) nonEmpty(ref, 'evidence.artifactRef');
   }
   for (const id of contract.decision.evidenceIds) {
     if (!evidenceById.has(id)) errors.push(`decision references unknown evidence: ${id}`);
@@ -294,9 +295,25 @@ export function validateLearningContract(contract: LearningContract): LearningCo
 
   if (contract.decision.verdict === 'accepted') {
     if (contract.evidence.length === 0) errors.push('accepted decision requires evidence');
+    // Validate the required population, not only the rows a caller supplied.
+    // Removing an unmeasured gate must never turn an inconclusive result green.
+    for (const kind of ['objective', 'judgment', 'regression', 'probe', 'cost', 'rollback'] as const) {
+      if (!contract.evidence.some((evidence) => evidence.kind === kind)) {
+        errors.push(`accepted decision is missing required evidence: ${kind}`);
+      }
+    }
+    if (contract.spend.unsettledUsd !== 0) errors.push('accepted decision requires settled spend');
+    if (!contract.spend.settledAt || !Number.isFinite(Date.parse(contract.spend.settledAt))) {
+      errors.push('accepted decision requires a valid spend.settledAt');
+    }
+    if (new Set(contract.decision.evidenceIds).size !== contract.decision.evidenceIds.length) {
+      errors.push('accepted decision has duplicate evidence citations');
+    }
     for (const evidence of contract.evidence) {
       if (evidence.status !== 'pass') errors.push(`accepted decision has ${evidence.status} evidence: ${evidence.id}`);
       if (evidence.coverage.measured < evidence.coverage.required) errors.push(`accepted decision has incomplete evidence: ${evidence.id}`);
+      if (evidence.coverage.required < 1) errors.push(`accepted decision has no required coverage: ${evidence.id}`);
+      if (!contract.decision.evidenceIds.includes(evidence.id)) errors.push(`accepted decision does not cite evidence: ${evidence.id}`);
     }
   }
   if (contract.activation) {

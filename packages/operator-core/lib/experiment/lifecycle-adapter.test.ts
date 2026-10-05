@@ -24,6 +24,10 @@ const baseInput = (verdict: ProducerLifecycleInput['verdict'] = 'accept'): Produ
   evidence: [
     { id: 'objective-1', kind: 'objective', status: 'pass', coverage: { required: 2, measured: 2 }, artifactRefs: ['legacy:objective-1'], recordedAt: '2026-09-05T00:01:00.000Z' },
     { id: 'regression-1', kind: 'regression', status: 'pass', coverage: { required: 2, measured: 2 }, artifactRefs: ['legacy:regression-1'], recordedAt: '2026-09-05T00:01:00.000Z' },
+    ...(['judgment', 'probe', 'cost', 'rollback'] as const).map((kind) => ({
+      id: `${kind}-1`, kind, status: 'pass' as const, coverage: { required: 2, measured: 2 },
+      artifactRefs: [`legacy:${kind}-1`], recordedAt: '2026-09-05T00:01:00.000Z',
+    })),
   ],
   spend: { requestedUsd: 2, reservedUsd: 2, usedUsd: 1.5, unsettledUsd: 0, settledAt: '2026-09-05T00:01:00.000Z' },
   verdict,
@@ -85,6 +89,21 @@ describe('P-011 common candidate/evidence/decision lifecycle', () => {
     expect(adaptTransferOutput({ ...input, contract: { ...contract, spend: { ...contract.spend, settledAt: undefined } } }).promotionAllowed).toBe(false);
   });
 
+  it.each(LEARNING_PRODUCERS)('withholds common promotion when %s omits a required gate', (producer) => {
+    const fixture = baseInput();
+    const sourceRef = `${producer}:${fixture.candidate.id}`;
+    fixture.evidence = fixture.evidence.filter((e) => e.kind !== 'rollback')
+      .map((e) => ({ ...e, artifactRefs: [...e.artifactRefs, sourceRef] }));
+    const adapters = { scout: adaptScoutOutput, gym: adaptGymOutput, calibration: adaptCalibrationOutput,
+      transfer: adaptTransferOutput, regret: adaptRegretOutput, 'red-queen': adaptRedQueenOutput };
+    const adapt = adapters[producer];
+    const contract = adapt(fixture).contract;
+    const receipt = adapt({ stage: 'observation', workspaceId: fixture.candidate.potScope.workspaceId,
+      sourceRef, source: { status: 'passed' }, recordedAt: fixture.decidedAt, contract });
+    expect(receipt.promotionAllowed).toBe(false);
+    expect(receipt.validation?.errors).toContain('accepted decision is missing required evidence: rollback');
+  });
+
   it('preserves decision history through later observations and refuses rewriting the same battery decision', () => {
     const fixture = baseInput();
     const sourceRef = `transfer:${fixture.candidate.id}`;
@@ -142,13 +161,16 @@ describe('P-011 common candidate/evidence/decision lifecycle', () => {
       requiredEvidenceKinds: ['objective', 'regression'],
     });
     expect(parity.ok).toBe(true);
-    expect(contractArtifactRefs(contract)).toEqual(['legacy:objective-1', 'legacy:regression-1']);
+    expect(contractArtifactRefs(contract)).toEqual(['legacy:cost-1', 'legacy:judgment-1', 'legacy:objective-1',
+      'legacy:probe-1', 'legacy:regression-1', 'legacy:rollback-1']);
     expect(canRetireLegacyWriter({ parity, remainingLegacyWrites: 1 })).toBe(false);
     expect(canRetireLegacyWriter({ parity, remainingLegacyWrites: 0 })).toBe(true);
   });
 
   it('keeps a missing legacy artifact or evidence kind from looking like parity', () => {
-    const contract = adaptRedQueenOutput(baseInput()).contract;
+    const input = baseInput();
+    input.evidence = input.evidence.filter((e) => e.kind !== 'probe');
+    const contract = adaptRedQueenOutput(input).contract;
     const parity = evaluateLifecycleParity({ producer: 'red-queen', contract, legacyArtifactRefs: ['legacy:drill-1'], requiredEvidenceKinds: ['probe'] });
     expect(parity.ok).toBe(false);
     expect(parity.missingArtifactRefs).toEqual(['legacy:drill-1']);

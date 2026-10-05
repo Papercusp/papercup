@@ -59,8 +59,9 @@ function evaluated(lesson: TransferLesson): TransferReplayEvidence {
     candidate: { id: lesson.id, version: lesson.signature, parentVersion: 'controlled-baseline',
       variantHash: transferLessonArtifactHash(lesson), actor: { kind: 'system', id: 'controlled-producer' },
       potScope: { workspaceId: WS, potId: lesson.potSlug! }, createdAt: lesson.createdAt },
-    experiment, evidence: [{ id: `${batteryId}:pair`, kind: 'judgment', status: 'pass',
-      coverage: { required: 2, measured: 2 }, artifactRefs, recordedAt: completedAt }],
+    experiment, evidence: (['objective', 'judgment', 'regression', 'probe', 'cost', 'rollback'] as const)
+      .map((kind) => ({ id: `${batteryId}:${kind}`, kind, status: 'pass',
+        coverage: { required: 2, measured: 2 }, artifactRefs, recordedAt: completedAt })),
     spend: { requestedUsd: 0.5, reservedUsd: 0.5, usedUsd: 0.04, unsettledUsd: 0, settledAt: completedAt },
     verdict: 'accept', authority: { kind: 'system', id: 'controlled-decision' },
     reason: 'controlled measured pair meets gate', decidedAt: completedAt,
@@ -237,7 +238,7 @@ describe('common decision promotion boundary', () => {
     expect(receipts.find((r) => r.sourceRef === `transfer:${admitted.lesson.id}`)).toMatchObject({ promotionAllowed: false, sourceCurrent: false });
   });
 
-  it.each(['absent', 'artifact', 'workspace', 'pot', 'pin', 'open', 'unknown-cost', 'cap', 'cells', 'spend', 'rejected', 'references'] as const)(
+  it.each(['absent', 'artifact', 'workspace', 'pot', 'pin', 'open', 'unknown-cost', 'cap', 'cells', 'spend', 'rejected', 'references', 'missing-gate'] as const)(
     'retains the attempt without promoting when %s evidence is invalid', async (kind) => {
       const admitted = await admitTransferLesson(sql, { workspaceId: WS, signature: `guard-${++sequence}`,
         lessonText: 'Controlled guarded lesson', sourceRef: '/controlled/transcript', potSlug: 'test-pot' });
@@ -255,6 +256,8 @@ describe('common decision promotion boundary', () => {
       if (kind === 'spend') proof.reservation = { ...proof.reservation!, usedUsd: 0.02 };
       if (kind === 'rejected') proof.contract = { ...contract, decision: { ...contract.decision, verdict: 'rejected' } };
       if (kind === 'references') proof.contract = { ...contract, evidence: contract.evidence.map((e) => ({ ...e, artifactRefs: ['unrelated'] })) };
+      if (kind === 'missing-gate') proof.contract = { ...contract, evidence: contract.evidence.filter((e) => e.kind !== 'objective'),
+        decision: { ...contract.decision, evidenceIds: contract.decision.evidenceIds.filter((id) => id !== `${proof.experiment.batteryId}:objective`) } };
       expect(await recordTransferOutcome(sql, proposal(admitted.lesson, kind === 'absent' ? undefined : proof))).toMatchObject({
         tier: 'probationary', status: 'error', testCount: 1, passCount: 0, failCount: 0 });
     });

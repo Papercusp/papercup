@@ -98,6 +98,12 @@ const NON_COMPLETION_PATTERNS = [
   /\b(?:will|would|should|might|may|could)\s+(?:be\s+)?(?:complete|completed|done|finished|resolved|closed)\b/i,
 ] as const;
 
+// These are bounded activities a holder can finish while the referenced work-item
+// remains open. Only match them as the subject immediately before the completion
+// predicate; a later explicit "<item> is complete" in the same clause must still warn.
+const BOUNDED_ACTIVITY_SUBJECT_PATTERN =
+  /^(?:['’]s\s+)?(?:(?:the|a|an|bounded|brief|initial|targeted)\s+)*(?:observation|investigation|analysis|research|evidence[- ](?:collection|gathering)|lookup|search|scan|probe|check|test(?:\s+run)?|verification|review|inspection|audit|monitoring|triage|diagnosis|reproduction|experiment|validation|measurement|assessment|query|read|fetch)(?:\s+(?:of|for|into|on)\s+(?:(?:the|a|an)\s+)?(?:root[- ]cause|blocker|record|repository|evidence|work[- ]item|item))?\s*$/i;
+
 function escapedRegExp(value: string): RegExp {
   return new RegExp(`(?:^|[^A-Za-z0-9])${value.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}(?:$|[^A-Za-z0-9])`, 'i');
 }
@@ -222,7 +228,12 @@ function rangeDistance(left: TextRange, right: TextRange): number {
   return 0;
 }
 
-function hasItemScopedPattern(clause: string, itemId: string, patterns: readonly RegExp[]): boolean {
+function hasItemScopedPattern(
+  clause: string,
+  itemId: string,
+  patterns: readonly RegExp[],
+  ignoreBoundedActivitySubject = false,
+): boolean {
   const references = [...clause.matchAll(/\b(?:WI|EI|F)-\d+\b/gi)].map((match) => ({
     value: match[0],
     start: match.index ?? 0,
@@ -242,13 +253,22 @@ function hasItemScopedPattern(clause: string, itemId: string, patterns: readonly
   });
 
   return matches.some((match) => {
-    const targetDistance = Math.min(...targetReferences.map((reference) => rangeDistance(match, reference)));
+    const nearestTargetReference = targetReferences.reduce((nearest, reference) =>
+      rangeDistance(match, reference) < rangeDistance(match, nearest) ? reference : nearest,
+    );
+    const targetDistance = rangeDistance(match, nearestTargetReference);
     const otherDistance = otherReferences.length
       ? Math.min(...otherReferences.map((reference) => rangeDistance(match, reference)))
       : Number.POSITIVE_INFINITY;
     // A tie is ambiguous. Keep the warning conservative and do not attribute a
     // sibling's status to this item just because both occur in one clause.
-    return targetDistance < otherDistance;
+    if (targetDistance >= otherDistance) return false;
+
+    if (ignoreBoundedActivitySubject && nearestTargetReference.end <= match.start) {
+      const subject = clause.slice(nearestTargetReference.end, match.start).trim();
+      if (BOUNDED_ACTIVITY_SUBJECT_PATTERN.test(subject)) return false;
+    }
+    return true;
   });
 }
 
@@ -256,7 +276,7 @@ function assertsCompletionForItem(message: unknown, itemId: string): boolean {
   if (hasStructuredCompletionPremise(message, itemId)) return true;
   return coordMessageText(message).some((segment) => {
     return completionClauses(segment).some((clause) => {
-      if (!hasItemScopedPattern(clause, itemId, COMPLETION_ASSERTION_PATTERNS)) return false;
+      if (!hasItemScopedPattern(clause, itemId, COMPLETION_ASSERTION_PATTERNS, true)) return false;
       return !hasItemScopedPattern(clause, itemId, NON_COMPLETION_PATTERNS);
     });
   });
