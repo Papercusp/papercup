@@ -267,6 +267,14 @@ describe('resource governor enforcement lint', () => {
     expect(
       scanInventory([[diagnosisPath, diagnosis + "\nspawnSync('worker', []);"]], { migrations: ['P-013'] }),
     ).toContain(diagnosisFinding);
+    for (const unbounded of [
+      diagnosis.replace('const SYSTEMCTL_TIMEOUT_MS = 3_000;', 'const SYSTEMCTL_TIMEOUT_MS = undefined;'),
+      diagnosis.replace('timeout: SYSTEMCTL_TIMEOUT_MS', 'timeout: undefined'),
+    ]) {
+      expect(scanInventory([[diagnosisPath, unbounded]], { migrations: ['P-013'] })).toContain(
+        diagnosisFinding,
+      );
+    }
 
     const launcher = readFileSync(ROOT + 'apps/operator/scripts/psu-launcher.mjs', 'utf8');
     expect(launcher).toMatch(/let\s+slowRequestNoticeShown\s*=\s*false/);
