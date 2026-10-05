@@ -59,11 +59,23 @@ const verdictMap: Record<ProducerVerdict, LearningDecision['verdict']> = {
   inconclusive: 'inconclusive',
 };
 
+/** Freeze the detached JSON receipt, including evidence and inherited decisions. */
+function freezeReceipt<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) freezeReceipt(child);
+  }
+  return value;
+}
+
 /** Build the one common contract from any producer's already-recorded output. */
 export function buildProducerLifecycleContract(
   producer: LearningProducer,
   input: ProducerLifecycleInput,
 ): LifecycleAdapterResult {
+  // Validate and retain the same snapshot; caller mutation cannot change the
+  // evidence behind an already-computed verdict, and callers stay writable.
+  input = structuredClone(input);
   const decision: LearningDecision = {
     verdict: verdictMap[input.verdict],
     authority: input.authority,
@@ -81,7 +93,7 @@ export function buildProducerLifecycleContract(
     ...(input.activation ? { activation: input.activation } : {}),
     outcomes: input.outcomes ?? [],
   };
-  return { producer, contract, validation: validateLearningContract(contract) };
+  return freezeReceipt({ producer, contract, validation: validateLearningContract(contract) });
 }
 
 /** Discovery and domain verdicts are observations until the complete contract exists. */
@@ -133,6 +145,7 @@ function canonical(value: unknown): unknown {
 }
 
 function adaptProducerObservation(producer: LearningProducer, input: ProducerObservationInput): ProducerLifecycleObservation {
+  input = structuredClone(input);
   if (!input.workspaceId.trim() || !input.sourceRef.trim() || !Number.isFinite(Date.parse(input.recordedAt))) {
     throw new Error('producer observation requires workspace, source identity and a valid recording time');
   }
@@ -158,7 +171,7 @@ function adaptProducerObservation(producer: LearningProducer, input: ProducerObs
     }
     if (!prior) decisions.push({ contract, sourceHash, recordedAt: input.recordedAt });
   }
-  return {
+  return freezeReceipt({
     receiptVersion: '1', stage: contract ? 'decision' : 'observation', producer,
     workspaceId: input.workspaceId, sourceRef: input.sourceRef,
     sourceHash,
@@ -169,7 +182,7 @@ function adaptProducerObservation(producer: LearningProducer, input: ProducerObs
     ...(decisions.length ? { decisions } : {}),
     missing: contract ? [] : ['candidate', 'experiment', 'evidence', 'spend', 'decision'],
     ...(evaluation === undefined ? {} : { evaluation, evaluationSourceHash, evaluationCurrent: evaluationSourceHash === sourceHash }),
-  };
+  });
 }
 
 interface ProducerAdapter {

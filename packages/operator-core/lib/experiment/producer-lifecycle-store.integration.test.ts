@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
-import { readProducerObservations } from './producer-lifecycle-store';
+import { readProducerObservations, recordProducerObservation } from './producer-lifecycle-store';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
@@ -77,6 +77,46 @@ describe('six actual producer boundaries', () => {
     await recordProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, cycle: 2, role: 'worker', proposedMd: 'must not resurrect' });
     expect((await observation('gym')).source.proposed_md).toBe('candidate prompt');
     expect((await decideProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, decision: 'rejected' })).ok).toBe(false);
+  });
+
+  it('captures evaluation before the source read yields and retains it through a later native write', async () => {
+    const workspaceId = 'ws-gym-evaluation-alias';
+    const id = await recordProposal(db.adminSql, { workspaceId, harnessSlug: 'papercusp', cycle: 1,
+      id: 'gym-evaluation-alias', role: 'worker', proposedMd: 'original prompt' });
+    const evaluation = { codeHash: null, runs: [{ id: 'original-run', score: 0.8 }] };
+    const scope = { producer: 'gym' as const, workspaceId, sourceId: id, evaluation };
+    let reachedRead!: () => void;
+    let releaseRead!: () => void;
+    const reading = new Promise<void>((resolve) => { reachedRead = resolve; });
+    const released = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const writing = db.adminSql.begin(async (tx) => {
+      // Both statements use real private PG; only the scheduling boundary is held.
+      const gatedSql = { unsafe: async (query: string, params: never[]) => {
+        const rows = await tx.unsafe(query, params);
+        if (query.startsWith('SELECT')) {
+          reachedRead();
+          await released;
+        }
+        return rows;
+      } } as unknown as typeof db.adminSql;
+      await recordProducerObservation(gatedSql, scope);
+    });
+    await reading;
+    try {
+      evaluation.runs[0]!.id = 'unrelated-run';
+      evaluation.runs[0]!.score = -1;
+    } finally {
+      releaseRead();
+    }
+    await writing;
+    const [captured] = await readProducerObservations(db.adminSql, { producer: 'gym', workspaceId });
+    expect(captured).toMatchObject({ contract: null, promotionAllowed: false, evaluationCurrent: true,
+      evaluation: { codeHash: null, runs: [{ id: 'original-run', score: 0.8 }] } });
+    await recordProposal(db.adminSql, { workspaceId, harnessSlug: 'papercusp', cycle: 2,
+      id, role: 'worker', proposedMd: 'later prompt' });
+    const [updated] = await readProducerObservations(db.adminSql, { producer: 'gym', workspaceId });
+    expect(updated).toMatchObject({ sourceCurrent: true, evaluationCurrent: false, promotionAllowed: false,
+      evaluation: captured!.evaluation, evaluationSourceHash: captured!.evaluationSourceHash });
   });
 
   it('captures scored and void calibration outcomes; a duplicate open prediction remains a no-op', async () => {
