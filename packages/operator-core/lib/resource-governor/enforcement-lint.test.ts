@@ -255,6 +255,24 @@ describe('resource governor enforcement lint', () => {
     expect(scanActiveInventory(sourceFiles)).toEqual([]);
   });
 
+  it('keeps the PSU operator-down systemd probe exact and once per launcher', () => {
+    const diagnosisPath = 'apps/operator/scripts/psu-operator-down-diagnosis.mjs';
+    const diagnosis = readFileSync(ROOT + diagnosisPath, 'utf8');
+    const diagnosisFinding = `${diagnosisPath}:resource-start-outside-admission`;
+    const disposition = BYPASS_REGISTRY.get(`${diagnosisPath}::resource-start-outside-admission`);
+    expect(disposition?.disposition).toBe('bypass');
+    expect(disposition?.matchesSource?.(diagnosis)).toBe(true);
+    expect(
+      scanInventory([[diagnosisPath, diagnosis + "\nspawnSync('worker', []);"]], { migrations: ['P-013'] }),
+    ).toContain(diagnosisFinding);
+
+    const launcher = readFileSync(ROOT + 'apps/operator/scripts/psu-launcher.mjs', 'utf8');
+    expect(launcher).toMatch(/let\s+slowRequestNoticeShown\s*=\s*false/);
+    expect(launcher).toMatch(/if\s*\(slowRequestNoticeShown\)\s*return\s+null/);
+    expect(launcher).toMatch(/slowRequestNoticeShown\s*=\s*true/);
+    expect(launcher.match(/\bslowOperatorNotice\s*\(/g)).toHaveLength(1);
+  });
+
   it('requires an explicit reviewed disposition for every active P-016 finding and excludes only scanner self-code', () => {
     const { files } = listTrackedFiles(ROOT);
     const p016Rows = RESOURCE_GOVERNOR_INVENTORY.filter((row) => row.migration === 'P-016');

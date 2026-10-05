@@ -2258,6 +2258,23 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
+    "apps/operator/scripts/psu-operator-down-diagnosis.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed P-013 bypass disposition for psu-operator-down-diagnosis.mjs: the psu launcher uses this control-path helper only after its operator health request stays pending, to identify the systemd unit that is down. The helper's only child start is a synchronous `systemctl --user` read with a 3-second timeout; commands are awaited, sequential and return captured output. It creates no worker, detached child, durable queue or resident work. psu-launcher guards the notice to once per launcher process. This is an operator recovery diagnostic, not runtime workload; its exact source predicate below rejects added starts or removal of the bounded systemctl timeout.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+          source.includes('const SYSTEMCTL_TIMEOUT_MS = 3_000;') &&
+          source.includes('spawnSync("systemctl", ["--user", ...args, "--no-pager"], {') &&
+          code.includes("timeout: SYSTEMCTL_TIMEOUT_MS") &&
+          !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+          !/\bdetached\s*:\s*true/.test(code);
+      },
+    },
+  ],
+  [
     "packages/operator-core/lib/agent-auth-detect.ts::resource-start-outside-admission",
     {
       disposition: "bypass",

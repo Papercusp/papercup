@@ -98,7 +98,7 @@ describe('independently packaged provider through the plugin contract (P-001)', 
     expect(registry.forDatatype('email-message', 'mail.read').map((p) => p.descriptor.id)).toEqual(['acme-mail']);
     expect(registry.forDatatype('email-message', 'mail.send')).toEqual([]);
     // The adapter that registered is the package's own code, and it answers.
-    const page = await entry!.adapter!.syncPage({} as never);
+    const page = await entry!.adapter!.syncPage({ source: 'src-1', cursor: null } as never, {} as never);
     expect(page).toMatchObject({ records: [{ id: 'm1' }], hasMore: false });
   });
 

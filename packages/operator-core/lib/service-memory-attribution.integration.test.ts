@@ -1257,6 +1257,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
   it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT))('compares order-reversed full inbox keys with observed HTTP overlap', async () => {
     const destination = evidenceDestination(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT)!;
     const cacheRetainers = process.env.PAPERCUSP_P011_INBOX_HEAP_RETAINERS === '1';
+    const traceOnly = process.env.PAPERCUSP_P011_INBOX_ID_LIFETIME_TRACE === '1';
+    if (traceOnly && !cacheRetainers) throw Error('Inspector lifetime trace requires the file-snapshot route');
     const nativeAdapter = process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER ?? '';
     const nativeDecoder = process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER ?? '';
     if (cacheRetainers && (!nativeAdapter || !nativeDecoder))
@@ -1280,6 +1282,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       'libs/generic/cache/src/cache.ts', 'libs/generic/cache/src/l1.ts',
       'scripts/cdp-inspector.mjs', 'apps/operator/bin/bundle-host.sh',
       'packages/operator-core/lib/service-memory-attribution.integration.test.ts',
+      ...(traceOnly ? ['packages/operator-core/lib/event-loop-cpu-recorder.ts',
+        'packages/operator-core/lib/event-loop-lag-monitor.ts'] : []),
       ...(cacheRetainers ? ['scripts/analyze-heap-snapshots.mjs',
         'scripts/heap-retainers-native/src/main.rs', 'scripts/heap-retainers-native/Cargo.lock'] : []),
     ];
@@ -1331,8 +1335,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       (async () => {
         if (!e.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-') || e.PAPERCUSP_BACKGROUND_WORKERS !== '0')
           throw Error('Private request-only operator-api profile required');
-        const { createCdpClient, readProcessMemory, readPinnedHeapObjectIds } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
+        const { createCdpClient, readProcessMemory, readPinnedHeapObjectIds, withFunctionCallTrace } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
         const cacheRetainers = e.TEST_CACHE_HEAP_RETAINERS === '1';
+        const traceOnly = e.TEST_ID_LIFETIME_TRACE === '1';
+        report.traceOnly = traceOnly;
+        if (traceOnly) report.limitations.push('One shared arm traces only snapshot/ID lifetime; no matched resource or retainer acceptance.');
         if (cacheRetainers) {
           report.limitations.push('Cache snapshots force GC after every unforced resource window; exact V8 nodes do not establish native physical ownership or production savings.');
           for (const [field, executable, version] of [
@@ -1357,7 +1364,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         const variants = Array.from({ length: 8 }, (_, i) => ({ directed: true, limit: i + 1,
           include_ambient: Boolean(i & 1), include_intents: Boolean(i & 2), max_body_chars: 1 }));
         report.variants = variants;
-        for (const [arm, mode] of ['baseline', 'shared', 'shared', 'baseline'].entries()) {
+        for (const [arm, mode] of (traceOnly ? ['shared'] : ['baseline', 'shared', 'shared', 'baseline']).entries()) {
           const entry = mode === 'baseline' ? e.TEST_BASELINE_PATH : e.TEST_CURRENT_PATH;
           const cohort = { arm, mode, bundleSha256: hash(fs.readFileSync(entry)), samples: [], windows: [], pauses: 0,
             descendants: [], reaped: false, forcedCleanup: false };
@@ -1471,7 +1478,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               const started = Date.now();
               heap.snapshotStartedAt = started;
               try {
-                heap.heapOwnerBinding = await readPinnedHeapObjectIds(client, { expectedPid: host.pid,
+                const captureIds = () => readPinnedHeapObjectIds(client, { expectedPid: host.pid,
                   owners: ['@papercusp/operator-core.operatorCache'], cacheKeyDigests: keyDigests,
                   captureSnapshot: async metadata => {
                     heap.cacheBeforeSnapshot = metadata.cacheEntries; publish();
@@ -1484,8 +1491,24 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                     if (captured !== snapshotPath) throw Error('Inbox snapshot destination mismatch');
                     heap.heapSnapshotWriteMs = Date.now() - writeStarted; publish();
                   } });
+                if (traceOnly) {
+                  const measured = await withFunctionCallTrace(client, { expectedPid: host.pid,
+                    durationMs: 30000, maxCalls: 64, maxStacks: 8, maxStackChars: 4096,
+                    targets: [{ name: 'inspector.Session.disconnect',
+                      expression: "process.getBuiltinModule('inspector').Session.prototype.disconnect" }],
+                  }, captureIds);
+                  heap.heapOwnerBinding = measured.value;
+                  heap.sessionLifecycle = { trace: measured.trace, limits: measured.limits };
+                  publish();
+                } else heap.heapOwnerBinding = await captureIds();
                 await client.send('HeapProfiler.disable'); profilerEnabled = false;
                 heap.profilerOperations.push('HeapProfiler.disable (object IDs)');
+                if (traceOnly) {
+                  heap.postSnapshotRowsPreserved = JSON.stringify((await client.evaluate(contentExpression,
+                    { returnByValue: true })).result.value) === JSON.stringify(content);
+                  if (!heap.postSnapshotRowsPreserved) throw Error('Inbox useful cache content changed after snapshot');
+                  continue;
+                }
                 const objectIds = [...new Set([
                   ...heap.heapOwnerBinding.roots.filter(row => row.status === 'found').map(row => row.id),
                   ...heap.heapOwnerBinding.cacheEntries.records.flatMap(row =>
@@ -1582,6 +1605,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         { cwd: root, timeout: cacheRetainers ? 900000 : 360000, env: { ...process.env, TEST_CURRENT_PATH: current, TEST_BASELINE_PATH: baseline,
           TEST_REPORT_PATH: rawReport, TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX,
           TEST_CACHE_HEAP_RETAINERS: cacheRetainers ? '1' : '0', TEST_NATIVE_HEAP_ADAPTER: nativeAdapter,
+          TEST_ID_LIFETIME_TRACE: traceOnly ? '1' : '0',
           TEST_NATIVE_HEAP_DECODER: nativeDecoder, TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs'),
           TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_PRIVATE_PARENT: tmpdir(), TEST_EXPECTED_BUILD: servingPin?.health.sha ?? '' } },
         join(directory, 'runtime.log'));
@@ -1602,6 +1626,20 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         }
       });
       expect(result.status, report.error ?? result.stderr).toBe(0);
+      if (traceOnly) {
+        expect(report.traceOnly).toBe(true); expect(report.incomplete).toBe(false);
+        expect(report.cohorts).toHaveLength(1);
+        const cohort = report.cohorts[0];
+        expect(cohort.mode).toBe('shared'); expect(cohort.reaped).toBe(true);
+        expect(cohort.unreaped).toEqual([]); expect(cohort.pauses).toBe(0);
+        expect(cohort.cacheHeap.snapshotRemoved).toBe(true);
+        expect(cohort.cacheHeap.postSnapshotRowsPreserved).toBe(true);
+        expect(cohort.cacheHeap.heapOwnerBinding.cacheEntries.records[0].status).toBe('selected');
+        expect(cohort.cacheHeap.sessionLifecycle.trace.pid).toBe(cohort.pid);
+        expect(cohort.cacheHeap.sessionLifecycle.trace.limited).toBe(false);
+        expect(report.sources.before).toEqual(report.sources.after);
+        return;
+      }
       expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(4);
       expect(report.sources.before).toEqual(report.sources.after);
       const [control, shared] = report.cohorts;
