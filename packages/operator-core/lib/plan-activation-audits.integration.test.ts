@@ -105,6 +105,9 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, migration('851-first-class-plan-spec-clauses.sql'));
   await applyMigrationForTest(db.sql, migration('929-spec-clause-falsifier.sql'));
   await applyMigrationForTest(db.sql, migration('1111-acceptance-bar-contract-seed.sql'));
+  // The real BAR writer resets its receiver-local verified revision. Apply
+  // the owning migration so this fixture follows that production write path.
+  await applyMigrationForTest(db.sql, migration('1258-acceptance-bar-verified-revision.sql'));
   await applyMigrationForTest(db.sql, migration('855-work-item-spec-evidence-bindings.sql'));
 }, 90_000);
 
