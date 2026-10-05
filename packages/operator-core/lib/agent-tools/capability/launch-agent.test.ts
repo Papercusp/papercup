@@ -831,11 +831,24 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
       {
         brief: 'replace one fleet member',
         __respawnOwnerId: 'su-respawn-test-owner',
+        __respawnReplacesOwnerId: 'su-replaced-owner',
       } as never,
       ctx,
     );
 
     expect(spawnedCommand()).toContain('--owner-id=su-respawn-test-owner');
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ replacesOwnerId: 'su-replaced-owner' }),
+    }), expect.any(Function));
+  });
+
+  it('reports degraded final goal registration through the launch notes', async () => {
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) => ({
+      ...await spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
+      goalAdmissionDegraded: ['fixture final goal registration unavailable'],
+    }));
+    const result = await launchAgent.handler({ brief: 'verify goal admission receipt' }, ctx);
+    expect(textOf(result)).toContain('fixture final goal registration unavailable');
   });
 
   it('refuses a launch with nothing to do (it would just sit idle)', async () => {
