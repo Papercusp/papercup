@@ -18,6 +18,8 @@ documents:
   - "packages/operator-core/lib/gym/runner-ports.ts"
   - "packages/operator-core/lib/gym/__tests__/gym-runner.test.ts"
   - "packages/operator-core/lib/gym/__tests__/runner-ports.test.ts"
+  - "scripts/lib/committed-source-loader.mjs"
+  - "packages/operator-core/lib/__tests__/committed-source-loader.test.ts"
 plans:
   - "blender-evidence-driven-learning-redesign-2026-09-04"
 ---
@@ -51,3 +53,8 @@ Worker threads share their parent PID. A real worker control a79e7bdd-59d6-45c1-
 The first-attempt result classifier also treats TestCase.diagnostic() as optional. An absent diagnostic marks that case unmeasured and continues, allowing a later observed retry miss to remain fail. The mixed absent-then-retry regression failed before the guard (a5cebc80-5966-4286-85d0-14c3e4448a87, row20724887); the missing-only case remains unknown. WI-10006093 records the verified source fix and is committed done.
 
 Final combined source verification after these corrections: canonical run 9cc3aa84-8d08-410c-ba48-c0e16aa13c6b passed 192 assertions over the capture, reporter, Gym runner, real ports and AB files, with zero failures/skips. Full test-config typecheck and focused Gym typecheck were clean. Previous 146-pass evidence above describes its earlier measured source; the complete runtime/native contract and original release acceptance remain unresolved.
+
+
+The committed-source loader also returns intermediate source receipts through its existing PAPERCUSP_COMMITTED_SOURCE_AUDIT JSONL channel. Each ESM receipt records the actual input and returned buffer SHA256, returned byte length, format, PID and loader-thread ID at node-esm-load-return. An uncommitted refusal has null returned fields. The immutable committed blob may differ from the dirty input; neither disk nor a later HEAD read supplies these observed hashes. A later loader such as tsx can still transform the returned source, and loader self-input remains unmeasured. The native counterexample executes TRANSFORMED while this boundary correctly records HEAD, proving why this receipt cannot identify final executed code.
+
+Gym retains the exact raw JSONL as commandProcessSources.loaderReport, including on command failure, and removes its temporary file after reading. Missing audit remains unmeasured. The committed-source-loader-chain-not-closed marker remains even when audit exists; no aggregate codeHash, pass reuse or activation authority is inferred. Dated Oct 5 source verification: rows 20733487/20733488/20733489 passed 125 assertions across committed-source-loader (15), runner-ports (26) and gym-runner (84), with no skips. The local test ledger names commit 13d97500b016c475fe9a77d91f0d8d4a0431dd58 with worktreeDirty true; this is bounded current-build evidence, not final-release or complete runtime identity. Focused type checking of four changed TypeScript files and the checked direct graph was clean.

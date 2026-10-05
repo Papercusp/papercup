@@ -46,6 +46,9 @@ export interface GymOracleRun {
      * The process population, preloads and external/native runtime remain open. */
     commandProcessSources?: {
       report: string | null;
+      /** Exact JSONL emitted by the committed-source hook before later
+       * transforms. Retained for diagnosis, never final runtime authority. */
+      loaderReport?: string | null;
       reference: { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> };
       processes: Array<{ schemaVersion: string; scope: string; basis: string; status: string;
         entrypoint: string | null; pid: number; parentPid: number; exitCode: number;

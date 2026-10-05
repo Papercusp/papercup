@@ -11,11 +11,11 @@
 //
 // Catalog measured: 945 tools.
 
-/** claude: 0 full + 63 compact = 100621 B of 100000 B (OVERRUN 621 B — floors alone exceed the budget). */
+/** claude: 0 full + 63 compact = 100087 B of 100000 B (OVERRUN 87 B — floors alone exceed the budget). */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 100621,
-  budgetOverrun: 621,
+  spentBytes: 100087,
+  budgetOverrun: 87,
   counts: Object.freeze({ full: 0, compact: 63, deferred: 882 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
@@ -217,11 +217,11 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 0 full + 63 compact = 100621 B of 100000 B (OVERRUN 621 B — floors alone exceed the budget). */
+/** codex: 0 full + 63 compact = 100087 B of 100000 B (OVERRUN 87 B — floors alone exceed the budget). */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 100621,
-  budgetOverrun: 621,
+  spentBytes: 100087,
+  budgetOverrun: 87,
   counts: Object.freeze({ full: 0, compact: 63, deferred: 882 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
@@ -423,11 +423,11 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 0 full + 63 compact = 100621 B of 100000 B (OVERRUN 621 B — floors alone exceed the budget). */
+/** omp: 0 full + 63 compact = 100087 B of 100000 B (OVERRUN 87 B — floors alone exceed the budget). */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 100621,
-  budgetOverrun: 621,
+  spentBytes: 100087,
+  budgetOverrun: 87,
   counts: Object.freeze({ full: 0, compact: 63, deferred: 882 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({

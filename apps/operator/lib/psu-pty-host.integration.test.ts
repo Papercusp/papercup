@@ -4966,6 +4966,9 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       const { io } = fakeIo();
 
       let exitCode: number | null = null;
+      // This fixture owns its child PGID, while its host shares the test run's
+      // scope with Vitest and esbuild. Never sweep that scope on shutdown.
+      const reapScopeResidue = vi.fn(() => ({ killedPids: [], failedPids: [] }));
       const done = hostThroughPty({
         command: execPath,
         args: ['-e', LONG_LIVED_CHILD],
@@ -4982,6 +4985,7 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
         advSessionId: 6638,
         io,
         bridgeTty: false,
+        reapScopeResidue,
         onExit: (c: number) => {
           exitCode = c;
         },
@@ -5008,6 +5012,7 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       expect(Date.now() - startedAt).toBeLessThan(20_000);
       expect(typeof code).toBe('number');
       expect(exitCode).not.toBeNull();
+      expect(reapScopeResidue).not.toHaveBeenCalled();
       // The window is gone: same cleanup path as any other child exit.
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);

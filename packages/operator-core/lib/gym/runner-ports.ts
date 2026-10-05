@@ -296,6 +296,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       const implementationBefore = implPath ? fileHash(implPath) : null;
       const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
       const sourceReportPath = `${reportPath}.sources.json`;
+      const loaderReportPath = `${sourceReportPath}.committed-loads.jsonl`;
       const sourceReporter = join(clonePath, 'libs/test-config/src/executed-source-map-reporter.ts');
       const hasSourceReporter = existsSync(sourceReporter);
       const configLoadCapture = join(clonePath, 'libs/test-config/src/executed-config-load-capture.ts');
@@ -311,6 +312,9 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           command[0], command.slice(1),
           { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
             env: { ...process.env, PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle',
+              // The router's existing loader emits intermediate return receipts.
+              // Preserve them separately from final worker/module observations.
+              PAPERCUSP_COMMITTED_SOURCE_AUDIT: loaderReportPath,
               ...(hasConfigLoadCapture ? { PC_EXECUTED_SOURCE_MAP_PRELOAD: '1',
                 PC_EXECUTED_SOURCE_MAP_ROOT: clonePath,
                 NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(configLoadCapture).href}` } : {}),
@@ -367,9 +371,13 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         const manifestAfter = fileHash('package.json');
         const manifestUnknown = [manifestPinned, manifestBefore, manifestAfter].some((hash) => hash === null);
         let commandProcessReport: string | null = null;
+        let loaderReport: string | null = null;
         let commandProcesses: NonNullable<NonNullable<GymOracleRun['execution']>['commandProcessSources']>['processes'] = [];
         const commandProcessUnresolved = ['node-process-descendant-population-unmeasured',
-          'node-preload-self-unmeasured', 'node-external-native-runtime-unmeasured'];
+          'node-preload-self-unmeasured', 'node-external-native-runtime-unmeasured',
+          'committed-source-loader-chain-not-closed'];
+        try { loaderReport = readFileSync(loaderReportPath, 'utf8'); } catch { /* unknown */ }
+        if (!loaderReport) commandProcessUnresolved.push('oracle-committed-source-load-unmeasured');
         try {
           const raw = readdirSync(`${sourceReportPath}.processes`).sort().map(file =>
             readFileSync(join(`${sourceReportPath}.processes`, file), 'utf8'));
@@ -393,7 +401,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
             workerSources: { report: sourceReport, modules, reference: { pinCommit, sources: referenceSources } },
             configSources: { evidence: configEvidence, loaded: configLoaded, reference: { pinCommit, sources: configReferenceSources } },
             mainProcessSources: { evidence: mainProcessEvidence, reference: { pinCommit, sources: mainProcessReferenceSources } },
-            commandProcessSources: { report: commandProcessReport, processes: commandProcesses,
+            commandProcessSources: { report: commandProcessReport, loaderReport, processes: commandProcesses,
               reference: { pinCommit, sources: commandProcessReferenceSources }, unresolved: commandProcessUnresolved },
             unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
               ...(!mainProcessEvidence || mainProcessEvidence.status === 'unknown' ? ['oracle-main-process-load-unmeasured'] : []),
@@ -411,6 +419,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       } finally {
         try { unlinkSync(reportPath); } catch { /* best effort */ }
         try { unlinkSync(sourceReportPath); } catch { /* best effort */ }
+        try { unlinkSync(loaderReportPath); } catch { /* best effort */ }
         try { rmSync(`${sourceReportPath}.processes`, { recursive: true, force: true }); } catch { /* best effort */ }
       }
     },

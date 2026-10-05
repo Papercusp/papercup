@@ -49,6 +49,33 @@ export interface TestPassReuseWorkspace {
   /** The actual selector configuration; never inferred from its random sample size. */
   auditRate: number | null;
   lane: 'pure' | 'db' | null;
+  /** Selector identity also exists when this task drew zero sampled files. */
+  runtime?: TestPassReuseRuntime | null;
+}
+
+export interface TestPassReuseRuntime {
+  version: 1;
+  judgedSha: string;
+  runnerIdentity: string;
+  runContext: string;
+  runGroupId: string | null;
+  dirty: boolean;
+}
+
+function parseReuseRuntime(value: unknown): TestPassReuseRuntime | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (v.version !== 1 || typeof v.judgedSha !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(v.judgedSha) ||
+      !['runnerIdentity', 'runContext'].every((k) => typeof v[k] === 'string' && (v[k] as string).trim()) ||
+      !(v.runGroupId === null || (typeof v.runGroupId === 'string' && v.runGroupId.trim())) ||
+      typeof v.dirty !== 'boolean') return null;
+  return { version: 1, judgedSha: v.judgedSha, runnerIdentity: v.runnerIdentity as string,
+    runContext: v.runContext as string, runGroupId: v.runGroupId as string | null, dirty: v.dirty };
+}
+
+function parseRuntimeField(value: string): TestPassReuseRuntime | null {
+  try { return parseReuseRuntime(JSON.parse(decodeURIComponent(value))); }
+  catch { return null; }
 }
 
 export interface TestPassReuseAlarm {
@@ -238,6 +265,7 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
       narrowed: narrowed === 'true' ? true : narrowed === 'false' ? false : null,
       auditRate: rate(f.get('auditRate')),
       lane: f.get('lane') === 'pure' ? 'pure' : f.get('lane') === 'db' ? 'db' : null,
+      ...(f.has('runtime') ? { runtime: parseRuntimeField(f.get('runtime')!) } : {}),
     });
   }
   return runs;
@@ -804,7 +832,8 @@ function parseArchivedAuditRuns(value: unknown): TestPassReuseRun[] | null {
           typeof w.auditRate !== 'number' || !Number.isFinite(w.auditRate) || w.auditRate < 0 || w.auditRate > 1) return null;
       workspaces.push({ ws: w.ws, applied: true, reason: null, counts: { ...w.counts as Record<string, number> },
         minSavedTestMs: w.minSavedTestMs as number | null, narrowed: w.narrowed as boolean | null,
-        lane: w.lane as TestPassReuseWorkspace['lane'], auditRate: w.auditRate });
+        lane: w.lane as TestPassReuseWorkspace['lane'], auditRate: w.auditRate,
+        ...(w.runtime === undefined ? {} : { runtime: parseReuseRuntime(w.runtime) }) });
     }
     if (new Set(workspaces.map((w) => w.ws)).size !== workspaces.length) return null;
     const alarms: TestPassReuseAlarm[] = [];

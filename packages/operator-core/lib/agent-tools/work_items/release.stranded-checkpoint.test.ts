@@ -272,6 +272,29 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0].completionAssertionWarning).toMatch(/work_items:complete/);
   });
 
+  it('does not treat a completed bounded observation as completion of the referenced item', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'coord-send-63ac7f89f2c165b527963983fccddd74257a663d1f0627cc3bf10b3cbec7c657',
+        ts: '2026-10-03T13:31:00.549Z',
+        from: 'me',
+        summary:
+          'WI-10005168 observation is complete; please route the remaining root-cause work through an admitted lane.',
+        body:
+          'The missing-run blocker cleared; the delay and failure causes remain unknown. Please route any root-cause follow-up through an admitted lane.',
+        sections: [
+          {
+            text:
+              'The missing-run blocker cleared; the delay and failure causes remain unknown. Please route any root-cause follow-up through an admitted lane.',
+          },
+        ],
+      } as never,
+    ]);
+
+    const b = await body({ id: 'WI-10005168' });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
   it('recognizes an explicit structured completion premise for the item', async () => {
     outboxM.mockResolvedValue([
       {

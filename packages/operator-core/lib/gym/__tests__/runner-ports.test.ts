@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -388,6 +388,33 @@ describe('createGymRunnerPorts', () => {
       } });
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   }, 30_000);
+
+  it.each([false, true])('retains intermediate loader audit verbatim and cleans its file (command failure=%s)', async failure => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-loader-audit-'));
+    // Propagation only: actual native byte/transform semantics are verified by
+    // committed-source-loader.test.ts, not inferred from this controlled record.
+    const raw = JSON.stringify({ boundary: 'node-esm-load-return', returnedSha256: 'controlled',
+      unresolved: ['later-loader-transforms-unmeasured'] }) + '\n';
+    let loaderPath = '';
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      const { config } = cfg({ execCapture: async (cmd, args, opts) => {
+        if (cmd === 'git') return { stdout: 'oracle', stderr: '' };
+        loaderPath = opts?.env?.PAPERCUSP_COMMITTED_SOURCE_AUDIT ?? '';
+        expect(loaderPath).not.toBe('');
+        writeFileSync(loaderPath, raw);
+        writeFileSync(args.find(arg => arg.startsWith('--outputFile='))!.slice('--outputFile='.length),
+          JSON.stringify({ testResults: [{ assertionResults: [{ fullName: 't', status: 'passed' }] }] }));
+        if (failure) throw Object.assign(new Error('controlled command failure'), { code: 7 });
+        return { stdout: '', stderr: '' };
+      } });
+      const receipt = await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit: 'a'.repeat(40) });
+      expect(receipt).toMatchObject({ execution: { exitCode: failure ? 7 : 0,
+        commandProcessSources: { loaderReport: raw,
+          unresolved: expect.arrayContaining(['committed-source-loader-chain-not-closed']) } } });
+      expect(existsSync(loaderPath)).toBe(false);
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
 
   it.each(['exit', 'signal', 'spawn'] as const)('retains a report without hiding the test command %s failure', async (failure) => {
     const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-command-'));

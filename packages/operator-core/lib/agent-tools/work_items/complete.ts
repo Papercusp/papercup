@@ -309,7 +309,7 @@ function defaultCompletionStatus(value: unknown): unknown {
 // Two separate metadata-bearing object clones would collide during strictArgs.
 const completionCoverageField = CompletionRecordSchema.shape.coverage.meta({
   ...CompletionRecordSchema.shape.coverage.meta(),
-  id: 'work-items-completion-coverage-v1',
+  id: 'completion-coverage',
 });
 
 const completionInputSchema = CompletionRecordSchema.extend({
@@ -925,6 +925,11 @@ function isPlanGateRejection(error: string): boolean {
   return /linked plan-item .* is STILL effectively /i.test(error);
 }
 
+const closeAssumptionsField = z
+  .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
+  .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.')
+  .meta({ id: 'close-assumptions' });
+
 const itemSpec = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
@@ -961,7 +966,7 @@ const itemSpec = z.object({
    * without an assumption declaration. The handler enforces the required declaration
    * once it knows the effective state, including the issue-family status inference.
   */
-  assumptions: z.preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional()),
+  assumptions: closeAssumptionsField,
   /** Optional successor/boundary note, posted only after a terminal finish converges. */
   boundaryNote: z
     .string()
@@ -5763,9 +5768,7 @@ const workItemsCompleteTool = defineTool({
             /** Read-only preflight: evaluate every applicable completion requirement without writing. */
             validateOnly: z.boolean().optional(),
             /** Required only when this single item requests a terminal close. */
-            assumptions: z
-              .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
-              .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.'),
+            assumptions: closeAssumptionsField,
             // Keep the union's handler type uniform while ensuring a bulk payload
             // cannot accidentally parse through this branch and have `items` stripped.
             items: z.never().optional(),
@@ -5809,9 +5812,7 @@ const workItemsCompleteTool = defineTool({
             outputPayload: z.unknown().optional(),
             /** Read-only preflight for every item in this envelope unless an item overrides it. */
             validateOnly: z.boolean().optional(),
-            assumptions: z
-              .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
-              .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.'),
+            assumptions: closeAssumptionsField,
             items: z
               .array(itemSpec)
               .min(1)

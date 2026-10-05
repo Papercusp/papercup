@@ -925,8 +925,14 @@ export function laneScopedCandidates({ candidates, wsRel, lane, laneOf }) {
   return { candidates: kept, otherLane };
 }
 
-/** One greppable line per workspace: how many selected files were reused, and why others ran. */
-export function formatTestReuseLine(wsName, summary, extra = "") {
+/**
+ * One greppable line per workspace: selected files, counters and original selector identity.
+ * @param {string} wsName
+ * @param {Record<string, number>} summary
+ * @param {string} [extra]
+ * @param {{version: 1, judgedSha: string, runnerIdentity: string, runContext: string, runGroupId: string | null, dirty: boolean}} [runtime]
+ */
+export function formatTestReuseLine(wsName, summary, extra = "", runtime = undefined) {
   const s = summary;
   return (
     `TEST_PASS_REUSE ws=${wsName} candidates=${s.candidates} reused=${s.reused} noProof=${s.noProof} ` +
@@ -935,6 +941,7 @@ export function formatTestReuseLine(wsName, summary, extra = "") {
     `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
     `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0} ` +
     `testConfigNarrowed=${s.testConfigNarrowed ?? 0} tsconfigNarrowed=${s.tsconfigNarrowed ?? 0} ` +
-    `inertWorkspaceConfig=${s.inertWorkspaceConfig ?? 0} schemaNarrowed=${s.schemaNarrowed ?? 0}${extra}`
+    `inertWorkspaceConfig=${s.inertWorkspaceConfig ?? 0} schemaNarrowed=${s.schemaNarrowed ?? 0}${extra}` +
+    (runtime === undefined ? "" : ` runtime=${encodeURIComponent(JSON.stringify(runtime))}`)
   );
 }

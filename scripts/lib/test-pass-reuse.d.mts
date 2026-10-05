@@ -383,8 +383,21 @@ export function laneScopedCandidates({ candidates, wsRel, lane, laneOf }: {
     candidates: string[];
     otherLane: number;
 };
-/** One greppable line per workspace: how many selected files were reused, and why others ran. */
-export function formatTestReuseLine(wsName: any, summary: any, extra?: string): string;
+/**
+ * One greppable line per workspace: selected files, counters and original selector identity.
+ * @param {string} wsName
+ * @param {Record<string, number>} summary
+ * @param {string} [extra]
+ * @param {{version: 1, judgedSha: string, runnerIdentity: string, runContext: string, runGroupId: string | null, dirty: boolean}} [runtime]
+ */
+export function formatTestReuseLine(wsName: string, summary: Record<string, number>, extra?: string, runtime?: {
+    version: 1;
+    judgedSha: string;
+    runnerIdentity: string;
+    runContext: string;
+    runGroupId: string | null;
+    dirty: boolean;
+}): string;
 /** Env kill switch: `0`/`false`/`off`/`no` disables reuse entirely (default: ON). */
 export const TEST_REUSE_ENV: "AFFECTED_TEST_REUSE";
 /** The channel that carries the skip list to vitest-config (a JSON array of repo-relative paths). */

@@ -6481,12 +6481,13 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const completionRef = '#/$defs/work-items-completion-record-v1';
 
       expect(json.$defs).toHaveProperty('work-items-completion-record-v1');
-      expect(json.$defs).toHaveProperty('work-items-completion-coverage-v1');
-      expect(json.$defs!['work-items-completion-coverage-v1']).toHaveProperty('x-papercusp-call-constraint');
+      expect(json.$defs).toHaveProperty('completion-coverage');
+      expect(json.$defs!['completion-coverage']).toHaveProperty('x-papercusp-call-constraint');
+      expect(json.$defs).toHaveProperty('close-assumptions');
       const record = json.$defs!['work-items-completion-record-v1'] as {
         properties: { coverage: { $ref: string }; verification: { properties: { coverage: { $ref: string } } } };
       };
-      const coverageRef = '#/$defs/work-items-completion-coverage-v1';
+      const coverageRef = '#/$defs/completion-coverage';
       expect(record.properties.coverage.$ref).toBe(coverageRef);
       expect(record.properties.verification.properties.coverage.$ref).toBe(coverageRef);
       expect(branches).toHaveLength(2);
@@ -6495,6 +6496,11 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         (branch) => (branch.properties?.items as { type?: unknown } | undefined)?.type === 'array',
       );
       expect(bulkBranch?.properties?.items?.items?.properties?.completion?.$ref).toBe(completionRef);
+      for (const branch of branches) {
+        expect((branch.properties as Record<string, { $ref?: string }>).assumptions.$ref).toBe('#/$defs/close-assumptions');
+      }
+      expect((bulkBranch?.properties?.items?.items?.properties as Record<string, { $ref?: string }>).assumptions.$ref)
+        .toBe('#/$defs/close-assumptions');
     });
 
     it('documents that assumptions are required only for terminal closes', () => {

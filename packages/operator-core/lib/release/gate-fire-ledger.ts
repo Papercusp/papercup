@@ -257,8 +257,19 @@ export function evaluateGateReuseAuditWindow(read: PipelineEventWindowRead) {
         archive.recordedAtMs > outcome.createdAtMs) {
       return unknown('The immutable archive lacks matching run, source or suite boundaries.');
     }
-    const runners = new Set(archive.auditedFiles.map((f) => f.runnerIdentity));
-    const runnerIdentity = archive.auditedFiles[0]?.runnerIdentity;
+    const workspaces = archive.auditRuns.flatMap((r) => r.workspaces);
+    const hasSelectorRuntime = workspaces.some((w) => w.runtime !== undefined);
+    if (hasSelectorRuntime && workspaces.some((w) => !w.runtime ||
+        w.runtime.judgedSha !== archive.judgedSha || w.runtime.runGroupId !== runId ||
+        w.runtime.runContext !== 'green-checkpoint' || w.runtime.dirty !== false)) {
+      return unknown('The archived selector runtime is missing or mismatches the initial suite.');
+    }
+    // A valid 5% draw can select zero files for one invocation. Its selector runtime must
+    // then come from the original task line, never from another invocation's sample.
+    const runnerIdentities = hasSelectorRuntime ? workspaces.map((w) => w.runtime!.runnerIdentity)
+      : archive.auditedFiles.map((f) => f.runnerIdentity);
+    const runners = new Set(runnerIdentities);
+    const runnerIdentity = runnerIdentities[0];
     if (!runnerIdentity || runners.size !== 1) return unknown('The archived audit runner identity is unmeasured or ambiguous.');
     seenRuns.add(runId);
     invocations.push({ runId, judgedSha: archive.judgedSha, runnerIdentity,

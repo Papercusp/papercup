@@ -60,11 +60,31 @@ const captureBrowserFeed = async (phase: string, expectedMessageId: string, expe
   const request = '/api/zero-harness/rest-query?' + new URLSearchParams({
     name: 'plans.attention', args: JSON.stringify({ limit: 100, offset: 0 }),
   });
+  // Compare the SAME named-query route against the browser bridge, rather than
+  // treating a positive /admin/plans/attention read as proof of this route.
+  const directResponse = await fetch(`${origin}${request}`, {
+    headers: { 'x-papercusp-workspace': workspaceId }, signal: AbortSignal.timeout(15_000),
+  });
+  save(`${phase}-http-sync-feed.json`, {
+    status: directResponse.status, request, workspaceHeader: workspaceId,
+    data: await directResponse.json(),
+  });
   native('eval', `(()=>{window.__goalReportFeedProbe={done:false};
+    const internals=window.__TAURI_INTERNALS__, originalInvoke=internals?.invoke;
+    const ipcRequests=[];
+    // Record only the exact request's routing fields; never record host auth.
+    if(originalInvoke)internals.invoke=function(command,args,...rest){
+      const input=args?.input;
+      if(command==='endpoint_invoke' && args?.toolName==='sys:http' && input?.path===${JSON.stringify(request)})
+        ipcRequests.push({method:input.method,path:input.path,
+          workspaceHeader:new Headers(input.headers).get('x-papercusp-workspace')});
+      return originalInvoke.call(this,command,args,...rest);
+    };
     (async()=>{try{const response=await fetch(${JSON.stringify(request)});
       window.__goalReportFeedProbe={done:true,status:response.status,data:await response.json(),
-        browserWorkspace:window.__PAPERCUSP_WS__??null,url:location.href,request:${JSON.stringify(request)}};
-    }catch(error){window.__goalReportFeedProbe={done:true,error:String(error),url:location.href}}})();return true})()`);
+        browserWorkspace:window.__PAPERCUSP_WS__??null,url:location.href,request:${JSON.stringify(request)},ipcRequests};
+    }catch(error){window.__goalReportFeedProbe={done:true,error:String(error),url:location.href,ipcRequests}}
+    finally{if(originalInvoke)internals.invoke=originalInvoke}})();return true})()`);
   const deadline = Date.now() + 30_000;
   let result: any;
   do {
@@ -76,6 +96,9 @@ const captureBrowserFeed = async (phase: string, expectedMessageId: string, expe
   assert.equal(result.done, true, 'Browser sync request did not settle');
   assert.equal(result.status, 200, 'Browser sync request failed');
   assert.equal(result.browserWorkspace, workspaceId, 'Browser workspace differs from the persisted fixture');
+  assert.ok(result.ipcRequests?.length, 'Exact browser sync request did not cross the desktop IPC boundary');
+  assert.ok(result.ipcRequests.every((request: any) => request.workspaceHeader === workspaceId),
+    'Desktop IPC transmitted a different workspace from the browser fixture');
   const item = result.data?.rows?.flatMap((group: any) => group.items ?? [])
     .find((item: any) => item.id === `coord-message:${expectedMessageId}`);
   assert.ok(item, 'Exact persisted report is absent from the actual browser sync feed');
