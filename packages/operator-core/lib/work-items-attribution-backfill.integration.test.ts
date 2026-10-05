@@ -94,6 +94,12 @@ describe('work_items completion-attribution backfill (migration 729)', () => {
         '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
         '726-preserve-terminal-attribution-on-federated-write.sql',
         '741-work-items-condition-key-singleton.sql',
+        '777-work-items-embedding-recipe-discriminator.sql',
+        '1110-work-items-admission-flags-generated-columns.sql',
+        '1135-work-items-epoch-ms-timestamp-guard.sql',
+        '1194-work-items-directive-ref.sql',
+        '1294-work-item-readiness-payload-projections.sql',
+        '1308-work-items-severity-projection.sql',
       ],
       { label: 'work-items-attribution-backfill' },
     );
