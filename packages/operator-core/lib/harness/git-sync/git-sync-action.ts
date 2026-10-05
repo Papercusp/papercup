@@ -74,6 +74,7 @@ import {
   resolveIntegrationPushRemote,
   type IntegrationPushDecision,
 } from './pot-integration-mode';
+import { fileSyncBackConflict, syncBackConflictTitlePrefix } from './sync-back';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import {
