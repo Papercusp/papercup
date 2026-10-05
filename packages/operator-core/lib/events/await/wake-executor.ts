@@ -2949,6 +2949,7 @@ async function injectPsuHostWake(
         return {
           kind: 'park',
           reason: `psu-host ${result.reason}: delivery accepted before turn-start proof; retry remains durable`,
+          hostCommitPending: true,
         };
       }
       if (result.reason === 'duplicate-delivery-id') {
@@ -3288,6 +3289,7 @@ async function injectPsuHostWake(
         return {
           kind: 'park',
           reason: `psu-host ${confirmationReason}: delivery accepted before turn-start proof; retry remains durable`,
+          hostCommitPending: true,
         };
       }
       // A re-exec the host never confirmed is reported as such instead of as a clean success.

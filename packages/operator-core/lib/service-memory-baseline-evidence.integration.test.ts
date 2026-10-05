@@ -336,6 +336,8 @@ function auditRequestRetainers(r: any) {
   const natural = (x: unknown) => Number.isSafeInteger(x) && Number(x) >= 0;
   const tuple = (x: any) => JSON.stringify([x.pool, x.source?.processInstanceId,
     x.source?.buildSha, x.source?.poolInstanceId, x.connectionId, x.queryId, x.requestId]);
+  const identity = ({ weakPhasePresence, ...row }: any) => row;
+  const phases = ['decodedResult', 'resolvedRows', 'responseValue'];
   const final = r.windows[2].completedPageResults.map((x: any) => ({ pool: x.pool,
     source: x.source, connectionId: x.connectionId, queryId: x.queryId, requestId: x.correlation.requestId }));
   function metadata(m: any) {
@@ -347,8 +349,14 @@ function auditRequestRetainers(r: any) {
       new Set(m.poolSummaries.map((p: any) => p.pool)).size === m.poolSummaries.length &&
       m.poolSummaries.every((p: any) => natural(p.retained) && p.retained <= 32 &&
         natural(p.totalRecorded) && p.totalRecorded >= p.retained), 'raw FIFO counters');
+    requireHeap(m.records.every((row: any) => row.weakPhasePresence === undefined ||
+      (isDeepStrictEqual(Object.keys(row.weakPhasePresence).sort(), [...phases].sort()) &&
+        phases.every(phase => typeof row.weakPhasePresence[phase] === 'boolean'))), 'weak phase registration metadata');
   }
   metadata(before);
+  const registrationMeasured = before.records.some((row: any) => row.weakPhasePresence !== undefined);
+  if (registrationMeasured) requireHeap(before.records.every((row: any) =>
+    phases.every(phase => row.weakPhasePresence?.[phase] === true)), 'complete pre-snapshot weak phase registration');
   requireHeap(q?.selection === 'pre-snapshot-metadata-and-weakrefs' && q.status === 'observed' &&
     isDeepStrictEqual(q.registryBeforeSnapshot, before) &&
     isDeepStrictEqual(q.unobservedRequestIds, []) && q.omitted === 0 && q.omittedRows === 0 && q.omittedPools === 0 &&
@@ -357,11 +365,14 @@ function auditRequestRetainers(r: any) {
   const samePopulation = (a: any[], b: any[]) => a.length === b.length &&
     new Set(a.map(tuple)).size === a.length && new Set(b.map(tuple)).size === b.length &&
     a.every(x => b.filter(y => isDeepStrictEqual(x, y)).length === 1);
-  requireHeap(samePopulation(before.records, final), 'pre-snapshot raw relation');
-  const identities = q.records.map(({ objects, ...row }: any) => row);
+  requireHeap(samePopulation(before.records.map(identity), final), 'pre-snapshot raw relation');
+  requireHeap(q.records.every((row: any) => isDeepStrictEqual(row.weakPhasePresence,
+    before.records.find((selected: any) => tuple(selected) === tuple(row))?.weakPhasePresence)),
+  'selected weak phase registration');
+  const identities = q.records.map(({ objects, weakPhasePresence, ...row }: any) => row);
   requireHeap(samePopulation(identities, final), 'selected exact query tuples');
   metadata(q.registryAfterSnapshot);
-  requireHeap(q.registryAfterSnapshot.records.every((x: any) => final.some((y: any) => isDeepStrictEqual(x, y))),
+  requireHeap(q.registryAfterSnapshot.records.every((x: any) => final.some((y: any) => isDeepStrictEqual(identity(x), y))),
     'post-snapshot named subset');
   for (const p of before.poolSummaries) {
     const after = q.registryAfterSnapshot.poolSummaries.find((x: any) => x.pool === p.pool);
@@ -391,10 +402,11 @@ function auditRequestRetainers(r: any) {
     r.heapSnapshotWriteMs === r.heapSnapshot.writeMs &&
     r.heapSnapshot.durationMs >= r.heapSnapshot.writeMs + r.heapSnapshot.summaryMs,
   'separate snapshot write and summary timing');
-  return { requests, owners, foundQueryObjectIds: [...new Set(found)].sort((a, b) => a - b),
+  return { requests, owners, weakPhaseRegistration: registrationMeasured ? 'observed-complete' : 'unmeasured',
+    foundQueryObjectIds: [...new Set(found)].sort((a, b) => a - b),
     weakObjectGaps: gaps.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     missingLiveRegistryTuples: final.filter((x: any) => !q.registryAfterSnapshot.records.some((y: any) =>
-      isDeepStrictEqual(x, y))).map(tuple).sort(),
+      isDeepStrictEqual(x, identity(y)))).map(tuple).sort(),
     timing: { writeMs: r.heapSnapshot.writeMs, summaryMs: r.heapSnapshot.summaryMs },
     workerCloneIdentity: 'unobserved', nativePhysicalOwnership: 'unknown', physicalSavings: 'unmeasured' };
 }
@@ -520,6 +532,49 @@ describe('independent P011 baseline raw evidence', () => {
 describe('P011 independent request heap evidence', () => {
   const path = 'docs/evidence/papercusp-oct1-p011-request-retainers-r2-2026-10-03.json';
   const saved = () => JSON.parse(readFileSync(resolve(root, path)).toString());
+  function registeredFixture() {
+    const r = saved();
+    for (const rows of [r.heapQueryRegistryBeforeSnapshot.records, r.heapOwnerBinding.queries.records,
+      r.heapOwnerBinding.queries.registryBeforeSnapshot.records, r.heapOwnerBinding.queries.registryAfterSnapshot.records])
+      for (const row of rows) row.weakPhasePresence = { decodedResult: true, resolvedRows: true, responseValue: true };
+    for (const row of r.heapOwnerBinding.queries.records)
+      for (const object of row.objects) if (object.status === 'unobserved') object.status = 'collected';
+    return r;
+  }
+  it('audits registered weak phases while preserving collected object gaps and historical scope', () => {
+    expect(auditRequestRetainers(saved()).weakPhaseRegistration).toBe('unmeasured');
+    const result = auditRequestRetainers(registeredFixture());
+    expect(result.weakPhaseRegistration).toBe('observed-complete');
+    expect(result.foundQueryObjectIds).toEqual([]);
+    expect(result.weakObjectGaps).toHaveLength(48);
+    expect(result.weakObjectGaps.every((gap: any) => gap.status === 'collected')).toBe(true);
+  });
+  it.each(['missing', 'false', 'nonboolean', 'extra', 'selected-drift', 'identity-extra'] as const)(
+    'rejects %s registration or identity evidence', defect => {
+      const r = registeredFixture(), before = r.heapQueryRegistryBeforeSnapshot.records[0];
+      if (defect === 'missing') delete before.weakPhasePresence;
+      if (defect === 'false') before.weakPhasePresence.resolvedRows = false;
+      if (defect === 'nonboolean') before.weakPhasePresence.resolvedRows = 'true';
+      if (defect === 'extra') before.weakPhasePresence.unmeasured = true;
+      if (defect === 'selected-drift') delete r.heapOwnerBinding.queries.records[0].weakPhasePresence;
+      if (defect === 'identity-extra') before.unmeasuredIdentity = 'unknown';
+      expect(() => auditRequestRetainers(r)).toThrow(/P011 /);
+    });
+  it.runIf(Boolean(process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_INPUT))(
+    'audits the specified saved request heap report without a new resource cohort', () => {
+      const input = process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_INPUT!;
+      const bytes = readFileSync(resolve(root, input)), result = auditRequestRetainers(JSON.parse(bytes.toString()));
+      expect(result.weakPhaseRegistration).toBe('observed-complete');
+      const destination = process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_REPORT;
+      if (destination) writeFileSync(resolve(root, destination), serializeIdentitySafeJson({
+        schemaVersion: 'p011-request-heap-independent-v1',
+        proof: { path: input, sha256: digest(bytes), bytes: bytes.length, result },
+        independentOf: 'No producer/inspector import; exact raw HTTP/query/weak metadata/graph conservation.',
+        limitations: ['Saved private snapshot with forced GC and synchronous write; no new runtime measurement.',
+          'Registered WeakRefs do not prove target liveness; collected targets remain explicit gaps.',
+          'Worker-clone/native physical ownership, full executed graph, full P011 acceptance and shipment remain open.'],
+      }));
+    });
   it('audits preserved raw weak selection with explicit unobserved response links', () => {
     const result = auditRequestRetainers(saved());
     expect(result.requests.requestCount).toBe(24);

@@ -1117,7 +1117,12 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         // a busy psu host that never proves a turn start). Park retries consume the
         // same delivery-attempt budget as errors, so honor the ceiling here too and
         // use the contract's inbox fallback instead of re-parking without end.
-        if (headline.attempts >= MAX_ATTEMPTS) {
+        // An accepted psu-host delivery remains owned by its detached host
+        // pipeline until a later retry observes completion or a terminal miss.
+        // Inbox fallback here would race that still-live commit and deliver the
+        // same wake twice, so the normal park recheck continues past the generic
+        // attempt ceiling for this explicitly tagged outcome.
+        if (headline.attempts >= MAX_ATTEMPTS && !outcome.hostCommitPending) {
           const degraded = await degradeToInboxOrDrop(
             coalesced,
             `delivery remained parked and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.reason}`,
@@ -1148,10 +1153,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
           );
           continue;
         }
-        // One-time inbox nudge on the first park: the awake-but-uninjectable agent sees it
-        // mid-turn (PostToolUse hook) or on its next turn; the parked row converts to a
-        // resume when its process exits. Siblings re-coalesce with the headline next tick.
-        if (headline.attempts <= 1) {
+        // One-time inbox nudge for parks without an accepted host-side commit: the
+        // awake-but-uninjectable agent sees it mid-turn (PostToolUse hook) or on its next
+        // turn. A host-owned pending delivery must not get a parallel inbox wake that can
+        // race its later pty commit. Siblings re-coalesce with the headline next tick.
+        if (headline.attempts <= 1 && !outcome.hostCommitPending) {
           try {
             await sendMessage(emitterIdentity('await-event', headline.workspaceId), {
               to: [subscriberId],

@@ -2674,11 +2674,47 @@ describe('executeWake — the liveness ladder', () => {
         injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
       }),
     );
-    expect(out).toEqual({ kind: 'park', reason: expect.stringContaining('accepted') });
+    expect(out).toEqual({ kind: 'park', reason: expect.stringContaining('accepted'), hostCommitPending: true });
     expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
       '/tmp/x.sock',
       expect.objectContaining({ mode: 'turn', deliveryId: String(work({ wakeHandle: null }).id) }),
     );
+  });
+
+  it('keeps an accepted host delivery nonterminal while pending, then recognizes its late completion', async () => {
+    const results = [
+      { ok: true, confirmation: 'acked' as const, reason: 'accepted' },
+      { ok: true, confirmation: 'acked' as const, reason: 'pending-delivery-id' },
+      { ok: true, confirmation: 'acked' as const, reason: 'duplicate-delivery-id' },
+    ];
+    const injectPsuHostWithConfirmation = vi.fn(async () => results.shift()!);
+    const delivery = work({ wakeHandle: null, id: 901 });
+    const wakeDeps = deps({
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/pending-host.sock' })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+    });
+
+    expect(await executeWake(delivery, wakeDeps)).toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('accepted'),
+    });
+    expect(await executeWake(delivery, wakeDeps)).toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('pending-delivery-id'),
+    });
+    expect(await executeWake(delivery, wakeDeps)).toEqual({
+      kind: 'delivered',
+      channel: 'psu-socket-inject',
+    });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(3);
+    expect(injectPsuHostWithConfirmation.mock.calls.map((call) => call[1].deliveryId)).toEqual([
+      '901',
+      '901',
+      '901',
+    ]);
   });
 
   it("threads this delivery's own id onto the envelope as deliveryId (EI-19311270129974785 — host-side retry dedup)", async () => {

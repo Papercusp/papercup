@@ -1377,6 +1377,46 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats.parked).toBe(0);
   });
 
+  it('keeps an accepted pending psu-host delivery parked at the retry cap until late host settlement', async () => {
+    const pendingReason =
+      'psu-host pending-delivery-id: delivery accepted before turn-start proof; retry remains durable';
+    h.executeWake
+      .mockResolvedValueOnce({ kind: 'park', reason: pendingReason, hostCommitPending: true })
+      .mockResolvedValueOnce({ kind: 'park', reason: pendingReason, hostCommitPending: true })
+      .mockResolvedValueOnce({ kind: 'delivered', channel: 'psu-socket-inject' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 17, subscriberId: 'su-pending-host-cap', attempts: 1, lastError: pendingReason }),
+    ]);
+
+    const first = await pumpWakeDeliveries('ws-test');
+
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 17, subscriberId: 'su-pending-host-cap', attempts: 8, lastError: pendingReason }),
+    ]);
+    const pending = await pumpWakeDeliveries('ws-test');
+
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 17, subscriberId: 'su-pending-host-cap', attempts: 9, lastError: pendingReason }),
+    ]);
+    const settled = await pumpWakeDeliveries('ws-test');
+
+    // The host pipeline settles after the attempt-cap boundary. The next retry
+    // observes its duplicate-delivery-id terminal receipt and books the original
+    // delivery as a host injection, with no preceding inbox fallback.
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryParked).toHaveBeenCalledWith(17, pendingReason, 45_000);
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(17, 'inbox', 1);
+    expect(first.parked).toBe(1);
+    expect(first.inbox).toBe(0);
+    expect(pending.parked).toBe(1);
+    expect(pending.inbox).toBe(0);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(17, 'psu-socket-inject', 1);
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    expect(settled.delivered).toBe(1);
+    expect(settled.inbox).toBe(0);
+  });
+
   it('settles a park-exhausted wake as dropped when the inbox fallback fails', async () => {
     h.degradeToInboxOrDrop.mockResolvedValueOnce({
       kind: 'drop',
