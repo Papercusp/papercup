@@ -152,6 +152,25 @@ describe('committed mobile producer source contract (WI-10006121)', () => {
     });
   });
 
+  it('keeps a nested snapshot on its recorded commit after the original HEAD moves', () => {
+    withFixture(({ source, repo, clone, parent, sha }) => {
+      const first = materializeMobileSourceContract(repo, clone, {})!;
+      // Neither a loose snapshot edit nor a newer original commit is the input
+      // identified by the inherited source-provenance record.
+      writeFileSync(join(first.root, sourcePath), 'tampered snapshot\n');
+      const git = (args: string[], input?: string) => execFileSync('git', args, { cwd: source, input, encoding: 'utf8' }).trim();
+      const blob = git(['hash-object', '-w', '--stdin'], 'newer committed producer\n');
+      git(['update-index', '--cacheinfo', '100644', blob, sourcePath]);
+      const tree = git(['write-tree']);
+      const newer = git(['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-p', sha, '-m', 'newer producer']);
+      git(['update-ref', 'refs/heads/staging', newer]);
+      const nested = materializeMobileSourceContract(repo, join(parent, 'nested'), { PAPERCUSP_MOBILE_ROOT: first.root })!;
+      expect(newer).not.toBe(sha);
+      expect(nested.sourceCommit).toBe(sha);
+      expect(readFileSync(join(nested.root, sourcePath), 'utf8')).toBe('committed Android producer\n');
+    });
+  });
+
   it('refuses an explicit missing source instead of silently using a sibling', () => {
     withFixture(({ repo, clone, parent }) => {
       expect(() => materializeMobileSourceContract(repo, clone, { PAPERCUSP_MOBILE_ROOT: join(parent, 'absent') })).toThrow('explicit mobile source root is missing');

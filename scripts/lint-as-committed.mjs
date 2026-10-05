@@ -132,9 +132,22 @@ export function materializeMobileSourceContract(repoRoot, workRoot, environment 
     if (requestedRoot) throw new Error(`lint-as-committed: explicit mobile source root is missing: ${sourceRoot}`);
     return null;
   }
-  const sourceRepoRoot = git(['rev-parse', '--show-toplevel'], sourceRoot);
-  const sourceCommit = git(['rev-parse', '--verify', 'HEAD^{commit}'], sourceRepoRoot);
   const sourcePath = 'tools/build-scripts/build-android.sh';
+  // A test may launch another committed-source check. Its inherited override
+  // points at our snapshot, which is metadata, not a second Git checkout.
+  // Re-read the recorded commit from the original repository; do not substitute
+  // its newer HEAD or accept the snapshot's loose file as committed source.
+  const priorProvenancePath = join(sourceRoot, 'source-provenance.json');
+  const prior = existsSync(priorProvenancePath)
+    ? JSON.parse(readFileSync(priorProvenancePath, 'utf8'))
+    : null;
+  if (prior && (prior.schemaVersion !== 1 || typeof prior.sourceRepoRoot !== 'string'
+    || !/^[0-9a-f]{40}$/.test(prior.sourceCommit)
+    || !Array.isArray(prior.paths) || !prior.paths.includes(sourcePath))) {
+    throw new Error('lint-as-committed: invalid mobile source snapshot provenance');
+  }
+  const sourceRepoRoot = prior?.sourceRepoRoot ?? git(['rev-parse', '--show-toplevel'], sourceRoot);
+  const sourceCommit = git(['rev-parse', '--verify', `${prior?.sourceCommit ?? 'HEAD'}^{commit}`], sourceRepoRoot);
   const content = gitShowOrNull(sourceRepoRoot, `${sourceCommit}:${sourcePath}`);
   if (content === null) {
     throw new Error(`lint-as-committed: mobile source contract ${sourcePath} is absent at ${sourceCommit}`);
