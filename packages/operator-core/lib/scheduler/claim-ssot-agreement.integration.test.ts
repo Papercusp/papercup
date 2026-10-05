@@ -66,6 +66,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
 import { DEFAULT_CLAIM_SPEC } from './claim-spec';
+import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import {
@@ -412,6 +413,7 @@ beforeAll(async () => {
   // view through the 12-argument work_item_claim_floors overload. Seeds default to created_ts 0,
   // i.e. before the enforcement cutover, so every earlier case keeps its legacy admission.
   await db.sql.unsafe(readMigration('1301-acceptance-claim-floor.sql')).simple();
+  await db.sql.unsafe(readMigration('1364-solo-decision-execution-reservation.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -421,6 +423,75 @@ beforeEach(async () => {
                        harness_shared.plan_items, harness_shared.plan_decisions,
                        harness_shared.harness_plans, harness_shared.plan_item_claims,
                        harness_shared.plan_item_assignments, harness_shared.agent_name_sessions`;
+});
+
+// WI-10006159: exact owner reservations must survive the normal decision writer's
+// title and an execution master with no plan_item back-pointer. No hold, lease,
+// assignment, active plan or spec exclusion supplies the answer in these cases.
+describe('WI-10006159 solo decision reservations', () => {
+  const decision = async (title: string, body: string, refs: string[] = []) => {
+    await seedPlan('solo-route-plan', 'ready');
+    await writePlanIndexRows(db.sql, { workspaceId: WS, harnessSlug: H, planSlug: 'solo-route-plan' }, {
+      decisions: [{ id: 'D-005', title, body, itemRefs: refs }],
+    });
+  };
+  const floors = async (id: string) => {
+    const [row] = await db.sql<{ floors: string[] }[]>`SELECT harness_shared.work_item_claim_floors(
+      workspace_id, status, taken_by, origin, title, terminal_owner,
+      terminal_completion_ref, payload, feature_id) AS floors
+      FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+    return row!.floors;
+  };
+
+  it.each(['task', 'feature'])('reserves the unmarked single-implementer decision for %s', async (kind) => {
+    await decision('Implementation authorized; publication still separate',
+      'Avi authorizes the plan. The authoring session ended, so su-a973d2b0 is the single implementer.', ['P-007']);
+    await seed('WI-10006071', { kind, payload: { plan_item: {
+      plan_slug: 'solo-route-plan', item_id: 'P-007', harness_slug: H,
+    } } });
+    await seed('WI-10006072', { kind, payload: { plan_item: {
+      plan_slug: 'solo-route-plan', item_id: 'P-008', harness_slug: H,
+    } } });
+    expect(await floors('WI-10006071')).toContain('reserved-plan-lane');
+    expect(await floors('WI-10006072')).not.toContain('reserved-plan-lane');
+    if (kind === 'task') expect(await viewClaimableIds()).toEqual(['WI-10006072']);
+    const claimed = kind === 'task'
+      ? await wi.claimNextIssueWorkItem({ harness: H, assignee: 'generic-drainer' }, WS)
+      : await wi.claimNextWorkItem({ harness: H, assignee: 'generic-drainer' });
+    expect(claimed?.id).toBe('WI-10006072');
+    expect((await wi.claimWorkItem('WI-10006071', 'route-owner', { harness: H }))?.id).toBe('WI-10006071');
+  });
+
+  it.each(['task', 'feature'])('reserves an unbound explicit execution master for %s without reserving other mentions', async (kind) => {
+    await decision('Owner authorizes direct AUTO execution',
+      'Route is this session implementing directly, without a new fleet or client-native subagents. ' +
+      'WI-10005829 owns execution and its durable successor state. Preserve independent cloud lane WI-10005826.');
+    await seed('WI-10005829', { kind });
+    await seed('WI-10005826', { kind });
+    expect(await floors('WI-10005829')).toContain('reserved-plan-lane');
+    expect(await floors('WI-10005826')).not.toContain('reserved-plan-lane');
+    if (kind === 'task') expect(await viewClaimableIds()).toEqual(['WI-10005826']);
+    const claimed = kind === 'task'
+      ? await wi.claimNextIssueWorkItem({ harness: H, assignee: 'generic-drainer' }, WS)
+      : await wi.claimNextWorkItem({ harness: H, assignee: 'generic-drainer' });
+    expect(claimed?.id).toBe('WI-10005826');
+    // A second pull cannot hand the reserved master back after the unrelated claim.
+    expect(kind === 'task'
+      ? await wi.claimNextIssueWorkItem({ harness: H, assignee: 'another-drainer' }, WS)
+      : await wi.claimNextWorkItem({ harness: H, assignee: 'another-drainer' })).toBeNull();
+    expect((await wi.claimWorkItem('WI-10005829', 'route-owner', { harness: H }))?.id).toBe('WI-10005829');
+  });
+
+  it('does not infer solo authority from rejected routes, negated implementers or a foreign tenant', async () => {
+    await decision('Direct execution route rejected',
+      'su-a973d2b0 is not the single implementer. WI-10005829 owns execution only if Avi approves.');
+    await seed('WI-10005829', { kind: 'task' });
+    expect(await floors('WI-10005829')).not.toContain('reserved-plan-lane');
+    await db.sql`UPDATE harness_shared.plan_decisions SET workspace_id = 'foreign-tenant',
+      title = 'Self-only execution route', body = 'WI-10005829 owns execution.'`;
+    expect(await floors('WI-10005829')).not.toContain('reserved-plan-lane');
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'generic-drainer' }, WS))?.id).toBe('WI-10005829');
+  });
 });
 
 describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () => {

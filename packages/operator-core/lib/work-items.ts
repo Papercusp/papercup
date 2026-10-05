@@ -6459,41 +6459,6 @@ export function reservedPlanLaneExclusionSql(
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
       ))
-      -- WI-41737: a recorded SELF-ONLY / DIRECT execution-route decision is durable
-      -- plan ownership even when the plan is lifecycle-ready and its implementing
-      -- session is between item leases/assignments. Before this leg, generic
-      -- scheduler:get_next could claim the linked work-item, discover the D-NNN ruling
-      -- only after pickup, release it, and immediately serve it again.
-      --
-      -- Keep the marker deliberately narrow and STRUCTURED around the decision title:
-      --   * "... self-only execution route ..." is explicit by itself;
-      --   * the exact conventional title "Direct execution route" additionally needs
-      --     affirmative direct/no-fleet language in its body.
-      -- A title such as "Direct execution route rejected" therefore does not reserve.
-      -- Scope the reservation to item_refs when the decision names them; an empty ref
-      -- set is plan-wide. Generic self-select is denied, while claim-by-id remains the
-      -- deliberate escape hatch for the named route owner.
-      OR EXISTS (
-        SELECT 1 FROM harness_shared.plan_decisions d
-         WHERE d.workspace_id = ${wsCol}
-           AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
-           AND (
-             cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
-             OR ${col}->'plan_item'->>'item_id' = ANY(COALESCE(d.item_refs, ARRAY[]::text[]))
-           )
-           AND (
-             LOWER(d.title) LIKE '%self-only execution route%'
-             OR (
-               LOWER(BTRIM(d.title)) = 'direct execution route'
-               AND (
-                 LOWER(d.body) LIKE '%implements the plan directly%'
-                 OR LOWER(d.body) LIKE '%implement it itself%'
-                 OR LOWER(d.body) LIKE '%no fleet%'
-                 OR LOWER(d.body) LIKE '%no subagents%'
-               )
-             )
-           )
-      )
       -- EI-22040912157347872: ASSIGNMENT is the durable ownership intent underneath the
       -- leased claim. A route-owning plan session can legitimately be between claims while
       -- its assignment remains active; without this leg a generic kind-drain claims the
@@ -6650,6 +6615,48 @@ export function reservedPlanLaneExclusionSql(
            AND dep_it->>'id' = dep_id
            AND COALESCE(dep_it->>'status', '') NOT IN ('done', 'dropped')
       )
+    )
+    -- WI-10006159 extends WI-41737 at the existing decision writer/read seam.
+    -- A direct execution master may be ad-hoc, and a solo authorization may have
+    -- an ordinary title. Keep this OUTSIDE the plan_item gate. Require affirmative
+    -- route language; extract only explicit "WI-N owns execution" clauses, never
+    -- every WI mentioned in the body. The token lookup uses migration 1364's GIN
+    -- index. Item refs, tenant scope and deliberate by-id pickup remain unchanged.
+    -- The real-PG SSOT agreement suite binds this to migration 1364.
+    OR EXISTS (
+      SELECT 1 FROM harness_shared.plan_decisions d
+      WHERE d.workspace_id = ${wsCol}
+        AND (
+          (
+            d.plan_slug = ${col}->'plan_item'->>'plan_slug'
+            AND (
+              cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
+              OR ${col}->'plan_item'->>'item_id' = ANY(COALESCE(d.item_refs, ARRAY[]::text[]))
+            )
+          )
+          OR (
+            regexp_split_to_array(d.body, '[^A-Za-z0-9_-]+') @> ARRAY[${idCol}]::text[]
+            AND EXISTS (
+              SELECT 1 FROM regexp_matches(d.body,
+                '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
+              WHERE master.ref[2] = ${idCol}
+            )
+          )
+        )
+        AND (
+          LOWER(d.title) LIKE '%self-only execution route%'
+          OR (
+            LOWER(BTRIM(d.title)) = 'direct execution route'
+            AND (
+              LOWER(d.body) LIKE '%implements the plan directly%'
+              OR LOWER(d.body) LIKE '%implement it itself%'
+              OR LOWER(d.body) LIKE '%no fleet%'
+              OR LOWER(d.body) LIKE '%no subagents%'
+            )
+          )
+          OR LOWER(d.body) ~ '(^|[^a-z0-9_-])su-[a-f0-9-]{8,36} is the (single|sole) implementer([[:space:].;]|$)'
+          OR LOWER(d.body) ~ '(^|[^a-z0-9_-])route is this session implementing directly, without (a new )?fleet([[:space:].;]|$)'
+        )
     )
   )`;
 }

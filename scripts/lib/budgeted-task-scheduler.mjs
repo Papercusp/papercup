@@ -830,7 +830,7 @@ function takeShortest(pending) {
  * durations and call that a wall-time lower bound — the parallel lanes make that sum serial-
  * equivalent work, not elapsed time.
  *
- * The simulation mirrors `runBudgetedTasksWithoutSharedAdmission`: the primary lane takes the
+ * The simulation mirrors an uncontended admission turn: the primary lane takes the
  * longest known pending task, the reserved lane takes the shortest known pending task, and the
  * next task on each lane starts when that lane becomes free. Shards are summed because
  * `runBudgetedTaskShards` runs them sequentially.
@@ -1046,35 +1046,34 @@ function createBudgetedTaskRun(tasks, options) {
   };
 
   return async (hasWaiters) => {
-  const turn = { startedAdmissions: admissions, yielded: false, hasWaiters };
-  if (budget.mode === "parallel" && pending.length > 1) {
-    // Promise.all rejects before its siblings settle. A task failure must instead stop NEW
-    // admission, drain the child already running in the other lane, and only then reject so the
-    // caller never tears down while an unobserved child is still writing output/history.
-    const lanes = await Promise.allSettled([
-      runLane("primary", budget.primaryWorkers, takeLongest, turn),
-      runLane("reserved", budget.reserveLaneWorkers, takeShortest, turn),
-    ]);
-    const rejected = lanes.find((lane) => lane.status === "rejected");
-    if (rejected) throw rejected.reason;
-  } else {
-    await runLane("serial", budget.effectiveWorkerBudget, takeLongest, turn);
-  }
+    const turn = { startedAdmissions: admissions, yielded: false, hasWaiters };
+    if (budget.mode === "parallel" && pending.length > 1) {
+      // Promise.all rejects before its siblings settle. Stop new admissions and
+      // drain the surviving child and its persistence before releasing the slot.
+      const lanes = await Promise.allSettled([
+        runLane("primary", budget.primaryWorkers, takeLongest, turn),
+        runLane("reserved", budget.reserveLaneWorkers, takeShortest, turn),
+      ]);
+      const rejected = lanes.find((lane) => lane.status === "rejected");
+      if (rejected) throw rejected.reason;
+    } else {
+      await runLane("serial", budget.effectiveWorkerBudget, takeLongest, turn);
+    }
 
-  return {
-    results,
-    pendingTasks: pending.length,
-    stats: {
-      ...budget,
-      observedMaxWorkers,
-      observedMaxMemoryMb,
-      observedMaxTasks,
-      memoryReadings,
-      admissionClamps,
-      minAdmittedWorkers,
-      lastMemAvailableMb,
-    },
-  };
+    return {
+      results,
+      pendingTasks: pending.length,
+      stats: {
+        ...budget,
+        observedMaxWorkers,
+        observedMaxMemoryMb,
+        observedMaxTasks,
+        memoryReadings,
+        admissionClamps,
+        minAdmittedWorkers,
+        lastMemAvailableMb,
+      },
+    };
   };
 }
 
@@ -1085,7 +1084,10 @@ function createBudgetedTaskRun(tasks, options) {
  * launch call: the child process and all of its Vitest descendants remain the
  * admitted resident workload until `runTask` settles.  `withFsMutex` releases
  * in a finally block and reclaims a stale/dead owner, so a failed or crashed
- * runner cannot leave later verification permanently wedged.
+ * runner cannot leave later verification permanently wedged. A queued peer
+ * stops lane refill after the initial wave; pending tasks resume through a
+ * fresh FIFO ticket after all active work drains. State and queue spending
+ * remain scoped to the complete invocation, rather than restarting per turn.
  *
  * EI-21921867787033533: under heavy fleet-wide load this mutex is a real,
  * intentional serialization point — most concurrent `test:affected` callers
@@ -1270,8 +1272,8 @@ export async function runBudgetedTasks(tasks, options) {
   let queuedMs = 0;
   let run;
   do {
-  const remainingQueueMs = Math.max(1, timeoutMs - queuedMs);
-  run = await withFsMutex(
+    const remainingQueueMs = Math.max(1, timeoutMs - queuedMs);
+    run = await withFsMutex(
     // WI-1746759: the release gate rides its own lane; everyone else shares one.
     admissionMutexName(),
     ({ hasWaiters } = {}) => runTurn(hasWaiters),
@@ -1315,11 +1317,11 @@ export async function runBudgetedTasks(tasks, options) {
       },
     },
   );
-  if (run.pendingTasks > 0) notify(
-    `AFFECTED_TESTS_ADMISSION_YIELD completedTasks=${tasks.length - run.pendingTasks} ` +
-      `remainingTasks=${run.pendingTasks} — active children drained; rejoining the FIFO queue`,
-    { kind: "yielded", budgetMs: Math.max(0, timeoutMs - queuedMs) },
-  );
+    if (run.pendingTasks > 0) notify(
+      `AFFECTED_TESTS_ADMISSION_YIELD completedTasks=${tasks.length - run.pendingTasks} ` +
+        `remainingTasks=${run.pendingTasks} — active children drained; rejoining the FIFO queue`,
+      { kind: "yielded", budgetMs: Math.max(0, timeoutMs - queuedMs) },
+    );
   } while (run.pendingTasks > 0);
   return { results: run.results, stats: run.stats };
 }
