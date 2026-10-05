@@ -286,6 +286,8 @@
     "Eight-source dispositions, worker clones, native physical ownership, full executed graph, current shared/deployed runtime",
     "WholeP011@2/D021, P010/R8R9, authenticated owner-origin wall, independent acceptance and shipment"
   ],
+  "runtimeCleanup": {"hostsOsAbsent":true,"privateDirectoryRemoved":true,"lastSnapshotRemoved":true,"lastHostReportedReaped":false,"distinction":"Final host teardown happened through watchdog; its inner finally did not publish reaped:true. OS absence was independently checked."},
+  "interruptedRuntimeLogs": [{"path":".papercusp/logs/cohort-00a9ae0bf28337202bd0dde4f406c978746b929f23995b40671e31e41a24d0b8.log","bytes":2487,"sha256":"00a9ae0bf28337202bd0dde4f406c978746b929f23995b40671e31e41a24d0b8"},{"path":".papercusp/logs/cohort-35173216e42ce34b3a542f1a790718caae88c557080b93819a8f17a666592dc5.log","bytes":636942,"sha256":"35173216e42ce34b3a542f1a790718caae88c557080b93819a8f17a666592dc5"}],
   "sourceRefs": [
     "https://github.com/nodejs/node/blob/v25.9.0/deps/v8/src/inspector/v8-heap-profiler-agent-impl.cc#L302",
     "https://github.com/nodejs/node/blob/v25.9.0/deps/v8/src/inspector/v8-inspector-session-impl.cc#L146"

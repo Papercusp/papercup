@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Script } from 'node:vm';
+import * as terminalCounters from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
 import {
@@ -1597,6 +1599,53 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     // And the queue notices must be routed to `errSync` (stderr AND the run log), not left on
     // the scheduler's `console.error` default, which never reaches RUN_LOG_PATH.
     expect(AFFECTED_TESTS_SRC).toMatch(/onAdmissionNotice:\s*\(line\)\s*=>\s*errSync\(line\)/);
+  });
+
+  it.each([
+    { reason: 'admission-starved', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
+    { reason: 'admission-starved', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
+    { reason: 'deadline-insufficient', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
+    { reason: 'deadline-insufficient', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
+  ])('retains settled shard evidence on $reason: $completedTasks completed', (sample) => {
+    // Execute the production refusal boundary, including its actual result marker.
+    // The second case reproduces a failed pure shard followed by a queued shard;
+    // a wholly unstarted run is the contrasting control.
+    const runAt = AFFECTED_TESTS_SRC.indexOf('initialPool = await runBudgetedTaskShards');
+    const catchAt = AFFECTED_TESTS_SRC.indexOf('} catch (error) {', runAt);
+    const bodyAt = catchAt + '} catch (error) {'.length;
+    const endAt = AFFECTED_TESTS_SRC.indexOf('\n}\n', bodyAt);
+    expect(runAt).toBeGreaterThan(-1);
+    expect(catchAt).toBeGreaterThan(runAt);
+    expect(endAt).toBeGreaterThan(bodyAt);
+    const output: string[] = [];
+    const exit = new Error('captured process exit');
+    const context = {
+      ...terminalCounters,
+      error: new Error(`Timed out after 60ms waiting for fs-mutex "${admissionMutexName()}" (/tmp/private-test-lock)`),
+      isTaskDeadlineRefusal: () => sample.reason === 'deadline-insufficient',
+      isSharedAdmissionTimeout,
+      tasks: Array.from({ length: 5 }),
+      readTerminalCounters: () => ({
+        tasks: 5, failed: 0, quarantinedFailed: 0, timedOutTasks: 0,
+        undeterminedTasks: 0, observedAdmissionErrors: 0, ...sample,
+      }),
+      coverage: {},
+      formatCoverageFields: () => `testsExecuted=${sample.completedTasks * 3} testsSkipped=0`,
+      errSync: (line: string) => output.push(line),
+      RUN_LOG_PATH: '/tmp/private-test-log',
+      terminalEmitted: false,
+      process: { exit: (_code: number) => { throw exit; } },
+    };
+    expect(() => new Script(AFFECTED_TESTS_SRC.slice(bodyAt, endAt)).runInNewContext(context)).toThrow(exit);
+    const marker = output.find((line) => line.startsWith('AFFECTED_TESTS_RESULT '));
+    expect(marker).toContain(`status=refused reason=${sample.reason}`);
+    expect(marker).toContain(`completedTasks=${sample.completedTasks}`);
+    expect(marker).toContain(`undeterminedTasks=${sample.remaining}`);
+    expect(marker).toContain(`observedNonzeroExits=${sample.observedNonzeroExits}`);
+    expect(marker).toContain(`testsExecuted=${sample.completedTasks * 3}`);
+    expect(output.join('\n')).not.toContain('never got to run its tasks');
+    if (sample.observedNonzeroExits) expect(marker).toContain('TALLY-UNDERCOUNT');
+    else expect(marker).not.toContain('TALLY-UNDERCOUNT');
   });
 
   describe('WI-1746759: the release gate rides its own admission lane', () => {
