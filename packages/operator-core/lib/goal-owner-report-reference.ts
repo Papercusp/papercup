@@ -192,7 +192,7 @@ export async function resolveGoalReportReference(sql: Db, workspaceId: string, g
  */
 export async function persistGoalReportReference(sql: Sql, envelope: CoordEnvelope,
   context: { workspaceId: string; goalId: string; ref: GoalOwnerReportRefV1; viewer: ReportViewer },
-  hooks?: { phase?: (phase: 'before-notification' | 'before-stamp' | 'before-commit', tx: TransactionSql) => Promise<void> },
+  hooks?: { phase?: (phase: 'before-notification' | 'before-stamp' | 'before-commit', tx: Db) => Promise<void> },
 ): Promise<CoordEnvelope> {
   const log = new PgCoordLog({ getSql: () => sql, workspaceId: context.workspaceId, ensureSchema: async () => {} });
   const msgId = goalReportDeliveryId(context.workspaceId, context.ref);

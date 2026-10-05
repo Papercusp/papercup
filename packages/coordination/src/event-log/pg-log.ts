@@ -624,9 +624,9 @@ export class PgCoordLog implements CoordEventLog {
       /** Producers validating several sources can require one coherent snapshot. */
       transactionOptions?: 'isolation level repeatable read';
       /** Prepare a fresh line on the SAME transaction as its append. Replays skip preparation. */
-      prepare?: (tx: import('postgres').TransactionSql) => Promise<CoordEnvelope>;
+      prepare?: (tx: import('postgres').Sql | import('postgres').TransactionSql) => Promise<CoordEnvelope>;
       /** A producer's commit-boundary assertion; throwing rolls back the append. */
-      afterAppend?: (tx: import('postgres').TransactionSql) => Promise<void>;
+      afterAppend?: (tx: import('postgres').Sql | import('postgres').TransactionSql) => Promise<void>;
     },
   ): Promise<AppendLineIfAbsentResult> {
     return withPgContentionRetry(async () => {
@@ -642,7 +642,7 @@ export class PgCoordLog implements CoordEventLog {
       // even caller-provided NULs become the six printable characters
       // `\u0000` before the value crosses the driver boundary.
       const lockKey = JSON.stringify([workspaceId, surface, line.msg_id]);
-      const append = async (tx: import('postgres').TransactionSql) => {
+      const append = async (tx: import('postgres').Sql | import('postgres').TransactionSql) => {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
         const existing = await tx<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
           SELECT id, body, ts, msg_id
@@ -685,7 +685,18 @@ export class PgCoordLog implements CoordEventLog {
       const reserved = await sql.reserve();
       try {
         await reserved`SELECT pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
-        return await reserved.begin(hooks.transactionOptions, append);
+        // postgres.js ReservedSql's declarations inherit begin(), but its
+        // runtime exposes only the query tag and release(). Keep every command
+        // on that reserved connection and explicitly settle the transaction.
+        await reserved.unsafe('BEGIN ISOLATION LEVEL REPEATABLE READ');
+        try {
+          const result = await append(reserved);
+          await reserved.unsafe('COMMIT');
+          return result;
+        } catch (error) {
+          await reserved.unsafe('ROLLBACK');
+          throw error;
+        }
       } finally {
         try {
           await reserved`SELECT pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
