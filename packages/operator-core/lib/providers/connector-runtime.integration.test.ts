@@ -463,13 +463,13 @@ describe('connector sync driver over registered providers (R-3)', () => {
     expect(s.next_in).toBeGreaterThan(100);
     expect(s.next_in).toBeLessThanOrEqual(120);
 
-    // A JSON-RPC shaped error from a daemon provider classifies the same way.
     const callsBefore = calls.length;
     expect((await sync(src)).sources).toEqual([]); // still cooling down
     expect(await wakeConnectorSource(org.adminSql, { workspaceId: WS, sourceId: src })).toBe(true);
     expect((await sync(src)).sources).toEqual([]); // the wake never overrides a backoff
     expect(calls.length).toBe(callsBefore);
 
+    // A JSON-RPC shaped error from a daemon provider classifies the same way.
     await makeDue(src);
     handler = scripted({
       c1: fail({ code: -32000, message: 'provider error', data: { kind: 'rate-limited', retryAfterSeconds: 60 } }),
