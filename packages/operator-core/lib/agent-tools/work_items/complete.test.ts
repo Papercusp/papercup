@@ -7059,6 +7059,18 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(commentWorkItem).not.toHaveBeenCalled();
     });
 
+    it('keeps missing-field advice when a forbidden mode also omits its test evidence', async () => {
+      enforcement(true);
+      const r = await one({
+        ...downgradingClose,
+        completion: { summary: 'checked existing code', verifiedHow: 'already-passing' },
+      });
+      expect(r.completionAuthority).toBe('proposed');
+      expect(r.terminalCriteriaWarning).toMatch(/forbidden-evidence-mode/i);
+      expect(r.authorityWarning).toMatch(/requires `verifiedHow`.*testsRun/i);
+      expect(r.authorityWarning).not.toContain('evidence fields are complete');
+    });
+
     it('OFF: the SAME close lands `committed` — the switch actually switches something off', async () => {
       enforcement(false);
       const r = await one(downgradingClose);
