@@ -66,6 +66,18 @@ vi.mock('../../harness/improvements/agent-review', () => ({
 }));
 vi.mock('../coordination/identity');
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => []) }));
+// P-013 (D-024): the filing door resolves a receipt's ledger ref through this seam.
+const reproLedger = vi.hoisted(() => ({
+  invocations: new Map<number, { status: string | null; servingBuildSha: string | null }>(),
+}));
+vi.mock('../../attention/intake-promotion', async (original) => ({
+  ...(await original<typeof import('../../attention/intake-promotion')>()),
+  defaultReproductionLedgerDeps: () => ({
+    readTestRun: async () => null,
+    readToolInvocation: async (id: number) => reproLedger.invocations.get(id) ?? null,
+    now: () => new Date('2026-10-05T22:00:00Z'),
+  }),
+}));
 vi.mock('../work_items/drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
 // P-008: the novelty pre-check is PG-backed (readNoveltyCorpus) — mock it so this
 // suite stays PG-free. Default = resolved undefined ("check unavailable"), which the
@@ -2667,5 +2679,78 @@ describe('improvements:capture — foundDuring is soft-capped (EI-10943)', () =>
     expect(fd?.type).toBe('string');
     // advertised as a plain string: no maxLength to bounce a caller on
     expect(fd?.maxLength).toBeUndefined();
+  });
+});
+
+// observation-candidate-acceptance-promotion-2026-09-30 P-013 (D-024): an encountered
+// bug files its encounter as the reproduction receipt; the verdict is the server's.
+describe('improvements:capture reproduction receipt (D-024)', () => {
+  const BUILD = 'abcdef1234567';
+  const passedPayload = () =>
+    (mockCapture.mock.calls[0]![0] as { payloadExtra?: Record<string, unknown> }).payloadExtra ?? {};
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reproLedger.invocations.clear();
+    mockReadTrustedHarnessTestRunProvenance.mockResolvedValue(null);
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-77', title: 'writer rejects a valid state' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+  });
+
+  it('stamps a ledger-verified encounter on the filing and reports its status', async () => {
+    reproLedger.invocations.set(7, { status: 'error', servingBuildSha: BUILD });
+    const result = await callTool({
+      title: 'writer rejects a valid state',
+      kind: 'bug',
+      reproduction: { ref: 'tool_invocations:7', buildSha: BUILD },
+    });
+    expect(passedPayload().reproduction).toMatchObject({
+      schemaVersion: 'bug-reproduction-v1',
+      filedBy: 'su-filer',
+      receipt: { kind: 'encounter', ref: 'tool_invocations:7', buildSha: BUILD },
+      verification: { status: 'verified' },
+    });
+    expect(JSON.parse(result.content[0].text).reproduction).toMatchObject({ status: 'verified' });
+  });
+
+  it('records what the ledger says, not what the filer claims: a succeeded invocation is refuted', async () => {
+    reproLedger.invocations.set(8, { status: 'ok', servingBuildSha: BUILD });
+    const result = await callTool({
+      title: 'writer rejects a valid state',
+      kind: 'bug',
+      reproduction: { ref: 'tool_invocations:8', buildSha: BUILD },
+    });
+    expect(passedPayload().reproduction).toMatchObject({ verification: { status: 'refuted' } });
+    expect(JSON.parse(result.content[0].text).reproduction).toMatchObject({ status: 'refuted' });
+  });
+
+  it('a caller-classified tool failure keeps its probation path: the receipt is stored as not-eligible', async () => {
+    reproLedger.invocations.set(7, { status: 'error', servingBuildSha: BUILD });
+    await callTool(
+      captureTool.args.parse({
+        toolFailure: { ...metadataToolFailure },
+        reproduction: { ref: 'tool_invocations:7', buildSha: BUILD },
+      }),
+    );
+    expect(passedPayload()).toMatchObject({
+      toolFailureProbation: { state: 'probation', class: 'caller' },
+      reproduction: { verification: { status: 'not-eligible' } },
+    });
+  });
+
+  it('refuses a receipt whose build sha is not a git sha, before filing anything', async () => {
+    await expect(
+      callTool({ title: 'x', kind: 'bug', reproduction: { ref: 'stack trace line', buildSha: 'staging' } }),
+    ).rejects.toThrow(/buildSha/);
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
+  it('files without a reproduction key when none is supplied', async () => {
+    await callTool({ title: 'writer rejects a valid state', kind: 'bug' });
+    expect(passedPayload()).not.toHaveProperty('reproduction');
   });
 });

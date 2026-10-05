@@ -22,7 +22,8 @@ describe.each([
   ['standing-pr-merge-deps', 'execFileP'],
   ['standing-pr-merge-live', 'execFileP'],
 ])('%s subprocess wrapper', (module, binding) => {
-  function loadWrapper(execFile: unknown, wrap = promisify) {
+  function loadWrapper(execFile: unknown,
+    wrap: (fn: Parameters<typeof promisify>[0]) => ReturnType<typeof promisify> = promisify) {
     const source = readFileSync(new URL(`../harness/git-sync/${module}.ts`, import.meta.url), 'utf8');
     const tree = ts.createSourceFile(`${module}.ts`, source, ts.ScriptTarget.Latest, true);
     const declarations = tree.statements.filter((statement) =>

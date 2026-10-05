@@ -38,8 +38,14 @@ import {
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 import type { AdvSessionRow } from './adv-sessions';
 import type { SessionPortRow } from './session-port/store';
+import type { PsuPtyHost } from './events/await/psu-pty-discovery';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
+
+function ptyHostFixture(over: Partial<PsuPtyHost> = {}): PsuPtyHost {
+  return { ownerId: OWNER, advSessionId: null, pid: 42, ptyPid: 43,
+    sock: `/run/psu-pty/${OWNER}.sock`, command: 'codex', startedAt: 0, ...over };
+}
 
 describe('typed verifier launch modes', () => {
   it('accepts GRADE and TEST while refusing an unregistered mode', () => {
@@ -1224,7 +1230,7 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
     const findHost = vi
       .fn()
       .mockReturnValueOnce(null)
-      .mockReturnValue({ ownerId: OWNER, pid: 42, sock: `/run/psu-pty/${OWNER}.sock` } as never);
+      .mockReturnValue(ptyHostFixture());
     const sleep = vi.fn().mockResolvedValue(undefined);
 
     const r = await injectKickoffAfterResume(OWNER, 'pick up where you left off', {
@@ -1297,7 +1303,7 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
     const findHost = vi
       .fn()
       .mockReturnValueOnce(null)
-      .mockReturnValue({ ownerId: OWNER, pid: 42, sock: `/run/psu-pty/${OWNER}.sock` } as never);
+      .mockReturnValue(ptyHostFixture());
     const sleep = vi.fn().mockResolvedValue(undefined);
 
     const r = await verifyResumeStarted(OWNER, { findHost, sleep, pollMs: 10, timeoutMs: 1000 });
