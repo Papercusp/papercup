@@ -260,7 +260,7 @@ import {
 // hoisted and fully initialized before this module's body executes, so unlike a closure
 // over a `let` declared further down (the TDZ hazard the abort block below is built
 // around), this binding cannot be unresolved when emitAbortMarker fires.
-import { formatTerminalCounterFields } from "./lib/terminal-counter-fields.mjs";
+import { formatRefusalCounterFields, formatTerminalCounterFields } from "./lib/terminal-counter-fields.mjs";
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -564,8 +564,10 @@ let plannedTaskCount = 0;
 // risk — which is what lets an abort BEFORE the run loop stay honest too.
 let observedNonzeroExits = 0;
 let observedAdmissionErrors = 0;
+let observedCompletedTasks = 0;
 let readTerminalCounters = () => ({
   tasks: plannedTaskCount,
+  completedTasks: observedCompletedTasks,
   failed: 0,
   quarantinedFailed: 0,
   timedOutTasks: 0,
@@ -6378,6 +6380,7 @@ let coverage = emptyCoverage();
 // because a closure over these `let`s is a TDZ throw until this point.
 readTerminalCounters = () => ({
   tasks: tasks.length,
+  completedTasks: observedCompletedTasks,
   failed,
   quarantinedFailed,
   timedOutTasks,
@@ -7457,6 +7460,10 @@ try {
     durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => runCapturedTask(context, allocation),
   onTaskSettled: (scheduled) => {
+    // Refusal can interrupt a later shard before the aggregate tally. Count
+    // only outcomes whose exit is known; an unreadable result remains unknown.
+    const value = scheduled?.value ?? {};
+    if (typeof value.status === "number" || value.signal) observedCompletedTasks++;
     // Coverage first: it is pure bookkeeping over output already in hand, while the verdict
     // cache does filesystem work whose environmental failures are tolerated. Ordering them
     // this way keeps a slow or failing cache write from costing the tally.
@@ -7483,8 +7490,8 @@ try {
       `AFFECTED_TESTS_REFUSAL kind=deadline-insufficient detail=${String(error?.message ?? error)}`,
     );
     errSync(
-      `AFFECTED_TESTS_RESULT status=refused reason=deadline-insufficient tasks=${tasks.length} ` +
-        `failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=${tasks.length}`,
+      `AFFECTED_TESTS_RESULT status=refused reason=deadline-insufficient ` +
+        formatRefusalCounterFields(readTerminalCounters()) + ` ${formatCoverageFields(coverage)}`,
     );
     errSync(
       "NOT MEASURED — this run's launcher gave it a wall clock shorter than the work it was " +
@@ -7505,14 +7512,14 @@ try {
   if (!isSharedAdmissionTimeout(error)) throw error;
   errSync(`AFFECTED_TESTS_REFUSAL kind=admission-starved detail=${String(error?.message ?? error)}`);
   errSync(
-    `AFFECTED_TESTS_RESULT status=refused reason=admission-starved tasks=${tasks.length} ` +
-      `failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=${tasks.length}`,
+    `AFFECTED_TESTS_RESULT status=refused reason=admission-starved ` +
+      formatRefusalCounterFields(readTerminalCounters()) + ` ${formatCoverageFields(coverage)}`,
   );
   errSync(
-    "NOT MEASURED — this run spent its whole shared-admission budget queued behind another " +
-      "test process and never got to run its tasks. Nothing here is a test verdict. The " +
-      "holder is named in the AFFECTED_TESTS_ADMISSION_QUEUED lines above; re-fire once the " +
-      "queue drains.",
+    "NOT MEASURED — the full task plan could not finish within its shared-admission " +
+      "queue budget. Settled shards retain their coverage and observed exit counters " +
+      "above; this is not a full test verdict. The holder is named in the " +
+      "AFFECTED_TESTS_ADMISSION_QUEUED lines above.",
   );
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);

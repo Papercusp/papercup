@@ -9,7 +9,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // readNonAgentWorkCategory backs the D-035 agent-work door gate (work-nature/agent-work-door-gate);
 // null = the row IS agent work, so every existing case reaches its own write path unchanged.
-const readNonAgentWorkCategory = vi.hoisted(() => vi.fn(async () => null as { nature: string; audience: string | null } | null));
+const readNonAgentWorkCategory = vi.hoisted(() =>
+  vi.fn<typeof import('../../work-items').readNonAgentWorkCategory>(async () => null),
+);
 vi.mock('../../work-items', () => ({
   getWorkItem: vi.fn(),
   setWorkItemStateWithAliasInfo: vi.fn(),
