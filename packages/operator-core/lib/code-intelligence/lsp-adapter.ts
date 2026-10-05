@@ -44,6 +44,10 @@ import {
 
 import { pinModuleState } from '@papercusp/module-singleton';
 import { managedSpawn } from '../task-manager/managed-spawn.ts';
+import {
+  initializeCapabilityObservations, lspCapabilityStore, lspServerIdentity,
+  requireLspCapability, requestWithLspCapability, type LspCapabilityKey,
+} from './lsp-capability-matrix';
 
 import {
   toOneIndexed,
@@ -321,6 +325,8 @@ export function resolveServerBin(language: LspLanguage): string | null {
 
 interface LspClient {
   connection: MessageConnection;
+  /** Identity of the installed binary + initialize version, never a project-specific cache. */
+  capabilityServerIdentity?: string;
   child: ChildProcess;
   taskId: string;
   language: LspLanguage;
@@ -1220,7 +1226,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
       : { cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } };
 
   const t0 = Date.now();
-  await connection.sendRequest('initialize', {
+  const initialized = await connection.sendRequest('initialize', {
     processId: process.pid,
     rootUri: client.rootUri,
     workspaceFolders: [{ uri: client.rootUri, name: 'papercusp' }],
@@ -1251,12 +1257,39 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
       experimental: { serverStatusNotification: true },
     },
   });
+  try {
+    const result = initialized as { serverInfo?: unknown; capabilities?: unknown } | null;
+    client.capabilityServerIdentity = lspServerIdentity(
+      bin, result?.serverInfo, language === 'typescript' ? [resolveTsserverPath()] : [],
+    );
+    await Promise.all(initializeCapabilityObservations(language, client.capabilityServerIdentity, result?.capabilities)
+      .map(observation => lspCapabilityStore.observe(observation)));
+  } catch (error) {
+    // A failed persistence handshake must not leave an unregistered warm child behind.
+    connection.dispose();
+    child.kill('SIGTERM');
+    throw new Error(`LSP capability initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   client.coldStartMs = Date.now() - t0;
   connection.sendNotification('initialized', {});
   client.health = 'healthy';
 
   state.clients.set(clientKey(language, rootPath), client);
   return client;
+}
+
+function capabilityKey(client: LspClient, intent: LspReadinessIntent): LspCapabilityKey {
+  if (!client.capabilityServerIdentity) throw new Error('LSP capability identity is unknown; restart the daemon to initialize capability truth');
+  return { language: client.language, intent, serverIdentity: client.capabilityServerIdentity };
+}
+
+function requireClientCapability(client: LspClient, intent: LspReadinessIntent): Promise<void> {
+  return requireLspCapability(lspCapabilityStore, capabilityKey(client, intent));
+}
+
+function capabilityRequest(client: LspClient, intent: LspReadinessIntent, method: string, params: unknown): Promise<unknown> {
+  return requestWithLspCapability(lspCapabilityStore, capabilityKey(client, intent), method,
+    () => client.connection.sendRequest(method, params));
 }
 
 async function getClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
@@ -1773,6 +1806,7 @@ export async function lspQuery(
 
     // Never answer from a half-loaded project — that returns a plausible WRONG
     // location, not an error (measured: ~4.7s window on this repo).
+    await requireClientCapability(client, readinessIntent);
     const readiness = await prepareIntentReadiness(client, readinessIntent);
     if (readiness === 'timeout') {
       return fail(
@@ -1806,7 +1840,7 @@ export async function lspQuery(
       params.context = { includeDeclaration: true };
     }
 
-    const raw = await client.connection.sendRequest(method, params);
+    const raw = await capabilityRequest(client, readinessIntent, method, params);
     const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
     const sites = list.map((r) => toSite(r, query.rootPath)).filter((s): s is SymbolSite => s !== null);
     certifyCanaryAnswer(client, readinessIntent, readiness, sites.length, JSON.stringify(sites));
@@ -1919,6 +1953,7 @@ export async function lspDiagnostics(query: {
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+    await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
       return fail(
@@ -1944,6 +1979,9 @@ export async function lspDiagnostics(query: {
         'degraded',
       );
     }
+
+    await lspCapabilityStore.observe({ ...capabilityKey(client, intent), supported: true,
+      source: 'publish', evidence: 'textDocument/publishDiagnostics' });
 
     const rel = query.file.startsWith(query.rootPath + '/') ? query.file.slice(query.rootPath.length + 1) : query.file;
     const sites: SymbolSite[] = entry.diags.map((d) => ({
@@ -2059,6 +2097,7 @@ export async function lspWorkspaceSymbols(query: {
     // Opening the anchor is what CREATES the tsserver project this search runs
     // against; for rust it merely warms a crate graph the root already implies.
     if (scope.anchor) await ensureOpen(client, scope.anchor);
+    await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
       return fail(
@@ -2069,7 +2108,7 @@ export async function lspWorkspaceSymbols(query: {
       );
     }
 
-    const raw = await client.connection.sendRequest('workspace/symbol', { query: query.name });
+    const raw = await capabilityRequest(client, intent, 'workspace/symbol', { query: query.name });
     const list = Array.isArray(raw) ? raw : [];
     const all = list
       .map((entry): SymbolSite | null => {
@@ -2154,6 +2193,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+    await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
       return fail(
@@ -2164,7 +2204,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
       );
     }
 
-    const raw = (await client.connection.sendRequest('textDocument/rename', {
+    const raw = (await capabilityRequest(client, intent, 'textDocument/rename', {
       textDocument: { uri },
       position: { line: query.line1 - 1, character: query.character },
       newName: query.newName,
@@ -2258,6 +2298,7 @@ export async function lspRenameWorkspaceEdit(
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+    await requireClientCapability(client, 'rename-preview');
     const readiness = await prepareIntentReadiness(client, 'rename-preview');
     // `answerable` is accepted here to hold this gate EXACTLY where it stood
     // before WI-2142382 split the verdict: the settle window used to return
@@ -2290,7 +2331,7 @@ export async function lspRenameWorkspaceEdit(
       };
     }
 
-    const edit = await client.connection.sendRequest('textDocument/rename', {
+    const edit = await capabilityRequest(client, 'rename-preview', 'textDocument/rename', {
       textDocument: { uri },
       position: { line: query.line1 - 1, character: query.character },
       newName: query.newName,
