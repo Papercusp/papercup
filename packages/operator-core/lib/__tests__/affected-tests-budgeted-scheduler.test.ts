@@ -158,7 +158,7 @@ describe('runBudgetedTasks', () => {
       { id: 'short', lane: 'reserved', workers: 1 },
     ]);
     gates.get('short')!.resolve('short-result');
-    await new Promise<void>((done) => setImmediate(done));
+    await until(() => starts.length >= 3, 'the uncontended reserved lane refill');
     expect(starts[2]).toEqual({ id: 'medium', lane: 'reserved', workers: 1 });
     gates.get('medium')!.resolve('medium-result');
     gates.get('long')!.resolve('long-result');
@@ -350,6 +350,150 @@ describe('runBudgetedTasks', () => {
       rmSync(lockRoot, { recursive: true, force: true });
     }
   });
+});
+
+describe('cooperative shared admission (WI-10006150)', () => {
+  it('drains the active wave and lets a queued peer run before refilling the shard', async () => {
+    const tasks = [
+      { id: 'long', estimateMs: 100 },
+      { id: 'medium', estimateMs: 50 },
+      { id: 'short', estimateMs: 5 },
+    ];
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const events: string[] = [];
+    const notices: string[] = [];
+    const admissions: Array<{ waitedMs: number; budgetMs: number }> = [];
+    let activeWorkers = 0;
+    let observedWorkers = 0;
+    let peerQueued = false;
+    const running = runBudgetedTasks(tasks, {
+      ...config,
+      admissionTimeoutMs: 8_000,
+      estimateMs: (task) => task.estimateMs,
+      readMemAvailableMb: () => 8192,
+      onAdmissionNotice: (line) => notices.push(line),
+      onAdmissionAcquired: (info) => admissions.push(info),
+      runTask: async (task, allocation) => {
+        events.push(task.id);
+        activeWorkers += allocation.workers;
+        observedWorkers = Math.max(observedWorkers, activeWorkers);
+        try { return await gates.get(task.id)!.promise; }
+        finally { activeWorkers -= allocation.workers; }
+      },
+    });
+    await until(() => events.length === 2, 'the initial concurrent wave');
+    const peer = runBudgetedTasks(['peer'], {
+      ...config,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') peerQueued = true; },
+      runTask: async (_, allocation) => {
+        events.push('peer');
+        activeWorkers += allocation.workers;
+        observedWorkers = Math.max(observedWorkers, activeWorkers);
+        activeWorkers -= allocation.workers;
+        return 'peer-result';
+      },
+    });
+    await until(() => peerQueued, 'the peer FIFO ticket');
+    gates.get('short')!.resolve('short-result');
+    // Wait for the contention check, using its queue directory observation rather
+    // than a guessed timer. The long child still owns the slot at this point.
+    await until(() => readdirSync(join(mutexLockRoot, `${admissionMutexName()}.queue`)).length === 1,
+      'the peer remains queued while the long child drains');
+    gates.get('long')!.resolve('long-result');
+    await peer;
+    await until(() => events.length === 4, 'the remaining task to resume');
+    gates.get('medium')!.resolve('medium-result');
+    const result = await running;
+    expect(events).toEqual(['long', 'short', 'peer', 'medium']);
+    expect(result.results.map((entry) => [entry.index, entry.task.id, entry.value])).toEqual([
+      [0, 'long', 'long-result'], [1, 'medium', 'medium-result'], [2, 'short', 'short-result'],
+    ]);
+    expect(observedWorkers).toBe(4);
+    expect(result.stats.observedMaxWorkers).toBe(4);
+    expect(result.stats.memoryReadings).toBe(2);
+    expect(notices.some((line) => line.startsWith('AFFECTED_TESTS_ADMISSION_YIELD '))).toBe(true);
+    expect(admissions).toHaveLength(2);
+    expect(admissions[1].budgetMs).toBe(admissions[0].budgetMs - admissions[0].waitedMs);
+  }, 20_000);
+
+  it('retains one queue budget across a yield after an initial admission wait', async () => {
+    const releaseInitial = deferred<void>();
+    const initialAcquired = deferred<void>();
+    const initial = withFsMutex(admissionMutexName(), async () => {
+      initialAcquired.resolve();
+      await releaseInitial.promise;
+    });
+    await initialAcquired.promise;
+    const releaseFirst = deferred<void>();
+    let firstStarted = false;
+    let firstQueued = false;
+    let peerQueued = false;
+    const admissions: Array<{ waitedMs: number; budgetMs: number }> = [];
+    const running = runBudgetedTasks(['first', 'remaining'], {
+      ...config,
+      maxConcurrentTasks: 1,
+      admissionTimeoutMs: 8_000,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') firstQueued = true; },
+      onAdmissionAcquired: (info) => admissions.push(info),
+      runTask: async (task) => {
+        if (task === 'first') { firstStarted = true; await releaseFirst.promise; }
+        return task;
+      },
+    });
+    await until(() => firstQueued, 'the initial queue wait');
+    await new Promise<void>((done) => setTimeout(done, 300));
+    releaseInitial.resolve();
+    await initial;
+    await until(() => firstStarted, 'the first task to start');
+    const peer = runBudgetedTasks(['peer'], {
+      ...config,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') peerQueued = true; },
+      runTask: async () => 'peer',
+    });
+    await until(() => peerQueued, 'the peer to queue');
+    releaseFirst.resolve();
+    await Promise.all([running, peer]);
+    expect(admissions).toHaveLength(2);
+    expect(admissions[0].waitedMs).toBeGreaterThanOrEqual(250);
+    expect(admissions[1].budgetMs).toBe(8_000 - admissions[0].waitedMs);
+  }, 20_000);
+
+  it('drains a failed wave and its persistence before releasing to a queued peer', async () => {
+    const failLong = deferred<string>();
+    const finishShort = deferred<string>();
+    const finishPersistence = deferred<void>();
+    let persistenceStarted = false;
+    let queued = false;
+    const starts: string[] = [];
+    const running = runBudgetedTasks([
+      { id: 'long', estimateMs: 100 }, { id: 'remaining', estimateMs: 50 }, { id: 'short', estimateMs: 5 },
+    ], {
+      ...config,
+      estimateMs: (task) => task.estimateMs,
+      onAdmissionNotice: () => undefined,
+      runTask: async (task) => {
+        starts.push(task.id);
+        return task.id === 'long' ? failLong.promise : finishShort.promise;
+      },
+      onTaskSettled: async () => { persistenceStarted = true; await finishPersistence.promise; },
+    });
+    const failure = running.catch((error: Error) => error.message);
+    await until(() => starts.length === 2, 'the failed wave to start');
+    const peer = runBudgetedTasks(['peer'], {
+      ...config,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') queued = true; },
+      runTask: async () => { starts.push('peer'); return 'peer'; },
+    });
+    await until(() => queued, 'the peer to wait on the failed wave');
+    failLong.reject(new Error('failed child'));
+    finishShort.resolve('short');
+    await until(() => persistenceStarted, 'the surviving child persistence');
+    expect(starts).toEqual(['long', 'short']);
+    finishPersistence.resolve();
+    expect(await failure).toBe('failed child');
+    await peer;
+    expect(starts).toEqual(['long', 'short', 'peer']);
+  }, 20_000);
 });
 
 describe('near-tree-wide deterministic sharding (P-011)', () => {
