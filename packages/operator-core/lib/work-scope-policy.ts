@@ -309,29 +309,70 @@ export async function gateWorkScope(site: string, subject: WorkScopeSubject, pol
   return v;
 }
 
+interface WorkScopeSqlExceptionTerms {
+  exactHarnesses: string[];
+  harnessLikePrefixes: string[];
+  plans: string[];
+  goals: string[];
+  workItems: string[];
+}
+
+interface WorkScopeSqlTerms {
+  exact: string[];
+  likePrefixes: string[];
+  exceptions?: WorkScopeSqlExceptionTerms;
+}
+
 /**
- * The parts of the allow-list a SQL predicate needs: exact slugs and LIKE prefixes.
- * `null` ⇒ not enforced (emit no predicate). Used by the admission promoter so
- * out-of-scope pending items are simply never promoted (they stay `pending` =
- * visibly not admitted, reversible the moment the policy widens).
+ * The allow-list and explicit exceptions as SQL-ready terms. `null` means the
+ * policy is unenforced or admits every harness, so callers emit no predicate.
+ * The admission promoter uses these terms for both its admitted set and the
+ * complementary held census; keep every exception axis aligned with
+ * evaluateWorkScope.
  */
-export function workScopeSqlTerms(policy: WorkScopePolicy | null = workScopePolicy()): { exact: string[]; likePrefixes: string[] } | null {
+export function workScopeSqlTerms(policy: WorkScopePolicy | null = workScopePolicy()): WorkScopeSqlTerms | null {
   if (!isWorkScopeEnforced(policy)) return null;
   const exact: string[] = [];
   const likePrefixes: string[] = [];
   for (const raw of policy.allowHarnesses) {
-    const p = (raw ?? '').trim();
-    if (!p) continue;
-    if (p === '*') return null; // everything allowed — no predicate
-    if (p.endsWith('/*')) {
-      const root = p.slice(0, -2);
-      exact.push(root);
-      likePrefixes.push(`${escapeLike(root)}/%`);
-    } else if (p.endsWith('*')) {
-      likePrefixes.push(`${escapeLike(p.slice(0, -1))}%`);
-    } else exact.push(p);
+    if (appendHarnessSqlTerm(raw, exact, likePrefixes)) return null;
   }
-  return { exact, likePrefixes };
+
+  const exceptionTerms: WorkScopeSqlExceptionTerms = {
+    exactHarnesses: [],
+    harnessLikePrefixes: [],
+    plans: [],
+    goals: [],
+    workItems: [],
+  };
+  for (const exception of policy.exceptions ?? []) {
+    if (appendHarnessSqlTerm(exception.harness, exceptionTerms.exactHarnesses, exceptionTerms.harnessLikePrefixes)) {
+      return null;
+    }
+    if (exception.plan) exceptionTerms.plans.push(exception.plan);
+    if (exception.goal) exceptionTerms.goals.push(exception.goal);
+    if (exception.workItem) exceptionTerms.workItems.push(exception.workItem);
+  }
+
+  const hasExceptions = Object.values(exceptionTerms).some((terms) => terms.length > 0);
+  return { exact, likePrefixes, ...(hasExceptions ? { exceptions: exceptionTerms } : {}) };
+}
+
+/** Returns true only when this pattern admits every harness. */
+function appendHarnessSqlTerm(raw: string | undefined, exact: string[], likePrefixes: string[]): boolean {
+  const p = (raw ?? '').trim();
+  if (!p) return false;
+  if (p === '*') return true;
+  if (p.endsWith('/*')) {
+    const root = p.slice(0, -2);
+    exact.push(root);
+    likePrefixes.push(`${escapeLike(root)}/%`);
+  } else if (p.endsWith('*')) {
+    likePrefixes.push(`${escapeLike(p.slice(0, -1))}%`);
+  } else {
+    exact.push(p);
+  }
+  return false;
 }
 
 function escapeLike(s: string): string {

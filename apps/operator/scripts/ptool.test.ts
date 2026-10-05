@@ -2155,7 +2155,7 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
       StreamableHTTPClientTransport: 'transport-module',
     };
     const connectOnce = vi.fn(
-      (_url: string, _scope: object, _options: { timeoutMs?: number }, _context: unknown) => network.promise,
+      (_url: string, _scope: object, _options?: { timeoutMs?: number }, _context?: unknown) => network.promise,
     );
     const pending = connectWithOperatorCandidates(
       connectOnce,

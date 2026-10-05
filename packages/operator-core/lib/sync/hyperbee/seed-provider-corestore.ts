@@ -237,11 +237,13 @@ function uuidIdempotencyRowDropper(
         || !Array.isArray(row.occurrences) || row.occurrences.length === 0) {
       throw new Error('[seed:corestore] invalid/duplicate UUID row-drop binding');
     }
-    const occurrences = row.occurrences.map((occurrence) => {
+    // Explicit parameter types: `Array.isArray` on a `readonly` array narrows it to
+    // `readonly T[] & any[]`, which would leave these callback parameters implicitly `any`.
+    const occurrences = row.occurrences.map((occurrence: SeedUuidIdempotencyDropPlan['rows'][number]['occurrences'][number]) => {
       if (!/^segment-[0-9]{6}\.(?:blob|log)$/.test(occurrence.segment)
           || !Number.isSafeInteger(occurrence.line) || occurrence.line <= 0
           || !Array.isArray(occurrence.fieldPath) || occurrence.fieldPath.length === 0
-          || occurrence.fieldPath.some((part) => typeof part === 'number'
+          || occurrence.fieldPath.some((part: string | number) => typeof part === 'number'
             ? !Number.isSafeInteger(part) || part < 0
             : typeof part !== 'string' || !part
               || /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/i.test(part))) {

@@ -149,6 +149,35 @@ describe('workScopeSqlTerms', () => {
     expect(workScopeSqlTerms(ENFORCE)).toEqual({ exact: ['papercusp', 'papercusp'], likePrefixes: ['papercusp/%'] });
     expect(workScopeSqlTerms({ mode: 'enforce', allowHarnesses: ['a_b*'] })).toEqual({ exact: [], likePrefixes: ['a\\_b%'] });
   });
+
+  it('returns SQL terms for harness, plan, goal, and work-item exceptions', () => {
+    expect(workScopeSqlTerms({
+      mode: 'enforce',
+      allowHarnesses: ['papercusp'],
+      exceptions: [
+        { harness: 'recipe-app', reason: 'explicit harness exception' },
+        { harness: 'north/*', plan: 'plan-1', goal: 'goal-1', workItem: 'WI-1', reason: 'subject exceptions' },
+      ],
+    })).toEqual({
+      exact: ['papercusp'],
+      likePrefixes: [],
+      exceptions: {
+        exactHarnesses: ['recipe-app', 'north'],
+        harnessLikePrefixes: ['north/%'],
+        plans: ['plan-1'],
+        goals: ['goal-1'],
+        workItems: ['WI-1'],
+      },
+    });
+  });
+
+  it('emits no scope predicate when an exception admits every harness', () => {
+    expect(workScopeSqlTerms({
+      mode: 'enforce',
+      allowHarnesses: ['papercusp'],
+      exceptions: [{ harness: '*', reason: 'all harnesses' }],
+    })).toBeNull();
+  });
 });
 
 describe('reconcilePresencePot (P-010)', () => {

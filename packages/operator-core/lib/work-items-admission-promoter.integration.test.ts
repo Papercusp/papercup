@@ -7,7 +7,17 @@ import { createImplementationReadiness, sealImplementationAcceptance, countWorkI
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   // undefined ⇒ the real policy (none under VITEST). A test sets it to exercise the work-scope hold.
-  scopeTerms: undefined as { exact: string[]; likePrefixes: string[] } | null | undefined,
+  scopeTerms: undefined as {
+    exact: string[];
+    likePrefixes: string[];
+    exceptions?: {
+      exactHarnesses: string[];
+      harnessLikePrefixes: string[];
+      plans: string[];
+      goals: string[];
+      workItems: string[];
+    };
+  } | null | undefined,
   scopeDecisions: [] as Array<{ harness?: string | null; verdict: string; note?: string }>,
 }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -110,6 +120,7 @@ const DDL = `
     terminal_completion_ref text,
     authority text,
     source_plan_slug text,
+    goal_id text,
     source_plan_item_ids text[],
     created_ts bigint,
     updated_ts bigint,
@@ -266,14 +277,16 @@ async function seedItem(input: {
   expectedCostCents?: number | null;
   closedTs?: number | null;
   authority?: string | null;
+  sourcePlanSlug?: string | null;
+  goalId?: string | null;
   origin?: string;
 }): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, parent_id,
        taken_by, admission, admitted_at, first_claimed_at, condition_key, lane, payload,
-       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, embedding, embedding_mode,
-       embedding_profile)
+       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, source_plan_slug, goal_id,
+       embedding, embedding_mode, embedding_profile)
     VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
             ${input.title ?? 'vitest clone failure'},
             ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, ${input.itemKind ?? 'bug'},
@@ -284,7 +297,7 @@ async function seedItem(input: {
             ${JSON.stringify(input.payload ?? {})}::text::jsonb,
             ${input.createdAtMs ?? NOW - 10_000}, ${input.createdAtMs ?? NOW - 10_000},
             ${input.closedTs ?? null}, ${input.authority ?? null}, ${input.expectedCostCents ?? null},
-            ${input.origin ?? 'local'},
+            ${input.origin ?? 'local'}, ${input.sourcePlanSlug ?? null}, ${input.goalId ?? null},
             ${input.vector === undefined ? '[1,0,0]' : input.vector}::vector,
             ${input.vector === null ? null : 'gemma'},
             ${input.vector === null ? null : (input.embeddingProfile ?? null)})`;
@@ -2072,6 +2085,64 @@ describe('work-item admission promoter (real Postgres)', () => {
       const [foreign] = await db.sql<Array<{ admission: string }>>`
         SELECT admission FROM harness_shared.work_items WHERE workspace_id = 'some-other-workspace'`;
       expect(foreign).toEqual({ admission: 'pending' });
+    });
+
+    it('applies harness and named-subject exceptions to admission and the held census', async () => {
+      const old = NOW - 61 * 60_000;
+      h.scopeTerms = {
+        exact: [HARNESS],
+        likePrefixes: [],
+        exceptions: {
+          exactHarnesses: ['recipe-app'],
+          harnessLikePrefixes: [],
+          plans: ['exception-plan'],
+          goals: ['exception-goal'],
+          workItems: ['WI-item-exception'],
+        },
+      };
+      await seedItem({ id: 'WI-scope-home', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-harness-exception', harness: 'recipe-app', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-plan-exception', harness: 'email', sourcePlanSlug: 'exception-plan', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-goal-exception', harness: 'calendar', goalId: 'exception-goal', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-item-exception', harness: 'email', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-held', harness: 'work-scope-exception-unmatched', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-fresh-exception', harness: 'recipe-app', createdAtMs: NOW - 59 * 60_000, vector: null });
+      await seedItem({
+        id: 'WI-foreign-exception',
+        harness: 'email',
+        workspaceId: 'some-other-workspace',
+        sourcePlanSlug: 'exception-plan',
+        createdAtMs: old,
+        vector: null,
+      });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-work-scope-exceptions',
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+      });
+
+      expect(result.autoPromoted).toEqual([
+        'WI-goal-exception',
+        'WI-harness-exception',
+        'WI-item-exception',
+        'WI-plan-exception',
+        'WI-scope-home',
+      ]);
+      expect(result.heldByScope).toEqual({ 'work-scope-exception-unmatched': 1 });
+      const rows = await db.sql<Array<{ feature_id: string; admission: string }>>`
+        SELECT feature_id, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = ANY(${['WI-fresh-exception', 'WI-foreign-exception', 'WI-held']}::text[])
+         ORDER BY feature_id`;
+      expect(rows).toEqual([
+        { feature_id: 'WI-foreign-exception', admission: 'pending' },
+        { feature_id: 'WI-fresh-exception', admission: 'pending' },
+        { feature_id: 'WI-held', admission: 'pending' },
+      ]);
     });
 
     // Widening the harness axis must not weaken the age floor on the rows it newly reaches.

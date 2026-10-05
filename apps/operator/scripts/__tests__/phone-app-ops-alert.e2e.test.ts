@@ -37,7 +37,7 @@ it('reports and clears real Phone usage and backup faults across CLI and Postgre
   const env = { ...process.env, PHONE_APP_DATABASE_URL: server.urls.admin,
     PHONE_DATABASE_URL: '', DATABASE_URL: '', PHONE_CONFIG_DIR: work,
     PHONE_BACKUP_ARCHIVE: archive, PHONE_BACKUP_MAX_AGE_HOURS: '24' };
-  const notices: Array<{ title: string; body: string; dedupeKey: string }> = [];
+  const notices: Array<Record<string, string>> = [];
   const run = async (command: string, args: string[]) => {
     // The systemd readiness boundary is covered by the installer integration
     // suite. Exercise the usage and backup subprocesses against real PG here.
@@ -50,7 +50,7 @@ it('reports and clears real Phone usage and backup faults across CLI and Postgre
       return { code: typeof failed.code === 'number' ? failed.code : 1, stdout: failed.stdout ?? '' };
     }
   };
-  const notify = async (notice: { title: string; body: string; dedupeKey: string }) => {
+  const notify = async (notice: Record<string, string>) => {
     notices.push(notice);
   };
   const check = (minute: number) => runPhoneOpsAlert({ env, run, notify,

@@ -5536,8 +5536,17 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // independently-editable copies of the same truth, which is exactly how an admitted row
     // and a reported-held row could drift into double-counting — or, worse, into a row that
     // is neither admitted nor reported and so disappears again.
+    const exceptionTerms = scopeTerms?.exceptions;
     const scopeMatch = scopeTerms
-      ? sql`(harness_slug = ANY(${scopeTerms.exact}::text[]) OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[]))`
+      ? sql`COALESCE((
+          harness_slug = ANY(${scopeTerms.exact}::text[])
+          OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[])
+          OR harness_slug = ANY(${exceptionTerms?.exactHarnesses ?? []}::text[])
+          OR harness_slug LIKE ANY(${(exceptionTerms?.harnessLikePrefixes ?? []).map((p) => `${p}%`)}::text[])
+          OR source_plan_slug = ANY(${exceptionTerms?.plans ?? []}::text[])
+          OR goal_id = ANY(${exceptionTerms?.goals ?? []}::text[])
+          OR feature_id = ANY(${exceptionTerms?.workItems ?? []}::text[])
+        ), FALSE)`
       : null;
     const scopePredicate = scopeMatch ? sql`AND ${scopeMatch}` : sql``;
     // Admission and the held census share one eligibility floor. Terminal rows can
