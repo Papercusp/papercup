@@ -487,7 +487,10 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
       // `work_item_id` only attributes the run (task ledger + slow-attempt gate) to a
       // held work-item; it selects nothing and fixes neither reporter nor config, so
       // it disturbs neither verdict either.
-      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'testNamePattern', 'timeoutMs', 'work_item_id'],
+      // `rootHarnessSlug` selects a registered checkout for explicit files. It does
+      // not execute changedPaths or accept an arbitrary Vitest --root/config, so
+      // the existing default-root substitutions and exclusions remain valid.
+      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'work_item_id'],
       'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` because no arg makes ' +
         'the tool RUN a list it derived — `changedPaths` returns the plan and executes nothing. An arg that ' +
         'EXECUTED a derived selection would make 206 corpus atoms across 48 sessions suddenly expressible, and ' +
@@ -498,6 +501,7 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
   });
 
   it('cover() emits expressions built only from real testing:run args', () => {
+    expect(accepts({ files: ONE_FILE, rootHarnessSlug: 'papercusp' })).toBe(true);
     expectExpressionUsesRealArgs(
       routerTestFiles,
       'npm run test:file -- packages/operator-core/lib/a.test.ts 2>&1',
