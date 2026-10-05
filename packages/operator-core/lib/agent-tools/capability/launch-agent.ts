@@ -2363,6 +2363,20 @@ export default defineTool({
 
     const launchSummary = {
       deduped: false,
+      // Preserve the resolver's pre-spawn count. A later read could include this
+      // launch or an existing actor whose goal attribution/freshness changed.
+      goalAdmission: goalLaunch.goalId ? {
+        goalId: goalLaunch.goalId,
+        fleet: fleetSlug,
+        requested: count,
+        ceilings: goalLaunch.ceilings,
+        headcount: goalLaunch.headcount,
+        measurement: goalLaunch.headcountMeasurement ?? null,
+        capacityStatus: goalLaunch.degradedReasons.some((reason) => reason.startsWith('ceiling not enforced'))
+          ? 'unenforced' : goalLaunch.headcountMeasurement ? 'enforced' : 'not-checked',
+        degraded: goalLaunch.degraded,
+        degradedReasons: goalLaunch.degradedReasons,
+      } : null,
       opened: opened.length,
       failed: failed.length,
       failures,
