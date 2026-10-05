@@ -327,6 +327,7 @@ type WorkerCensus = { main: ResourceRow; descendants: ResourceRow[];
   notChecked: { pid: number; parentPid: number; reason: string }[] };
 type WorkerWindowReader = {
   census: () => WorkerCensus;
+  record?: (stage: string, value: unknown) => void;
   read: (pid: number, requestIds: string[]) => Promise<{
     counters: Awaited<ReturnType<typeof readProcessMemory>>;
     snapshot: ReturnType<typeof requestWorkerSnapshot>;
@@ -410,8 +411,11 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
         population: 'Selected PID lifetime fences within a bounded descendant census; serving-worker population remains unknown' } };
   };
   const before = await sample([]);
+  reader.record?.('before', structuredClone(before));
   const requestIds = await workload();
+  reader.record?.('requestIds', [...requestIds]);
   const after = await sample(requestIds.filter((id): id is string => typeof id === 'string'));
+  reader.record?.('after', structuredClone(after));
   const resources = after.observations.map((row, index) => {
     const prior = before.observations[index];
     if (prior.snapshot.processInstanceId !== row.snapshot.processInstanceId ||
@@ -424,8 +428,10 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
       pssChangeBytes: row.after.pssBytes - prior.after.pssBytes, allocatedBytes,
       countersBefore: prior.counters, countersAfter: row.counters };
   });
-  return { before, after, resources,
-    assignment: auditRequestWorkerAssignments(requestIds, after.observations, expectedBuild),
+  reader.record?.('resources', structuredClone(resources));
+  const assignment = auditRequestWorkerAssignments(requestIds, after.observations, expectedBuild);
+  reader.record?.('assignment', structuredClone(assignment));
+  return { before, after, resources, assignment,
     definition: 'Unforced serial per-worker PSS and cumulative V8 allocation bracketing one exact request window; no native ownership, intervention saving, or complete worker census' };
 }
 
@@ -732,6 +738,23 @@ describe('actual current-build operator memory baseline', () => {
         parentPid: f.main.pid, startTicks: String(100 + i) })));
       await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow('census cap');
       expect(f.counts().reads).toBe(0); expect(f.counts().workloads).toBe(0);
+    });
+    it('preserves raw failed brackets before deriving request assignment', async () => {
+      const f = setup(), read = f.reader.read;
+      const recorded: { stage: string; value: any }[] = [];
+      f.reader.read = async (pid, ids) => {
+        const value = await read(pid, ids);
+        if (ids.length && pid === 11) value.snapshot.results[0].status = 'error';
+        return value;
+      };
+      await expect(collectRequestWorkerWindow(f.targets, build,
+        { ...f.reader, record: (stage, value) => { recorded.push({ stage, value }); } }, f.workload))
+        .rejects.toThrow('Request-worker query identity');
+      expect(recorded.map(row => row.stage)).toEqual(['before', 'requestIds', 'after', 'resources']);
+      expect(recorded.find(row => row.stage === 'after')!.value.observations[0].snapshot.results[0].status)
+        .toBe('error');
+      expect(recorded.find(row => row.stage === 'after')!.value.census.after.main.pid).toBe(10);
+      expect(recorded.find(row => row.stage === 'resources')!.value).toHaveLength(2);
     });
     it.each(['duplicate', 'foreign', 'reused', 'parent pin', 'entry pin'] as const)('rejects %s target selection before observing workload', async kind => {
       const f = setup();
@@ -1481,7 +1504,14 @@ describe('actual current-build operator memory baseline', () => {
           return report.requests.filter((row: any) => row.window === window).map((row: any) => row.requestId);
         };
         const workerWindow = workerWindowEnabled
-          ? await collectRequestWorkerWindow(counterTargets, expectedBuild!, workerReader, workload) : undefined;
+          ? await collectRequestWorkerWindow(counterTargets, expectedBuild!, { ...workerReader,
+            record: (stage, value) => {
+              const attempts = (report.requestWorkerWindowAttempts ??= []);
+              const attempt = (attempts[window] ??= { window, incomplete: true });
+              attempt[stage] = value; attempt.stage = stage;
+              if (stage === 'assignment') attempt.incomplete = false;
+              publish();
+            } }, workload) : undefined;
         if (!workerWindow) await workload();
         else (report.requestWorkerWindows ??= []).push({ window, ...workerWindow });
         await sample(`ordinary-${window}-end`);
