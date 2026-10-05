@@ -1258,6 +1258,19 @@ export interface Plugin {
    */
   triggerPack?: PluginTriggerPack;
 
+  /**
+   * Integration provider descriptor (pure data, validated at load/install).
+   * See `./provider` and plan generalized-integrations-…-2026-10-05 D-006.
+   */
+  provider?: import('./provider').ProviderDescriptor;
+
+  /**
+   * Adapter implementing the provider contract. `js` providers export it
+   * in-process; daemon providers serve the same three methods over JSON-RPC.
+   * Providers never receive tokens — network access goes through `host.fetch`.
+   */
+  providerAdapter?: import('./provider').ProviderAdapter;
+
   /** Full-route UI mounted at /harness/<slug>. */
   ui?: UiContribution;
   /** Tabs added to a host's harness dashboard. */
@@ -1661,6 +1674,32 @@ export const PAPERCUSP_RUNTIME_VERSION = '0.1.1' as const;
 
 export { lookupTier, TIER_TABLE } from './tier-table';
 export type { CapabilityTier } from './tier-table';
+export {
+  PROVIDER_CONTRACT_VERSIONS,
+  PROVIDER_ID_PATTERN,
+  PROVIDER_DATATYPE_PATTERN,
+  PROVIDER_CAPABILITY_PATTERN,
+  PROVIDER_EGRESS_HOST_PATTERN,
+  providerEgressAllows,
+  validateProviderDescriptor,
+  validateProviderDeclaration,
+  isProviderAdapter,
+} from './provider';
+export type {
+  ProviderContractVersion,
+  ProviderOAuthDescriptor,
+  ProviderDescriptor,
+  ProviderSyncRequest,
+  ProviderRecord,
+  ProviderSyncPage,
+  ProviderSyncError,
+  ProviderInvokeRequest,
+  HostFetchRequest,
+  HostFetchResponse,
+  HostFetch,
+  ProviderHost,
+  ProviderAdapter,
+} from './provider';
 
 
 /* ─────────────────────────────────────────────────────────────────────

@@ -1,0 +1,248 @@
+/**
+ * Integration provider contract (generalized-integrations-google-migration-
+ * cupboard-workflows-2026-10-05, D-006 / P-001).
+ *
+ * A provider is a plugin that declares a `provider` descriptor in its
+ * manifest and implements a small request/response adapter. The descriptor is
+ * pure data (validated at load and install time); the adapter is code. The
+ * host owns everything stateful — connections, credentials, leases, cursors,
+ * retry, health, receipts and grants. The provider owns HTTP details,
+ * pagination and the mapping into canonical records.
+ *
+ * Providers never receive tokens. All network access goes through
+ * `host.fetch({ source, request })`, which checks the URL against the declared
+ * egress hosts and injects the access token for exactly that source.
+ */
+
+/** Contract versions this SDK understands. A descriptor naming any other version is refused. */
+export const PROVIDER_CONTRACT_VERSIONS = [1] as const;
+export type ProviderContractVersion = (typeof PROVIDER_CONTRACT_VERSIONS)[number];
+
+/** Provider ids are stable, lowercase, and used inside `ext:<provider>:<event>` provenance keys. */
+export const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}$/;
+/** Canonical datatype ids (e.g. `email-message`, `calendar-event`, `ticket`). */
+export const PROVIDER_DATATYPE_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+/** Capabilities are `<domain>.<verb>` (e.g. `mail.read`, `mail.draft`, `calendar.write`). */
+export const PROVIDER_CAPABILITY_PATTERN = /^[a-z][a-z0-9]*\.[a-z][a-z0-9-]*$/;
+/** Egress hosts are exact hostnames or a single leading `*.` wildcard label. */
+export const PROVIDER_EGRESS_HOST_PATTERN = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+export interface ProviderOAuthDescriptor {
+  authorizeUrl: string;
+  tokenUrl: string;
+  scopes: string[];
+  pkce?: boolean;
+  /** Reference to a host-held client registration. Never a client secret. */
+  clientRegistrationRef?: string;
+  /** Optional shared-credential group (e.g. one Google Workspace grant serving mail + calendar). */
+  credentialGroup?: string;
+}
+
+export interface ProviderDescriptor {
+  /** Stable provider id, e.g. `gmail`, `google-calendar`, `outlook-mail`, `github-issues`. */
+  id: string;
+  /** Contract version the adapter implements. */
+  contractVersion: number;
+  displayName?: string;
+  /** Canonical datatypes this provider's `syncPage` produces. */
+  datatypes: string[];
+  /** Capability subset `invoke` accepts. */
+  capabilities: string[];
+  /** OAuth connection descriptor; omitted for providers that need no account grant. */
+  oauth?: ProviderOAuthDescriptor;
+  /** Hosts `host.fetch` may reach for this provider. Everything else is refused. */
+  egressHosts: string[];
+  /** JSON Schema for per-source configuration (account/calendar choices etc.). */
+  configSchema?: Record<string, unknown>;
+}
+
+/** Sync request issued by the host-owned connector driver. */
+export interface ProviderSyncRequest {
+  /** Opaque source id. The provider never learns the account's credentials. */
+  source: string;
+  /** Opaque cursor returned by the previous page, or null for a fresh backfill. */
+  cursor: string | null;
+  mode: 'backfill' | 'incremental';
+  /** Per-source configuration validated against the descriptor's configSchema. */
+  config?: Record<string, unknown>;
+}
+
+export interface ProviderRecord {
+  /** One of the descriptor's declared datatypes. */
+  datatype: string;
+  /** Provider-native id, unique within the source. Host keys include the source id. */
+  nativeId: string;
+  /** Provider-native event name used for `ext:<provider>:<event>` provenance. */
+  event: string;
+  /** Canonical payload for the datatype. Provider-specific fields live under `extensions.<provider>`. */
+  payload: Record<string, unknown>;
+  /** ISO-8601 time the remote object last changed. */
+  occurredAt?: string;
+  /** True when the remote object was deleted. */
+  deleted?: boolean;
+}
+
+export interface ProviderSyncPage {
+  records: ProviderRecord[];
+  /** Cursor to commit after the host durably admits `records`. */
+  nextCursor: string | null;
+  /** True when more pages are immediately available. */
+  hasMore: boolean;
+}
+
+/** Signals the host interprets; a provider throws or returns these instead of retrying itself. */
+export type ProviderSyncError =
+  | { kind: 'cursor-expired'; message: string }
+  | { kind: 'rate-limited'; retryAfterSeconds?: number; message: string }
+  | { kind: 'auth'; message: string }
+  | { kind: 'transient'; message: string };
+
+export interface ProviderInvokeRequest {
+  source: string;
+  capability: string;
+  args: Record<string, unknown>;
+}
+
+export interface HostFetchRequest {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  /** UTF-8 body. Binary payloads are base64 with `bodyEncoding: 'base64'`. */
+  body?: string;
+  bodyEncoding?: 'utf8' | 'base64';
+}
+
+export interface HostFetchResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+  bodyEncoding: 'utf8' | 'base64';
+}
+
+/** The only network path a provider has. The host enforces egress and injects the source's token. */
+export type HostFetch = (input: { source: string; request: HostFetchRequest }) => Promise<HostFetchResponse>;
+
+export interface ProviderHost {
+  fetch: HostFetch;
+}
+
+/** Adapter a provider plugin implements. All three methods are request/response. */
+export interface ProviderAdapter {
+  describe(): ProviderDescriptor | Promise<ProviderDescriptor>;
+  syncPage(request: ProviderSyncRequest, host: ProviderHost): Promise<ProviderSyncPage>;
+  invoke(request: ProviderInvokeRequest, host: ProviderHost): Promise<unknown>;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isHttpsUrl(value: unknown): boolean {
+  if (!isNonEmptyString(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || (url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost'));
+  } catch {
+    return false;
+  }
+}
+
+function duplicates(values: string[]): string[] {
+  const seen = new Set<string>();
+  const dups = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) dups.add(value);
+    seen.add(value);
+  }
+  return [...dups];
+}
+
+/** True when `host` is allowed by one of the descriptor's egress patterns. */
+export function providerEgressAllows(egressHosts: readonly string[], host: string): boolean {
+  const target = host.toLowerCase();
+  return egressHosts.some((pattern) => {
+    const p = pattern.toLowerCase();
+    if (p.startsWith('*.')) {
+      const suffix = p.slice(1);
+      return target.endsWith(suffix) && target.length > suffix.length;
+    }
+    return target === p;
+  });
+}
+
+/**
+ * Semantic validation of a provider descriptor. Returns a list of issues (empty = valid).
+ * The JSON schema enforces shape; this enforces identity, version and value rules.
+ */
+export function validateProviderDescriptor(descriptor: unknown): string[] {
+  const issues: string[] = [];
+  if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    return ['provider descriptor must be an object'];
+  }
+  const d = descriptor as Partial<ProviderDescriptor>;
+  if (!isNonEmptyString(d.id) || !PROVIDER_ID_PATTERN.test(d.id)) {
+    issues.push(`provider.id must match ${PROVIDER_ID_PATTERN}`);
+  }
+  if (!PROVIDER_CONTRACT_VERSIONS.includes(d.contractVersion as ProviderContractVersion)) {
+    issues.push(
+      `provider.contractVersion ${String(d.contractVersion)} is unsupported (supported: ${PROVIDER_CONTRACT_VERSIONS.join(', ')})`,
+    );
+  }
+  const datatypes = Array.isArray(d.datatypes) ? d.datatypes : [];
+  if (datatypes.length === 0) issues.push('provider.datatypes must declare at least one canonical datatype');
+  for (const datatype of datatypes) {
+    if (!isNonEmptyString(datatype) || !PROVIDER_DATATYPE_PATTERN.test(datatype)) {
+      issues.push(`provider.datatypes entry "${String(datatype)}" is not a canonical datatype id`);
+    }
+  }
+  for (const dup of duplicates(datatypes.filter(isNonEmptyString))) issues.push(`provider.datatypes repeats "${dup}"`);
+  const capabilities = Array.isArray(d.capabilities) ? d.capabilities : [];
+  for (const capability of capabilities) {
+    if (!isNonEmptyString(capability) || !PROVIDER_CAPABILITY_PATTERN.test(capability)) {
+      issues.push(`provider.capabilities entry "${String(capability)}" must be <domain>.<verb>`);
+    }
+  }
+  for (const dup of duplicates(capabilities.filter(isNonEmptyString))) issues.push(`provider.capabilities repeats "${dup}"`);
+  const egress = Array.isArray(d.egressHosts) ? d.egressHosts : [];
+  if (egress.length === 0) issues.push('provider.egressHosts must declare at least one host');
+  for (const host of egress) {
+    if (!isNonEmptyString(host) || !PROVIDER_EGRESS_HOST_PATTERN.test(host.toLowerCase())) {
+      issues.push(`provider.egressHosts entry "${String(host)}" must be a hostname or *.domain`);
+    }
+  }
+  if (d.oauth !== undefined) {
+    const oauth = d.oauth as Partial<ProviderOAuthDescriptor>;
+    if (!isHttpsUrl(oauth.authorizeUrl)) issues.push('provider.oauth.authorizeUrl must be an https URL');
+    if (!isHttpsUrl(oauth.tokenUrl)) issues.push('provider.oauth.tokenUrl must be an https URL');
+    if (!Array.isArray(oauth.scopes) || !oauth.scopes.every(isNonEmptyString)) {
+      issues.push('provider.oauth.scopes must be a list of scope strings');
+    }
+    for (const key of Object.keys(oauth)) {
+      if (/secret/i.test(key)) issues.push(`provider.oauth.${key} must not carry a secret; use clientRegistrationRef`);
+    }
+    for (const url of [oauth.authorizeUrl, oauth.tokenUrl]) {
+      if (!isHttpsUrl(url)) continue;
+      const host = new URL(url as string).hostname;
+      if (host !== '127.0.0.1' && host !== 'localhost' && !providerEgressAllows(egress.filter(isNonEmptyString), host)) {
+        issues.push(`provider.oauth endpoint host "${host}" is not in provider.egressHosts`);
+      }
+    }
+  }
+  if (d.configSchema !== undefined && (typeof d.configSchema !== 'object' || d.configSchema === null || Array.isArray(d.configSchema))) {
+    issues.push('provider.configSchema must be a JSON Schema object');
+  }
+  return issues;
+}
+
+/** Manifest-level check run by the loader and the Cupboard installer. */
+export function validateProviderDeclaration(manifest: { provider?: unknown }): string[] {
+  if (manifest.provider === undefined) return [];
+  return validateProviderDescriptor(manifest.provider);
+}
+
+/** True when `value` structurally implements the adapter (used before registering a js provider). */
+export function isProviderAdapter(value: unknown): value is ProviderAdapter {
+  if (!value || typeof value !== 'object') return false;
+  const a = value as Record<string, unknown>;
+  return typeof a.describe === 'function' && typeof a.syncPage === 'function' && typeof a.invoke === 'function';
+}
