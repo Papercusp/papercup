@@ -25,7 +25,7 @@ import { costUsdOf, proposeCandidate, throwWithCostUsd, type WorstTrace } from '
 import { insertCycle } from './store';
 import { runWithRatePause } from './rate-pause';
 import { ratePauseEventHooks } from './rate-pause-events';
-import { GYM_JUDGE_RUBRIC_V1, type GymJudgeRubric } from './judge-scoring';
+import { GYM_JUDGE_RUBRIC_V1, rubricHash, type GymJudgeRubric } from './judge-scoring';
 import type { GymRunnerPorts } from './gym-runner';
 import type { LoopDeps, EvaluateResult, LoopProposalRecord } from './loop';
 import type { ArchiveCandidateRecord } from './qd/niche';
@@ -247,6 +247,14 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
             repeat,
             harnessSlug: handle.harnessSlug,
             workflowId: handle.workflowID,
+            params: {
+              harnessCommit: cfg.harnessCommit,
+              substrateCommit: task.repoCommit,
+              judgeModel: rubric.model,
+              judgeTemp: rubric.temperature,
+              weights: rubric.weights,
+              rubricHash: rubricHash(rubric),
+            },
           });
           const { distilledTrace, traceRef, rawSignals } = await ab.collectAndDistill({
             handle,

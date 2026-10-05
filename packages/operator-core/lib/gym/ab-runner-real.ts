@@ -26,6 +26,7 @@ import {
   insertVariant,
   insertTask,
   insertRun,
+  insertRunParams,
   finishRun as storeFinishRun,
   insertScore,
   compareVariants,
@@ -62,6 +63,7 @@ export function createGymStore(sql: Sql): AbStore {
         harnessSlug: r.harnessSlug,
         workflowId: r.workflowId,
       });
+      if (r.params) await insertRunParams(sql, r.runId, r.params);
     },
     async finishRun(runId, fields) {
       await storeFinishRun(sql, runId, {

@@ -25,7 +25,7 @@ import { runBattery, type BatteryCell, type Subject } from '@papercusp/eval-batt
 import type { GymScore, JudgeLlmCall } from './judge';
 import { rubricHash, type GymJudgeRubric } from './judge-scoring';
 import type { VariantOverlay } from './variant-overlay';
-import type { VariantComparisonRow } from './store';
+import type { GymRunParams, VariantComparisonRow } from './store';
 import type { RatePauseDeps } from './rate-pause';
 import type { GymTaskCorpus } from './task-corpus';
 import type { GymOracleSpec } from './gym-runner';
@@ -103,6 +103,8 @@ export interface AbStore {
     repeat: number;
     harnessSlug: string;
     workflowId: string;
+    /** Available runner/rubric declarations; omit when unknown. */
+    params?: GymRunParams;
   }): Promise<void>;
   finishRun(runId: string, fields: { terminalState: string; deterministicSignals: unknown; traceRef?: string }): Promise<void>;
   recordScore(runId: string, score: GymScore): Promise<void>;
@@ -227,6 +229,14 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
             repeat: cell.repeat,
             harnessSlug: handle.harnessSlug,
             workflowId: handle.workflowID,
+            params: {
+              harnessCommit: cell.harnessCommit,
+              substrateCommit: cell.task.repoCommit,
+              judgeModel: config.rubric.model,
+              judgeTemp: config.rubric.temperature,
+              weights: config.rubric.weights,
+              rubricHash: rh,
+            },
           }),
         onFinish: ({ runId, handle, distilled }) =>
           deps.store.finishRun(runId, {
