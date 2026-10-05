@@ -133,6 +133,15 @@ export const DEFAULT_WORKSPACE_HOST_WORKSPACE_USER = 'papercusp-workspace';
  * hold exactly as written while the agents remain runnable.
  */
 export const DEFAULT_WORKSPACE_HOST_AGENT_USER = 'papercusp-agent';
+/**
+ * The bootc image's immutable runtime-read capability (D-314): the group that owns the 0750
+ * `/opt/papercusp` parents, declared with exactly two members (service + agent) by
+ * `infra/images/bootc/papercusp-sysusers.conf` and re-verified on every boot by
+ * `papercusp-host-prepare.sh`. On that model it is the agent identity's ONLY path to the
+ * runtime (no named-user ACL survives a container commit), so the bootstrap must keep the agent
+ * in it rather than clear its supplementary groups (WI-10006173).
+ */
+export const WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP = 'papercusp-runtime-read';
 export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
 export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
 export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
@@ -2667,7 +2676,13 @@ export function buildWorkspaceHostBootstrap(
     // privileged conduits invoke it via `runuser`, so it needs no password, no shell and no key.
     'getent group "$AGENT_GROUP" >/dev/null || groupadd --system "$AGENT_GROUP"',
     'id -u "$AGENT_USER" >/dev/null 2>&1 || useradd --system --gid "$AGENT_GROUP" --home-dir "$AGENT_HOME" --create-home --shell /usr/sbin/nologin "$AGENT_USER"',
-    'usermod --lock --gid "$AGENT_GROUP" --groups "" --home "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"',
+    // Supplementary groups are SET, not merely cleared. ubuntu: none (the runtime grant is the
+    // named-user ACL below). bootc: exactly the image's runtime-read group, because that is the
+    // agent's only route through the 0750 /opt/papercusp parents; clearing it left every agent
+    // CLI unexecutable and made papercusp-host-prepare refuse the next boot (WI-10006173).
+    `usermod --lock --gid "$AGENT_GROUP" --groups ${
+      hostModel === 'bootc-image' ? `"${WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP}"` : '""'
+    } --home "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"`,
     'repair_persisted_home_ownership "$AGENT_USER" "$AGENT_GROUP" "$AGENT_HOME"',
     // Two memberships, refused for two different reasons. $SERVICE_GROUP would hand the agent
     // runtime $STATE_ROOT — embedded PG and every delivered credential. $WORKSPACE_GROUP would
