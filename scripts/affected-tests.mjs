@@ -6686,6 +6686,9 @@ function runCapturedTask(
         // drift apart: a field added to one would otherwise silently weaken the other.
         const cacheIdentitySpec = {
           taskKey: taskKey(context.t),
+          // lint:as-committed isolates its cache by source repository. Only that
+          // explicit immutable launch may compare relocated checkout commands.
+          commandRoot: process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === "1" ? ROOT : null,
           command: {
             cmd,
             argv,
