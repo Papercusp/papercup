@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import { applyPayloadTier } from '@papercusp/tooldef';
+import { shapeCodeRunSummary } from './agent-tools/code/run';
 
 // P-023: the door resolves its constants through the config surface per call — stub it
 // (the config module has its own suite) so these tests run PG-free and one case can
@@ -435,6 +436,115 @@ describe('applyResultDoor', () => {
       expectedIds.map((_, i) => (i % 2 === 0 ? 'todo' : 'passed')),
     );
     expect(emitted._projection.cursor).toEqual(tieredBody._projection.cursor);
+  });
+
+  it('EI-251528: code:run reduction stays visibly partial through a later result-door projection', () => {
+    const produced = shapeCodeRunSummary({
+      ok: true,
+      summary: {
+        markerCount: 9,
+        rows: Array.from({ length: 18 }, (_, index) => ({
+          id: `row-${index}`,
+          status: index % 2 === 0 ? 'pass' : 'fail',
+          evidence: `evidence-${index} `.repeat(90),
+        })),
+      },
+    }) as any;
+    expect(produced.summaryNotice).toMatchObject({ truncated: true });
+
+    const sourceText = JSON.stringify({ ...produced, padding: 'p'.repeat(BUDGET_CHARS * 2) });
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: sourceText }] },
+      { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const inline = boundedBody(doored);
+
+    expect(inline._projection.truncated).toBe(true);
+    expect(inline._projection.next).toContain('source is already partial');
+    expect((doored as any)._meta.resultDoor.innerTruncationMarkers).toContain('summaryNotice.truncated');
+    expect(readSpill('ws-1', 'code:run', RUN_ID)).toContain(sourceText);
+  });
+
+  it('EI-251528: evaluator rating-map payload-tier omissions remain explicitly incomplete at the result door', () => {
+    const criteria = Array.from({ length: 9 }, (_, index) => `criterion-${index + 1}`);
+    const ratings = Object.fromEntries(criteria.map((criterion, index) => [criterion, {
+      rating: index % 2 === 0 ? 'fail' : 'unknown',
+      evidence: `${criterion} evidence `.repeat(180),
+      suggestion: `${criterion} suggestion `.repeat(80),
+    }]));
+    const source = {
+      ok: true,
+      slug: 'adequacy-plan',
+      count: 1,
+      rows: [{ specId: 'SPEC-1', planItemId: 'P-001', verdict: 'fail', ratings }],
+      padding: 'p'.repeat(20_000),
+    };
+    const tiered = applyPayloadTier({
+      toolName: 'plans:evaluate-spec-test-adequacy',
+      shape: undefined,
+      response: { data: source },
+      tier: 'trimmed',
+      args: { slug: 'adequacy-plan' },
+      rawDispatchTemplate: "tools:invoke { name:'{tool}', args:{ …original args, payloadTier:'full' } }",
+      log: vi.fn(),
+    });
+    expect(tiered.payloadProjection).toMatchObject({ truncated: true, tier: 'trimmed' });
+
+    const tieredBody = tiered.data as any;
+    expect(tieredBody._projection).toMatchObject({ truncated: true });
+    expect(tieredBody._projection.omittedCount).toBeGreaterThan(0);
+    const visibleRatings = tieredBody.rows?.[0]?.ratings ?? {};
+    const missingRatings = criteria.filter((criterion) => !Object.prototype.hasOwnProperty.call(visibleRatings, criterion));
+    if (missingRatings.length > 0) expect(tieredBody._projection.omittedCount).toBeGreaterThan(0);
+
+    const doored = applyResultDoor(
+      {
+        content: [{ type: 'text' as const, text: JSON.stringify(tieredBody) }],
+        _meta: { payloadProjection: tiered.payloadProjection },
+      },
+      { toolName: 'plans:evaluate-spec-test-adequacy', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const inline = JSON.parse((doored.content[0] as { text: string }).text) as any;
+    expect((doored as any)._meta.resultDoor).toMatchObject({ truncated: true, upstreamProjected: true });
+    if (inline.schemaVersion === 'papercusp.output-envelope/v1') {
+      expect(inline).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+    } else {
+      expect(inline._projection).toMatchObject({ truncated: true });
+    }
+    expect(readSpill('ws-1', 'plans:evaluate-spec-test-adequacy', RUN_ID)).toContain('full-detail');
+  });
+
+  it('EI-251528: oversized rubrics:amend output signals projection and retains the routed review in spill', () => {
+    const output = {
+      ok: true,
+      dryRun: true,
+      preview: { changes: Array.from({ length: 180 }, (_, index) => ({
+        barKey: `R-${index}`,
+        detail: `preview-${index} `.repeat(50),
+      })) },
+      review: {
+        state: 'routed',
+        conversationId: 'conv-review-1',
+        previewPostRef: 'thread-post:42',
+        next: "events:await { event:'consult:reply:conv-review-1' }",
+      },
+    };
+    const sourceText = JSON.stringify(output);
+    expect(sourceText.length).toBeGreaterThan(BUDGET_CHARS);
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: sourceText }] },
+      { toolName: 'rubrics:amend', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const inline = boundedBody(doored);
+    const spill = readSpill('ws-1', 'rubrics:amend', RUN_ID);
+
+    expect(inline._projection.truncated).toBe(true);
+    expect((doored as any)._meta.resultDoor.spillUri).toContain('papercusp://scratch/ws-1/rubrics:amend/');
+    expect(spill).toContain('thread-post:42');
+    expect(spill).toContain('consult:reply:conv-review-1');
   });
 
   it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
