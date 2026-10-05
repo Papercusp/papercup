@@ -223,7 +223,10 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
         let worst: { composite: number; rationale: string; distilled: string } | null = null;
 
         for (let repeat = 0; repeat < repeats; repeat++) {
-          const runId = `${variantId}::${task.taskId}::c${cycle}::r${repeat}`;
+          // The baseline variant is reused across independent loop runs. Its
+          // durable run key must carry the existing loop token, just as candidate
+          // and cycle keys do, so a later run cannot replace earlier evidence.
+          const evaluationRunId = `${runId}::${variantId}::${task.taskId}::c${cycle}::r${repeat}`;
           const handle = await ab.runPipeline({
             variant,
             task: { ...task, pool: task.pool },
@@ -237,7 +240,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
           const pipelineCostUsd = costUsdOf(handle.pipelineUsd);
           incurredCostUsd += pipelineCostUsd;
           await ab.store.startRun({
-            runId,
+            runId: evaluationRunId,
             variantId,
             taskId: task.taskId,
             cycle,
@@ -250,7 +253,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
             task: { ...task, pool: task.pool },
             maxChars: cfg.maxDistillChars,
           });
-          await ab.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
+          await ab.store.finishRun(evaluationRunId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
           const score = await runWithRatePause(
             () =>
               judgeGymRun(
@@ -264,7 +267,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
           // The judge response is billed even if recording the score fails.
           const judgeCostUsd = costUsdOf(score.costUsd);
           incurredCostUsd += judgeCostUsd;
-          await ab.store.recordScore(runId, score);
+          await ab.store.recordScore(evaluationRunId, score);
           const sig = (rawSignals ?? {}) as Record<string, unknown>;
           composites.push(score.composite);
           cost += pipelineCostUsd + judgeCostUsd;

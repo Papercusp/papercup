@@ -29,6 +29,9 @@ import {
 } from '../store';
 import { readDurableCycleHistory, readDurableVariants, durableFrontierView } from '../read-api';
 import type { GymScore } from '../judge';
+import { createGymStore } from '../ab-runner-real';
+import { buildLoopDeps } from '../loop-deps';
+import type { AbDeps } from '../ab-runner';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_650 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/650-harness-gym-durable-run-analytics.sql');
@@ -266,5 +269,46 @@ describe('durable run-analytics copy (migration 650)', () => {
         FROM harness_gym_durable.gym_runs
        WHERE workspace_id = 'unknown-ws' AND harness_slug = 'unknown-harness' AND run_id = ${runId}`;
     expect(row).toEqual({ deterministic_signals: null, trace_ref: null, distilled_ref: null, run_params: null });
+  });
+
+  it('retains both independent baseline evaluations through the real store and durable copy', async () => {
+    const scope = { workspaceId: 'identity-ws', harnessSlug: 'identity-harness' };
+    const evaluate = async (token: string) => {
+      const judge: AbDeps['llmCall'] = async () => ({
+        text: JSON.stringify({ d1: 5, d2: 5, d3: 5, rationale: 'controlled identity fixture' }),
+        costUsd: 0, inputTokens: 0, outputTokens: 0,
+      });
+      const ab: AbDeps = {
+        store: createGymStore(src), llmCall: judge, now: () => 0,
+        newRunId: () => { throw new Error('the loop owns its evaluation identity'); },
+        runPipeline: async () => ({ harnessSlug: `identity-${token}`, clonePath: '/controlled-clone',
+          workflowID: `identity-${token}`, outcome: 'passed', pipelineUsd: 0 }),
+        collectAndDistill: async () => ({ distilledTrace: 'controlled trace',
+          traceRef: `controlled:${token}`, rawSignals: { regressions: false, fixtureLoop: token } }),
+      };
+      const deps = buildLoopDeps({ gymSql: src, ports: {} as never, abDeps: ab,
+        judgeCall: judge, proposerCall: judge, proposerModel: 'controlled-unused',
+        tasks: [{ taskId: 'identity-task', pool: 'train', repoUrl: '/controlled',
+          repoCommit: 'declared-source', spec: 'controlled', intent: 'controlled', projectContext: 'controlled' }],
+        baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+        harnessCommit: 'declared-harness', workspaceId: 'controlled-workspace', scratchRoot: '/controlled-scratch',
+        timeoutMs: 1000, pollIntervalMs: 10, maxDistillChars: 100, runId: token,
+      });
+      await deps.evaluate('baseline', { promptOverrides: {} });
+      await copyRunAnalyticsToDurable(src, dst, scope);
+      // The next independent loop has a new temporary DB. Clear its source run
+      // here while keeping the real destination, reproducing that lifecycle.
+      await src`DELETE FROM harness_gym.gym_runs WHERE task_id = 'identity-task'`;
+    };
+    await evaluate('first');
+    await evaluate('second');
+    const rows = await dst`
+      SELECT run_id, run_evidence->'deterministic_signals'->>'fixtureLoop' AS fixture_loop
+        FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+         AND task_id = 'identity-task' ORDER BY fixture_loop`;
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.run_id)).size).toBe(2);
+    expect(rows.map((row) => row.fixture_loop)).toEqual(['first', 'second']);
   });
 });

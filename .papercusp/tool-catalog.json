@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 945,
+  "count": 946,
   "tools": [
     {
       "name": "ablation:report",
@@ -14038,6 +14038,39 @@
         "when": "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.",
         "notWhen": "Do not fire it through a request-only operator (:3070/:3170 on the canonical dev box); route the mutation to the background-worker MCP host. To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
         "chaining": "git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
+      }
+    },
+    {
+      "name": "git-sync:send-green",
+      "http": {
+        "path": "/api/agent-tools/git-sync/send-green",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Working-copy pots: open or update the standing PR from the working copy's main (gate-promoted commits only) to the main repository now.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "cup",
+        "release-fixer",
+        "release-manager"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A review-mode pot has green work on its working copy and you want the standing PR refreshed now.",
+        "notWhen": "Direct-mode pots (no standing PR), or to ship untested commits: it only sends what the gate promoted."
       }
     },
     {

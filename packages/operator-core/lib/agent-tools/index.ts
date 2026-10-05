@@ -984,6 +984,7 @@ import './routines/revert';
 // git-sync:run — fire git-sync once on demand (WI-1320; the manual lever git-sync lacked,
 // so a force-deploy ships CURRENT staging not stale).
 import './git_sync/run';
+import './git_sync/send_green';
 // WI-1555 — the owner ratify surface for the multi-owner integration-requests queue
 // (lib/sync/pot-git/integration-requests.ts had no exposed verb until this tool).
 import './pot_git/integration_requests';
