@@ -234,7 +234,17 @@ function providerTablesCreated(sql: string): string[] {
   return names;
 }
 
+/**
+ * Read a scanned repo file. `R1_DRIFT_SCAN_FILE_OVERRIDE=<repo path>=<absolute path>` substitutes
+ * one subject, so scripts/mutation-probe.sh can prove the scan catches drift in a mutated COPY
+ * without ever touching the shared tree.
+ */
 function repoFile(path: string): string {
+  const override = process.env.R1_DRIFT_SCAN_FILE_OVERRIDE;
+  const separator = override?.indexOf('=') ?? -1;
+  if (override && separator > 0 && override.slice(0, separator) === path) {
+    return readFileSync(override.slice(separator + 1), 'utf8');
+  }
   return readFileSync(join(REPO_ROOT, path), 'utf8');
 }
 
