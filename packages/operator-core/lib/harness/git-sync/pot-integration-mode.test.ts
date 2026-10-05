@@ -25,6 +25,8 @@ import {
   ensurePotForkGitRemote,
   applyIntegrationPushTarget,
   setPotIntegrationMode,
+  choosePotIntegrationMode,
+  type ChoosePotIntegrationModeInput,
   type IntegrationPushConfig,
   type RunGit,
 } from './pot-integration-mode';
@@ -220,5 +222,105 @@ describe('setPotIntegrationMode (P-015 guard)', () => {
     await expect(
       setPotIntegrationMode({ ...base, mode: 'pr' as never, greenCmd: 'npm test', forkRemote: FORK }),
     ).rejects.toThrow(/unknown mode/);
+  });
+});
+
+describe('choosePotIntegrationMode (P-014: choosing working-copy mode creates the fork)', () => {
+  const UPSTREAM = 'https://github.com/acme/widget.git';
+  const input = (over: Partial<ChoosePotIntegrationModeInput> = {}): ChoosePotIntegrationModeInput => ({
+    workspaceId: 'ws',
+    potHomeSlug: 'pot',
+    harnessSlug: 'widget',
+    mode: 'review',
+    greenCmd: 'npm test',
+    forkRemote: null,
+    upstreamRemote: UPSTREAM,
+    ...over,
+  });
+  const deps = (forkFullName = 'acme-bot/widget', created = true) => ({
+    ensureFork: vi.fn().mockResolvedValue({ forkOwner: forkFullName.split('/')[0], forkFullName, created }),
+    setForkRemote: vi
+      .fn()
+      .mockImplementation(async (slug: string, url: string) => ({ ok: true, slug, forkRemote: url, cleared: false })),
+    setMode: vi.fn().mockImplementation(async (i: { mode: string | null }) => ({ ok: true, mode: i.mode })),
+  });
+
+  it('creates the fork, records it as fork_remote, then sets the mode with that fork', async () => {
+    const d = deps();
+    const r = await choosePotIntegrationMode(input(), d);
+    expect(r).toEqual({ ok: true, mode: 'review', fork: { url: FORK, created: true } });
+    expect(d.ensureFork).toHaveBeenCalledWith({ upstreamOwner: 'acme', upstreamRepo: 'widget' });
+    expect(d.setForkRemote).toHaveBeenCalledWith('widget', FORK, 'ws');
+    expect(d.setMode).toHaveBeenCalledWith(expect.objectContaining({ mode: 'review', forkRemote: FORK }));
+  });
+
+  it('a fork already recorded is reused: no fork is created', async () => {
+    const d = deps();
+    const r = await choosePotIntegrationMode(input({ forkRemote: FORK }), d);
+    expect(r).toEqual({ ok: true, mode: 'review', fork: null });
+    expect(d.ensureFork).not.toHaveBeenCalled();
+    expect(d.setForkRemote).not.toHaveBeenCalled();
+    expect(d.setMode).toHaveBeenCalledWith(expect.objectContaining({ forkRemote: FORK }));
+  });
+
+  it('direct mode never touches forks', async () => {
+    const d = deps();
+    expect(await choosePotIntegrationMode(input({ mode: 'direct' }), d)).toEqual({ ok: true, mode: 'direct', fork: null });
+    expect(d.ensureFork).not.toHaveBeenCalled();
+  });
+
+  it('without a green-gate test command it refuses BEFORE creating any fork', async () => {
+    const d = deps();
+    d.setMode.mockResolvedValue({ ok: false, error: 'green_cmd_required', message: 'x' });
+    const r = await choosePotIntegrationMode(input({ greenCmd: '  ' }), d);
+    expect(r).toMatchObject({ ok: false, error: 'green_cmd_required' });
+    expect(d.ensureFork).not.toHaveBeenCalled();
+    expect(d.setForkRemote).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the signed-in account owns the main repository (the "fork" would BE the main repository)', async () => {
+    const d = deps('ACME/widget', false);
+    const r = await choosePotIntegrationMode(input(), d);
+    expect(r).toMatchObject({ ok: false, error: 'fork_is_main_repository' });
+    expect(d.setForkRemote).not.toHaveBeenCalled();
+    expect(d.setMode).not.toHaveBeenCalled();
+  });
+
+  it('a fork-creation failure is reported and nothing is recorded', async () => {
+    const d = deps();
+    d.ensureFork.mockRejectedValue(new Error('no gh token'));
+    const r = await choosePotIntegrationMode(input(), d);
+    expect(r).toMatchObject({ ok: false, error: 'fork_create_failed' });
+    expect((r as { message: string }).message).toContain('no gh token');
+    expect(d.setForkRemote).not.toHaveBeenCalled();
+    expect(d.setMode).not.toHaveBeenCalled();
+  });
+
+  it('a pot whose main repository is not on GitHub is refused', async () => {
+    for (const upstreamRemote of [null, undefined, '', 'https://gitlab.com/acme/widget.git']) {
+      const d = deps();
+      const r = await choosePotIntegrationMode(input({ upstreamRemote }), d);
+      expect(r).toMatchObject({ ok: false, error: 'upstream_remote_required' });
+      expect(d.ensureFork).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a failure to record the fork leaves the mode unset', async () => {
+    const d = deps();
+    d.setForkRemote.mockResolvedValue({ ok: false, error: 'harness_not_found', message: 'no such harness' });
+    const r = await choosePotIntegrationMode(input(), d);
+    expect(r).toMatchObject({ ok: false, error: 'fork_record_failed', message: 'no such harness' });
+    expect(d.setMode).not.toHaveBeenCalled();
+  });
+
+  it('the recorded fork is what the push resolver pushes to', async () => {
+    const d = deps();
+    const r = await choosePotIntegrationMode(input(), d);
+    const url = r.ok && r.fork ? r.fork.url : undefined;
+    expect(resolveIntegrationPushRemote({ read: { mode: 'review', source: 'set' }, forkRemote: url })).toMatchObject({
+      kind: 'fork',
+      remoteName: POT_FORK_REMOTE_NAME,
+      url: FORK,
+    });
   });
 });
