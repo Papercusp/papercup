@@ -2332,7 +2332,13 @@ exec /bin/cp "$@"
   it('keeps a live cross-filesystem sibling pin but prunes one whose checkout was offloaded and went stale (WI-10003695)', () => {
     const integration = makeIntegration();
     const generationRoot = join(integration, '.papercusp/dependency-generations');
-    const first = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    // The host service can set PAPERCUSP_DEPENDENCY_GENERATION_ROOT globally. Pin this
+    // fixture's store to the integration tree so its device and pin assertions stay isolated.
+    const first = publish(
+      integration,
+      { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' },
+      generationRoot,
+    );
     expect(first.status, first.stderr).toBe(0);
     const firstIdentity = publishedIdentity(first.stdout);
     const firstPath = publishedPath(first.stdout);
