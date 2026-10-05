@@ -3,6 +3,7 @@ import { drainDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
+import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
 
 vi.mock('../../release/gate-action-receipt', () => ({
   executeWithGateActionReceipt: vi.fn(async (input: { run: () => Promise<unknown>; ownerId: string }) => ({
@@ -68,6 +69,7 @@ const mocks = vi.hoisted(() => ({
   alive: vi.fn(),
   audit: vi.fn(),
   admit: vi.fn(),
+  admissionJobOptions: vi.fn(),
   admissionGit: vi.fn(),
   retract: vi.fn(),
   containment: vi.fn(),
@@ -147,7 +149,19 @@ vi.mock('../../release/admission-import-completeness', () => ({
 // The worker path itself is covered by release/admission-offthread.test.ts.
 vi.mock('../../release/admission-offthread', async () => {
   const { executeAdmissionJob } = await import('../../release/admission-jobs');
-  return { runAdmissionJob: async (job: Parameters<typeof executeAdmissionJob>[0]) => executeAdmissionJob(job) };
+  const original = await vi.importActual<typeof import('../../release/admission-offthread')>(
+    '../../release/admission-offthread',
+  );
+  return {
+    ...original,
+    runAdmissionJob: async (
+      job: Parameters<typeof executeAdmissionJob>[0],
+      options?: { timeoutMs?: number; stepName?: string },
+    ) => {
+      mocks.admissionJobOptions(job, options);
+      return executeAdmissionJob(job);
+    },
+  };
 });
 /** P-020: what the hunk-exact builder returns for a clean single-path replay. */
 const HX_SOURCE = 'h'.repeat(40);
@@ -514,6 +528,44 @@ describe('release:repair-queue', () => {
       'containment',
     ]);
     expect(result.timings.steps.every((s: { ms: number; ok: boolean }) => s.ok && s.ms >= 0)).toBe(true);
+  });
+
+  it('returns a structured read-only timeout when a dry-run admission worker reaches its deadline', async () => {
+    mocks.admit.mockRejectedValueOnce(new AdmissionOffthreadTimeoutError('admit', 240_000, 'build-proof'));
+    const result = body(
+      await tool.handler(
+        {
+          op: 'admit',
+          paths: ['lib/red.test.ts'],
+          wholeBlob: true,
+          reason: 'verify the timeout result shape',
+        } as never,
+        { role: 'su' } as never,
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      op: 'admit',
+      admitted: false,
+      refused: true,
+      dryRun: true,
+      verdict: 'timeout',
+      reason: 'admission-preview-timeout',
+      mode: 'whole-blob',
+      timedOutStep: 'build-proof',
+      timeoutMs: 240_000,
+      timings: {
+        inFlight: [],
+        steps: expect.arrayContaining([expect.objectContaining({ step: 'build-proof', ok: false })]),
+      },
+    });
+    expect(mocks.admissionJobOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'admit', input: expect.objectContaining({ dryRun: true }) }),
+      { timeoutMs: 240_000, stepName: 'build-proof' },
+    );
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.retract).not.toHaveBeenCalled();
   });
 
   it('rejects a stale expected queue identity before reading the edit ledger or building an admission', async () => {

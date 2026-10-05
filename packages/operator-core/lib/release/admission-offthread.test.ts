@@ -111,6 +111,39 @@ describe('admission off-thread host (WI-10005223)', () => {
     expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
   }, 60_000);
 
+  it('terminates a worker that exceeds an opt-in preview deadline and accepts later work', async () => {
+    const stuckWorker = join(repo, 'stuck-admission-worker.mjs');
+    writeFileSync(
+      stuckWorker,
+      [
+        "import { parentPort } from 'node:worker_threads';",
+        "parentPort.postMessage({ type: 'ready' });",
+        "parentPort.on('message', () => { while (true) {} });",
+      ].join('\n'),
+    );
+    configureAdmissionOffthread({ workerPath: stuckWorker });
+
+    await expect(
+      runAdmissionJob(
+        { kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo },
+        { timeoutMs: 100, stepName: 'build-proof' },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AdmissionOffthreadTimeoutError',
+      code: 'ADMISSION_OFFTHREAD_TIMEOUT',
+      jobKind: 'git',
+      stepName: 'build-proof',
+      timeoutMs: 100,
+    });
+    expect(admissionOffthreadStats().workerLive).toBe(false);
+
+    configureAdmissionOffthread({ workerPath: null });
+    await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
+      status: 0,
+    });
+    expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+  }, 60_000);
+
   it('reaps an idle worker and starts a fresh worker for later work', async () => {
     // idle-window-ok: the test needs the idle reap to fire; vi.waitFor below tolerates load.
     configureAdmissionOffthread({ idleMs: 10 });

@@ -72,6 +72,7 @@ interface Pending {
   id: number;
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
+  timeoutTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface HostState {
@@ -92,6 +93,39 @@ export class AdmissionOffthreadBusyError extends Error {
   constructor() {
     super('an admission job is already running in this process; retry after it settles');
     this.name = 'AdmissionOffthreadBusyError';
+  }
+}
+
+export interface AdmissionJobRunOptions {
+  /** Opt-in execution bound. Only callers whose job is safe to abandon should set this. */
+  timeoutMs?: number;
+  /** Operation label included in a timeout result, e.g. `build-proof`. */
+  stepName?: string;
+}
+
+export class AdmissionOffthreadTimeoutError extends Error {
+  readonly code = 'ADMISSION_OFFTHREAD_TIMEOUT';
+
+  constructor(
+    readonly jobKind: AdmissionJobKind,
+    readonly timeoutMs: number,
+    readonly stepName?: string,
+  ) {
+    super(`admission ${stepName ?? jobKind} exceeded its ${timeoutMs}ms execution deadline`);
+    this.name = 'AdmissionOffthreadTimeoutError';
+  }
+}
+
+export class AdmissionOffthreadTimeoutUnavailableError extends Error {
+  readonly code = 'ADMISSION_OFFTHREAD_TIMEOUT_UNAVAILABLE';
+
+  constructor(
+    readonly jobKind: AdmissionJobKind,
+    readonly detail: string,
+    readonly stepName?: string,
+  ) {
+    super(`cannot enforce the ${stepName ?? jobKind} admission timeout: ${detail}`);
+    this.name = 'AdmissionOffthreadTimeoutUnavailableError';
   }
 }
 
@@ -157,11 +191,17 @@ export async function resetAdmissionOffthread(): Promise<void> {
  * Run one admission job. Resolves with exactly what the sync builder returns, and rejects
  * with exactly what it throws (name/message/stack preserved across the thread boundary).
  */
-export function runAdmissionJob<K extends AdmissionJobKind>(job: AdmissionJobOf<K>): Promise<AdmissionJobResults[K]> {
+export function runAdmissionJob<K extends AdmissionJobKind>(
+  job: AdmissionJobOf<K>,
+  options: AdmissionJobRunOptions = {},
+): Promise<AdmissionJobResults[K]> {
+  if (options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0)) {
+    return Promise.reject(new RangeError('admission job timeoutMs must be a positive integer'));
+  }
   if (state.activeJob !== null) return Promise.reject(new AdmissionOffthreadBusyError());
   let active!: Promise<AdmissionJobResults[K]>;
   active = Promise.resolve()
-    .then(() => runOne(job))
+    .then(() => runOne(job, options))
     .finally(() => {
       if (state.activeJob === active) state.activeJob = null;
     }) as Promise<AdmissionJobResults[K]>;
@@ -169,8 +209,15 @@ export function runAdmissionJob<K extends AdmissionJobKind>(job: AdmissionJobOf<
   return active;
 }
 
-async function runOne(job: AdmissionJob): Promise<unknown> {
+async function runOne(job: AdmissionJob, options: AdmissionJobRunOptions): Promise<unknown> {
   if (state.config.mode === 'inline' || Date.now() < state.stats.inlineUntilMs) {
+    if (options.timeoutMs !== undefined) {
+      throw new AdmissionOffthreadTimeoutUnavailableError(
+        job.kind,
+        state.config.mode === 'inline' ? 'inline mode is active' : 'the worker load-failure cooldown is active',
+        options.stepName,
+      );
+    }
     state.stats.jobsInline++;
     return executeAdmissionJob(job);
   }
@@ -182,6 +229,9 @@ async function runOne(job: AdmissionJob): Promise<unknown> {
     state.stats.loadFailures++;
     state.stats.lastLoadError = message.slice(0, 500);
     state.stats.inlineUntilMs = Date.now() + state.config.loadFailureCooldownMs;
+    if (options.timeoutMs !== undefined) {
+      throw new AdmissionOffthreadTimeoutUnavailableError(job.kind, message.slice(0, 500), options.stepName);
+    }
     console.error(
       `[admission-offthread] admission worker failed to load (${message.slice(0, 300)}); ` +
         `running admission git INLINE on the main thread for ${Math.round(state.config.loadFailureCooldownMs / 1000)}s ` +
@@ -191,7 +241,7 @@ async function runOne(job: AdmissionJob): Promise<unknown> {
     return executeAdmissionJob(job);
   }
   state.stats.jobsOnWorker++;
-  return dispatch(worker, job);
+  return dispatch(worker, job, options);
 }
 
 function ensureWorker(): Promise<Worker> {
@@ -253,7 +303,7 @@ function ensureWorker(): Promise<Worker> {
   return ready;
 }
 
-function dispatch(worker: Worker, job: AdmissionJob): Promise<unknown> {
+function dispatch(worker: Worker, job: AdmissionJob, options: AdmissionJobRunOptions): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
     if (state.pending !== null) {
       reject(new AdmissionOffthreadBusyError());
@@ -261,13 +311,35 @@ function dispatch(worker: Worker, job: AdmissionJob): Promise<unknown> {
     }
     const id = state.nextId++;
     clearIdle();
-    state.pending = { id, resolve, reject };
+    const pending: Pending = { id, resolve, reject, timeoutTimer: null };
+    state.pending = pending;
+    if (options.timeoutMs !== undefined) {
+      pending.timeoutTimer = setTimeout(() => {
+        if (state.pending?.id !== id) return;
+        state.pending = null;
+        pending.timeoutTimer = null;
+        clearIdle();
+        if (state.worker === worker) {
+          // This timeout is opt-in and reserved for read-only previews. Discard the worker so
+          // its synchronous builder cannot monopolize the one-job lane after the caller returns.
+          state.worker = null;
+          state.ready = null;
+          void retireWorker(worker);
+        }
+        reject(new AdmissionOffthreadTimeoutError(job.kind, options.timeoutMs!, options.stepName));
+      }, options.timeoutMs);
+      pending.timeoutTimer.unref?.();
+    }
     // Keep the process alive while a job is in flight; idle workers never do.
     worker.ref();
     try {
       worker.postMessage({ id, job } satisfies AdmissionWorkerRequest);
     } catch (err) {
-      if (state.pending?.id === id) state.pending = null;
+      if (state.pending?.id === id) {
+        if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+        pending.timeoutTimer = null;
+        state.pending = null;
+      }
       settleIdle(worker);
       reject(err instanceof Error ? err : new Error(String(err)));
     }
@@ -277,6 +349,8 @@ function dispatch(worker: Worker, job: AdmissionJob): Promise<unknown> {
 function onResult(worker: Worker, message: Extract<AdmissionWorkerResponse, { type: 'result' }>): void {
   const pending = state.pending;
   if (!pending || pending.id !== message.id) return;
+  if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+  pending.timeoutTimer = null;
   state.pending = null;
   settleIdle(worker);
   if (message.ok) {
@@ -301,6 +375,8 @@ function failWorker(worker: Worker, err: Error): void {
   const pending = state.pending;
   state.pending = null;
   if (pending) {
+    if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+    pending.timeoutTimer = null;
     pending.reject(new Error(`admission worker failed mid-job: ${err.message}`));
   }
   void retireWorker(worker);

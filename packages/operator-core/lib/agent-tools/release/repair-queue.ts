@@ -45,7 +45,12 @@ import { integrationBranch } from '../../release/judged-sha-containment';
 import { realAdmissionGit } from '../../release/repair-head-admission';
 // WI-10005223: every admission git sequence below runs on the admission worker thread, never
 // on the operator main thread (a single admit measured up to 61.8s of blocked event loop).
-import { runAdmissionJob } from '../../release/admission-offthread';
+import {
+  AdmissionOffthreadTimeoutError,
+  AdmissionOffthreadTimeoutUnavailableError,
+  runAdmissionJob,
+} from '../../release/admission-offthread';
+import type { AdmissionJobKind, AdmissionJobOf } from '../../release/admission-jobs';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   ADMISSION_PRECHECK_PER_FILE_BUDGET_MS,
@@ -74,6 +79,8 @@ import { executeWithGateActionReceipt } from '../../release/gate-action-receipt'
 const json = (payload: unknown) => ({ data: payload });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
 const FULL_COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+// Stay ahead of the observed 300s MCP client deadline. This applies to read-only previews only.
+const ADMISSION_PREVIEW_JOB_TIMEOUT_MS = 4 * 60 * 1000;
 const queueIdentityFields = {
   /** The frozen queue snapshot the caller read before building this admission. */
   expectedCandidate: z
@@ -747,7 +754,8 @@ export default defineTool({
               `op=${args.op} paths=${Array.isArray(args.paths) ? args.paths.length : 0} ` +
               `dryRun=${args.confirm !== true} wholeBlob=${args.wholeBlob === true}`,
           })
-        : null;
+      : null;
+    try {
     const inspected = clock ? await clock.step('inspect-queue', () => inspectQueue()) : await inspectQueue();
     const compactRead =
       inspected.read.status === 'value'
@@ -978,9 +986,18 @@ export default defineTool({
       // WI-10005695: every slow step below runs through `step`, so the response and the
       // journal both name where an admit spent its time.
       const step = <T,>(name: string, run: () => Promise<T>): Promise<T> => (clock ? clock.step(name, run) : run());
+      const runJob = <K extends AdmissionJobKind>(name: string, job: AdmissionJobOf<K>) =>
+        step(name, () =>
+          runAdmissionJob(
+            job,
+            args.op === 'admit' && args.confirm !== true
+              ? { timeoutMs: ADMISSION_PREVIEW_JOB_TIMEOUT_MS, stepName: name }
+              : undefined,
+          ),
+        );
       const containmentAt = async (judgedSha: string) =>
         paths.length
-          ? step('containment', () => runAdmissionJob({ kind: 'containment', paths, judgedSha, root, branch }))
+          ? runJob('containment', { kind: 'containment', paths, judgedSha, root, branch })
           : null;
       if (paths.length === 0) {
         return json({
@@ -1124,8 +1141,7 @@ export default defineTool({
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
       if (args.patchCommit !== undefined) {
         const patchCommit = args.patchCommit;
-        const built = await step('committed-patch', () =>
-          runAdmissionJob({
+        const built = await runJob('committed-patch', {
             kind: 'committed-patch',
             input: {
               root,
@@ -1135,8 +1151,7 @@ export default defineTool({
               paths,
               reason: args.reason!,
             },
-          }),
-        );
+          });
         if (!built.ok) {
           return json({
             ...base,
@@ -1172,13 +1187,11 @@ export default defineTool({
         }
         if (args.sourceCommit !== undefined) {
           const sourceCommitArg = args.sourceCommit;
-          const resolved = await step('source-commit-resolve', () =>
-            runAdmissionJob({
+          const resolved = await runJob('source-commit-resolve', {
               kind: 'git',
               argv: ['rev-parse', '--verify', `${sourceCommitArg}^{commit}`],
               cwd: root,
-            }),
-          );
+            });
           const resolvedSha = resolved.stdout.trim();
           if (resolved.status !== 0 || !FULL_COMMIT_SHA.test(resolvedSha)) {
             return json({
@@ -1194,13 +1207,11 @@ export default defineTool({
               ...base,
             });
           }
-          const ancestor = await step('source-commit-ancestry', () =>
-            runAdmissionJob({
+          const ancestor = await runJob('source-commit-ancestry', {
               kind: 'git',
               argv: ['merge-base', '--is-ancestor', resolvedSha, branch],
               cwd: root,
-            }),
-          );
+            });
           if (ancestor.status !== 0) {
             return json({
               ok: false,
@@ -1237,8 +1248,7 @@ export default defineTool({
             ...base,
           });
         }
-        const built = await step('hunk-exact', () =>
-          runAdmissionJob({
+        const built = await runJob('hunk-exact', {
             kind: 'hunk-exact',
             input: {
               root,
@@ -1250,8 +1260,7 @@ export default defineTool({
               includeHunksFrom,
               nowMs: Date.now(),
             },
-          }),
-        );
+          });
         if (!built.ok) {
           return json({
             ok: false,
@@ -1306,7 +1315,7 @@ export default defineTool({
       }
       const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
       const buildAdmission = (dry: boolean) =>
-        step(dry ? 'build-proof' : 'publish', () => runAdmissionJob({
+        runJob(dry ? 'build-proof' : 'publish', {
           kind: 'admit',
           input: {
             root,
@@ -1333,7 +1342,7 @@ export default defineTool({
             probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
             ...(wholeBlob ? { enforceSourceCohort: true as const } : {}),
           },
-        }));
+        });
       // Build the immutable candidate first. Publication is the effect boundary,
       // and must happen only while the condition claim row is locked below.
       let outcome = await buildAdmission(true);
@@ -2146,5 +2155,41 @@ export default defineTool({
         ? 'The next scheduled green-checkpoint run RE-FREEZES a candidate on its own — retiring does not stall the gate, so nothing needs firing to restart it. Do NOT call release:checkpoint-run to make the gate move: it always cuts a FRESH candidate at the current tip, which is the pre-D-001 re-cut-at-tip treadmill D-007 diagnosed (each cut re-admits the whole sweep and imports breakage faster than fixes land). To land a fix on the judged lineage, use release:repair-queue { op: "admit", paths: [...] }.'
         : undefined,
     });
+    } catch (err) {
+      if (args.op === 'admit' && args.confirm !== true && err instanceof AdmissionOffthreadTimeoutError) {
+        return json({
+          ok: false,
+          op: 'admit',
+          admitted: false,
+          refused: true,
+          dryRun: true,
+          verdict: 'timeout',
+          reason: 'admission-preview-timeout',
+          mode: args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
+          timedOutStep: err.stepName ?? err.jobKind,
+          timeoutMs: err.timeoutMs,
+          detail:
+            `The read-only preview exceeded ${err.timeoutMs}ms in ${err.stepName ?? err.jobKind}. ` +
+            'The admission worker is being stopped; no lineage ref or repair-queue row was written. ' +
+            'Retry with a smaller path set or investigate the named step.',
+          timings: clock?.summary() ?? null,
+        });
+      }
+      if (args.op === 'admit' && args.confirm !== true && err instanceof AdmissionOffthreadTimeoutUnavailableError) {
+        return json({
+          ok: false,
+          op: 'admit',
+          admitted: false,
+          refused: true,
+          dryRun: true,
+          verdict: 'refused',
+          reason: 'admission-preview-timeout-unavailable',
+          mode: args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
+          detail: err.message,
+          timings: clock?.summary() ?? null,
+        });
+      }
+      throw err;
+    }
   },
 });
