@@ -193,14 +193,17 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
 });
 
 describe('plain launch kickoff turn-start proof', () => {
-  it('preserves and submits a long Codex kickoff when the composer only renders its tail', async () => {
+  it.each([
+    { receiptState: 'empty', receiptAllowed: true },
+    { receiptState: 'nonempty', receiptAllowed: false },
+  ])('preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt)', async ({ receiptAllowed }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-viewport-'));
     const codexHome = join(root, 'codex-home');
     const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
     const submitFile = join(root, 'submitted.txt');
     const proofPath = join(root, 'kickoff-proof.json');
     const proofToken = 'd'.repeat(48);
-    writeFileSync(proofPath, '', { mode: 0o600 });
+    writeFileSync(proofPath, receiptAllowed ? '' : 'reserved', { mode: 0o600 });
     chmodSync(proofPath, 0o600);
     const ownerId = 'su-codex-viewport-' + process.pid + '-' + Math.floor(performance.now());
     const sock = socketPathFor(ownerId);
@@ -245,13 +248,27 @@ describe('plain launch kickoff turn-start proof', () => {
       expect(readFileSync(submitFile, 'utf8')).toBe(kickoff);
       expect(captured()).toContain('COMPOSER_ECHO:' + marker);
       expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
-      await vi.waitFor(() => {
-        const proof = readFileSync(proofPath, 'utf8');
-        expect(proof.length).toBeGreaterThan(0);
-        expect(JSON.parse(proof)).toEqual({
-          token: proofToken, persisted: true, nativeRef: nativeFile, reason: null,
-        });
-      }, { timeout: 1500 });
+      if (receiptAllowed) {
+        await vi.waitFor(() => {
+          const proof = readFileSync(proofPath, 'utf8');
+          expect(proof.length).toBeGreaterThan(0);
+          expect(JSON.parse(proof)).toEqual({
+            token: proofToken, persisted: true, nativeRef: nativeFile, reason: null,
+          });
+        }, { timeout: 1500 });
+      } else {
+        await vi.waitFor(() => {
+          const rows = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .trim().split('\n').map(line => JSON.parse(line));
+          expect(rows.find(row => row.kind === 'kickoff-proof-receipt-publication-failed'))
+            .toMatchObject({
+              persisted: true,
+              reason: 'kickoff-proof-receipt-publish-failed',
+              errorMessage: 'kickoff-proof placeholder is not an empty 0600 file',
+            });
+        }, { timeout: 1500 });
+        expect(readFileSync(proofPath, 'utf8')).toBe('reserved');
+      }
     } finally {
       if (existsSync(sock)) await rawInject(sock, '\x04');
       await done?.catch(() => undefined);
