@@ -782,7 +782,7 @@ describe('P011 independent unforced expiry resource evidence', () => {
     ['RSS alone', r => { delete r.cohorts[0].samples[3].pssBytes; }],
     ['allocation omitted', r => { delete r.cohorts[0].samples[3].allocatedBytes; }],
     ['allocation reset', r => { r.cohorts[0].samples[3].allocatedBytes = 1; }],
-    ['short idle', r => { r.cohorts[0].samples[2].monotonicMs--; }],
+    ['short idle', r => { r.cohorts[0].samples[2].monotonicMs = r.cohorts[0].samples[1].monotonicMs + 199; }],
     ['GC during window', r => { r.cohorts[0].unforcedWindowGcCalls++; }],
     ['profiler during window', r => { r.cohorts[0].profilerOperations.push('HeapProfiler.enable'); }],
     ['diagnostic before resources', r => { r.cohorts[0].diagnostic.sample.monotonicMs = 1; }],
