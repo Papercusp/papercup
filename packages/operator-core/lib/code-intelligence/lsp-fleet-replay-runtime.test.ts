@@ -120,6 +120,37 @@ describe('daemon replay qualification', () => {
     writeFileSync(join(root, 'base.json'), '{}');
     expect(() => validateDaemonReplayConfig(oracle)).toThrow('changed-file');
   });
+  it('rejects a disk edit after compiler load instead of labeling old bindings with the new bytes', () => {
+    const frozen = config();
+    const root = frozen.rootPath;
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], compilerOptions: { noLib: true } }));
+    const phases: string[] = [];
+    expect(() => freezeCompilerReplayConfig({ runId: 'loaded-drift', rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'source.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [], evidenceRef: 'disk-mutation-control' }, { onProgress: progress => {
+        phases.push(progress.phase);
+        if (progress.phase === 'compiler-loaded') writeFileSync(join(root, 'source.ts'), 'export function replacement() {}\nreplacement();\n');
+      } })).toThrow(`changed-file:${join(root, 'source.ts')}`);
+    expect(phases).toContain('references-scanned');
+    expect(phases).not.toContain('validated');
+  });
+  it.each(['utf8', 'utf16le', 'utf16be'] as const)('retains original %s BOM bytes used for compiler binding', encoding => {
+    const frozen = config();
+    const root = frozen.rootPath;
+    const source = 'export function hot() {}\nhot();\n';
+    const bytes = encoding === 'utf8' ? Buffer.from(`\uFEFF${source}`) :
+      Buffer.concat([Buffer.from(encoding === 'utf16le' ? [255, 254] : [254, 255]),
+        encoding === 'utf16le' ? Buffer.from(source, 'utf16le') : Buffer.from(source, 'utf16le').swap16()]);
+    writeFileSync(join(root, 'source.ts'), bytes);
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], compilerOptions: { noLib: true } }));
+    const oracle = freezeCompilerReplayConfig({ runId: `bom-${encoding}`, rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'source.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [], evidenceRef: 'encoded-source-control' });
+    expect(oracle.files[join(root, 'source.ts')]).toBe(replayHash(bytes));
+    expect(oracle.corpus['hot-references'].oracle.sites).toEqual([{ path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]);
+  });
 });
 
 describe('kernel replay process provenance', () => {

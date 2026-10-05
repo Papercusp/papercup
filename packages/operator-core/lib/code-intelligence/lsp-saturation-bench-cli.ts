@@ -220,7 +220,8 @@ async function main(): Promise<void> {
   if (process.argv[2] === '--freeze-replay') {
     if (!process.argv[3] || !process.argv[4]) throw new Error('--freeze-replay requires authored input and a new config path');
     const input = JSON.parse(readFileSync(process.argv[3], 'utf8')) as ReplayOracleInput;
-    const config = freezeCompilerReplayConfig(input);
+    const config = freezeCompilerReplayConfig(input, { onProgress: progress =>
+      console.error(JSON.stringify({ event: 'replay-oracle-progress', runId: input.runId, atMs: Date.now(), ...progress })) });
     writeFileSync(process.argv[4], JSON.stringify(config, null, 2), { flag: 'wx' });
     console.log(JSON.stringify({ config: process.argv[4], files: Object.keys(config.files).length,
       expectedDefinitions: config.corpus.definition.oracle.sites.length, expectedReferences: config.corpus['hot-references'].oracle.sites.length }));

@@ -55,16 +55,37 @@ export interface ReplayOracleInput {
  * checker, never calls the subject adapter/server or learns sites from a warmup.
  * The explicit config/roots bound the population and are retained in the archive.
  */
-export function freezeCompilerReplayConfig(input: ReplayOracleInput): DaemonReplayConfig {
+export function freezeCompilerReplayConfig(input: ReplayOracleInput, options: {
+  onProgress?: (progress: { phase: 'config-parsed' | 'compiler-loaded' | 'oracle-resolved' | 'references-scanned' | 'validated';
+    completed: number; total: number }) => void;
+} = {}): DaemonReplayConfig {
   const tsconfigPath = resolve(input.rootPath, input.tsconfigPath);
-  const configInputs = new Set<string>();
-  const readConfig = (file: string) => { configInputs.add(resolve(file)); return ts.sys.readFile(file); };
-  const read = ts.readConfigFile(tsconfigPath, readConfig);
+  const loadedInputs = new Map<string, string>();
+  // Capture the very bytes handed to the compiler, not a later disk read.
+  // Match TypeScript's BOM decoding while retaining the original byte hash.
+  const readCompilerInput = (file: string): string | undefined => {
+    let bytes: Buffer;
+    try { bytes = readFileSync(file); } catch { return undefined; }
+    const absolute = resolve(file);
+    const hash = replayHash(bytes);
+    const previous = loadedInputs.get(absolute);
+    if (previous && previous !== hash) throw new Error(`changed-compiler-input:${absolute}`);
+    loadedInputs.set(absolute, hash);
+    if (bytes[0] === 254 && bytes[1] === 255)
+      return Buffer.from(bytes.subarray(2, bytes.length & ~1)).swap16().toString('utf16le');
+    if (bytes[0] === 255 && bytes[1] === 254) return bytes.toString('utf16le', 2);
+    return bytes.toString('utf8', bytes[0] === 239 && bytes[1] === 187 && bytes[2] === 191 ? 3 : 0);
+  };
+  const read = ts.readConfigFile(tsconfigPath, readCompilerInput);
   if (read.error) throw new Error(ts.flattenDiagnosticMessageText(read.error.messageText, '\n'));
-  const parsed = ts.parseJsonConfigFileContent(read.config, { ...ts.sys, readFile: readConfig }, resolve(tsconfigPath, '..'), undefined, tsconfigPath);
+  const parsed = ts.parseJsonConfigFileContent(read.config, { ...ts.sys, readFile: readCompilerInput }, resolve(tsconfigPath, '..'), undefined, tsconfigPath);
   if (parsed.errors.length) throw new Error(parsed.errors.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'));
   const roots = [...new Set([...parsed.fileNames, resolve(input.rootPath, input.definition.file), resolve(input.rootPath, input.references.file)])];
-  const program = ts.createProgram({ rootNames: roots, options: parsed.options });
+  options.onProgress?.({ phase: 'config-parsed', completed: 0, total: roots.length });
+  const host = ts.createCompilerHost(parsed.options);
+  host.readFile = readCompilerInput;
+  const program = ts.createProgram({ rootNames: roots, options: parsed.options, host });
+  options.onProgress?.({ phase: 'compiler-loaded', completed: program.getSourceFiles().length, total: program.getSourceFiles().length });
   const checker = program.getTypeChecker();
   const canonical = (symbol: ts.Symbol | undefined): ts.Symbol | undefined => {
     const seen = new Set<ts.Symbol>();
@@ -73,12 +94,16 @@ export function freezeCompilerReplayConfig(input: ReplayOracleInput): DaemonRepl
   };
   const sourceFiles = program.getSourceFiles().filter(source => !source.isDeclarationFile &&
     !relative(input.rootPath, source.fileName).startsWith('..') && !source.fileName.includes('/node_modules/'));
-  const files: Record<string, string> = {};
+  const files: Record<string, string> = Object.fromEntries(loadedInputs);
   // Declaration inputs and inherited configs affect symbol binding even though
   // they are not candidate reference sites. Their drift invalidates the oracle.
-  for (const file of [...program.getSourceFiles().map(source => source.fileName), ...configInputs, ...input.runtimeFiles]) {
+  for (const source of program.getSourceFiles()) if (!loadedInputs.has(resolve(source.fileName)))
+    throw new Error(`unmeasured-compiler-input:${source.fileName}`);
+  for (const file of input.runtimeFiles) {
     const absolute = resolve(input.rootPath, file);
-    files[absolute] = replayHash(readFileSync(absolute));
+    const hash = replayHash(readFileSync(absolute));
+    if (files[absolute] && files[absolute] !== hash) throw new Error(`changed-compiler-input:${absolute}`);
+    files[absolute] = hash;
   }
   const sourceFingerprint = replaySourceFingerprint(files);
   const locate = (cursor: ReplayCorpus['cursor']) => {
@@ -106,12 +131,15 @@ export function freezeCompilerReplayConfig(input: ReplayOracleInput): DaemonRepl
   const hot = locate(input.references);
   const definitions = unique(cheap.declarations!.map(site));
   const references: { path: string; line1: number }[] = [];
-  for (const source of sourceFiles) {
+  options.onProgress?.({ phase: 'oracle-resolved', completed: 0, total: sourceFiles.length });
+  for (const [index, source] of sourceFiles.entries()) {
     const visit = (node: ts.Node) => {
       if (ts.isIdentifier(node) && canonical(checker.getSymbolAtLocation(node)) === hot) references.push(site(node));
       ts.forEachChild(node, visit);
     };
     visit(source);
+    if ((index + 1) % 64 === 0 || index + 1 === sourceFiles.length)
+      options.onProgress?.({ phase: 'references-scanned', completed: index + 1, total: sourceFiles.length });
   }
   const corpus = (cursor: ReplayCorpus['cursor'], sites: ReplayOracle['sites']): ReplayCorpus => ({ cursor,
     oracle: { sites, sourceFingerprint, oracleFingerprint: replayOracleFingerprint({ sites }) } });
@@ -122,6 +150,7 @@ export function freezeCompilerReplayConfig(input: ReplayOracleInput): DaemonRepl
       evidenceRef: input.evidenceRef },
     corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) } };
   validateDaemonReplayConfig(config);
+  options.onProgress?.({ phase: 'validated', completed: sourceFiles.length, total: sourceFiles.length });
   return config;
 }
 export function replayFileMismatches(files: DaemonReplayConfig['files']): string[] {
