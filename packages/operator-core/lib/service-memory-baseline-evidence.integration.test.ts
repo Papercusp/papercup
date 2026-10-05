@@ -75,6 +75,7 @@ function auditRequestWorkerWindows(r: any) {
   const lifetimes = new Map<number, any>();
   const loadedIdentities = new Map<number, any>();
   const previousCounters = new Map<number, number>();
+  const previousRingTotals = new Map<string, number>();
   let lastEnd = time(r.startedAt);
   return r.requestWorkerWindows.map((w: any, index: number) => {
     const outer = r.windows[index], requests = r.requests.filter((q: any) => q.window === w.window);
@@ -89,10 +90,27 @@ function auditRequestWorkerWindows(r: any) {
       w.after?.startedAt >= w.before.endedAt && w.after.endedAt >= w.after.startedAt &&
       w.after.endedAt <= time(outer.endedAt), 'ordered unforced window brackets');
     lastEnd = w.after.endedAt;
+    const during: any[] = w.during ?? [];
+    requireWorker(Array.isArray(during) && during.length <= 32, 'bounded response checkpoints');
+    let priorCheckpoint = w.before.endedAt, priorRequestIds: string[] = [];
+    for (const point of during) {
+      requireWorker(positive(point.startedAt) && point.startedAt >= priorCheckpoint &&
+        point.endedAt >= point.startedAt && point.endedAt <= w.after.startedAt &&
+        Array.isArray(point.requestIds) && point.requestIds.length > priorRequestIds.length &&
+        point.requestIds.length <= 32 && point.requestIds.every((id: string) => uuid(id) && requestIds.includes(id)) &&
+        new Set(point.requestIds).size === point.requestIds.length &&
+        priorRequestIds.every(id => point.requestIds.includes(id)), 'ordered checkpoint HTTP population');
+      priorCheckpoint = point.endedAt; priorRequestIds = point.requestIds;
+    }
+    if (during.length) requireWorker(isDeepStrictEqual([...priorRequestIds].sort(),
+      requestIds.filter(uuid).sort()), 'complete final checkpoint HTTP population');
     const gaps: any[] = [];
     const ancestry: any[] = [];
-    for (const phase of ['before', 'after']) {
-      const sample = w[phase], coverage = sample.coverage;
+    const ringSamples: any[] = [];
+    const points = [{ phase: 'before', sample: w.before }, ...during.map((sample, i) =>
+      ({ phase: 'during-' + i, sample })), { phase: 'after', sample: w.after }];
+    for (const { phase, sample } of points) {
+      const coverage = sample.coverage;
       requireWorker(Array.isArray(sample.observations) && sample.observations.length === selected.length &&
         isDeepStrictEqual(sample.observations.map((x: any) => x.after?.pid), selected), 'selected observation population');
       requireWorker(isDeepStrictEqual(coverage?.selectedPids, selected) &&
@@ -184,6 +202,24 @@ function auditRequestWorkerWindows(r: any) {
           uuid(snapshot.processInstanceId) && !instances.has(snapshot.processInstanceId) &&
           Array.isArray(snapshot.results) && snapshot.results.length <= 64, 'loaded process/build identity');
         instances.add(snapshot.processInstanceId);
+        if (snapshot.pools !== undefined) {
+          requireWorker(Array.isArray(snapshot.pools) && snapshot.pools.length <= 64 &&
+            new Set(snapshot.pools.map((p: any) => p.pool)).size === snapshot.pools.length,
+            'bounded diagnostic ring population');
+          for (const pool of snapshot.pools) {
+            const key = JSON.stringify([id, snapshot.processInstanceId, pool.pool]);
+            requireWorker(typeof pool.pool === 'string' && pool.pool.length > 0 && pool.capacity === 32 &&
+              [pool.retained, pool.totalRecorded, pool.dropped].every((n: unknown) =>
+                Number.isSafeInteger(n) && (n as number) >= 0) &&
+              pool.retained === Math.min(pool.totalRecorded, pool.capacity) &&
+              pool.dropped === pool.totalRecorded - pool.retained &&
+              pool.totalRecorded >= (previousRingTotals.get(key) ?? 0), 'diagnostic ring accounting');
+            previousRingTotals.set(key, pool.totalRecorded);
+            ringSamples.push({ phase, pid: id, ...pool });
+          }
+          requireWorker(snapshot.results.every((q: any) => snapshot.pools.some((p: any) => p.pool === q.pool)),
+            'selected queries belong to observed rings');
+        }
         const loaded = { processInstanceId: snapshot.processInstanceId, role: observation.role };
         requireWorker(!loadedIdentities.has(id) || isDeepStrictEqual(loadedIdentities.get(id), loaded),
           'cross-window loaded process and role fence');
@@ -193,7 +229,7 @@ function auditRequestWorkerWindows(r: any) {
     }
     requireWorker(Array.isArray(w.resources) && w.resources.length === selected.length &&
       isDeepStrictEqual(w.resources.map((x: any) => x.pid), selected), 'resource population');
-    const assignments = new Map<string, any>(), tuples = new Set<string>();
+    const assignments = new Map<string, any>(), tuples = new Map<string, any>();
     const resources = w.after.observations.map((after: any, i: number) => {
       const before = w.before.observations[i], raw = w.resources[i];
       requireWorker(before.snapshot.processInstanceId === after.snapshot.processInstanceId &&
@@ -205,8 +241,13 @@ function auditRequestWorkerWindows(r: any) {
         allocatedBytes: after.counters.heap.total_allocated_bytes - before.counters.heap.total_allocated_bytes,
         countersBefore: before.counters, countersAfter: after.counters };
       requireWorker(isDeepStrictEqual(raw, derived) && nonnegative(derived.allocatedBytes), 'raw resource delta correspondence');
+      return derived;
+    });
+    for (const point of [...during, w.after]) for (const after of point.observations) {
+      const pointTuples = new Set<string>();
       for (const q of after.snapshot.results) {
         requireWorker(requestIds.includes(q.correlation?.requestId) && uuid(q.correlation.requestId) &&
+          (!point.requestIds || point.requestIds.includes(q.correlation.requestId)) &&
           q.correlation.operation === 'workItems.byHarness' && q.status === 'ok' &&
           q.source?.processInstanceId === after.snapshot.processInstanceId &&
           q.correlation.processInstanceId === after.snapshot.processInstanceId &&
@@ -215,15 +256,19 @@ function auditRequestWorkerWindows(r: any) {
           q.connectionId >= 0 && Number.isSafeInteger(q.queryId) && q.queryId >= 0, 'exact query identity');
         const tuple = JSON.stringify([q.correlation.requestId, q.pool, q.source.processInstanceId,
           q.source.buildSha, q.source.poolInstanceId, q.connectionId, q.queryId]);
-        requireWorker(!tuples.has(tuple), 'duplicate query tuple'); tuples.add(tuple);
+        requireWorker(!pointTuples.has(tuple), 'duplicate query tuple'); pointTuples.add(tuple);
+        if (tuples.has(tuple)) {
+          requireWorker(isDeepStrictEqual(tuples.get(tuple), q), 'checkpoint query tuple changed');
+          continue;
+        }
+        tuples.set(tuple, q);
         const prior = assignments.get(q.correlation.requestId);
         requireWorker(!prior || prior.pid === after.after.pid, 'cross-worker HTTP assignment');
         const value = prior ?? { requestId: q.correlation.requestId, pid: after.after.pid,
           startTicks: after.after.startTicks, processInstanceId: after.snapshot.processInstanceId, queryTuples: [] };
         value.queryTuples.push(tuple); assignments.set(q.correlation.requestId, value);
       }
-      return derived;
-    });
+    }
     const missingHttp = requestIds.some((id: unknown) => id === null);
     const unresolvedRequestIds = missingHttp ? requestIds : requestIds.filter((id: string) => !assignments.has(id));
     const assignment = { status: missingHttp ? 'unknown' : unresolvedRequestIds.length ? 'partial' : 'observed',
@@ -239,7 +284,11 @@ function auditRequestWorkerWindows(r: any) {
       selectedAncestry: hasCensus ? { status: 'observed', brackets: ancestry,
         definition: 'Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census' } :
         { status: 'unknown', reason: 'Historical raw window has no saved ancestry census brackets' },
-      servingWorkerPopulation: 'unknown', queryPopulation: 'bounded terminal ring; eviction remains unknown',
+      servingWorkerPopulation: 'unknown', queryPopulation: 'bounded observed rings; unseen queries remain unknown',
+      queryObservation: during.length ? 'response checkpoints and terminal ring' : 'historical terminal ring only',
+      diagnosticRings: ringSamples.length ? { status: 'observed', samples: ringSamples,
+        definition: 'Per-pool all-query FIFO counters; they do not identify an unseen request or prove its eviction' } :
+        { status: 'unknown', reason: 'Historical raw snapshots omit ring counters' },
       unsampledAncestorLifetimes: 'unknown', allocationOwner: 'unknown', physicalSavings: 'unmeasured' };
   });
 }
@@ -1048,6 +1097,61 @@ describe('P011 independent selected-worker resource windows', () => {
     expect(result.requestWorkerWindows!.every((w: any) => w.selectedAncestry.status === 'unknown')).toBe(true);
     expect(r).toEqual(frozen);
   });
+  function checkpointFixture() {
+    const r = workerFixture();
+    for (const w of r.requestWorkerWindows) {
+      const point = structuredClone(w.after);
+      point.startedAt = w.before.endedAt + 1; point.endedAt = point.startedAt + 1;
+      point.requestIds = r.requests.filter((q: any) => q.window === w.window).map((q: any) => q.requestId);
+      for (let i = 0; i < point.observations.length; i++) {
+        point.observations[i].counters.heap.total_allocated_bytes =
+          w.before.observations[i].counters.heap.total_allocated_bytes + 100;
+        for (const sample of [w.before, point, w.after]) {
+          // All-query counters are separate from selected metadata. A later
+          // overwrite is visible without inventing a tuple for a missing ID.
+          const total = w.window * 100 + (sample === w.before ? 0 : sample === point ? 10 : 50);
+          sample.observations[i].snapshot.pools = ['main', 'secondary'].map(pool => ({ pool,
+            capacity: 32, totalRecorded: total, retained: Math.min(total, 32), dropped: Math.max(0, total - 32) }));
+        }
+        w.after.observations[i].snapshot.results = [];
+      }
+      w.during = [point];
+    }
+    return r;
+  }
+  it('independently conserves observed checkpoint tuples after terminal ring turnover', () => {
+    const r = checkpointFixture(), frozen = structuredClone(r), result = auditBaseline(r);
+    expect(r).toEqual(frozen);
+    expect(result.requestWorkerWindows!.every((w: any) => w.assignment.status === 'observed')).toBe(true);
+    expect(result.requestWorkerWindows![0].diagnosticRings.status).toBe('observed');
+    expect(result.requestWorkerWindows![0].diagnosticRings.samples.some((p: any) => p.dropped > 0)).toBe(true);
+    expect(result.requestWorkerWindows![0].queryObservation).toBe('response checkpoints and terminal ring');
+  });
+  it('deduplicates identical checkpoint tuples without duplicating query assignments', () => {
+    const r = checkpointFixture();
+    for (const w of r.requestWorkerWindows) for (let i = 0; i < w.after.observations.length; i++)
+      w.after.observations[i].snapshot.results = structuredClone(w.during[0].observations[i].snapshot.results);
+    expect(auditBaseline(r).requestWorkerWindows![0].assignment.assignments[0].queryTuples).toHaveLength(2);
+  });
+  it.each(['time', 'request omission', 'foreign request', 'PID reuse', 'build', 'allocation',
+    'pool accounting', 'pool omission', 'duplicate tuple', 'conflicting tuple'])(
+    'rejects response-checkpoint corruption: %s', kind => {
+      const r = checkpointFixture(), w = r.requestWorkerWindows[0], point = w.during[0], row = point.observations[0];
+      if (kind === 'time') point.endedAt = w.after.startedAt + 1;
+      if (kind === 'request omission') point.requestIds.pop();
+      if (kind === 'foreign request') point.requestIds[0] = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      if (kind === 'PID reuse') row.after.startTicks = 'reused';
+      if (kind === 'build') row.snapshot.buildSha = 'abcdef12';
+      if (kind === 'allocation') row.counters.heap.total_allocated_bytes = 999;
+      if (kind === 'pool accounting') row.snapshot.pools[0].dropped++;
+      if (kind === 'pool omission') row.snapshot.pools = [];
+      if (kind === 'duplicate tuple') row.snapshot.results.push(structuredClone(row.snapshot.results[0]));
+      if (kind === 'conflicting tuple') {
+        w.after.observations[0].snapshot.results = structuredClone(row.snapshot.results);
+        w.after.observations[0].snapshot.results[0].metadataDrift = true;
+      }
+      expect(() => auditBaseline(r)).toThrow(/P011 worker windows:/);
+    });
   function intermediateAncestorFixture() {
     const r = workerFixture();
     for (const s of r.samples) {
