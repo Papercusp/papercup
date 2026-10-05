@@ -69,6 +69,49 @@ const identity = (overrides: Record<string, unknown> = {}) =>
   });
 
 describe('passing affected-task verdict identity', () => {
+  it('reuses relocated immutable commands only while command selection and dependency bytes match', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'verdict-clone-identity-'));
+    try {
+      const roots = [join(parent, 'a'), join(parent, 'b')];
+      for (const root of roots) {
+        mkdirSync(root);
+        writeFileSync(join(root, 'subject.ts'), 'export const value = 1;\n');
+      }
+      const fromClone = (root: string, commandOverrides = {}) => identity({
+        commandRoot: root,
+        command: {
+          cmd: join(root, 'node_modules/.bin/vitest'),
+          argv: ['run', join(root, 'subject.ts')],
+          cwd: root,
+          scriptText: 'vitest run',
+          relatedFilterDigest: 'complete-selection',
+          ...commandOverrides,
+        },
+        dependencyHash: hashDependencyFileSet({ root, files: ['subject.ts'] }).hash,
+      });
+      const prior = fromClone(roots[0]);
+      const verdict = (next: ReturnType<typeof identity>) => decidePassingTaskVerdict({
+        enabled: true, cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictEntry(prior), identity: next,
+      });
+      expect(verdict(fromClone(roots[1]))).toEqual({ hit: true, reason: 'identity-match' });
+      expect(verdict(fromClone(roots[1], { argv: ['run', 'different.test.ts'] })).reason).toBe('command-changed');
+      expect(verdict(fromClone(roots[1], { relatedFilterDigest: 'narrow-selection' })).reason).toBe('command-changed');
+      expect(verdict(fromClone(roots[1], { cmd: join(parent, 'external-tool') })).reason).toBe('command-changed');
+      expect(verdict(fromClone(roots[1], { cwd: `${roots[1]}-sibling` })).reason).toBe('command-changed');
+      writeFileSync(join(roots[1], 'subject.ts'), 'export const value = 2;\n');
+      expect(verdict(fromClone(roots[1]))).toEqual({ hit: false, reason: 'dependency-closure-changed' });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('retains absolute command identity when relocatable clone mode is absent', () => {
+    const command = { cmd: 'npm', argv: ['run', 'test'], cwd: '/clone-a' };
+    expect(identity({ command }).components.command)
+      .not.toBe(identity({ command: { ...command, cwd: '/clone-b' } }).components.command);
+  });
+
   it('is stable across object key order and hits only on a complete identity match', () => {
     const first = identity();
     const same = identity({
@@ -366,6 +409,12 @@ describe('dependency-closure hashing and persistence', () => {
 });
 
 describe('gate wiring safety contract', () => {
+  it('normalizes command paths only on the explicitly marked committed clone path', () => {
+    expect(AFFECTED_TESTS_SRC).toContain("commandRoot: process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1' ? ROOT : null");
+    const launcher = readFileSync(resolve(REPO_ROOT, 'scripts/lint-as-committed.mjs'), 'utf8');
+    expect(launcher).toContain('lintAsCommittedChildEnv(process.env, repoRoot)');
+  });
+
   it('enables reuse only for a green checkpoint or an explicit bounded resume series', () => {
     expect(AFFECTED_TESTS_SRC).toContain("process.env.GREEN_CHECKPOINT === '1'");
     expect(AFFECTED_TESTS_SRC).toContain("process.env.AFFECTED_TASK_VERDICT_RESUME === '1'");
