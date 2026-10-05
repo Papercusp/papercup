@@ -393,6 +393,33 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(admit(root, candidate, ['lib/reader.test.ts', 'lib/real.json'], { preflight }).ok).toBe(true);
   });
 
+  it.each([
+    "const filename = 'real.json'; const value = readFileSync(new URL(filename, import.meta.url), 'utf8');",
+    "const DATA = { item: { file: 'real.json' } }; const values = Object.values(DATA).map(block => readFileSync(new URL(block.file, import.meta.url), 'utf8'));",
+  ])('preserves a local variable data dependency: %s', (reader) => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\n" + reader + '\n',
+      'lib/real.json': '{}\n',
+    }, 'inline data dependency');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+    expect(admit(root, candidate, ['lib/reader.ts'], { preflight })).toMatchObject({
+      ok: false, code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/real.json', relation: 'runtime-data' })],
+    });
+    expect(admit(root, candidate, ['lib/reader.ts', 'lib/real.json'], { preflight }).ok).toBe(true);
+  });
+
+  it('does not resolve a generated temporary URL against the repository', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\nconst value = readFileSync(new URL('generated.json', temporaryDirectoryUrl), 'utf8');\n",
+    }, 'temporary URL data');
+    expect(admit(root, candidate, ['lib/reader.ts'], {
+      preflight: importCompletenessPreflight({ root, probeRef: 'staging' }),
+    }).ok).toBe(true);
+  });
+
   it('refuses a whole-blob admission until differing reverse-importing tests and their imported modules share its pinned source', () => {
     const { root, candidate } = repo();
     const sourceCommit = sweep(root, {

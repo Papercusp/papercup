@@ -19,6 +19,76 @@
  * parser returns one entry per invocation, in output order.
  */
 import { auditDraw } from '../../../../scripts/lib/test-pass-reuse.mjs';
+import type { runPureLaneProofCapture } from '../../../../scripts/lib/pure-lane-proof-capture.mjs';
+
+/** The existing capture result, without its diagnostic console lines. */
+export type PureProofCaptureResult = Omit<Awaited<ReturnType<typeof runPureLaneProofCapture>>, 'lines'>;
+
+/**
+ * Read the named capture population retained by the producer. Aggregate-only historical
+ * records remain unmeasured. A valid record with proofs:null still describes an UNKNOWN
+ * population; it cannot establish ordering, subsequent reuse, or acceptance by itself.
+ */
+export function parsePureProofCaptureResult(value: unknown): PureProofCaptureResult | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const counters = ['slices', 'files', 'rows', 'retired', 'failed', 'isolatedFail', 'remaining'] as const;
+  const text = (x: unknown): x is string => typeof x === 'string' && x.trim().length > 0;
+  if (!['done', 'skipped'].includes(v.state as string) || !counters.every((k) => isCount(v[k])) ||
+      !(v.sha === null || (typeof v.sha === 'string' && /^[0-9a-f]{40}$/.test(v.sha))) ||
+      !(v.reason === null || text(v.reason)) || !(v.stoppedBy === null || text(v.stoppedBy)) ||
+      (v.rows as number) > (v.files as number) || (v.slices as number) > (v.files as number) ||
+      (v.failed as number) > (v.files as number) || (v.isolatedFail as number) > (v.failed as number) ||
+      !v.evidence || typeof v.evidence !== 'object' || Array.isArray(v.evidence)) return null;
+  const e = v.evidence as Record<string, unknown>;
+  if (e.version !== 1 || !text(e.runGroupId) || !isCount(e.startedAtMs) || !isCount(e.completedAtMs) ||
+      e.completedAtMs < e.startedAtMs || !(e.clean === null || typeof e.clean === 'boolean') ||
+      !(e.proofs === null || Array.isArray(e.proofs))) return null;
+  if (v.state === 'skipped' && (v.reason === null || e.proofs !== null)) return null;
+  if (v.state === 'done' && (v.sha === null || v.reason !== null || e.clean !== true)) return null;
+
+  let proofs: PureProofCaptureResult['evidence']['proofs'] = null;
+  if (Array.isArray(e.proofs)) {
+    if (v.state !== 'done' || e.clean !== true || e.proofs.length !== v.rows) return null;
+    proofs = [];
+    const files = new Set<string>();
+    const testRunIds = new Set<string>();
+    let runner: string | null = null;
+    for (const raw of e.proofs) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const p = raw as Record<string, unknown>;
+      if (!text(p.file) || !p.file.startsWith('packages/operator-core/') || p.file.includes('\\') ||
+          p.file.split('/').some((part) => !part || part === '.' || part === '..') ||
+          typeof p.testRunId !== 'string' || !/^[1-9]\d*$/.test(p.testRunId) ||
+          !isCount(p.recordedAtMs) || p.recordedAtMs < e.startedAtMs || p.recordedAtMs > e.completedAtMs ||
+          !text(p.runnerIdentity) || p.source !== 'local' || p.runContext !== 'green-checkpoint' ||
+          p.runGroupId !== e.runGroupId || files.has(p.file) || testRunIds.has(p.testRunId) ||
+          (runner !== null && runner !== p.runnerIdentity)) return null;
+      files.add(p.file);
+      testRunIds.add(p.testRunId);
+      runner = p.runnerIdentity;
+      proofs.push({ file: p.file, testRunId: p.testRunId, recordedAtMs: p.recordedAtMs,
+        runnerIdentity: p.runnerIdentity, runContext: 'green-checkpoint',
+        runGroupId: e.runGroupId, source: 'local' });
+    }
+  }
+  return { state: v.state as string, reason: v.reason as string | null, sha: v.sha as string | null,
+    slices: v.slices as number, files: v.files as number, rows: v.rows as number,
+    retired: v.retired as number, failed: v.failed as number, isolatedFail: v.isolatedFail as number,
+    remaining: v.remaining as number, stoppedBy: v.stoppedBy as string | null,
+    evidence: { version: 1, runGroupId: e.runGroupId, startedAtMs: e.startedAtMs,
+      completedAtMs: e.completedAtMs, clean: e.clean as boolean | null, proofs } };
+}
+
+/** Exactly one complete producer result in the stored process output; duplicates are unknown. */
+export function readPureProofCaptureResult(output: string): PureProofCaptureResult | null {
+  const records = output.split(/\r?\n/).map((line) =>
+    /^(?:\[[^\]]*\]\s*)?PURE_PROOF_CAPTURE_RESULT(?:\s+(.*))?$/.exec(line.trim()),
+  ).filter((record) => record !== null);
+  if (records.length !== 1 || !records[0]![1]) return null;
+  try { return parsePureProofCaptureResult(JSON.parse(records[0]![1])); }
+  catch { return null; }
+}
 
 export interface TestPassReuseTotal {
   tasks: number;

@@ -204,26 +204,55 @@ function scanRuntimeDataFiles(source: string): RuntimeDataFileScan {
   const urlSpecifiers = new Set<string>();
   let hasUrlRead = false;
   const ast = ts.createSourceFile('admission.ts', source, ts.ScriptTarget.Latest, true);
+  const bindings = new Map<string, ts.Expression[]>();
+  const filenames: ts.Expression[] = [];
+  const bind = (name: string, value: ts.Expression): void => {
+    bindings.set(name, [...(bindings.get(name) ?? []), value]);
+  };
   const isLocalData = (value: string): boolean =>
     /\.(?:json|jsonl|md)$/i.test(value) && !/^(?:\/)/.test(value) && !/[\\:?#\s]/.test(value);
   const visit = (node: ts.Node): void => {
     if (ts.isStringLiteralLike(node) && isLocalData(node.text)) specifiers.add(node.text);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      bind(node.name.text, node.initializer);
+    }
+    // Object.values(DATA).map(block => readFile(new URL(prefix + block.file, ...)))
+    // carries filenames from DATA even when its declaration is local to the reader.
+    if (ts.isParameter(node) && ts.isIdentifier(node.name) && ts.isArrowFunction(node.parent)) {
+      const call = node.parent.parent;
+      if (ts.isCallExpression(call) && ts.isPropertyAccessExpression(call.expression)) {
+        bind(node.name.text, call.expression.expression);
+      }
+    }
     if (ts.isCallExpression(node)) {
       const name = ts.isIdentifier(node.expression) ? node.expression.text
         : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : '';
       const url = node.arguments[0];
+      const base = url && ts.isNewExpression(url) ? url.arguments?.[1] : undefined;
       if ((name === 'readFile' || name === 'readFileSync') && url && ts.isNewExpression(url) &&
-          ts.isIdentifier(url.expression) && url.expression.text === 'URL') {
+          ts.isIdentifier(url.expression) && url.expression.text === 'URL' && base &&
+          ts.isPropertyAccessExpression(base) && base.name.text === 'url' &&
+          ts.isMetaProperty(base.expression) && base.expression.keywordToken === ts.SyntaxKind.ImportKeyword) {
         hasUrlRead = true;
         const filename = url.arguments?.[0];
-        if (filename && ts.isStringLiteralLike(filename) && isLocalData(filename.text)) {
-          urlSpecifiers.add(filename.text);
-        }
+        if (filename) filenames.push(filename);
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(ast);
+  const followed = new Set<ts.Node>();
+  const collectFilename = (node: ts.Node): void => {
+    if (followed.has(node)) return;
+    followed.add(node);
+    if (ts.isStringLiteralLike(node) && isLocalData(node.text)) urlSpecifiers.add(node.text);
+    if (ts.isIdentifier(node) &&
+        !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)) {
+      for (const value of bindings.get(node.text) ?? []) collectFilename(value);
+    }
+    ts.forEachChild(node, collectFilename);
+  };
+  filenames.forEach(collectFilename);
   return { specifiers: [...specifiers], urlSpecifiers: [...urlSpecifiers], hasUrlRead };
 }
 

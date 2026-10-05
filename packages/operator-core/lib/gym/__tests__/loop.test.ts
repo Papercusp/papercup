@@ -4,6 +4,7 @@ import type { VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
 import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { TurnError } from '../../agent-chat-stream';
+import type { GateResult } from '../gates';
 
 const rateLimited = (resetAt?: number): LlmCallError =>
   new LlmCallError({ class: 'rate_limited', message: '429', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError);
@@ -209,6 +210,65 @@ describe('runOptimizationLoop', () => {
       taskHash: 't',
       codeHash: 'c',
     });
+  });
+
+  it('retains the hashed candidate, rollback target and nested gate artifacts after caller mutation', () => {
+    const input = {
+      candidateId: 'cand-1', parentId: 'baseline', recordedAt: 1,
+      variant: { promptOverrides: { worker: 'evaluated' }, models: { worker: 'student' } },
+      parent: { promptOverrides: { worker: 'rollback' }, models: { worker: 'parent-model' } },
+      gateResults: [{ gate: 'no-new-regressions', pass: true, status: 'pass', detail: 'measured',
+        evidence: { status: 'pass', coverage: { required: 1, measured: 1, unmeasuredTaskIds: [] },
+          artifacts: ['trace://original'] } }] as GateResult[],
+      provenance: { evaluatorHash: 'e', rubricHash: 'r', taskHash: 't', codeHash: 'c' },
+    };
+    const receipt = createCandidateVersionVerdict(input);
+    const original = JSON.stringify(receipt);
+    input.variant.promptOverrides.worker = 'unevaluated';
+    input.variant.models.worker = 'other-model';
+    input.parent.promptOverrides.worker = 'different-rollback';
+    input.parent.models.worker = 'other-parent-model';
+    input.provenance.codeHash = 'other-code';
+    input.gateResults[0].status = 'fail';
+    input.gateResults[0].evidence!.coverage.measured = 0;
+    (input.gateResults[0].evidence!.coverage.unmeasuredTaskIds as string[]).push('missing-task');
+    (input.gateResults[0].evidence!.artifacts as string[]).push('trace://replacement');
+    input.gateResults.push({ gate: 'cost', pass: false, status: 'fail', detail: 'late gate' });
+    expect(JSON.stringify(receipt)).toBe(original);
+    expect(Object.isFrozen(input.variant)).toBe(false);
+    expect(Object.isFrozen(input.gateResults[0].evidence!.artifacts)).toBe(false);
+  });
+
+  it('refuses to rewrite any nested part of a returned candidate receipt', () => {
+    const receipt = createCandidateVersionVerdict({
+      candidateId: 'cand-1', parentId: 'baseline', recordedAt: 1,
+      variant: { promptOverrides: { worker: 'evaluated' }, models: { worker: 'student' } },
+      parent: { promptOverrides: { worker: 'rollback' } },
+      gateResults: [{ gate: 'no-new-regressions', pass: true, status: 'pass', detail: 'measured',
+        evidence: { status: 'pass', coverage: { required: 1, measured: 1, unmeasuredTaskIds: [] },
+          artifacts: ['trace://original'] } }],
+    });
+    expect(() => { receipt.variant.promptOverrides.worker = 'unevaluated'; }).toThrow(TypeError);
+    expect(() => { receipt.variant.models!.worker = 'other-model'; }).toThrow(TypeError);
+    expect(() => { receipt.parent.promptOverrides.worker = 'different-rollback'; }).toThrow(TypeError);
+    expect(() => { receipt.hashes.variantHash = 'other-hash'; }).toThrow(TypeError);
+    expect(() => { receipt.gateResults[0].evidence!.coverage.measured = 0; }).toThrow(TypeError);
+    expect(() => { (receipt.gateResults[0].evidence!.artifacts as string[]).push('trace://other'); }).toThrow(TypeError);
+    expect(() => { receipt.verdict = 'reject'; }).toThrow(TypeError);
+    expect(receipt.hashes.codeHash).toBe('unresolved');
+  });
+
+  it('keeps the loop proposal receipt separate from mutable prompt and rollback views', async () => {
+    const recorded: LoopProposalRecord[] = [];
+    const { d } = baseDeps({ recordProposal: async (record) => { recorded.push(record); } });
+    await runOptimizationLoop({ ...config, maxCycles: 1, autoPromote: false }, d);
+    const record = recorded[0];
+    const original = JSON.stringify(record.candidateVersion);
+    record.overlay.promptOverrides.worker = 'later-edit';
+    record.parentOverlay.promptOverrides.worker = 'later-parent-edit';
+    expect(JSON.stringify(record.candidateVersion)).toBe(original);
+    expect(record.candidateVersion.variant.promptOverrides.worker).toBe('improved');
+    expect(record.candidateVersion.parent.promptOverrides.worker).toBeUndefined();
   });
 
   it('still auto-promotes by default (autoPromote undefined) + records when the dep is present', async () => {

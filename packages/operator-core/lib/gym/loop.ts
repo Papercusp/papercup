@@ -131,7 +131,10 @@ export function createCandidateVersionVerdict(input: {
   recordedAt: number;
   provenance?: LoopConfig['provenance'];
 }): CandidateVersionVerdict {
-  return {
+  // Hash and retain one detached snapshot. A later edit to the caller's overlay
+  // or gate evidence must not rewrite the evaluated candidate or rollback target.
+  input = structuredClone(input);
+  const receipt: CandidateVersionVerdict = {
     schemaVersion: 1,
     candidateId: input.candidateId,
     parentId: input.parentId,
@@ -151,6 +154,16 @@ export function createCandidateVersionVerdict(input: {
     verdict: candidateVerdictFromGates(input.gateResults),
     recordedAt: input.recordedAt,
   };
+  // JSON serialization remains unchanged; in-process consumers cannot replace
+  // nested evidence or prompt bytes while leaving the receipt's hashes intact.
+  const freeze = (value: unknown): void => {
+    if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+      Object.freeze(value);
+      for (const child of Object.values(value)) freeze(child);
+    }
+  };
+  freeze(receipt);
+  return receipt;
 }
 
 /** One candidate's reviewable record, handed to deps.recordProposal (gym UI). */

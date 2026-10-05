@@ -27,6 +27,8 @@ import {
   parseTestPassReuse,
   parseTestPassReuseHealth,
   parseTestPassReuseAuditArchive,
+  parsePureProofCaptureResult,
+  readPureProofCaptureResult,
   summarizeExecutedSourceMapRecorder,
   summarizeTestPassReuse,
   TEST_PASS_REUSE_HEALTH_MAX_ALARMS,
@@ -48,6 +50,70 @@ const summary = (over: Record<string, number> = {}) => ({
   audited: 0,
   expiredClean: 0,
   ...over,
+});
+
+describe('named pure capture result reader (WI-10005218 / R-3)', () => {
+  const record = () => ({ state: 'done', reason: null, sha: 'a'.repeat(40),
+    slices: 1, files: 2, rows: 2, retired: 0, failed: 0, isolatedFail: 0, remaining: 0, stoppedBy: 'complete',
+    evidence: { version: 1, runGroupId: 'run-1:pure-proof-capture', startedAtMs: 100, completedAtMs: 200,
+      clean: true, proofs: ['a', 'b'].map((file, i) => ({ file: `packages/operator-core/lib/${file}.test.ts`,
+        testRunId: String(i + 1), recordedAtMs: 150, runnerIdentity: 'runner-1',
+        runContext: 'green-checkpoint', runGroupId: 'run-1:pure-proof-capture', source: 'local' })) } });
+  const line = (r = record()) => `PURE_PROOF_CAPTURE_RESULT ${JSON.stringify(r)}`;
+
+  it('preserves the complete named population through the existing process log and JSON archive', () => {
+    const r = record();
+    const parsed = readPureProofCaptureResult(`unrelated log\n[green-checkpoint:123] ${line(r)}\r\n`)!;
+    expect(parsed).toEqual(r);
+    expect(parsePureProofCaptureResult(JSON.parse(JSON.stringify(parsed)))).toEqual(r);
+    r.evidence.proofs[0]!.file = 'mutated';
+    expect(parsed.evidence.proofs![0]!.file).toBe('packages/operator-core/lib/a.test.ts');
+  });
+
+  it.each([
+    ['aggregate-only', (r: any) => { delete r.evidence; }],
+    ['missing counter', (r: any) => { delete r.rows; }],
+    ['negative counter', (r: any) => { r.remaining = -1; }],
+    ['fractional counter', (r: any) => { r.slices = 0.5; }],
+    ['short SHA', (r: any) => { r.sha = 'abcdef0'; }],
+    ['missing population', (r: any) => { delete r.evidence.proofs; }],
+    ['count-only population', (r: any) => { r.evidence.proofs = 2; }],
+    ['missing row', (r: any) => { r.evidence.proofs.pop(); }],
+    ['duplicate file', (r: any) => { r.evidence.proofs[1].file = r.evidence.proofs[0].file; }],
+    ['aliased test row', (r: any) => { r.evidence.proofs[1].testRunId = r.evidence.proofs[0].testRunId; }],
+    ['traversal path', (r: any) => { r.evidence.proofs[0].file = 'packages/operator-core/../foreign.test.ts'; }],
+    ['foreign workspace', (r: any) => { r.evidence.proofs[0].file = 'packages/web/a.test.ts'; }],
+    ['foreign group', (r: any) => { r.evidence.proofs[0].runGroupId = 'other'; }],
+    ['CI source', (r: any) => { r.evidence.proofs[0].source = 'ci'; }],
+    ['foreign context', (r: any) => { r.evidence.proofs[0].runContext = 'local'; }],
+    ['mixed runner', (r: any) => { r.evidence.proofs[0].runnerIdentity = 'other'; }],
+    ['dirty tree', (r: any) => { r.evidence.clean = false; }],
+    ['unknown tree', (r: any) => { r.evidence.clean = null; }],
+    ['old row', (r: any) => { r.evidence.proofs[0].recordedAtMs = 99; }],
+    ['future row', (r: any) => { r.evidence.proofs[0].recordedAtMs = 201; }],
+    ['reversed boundary', (r: any) => { r.evidence.completedAtMs = 90; }],
+    ['missing test identity', (r: any) => { r.evidence.proofs[0].testRunId = ''; }],
+  ])('rejects %s instead of qualifying evidence', (_name, mutate) => {
+    const r = record();
+    mutate(r);
+    expect(readPureProofCaptureResult(line(r))).toBeNull();
+  });
+
+  it('retains explicitly unknown or empty populations without inventing named proofs', () => {
+    const r = record();
+    expect(parsePureProofCaptureResult({ ...r, evidence: { ...r.evidence, proofs: null } })?.evidence.proofs).toBeNull();
+    const skipped = { ...r, state: 'skipped', reason: 'dirty-checkout(1)',
+      slices: 0, files: 0, rows: 0, stoppedBy: null, evidence: { ...r.evidence, clean: null, proofs: null } };
+    expect(parsePureProofCaptureResult(skipped)).toEqual(skipped);
+    const empty = { ...r, slices: 0, files: 0, rows: 0, evidence: { ...r.evidence, proofs: [] } };
+    expect(parsePureProofCaptureResult(empty)?.evidence.proofs).toEqual([]);
+  });
+
+  it.each(['', 'PURE_PROOF_CAPTURE state=done rows=2', 'PURE_PROOF_CAPTURE_RESULT',
+    'PURE_PROOF_CAPTURE_RESULT {"state":"done"', `${line()}\n${line()}`,
+    `${line()}\nPURE_PROOF_CAPTURE_RESULT {broken`])('rejects absent, torn or duplicate log records: %s', (output) => {
+    expect(readPureProofCaptureResult(output)).toBeNull();
+  });
 });
 
 describe('parseTestPassReuse', () => {

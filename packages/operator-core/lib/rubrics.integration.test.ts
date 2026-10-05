@@ -3927,9 +3927,11 @@ describe('template_data persistence boundary — the set-template-data door', ()
         harnessSlug: 'papercusp',
       } as never,
     );
-    expect(response).toHaveProperty('data');
-    if (!('data' in response)) throw new Error('handler must return the canonical data envelope');
-    const written = response.data as {
+    expect(response).toHaveProperty('content');
+    if (!('content' in response)) throw new Error('template data handler must return text content');
+    const responseText = response.content.find((part) => part.type === 'text')?.text;
+    expect(responseText).toBeTruthy();
+    const written = JSON.parse(responseText!) as {
       ok: boolean;
       version: number;
       revision: { seq: number } | null;
