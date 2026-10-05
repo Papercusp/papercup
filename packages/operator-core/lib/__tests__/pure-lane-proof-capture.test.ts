@@ -243,6 +243,64 @@ const run = (h: ReturnType<typeof harness>, env = h.env) =>
   runPureLaneProofCapture({ root: '/r', env, runGroupId: 'run-1:pure-proof-capture', deps: h.deps as never });
 
 describe('runPureLaneProofCapture', () => {
+  function namedHarness(mutate?: (rows: Array<Record<string, unknown>>) => void) {
+    const h = harness({ loadSliceFailures: async () => [] });
+    h.deps.readResults = () => ({ status: 'reported', malformed: 0,
+      results: [{ outcome: 'written', rows: h.slices.at(-1)!.args.length - 2,
+        retired: 0, skipped: 0, dirty: false, sha: SHA }] });
+    Object.assign(h.deps, { loadCapturedProofRows: async ({ files }: { files: string[] }) => {
+      const rows = files.map((file, i) => ({ file, testRunId: String(100 + i), recordedAtMs: h.clock.now,
+        runnerIdentity: RUNNER, runContext: 'green-checkpoint', runGroupId: 'run-1:pure-proof-capture', source: 'local' }));
+      mutate?.(rows);
+      return rows;
+    } });
+    return h;
+  }
+
+  it('retains the exact named local proof population before removing its temporary result files', async () => {
+    const h = namedHarness();
+    const r = await run(h);
+    expect(r.evidence).toMatchObject({ version: 1, runGroupId: 'run-1:pure-proof-capture',
+      clean: true, startedAtMs: NOW, completedAtMs: NOW + 60_000 });
+    expect(r.evidence.proofs?.map((p) => p.file)).toEqual([rr('lib/c.test.ts'), rr('lib/d.test.ts'), rr('lib/b.test.ts')]);
+    const records = h.logs.filter((line) => line.startsWith('PURE_PROOF_CAPTURE_RESULT '));
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(records[0].slice('PURE_PROOF_CAPTURE_RESULT '.length))).toMatchObject({
+      sha: SHA, rows: 3, evidence: r.evidence,
+    });
+    expect(h.removed).toEqual(['/tmp/capture-test']);
+  });
+
+  it.each([
+    ['missing row', (r: Array<Record<string, unknown>>) => { r.pop(); }],
+    ['duplicate row', (r: Array<Record<string, unknown>>) => { r[1] = r[0]; }],
+    ['foreign file', (r: Array<Record<string, unknown>>) => { r[0].file = rr('foreign.test.ts'); }],
+    ['foreign group', (r: Array<Record<string, unknown>>) => { r[0].runGroupId = 'other'; }],
+    ['CI source', (r: Array<Record<string, unknown>>) => { r[0].source = 'ci'; }],
+    ['foreign context', (r: Array<Record<string, unknown>>) => { r[0].runContext = 'local'; }],
+    ['foreign runner', (r: Array<Record<string, unknown>>) => { r[0].runnerIdentity = 'other'; }],
+    ['old row', (r: Array<Record<string, unknown>>) => { r[0].recordedAtMs = NOW - 1; }],
+    ['future row', (r: Array<Record<string, unknown>>) => { r[0].recordedAtMs = NOW + 90_000; }],
+    ['missing test row', (r: Array<Record<string, unknown>>) => { r[0].testRunId = ''; }],
+  ])('retains %s as unknown rather than a named capture', async (_name, mutate) => {
+    expect((await run(namedHarness(mutate))).evidence.proofs).toBeNull();
+  });
+
+  it('does not turn a failed proof query or historical aggregate-only report into zero proofs', async () => {
+    const h = namedHarness();
+    Object.assign(h.deps, { loadCapturedProofRows: async () => { throw new Error('query failed'); } });
+    expect((await run(h)).evidence.proofs).toBeNull();
+    expect((await run(harness())).evidence.proofs).toBeNull();
+  });
+
+  it('emits one explicit skip with unknown proof evidence on a dirty tree', async () => {
+    const h = harness({ git: (_root: string, args: string[]) => args[0] === 'rev-parse' ? SHA : ' M source.ts' });
+    const result = await run(h);
+    expect(result.evidence).toMatchObject({ clean: null, proofs: null });
+    expect(h.logs.filter((line) => line.startsWith('PURE_PROOF_CAPTURE_RESULT '))).toHaveLength(1);
+    expect(h.slices).toHaveLength(0);
+  });
+
   it('captures the ordered candidates in slices, isolated, and reports what was recorded', async () => {
     const h = harness();
     const r = await run(h);
