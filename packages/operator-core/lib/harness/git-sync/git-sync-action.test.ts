@@ -4911,8 +4911,19 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
   });
 });
 
-describe('WI-10005972: git-sync orchestration stays off the sidecar Git runner', () => {
-  it('attributes and rejects every defaultRunGit entry from this unit suite', () => {
-    expect(defaultRunGitCallHistory).toEqual([]);
+describe('WI-10005972: sidecar Git entrypoint attribution', () => {
+  it('pins the first sidecar-eligible Git call to the bridged credential-helper lookup', () => {
+    const first = defaultRunGitCallHistory[0];
+    expect(first).toBeDefined();
+    expect(first?.testName).toContain(
+      'EI-20232774599730947: bridged mode makes the superproject truly commit-only',
+    );
+    expect(first?.args).toEqual([
+      ['config', '--local', '--get-all', 'credential.https://github.com.helper'],
+      repoDir,
+    ]);
+    expect(defaultRunGitCallHistory.every((call) =>
+      JSON.stringify(call.args[0]).includes('credential.https://github.com.helper'),
+    )).toBe(true);
   });
 });
