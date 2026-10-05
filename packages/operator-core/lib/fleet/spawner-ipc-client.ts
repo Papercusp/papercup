@@ -170,6 +170,17 @@ export class SpawnerIpcClient {
         settleErr(e);
       });
 
+      // A peer can finish its write side before Node emits `close`. During
+      // that interval `destroyed` is still false even though this socket can
+      // no longer receive RPC replies; writing to it can fail with EPIPE or
+      // leave a request waiting until its timeout. Retire it as soon as EOF
+      // arrives so the next call dials a replacement.
+      sock.on('end', () => {
+        const e = new Error(`Sidecar socket ended (${this.socketPath})`);
+        this.teardown(sock, e);
+        settleErr(new Error(`Sidecar connection ended before ready (${this.socketPath})`));
+      });
+
       sock.on('close', () => {
         // Fires on sidecar death AND after error/destroy; teardown is
         // idempotent via the socket-identity guard. After an ESTABLISHED

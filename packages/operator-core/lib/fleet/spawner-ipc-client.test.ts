@@ -335,6 +335,57 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
     }
   });
 
+  it('re-dials after the peer ends a socket before the local close event', async () => {
+    const p = socketPath();
+    let connectionCount = 0;
+    const sockets = new Set<net.Socket>();
+    const srv = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('error', () => {});
+      const generation = ++connectionCount;
+      const decoder = new StringDecoder('utf8');
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += decoder.write(chunk);
+        let newlineIndex: number;
+        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as { id: number; params?: { value?: string } };
+          const response = JSON.stringify({
+            jsonrpc: '2.0', result: { value: req.params?.value }, id: req.id,
+          }) + '\n';
+          if (generation === 1) socket.end(response);
+          else socket.write(response);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => srv.listen(p, resolve));
+    const c = new SpawnerIpcClient(p);
+    try {
+      await c.ensureConnected();
+      const firstSocket = (c as unknown as { socket: net.Socket | null }).socket;
+      if (!firstSocket) throw new Error('client did not retain its connected socket');
+      // Attach before the first RPC: the reply and peer FIN can arrive in one
+      // read cycle, before the awaiting test continuation runs.
+      const peerEnded = new Promise<void>((resolve) => firstSocket.once('end', resolve));
+      await expect(c.call<{ value: string }>('echo', { value: 'before' }, { timeoutMs: 1000 }))
+        .resolves.toEqual({ value: 'before' });
+      await peerEnded;
+
+      await expect(c.call<{ value: string }>('echo', { value: 'after' }, { timeoutMs: 100 }))
+        .resolves.toEqual({ value: 'after' });
+      expect(connectionCount).toBe(2);
+    } finally {
+      c.close();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* removed by server.close */ } }
+    }
+  });
+
   it('does not latch on a FAILED first dial — connects once the sidecar comes up', async () => {
     const p = socketPath();
     const c = new SpawnerIpcClient(p);
