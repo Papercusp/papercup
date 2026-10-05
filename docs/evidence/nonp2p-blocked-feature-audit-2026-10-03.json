@@ -9,6 +9,113 @@
   "count": 172,
   "scope": "Frozen non-P2P selector cohort; not the whole live backlog or original200 cohort"
  },
+ "cleanupMethodPreparation": {
+  "status": "verification-methods-applied-vetting-and-outcome-acceptance-open",
+  "preparedAt": "2026-10-05T20:54:20Z",
+  "workItems": ["WI-10005844", "WI-10005845", "WI-10005846"],
+  "subjectPlan": "nonp2p-feature-queue-cleanup-2026-10-03",
+  "subjectRevision": 17,
+  "subjectContentHash": "689814ec11bc909c283892e2af0e997a621118ae7c27e609282beb0ac2ceb92f",
+  "rubric": "acceptance-nonp2p-feature-queue-cleanup-2026-10-03",
+  "baseRubricRevision": 2,
+  "baseCriteriaHash": "f1082b77aa649c6ad822181e5af68e2d814d136e50e17346120bf55c69291b29",
+  "currentRubricRevision": 3,
+  "currentCriteriaHash": "78848236bf02b907a65dffd109a36965123e71d8b7aa4ca8acc0a1c682604a3d",
+  "barSetHashBeforeAndAfter": "8c124ecde4dfb7f6bc07a76591fe1407c0ec6adb54ad73ab0c2ef4b499aafaf3",
+  "amendmentIdempotencyKey": "25bc-cleanup-manual-main-replication-artifact-v17-r2-20261005",
+  "proposedMethodRef": "agent-insights/launching-agents-which-tool-for-which-door",
+  "checkDisposition": "Keep explicitly manual instrument:none. These are record review outcomes; passing source tests does not prove them. Add concrete main and replication procedures before independent vetting.",
+  "reuse": "Extend this existing evidence artifact and existing launch-evidence/lifecycle runbooks; no new tool, table, event kind, worker wave or audit cohort.",
+  "launchReceipt": {
+   "idempotencyKey": "nonp2p-feature-owner-20-new-sol61-xhigh-20261003-25bc",
+   "launchedAtMs": "1791002305129",
+   "processOpened": 20,
+   "failed": 0,
+   "sessionRegistered": 20,
+   "firstTurn": null,
+   "agentStarted": null,
+   "taskDisposition": {"claimed": 0, "noClaim": 0, "unknown": 20},
+   "scope": "Original launcher observation, recovered from agent_launch_idempotency; not readiness or current activity."
+  },
+  "namedLaunchCohort": {
+   "source": "harness_shared.adv_sessions",
+   "workspace": "papercusp-workspace",
+   "launchParentOwner": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+   "firstSeenWindow": ["2026-10-03T04:34:00Z", "2026-10-03T04:59:15.716Z"],
+   "windowBasis": "Original recorded owners query lower bound; upper bound is its recorded read completion, added to exclude later launches.",
+   "rowsReturned": 20,
+   "truncated": false,
+   "columns": ["advSessionId", "ownerId"],
+   "rows": [
+    ["33973", "su-9317dcba-2fd2-4233-b38e-491fd1d599ea"],
+    ["33974", "su-8daff195-b7f8-437f-91f7-d30e0bdd39d0"],
+    ["33975", "su-b681ae4a-2824-4f14-ad71-8a9b69792c4c"],
+    ["33976", "su-ec851ba3-5c32-4bc5-9b6e-b1bec1d196fb"],
+    ["33977", "su-77a1b151-dc4a-4a97-a231-7a36de70cf29"],
+    ["33978", "su-e01de719-5aeb-4c3d-befe-438f0df250c9"],
+    ["33979", "su-6cd7f137-cef1-40a4-b9dc-34705ceda5cc"],
+    ["33980", "su-937ab496-754f-4a1c-8c5b-f4fdd7eaca80"],
+    ["33981", "su-04e408eb-3bc2-4dc1-8e02-950921ddc584"],
+    ["33982", "su-7651ee79-0b80-430e-9cb6-3800e932ee75"],
+    ["33983", "su-79531fc3-116d-4456-bf75-e62ad2361ac1"],
+    ["33984", "su-8a3d638a-0de7-42cf-a7f0-c02897c0326b"],
+    ["33985", "su-4de9b260-dd0e-47ba-b0aa-7a0f195a3596"],
+    ["33986", "su-55c41d4e-3384-4358-8bef-d4d524ccf3b6"],
+    ["33987", "su-76fd70b1-4f38-4c1a-97f3-52cebd2fe425"],
+    ["33989", "su-bfc4ea92-12d8-4693-8939-1b566289f7da"],
+    ["33990", "su-036a1f1c-1426-408c-88e5-72148a51f5f6"],
+    ["33991", "su-4b849746-5b02-4155-a747-9432051437b7"],
+    ["33992", "su-41eed7cb-d7f9-4439-a2a6-c36dc939bb2a"],
+    ["33993", "su-121f621a-051b-40da-8786-fe14c1fcbae3"]
+   ],
+   "storedProfile": {"agent": "codex", "model": "gpt-6.1-sol:xhigh", "effort": "xhigh", "headless": true, "autoMode": true, "drainMode": true, "fleet": {"role": "member", "slug": "nonp2p-feature-drain-sol61-xhigh-0930"}},
+   "storedProfileExceptions": [],
+   "runtimeReadiness": "unknown from this configuration-only read",
+   "nativeIdentityQualification": "Current adv_sessions.session_id is mutable on resume (adv-sessions.ts adoptStartingTerminalLaunch/reanchorAdvSessionAfterRespawn). It differs from original transcript row33973. Never substitute it for the original native first-turn identity."
+  },
+  "sourceRefs": [
+   "thread-post:1156804",
+   "thread-post:1156838",
+   "thread-post:1158000",
+   "$HOME/.papercusp/su-codex-homes/session-32446/sessions/2026/10/03/rollout-2026-10-03T00-48-05-01a10017-3f0b-7013-92cd-fbaf80c0bde6.jsonl:243",
+   "/internal/docs/agent-insights/launching-agents-which-tool-for-which-door#queue-screening-and-honest-launch-evidence",
+   "packages/operator-core/lib/agent-tools/fleet_registry/status.ts:599",
+   "packages/operator-core/lib/adv-sessions.ts:1695"
+  ],
+  "readCalls": {
+   "receipt": {
+    "tool": "dev:pg_query",
+    "args": {"allowUnscoped": false, "maxRows": 1, "sql": "SELECT idempotency_key,launched_at,summary->'opened' AS opened,summary->'failed' AS failed,summary->'agentStarted' AS agent_started,summary->'launchEvidence' AS launch_evidence FROM harness_shared.agent_launch_idempotency WHERE workspace_id='papercusp-workspace' AND idempotency_key='nonp2p-feature-owner-20-new-sol61-xhigh-20261003-25bc'"}
+   },
+   "owners": {
+    "tool": "dev:pg_query",
+    "args": {"allowUnscoped": false, "maxRows": 30, "sql": "SELECT id,coord_owner_id,agent,launch_spec->>'headless' AS headless,launch_spec->>'model' AS model,launch_spec->>'effort' AS effort,launch_spec->>'autoMode' AS auto,launch_spec->>'drainMode' AS drain,launch_spec->'fleet' AS fleet,first_seen_at FROM harness_shared.adv_sessions WHERE workspace_id='papercusp-workspace' AND launch_parent_owner='su-25bc0450-2829-42b9-a2dd-1431c99e4ba8' AND first_seen_at>='2026-10-03T04:34:00Z' AND first_seen_at<='2026-10-03T04:59:15.716Z' ORDER BY id"}
+   },
+   "archivalFleet": {
+    "tool": "fleet:audit",
+    "args": {"fleet": "nonp2p-feature-drain-sol61-xhigh-0930", "workspace": "papercusp-workspace", "harness": "papercusp", "since": "2026-10-01T00:00:00Z", "limit": 50},
+    "paging": "Repeat with each returned page.nextCursor and identical scope until hasMore:false. The tool freezes the retrieval snapshot, not the historical roster. Resume-mutated session fields cannot replace original lifecycle evidence."
+   },
+   "reports": {"tool": "conversations:get", "args": {"ids": ["thread-post:1156804", "thread-post:1156838"]}}
+  },
+  "main": {
+   "R-1": "Read the original idempotency receipt and named cohort using the exact workspace, parent and firstSeenWindow above. Require 20 distinct advSessionId/ownerId pairs, no truncation and no stored-profile exceptions. Join each to its ORIGINAL native config and first turn, successful gateway invocation with no account pin, exact authored claim-spec revision6/hash, first scheduler disposition and canonical wake at the original observation. Process-open, registered presence, current resumed native identity and config alone cannot pass. Missing original per-worker proof is UNKNOWN; a measured mismatch is FAIL.",
+   "R-2": "Use the dated original roster snapshot, append-only fleet_membership_events, recorded native/lifecycle endings and the roster/count writers to explain the count at that same observation. Page fleet:audit to exhaustion for archival evidence, retaining its snapshotAt/cursor scope and every unavailable leg. Historical membership, runnable roster, executing sessions and productive/awaiting sessions are separate populations. Preserve the original three-worker observation separately from the later 05:37-05:39 four-executing/24-roster observation. A reaper sweep time is not actual loss time, and ending classes do not establish initiating causes. Disabled top-up does not establish an individual termination cause. Missing contemporaneous snapshot/cause proof remains UNKNOWN.",
+   "R-3": "Read the complete independently frozen matching OPEN and BLOCKED ID population with exact revision6/shared-selector and claim-floor provenance. Qualify the open and blocked captures and their union separately; do not infer an original200 manifest by adding reported counts. Leader25bc must review each ID's record, governing plan/Decisions/specification, source/evidence and requirements/dependencies. Record each disposition and authoritative readback; retain exact unresolved prerequisites for every block. Never override a live peer claim. Unread entries, missing union/cohort proof or proposed terminal authority remain explicit residue and cannot pass."
+  },
+  "replication": {
+   "R-1": "A second reviewer repeats the exact receipt/cohort reads and joins using this named 20-row population and ORIGINAL observation evidence, retaining source/runtime hashes. On a review copy only, remove one owner or duplicate an owner: the population check must fail. Replace a native proof with a current resumed session, or supply only firstTurn:null/processOpened without later qualified attestation: readiness must stay UNKNOWN. Alter model, effort, pin, fleet, revision6 scope or wake: a measured mismatch must fail. No launch, wake or fleet mutation is part of this drill.",
+   "R-2": "A second reviewer independently reads the roster/count writer and archived snapshots, follows every same-snapshot fleet:audit cursor and reconciles IDs against membership/native/lifecycle evidence. On a review copy only, replace executing count with historical membership, equate reaper noticed time with true loss, or assert an initiating cause without direct evidence: the grade must fail. Omit a snapshot or audit page: coverage remains UNKNOWN rather than zero. This drill does not monitor or change the live fleet.",
+   "R-3": "A second reviewer compares the exact frozen manifest against one per-ID personally authored conclusion, preserved requirement/dependency references and authoritative disposition readback. On a review copy only, remove a blocked ID, substitute a current/open-only census, erase a prerequisite, remove readback, or present a proposed completion as committed: coverage/authority must fail. An unverified original200 cohort is not satisfied by another cohort's verified count."
+  },
+  "openEvidence": [
+   "The cited /tmp readiness and roster inputs no longer exist. Original transcript contains intentionally clipped JSON; clipped details cannot be reconstructed from aggregate counts.",
+   "Original full native/model/gateway/spec/wake joins need recoverable per-worker source references before R-1 acceptance.",
+   "Original three-worker observation and initiating departure causes are not re-established by the later four-executing report or current resumed session rows.",
+   "Original200 ID provenance and complete frozen open/blocked union remain unqualified.",
+   "Rubric3 now contains the MAIN/REPLICATION methods and existing runbook reference. Canonical reread preserves every other criterion field and all BAR hashes; source17 is unchanged. Source METHOD/Requirements synchronization, independent rubric vetting, grading-integrity audit and outcome acceptance remain pending."
+  ]
+ },
  "evidenceTimes": {
   "sourceSnapshot": "2026-10-03T08:39:58.564327+00:00",
   "canonicalDependencies": "2026-10-03T08:46:22.401400+00:00",
