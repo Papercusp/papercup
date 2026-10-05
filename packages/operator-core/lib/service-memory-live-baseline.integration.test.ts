@@ -322,6 +322,97 @@ function auditRequestWorkerAssignments(requestIds: (string | null)[], observatio
     queryRelationCoverage: 'Bounded terminal records, not a complete query census or retained/native ownership proof' };
 }
 
+type WorkerCensus = { main: ResourceRow; descendants: ResourceRow[];
+  notChecked: { pid: number; parentPid: number; reason: string }[] };
+type WorkerWindowReader = {
+  census: () => WorkerCensus;
+  read: (pid: number, requestIds: string[]) => Promise<{
+    counters: Awaited<ReturnType<typeof readProcessMemory>>;
+    snapshot: ReturnType<typeof requestWorkerSnapshot>;
+  }>;
+};
+
+// The same bounded reader can bracket several selected workers. Inspector
+// ownership stays with the caller; this collector never opens a profiler,
+// forces GC, changes a worker count, or infers an unsampled worker's resources.
+async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild: string,
+  reader: WorkerWindowReader, workload: () => Promise<(string | null)[]>) {
+  if (!targets.length || targets.length > 8 || new Set(targets.map(row => row.pid)).size !== targets.length ||
+      targets.some(row => !Number.isSafeInteger(row.pid) || row.pid <= 0) ||
+      !/^[a-f0-9]{7,64}$/i.test(expectedBuild)) throw Error('Worker-window target selection');
+  const initial = reader.census();
+  processInventory(initial.main, initial.descendants, initial.notChecked);
+  const stablePath = (census: WorkerCensus, target: ResourceRow) => {
+    assertIdentity(initial.main, census.main);
+    let row = counterTarget(census.main, census.descendants, target.pid);
+    assertIdentity(target, row);
+    while (true) {
+      const prior = [initial.main, ...initial.descendants].find(value => value.pid === row.pid);
+      if (!prior) throw Error('Worker-window ancestry unavailable');
+      assertIdentity(prior, row);
+      if (prior.parentPid !== row.parentPid || prior.command.sha256 !== row.command.sha256 ||
+          prior.command.script !== row.command.script) throw Error('Worker-window ancestry changed');
+      if (row.pid === census.main.pid) break;
+      row = census.descendants.find(value => value.pid === row.parentPid) ?? census.main;
+    }
+    return counterTarget(census.main, census.descendants, target.pid);
+  };
+  // Reject a foreign/reused selection before reading any target or workload.
+  for (const target of targets) stablePath(initial, target);
+  const sample = async (requestIds: string[]) => {
+    const startedAt = Date.now();
+    const before = reader.census();
+    processInventory(before.main, before.descendants, before.notChecked);
+    for (const target of targets) stablePath(before, target);
+    const readings = [];
+    for (const target of targets) {
+      const value = await reader.read(target.pid, requestIds);
+      const role = configuredHostRole(value.counters.hostFacts);
+      if (value.counters.pid !== target.pid || value.snapshot.pid !== target.pid ||
+          value.snapshot.status !== 'observed' || value.snapshot.buildSha !== expectedBuild ||
+          !/^[a-f0-9-]{36}$/i.test(value.snapshot.processInstanceId) ||
+          role.configuredSidecar !== null || !role.requestOnly) throw Error('Worker-window loaded target identity or role');
+      if (!Number.isFinite(value.counters.heap?.total_allocated_bytes) ||
+          value.counters.heap.total_allocated_bytes < 0) throw Error('Worker-window cumulative allocation unavailable');
+      readings.push({ ...value, role, before: stablePath(before, target) });
+    }
+    const after = reader.census();
+    processInventory(after.main, after.descendants, after.notChecked);
+    const observations = readings.map((value, index) => {
+      const os = stablePath(after, targets[index]);
+      if (!Number.isFinite(os.pssBytes) || os.pssBytes <= 0 ||
+          !Number.isFinite(value.before.pssBytes) || value.before.pssBytes <= 0) throw Error('Worker-window PSS unavailable');
+      return { ...value, after: os };
+    });
+    if (new Set(observations.map(row => row.snapshot.processInstanceId)).size !== observations.length)
+      throw Error('Worker-window duplicate process instance');
+    const selected = new Set(targets.map(row => row.pid));
+    return { startedAt, endedAt: Date.now(), observations,
+      coverage: { selectedPids: targets.map(row => row.pid),
+        unsampledPids: [after.main, ...after.descendants].filter(row => !selected.has(row.pid)).map(row => row.pid),
+        notCheckedBefore: before.notChecked, notCheckedAfter: after.notChecked,
+        population: 'Selected PID lifetime fences within a bounded descendant census; serving-worker population remains unknown' } };
+  };
+  const before = await sample([]);
+  const requestIds = await workload();
+  const after = await sample(requestIds.filter((id): id is string => typeof id === 'string'));
+  const resources = after.observations.map((row, index) => {
+    const prior = before.observations[index];
+    if (prior.snapshot.processInstanceId !== row.snapshot.processInstanceId ||
+        JSON.stringify(prior.role) !== JSON.stringify(row.role)) throw Error('Worker-window process instance or role changed');
+    const allocatedBytes = row.counters.heap.total_allocated_bytes - prior.counters.heap.total_allocated_bytes;
+    if (allocatedBytes < 0) throw Error('Worker-window cumulative allocation regressed');
+    return { pid: row.after.pid, startTicks: row.after.startTicks, executableSha256: row.after.executableSha256,
+      processInstanceId: row.snapshot.processInstanceId, buildSha: expectedBuild, role: row.role,
+      pssBytesBefore: prior.after.pssBytes, pssBytesAfter: row.after.pssBytes,
+      pssChangeBytes: row.after.pssBytes - prior.after.pssBytes, allocatedBytes,
+      countersBefore: prior.counters, countersAfter: row.counters };
+  });
+  return { before, after, resources,
+    assignment: auditRequestWorkerAssignments(requestIds, after.observations, expectedBuild),
+    definition: 'Unforced serial per-worker PSS and cumulative V8 allocation bracketing one exact request window; no native ownership, intervention saving, or complete worker census' };
+}
+
 function listenerPorts(pid: number) {
   const inodes = new Set(readdirSync(`/proc/${pid}/fd`).flatMap(fd => {
     try { return [readlinkSync(`/proc/${pid}/fd/${fd}`).match(/^socket:\[(\d+)\]$/)?.[1]]; }
@@ -335,6 +426,95 @@ function listenerPorts(pid: number) {
 }
 
 describe('actual current-build operator memory baseline', () => {
+  describe('multi-target request-resource window', () => {
+    const build = 'abcdef1234';
+    const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+    const setup = () => {
+      const main: ResourceRow = { pid: 10, parentPid: 1, startTicks: '1', executable: '/node',
+        executableSha256: 'a'.repeat(64), command: { script: '/runtime/hono-host.mjs', sha256: 'x', esbuildService: false },
+        pssBytes: 1000, rssBytes: 2000, anonymousBytes: 800 };
+      const children = [11, 12, 13].map(pid => ({ ...main, pid, parentPid: main.pid, startTicks: String(pid) }));
+      const targets = children.slice(0, 2).map(row => ({ ...row }));
+      let reads = 0, workloads = 0, censuses = 0;
+      const census = () => { censuses++; return { main: { ...main }, descendants: children.map(row => ({ ...row })),
+        notChecked: [] as WorkerCensus['notChecked'] }; };
+      const read: WorkerWindowReader['read'] = async (pid, requestIds) => {
+        const phase = Math.floor(reads++ / 2);
+        const requestId = ids[pid - 11];
+        const processInstanceId = (pid === 11 ? '33333333' : '44444444') + '-3333-4333-8333-333333333333';
+        const poolInstanceId = '55555555-5555-4555-8555-555555555555';
+        return { counters: { pid, heap: { total_allocated_bytes: 10000 + phase * 200 },
+          memory: { heapUsed: 100 }, hostFacts: { cluster: { isPrimary: false, isWorker: true },
+            backgroundWorkersOverride: 'disabled', stagingPort: false,
+            sidecarFlags: { substrate: false, spawner: false, gateway: false, embed: false, resourceHealth: false } } },
+        snapshot: { status: 'observed', pid, processInstanceId, buildSha: build,
+          results: requestIds.includes(requestId) ? [1, 2].map(queryId => ({ pool: 'test',
+            source: { processInstanceId, buildSha: build, poolInstanceId }, connectionId: 1, queryId, status: 'ok',
+            correlation: { requestId, processInstanceId, buildSha: build, operation: 'workItems.byHarness' } })) : [] } };
+      };
+      const reader = { census, read };
+      const workload = async () => { workloads++; children[0].pssBytes -= 25; return ids; };
+      return { main, children, targets, reader, workload, counts: () => ({ reads, workloads, censuses }) };
+    };
+    it('brackets both worker resources and conserves exact requests without calling a PSS decline a saving', async () => {
+      const f = setup(), result = await collectRequestWorkerWindow(f.targets, build, f.reader, f.workload);
+      expect(result.resources.map(row => [row.pid, row.allocatedBytes, row.pssChangeBytes])).toEqual([[11, 200, -25], [12, 200, 0]]);
+      expect(result.assignment.status).toBe('observed');
+      expect(result.assignment.assignments.map(row => [row.pid, row.queryTuples.length])).toEqual([[11, 2], [12, 2]]);
+      expect(result.after.coverage.unsampledPids).toEqual([10, 13]);
+      expect(result.definition).toContain('no native ownership'); expect(f.counts().workloads).toBe(1);
+    });
+    it('keeps evicted requests and raced census residue explicit beside successful resource rows', async () => {
+      const f = setup(), read = f.reader.read;
+      f.reader.read = async (pid, ids) => { const value = await read(pid, ids); if (pid === 12) value.snapshot.results = []; return value; };
+      const census = f.reader.census;
+      f.reader.census = () => ({ ...census(), notChecked: [{ pid: 99, parentPid: 10, reason: 'cap' }] });
+      const result = await collectRequestWorkerWindow(f.targets, build, f.reader, f.workload);
+      expect(result.resources).toHaveLength(2); expect(result.assignment.status).toBe('partial');
+      expect(result.assignment.unresolvedRequestIds).toEqual([ids[1]]);
+      expect(result.after.coverage.notCheckedAfter).toEqual([{ pid: 99, parentPid: 10, reason: 'cap' }]);
+    });
+    it.each(['duplicate', 'foreign', 'reused'] as const)('rejects %s target selection before observing workload', async kind => {
+      const f = setup();
+      if (kind === 'duplicate') f.targets[1] = f.targets[0];
+      if (kind === 'foreign') f.targets[0].parentPid = 98;
+      if (kind === 'reused') f.targets[0].startTicks = 'reused';
+      // The selected record's ancestry itself is also part of the pin.
+      if (kind === 'foreign') f.children[0].parentPid = 98;
+      await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow();
+      expect(f.counts().reads).toBe(0); expect(f.counts().workloads).toBe(0);
+    });
+    it.each(['build', 'role', 'allocation', 'counter PID', 'instance'] as const)('rejects changed %s within a measured window', async kind => {
+      const f = setup(), read = f.reader.read;
+      f.reader.read = async (pid, ids) => {
+        const value = await read(pid, ids);
+        if (ids.length && pid === 11) {
+          if (kind === 'build') value.snapshot.buildSha = '0123456789';
+          if (kind === 'role') value.counters.hostFacts.cluster = { isPrimary: true, isWorker: false };
+          if (kind === 'allocation') value.counters.heap.total_allocated_bytes = 9999;
+          if (kind === 'counter PID') value.counters.pid = 99;
+          if (kind === 'instance') value.snapshot.processInstanceId = '66666666-6666-4666-8666-666666666666';
+        }
+        return value;
+      };
+      await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow();
+    });
+    it('rejects ancestor PID reuse even when the selected worker PID and executable stay the same', async () => {
+      const f = setup();
+      const wrapper = { ...f.main, pid: 20, parentPid: f.main.pid, startTicks: '20',
+        command: { ...f.main.command, script: '/runtime/wrapper.mjs' } };
+      f.children.push(wrapper); f.children[0].parentPid = 20; f.targets[0].parentPid = 20;
+      const read = f.reader.read;
+      f.reader.read = async (pid, ids) => { const value = await read(pid, ids); wrapper.startTicks = 'reused'; return value; };
+      await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow('identity changed');
+      expect(f.counts().workloads).toBe(0);
+    });
+    it('propagates a failed worker read before running workload instead of silently dropping its resources', async () => {
+      const f = setup(); f.reader.read = async () => { throw Error('target disconnected'); };
+      await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow('target disconnected');
+      expect(f.counts().workloads).toBe(0);
+    });
+  });
   describe('exact request-worker assignment', () => {
     const build = 'abcdef1234';
     const request = '11111111-1111-4111-8111-111111111111';
