@@ -55,8 +55,8 @@ describe('reuse audit population from immutable gate events', () => {
   it.each([
     ['capped', (r: PipelineEventWindowRead) => { r.status = 'capped'; }],
     ['empty', (r: PipelineEventWindowRead) => { r.rows = []; r.total = 0; }],
-    ['missing outcome', (r: PipelineEventWindowRead) => { r.rows.pop(); r.total--; }],
-    ['missing anchor', (r: PipelineEventWindowRead) => { r.rows.shift(); r.total--; }],
+    ['missing outcome', (r: PipelineEventWindowRead) => { r.rows.pop(); r.total = r.rows.length; }],
+    ['missing anchor', (r: PipelineEventWindowRead) => { r.rows.shift(); r.total = r.rows.length; }],
     ['unidentified fire', (r: PipelineEventWindowRead) => { delete r.rows[0]!.detail.gateFireId; }],
     ['cross-window start', (r: PipelineEventWindowRead) => { r.rows[0]!.createdAtMs = 90; }],
     ['cross-window outcome', (r: PipelineEventWindowRead) => { r.rows[1]!.createdAtMs = 210; }],
@@ -81,7 +81,7 @@ describe('reuse audit population from immutable gate events', () => {
 
   it('collapses matching producer/fallback archives but refuses conflicting evidence', () => {
     const r = fixture();
-    r.rows.push({ ...r.rows[1]!, id: 'fallback', createdAtMs: 140 }); r.total++;
+    r.rows.push({ ...r.rows[1]!, id: 'fallback', createdAtMs: 140 }); r.total = r.rows.length;
     expect(evaluateGateReuseAuditWindow(r).verdict).toBe('pass');
     r.rows[2] = { ...r.rows[2]!, detail: { ...r.rows[2]!.detail, runId: 'other' } };
     expect(evaluateGateReuseAuditWindow(r).verdict).toBe('unknown');
@@ -91,7 +91,7 @@ describe('reuse audit population from immutable gate events', () => {
     const r = fixture();
     r.rows.push({ ...r.rows[0]!, id: 'skip-anchor', detail: { gateFireId: 'fire-2' } },
       { id: 'skip', kind: 'green_checkpoint', status: 'skipped-locked', createdAtMs: 140, detail: { gateFireId: 'fire-2' } });
-    r.total += 2;
+    r.total = r.rows.length;
     expect(evaluateGateReuseAuditWindow(r)).toMatchObject({ verdict: 'pass', excludedFireIds: ['fire-2'] });
   });
 });

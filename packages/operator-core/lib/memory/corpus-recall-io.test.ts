@@ -37,7 +37,10 @@ vi.mock('../agent-tools/search/sources', () => ({
     { name: 'coord_message' },
   ],
 }));
-vi.mock('../agent-tools/search/embedder', () => ({ buildQueryEmbedder }));
+vi.mock('../agent-tools/search/embedder', async () => ({
+  ...(await import('../search/embedder-mode-registry')),
+  buildQueryEmbedder,
+}));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { MEMORY_CORPUS_RECALL: 'papercusp-memory-corpus-recall' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag }));
 

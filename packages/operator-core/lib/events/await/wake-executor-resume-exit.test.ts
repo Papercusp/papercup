@@ -40,6 +40,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     return {
       s,
       deps: {
+        resolveWakeModeFn: async () => 'auto',
         findPsuHost: () => null, // no live socket → fall through to the resume ladder
         getSession: async () =>
           ({

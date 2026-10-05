@@ -3042,6 +3042,14 @@ export function buildWorkspaceHostBootstrap(
     'chown root:root "$PRIVILEGED_CONDUIT_SUDOERS"',
     'chmod 0440 "$PRIVILEGED_CONDUIT_SUDOERS"',
     'visudo -cf "$PRIVILEGED_CONDUIT_SUDOERS" >/dev/null',
+    // WI-10006110: the unit used to declare no start budget, so systemd's generic 90s
+    // DefaultTimeoutStartSec bounded a FIRST boot (embedded-PG initdb, migrations, content
+    // install) that ExecStartPost's health poll must see finish. Every AWS bootc clean room
+    // died there ("start-post operation timed out", 6.35s CPU in 90s: waiting, not computing).
+    // TEMPORARY MITIGATION until the start sampler below names what the wait is; durable fix
+    // = remove that wait, tracked on WI-10006110. The budget is explicit so a slow start is
+    // a measured number in the bootstrap log, never systemd's silent default.
+    "SERVICE_START_TIMEOUT_SEC=600",
     'cat > "/etc/systemd/system/$SERVICE_NAME.service" <<PAPERCUSP_SERVICE',
     "[Unit]",
     "Description=Papercusp durable workspace host",
@@ -3050,6 +3058,7 @@ export function buildWorkspaceHostBootstrap(
     "",
     "[Service]",
     "Type=simple",
+    "TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC",
     "User=$SERVICE_USER",
     "Group=$SERVICE_GROUP",
     "WorkingDirectory=$STATE_ROOT",
@@ -3200,8 +3209,56 @@ export function buildWorkspaceHostBootstrap(
     '  [[ "$(systemctl is-active "$SERVICE_NAME.service" 2>/dev/null)" == "active" ]] || return 0',
     '  return 1',
     '}',
+    // WI-10006110: service_diagnostics runs AFTER the start has failed, when systemd has
+    // already killed the server and scheduled its auto-restart — so it can say THAT the
+    // start timed out but never WHAT the server was waiting on. The sampler records the
+    // service's processes (state + wait channel), disk-read counters, listeners and
+    // pending outbound connects every 10s WHILE systemctl restart blocks, so a failed
+    // start carries its own in-flight evidence off the instance before teardown.
+    'START_SAMPLE_LOG=""',
+    'START_SAMPLER_PID=""',
+    'start_sampler() {',
+    '  START_SAMPLE_LOG="$(mktemp /run/papercusp-start-samples.XXXXXX 2>/dev/null || mktemp)"',
+    '  ( t0=$SECONDS; while true; do',
+    '      { echo "=== start sample t+$((SECONDS - t0))s";',
+    '        echo "cpustat $(head -1 /proc/stat)";',
+    '        grep -E " (nvme[0-9]+n[0-9]+|xvd[a-z]+|sd[a-z]+) " /proc/diskstats | sed "s/^ */diskstats /";',
+    '        ps -e -o pid=,stat=,wchan:22=,etimes=,time=,rss=,args= | grep -E "node|postgres|initdb|papercusp" | grep -v grep | cut -c1-180 | head -n 12;',
+    '        ss -ltn | tail -n +2 | sed "s/^/listen /" | head -n 8;',
+    '        ss -tn state syn-sent | tail -n +2 | sed "s/^/syn-sent /" | head -n 5;',
+    '      } >> "$START_SAMPLE_LOG" 2>&1 || true',
+    '      sleep 10',
+    '    done ) &',
+    '  START_SAMPLER_PID=$!',
+    '}',
+    'stop_sampler() {',
+    '  if [[ -n "$START_SAMPLER_PID" ]]; then kill "$START_SAMPLER_PID" 2>/dev/null || true; fi',
+    '  START_SAMPLER_PID=""',
+    '}',
+    'start_diagnostics() {',
+    '  if [[ -n "$START_SAMPLE_LOG" && -s "$START_SAMPLE_LOG" ]]; then',
+    '    echo "[workspace-host-bootstrap] --- start samples: first, then last (every 10s during systemctl restart) ---" >&2',
+    '    head -n 25 "$START_SAMPLE_LOG" >&2 || true',
+    '    echo "..." >&2',
+    '    tail -n 60 "$START_SAMPLE_LOG" >&2 || true',
+    '  fi',
+    '  echo "[workspace-host-bootstrap] --- recent logs under $STATE_ROOT ---" >&2',
+    '  find "$STATE_ROOT" -xdev -type f \\( -name "*.log" -o -name "logfile" -o -name "postmaster.log" \\) -mmin -20 2>/dev/null | head -n 6 | while read -r f; do echo "## $f" >&2; tail -n 15 "$f" 2>&1 | cut -c1-240 >&2; done || true',
+    '  echo "[workspace-host-bootstrap] --- SELinux denials this boot ---" >&2',
+    '  journalctl -b --no-pager -o cat 2>/dev/null | grep -F "avc:" | grep -F denied | tail -n 10 >&2 || echo "(none)" >&2',
+    '}',
     'if service_restart_needed; then',
-    '  systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }',
+    '  start_sampler',
+    '  SERVICE_START_T0=$SECONDS',
+    '  if systemctl restart "$SERVICE_NAME.service"; then',
+    '    stop_sampler',
+    '    log "service:started in $((SECONDS - SERVICE_START_T0))s (TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC)"',
+    '  else',
+    '    stop_sampler',
+    '    service_diagnostics',
+    '    start_diagnostics',
+    '    die "workspace service failed to start"',
+    '  fi',
     'else',
     '  log "service:unchanged — this boot re-runs the bootstrap that completed on an earlier boot; $SERVICE_NAME.service keeps running"',
     'fi',
