@@ -102,7 +102,11 @@ import {
   managedSetInterval,
   type ManagedHandle,
 } from "@papercusp/scheduled-registry";
-import { gateVerdictTargetFromEnv, type GateVerdictTarget } from "@papercusp/operator-core/lib/release/gate-verdict-target";
+import {
+  gateVerdictTargetFromEnv,
+  resolveHomeGateVerdictTarget,
+  type GateVerdictTarget,
+} from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
 import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
 import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
@@ -21022,7 +21026,11 @@ export function realCheckpointDeps(
       const routed = await publishPromotion(
         {
           repoPath: cfg.integrationRoot,
-          workspaceId: gateVerdictTargetFromEnv()?.workspaceId,
+          // The launcher stamps the verdict target; an unstamped run (direct CLI) falls
+          // back to the operator-home workspace so a registered pot home is not held
+          // merely for lack of a workspace id.
+          workspaceId:
+            gateVerdictTargetFromEnv()?.workspaceId ?? resolveHomeGateVerdictTarget()?.workspaceId,
           sha: candidateSha ?? ref,
           ref,
         },
