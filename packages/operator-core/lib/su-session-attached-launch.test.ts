@@ -7,6 +7,18 @@ const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
   ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
   resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(), owner: vi.fn(), recordOwner: vi.fn(),
+  callOwner: vi.fn(), forwardable: vi.fn(),
+}));
+// WI-10003879: the cross-worker relay is proven for real in
+// su-session-owner-routing.integration.test.ts; here only the launch's
+// decision (forward vs attach locally) is under test.
+vi.mock('./cluster-owner-rpc', async (orig) => ({
+  ...(await orig<typeof import('./cluster-owner-rpc')>()),
+  callOwnerProcess: (...args: unknown[]) => mocks.callOwner(...args),
+}));
+vi.mock('./su-session-owner-routing', async (orig) => ({
+  ...(await orig<typeof import('./su-session-owner-routing')>()),
+  isForwardableOwner: (...args: unknown[]) => mocks.forwardable(...args),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
@@ -368,6 +380,72 @@ describe('attached launch authority', () => {
     expect(response.status).toBe(200);
     expect(await (mocks.bootstrap.mock.calls[0][0] as Request).json()).toMatchObject({ model: expected });
     expect(mocks.engine.mock.calls[0][3].model).toBe(expected);
+  });
+});
+
+// WI-10003879: the :3070 operator runs several cluster workers. The engine
+// lives in the worker that attached it, so the launch must say which worker
+// that is, and a re-attach landing elsewhere must run on that worker.
+describe('engine ownership across cluster workers', () => {
+  const remoteOwner = { pid: 99_999, hostId: 'host-a', nonce: 'nonce-a', recordedAt: '2026-10-05T00:00:00.000Z' };
+
+  it('records this worker as the owner before a fresh launch returns', async () => {
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'owner-recorded' });
+    expect(response.status).toBe(200);
+    expect(mocks.recordOwner).toHaveBeenCalledWith(18, expect.objectContaining({
+      pid: process.pid, hostId: expect.any(String), nonce: expect.any(String), recordedAt: expect.any(String),
+    }), 'workspace');
+    // Recorded once the engine exists, so a sibling's first snapshot already finds the owner.
+    expect(mocks.engine.mock.invocationCallOrder[0]).toBeLessThan(mocks.recordOwner.mock.invocationCallOrder[0]);
+    expect(mocks.callOwner).not.toHaveBeenCalled();
+  });
+
+  it('runs a re-attach on the worker that holds the engine instead of starting a second one', async () => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(true);
+    mocks.callOwner.mockResolvedValue({ ok: true, result: { status: 'ok', httpStatus: 200, body: { status: 'ok', advSessionId: 18, ready: true } } });
+    const attach = { ...input, agent_chat_id: 'owned-elsewhere' };
+    const response = await launchAttachedSuSession(request(), attach);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Papercusp-Su-Session-Served-By')).toBe('forwarded:99999');
+    expect(await response.json()).toEqual({ status: 'ok', advSessionId: 18, ready: true });
+    expect(mocks.callOwner).toHaveBeenCalledWith(expect.objectContaining({
+      targetPid: 99_999, kind: 'su-session-attach', payload: { input: attach, hostId: 'host-a', nonce: 'nonce-a' },
+    }));
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+    expect(mocks.recordOwner).not.toHaveBeenCalled();
+  });
+
+  it.each(['owner_gone', 'no_handler', 'not_clustered'])('attaches locally when the owner is unreachable for good (%s)', async (code) => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(true);
+    mocks.callOwner.mockResolvedValue({ ok: false, code, message: 'gone' });
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: `owner-${code}` });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Papercusp-Su-Session-Served-By')).toBeNull();
+    expect(mocks.engine).toHaveBeenCalledOnce();
+    expect(mocks.recordOwner).toHaveBeenCalledWith(18, expect.objectContaining({ pid: process.pid }), 'workspace');
+  });
+
+  it('starts nothing and says retry when a live owner does not answer', async () => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(true);
+    mocks.callOwner.mockResolvedValue({ ok: false, code: 'timeout', message: 'no reply in 60000ms' });
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'owner-slow' });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'su_session_owner_unreachable', retryable: true });
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
+  it('attaches locally when the recorded owner is this worker or another service', async () => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(false);
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'owner-not-forwardable' });
+    expect(response.status).toBe(200);
+    expect(mocks.callOwner).not.toHaveBeenCalled();
+    expect(mocks.engine).toHaveBeenCalledOnce();
   });
 });
 
