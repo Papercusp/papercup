@@ -27,6 +27,7 @@ import {
   summarizePipelineWindow,
   recentPipelineEvents,
   findGreenCheckpointVerdictForCandidate,
+  readGatePipelineWindow,
   type PipelineEventKind,
 } from './pipeline-events';
 
@@ -56,7 +57,7 @@ describe('pipeline-events runtime — real Postgres', () => {
         status text NOT NULL,
         detail jsonb NOT NULL DEFAULT '{}'::jsonb,
         created_at timestamptz NOT NULL DEFAULT now(),
-        CONSTRAINT pipeline_events_kind_check CHECK (kind = ANY (ARRAY['git_sync'::text, 'merge_resolver'::text, 'content_fixer'::text, 'green_checkpoint'::text, 'deploy'::text, 'release_fixer'::text]))
+        CONSTRAINT pipeline_events_kind_check CHECK (kind = ANY (ARRAY['git_sync'::text, 'merge_resolver'::text, 'content_fixer'::text, 'green_checkpoint'::text, 'green_checkpoint_fire'::text, 'deploy'::text, 'release_fixer'::text]))
       );
     `);
   });
@@ -65,6 +66,51 @@ describe('pipeline-events runtime — real Postgres', () => {
   });
   beforeEach(async () => {
     await db.sql`TRUNCATE harness_shared.pipeline_events RESTART IDENTITY`;
+  });
+
+  it('reads complete gate windows in one snapshot, scopes exactly and exposes spanning attempts', async () => {
+    const start = Date.parse('2026-10-05T10:00:00Z');
+    const end = Date.parse('2026-10-05T11:00:00Z');
+    const insert = async (workspace: string, install: string, kind: PipelineEventKind,
+      fire: string, at: number, status: string) => {
+      await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${workspace}, ${install}, ${kind}, ${status}, ${JSON.stringify({ gateFireId: fire })}::text::jsonb, ${new Date(at)})`;
+    };
+    for (const [workspace, install] of [['ws', SLUG], ['foreign', SLUG], ['ws', 'foreign']]) {
+      await insert(workspace!, install!, 'green_checkpoint_fire', 'complete', start + 10, 'fired');
+      await insert(workspace!, install!, 'green_checkpoint', 'complete', start + 20, 'advanced');
+    }
+    await insert('ws', SLUG, 'git_sync', 'noise', start + 30, 'synced');
+    await insert('ws', SLUG, 'green_checkpoint_fire', 'old-finished', start - 20, 'fired');
+    await insert('ws', SLUG, 'green_checkpoint', 'old-finished', start - 10, 'advanced');
+    const input = { windowStartMs: start, windowEndMs: end, nonTerminalStatuses: ['decision-pending'] };
+    const types = await db.sql`SELECT DISTINCT jsonb_typeof(detail) AS type FROM harness_shared.pipeline_events`;
+    expect(types.map((r) => r.type)).toEqual(['object']);
+    const target = { workspaceId: 'ws', installSlug: SLUG };
+    const complete = await readGatePipelineWindow(target, input, db.sql);
+    expect(complete).toMatchObject({ status: 'complete', total: 2 });
+    expect(complete.rows.map((r) => r.detail.gateFireId)).toEqual(['complete', 'complete']);
+    expect(await readGatePipelineWindow(target, { ...input, maxRows: 1 }, db.sql))
+      .toMatchObject({ status: 'capped', total: 2, rows: [expect.anything()] });
+    // Both boundaries lie inside this attempt: a simple created_at window would miss it.
+    await insert('ws', SLUG, 'green_checkpoint_fire', 'spanning', start - 50, 'fired');
+    await insert('ws', SLUG, 'green_checkpoint', 'spanning', start - 40, 'decision-pending');
+    await insert('ws', SLUG, 'green_checkpoint', 'spanning', end + 50, 'advanced');
+    const spanning = await readGatePipelineWindow(target, input, db.sql);
+    expect(spanning.total, JSON.stringify(spanning)).toBe(5);
+    expect(spanning.status).toBe('complete');
+    expect(spanning.rows.filter((r) => r.detail.gateFireId === 'spanning')).toHaveLength(3);
+    // A vanished fire cannot silently disappear from the population either.
+    await insert('ws', SLUG, 'green_checkpoint_fire', 'unfinished', start - 30, 'fired');
+    expect((await readGatePipelineWindow(target, input, db.sql)).total).toBe(6);
+  });
+
+  it('distinguishes a double-encoded fixture from the production text-to-jsonb writer', async () => {
+    const detail = JSON.stringify({ gateFireId: 'fixture-control' });
+    const rows = await db.sql`SELECT jsonb_typeof(${detail}::jsonb) AS inferred,
+      jsonb_typeof(${detail}::text::jsonb) AS production`;
+    expect(rows[0]).toMatchObject({ inferred: 'string', production: 'object' });
   });
 
   it('appends events and summarizes the trailing window per kind/status', async () => {

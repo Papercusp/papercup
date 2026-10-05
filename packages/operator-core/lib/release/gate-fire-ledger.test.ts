@@ -12,8 +12,89 @@ import {
   classifyGateOutcomeStatus,
   recordGateFire,
   reconstructGateFireDays,
+  evaluateGateReuseAuditWindow,
   type GateOutcomeClass,
 } from './gate-fire-ledger';
+import { buildTestPassReuseHealth } from './test-pass-reuse-report';
+import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../scripts/lib/test-pass-reuse.mjs';
+
+describe('reuse audit population from immutable gate events', () => {
+  const sha = 'c58655490ce1a3be734de61df08aa7f8159122d4';
+  const ws = 'core::test:unit:pure';
+  const sampledFile = Array.from({ length: 500 }, (_, i) => `lib/audit-${i}.test.ts`)
+    .find((file) => auditDraw(file, sha) < 0.05)!;
+  const fixture = (verdict = 'pass'): PipelineEventWindowRead => {
+    const counts = { candidates: 20, reused: 19, audited: 1, expiredClean: 0 };
+    const output = [formatTestReuseLine(ws, counts, ' auditRate=0.05 lane=pure'),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [counts], savedMs: 100, unmeasured: 0 }),
+      'TEST_PASS_REUSE_AUDIT_RESULT ' + JSON.stringify({ version: 1, ws, file: sampledFile, verdict,
+        judgedSha: sha, runnerIdentity: 'proof-v2 node25 linux x64', runContext: 'green-checkpoint',
+        runGroupId: 'run-1', dirty: false })].join('\n');
+    const health = buildTestPassReuseHealth(output, sha, 120)!;
+    return { status: 'complete', windowStartMs: 100, windowEndMs: 200, total: 2, reason: null, rows: [
+      { id: 'anchor', kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: 110, detail: { gateFireId: 'fire-1' } },
+      { id: 'outcome', kind: 'green_checkpoint', status: 'advanced', createdAtMs: 130, detail: {
+        gateFireId: 'fire-1', runId: 'run-1', candidate: sha.slice(0, 12), testPassReuse: {
+          audit: { ...health.audit, judgedSha: sha, recordedAtMs: 120 },
+          auditRuns: health.auditRuns, auditedFiles: health.auditedFiles,
+        } } },
+    ] };
+  };
+  const mutate = (fn: (read: PipelineEventWindowRead) => void) => { const r = fixture(); fn(r); return r; };
+
+  it('derives the complete named invocation population and passes only its observed audit', () => {
+    expect(evaluateGateReuseAuditWindow(fixture())).toMatchObject({ verdict: 'pass', audited: 1,
+      alarms: 0, fireIds: ['fire-1'], runIds: ['run-1'], evidenceRefs: ['pipeline-event:anchor', 'pipeline-event:outcome'] });
+  });
+
+  it('retains an inline-retry miss without any final FAIL console row', () => {
+    expect(evaluateGateReuseAuditWindow(fixture('fail'))).toMatchObject({ verdict: 'fail', alarms: 1 });
+  });
+
+  it.each([
+    ['capped', (r: PipelineEventWindowRead) => { r.status = 'capped'; }],
+    ['empty', (r: PipelineEventWindowRead) => { r.rows = []; r.total = 0; }],
+    ['missing outcome', (r: PipelineEventWindowRead) => { r.rows.pop(); r.total--; }],
+    ['missing anchor', (r: PipelineEventWindowRead) => { r.rows.shift(); r.total--; }],
+    ['unidentified fire', (r: PipelineEventWindowRead) => { delete r.rows[0]!.detail.gateFireId; }],
+    ['cross-window start', (r: PipelineEventWindowRead) => { r.rows[0]!.createdAtMs = 90; }],
+    ['cross-window outcome', (r: PipelineEventWindowRead) => { r.rows[1]!.createdAtMs = 210; }],
+    ['no verdict', (r: PipelineEventWindowRead) => { r.rows[1]!.status = 'error'; }],
+    ['historical archive', (r: PipelineEventWindowRead) => {
+      delete (r.rows[1]!.detail.testPassReuse as Record<string, unknown>).auditRuns;
+    }],
+    ['source mismatch', (r: PipelineEventWindowRead) => { r.rows[1]!.detail.candidate = 'b'.repeat(12); }],
+    ['partial draw population', (r: PipelineEventWindowRead) => {
+      (r.rows[1]!.detail.testPassReuse as Record<string, unknown>).auditedFiles = [];
+    }],
+  ])('keeps %s unknown', (_label, fn) => {
+    expect(evaluateGateReuseAuditWindow(mutate(fn)).verdict).toBe('unknown');
+  });
+
+  it('rejects a retry or foreign run-group result for the initial gate suite', () => {
+    const r = fixture();
+    const payload = r.rows[1]!.detail.testPassReuse as { auditedFiles: Array<{ runGroupId: string }> };
+    payload.auditedFiles[0]!.runGroupId = 'run-1:retry';
+    expect(evaluateGateReuseAuditWindow(r).verdict).toBe('unknown');
+  });
+
+  it('collapses matching producer/fallback archives but refuses conflicting evidence', () => {
+    const r = fixture();
+    r.rows.push({ ...r.rows[1]!, id: 'fallback', createdAtMs: 140 }); r.total++;
+    expect(evaluateGateReuseAuditWindow(r).verdict).toBe('pass');
+    r.rows[2] = { ...r.rows[2]!, detail: { ...r.rows[2]!.detail, runId: 'other' } };
+    expect(evaluateGateReuseAuditWindow(r).verdict).toBe('unknown');
+  });
+
+  it('excludes an explicitly measured pre-suite skip while retaining it in coverage', () => {
+    const r = fixture();
+    r.rows.push({ ...r.rows[0]!, id: 'skip-anchor', detail: { gateFireId: 'fire-2' } },
+      { id: 'skip', kind: 'green_checkpoint', status: 'skipped-locked', createdAtMs: 140, detail: { gateFireId: 'fire-2' } });
+    r.total += 2;
+    expect(evaluateGateReuseAuditWindow(r)).toMatchObject({ verdict: 'pass', excludedFireIds: ['fire-2'] });
+  });
+});
 
 describe('classifyGateOutcomeStatus — single-homed outcome classes', () => {
   it('pins every status the ledger has actually recorded (measured 2026-08-30/31) plus the CLI vocabulary', () => {

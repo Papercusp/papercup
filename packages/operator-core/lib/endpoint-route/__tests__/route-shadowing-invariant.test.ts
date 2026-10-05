@@ -16,6 +16,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
+// A route can load before the registry in a shared fork. Exercise that entry
+// order: the plugin catch-all imports the 405 resolver, which reads the registry.
+import pluginCatchall from '../routes/plugins/catchall';
+import { ALL_ROUTES } from '../routes';
 import { routeRegistrationOrder, registerAllRoutes } from '../register';
 
 /** Path → segment list (basePath-relative). */
@@ -47,6 +51,12 @@ function shadows(a: string, b: string): boolean {
 }
 
 describe('route registration order — no parametric route shadows a literal sibling', () => {
+  it('retains the plugin catch-all when its module loads before the registry', () => {
+    const catchalls = Array.isArray(pluginCatchall) ? pluginCatchall : [pluginCatchall];
+    for (const route of catchalls) expect(ALL_ROUTES).toContain(route);
+    expect(ALL_ROUTES.every((route) => route != null)).toBe(true);
+  });
+
   it('every literal route registers before any parametric route that would swallow it', () => {
     const order = routeRegistrationOrder();
     const violations: string[] = [];

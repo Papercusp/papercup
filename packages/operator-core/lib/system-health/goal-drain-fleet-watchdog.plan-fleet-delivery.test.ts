@@ -89,6 +89,9 @@ function deps(cohort: GoalPlanFleetCohort): Partial<GoalDrainFleetSweepDeps> {
     flagEnabled: vi.fn(async () => true),
     now: () => NOW,
     readPlanFleetCohort: vi.fn(async () => cohort),
+    // This suite exercises plan-fleet delivery, not the independent pull-stall
+    // census. Keep that reader hermetic instead of touching the sentinel SQL.
+    readPullStallAlerts: vi.fn(async () => []),
   };
 }
 
