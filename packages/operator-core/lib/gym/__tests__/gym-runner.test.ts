@@ -376,7 +376,7 @@ describe('runGymPipeline', () => {
       expect(result.deterministicSignals?.oracle).toMatchObject({ workerSourcesCurrent: false });
     });
 
-  it.each(['missing', 'unknown', 'changed-during-run', 'changed-from-pin', 'wrong-path',
+  it.each(['missing', 'missing-hashes', 'malformed', 'unknown', 'changed-during-run', 'changed-from-pin', 'wrong-path',
     'changed-between-runs', 'wrong-command'] as const)(
     'withholds positive claims when the npm command manifest is %s', async (mode) => {
       const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
@@ -385,6 +385,8 @@ describe('runGymPipeline', () => {
         const execution = oracleExecution();
         run += 1;
         if (mode === 'missing') execution.npmManifest = undefined;
+        else if (mode === 'missing-hashes') Object.assign(execution.npmManifest!, { sourceHashes: undefined });
+        else if (mode === 'malformed') execution.npmManifest!.sourceHashes.pinned = 'not-a-digest';
         else if (mode === 'unknown') execution.npmManifest!.sourceHashes.pinned = null;
         else if (mode === 'changed-during-run') execution.npmManifest!.sourceHashes.after = 'e'.repeat(64);
         else if (mode === 'changed-from-pin') {

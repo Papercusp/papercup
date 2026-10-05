@@ -279,16 +279,16 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           [...preWorkerSources].every(([path, hash]) => postWorkerSources.get(path) === hash);
         // Stable worker sources alone cannot identify the command that ran them:
         // npm scripts and their pre/post hooks come from a separate manifest.
-        const manifestPin = preOracle?.execution?.npmManifest?.sourceHashes.pinned;
+        const manifestPin = preOracle?.execution?.npmManifest?.sourceHashes?.pinned;
         const npmManifestCurrent = typeof manifestPin === 'string' && /^[a-f0-9]{64}$/.test(manifestPin) &&
           [preOracle, postOracle].every((receipt) => {
             const execution = receipt?.execution;
             const manifest = execution?.npmManifest;
+            const hashes = manifest?.sourceHashes;
             return manifest?.path === 'package.json' &&
-              ['pinned', 'before', 'after'].every((key) =>
-                manifest.sourceHashes[key as keyof typeof manifest.sourceHashes] === manifestPin) &&
+              hashes?.pinned === manifestPin && hashes.before === manifestPin && hashes.after === manifestPin &&
               ['npm', 'run', 'test:file', '--', spec.task.oracle!.testPath].every((arg, index) =>
-                execution?.command[index] === arg);
+                execution?.command?.[index] === arg);
           });
         const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
         // A JSON report may exist even when the command is killed or fails after
