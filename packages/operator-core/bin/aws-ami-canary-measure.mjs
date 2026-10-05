@@ -25,6 +25,20 @@ export const CANARY_RUN_DIR = '/run/papercusp-ami-canary';
 export const SSM_CHUNK_CHARS = 32_000;
 /** Bound on the service diagnostics read back after a failed bootstrap (GetCommandInvocation caps stdout at 24,000 chars). */
 export const DIAGNOSTICS_MAX_CHARS = 16_000;
+/**
+ * Sub-budgets inside DIAGNOSTICS_MAX_CHARS for the three bootstrap sections a failed start
+ * prints: systemctl status + journal, the start sampler's readings, and recent state logs.
+ * The sampler section is printed AFTER the addon inventory, so it reaches neither the run's
+ * 3,000-char tail nor the status section (measured on P-012 chain8, WI-10006110).
+ */
+export const DIAGNOSTICS_SECTION_MAX_CHARS = Object.freeze({ status: 8_000, startSamples: 6_000, recentLogs: 2_000 });
+/**
+ * EBS VolumeInitializationRate (MiB/s, AWS range 100-300) for the canary's AMI-restored root
+ * volume. Without it the volume fetches each block from S3 on first read, and the first service
+ * start of a release blocked on those reads (WI-10006110: node in D state on
+ * folio_wait_bit_common, ~7s CPU over a 120s health window).
+ */
+export const ROOT_VOLUME_INITIALIZATION_RATE_MIBPS = 300;
 export const CANARY_BUDGETS = Object.freeze({
   runningMs: 10 * 60_000,
   ssmOnlineMs: 15 * 60_000,
@@ -185,7 +199,13 @@ export function ssmScriptPlan(fixture, chunkChars = SSM_CHUNK_CHARS) {
       'set +e',
       `f=${CANARY_RUN_DIR}/out.log`,
       `d="$(awk '/--- systemctl status /{on=1} /--- native addon inventory /{on=0} on' "$f" 2>/dev/null)"`,
-      `if [ -n "$d" ]; then printf '%s\\n' "$d" | tail -c ${DIAGNOSTICS_MAX_CHARS}; else tail -c ${DIAGNOSTICS_MAX_CHARS} "$f"; fi`,
+      `if [ -n "$d" ]; then printf '%s\\n' "$d" | tail -c ${DIAGNOSTICS_SECTION_MAX_CHARS.status}; else tail -c ${DIAGNOSTICS_MAX_CHARS} "$f"; fi`,
+      // The start sampler's readings (process wait channels, diskstats, listeners) and the
+      // recent state logs. The LAST samples are kept: they show where the start was stuck.
+      `s="$(awk '/--- start samples/{on=1} /--- recent logs under /{on=0} on' "$f" 2>/dev/null)"`,
+      `if [ -n "$d" ] && [ -n "$s" ]; then printf '%s\\n' "$s" | tail -c ${DIAGNOSTICS_SECTION_MAX_CHARS.startSamples}; fi`,
+      `l="$(awk '/--- recent logs under /{on=1} /--- SELinux denials /{on=0} on' "$f" 2>/dev/null)"`,
+      `if [ -n "$d" ] && [ -n "$l" ]; then printf '%s\\n' "$l" | tail -c ${DIAGNOSTICS_SECTION_MAX_CHARS.recentLogs}; fi`,
       "echo '--- bootstrap ERROR lines ---'",
       `grep -n 'ERROR' "$f" | tail -n 10`,
       'exit 0',
@@ -272,9 +292,9 @@ function requireSsmSuccess(result, label) {
  * Launch the shared AMI privately in the clean account, prove SSM + bootstrap + service, then
  * tear down and census. `deps` (all async unless noted):
  *   callerAccount() → account id of the assumed clean-account identity
- *   describeImage(imageId) → { state, architecture } | null
+ *   describeImage(imageId) → { state, architecture, rootDeviceName? } | null
  *   describeSubnet(subnetId) → { subnetId, vpcId } | null
- *   runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags }) → instanceId
+ *   runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags, rootDeviceName?, volumeInitializationRateMiBps? }) → instanceId
  *   describeInstance(instanceId) → { state, publicIpv4, stateReason } (state 'pending' while unknown)
  *   ssmPingStatus(instanceId) → 'Online' | 'ConnectionLost' | 'Inactive' | null
  *   sendCommand({ instanceId, commands, executionTimeoutSec }) → commandId
@@ -316,6 +336,9 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
       instanceProfileArn: input.instanceProfileArn,
       instanceType,
       tags: canaryTags(input, runId),
+      ...(image.rootDeviceName
+        ? { rootDeviceName: image.rootDeviceName, volumeInitializationRateMiBps: ROOT_VOLUME_INITIALIZATION_RATE_MIBPS }
+        : {}),
     });
     const instanceId = observed.instanceId;
     const running = await waitFor(deps, budgets.runningMs, budgets.pollMs, 'instance running', () => deps.describeInstance(instanceId), (i) => {

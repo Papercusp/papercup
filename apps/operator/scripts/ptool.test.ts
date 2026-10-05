@@ -2249,6 +2249,26 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(connectOnce).toHaveBeenCalledTimes(PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS);
   });
 
+  it('does not spend the local retry budget when explicit UDS discovery has no endpoint', async () => {
+    const first = 'http://127.0.0.1:3070';
+    const second = 'http://127.0.0.1:3170';
+    const client = { close: vi.fn() };
+    const unavailable = new Error('uds_endpoint_unavailable');
+    const connectOnce = vi.fn().mockRejectedValueOnce(unavailable).mockResolvedValueOnce(client);
+    const sleeps: number[] = [];
+
+    await expect(connectWithOperatorCandidates(connectOnce, [first, second], {}, {
+      maxAttempts: 80,
+      retryDelayMs: 1_000,
+      totalTimeoutMs: 120_000,
+      sleep: async (ms: number) => { sleeps.push(ms); },
+    })).resolves.toEqual({ client, operatorUrl: second });
+
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([first, second]);
+    expect(sleeps).toEqual([]);
+    expect(unavailable.message).toMatch(/\[1 connect attempt\(s\).*1x uds-endpoint-unavailable\]$/);
+  });
+
   it('honors Retry-After as a minimum and adds positive jitter', async () => {
     const sleeps: number[] = [];
     await expect(

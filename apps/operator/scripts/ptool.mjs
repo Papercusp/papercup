@@ -2622,6 +2622,7 @@ export async function connectWithLocalRetry(
         : null;
       if (
         !local ||
+        failureKind === 'uds-endpoint-unavailable' ||
         error?.code === 'PTOOL_CONNECTION_BOOTSTRAP_NOT_PREPARED' ||
         (isExplicitHttpConnectFailure(error) && !isRetryableLocalHttpConnectFailure(error)) ||
         (failureKind === 'proxy-upstream-502' &&
@@ -2738,11 +2739,12 @@ export async function connectWithOperatorCandidates(
         && !isRetryableLocalHttpConnectFailure(error);
       const isHttpNotFound = connectHttpStatusOf(error) === 404;
       const timedOutLocalAttempt = /^local operator connection attempt timed out/.test(errorDetail(error));
+      const unavailableUdsEndpoint = isUdsEndpointUnavailable(error);
       const permittedNotFoundFallback = allowHttpNotFoundFallback && isHttpNotFound;
       if (
         index === candidates.length - 1 ||
         (explicitHttpFailure && !permittedNotFoundFallback) ||
-        (!explicitHttpFailure && !isTransportFailure(error) && !timedOutLocalAttempt)
+        (!explicitHttpFailure && !isTransportFailure(error) && !timedOutLocalAttempt && !unavailableUdsEndpoint)
       ) {
         throw error;
       }
@@ -2772,6 +2774,7 @@ function connectHttpStatusOf(error) {
  * focused diagnostics tests.
  */
 export function classifyConnectFailure(error) {
+  if (isUdsEndpointUnavailable(error)) return 'uds-endpoint-unavailable';
   if (/^local operator connection attempt timed out/.test(errorDetail(error))) return 'attempt-timeout';
   if (isRetryableLocalHttpConnectFailure(error)) {
     const status = connectHttpStatusOf(error);
@@ -2781,6 +2784,11 @@ export function classifyConnectFailure(error) {
   if (isExplicitHttpConnectFailure(error)) return `http-${connectHttpStatusOf(error) ?? 'unknown'}`;
   if (isTransportFailure(error)) return 'transport';
   return 'other';
+}
+
+/** Explicit UDS discovery has no retryable handshake when the endpoint is absent. */
+function isUdsEndpointUnavailable(error) {
+  return /^uds_endpoint_unavailable(?:\s|$)/.test(errorDetail(error));
 }
 
 /**

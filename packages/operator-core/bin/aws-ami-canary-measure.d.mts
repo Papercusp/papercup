@@ -7,6 +7,8 @@ export declare const CANARY_FIXTURE_TAG: string;
 export declare const CANARY_RUN_DIR: string;
 export declare const SSM_CHUNK_CHARS: number;
 export declare const DIAGNOSTICS_MAX_CHARS: number;
+export declare const DIAGNOSTICS_SECTION_MAX_CHARS: Readonly<{ status: number; startSamples: number; recentLogs: number }>;
+export declare const ROOT_VOLUME_INITIALIZATION_RATE_MIBPS: number;
 export interface AwsAmiCanaryBudgets {
   runningMs: number;
   ssmOnlineMs: number;
@@ -47,7 +49,7 @@ export interface CanaryInvocation {
 }
 export interface AwsAmiCanaryDeps {
   callerAccount(): Promise<string>;
-  describeImage(imageId: string): Promise<{ state: string; architecture: string } | null>;
+  describeImage(imageId: string): Promise<{ state: string; architecture: string; rootDeviceName?: string } | null>;
   describeSubnet(subnetId: string): Promise<{ subnetId: string; vpcId?: string } | null>;
   runInstance(input: {
     imageId: string;
@@ -55,6 +57,9 @@ export interface AwsAmiCanaryDeps {
     instanceProfileArn: string;
     instanceType: string;
     tags: readonly CanaryTag[];
+    /** The AMI's root device; set together with the rate below (WI-10006110). */
+    rootDeviceName?: string;
+    volumeInitializationRateMiBps?: number;
   }): Promise<string>;
   describeInstance(instanceId: string): Promise<{ state: string; publicIpv4?: string | null; stateReason?: string | null }>;
   ssmPingStatus(instanceId: string): Promise<string | null>;

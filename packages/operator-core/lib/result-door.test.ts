@@ -278,6 +278,61 @@ describe('applyResultDoor', () => {
     });
   });
 
+  it('work_items:get preserves row reread handles ahead of get-shape counts through the result door', () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `WI-${String(i + 1).padStart(5, '0')}`);
+    const source = {
+      ok: true,
+      results: ids.map((id) => ({
+        ok: true,
+        id,
+        availability: 'available',
+        workItem: { id, summary: 'detail '.repeat(300) },
+      })),
+      counts: { ok: 100, failed: 0 },
+      read: {
+        schemaVersion: 'work-items-get-read-v1',
+        mode: 'complete',
+        requested: 100,
+        available: 100,
+        absent: 0,
+        unavailable: 0,
+        detailRows: 100,
+        stubbedRows: 0,
+      },
+      _shapeNote: {
+        tier: 'trimmed',
+        dropped: ['workItem.summary'],
+        stubbed: { count: 0, note: 're-read an id alone for detail' },
+      },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(source) }] },
+      { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as unknown as {
+      results: Array<Record<string, unknown>>;
+      read: Record<string, unknown>;
+      _shapeNote: { dropped: string[]; stubbed: { count: number } };
+    };
+
+    expect(body.read).toMatchObject({
+      requested: 100,
+      available: 100,
+      absent: 0,
+      unavailable: 0,
+      detailRows: 100,
+      stubbedRows: 0,
+    });
+    expect(body._shapeNote).toMatchObject({
+      dropped: ['workItem.summary'],
+      stubbed: { count: 0 },
+    });
+    expect(body.results.some((row) => typeof row.id === 'string')).toBe(true);
+    expect((doored as any)._meta?.resultDoor).toMatchObject({ truncated: true, spillUri: expect.any(String) });
+  });
+
   it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
     const noise = (prefix: string) => Object.fromEntries(
       Array.from({ length: 128 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),

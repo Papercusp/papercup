@@ -81,7 +81,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     ) as Envelope;
 
     expect(out.counts).toEqual({ ok: 1, failed: 0 });
-    expect(out.read).toEqual(read);
+    expect(out.read).toEqual({ ...read, detailRows: 1, stubbedRows: 0 });
     expect(out.results[0]).toMatchObject({
       availability: 'available',
       planItemTextDrift: { status: 'drifted' },
@@ -747,6 +747,7 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     const rows = Array.from({ length: 100 }, (_, i) =>
       row({
         id: `EI-${String(i).padStart(17, "0")}`,
+        availability: "available",
         workItem: {
           id: `EI-${String(i).padStart(17, "0")}`,
           kind: "bug",
@@ -757,7 +758,20 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
         checkpoint: "C".repeat(2_000),
       }),
     );
-    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope(rows),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: 100,
+          available: 100,
+          absent: 0,
+          unavailable: 0,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
     const size = JSON.stringify(out).length;
 
     // WI-39844: the old test asserted only PAYLOAD_TIER_HARD_CEILING_CHARS (~30k),
@@ -780,6 +794,72 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
       note: expect.stringMatching(/re-read an id alone/),
     });
     expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
+    expect(out.read).toMatchObject({ requested: 100, available: 100, detailRows: 0, stubbedRows: 100 });
+  });
+
+  it("reports available detail reduced to two id-only stubs while keeping each reread ID", () => {
+    const bulkyHolder = {
+      goalRef: "WI-2",
+      competing: Array.from({ length: 8 }, () => "X".repeat(12_000)),
+    };
+    const rows = ["WI-1", "WI-2"].map((id) =>
+      row({ id, availability: "available", holder: bulkyHolder, workItem: { id, state: "open" } }),
+    );
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope(rows),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: 2,
+          available: 2,
+          absent: 0,
+          unavailable: 0,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
+
+    expect(out.results).toEqual([
+      { ok: true, id: "WI-1", _stub: true },
+      { ok: true, id: "WI-2", _stub: true },
+    ]);
+    expect(out.read).toMatchObject({ requested: 2, available: 2, detailRows: 0, stubbedRows: 2 });
+  });
+
+  it("keeps absent and unavailable outcomes separate from shaped available detail", () => {
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope([
+          row({ id: "WI-available", availability: "available", workItem: { id: "WI-available", state: "open" } }),
+          { ok: false, id: "WI-absent", availability: "absent", error: "not found" },
+          { ok: false, id: "WI-unavailable", availability: "unavailable", error: "timeout", retryable: true },
+        ]),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: 3,
+          available: 1,
+          absent: 1,
+          unavailable: 1,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
+
+    expect(out.read).toMatchObject({
+      requested: 3,
+      available: 1,
+      absent: 1,
+      unavailable: 1,
+      detailRows: 1,
+      stubbedRows: 0,
+    });
+    expect(out.results.map((r) => [r.id, r.availability])).toEqual([
+      ["WI-available", "available"],
+      ["WI-absent", "absent"],
+      ["WI-unavailable", "unavailable"],
+    ]);
   });
 
   it("a 10-id read preserves every id when the result door requires stubs", () => {
