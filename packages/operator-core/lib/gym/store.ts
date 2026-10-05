@@ -105,10 +105,21 @@ export async function insertScore(sql: Sql, runId: string, s: GymScore): Promise
       SET d1 = EXCLUDED.d1, d2 = EXCLUDED.d2, d3 = EXCLUDED.d3, composite = EXCLUDED.composite, rationale = EXCLUDED.rationale`;
 }
 
+/** Recorded runner/rubric declarations, not measured loaded/runtime identity. */
+export interface GymRunParams {
+  harnessCommit: string;
+  substrateCommit: string;
+  mutableRoles?: unknown;
+  judgeModel?: string;
+  judgeTemp?: number;
+  weights?: unknown;
+  rubricHash?: string;
+}
+
 export async function insertRunParams(
   sql: Sql,
   runId: string,
-  p: { harnessCommit: string; substrateCommit: string; mutableRoles?: unknown; judgeModel?: string; judgeTemp?: number; weights?: unknown; rubricHash?: string },
+  p: GymRunParams,
 ): Promise<void> {
   await sql`
     INSERT INTO harness_gym.gym_runs_params (run_id, harness_commit, substrate_commit, mutable_roles, judge_model, judge_temp, weights, rubric_hash)

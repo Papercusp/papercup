@@ -214,9 +214,12 @@ describe('dependsOnSuggestionField — facts:assert suggests the dependency the 
       throw new Error('git unavailable');
     });
     expect(unknown?.suggested).toHaveLength(1);
+    let resolvedCounts = 0;
     const counts = await dependsOnSuggestionFieldResolvingCommits('main is 3 commits behind staging', [], undefined, async () => {
-      throw new Error('a branch count must not reach the commit resolver');
+      resolvedCounts += 1;
+      return false;
     });
+    expect(resolvedCounts).toBe(0);
     expect(counts?.suggested[0].value).toBe('3 commits');
   });
 
