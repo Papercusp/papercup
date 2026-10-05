@@ -23,7 +23,8 @@ export interface TestPassReuseTotal {
   tasks: number;
   candidates: number;
   reused: number;
-  audited: number;
+  /** Missing audit counters are unmeasured, including in historical logs. */
+  audited: number | null;
   expiredClean: number;
   /**
    * Lower bound on the test time the reused files would have cost: the sum of each reused
@@ -44,6 +45,9 @@ export interface TestPassReuseWorkspace {
   minSavedTestMs: number | null;
   /** Whether the task ran a narrowed (related-files) selection; null when the line omits it. */
   narrowed: boolean | null;
+  /** The actual selector configuration; never inferred from its random sample size. */
+  auditRate: number | null;
+  lane: 'pure' | 'db' | null;
 }
 
 export interface TestPassReuseAlarm {
@@ -79,6 +83,12 @@ function int(value: string | undefined): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
+function rate(value: string | undefined): number | null {
+  if (value === undefined || !/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(value)) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
+}
+
 /** `applied=false reason=<r>` keeps everything after `reason=`, since a reason may carry spaces. */
 function reasonOf(rest: string): string | null {
   const i = rest.indexOf('reason=');
@@ -108,7 +118,7 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
         tasks: int(f.get('tasks')) ?? 0,
         candidates: int(f.get('candidates')) ?? 0,
         reused: int(f.get('reused')) ?? 0,
-        audited: int(f.get('audited')) ?? 0,
+        audited: int(f.get('audited')),
         expiredClean: int(f.get('expiredClean')) ?? 0,
         minSavedTestMs: int(f.get('minSavedTestMs')),
         unmeasured: int(f.get('unmeasured')) ?? 0,
@@ -149,12 +159,14 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
         counts: {},
         minSavedTestMs: null,
         narrowed: null,
+        auditRate: null,
+        lane: null,
       });
       continue;
     }
     const counts: Record<string, number> = {};
     for (const [k, v] of f) {
-      if (k === 'ws' || k === 'minSavedTestMs' || k === 'narrowed') continue;
+      if (k === 'ws' || k === 'minSavedTestMs' || k === 'narrowed' || k === 'auditRate') continue;
       const n = int(v);
       if (n !== null) counts[k] = n;
     }
@@ -166,6 +178,8 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
       counts,
       minSavedTestMs: int(f.get('minSavedTestMs')),
       narrowed: narrowed === 'true' ? true : narrowed === 'false' ? false : null,
+      auditRate: rate(f.get('auditRate')),
+      lane: f.get('lane') === 'pure' ? 'pure' : f.get('lane') === 'db' ? 'db' : null,
     });
   }
   return runs;
@@ -354,7 +368,133 @@ export interface TestPassReuseRoundSummary {
   offReasons: string[];
   /** What the pass-proof recorder did this round (WI-10003603); null = not reported. */
   recorder: ExecutedSourceMapRecorderSummary | null;
+  /** Qualified counters only; null means a missing, malformed or inconsistent invocation. */
+  audit?: TestPassReuseAuditSummary | null;
   headline: string;
+}
+
+export interface TestPassReuseAuditSummary {
+  auditRate: number;
+  audited: number;
+  /** Includes the files selected for audit, which were eligible but deliberately not skipped. */
+  eligible: number;
+  /** null when any task omitted its lane, so a missing lane cannot turn into zero pure reuse. */
+  pureReused: number | null;
+  /** Full count, before the persisted alarm list is capped. */
+  alarmCount: number;
+}
+
+function summarizeReuseAudits(runs: TestPassReuseRun[]): TestPassReuseAuditSummary | null {
+  if (!runs.length) return null;
+  let audited = 0;
+  let eligible = 0;
+  let pureReused: number | null = 0;
+  let auditRate: number | null = null;
+  for (const run of runs) {
+    const total = run.total;
+    if (!run.applied || !total || !run.workspaces.length || total.tasks !== run.workspaces.length ||
+        total.audited === null) return null;
+    let workspaceCandidates = 0;
+    let workspaceReused = 0;
+    let workspaceAudited = 0;
+    const seen = new Set<string>();
+    for (const w of run.workspaces) {
+      const c = w.counts;
+      if (!w.applied || seen.has(w.ws) || w.auditRate === null ||
+          !isCount(c.candidates) || !isCount(c.reused) || !isCount(c.audited) ||
+          c.reused + c.audited > c.candidates) return null;
+      seen.add(w.ws);
+      if (auditRate !== null && auditRate !== w.auditRate) return null;
+      auditRate = w.auditRate;
+      workspaceCandidates += c.candidates;
+      workspaceReused += c.reused;
+      workspaceAudited += c.audited;
+      if (w.lane === null) pureReused = null;
+      else if (w.lane === 'pure' && pureReused !== null) pureReused += c.reused;
+    }
+    if (workspaceCandidates !== total.candidates || workspaceReused !== total.reused ||
+        workspaceAudited !== total.audited) return null;
+    audited += workspaceAudited;
+    eligible += workspaceReused + workspaceAudited;
+  }
+  if (auditRate === null || !isCount(audited) || !isCount(eligible) ||
+      (pureReused !== null && !isCount(pureReused))) return null;
+  return { auditRate, audited, eligible, pureReused, alarmCount: runs.reduce((n, r) => n + r.alarms.length, 0) };
+}
+
+/** Archived invocation identity comes from the run ledger, not a grader's aggregate count. */
+export interface TestPassReuseAuditInvocation {
+  runId: string;
+  judgedSha: string;
+  runnerIdentity: string;
+  startedAtMs: number;
+  completedAtMs: number;
+  output: string;
+  /** Per-file first-attempt results. null means that the archive did not retain them. */
+  auditedFiles: Array<{ ws: string; file: string; verdict: 'pass' | 'fail' | 'unknown'; evidenceRef: string }> | null;
+}
+
+/**
+ * R-2 detector over an exact archived population. A caller must resolve `expectedRunIds` from
+ * the canonical ledger for these boundaries before using the result as acceptance evidence.
+ * A bounded page, sampled population or empty window cannot establish zero real misses.
+ */
+export function evaluateTestPassReuseAuditWindow(input: {
+  windowStartMs: number;
+  windowEndMs: number;
+  expectedRunIds: string[];
+  invocations: TestPassReuseAuditInvocation[];
+}): { verdict: 'pass' | 'fail' | 'unknown'; reason: string; runIds: string[]; audited: number; alarms: number } {
+  const result = (verdict: 'pass' | 'fail' | 'unknown', reason: string, audited = 0, alarms = 0) =>
+    ({ verdict, reason, runIds: input.invocations.map((r) => r.runId), audited, alarms });
+  const ids = new Set(input.expectedRunIds);
+  if (!isCount(input.windowStartMs) || !isCount(input.windowEndMs) || input.windowStartMs >= input.windowEndMs ||
+      !ids.size || ids.size !== input.expectedRunIds.length || input.expectedRunIds.some((id) => !id.trim()) ||
+      input.invocations.length !== ids.size || new Set(input.invocations.map((r) => r.runId)).size !== ids.size ||
+      input.invocations.some((r) => !ids.has(r.runId))) {
+    return result('unknown', 'The exact nonempty invocation population and window are required.');
+  }
+  let audited = 0;
+  let alarms = 0;
+  let incomplete = false;
+  let wrongRate = false;
+  for (const invocation of input.invocations) {
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(invocation.judgedSha) || !invocation.runnerIdentity.trim() ||
+        !isCount(invocation.startedAtMs) || !isCount(invocation.completedAtMs) ||
+        invocation.startedAtMs < input.windowStartMs || invocation.completedAtMs > input.windowEndMs ||
+        invocation.startedAtMs > invocation.completedAtMs) {
+      return result('unknown', 'An invocation has missing or out-of-window source/runtime identity.');
+    }
+    const runs = parseTestPassReuse(invocation.output);
+    const summary = summarizeReuseAudits(runs);
+    alarms += runs.reduce((n, run) => n + run.alarms.length, 0);
+    if (!summary || invocation.auditedFiles === null) { incomplete = true; continue; }
+    wrongRate ||= summary.auditRate !== 0.05;
+    const files = invocation.auditedFiles;
+    const seen = new Set<string>();
+    const byWorkspace = new Map<string, number>();
+    for (const file of files) {
+      const identity = `${file.ws}\0${file.file}`;
+      if (!file.ws.trim() || !file.file.trim() || !file.evidenceRef.trim() || seen.has(identity) ||
+          !['pass', 'fail'].includes(file.verdict)) incomplete = true;
+      seen.add(identity);
+      byWorkspace.set(file.ws, (byWorkspace.get(file.ws) ?? 0) + 1);
+      if (file.verdict === 'fail') alarms += 1;
+    }
+    // Several affected-tests invocations can occur in one suite output. Counts are aggregated
+    // by task identity, but a named file must still occur once per archived invocation.
+    const expected = new Map<string, number>();
+    for (const run of runs) for (const w of run.workspaces) {
+      expected.set(w.ws, (expected.get(w.ws) ?? 0) + w.counts.audited!);
+    }
+    if (files.length !== summary.audited || [...byWorkspace.keys()].some((ws) => !expected.has(ws)) ||
+        [...expected].some(([ws, count]) => (byWorkspace.get(ws) ?? 0) !== count)) incomplete = true;
+    audited += files.length;
+  }
+  if (alarms > 0) return result('fail', 'A first-attempt reuse soundness miss was observed.', audited, alarms);
+  if (incomplete || audited === 0) return result('unknown', 'Audit files/results or nonempty observed audit coverage are missing.', audited);
+  if (wrongRate) return result('fail', 'The archived selector did not use the required 5% audit rule.', audited);
+  return result('pass', 'Every named audit in the complete window passed under the 5% rule.', audited);
 }
 
 export function formatDurationMs(ms: number): string {
@@ -420,6 +560,7 @@ export function summarizeTestPassReuse(
     alarms,
     offReasons: reasons,
     recorder,
+    audit: summarizeReuseAudits(runs),
     headline,
   };
 }
@@ -506,8 +647,19 @@ export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | 
     alarms,
     offReasons: v.offReasons as string[],
     recorder: parseRecorderSummary(v.recorder),
+    ...(v.audit === undefined ? {} : { audit: parseAuditSummary(v.audit) }),
     headline: v.headline,
   };
+}
+
+function parseAuditSummary(value: unknown): TestPassReuseAuditSummary | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.auditRate !== 'number' || !Number.isFinite(v.auditRate) || v.auditRate < 0 || v.auditRate > 1 ||
+      !isCount(v.audited) || !isCount(v.eligible) || v.audited > v.eligible || !isCount(v.alarmCount) ||
+      (v.pureReused !== null && (!isCount(v.pureReused) || v.pureReused > v.eligible - v.audited))) return null;
+  return { auditRate: v.auditRate, audited: v.audited, eligible: v.eligible,
+    pureReused: v.pureReused as number | null, alarmCount: v.alarmCount };
 }
 
 /** Storage caps for `gate_health.testPassReuse`. The headline keeps the full alarm COUNT, so a
