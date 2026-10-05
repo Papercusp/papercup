@@ -377,6 +377,7 @@ else
   # the image at this DIGEST, against the repos the image itself is configured with.
   VENDOR_CHECK="not-needed"; VENDOR_PENDING=0; VENDOR_NOTHING_NEWER=0
   echo '{}' > "$OUTDIR/ostree-object-index.json"
+  rm -f "$OUTDIR/ostree-objects.json" "$OUTDIR/vendor-check.attempt1.log"
   if [ "$OWNED_BEFORE" -gt 0 ] || [ -n "$OBJECT_PATHS" ]; then
     VENDOR_CHECK_SH=$(cat <<'SH'
 dnf -q --refresh check-update; rc=$?
@@ -398,8 +399,15 @@ done < /tmp/objects
 echo "OSTREE_OBJECT_DONE"
 SH
 )
+    # One retry when the probe is incomplete (WI-10006045). Measured 2026-10-03 on the P-012 B
+    # bake: one write to /tmp inside the probe container failed with "Transport endpoint is not
+    # connected", the probe resolved 111 of 117 objects but counted as incomplete, so it relocated
+    # nothing and 187 RPM-owned findings stayed actionable. /tmp is a tmpfs so the probe's scratch
+    # files never touch the image rootfs; a still-incomplete second attempt keeps the fail-closed
+    # verdict below, and the first attempt's log is kept beside the second.
+    for PROBE_ATTEMPT in 1 2; do
     VC_RC=0
-    "${PODMAN[@]}" run --rm --network host "${TLS_ARGS[@]}" -e PAPERCUSP_OSTREE_OBJECTS="$OBJECT_PATHS" \
+    "${PODMAN[@]}" run --rm --network host "${TLS_ARGS[@]}" --tmpfs /tmp -e PAPERCUSP_OSTREE_OBJECTS="$OBJECT_PATHS" \
       --entrypoint /bin/sh "$REF" -c "$VENDOR_CHECK_SH" > "$OUTDIR/vendor-check.log" 2>&1 || VC_RC=$?
     vc_field() { sed -n "s/^$1=\([0-9][0-9]*\)\$/\1/p" "$OUTDIR/vendor-check.log" | tail -1; }
     CU_EXIT=$(vc_field VENDOR_CHECK_UPDATE_EXIT)
@@ -436,6 +444,12 @@ SH
           complete: ($rc == 0 and any($lines[]; .kind == "OSTREE_OBJECT_DONE")
                      and all($objects[]; (.livePaths | length) > 0 or .stale)) }
     ' "$OUTDIR/vendor-check.log" > "$OUTDIR/ostree-objects.json" || die "could not record ostree-objects.json"
+    if [ -z "$OBJECT_PATHS" ] || [ "$(jq -r '.complete' "$OUTDIR/ostree-objects.json")" = "true" ]; then break; fi
+    if [ "$PROBE_ATTEMPT" -eq 1 ]; then
+      cp -f "$OUTDIR/vendor-check.log" "$OUTDIR/vendor-check.attempt1.log"
+      echo "OSTREE_PROBE_RETRY attempt 1 incomplete (container exit $VC_RC; log kept as vendor-check.attempt1.log)"
+    fi
+    done
     jq 'if .complete then (.objects | map({key: .path, value: .}) | from_entries) else {} end' \
       "$OUTDIR/ostree-objects.json" > "$OUTDIR/ostree-object-index.json" || die "could not index ostree objects"
   fi
@@ -472,6 +486,14 @@ SH
   echo "GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=$GENERIC_KERNEL_CPE_EXCLUDED   (EL upstream CPE matches; vendor namespaces remain actionable)"
   echo "GRYPE_VENDOR_PENDING=$VENDOR_PENDING   (of $VENDOR_CANDIDATES RPM-owned; vendor check: $VENDOR_CHECK; listed in vendor-pending.json — D-027)"
   echo "GRYPE_STALE_BASE_OBJECTS=$STALE_OBJECTS   (base-layer ostree objects with no live copy in the image; listed in stale-base-objects.json — D-029)"
+  # Say whether the ostree probe completed: an incomplete probe relocates nothing, so every
+  # finding inside an ostree object stays actionable. The bake log must not present those as
+  # vulnerabilities without saying why they were not classified (WI-10006045).
+  if [ -f "$OUTDIR/ostree-objects.json" ]; then
+    echo "GRYPE_OSTREE_PROBE=$(jq -r '"\(if .complete then "complete" else "INCOMPLETE" end) (\([.objects[] | select((.livePaths | length) > 0 or .stale)] | length) of \(.objects | length) objects resolved)"' "$OUTDIR/ostree-objects.json")$( [ "$(jq -r '.complete' "$OUTDIR/ostree-objects.json")" = "true" ] || echo '   <- nothing was relocated, so findings in ostree objects stay actionable; see vendor-check.log')"
+  else
+    echo "GRYPE_OSTREE_PROBE=not-run (no ostree objects among the findings)"
+  fi
   case "$VENDOR_CHECK" in
     updates-available) echo "  the image's repos ship NEWER RPMs (vendor-check.log): re-bake so the Containerfile's dnf upgrade takes them; nothing is pending" ;;
     error) echo "  the vendor check did not complete (vendor-check.log): every RPM-owned finding stays actionable" ;;

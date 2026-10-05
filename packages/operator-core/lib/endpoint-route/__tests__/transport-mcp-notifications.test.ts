@@ -289,4 +289,67 @@ describe('MCP session tool-contract revision notifications', () => {
     expect(dispatchCount).toBe(0);
     expect(sent).toEqual([]);
   });
+
+  // WI-10006051: the production HTTP transport (mcp-handler) is STATELESS — a
+  // fresh server per POST with no sessionIdGenerator — so `extra.sessionId` is
+  // always absent there. Refusing a keyless call took down every HTTP tools/call
+  // on :3170 and :3271, even straight after a successful tools/list.
+  describe('stateless transport (no session key)', () => {
+    it('dispatches an undeclared call without reading the generation or notifying', async () => {
+      __resetSessionSurfaces();
+      const { sent, sendNotification } = recordingSendNotification();
+      let dispatchCount = 0;
+      let generationReads = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => { generationReads += 1; return knownGeneration('generation-1'); },
+      );
+
+      // Exactly what mcp-handler hands the handler: no sessionId at all.
+      expect(await call({ params: { name: 'coord:whoami' } }, { sendNotification })).toEqual({ isError: false });
+      expect(await call({ params: { name: 'coord:whoami' } }, undefined)).toEqual({ isError: false });
+      expect(dispatchCount).toBe(2);
+      expect(generationReads).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
+    it('admits a call whose declared generation matches the live one', async () => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => knownGeneration('generation-1'),
+      );
+
+      const req = { params: { name: 'coord:whoami', _meta: { 'papercusp/servingGeneration': 'generation-1' } } };
+      expect(await call(req, {})).toEqual({ isError: false });
+      expect(dispatchCount).toBe(1);
+    });
+
+    it('refuses a call whose declared generation is stale, before dispatch', async () => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => knownGeneration('generation-2'),
+      );
+
+      const req = { params: { name: 'coord:whoami', _meta: { 'papercusp/servingGeneration': 'generation-1' } } };
+      await expect(call(req, {})).rejects.toThrow(/stale_tool_contract.*declares serving generation generation-1.*generation-2/);
+      expect(dispatchCount).toBe(0);
+    });
+
+    it('refuses a declared call when the generation is unknown', async () => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => ({ state: 'unknown', reason: 'applied-migrations-unknown' }),
+      );
+
+      const req = { params: { name: 'coord:whoami', _meta: { 'papercusp/servingGeneration': 'generation-1' } } };
+      await expect(call(req, {})).rejects.toThrow(/serving_generation_unknown/);
+      expect(dispatchCount).toBe(0);
+    });
+  });
 });

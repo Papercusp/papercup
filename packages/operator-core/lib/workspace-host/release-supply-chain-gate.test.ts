@@ -67,6 +67,8 @@ interface GateOptions {
   /** stdout of the in-image `dnf check-update` container (D-027 vendor check). */
   vendorCheckOutput?: string;
   vendorCheckExit?: number;
+  /** WI-10006045: stdout of a SECOND probe container (the retry after an incomplete probe). */
+  vendorCheckRetryOutput?: string;
   /**
    * WI-10006045: run a COPY of the script from a directory that is not a git checkout, the way
    * the bake runs it from its build-context snapshot.
@@ -113,6 +115,10 @@ function runGate(matches: unknown[], opts: GateOptions = {}) {
       '  exit 0',
       'fi',
       'if [[ " $* " == *"check-update"* ]]; then',
+      '  if [ -n "${PODMAN_VENDOR_CHECK_OUTPUT_RETRY:-}" ] && [ -f "$PODMAN_CALL_LOG.probed" ]; then',
+      '    printf "%s" "$PODMAN_VENDOR_CHECK_OUTPUT_RETRY"; exit 0',
+      '  fi',
+      '  : > "$PODMAN_CALL_LOG.probed"',
       '  printf "%s" "$PODMAN_VENDOR_CHECK_OUTPUT"',
       '  exit "$PODMAN_VENDOR_CHECK_EXIT"',
       'fi',
@@ -210,6 +216,7 @@ function runGate(matches: unknown[], opts: GateOptions = {}) {
         SYFT_FIXTURE: opts.sbom ? sbomFixture : '',
         PODMAN_VENDOR_CHECK_OUTPUT: opts.vendorCheckOutput ?? '',
         PODMAN_VENDOR_CHECK_EXIT: String(opts.vendorCheckExit ?? 0),
+        PODMAN_VENDOR_CHECK_OUTPUT_RETRY: opts.vendorCheckRetryOutput ?? '',
       },
       encoding: 'utf8',
       timeout: 30_000,
@@ -571,5 +578,46 @@ describe('release supply-chain vendor-pending classification (D-027, WI-10005719
     expect(result.output).toContain('GRYPE_VENDOR_PENDING=0');
     expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=2');
     expect(readOut(result, 'ostree-objects.json').complete).toBe(false);
+    // WI-10006045: retried once, then the log says WHY nothing was relocated.
+    expect(result.podmanCalls.filter((call) => call.includes('check-update'))).toHaveLength(2);
+    expect(result.output).toContain('OSTREE_PROBE_RETRY attempt 1 incomplete');
+    expect(result.output).toMatch(/GRYPE_OSTREE_PROBE=INCOMPLETE \(\d+ of 2 objects resolved\)/);
+  });
+
+  // WI-10006045. Measured 2026-10-03 on the P-012 B bake: one write to /tmp in the probe
+  // container failed ("Transport endpoint is not connected"), 111 of 117 objects resolved, the
+  // probe counted as incomplete and 187 RPM-owned findings stayed actionable.
+  it('retries an incomplete probe once, and classifies from the complete retry', () => {
+    const result = runGate([goFinding(liveObject, 'GO-LIVE'), goFinding(staleObject, 'GO-STALE'), goInPapercuspBinary], {
+      sbom: objectSbom,
+      vendorCheckOutput: probe([`OSTREE_OBJECT_LIVE ${liveObject} /usr/bin/toolbox`, '/bin/sh: line 16: /tmp/same-size: Transport endpoint is not connected']),
+      vendorCheckRetryOutput: probe([
+        `OSTREE_OBJECT_LIVE ${liveObject} /usr/bin/toolbox`,
+        `OSTREE_OBJECT_STALE ${staleObject} ${'c'.repeat(64)}`,
+        'OSTREE_OBJECT_DONE',
+      ]),
+    });
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('OSTREE_PROBE_RETRY attempt 1 incomplete');
+    expect(result.output).toContain('GRYPE_OSTREE_PROBE=complete (2 of 2 objects resolved)');
+    expect(result.output).toContain('GRYPE_VENDOR_PENDING=1');
+    expect(result.output).toContain('GRYPE_STALE_BASE_OBJECTS=1');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
+    expect(readOut(result, 'ostree-objects.json').complete).toBe(true);
+    expect(existsSync(join(result.out, 'vendor-check.attempt1.log'))).toBe(true);
+    // The probe's scratch files live on a tmpfs, never on the image rootfs.
+    // (The stub logs argv with newlines inside the object list, so match the call's first line.)
+    expect(result.podmanCalls.filter((call) => call.startsWith('run ') && call.includes('--tmpfs /tmp'))).toHaveLength(2);
+  });
+
+  it('does not retry a complete probe', () => {
+    const result = runGate([goFinding(liveObject, 'GO-LIVE')], {
+      sbom: objectSbom,
+      vendorCheckOutput: probe([`OSTREE_OBJECT_LIVE ${liveObject} /usr/bin/toolbox`, 'OSTREE_OBJECT_DONE']),
+    });
+    expect(result.podmanCalls.filter((call) => call.includes('check-update'))).toHaveLength(1);
+    expect(result.output).not.toContain('OSTREE_PROBE_RETRY');
+    expect(result.output).toContain('GRYPE_OSTREE_PROBE=complete (1 of 1 objects resolved)');
   });
 });

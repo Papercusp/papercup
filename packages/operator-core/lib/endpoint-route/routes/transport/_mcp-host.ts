@@ -3156,6 +3156,18 @@ function mcpSessionKey(extra: unknown): string | null {
 }
 
 /**
+ * The serving generation a tools/call says its client listed, echoed from the
+ * `papercusp/servingGeneration` meta every tools/list entry carries. This is how
+ * a STATELESS transport, which has no session key, opts into the fence.
+ */
+function declaredServingGeneration(req: unknown): string | null {
+  const meta = (req as { params?: { _meta?: unknown } } | undefined)?.params?._meta;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+  const declared = (meta as Record<string, unknown>)['papercusp/servingGeneration'];
+  return typeof declared === 'string' && declared.trim() ? declared.trim() : null;
+}
+
+/**
  * P-012 / D-040(b): the listings a governed identity's kernel admits, or null
  * to leave the listing unchanged. Records what was shown so a later attach can
  * be re-announced (D-040(c)). Visibility only: a failure here lists as before
@@ -3211,19 +3223,37 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       listChangedSent = true;
     };
 
+    // Refuse only what is PROVABLY stale (WI-10006051). The HTTP transport is
+    // STATELESS: mcp-handler builds a fresh server per POST with no
+    // sessionIdGenerator, so extra.sessionId is always absent there and no
+    // server-side tools/list baseline can exist for it. Treating "no session key"
+    // as stale refused EVERY HTTP tools/call, even straight after a successful
+    // tools/list. A stateless call can still opt into the fence by echoing the
+    // generation its listing carried (`_meta['papercusp/servingGeneration']`,
+    // stamped on every tools/list entry). An undeclared stateless call has
+    // nothing to compare against, so it is dispatched without the per-call
+    // generation read; argument validation and the kernel preflight still gate it.
+    const declaredGeneration = declaredServingGeneration(req);
+    if (!sessionKey && declaredGeneration === null) return handler(req, extra);
+
     const before = await readGeneration();
     if (before.state !== 'known') {
       throw new Error(`serving_generation_unknown: ${before.reason}; tools/call is blocked before dispatch`);
     }
-    if (!sessionKey || sessionToolRegistryRevisionChanged(sessionKey, before.revision)) {
+    const staleBaseline = sessionKey !== null && sessionToolRegistryRevisionChanged(sessionKey, before.revision);
+    const staleDeclaration = declaredGeneration !== null && declaredGeneration !== before.revision;
+    if (staleBaseline || staleDeclaration) {
       try {
         await notifyListChanged();
       } catch (err) {
         console.warn(`[mcp-host] stale serving-generation notification failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       throw new Error(
-        `stale_tool_contract: this MCP session has no tools/list baseline for the current serving generation ` +
-          `${before.revision}; call tools/list before retrying tools/call`,
+        staleBaseline
+          ? `stale_tool_contract: this MCP session has no tools/list baseline for the current serving generation ` +
+              `${before.revision}; call tools/list before retrying tools/call`
+          : `stale_tool_contract: this call declares serving generation ${declaredGeneration}, but the server now serves ` +
+              `${before.revision}; call tools/list before retrying tools/call`,
       );
     }
 
