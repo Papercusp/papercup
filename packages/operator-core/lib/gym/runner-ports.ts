@@ -21,6 +21,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rm as rmCb, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { buildSubstrateCloneCommands, isPinnedCommit } from './clone';

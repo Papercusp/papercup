@@ -303,13 +303,13 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
               ['npm', 'run', 'test:file', '--', spec.task.oracle!.testPath].every((arg, index) =>
                 execution?.command?.[index] === arg);
           });
-        const configSnapshots = (receipt: GymOracleRun | undefined): Map<string, string> | null => {
+        const configSourceHashes = (receipt: GymOracleRun | undefined, loaded = false): Map<string, string> | null => {
           const measured = receipt?.execution?.configSources;
-          const evidence = measured?.evidence;
+          const evidence = loaded ? measured?.loaded : measured?.evidence;
           const reference = measured?.reference;
-          if (evidence?.schemaVersion !== 'vitest-config-disk-snapshots-v1' ||
-              evidence.scope !== 'repository-vite-config-dependencies' || evidence.basis !== 'reporter-init-disk' ||
-              evidence.status !== 'unchanged' || !Array.isArray(evidence.reasons) || evidence.reasons.length > 0 ||
+          if (evidence?.schemaVersion !== (loaded ? 'node-loaded-config-sources-v1' : 'vitest-config-disk-snapshots-v1') ||
+              evidence.scope !== 'repository-vite-config-dependencies' || evidence.basis !== (loaded ? 'node-load-hook' : 'reporter-init-disk') ||
+              evidence.status !== (loaded ? 'stable' : 'unchanged') || !Array.isArray(evidence.reasons) || evidence.reasons.length > 0 ||
               !Array.isArray(evidence.sources) || evidence.sources.length === 0 ||
               reference?.pinCommit !== spec.task.oracle!.pinCommit || !Array.isArray(reference.sources)) return null;
           const hashes = new Map<string, string>();
@@ -326,11 +326,16 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           }
           return pins.size === hashes.size && [...hashes].every(([path, hash]) => pins.get(path) === hash) ? hashes : null;
         };
-        const preConfigSnapshots = configSnapshots(preOracle);
-        const postConfigSnapshots = configSnapshots(postOracle);
+        const preConfigSnapshots = configSourceHashes(preOracle);
+        const postConfigSnapshots = configSourceHashes(postOracle);
         const configSnapshotsCurrent = preConfigSnapshots !== null && postConfigSnapshots !== null &&
           preConfigSnapshots.size === postConfigSnapshots.size &&
           [...preConfigSnapshots].every(([path, hash]) => postConfigSnapshots.get(path) === hash);
+        const preConfigLoaded = configSourceHashes(preOracle, true);
+        const postConfigLoaded = configSourceHashes(postOracle, true);
+        const configLoadedCurrent = preConfigLoaded !== null && postConfigLoaded !== null &&
+          preConfigLoaded.size === postConfigLoaded.size &&
+          [...preConfigLoaded].every(([path, hash]) => postConfigLoaded.get(path) === hash);
         const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
         // A JSON report may exist even when the command is killed or fails after
         // writing it. Retain witnessed failures, but require a successful process
@@ -345,11 +350,11 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
-            sourceCurrent, implementationCurrent, workerSourcesCurrent, npmManifestCurrent, configSnapshotsCurrent,
+            sourceCurrent, implementationCurrent, workerSourcesCurrent, npmManifestCurrent, configSnapshotsCurrent, configLoadedCurrent,
             executionCompleted, populationComplete, regressionPopulation },
-          ...(regression === true || (regression === false && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
+          ...(regression === true || (regression === false && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && configLoadedCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
             ? { regressions: regression } : {}),
-          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent))
+          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && configLoadedCurrent))
             ? { taskPassed } : {}),
         };
       }
