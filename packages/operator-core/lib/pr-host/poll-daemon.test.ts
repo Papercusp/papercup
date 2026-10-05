@@ -656,7 +656,8 @@ describe('pollHarnessPrs — standing PR exact-merge gate (P-021/P-024, D-008)',
     expect(merge).not.toHaveBeenCalled();
     expect(out.merged).toEqual([42]);
     expect(stampMerge).toHaveBeenCalledTimes(1);
-    expect(stampMerge.mock.calls[0]![0]).toMatchObject({ mergeCommitSha: 'b'.repeat(40) });
+    const stamped = (stampMerge.mock.calls[0] as unknown as [{ mergeCommitSha: string }])[0];
+    expect(stamped).toMatchObject({ mergeCommitSha: 'b'.repeat(40) });
   });
 
   it.each([
