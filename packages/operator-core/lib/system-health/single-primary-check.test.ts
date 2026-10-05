@@ -30,30 +30,25 @@ import { readCutStatus, readCutStatusAsync } from '../release-cut-launch';
 // crash an unrelated module at import time (see check-no-eager-execfile-promisify.mjs).
 const childProcessMocks = vi.hoisted(() => ({
   execFileSync: vi.fn(),
-  // Calls through to the real execFile unless a test overrides it.
-  execFile: vi.fn(),
-  actualExecFile: null as unknown as (...args: unknown[]) => unknown,
 }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  childProcessMocks.actualExecFile = actual.execFile as unknown as (...args: unknown[]) => unknown;
-  childProcessMocks.execFile.mockImplementation((...args: unknown[]) => childProcessMocks.actualExecFile(...args));
-  return { ...actual, execFileSync: childProcessMocks.execFileSync, execFile: childProcessMocks.execFile };
+  return { ...actual, execFileSync: childProcessMocks.execFileSync };
+});
+const sidecarMocks = vi.hoisted(() => ({ execFileViaSidecar: vi.fn() }));
+vi.mock('../fleet/git-via-sidecar', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fleet/git-via-sidecar')>();
+  return { ...actual, execFileViaSidecar: sidecarMocks.execFileViaSidecar };
 });
 
-type ExecFileCb = (err: Error | null, stdout: string, stderr: string) => void;
 /** Answer `systemctl --user is-active <unit>` per unit, the way real systemctl does. */
 function mockAsyncIsActive(stateFor: (unit: string) => string): void {
-  childProcessMocks.execFile.mockImplementation((_cmd: unknown, args: unknown, _opts: unknown, cb: unknown) => {
-    const unit = (args as string[])[2] ?? '';
+  sidecarMocks.execFileViaSidecar.mockImplementation(async (_cmd: string, args: string[]) => {
+    const unit = args[2] ?? '';
     const state = stateFor(unit);
-    const ok = state === 'active';
-    (cb as ExecFileCb)(ok ? null : new Error('Command failed'), `${state}\n`, '');
-    return undefined;
+    if (state !== 'active') throw Object.assign(new Error('Command failed'), { stdout: `${state}\n` });
+    return { stdout: `${state}\n`, stderr: '', code: 0 };
   });
-}
-function restoreRealExecFile(): void {
-  childProcessMocks.execFile.mockImplementation((...args: unknown[]) => childProcessMocks.actualExecFile(...args));
 }
 
 function mockIsActiveOutput(state: 'active' | 'activating' | 'deactivating' | 'inactive' | 'failed'): void {
@@ -274,8 +269,11 @@ describe('readBackgroundPrimaryLoadState', () => {
 // with execFileSync, freezing the caller's event loop 107-237 ms per read. The
 // liveness alarm and the single-primary timer now use these async twins.
 describe('D-026 evidence without blocking the event loop', () => {
-  beforeEach(() => vi.mocked(execFileSync).mockReset());
-  afterEach(() => restoreRealExecFile());
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReset();
+    sidecarMocks.execFileViaSidecar.mockReset().mockRejectedValue(new Error('Unexpected systemctl probe'));
+  });
+  afterEach(() => sidecarMocks.execFileViaSidecar.mockReset());
 
   it('probes the cut unit and the restore unit, same as the sync reader', async () => {
     const calls: string[] = [];
@@ -313,11 +311,8 @@ describe('D-026 evidence without blocking the event loop', () => {
   });
 
   it('lets the event loop run while systemctl has not answered', async () => {
-    const pending: ExecFileCb[] = [];
-    childProcessMocks.execFile.mockImplementation((_c: unknown, _a: unknown, _o: unknown, cb: unknown) => {
-      pending.push(cb as ExecFileCb);
-      return undefined;
-    });
+    const pending: Array<(value: { stdout: string; stderr: string; code: number }) => void> = [];
+    sidecarMocks.execFileViaSidecar.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
     const read = readD026QuiescenceEvidenceAsync({
       readCutStatusAsync: (d) => readCutStatusAsync({ ...d, existsSync: () => false }),
     });
@@ -325,22 +320,18 @@ describe('D-026 evidence without blocking the event loop', () => {
     await new Promise<void>((resolve) => setTimeout(() => { ticked = true; resolve(); }, 0));
     expect(ticked).toBe(true);
     expect(pending).toHaveLength(2);
-    for (const cb of pending) cb(null, 'active\n', '');
+    for (const resolve of pending) resolve({ stdout: 'active\n', stderr: '', code: 0 });
     expect(await read).toEqual({ cutActive: true, restoreActive: true });
     expect(execFileSync).not.toHaveBeenCalled();
   });
 
   it('reads the background unit LoadState, and null when systemctl fails', async () => {
-    childProcessMocks.execFile.mockImplementationOnce((_c: unknown, args: unknown, _o: unknown, cb: unknown) => {
+    sidecarMocks.execFileViaSidecar.mockImplementationOnce(async (_cmd: string, args: string[]) => {
       expect(args).toEqual(['--user', 'show', 'papercusp-bg-host.service', '-p', 'LoadState', '--value']);
-      (cb as ExecFileCb)(null, 'masked\n', '');
-      return undefined;
+      return { stdout: 'masked\n', stderr: '', code: 0 };
     });
     expect(await readBackgroundPrimaryLoadStateAsync('papercusp-bg-host.service')).toBe('masked');
-    childProcessMocks.execFile.mockImplementationOnce((_c: unknown, _a: unknown, _o: unknown, cb: unknown) => {
-      (cb as ExecFileCb)(new Error('no bus'), '', '');
-      return undefined;
-    });
+    sidecarMocks.execFileViaSidecar.mockRejectedValueOnce(new Error('no bus'));
     expect(await readBackgroundPrimaryLoadStateAsync('papercusp-bg-host.service')).toBeNull();
   });
 });
