@@ -53,6 +53,27 @@ const summary = (over: Record<string, number> = {}) => ({
   ...over,
 });
 
+describe('candidate suite identity in the reuse archive', () => {
+  const sha = 'a'.repeat(40);
+  const suite = { command: 'npm run test:affected', runGroupId: 'run-1', startedAtMs: 10, completedAtMs: 20 };
+  const output = () => [formatTestReuseLine('core::test', summary(), ' auditRate=0.05 lane=pure'),
+    formatTestReuseTotalLine({ tasks: 1, summaries: [summary()], savedMs: 100, unmeasured: 0 })].join('\n');
+  it('retains the actual command and child boundaries through producer, health and immutable archive', () => {
+    const health = buildTestPassReuseHealth(output(), sha, 30, suite)!;
+    expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))?.suite).toEqual(suite);
+    expect(parseTestPassReuseAuditArchive({ suite: health.suite, audit: {
+      ...health.audit, judgedSha: sha, recordedAtMs: health.recordedAtMs },
+      auditRuns: health.auditRuns, auditedFiles: health.auditedFiles })?.suite).toEqual(suite);
+    expect(buildTestPassReuseHealth(output(), sha, 30)).not.toHaveProperty('suite');
+  });
+  it.each([{ command: '' }, { runGroupId: '' }, { startedAtMs: -1 },
+    { completedAtMs: 9 }, { completedAtMs: 31 }])('keeps malformed invocation evidence unknown: %j', (change) => {
+    const health = buildTestPassReuseHealth(output(), sha, 30, { ...suite, ...change })!;
+    expect(health.suite).toBeNull();
+    expect(parseTestPassReuseHealth({ ...health, suite: { ...suite, ...change } })?.suite).toBeNull();
+  });
+});
+
 describe('named pure capture result reader (WI-10005218 / R-3)', () => {
   const record = () => ({ state: 'done', reason: null, sha: 'a'.repeat(40),
     slices: 1, files: 2, rows: 2, retired: 0, failed: 0, isolatedFail: 0, remaining: 0, stoppedBy: 'complete',
