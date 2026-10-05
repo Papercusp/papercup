@@ -882,6 +882,12 @@ function main() {
         // locally cloned pin active; no URL or network transport is enabled.
         git(['config', '--local', `submodule.${sub.name}.active`, 'true'], workRoot);
       }
+      // WI-10006131: preserve submodule identity as well as its pinned bytes.
+      // A standalone .git directory makes reporter root discovery stop inside the
+      // submodule, producing doubled paths and submodule-relative ledger keys.
+      // Absorption is local Git metadata only: it keeps each commit and alternates,
+      // writes the normal .git/modules gitlinks, and performs no fetch or checkout.
+      git(['submodule', 'absorbgitdirs', '--', ...submodules.map((sub) => sub.path)], workRoot);
       console.log(
         `  initialised ${submodules.length} submodule(s) from local checkouts in ${((Date.now() - t1) / 1000).toFixed(1)}s (no network)`,
       );
