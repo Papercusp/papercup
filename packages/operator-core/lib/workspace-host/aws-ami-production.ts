@@ -78,6 +78,7 @@ import {
 import type { AwsBootcCleanRoomDiscardInput, AwsBootcCleanRoomStageInput } from './aws-bootc-clean-room-executor';
 import type { WorkspaceHostBootcCloudArtifact } from './bootc-bake-manifest';
 import { AWS_AMI_SCAN_COLDSNAP_ENV } from './coldsnap-pin';
+import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
 // The argv/shell:false process boundary is cloud-neutral; reuse it rather than fork a second one.
 import {
   NodeGcpImageFamilyCommandRunner,
@@ -106,6 +107,34 @@ const IMAGE_POLL_MS = 15_000;
 /** SSM Standard parameters hold 4 KB; Advanced holds 8 KB. */
 const SSM_STANDARD_LIMIT = 4096;
 const SSM_ADVANCED_LIMIT = 8192;
+const CANARY_RUNNER_SAFETY_MARGIN_MS = 5 * 60 * 1000;
+
+/**
+ * The child runner wraps the entire canary, including its finally-block teardown. Derive that
+ * outer deadline from the canary's per-phase budgets and the actual fixture size so the parent
+ * cannot SIGKILL a valid run before the canary reaches its own timeout and residue census.
+ */
+function cleanAccountCanaryRunnerTimeoutMs(
+  input: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0],
+): number {
+  // Keep malformed test/caller payloads on the child path so its schema error remains visible.
+  const bootstrapScript = typeof input.fixture?.bootstrapScript === 'string' ? input.fixture.bootstrapScript : '';
+  const encodedChars = Math.ceil(Buffer.byteLength(bootstrapScript, 'utf8') / 3) * 4;
+  const uploadCount = Math.max(1, Math.ceil(encodedChars / SSM_CHUNK_CHARS));
+  const waitCount = uploadCount + 6; // instance, SSM online, uploads, bootstrap, attestation, service, teardown
+  const shortCommandCount = uploadCount + 2; // uploads plus success-path attestation and service checks
+  const budgets = CANARY_BUDGETS;
+  // SSM waits reserve two poll intervals; allow one more for each wait-loop's final sleep/probe.
+  return (
+    budgets.runningMs +
+    budgets.ssmOnlineMs +
+    budgets.bootstrapMs +
+    budgets.terminateMs +
+    shortCommandCount * budgets.shortCommandMs +
+    waitCount * 3 * budgets.pollMs +
+    CANARY_RUNNER_SAFETY_MARGIN_MS
+  );
+}
 
 /** The one SDK capability the adapter needs: send a v3 command. Tests inject a fake. */
 export interface AwsAmiSdkSender {
@@ -280,14 +309,14 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     input: unknown,
     region: string,
     operation: string,
-    extraEnv: Readonly<Record<string, string>> = {},
+    options: { extraEnv?: Readonly<Record<string, string>>; timeoutMs?: number } = {},
   ): Promise<unknown> {
     const result = await this.commands.run({
       command: executable,
       args: [],
       stdin: JSON.stringify(input),
-      env: { ...(await this.childEnv(region)), ...extraEnv },
-      timeoutMs: RUNNER_TIMEOUT_MS,
+      env: { ...(await this.childEnv(region)), ...(options.extraEnv ?? {}) },
+      timeoutMs: options.timeoutMs ?? RUNNER_TIMEOUT_MS,
     });
     return parseJsonStdout(assertSuccess(result, operation), operation);
   }
@@ -459,7 +488,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     // The scan downloads the candidate's snapshot with coldsnap too: hand it the SAME binary the
     // upload used (pinned install or override) instead of letting it re-resolve one off its PATH.
     return (await this.runJson(this.executables.scan, input, input.region, 'AMI scan', {
-      [AWS_AMI_SCAN_COLDSNAP_ENV]: this.executables.coldsnap,
+      extraEnv: { [AWS_AMI_SCAN_COLDSNAP_ENV]: this.executables.coldsnap },
     })) as AwsAmiScanEvidence;
   }
 
@@ -568,7 +597,9 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
   async launchCleanAccountCanary(
     input: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0],
   ): Promise<AwsAmiCleanAccountLaunchProof> {
-    return (await this.runJson(this.executables.canary, input, input.region, 'clean-account canary')) as AwsAmiCleanAccountLaunchProof;
+    return (await this.runJson(this.executables.canary, input, input.region, 'clean-account canary', {
+      timeoutMs: cleanAccountCanaryRunnerTimeoutMs(input),
+    })) as AwsAmiCleanAccountLaunchProof;
   }
 
   private manifestParameterName(releaseVersion: string): string {

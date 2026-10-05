@@ -20,6 +20,7 @@ import {
   probeAwsAmiCredential,
   type AwsAmiCommandRunner,
 } from './aws-ami-production';
+import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
 
 const KMS = 'arn:aws:kms:us-east-1:111111111111:key/abc';
 const SHA = 'a'.repeat(64);
@@ -202,6 +203,43 @@ describe('SdkAwsAmiReleaseAdapter.launchCleanAccountCanary failure output', () =
     expect((error as Error).message).toContain('clean-account canary exited 1');
     expect((error as Error).message).toContain(journal);
     expect(AWS_AMI_COMMAND_ERROR_DETAIL_CHARS).toBeGreaterThanOrEqual(24_000);
+  });
+
+  it('budgets the child runner for every canary phase, fixture upload, and teardown', async () => {
+    const runs: unknown[] = [];
+    const adapter = new SdkAwsAmiReleaseAdapter({
+      ec2: () => fakeSender({}, []),
+      ssm: () => fakeSender({}, []),
+      childCredentials: async () => ({}),
+      commands: {
+        run: async (command) => {
+          runs.push(command);
+          return { exitCode: 0, stdout: '{}', stderr: '' };
+        },
+      },
+    });
+    const bootstrapScript = 'x'.repeat(24_001);
+    const uploadCount = Math.ceil((Math.ceil(Buffer.byteLength(bootstrapScript, 'utf8') / 3) * 4) / SSM_CHUNK_CHARS);
+    expect(uploadCount).toBe(2);
+
+    await adapter.launchCleanAccountCanary({
+      region: 'us-east-1',
+      fixture: { bootstrapScript },
+    } as Parameters<SdkAwsAmiReleaseAdapter['launchCleanAccountCanary']>[0]);
+
+    const expectedTimeoutMs =
+      CANARY_BUDGETS.runningMs +
+      CANARY_BUDGETS.ssmOnlineMs +
+      CANARY_BUDGETS.bootstrapMs +
+      CANARY_BUDGETS.terminateMs +
+      (uploadCount + 2) * CANARY_BUDGETS.shortCommandMs +
+      (uploadCount + 6) * 3 * CANARY_BUDGETS.pollMs +
+      5 * 60_000;
+    expect(runs[0]).toMatchObject({
+      command: 'papercusp-aws-ami-clean-account-canary',
+      timeoutMs: expectedTimeoutMs,
+    });
+    expect(expectedTimeoutMs).toBeGreaterThan(45 * 60_000);
   });
 });
 

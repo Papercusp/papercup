@@ -61,6 +61,7 @@ interface FakeOptions {
   serviceInactive?: boolean;
   attestation?: Record<string, unknown> | null;
   terminateThrows?: boolean;
+  bootstrapNeverTerminal?: boolean;
   leftover?: string[];
   censusThrows?: boolean;
   bootstrapFails?: boolean;
@@ -111,6 +112,9 @@ function fakeDeps(options: FakeOptions = {}) {
       const joined = sent[Number(commandId.slice(4)) - 1].join('\n');
       if (joined.includes('--- bootstrap ERROR lines ---')) {
         return { status: 'Success', stdout: `${JOURNAL_CAUSE}\n--- bootstrap ERROR lines ---\n9:ERROR: workspace service failed to start\n` };
+      }
+      if (options.bootstrapNeverTerminal && joined.includes('bootstrap.sh > ')) {
+        return { status: 'InProgress', stdout: 'bootstrap is still running\n' };
       }
       if (options.bootstrapFails && joined.includes('bootstrap.sh > ')) {
         return { status: 'Failed', stdout: 'ADDON LOADED OK\nPAPERCUSP_CANARY_BOOTSTRAP_EXIT=1\n', responseCode: 1 };
@@ -316,6 +320,17 @@ describe('runAwsAmiCleanAccountCanary', () => {
     const healthy = fakeDeps();
     await runAwsAmiCleanAccountCanary(input, healthy.deps);
     expect(healthy.calls).not.toContain('diagnostics');
+  });
+
+  it('reads partial diagnostics before teardown when the bootstrap invocation never becomes terminal', async () => {
+    const { deps, calls } = fakeDeps({ bootstrapNeverTerminal: true });
+    const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & {
+      details: Record<string, unknown>;
+    };
+    expect(error.message).toContain('SSM bootstrap did not happen within');
+    expect(calls.slice(-3)).toEqual(['diagnostics', 'terminate', 'census:run0001']);
+    expect(error.details.bootstrapDiagnostics).toContain(JOURNAL_CAUSE);
+    expect(Object.keys(error.details).at(-1)).toBe('bootstrapDiagnostics');
   });
 
   it('reports an unhealthy attestation and an inactive service as observed, not as success', async () => {
