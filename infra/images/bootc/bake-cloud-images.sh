@@ -310,6 +310,15 @@ export PAPERCUSP_RELEASE_AUDITOR
 HERE="$BUILD_CONTEXT"
 BUILD_HEALTH="$HERE/p307-build-health.sh"
 [ -x "$BUILD_HEALTH" ] || die "build health helper is missing or not executable: $BUILD_HEALTH"
+# WI-10005960: bound the rootful podman storage this bake fills (graphroot on the ROOT disk) and
+# refuse a bake the disk cannot hold. BAKE_STORAGE_HYGIENE overrides the helper (test seam).
+STORAGE_HYGIENE="${BAKE_STORAGE_HYGIENE:-$HERE/bake-storage-hygiene.sh}"
+storage_prune() {
+  local keep=(--keep-tag "$TAG")
+  # A reused local source image in this repo must survive the prune that runs before it is retagged.
+  case "$SOURCE_IMAGE" in "$REPO":*) keep+=(--keep-tag "${SOURCE_IMAGE#"$REPO":}");; esac
+  bash "$STORAGE_HYGIENE" prune --repo "$REPO" "${keep[@]}"
+}
 
 # Run one potentially long-lived rootful container operation while the companion
 # detector samples its process tree and build log. The operation's own exit code
@@ -534,6 +543,14 @@ export SYFT_BIN="$SYFT_RESOLVED" GRYPE_BIN="$GRYPE_RESOLVED"
 # The registry namespace is substituted into policy.json + registries.d INSIDE the build (layer
 # 3), all-or-nothing, so an image either names the real registry in both files or fails closed
 # in both. Passing it here is what makes the built image able to verify its own upgrades.
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY_RUN: would prune superseded $REPO images and require ${BAKE_MIN_FREE_GIB:-64}GiB free on podman's graphroot and $OUT"
+else
+  # Prune BEFORE measuring: a disk full of this bake's own superseded images is not a reason to refuse.
+  [ -r "$STORAGE_HYGIENE" ] || die "storage hygiene helper is missing: $STORAGE_HYGIENE"
+  storage_prune
+  bash "$STORAGE_HYGIENE" precheck "$OUT" || exit 1 # it printed BAKE_RESULT=FAILED storage-headroom
+fi
 if [ -n "$SOURCE_IMAGE" ] && [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY_RUN: would require local source image=$SOURCE_IMAGE, retag it as $REPO:$TAG, and push it"
 elif [ -n "$SOURCE_IMAGE" ]; then
@@ -891,5 +908,7 @@ fi
 
 echo "BAKE_MANIFEST=$OUT/bake-manifest.json"
 echo "BAKE_RENDERED=${rendered[*]:-none}"
+# The pushed image now lives in the registry; drop what this bake superseded (never fails the bake).
+[ "$DRY_RUN" -eq 1 ] || storage_prune
 echo "BAKE_RESULT=PASS"
 exit 0
