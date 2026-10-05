@@ -19960,12 +19960,18 @@ export function realCheckpointDeps(
       }
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
+      const suiteStartedAtMs = Date.now();
+      let suiteCompletedAtMs: number | null = null;
       const suitePromise = exec(cmd, args, {
         cwd: treeDir,
         env,
         allowNonZero: true,
         heavy: true,
         relayAffectedProgress: true,
+      }).then((result) => {
+        // Measure the child completion itself, before a slower concurrent repair leg.
+        suiteCompletedAtMs = Date.now();
+        return result;
       });
       // P-004 (green-gate-zero-wait-convergence-2026-09-08): a frozen repair
       // already paid for the initial serial verdict. On its re-verification run,
@@ -20415,6 +20421,10 @@ export function realCheckpointDeps(
         suiteOutput,
         resolvedHeadAtStart ?? execution?.candidate,
         Date.now(),
+        runId && suiteCompletedAtMs !== null ? {
+          command: cfg.greenCmd, runGroupId: runId,
+          startedAtMs: suiteStartedAtMs, completedAtMs: suiteCompletedAtMs,
+        } : null,
       );
       if (testPassReuse) log(`TEST_PASS_REUSE_ROUND ${testPassReuse.headline}`);
       return {
