@@ -97,6 +97,21 @@ function makeDeps(opts: { store: AbStore; composites: number[]; pipelineUsd?: nu
 }
 
 describe('runAbEvaluation', () => {
+  it.each([false, true])('retains canonical pipeline receipts without calling estimated/incomplete cost measured (complete=%s)', async (complete) => {
+    const { store } = makeStore();
+    const { deps } = makeDeps({ store, composites: [8], pipelineUsd: 0.4 });
+    const run = deps.runPipeline;
+    const receipt = { knownUsd: 0.4, providerUsd: 0, estimatedUsd: 0.4,
+      complete, measured: false, coverageBasis: 'retained-run-output-and-usage-samples' as const,
+      missingRunIds: complete ? [] : ['validator'], samples: [] };
+    deps.runPipeline = async (input) => ({ ...await run(input), pipelineSpend: receipt });
+    const result = await runAbEvaluation(oneVariant({ repeats: 1 }), deps);
+    expect(result.outcomes[0].pipelineSpend).toEqual(receipt);
+    expect(result.cost.costMeasured).toBe(false);
+    expect(result.cost.totalUsd).toBeCloseTo(2.9);
+    expect(result.comparison).toEqual([]);
+  });
+
   it('stops the next paid run and withholds comparison when a repair charge is unknown', async () => {
     const { store, scores } = makeStore();
     const { deps, calls } = makeDeps({ store, composites: [8], pipelineUsd: 0.4 });
