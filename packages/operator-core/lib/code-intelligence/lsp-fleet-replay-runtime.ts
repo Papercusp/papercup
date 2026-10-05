@@ -66,6 +66,8 @@ export function replayRepositorySources(root: string): string[] {
   const visit = (directory: string) => {
     const git = (args: string[]) => execFileSync('git', ['-C', directory, ...args],
       { encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
+    if (realpathSync(git(['rev-parse', '--show-toplevel']).trim()) !== realpathSync(directory))
+      throw new Error(`uninitialized-replay-submodule:${directory}`);
     for (const entry of git(['ls-files', '--stage', '-z']).split('\0').filter(Boolean)) {
       const tab = entry.indexOf('\t');
       if (tab < 0) throw new Error('invalid-replay-git-population');
@@ -138,6 +140,7 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     if ((index + 1) % 256 === 0 || index + 1 === paths.length)
       options.onProgress?.({ phase: 'source-copied', completed: index + 1, total: paths.length });
   }
+  options.onProgress?.({ phase: 'dependencies-copy-started', completed: 0, total: 1 });
   (options.snapshotDependencies ?? ((root, out) => {
     execFileSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
       { stdio: 'inherit', timeout: 600_000 });
@@ -195,6 +198,8 @@ export function freezeCompilerReplayConfig(input: ReplayOracleInput, options: {
     let bytes: Buffer;
     try { bytes = readFileSync(file); } catch { return undefined; }
     const absolute = resolve(file);
+    if (input.sourceSnapshot && !insideReplayRoot(input.rootPath, absolute))
+      throw new Error(`snapshot-input-escape:${absolute}`);
     const hash = replayHash(bytes);
     const previous = loadedInputs.get(absolute);
     if (previous && previous !== hash) throw new Error(`changed-compiler-input:${absolute}`);

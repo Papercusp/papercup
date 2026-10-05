@@ -111,8 +111,10 @@ describe('independent replay source materialization', () => {
     const f = fixture();
     writeFileSync(join(f.input.rootPath, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'] }));
     const copied = materializeReplaySource(f.input, f.target, f.options);
+    const phases: string[] = [];
     // This test's compiler is intentionally the original one, like a shared CLI.
-    expect(() => freezeCompilerReplayConfig(copied)).toThrow('snapshot-input-escape');
+    expect(() => freezeCompilerReplayConfig(copied, { onProgress: progress => phases.push(progress.phase) })).toThrow('snapshot-input-escape');
+    expect(phases).not.toContain('references-scanned');
   });
 });
 describe('daemon replay qualification', () => {

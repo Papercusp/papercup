@@ -120,8 +120,8 @@ async function seededRowCount(): Promise<number> {
 async function createPlatformPot(): Promise<void> {
   await sql.unsafe(
     `INSERT INTO harness_shared.pots
-       (workspace_id, pot_home_slug, canonical_pot_home_slug, public_key, keychain_id, created_at)
-     VALUES ($1, $2, $2, '\\x00'::bytea, $3, $4)
+       (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+     VALUES ($1, $2, '\\x00'::bytea, $3, $4)
      ON CONFLICT DO NOTHING`,
     [WORKSPACE, CATCH_ALL_POT, `kc-${randomBytes(4).toString('hex')}`, Date.now()],
   );
@@ -177,6 +177,14 @@ describe('migration 649 — a backfill must not gate the boot on post-boot state
        WHERE tgrelid='harness_shared.work_items'::regclass AND NOT tgisinternal`;
     expect(triggers.map((row) => row.tgname)).toContain('capture_work_items_outbox_ins_del_trg');
     expect(triggers.map((row) => row.tgname)).not.toContain('capture_work_items_outbox_ins_trg');
+    const columns = await sql<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema='harness_shared' AND table_name='pots'`;
+    expect(columns.map((row) => row.column_name)).toEqual(expect.arrayContaining([
+      'workspace_id', 'pot_home_slug', 'public_key', 'keychain_id', 'created_at',
+    ]));
+    // Added by 686, so it cannot be part of a 649-era seed.
+    expect(columns.map((row) => row.column_name)).not.toContain('canonical_pot_home_slug');
   });
 
   it('APPLIES CLEANLY on a database with no Pots at all — the shipped-app case', async () => {
