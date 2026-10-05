@@ -12,8 +12,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import type { OrgTestDb } from '../../test/_org-test-db';
-import { createOrgTestDb } from '../../test/_org-test-db';
+import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { insertHiveIfAbsent } from '../../hive-store';
 import { getHiveSetting } from '../../hive-settings-store';
 import {
