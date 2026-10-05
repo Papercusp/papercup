@@ -980,6 +980,56 @@ describe('immutable dependency generation', () => {
     expect(readFileSync(record, 'utf8')).toBe(`${configuredRoot}\n`);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('WI-10006081: once the root moves, retention sweeps the legacy tree-local store except live pins', () => {
+    const integration = makeIntegration();
+    const legacyRoot = join(integration, '.papercusp/dependency-generations');
+    const envLess = { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' };
+
+    // Two generations published before any root was configured land in the
+    // tree-local store; a direct sibling checkout still runs on the second one.
+    const stale = publish(integration, envLess);
+    expect(stale.status, stale.stderr).toBe(0);
+    const stalePath = publishedPath(stale.stdout);
+    expect(stalePath.startsWith(`${legacyRoot}/`)).toBe(true);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
+    const pinned = publish(integration, envLess);
+    expect(pinned.status, pinned.stderr).toBe(0);
+    const pinnedIdentity = publishedIdentity(pinned.stdout);
+    const pinnedPath = publishedPath(pinned.stdout);
+    const checkout = join(dirname(integration), 'checkpoint');
+    mkdirSync(join(checkout, 'node_modules'), { recursive: true });
+    const marker = join(checkout, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(marker, `identity=${pinnedIdentity}\nsource=${pinnedIdentity.slice(3)}\n`);
+
+    // A one-off explicit root with no env and no record is NOT a move: the
+    // tree-local store is still the real one and must be left alone.
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v3\n');
+    const oneOff = publish(integration, envLess, join(dirname(integration), 'one-off'));
+    expect(oneOff.status, oneOff.stderr).toBe(0);
+    expect(oneOff.stderr).not.toContain('sweeping legacy tree-local generation store');
+    expect(existsSync(stalePath)).toBe(true);
+
+    // The configured run moves the root: the unpinned legacy generation goes,
+    // the pinned one stays.
+    const configuredRoot = join(dirname(integration), 'configured-generations');
+    const moved = publish(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: configuredRoot });
+    expect(moved.status, moved.stderr).toBe(0);
+    expect(publishedPath(moved.stdout).startsWith(`${configuredRoot}/`)).toBe(true);
+    expect(moved.stderr).toContain('sweeping legacy tree-local generation store');
+    expect(existsSync(stalePath)).toBe(false);
+    expect(existsSync(pinnedPath)).toBe(true);
+
+    // Once the checkout moves off it, an env-less caller following the record
+    // reclaims the last legacy generation too.
+    rmSync(marker);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v4\n');
+    const followed = publish(integration, envLess);
+    expect(followed.status, followed.stderr).toBe(0);
+    expect(publishedPath(followed.stdout).startsWith(`${configuredRoot}/`)).toBe(true);
+    expect(existsSync(pinnedPath)).toBe(false);
+    expect(readdirSync(legacyRoot).filter((entry) => entry.startsWith('v1-'))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('P-004: exposes the cheap immutable candidate/input key without reading mutable live lockfiles', () => {
     const integration = makeIntegration();
     const firstCandidate = commitFixture(integration, 'first dependency inputs');

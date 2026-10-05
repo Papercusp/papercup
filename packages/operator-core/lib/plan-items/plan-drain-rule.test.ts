@@ -5,7 +5,8 @@
  * Pins the rules to the REAL dispatch path: `plans:set-status` and
  * `plans:add-item` return BULK envelopes, the engine FANS them into one event
  * per item, and the carrier is never matched. Initial lifecycle writes through
- * `plans:new` and `plans:set-frontmatter` are reconciled after success. A rule reading `data.results[]`
+ * `plans:new`, `plans:set-frontmatter`, and `plans:set-plan-status` are reconciled
+ * after success. A rule reading `data.results[]`
  * therefore has a `when` that is always false and silently never fires.
  *
  * FALSIFIABILITY. Every "fires" assertion is paired with a control event
@@ -25,6 +26,7 @@ const RULE_ID = 'plan-drain:terminality-changed';
 const ADD_RULE_ID = 'plan-drain:item-added';
 const CREATE_RULE_ID = 'plan-drain:plan-created';
 const FRONTMATTER_RULE_ID = 'plan-drain:legacy-plan-converted';
+const PLAN_STATUS_RULE_ID = 'plan-drain:plan-readied';
 const CONTENT_RULE_IDS = {
   'plans:set-content': 'plan-drain:content-rewritten',
   'plans:edit': 'plan-drain:content-edited',
@@ -67,6 +69,20 @@ function addItemBulkEvent(items: Record<string, unknown>[]): ToolInvocationEvent
   return {
     tool: 'plans:add-item',
     args: { items: items.map((i) => ({ slug: i.slug, text: i.text })) },
+    result: {
+      ok: true,
+      data: { ok: true, results: items, counts: { ok, failed: items.length - ok } },
+    },
+    ctx,
+  };
+}
+
+/** The RAW bulk envelope plans:set-plan-status actually returns. */
+function planStatusBulkEvent(items: Record<string, unknown>[]): ToolInvocationEvent {
+  const ok = items.filter((i) => i.ok !== false).length;
+  return {
+    tool: 'plans:set-plan-status',
+    args: { slugs: items.map((i) => i.slug), status: 'ready' },
     result: {
       ok: true,
       data: { ok: true, results: items, counts: { ok, failed: items.length - ok } },
@@ -248,6 +264,10 @@ describe('the rule on the real dispatch path', () => {
     expect(reactionRulesFor('plans:set-frontmatter').map((r) => r.id)).toContain(FRONTMATTER_RULE_ID);
   });
 
+  it('registers the ready-transition drain reaction on plans:set-plan-status', () => {
+    expect(reactionRulesFor('plans:set-plan-status').map((r) => r.id)).toContain(PLAN_STATUS_RULE_ID);
+  });
+
   it('matches the FANNED per-item events and NOT the bulk carrier', () => {
     const bulk = bulkEvent([
       flip('p1', 'P-001', 'todo', 'done'), // crosses
@@ -326,5 +346,25 @@ describe('the rule on the real dispatch path', () => {
     expect(action!.fire).toBe(PLAN_DRAIN_TRANSITION_ACTION);
     expect(action!.args.plans).toEqual([{ planSlug: 'p-legacy', harnessSlug: 'papercusp' }]);
     expect(matchReactions(setFrontmatterEvent('draft')).find((a) => a.ruleId === FRONTMATTER_RULE_ID)).toBeUndefined();
+  });
+
+  it('fires after a changed ready status write, only for the successful changed row', () => {
+    const bulk = planStatusBulkEvent([
+      { ok: true, slug: 'p-readied', newStatus: 'ready', changed: true },
+      { ok: false, slug: 'p-failed', newStatus: 'ready', changed: false },
+      { ok: true, slug: 'p-noop', newStatus: 'ready', changed: false },
+      { ok: true, slug: 'p-shipped', newStatus: 'shipped', changed: true },
+    ]);
+
+    expect(matchReactions(bulk).find((a) => a.ruleId === PLAN_STATUS_RULE_ID)).toBeUndefined();
+    const fanned = fanOutBulkEvent(bulk);
+    expect(fanned).not.toBeNull();
+    const action = matchReactions(fanned![0]!).find((a) => a.ruleId === PLAN_STATUS_RULE_ID);
+    expect(action).toBeDefined();
+    expect(action!.fire).toBe(PLAN_DRAIN_TRANSITION_ACTION);
+    expect(action!.args.plans).toEqual([{ planSlug: 'p-readied', harnessSlug: 'papercusp' }]);
+    for (const event of fanned!.slice(1)) {
+      expect(matchReactions(event).find((a) => a.ruleId === PLAN_STATUS_RULE_ID)).toBeUndefined();
+    }
   });
 });

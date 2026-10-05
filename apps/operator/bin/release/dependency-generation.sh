@@ -1576,10 +1576,14 @@ dependency_generation_remove_input_selectors_for_identity_locked() {
 }
 
 dependency_generation_quarantine_unretained_locked() {
-  local generation_root="$1" retain_count="${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}"
+  # An explicit second argument may retain ZERO by recency (the legacy-store
+  # sweep below: nothing reads that store, so only pins and leases protect).
+  local generation_root="$1" retain_count="${2:-${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}}"
+  local min_retain=1
+  [ -z "${2:-}" ] || min_retain=0
   local protected=' ' generation identity created pin lease kept=0 quarantine
   local ranked=()
-  if [[ ! "$retain_count" =~ ^[0-9]+$ ]] || [ "$retain_count" -lt 1 ]; then
+  if [[ ! "$retain_count" =~ ^[0-9]+$ ]] || [ "$retain_count" -lt "$min_retain" ]; then
     dependency_generation_log "FATAL: DEPENDENCY_GENERATION_RETAIN_COUNT must be an integer >= 1"
     return 2
   fi
@@ -1681,7 +1685,78 @@ dependency_generation_apply_retention() {
   fi
   dependency_generation_release_publish_lock
   dependency_generation_delete_prune_quarantines
+  if [ "$rc" -eq 0 ]; then
+    dependency_generation_sweep_legacy_store "$generation_root" "$integration_root"
+  fi
   return "$rc"
+}
+
+# WI-10006081: the persistent generation root for an integration root (env, then
+# the WI-10005159 record), WITHOUT writing the record. Empty when neither names
+# an absolute root, i.e. the tree-local store is still the real one.
+dependency_generation_persistent_root() {
+  local integration_root="$1" record recorded=''
+  if [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ]; then
+    printf '%s\n' "$PAPERCUSP_DEPENDENCY_GENERATION_ROOT"
+    return 0
+  fi
+  record="$(dependency_generation_root_record "$integration_root")"
+  if [ -f "$record" ]; then
+    IFS= read -r recorded < "$record" || true
+  fi
+  case "$recorded" in
+    /*) printf '%s\n' "$recorded" ;;
+  esac
+  return 0
+}
+
+# WI-10006081: once the root moves (env or record), every caller follows it and
+# NOTHING reads or retains the tree-local store again. Its generations were never
+# swept: on 2026-10-05 six of them (~80 GB, single-link) sat on the root disk
+# beside a store on /mnt/data, put / at 99% and stopped git-sync fleet-wide and
+# cargo admission. So each retention pass also sweeps that legacy store, keeping
+# only generations a live pin or lease still names (recency keeps nothing, since
+# no reader selects from it). Best-effort: a busy or unreadable legacy store must
+# never fail a publish, so every failure is logged and swallowed.
+dependency_generation_sweep_legacy_store() {
+  local generation_root="$1" integration_root="$2"
+  local legacy persistent legacy_real persistent_real generation_real residue rc=0
+  legacy="$integration_root/.papercusp/dependency-generations"
+  [ -d "$legacy" ] || return 0
+  persistent="$(dependency_generation_persistent_root "$integration_root")"
+  [ -n "$persistent" ] || return 0
+  legacy_real="$(cd "$legacy" 2>/dev/null && pwd -P)" || return 0
+  # The persistent store must exist: a record naming a missing directory proves
+  # nothing about where generations live, so the legacy store stays untouched.
+  persistent_real="$(cd "$persistent" 2>/dev/null && pwd -P)" || return 0
+  [ "$legacy_real" != "$persistent_real" ] || return 0
+  # An explicit --generation-root may be pointed at the legacy store on purpose.
+  generation_real="$(cd "$generation_root" 2>/dev/null && pwd -P)" || generation_real=''
+  [ "$legacy_real" != "$generation_real" ] || return 0
+  residue=''
+  for residue in "$legacy_real"/v1-* "$legacy_real"/.prune-* "$legacy_real"/.invalid-*; do
+    [ -d "$residue" ] && break
+    residue=''
+  done
+  [ -n "$residue" ] || return 0
+  dependency_generation_log \
+    "sweeping legacy tree-local generation store $legacy_real (generation root is $persistent_real)"
+  # A short lock budget: a live holder on a store nobody should be using is
+  # reason to retry on the next pass, not to stall this publish for 15 minutes.
+  DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC="${DEPENDENCY_GENERATION_LEGACY_SWEEP_LOCK_TIMEOUT_SEC:-5}" \
+    dependency_generation_acquire_publish_lock "$legacy_real" || {
+      dependency_generation_log "WARNING: legacy generation store $legacy_real is locked; sweep deferred"
+      return 0
+    }
+  dependency_generation_refresh_retention_state_locked "$legacy_real" "$integration_root" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    dependency_generation_quarantine_unretained_locked "$legacy_real" 0 || rc=$?
+  fi
+  dependency_generation_release_publish_lock
+  dependency_generation_delete_prune_quarantines
+  [ "$rc" -eq 0 ] \
+    || dependency_generation_log "WARNING: legacy generation store sweep of $legacy_real failed (rc=$rc); retained"
+  return 0
 }
 
 # WI-10004849: a changed root tree is one ~16-18 GB physical copy (ext4 has no
