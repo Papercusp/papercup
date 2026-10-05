@@ -20,13 +20,14 @@
  *   SPEC-P-002-visible-to-matrix      · the exact R-7 grant matrix
  *   SPEC-P-002-store-integration-test · this file, against migration-applied PG
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { parseGoalOwnerReportSnapshot, serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
-import { goalOwnerReportFixture } from '../test/fixtures/goal-owner-report';
+import { goalOwnerReportFixture, seedGoalReportFixturePresence } from '../test/fixtures/goal-owner-report';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import type { GoalOwnerReportRefV1 } from '@papercusp/chat-protocol';
 import type { CoordEnvelope } from '@papercusp/coordination';
@@ -54,6 +55,17 @@ const reportMigration = join(
 );
 const snapshotMigration = join(dirname(reportMigration), '1353-report-library-goal-snapshot.sql');
 
+// Keep the actual presence store, election and liveness oracle. Only route its
+// connection to this suite's disposable migrated database, like the store reads.
+const oracleDb = vi.hoisted(() => ({ sql: null as Sql | null }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => {
+    if (!oracleDb.sql) throw new Error('Report fixture oracle database is not ready');
+    return { sql: oracleDb.sql };
+  },
+}));
+
 /** A fresh workspace per test, so no test can see another's rows. */
 let wsSeq = 0;
 const nextWs = (): string => `rl-ws-${Date.now()}-${++wsSeq}`;
@@ -67,6 +79,7 @@ describe('report_library store (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    oracleDb.sql = db.adminSql;
     // Bind this coverage to the production migration, not just the baseline.
     expect(existsSync(reportMigration), `migration missing at ${reportMigration}`).toBe(true);
     await db.adminSql.unsafe(readFileSync(reportMigration, 'utf8')).simple();
@@ -76,11 +89,13 @@ describe('report_library store (real PG)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
+    oracleDb.sql = null;
   });
 
   async function deliveryFixture() {
     const workspaceId = nextWs();
     const goalId = `goal-${workspaceId}`;
+    const holderId = `report-holder-${workspaceId}`;
     const at = new Date().toISOString();
     const due = new Date(Date.now() + 60_000).toISOString();
     const snapshot = goalOwnerReportFixture(workspaceId);
@@ -91,10 +106,11 @@ describe('report_library store (real PG)', () => {
         ${JSON.stringify({ spentCents: 125.5, spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE, spentCentsAt: at,
           spentCentsBreakdown: { measured: true, lineageScope: 'partial; legacy unpriced' } })}::text::jsonb, ${at}::timestamptz)`;
     await db.adminSql`INSERT INTO harness_shared.agent_modes (workspace_id, owner_id, axis_key, mode, subject, set_by)
-      VALUES (${workspaceId}, 'agent-1', 'goal', 'goal', ${goalId}, 'fixture')`;
+      VALUES (${workspaceId}, ${holderId}, 'goal', 'goal', ${goalId}, 'fixture')`;
+    await seedGoalReportFixturePresence(db.adminSql, workspaceId, holderId, at);
     const [awaitRow] = await db.adminSql`INSERT INTO harness_shared.event_awaits
       (workspace_id, subscriber_id, event_key, timeout_behavior, expires_ts)
-      VALUES (${workspaceId}, 'agent-1', 'fixture:report-progress', 'wake', ${due}::timestamptz) RETURNING id`;
+      VALUES (${workspaceId}, ${holderId}, 'fixture:report-progress', 'wake', ${due}::timestamptz) RETURNING id`;
     const time = Date.parse(at);
     for (const wall of snapshot.ownerWalls) {
       await db.adminSql`INSERT INTO harness_shared.work_items
@@ -125,8 +141,25 @@ describe('report_library store (real PG)', () => {
       body: 'Caller-supplied misleading short prose', summary: 'Caller title' };
     const persisted = () => db.adminSql`SELECT id, body, ts FROM harness_shared.coord_event_log
       WHERE workspace_id = ${workspaceId} AND surface = 'messages' ORDER BY id`;
-    return { workspaceId, snapshot, ref, context, envelope, persisted };
+    return { workspaceId, holderId, snapshot, ref, context, envelope, persisted };
   }
+
+  it('REPORT-WAKE-FIXTURE: actual holder liveness and wake policy are prerequisites for publication', async () => {
+    const f = await deliveryFixture();
+    const reads = makeGoalReportReferenceReads(db.adminSql, f.workspaceId, f.snapshot.goalId);
+    expect(await reads.wake(f.snapshot.nextWake)).toBe(true);
+    await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${f.holderId}`;
+    expect(await reads.wake(f.snapshot.nextWake)).toBe(false);
+    await expect(persistGoalReportReference(db.adminSql, f.envelope, f.context)).rejects.toMatchObject({ oracle: 'next-wake-evidence' });
+    expect(await f.persisted()).toEqual([]);
+    await seedGoalReportFixturePresence(db.adminSql, f.workspaceId, f.holderId, new Date().toISOString());
+    await db.adminSql`UPDATE harness_shared.event_awaits SET policy = 'notify' WHERE subscriber_id = ${f.holderId}`;
+    expect(await reads.wake(f.snapshot.nextWake)).toBe(false);
+    await db.adminSql`UPDATE harness_shared.event_awaits SET policy = 'wake' WHERE subscriber_id = ${f.holderId}`;
+    expect(await reads.wake(f.snapshot.nextWake)).toBe(true);
+    await persistGoalReportReference(db.adminSql, f.envelope, f.context);
+    expect(await f.persisted()).toHaveLength(1);
+  });
 
   it('REPORT-REFERENCE-ATOMIC-P002: publish/resolve do not stamp; delivery commits one derived notification and cadence together', async () => {
     const f = await deliveryFixture();
