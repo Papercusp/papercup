@@ -545,8 +545,10 @@ describe('GOAL admission receipt (EI-25166050736574344)', () => {
     const measurement = {
       measuredAt: '2026-10-05 18:40:16+00', populationComplete: true,
       candidate: { total: 5, fleet: null },
-      counted: [{ ownerId: 'original-counted-owner', inFleet: false, basis: 'boot-grace',
-        heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00' }],
+      counted: Array.from({ length: 5 }, (_, index) => ({
+        ownerId: `original-counted-owner-${index}`, inFleet: false, basis: 'boot-grace',
+        heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00',
+      })),
       oracleEndedOwnerIds: ['ended-owner'], excludedOwnerIds: ['replaced-owner'],
     };
     const resolution = {
