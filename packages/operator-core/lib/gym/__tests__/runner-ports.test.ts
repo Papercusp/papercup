@@ -188,14 +188,21 @@ describe('createGymRunnerPorts', () => {
       symlinkSync(vitestDir, join(clonePath, 'node_modules', 'vitest'), 'dir');
       mkdirSync(join(clonePath, 'libs'));
       symlinkSync(dirname(dirname(reporterPath)), join(clonePath, 'libs', 'test-config'), 'dir');
+      const mainDir = join(clonePath, 'libs', 'runner-support');
+      mkdirSync(mainDir);
+      writeFileSync(join(mainDir, 'package.json'), JSON.stringify({ name: 'runner-support', type: 'module', exports: './index.mjs' }));
+      const mainSource = 'export const allow = true;\n';
+      writeFileSync(join(mainDir, 'index.mjs'), mainSource);
+      symlinkSync(mainDir, join(clonePath, 'node_modules', 'runner-support'), 'dir');
       writeFileSync(join(clonePath, 'package.json'), JSON.stringify({ name: 'gym-oracle-fixture', type: 'module', scripts: {
         'test:file': `node ${JSON.stringify(join(vitestDir, 'vitest.mjs'))} run --config vitest.config.mjs`,
       } }));
       const configHelper = 'export const workers = 1;\n';
       writeFileSync(join(clonePath, 'config-helper.mjs'), configHelper);
       writeFileSync(join(clonePath, 'vitest.config.mjs'), `import { workers } from './config-helper.mjs';
+        import { allow } from 'runner-support';
         export default { test: {
-        include: ['oracle.test.mjs'], pool: 'forks', maxWorkers: workers, fileParallelism: false,
+        include: ['oracle.test.mjs'], pool: 'forks', maxWorkers: workers, fileParallelism: !allow,
         experimental: { importDurations: { limit: 1000000 } },
         reporters: ['json', ${JSON.stringify(reporterPath)}], outputFile: process.argv.find(a => a.startsWith('--outputFile='))?.slice(13),
       } };\n`);
@@ -214,7 +221,7 @@ describe('createGymRunnerPorts', () => {
         });\n`);
       const git = (args: string[]) => execFileSync('git', args, { cwd: clonePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       git(['init', '--quiet']);
-      git(['add', 'package.json', 'vitest.config.mjs', 'config-helper.mjs', 'impl.mjs', 'helper.mjs', 'oracle.test.mjs']);
+      git(['add', 'package.json', 'vitest.config.mjs', 'config-helper.mjs', 'impl.mjs', 'helper.mjs', 'oracle.test.mjs', 'libs/runner-support']);
       git(['-c', 'user.name=Gym fixture', '-c', 'user.email=gym-fixture@example.invalid', 'commit', '--quiet', '-m', 'Pinned oracle fixture']);
       const pinCommit = git(['rev-parse', 'HEAD']).trim();
       const port = createGymRunnerPorts(cfg().config).runOracle!;
@@ -237,6 +244,18 @@ describe('createGymRunnerPorts', () => {
         } } });
       }
       expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution).toMatchObject({ mainProcessSources: {
+          evidence: { scope: 'repository-node-main-process-sources', sources: expect.arrayContaining([
+            { path: 'libs/runner-support/index.mjs', sha256: digest(mainSource), currentSha256: digest(mainSource) },
+          ]) },
+          reference: { pinCommit, sources: expect.arrayContaining([
+            { path: 'libs/runner-support/index.mjs', sha256: digest(mainSource) },
+          ]) },
+        } });
+        expect(receipt.execution!.configSources!.loaded!.sources.map(source => source.path))
+          .not.toContain('libs/runner-support/index.mjs');
+      }
       for (const receipt of [pre, post]) {
         expect(receipt.execution).toMatchObject({ configSources: {
           loaded: { basis: 'node-load-hook', status: 'stable', reasons: [],
@@ -287,6 +306,22 @@ describe('createGymRunnerPorts', () => {
           ]) },
       });
       writeFileSync(join(clonePath, 'vitest.config.mjs'), originalConfig);
+      // A bare repository import is externalized by Vite and absent from its
+      // config dependency list. It can restore itself before reporter init.
+      const rewrittenMain = `import { writeFileSync } from 'node:fs';
+        writeFileSync(new URL('./index.mjs', import.meta.url), ${JSON.stringify(mainSource)});
+        export const allow = false;\n`;
+      writeFileSync(join(mainDir, 'index.mjs'), rewrittenMain);
+      const selfRestoringMain = await port(input);
+      if (!selfRestoringMain || Array.isArray(selfRestoringMain)) throw new Error('Missing main-process receipt');
+      expect(selfRestoringMain.execution).toMatchObject({ mainProcessSources: {
+        evidence: { status: 'changed', sources: expect.arrayContaining([
+          { path: 'libs/runner-support/index.mjs', sha256: digest(rewrittenMain), currentSha256: digest(mainSource) },
+        ]) },
+        reference: { sources: expect.arrayContaining([
+          { path: 'libs/runner-support/index.mjs', sha256: digest(mainSource) },
+        ]) },
+      } });
       // A stable dirty helper must retain its immutable reference separately.
       // Comparing pre/post alone would silently accept the rewritten oracle.
       writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 41;\n');

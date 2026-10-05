@@ -78,6 +78,14 @@ function oracleExecution(implementationHash = 'b'.repeat(64)) {
         basis: 'reporter-init-disk', status: 'unchanged', reasons: [],
         sources: [{ path: 'vitest.config.ts', sha256: 'e'.repeat(64), currentSha256: 'e'.repeat(64) }] },
     } as NonNullable<GymOracleRun['execution']>['configSources'],
+    mainProcessSources: { reference: { pinCommit: makeSpec().harnessCommit,
+      sources: [{ path: 'libs/runner-support/index.mjs', sha256: 'f'.repeat(64) }] },
+      evidence: { schemaVersion: 'node-loaded-main-process-sources-v1', scope: 'repository-node-main-process-sources',
+        basis: 'node-load-hook', status: 'stable', reasons: [] as string[],
+        sources: [{ path: 'libs/runner-support/index.mjs', sha256: 'f'.repeat(64), currentSha256: 'f'.repeat(64) }] },
+    } as { reference: { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> };
+      evidence: { schemaVersion: string; scope: string; basis: string; status: string; reasons: string[];
+        sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }> } } | undefined,
     exitCode: 0, signal: null,
     workerSources: { report: '{}', reference: { pinCommit: makeSpec().harnessCommit, sources: [
       { path: 'oracle.test.js', sha256: 'a'.repeat(64) }, { path: 'impl.js', sha256: 'b'.repeat(64) },
@@ -479,6 +487,41 @@ describe('runGymPipeline', () => {
     expect(result.deterministicSignals?.regressions).toBeUndefined();
     expect(result.deterministicSignals?.oracle).toMatchObject({ configLoadedCurrent: false });
   });
+
+  it.each(['missing', 'unknown', 'changed', 'unpinned', 'wrong-basis', 'wrong-scope', 'duplicate',
+    'missing-source', 'missing-reference', 'changed-between-runs'] as const)
+    ('withholds positive claims when native main-process inputs are %s', async (mode) => {
+      const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+      let run = 0;
+      ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
+        const execution = oracleExecution();
+        const measured = execution.mainProcessSources!;
+        run += 1;
+        if (mode === 'missing') execution.mainProcessSources = undefined;
+        else if (mode === 'unknown') measured.evidence.status = 'unknown';
+        else if (mode === 'changed') measured.evidence.sources[0]!.currentSha256 = 'a'.repeat(64);
+        else if (mode === 'unpinned') measured.reference.sources[0]!.sha256 = null;
+        else if (mode === 'wrong-basis') measured.evidence.basis = 'after-run-disk';
+        else if (mode === 'wrong-scope') measured.evidence.scope = 'repository-vite-config-dependencies';
+        else if (mode === 'duplicate') measured.evidence.sources.push({ ...measured.evidence.sources[0]! });
+        else if (mode === 'missing-source') measured.evidence.sources = [];
+        else if (mode === 'missing-reference') Object.assign(measured, { reference: undefined });
+        else if (mode === 'changed-between-runs' && run === 2) {
+          measured.evidence.sources.push({ path: 'libs/other.mjs', sha256: 'c'.repeat(64), currentSha256: 'c'.repeat(64) });
+          measured.reference.sources.push({ path: 'libs/other.mjs', sha256: 'c'.repeat(64) });
+        }
+        return { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }],
+          testPath, pinCommit: pinCommit!, sourceHashes: {
+            pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64),
+          }, implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
+      };
+      const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+        oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+          pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+      expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+      expect(result.deterministicSignals?.regressions).toBeUndefined();
+      expect(result.deterministicSignals?.oracle).toMatchObject({ mainProcessCurrent: false });
+    });
 
   it('withholds authority from legacy unpinned oracle results even with complete passing coverage', async () => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
