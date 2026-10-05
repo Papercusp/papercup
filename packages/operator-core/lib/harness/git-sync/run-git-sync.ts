@@ -5966,7 +5966,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       headSha: await headSha(runGit, repo),
     }));
     superHeadSha = pushRes.headSha;
-    superSyncBack = pushRes.syncBack;
+    superSyncBack = 'syncBack' in pushRes ? pushRes.syncBack : undefined;
     repoResult = {
       ...pushRes,
       ...commitMetrics,

@@ -89,6 +89,12 @@ export function standingPrBody(potName: string | undefined, headSha: string): st
     '',
     `It only ever points at a commit that passed the working copy's full test suite (currently \`${headSha.slice(0, 12)}\`).`,
     'It is updated automatically each time a newer commit passes. Merging it is up to you.',
+    '',
+    // P-016: sync-back recognises already-merged work by commit id, so a squash or
+    // rebase merge would make that work reappear in every later pull request.
+    'Please merge it with **Create a merge commit**, not "Squash and merge" or "Rebase and merge". ' +
+      'The working copy recognises its already-merged work by commit id, so a squash or rebase ' +
+      'would make that work show up again in the next pull request.',
   ].join('\n');
 }
 
