@@ -3228,7 +3228,9 @@ export function buildWorkspaceHostBootstrap(
     '        ss -tn state syn-sent | tail -n +2 | sed "s/^/syn-sent /" | head -n 5;',
     '      } >> "$START_SAMPLE_LOG" 2>&1 || true',
     '      sleep 10',
-    '    done ) &',
+    // Detached from the bootstrap's stdio: a killed sampler's orphaned `sleep` would
+    // otherwise hold the SSM command's output pipe open for up to 10s.
+    '    done ) >/dev/null 2>&1 &',
     '  START_SAMPLER_PID=$!',
     '}',
     'stop_sampler() {',
