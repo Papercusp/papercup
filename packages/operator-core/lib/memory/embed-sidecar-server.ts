@@ -1708,7 +1708,7 @@ export function runEmbedSidecarServer(): void {
         console.log(`${EMBED_SIDECAR_IDLE_EXIT_LINE} idleMs=${idleMs}`);
         shutdown('idle');
       },
-      { category: 'lifecycle' },
+      { category: 'lifecycle', classification: 'timeout-reaper' },
     );
   }
 }

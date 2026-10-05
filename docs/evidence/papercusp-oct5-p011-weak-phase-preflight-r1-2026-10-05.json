@@ -119,8 +119,17 @@
   },
   "historicalQualification": {
     "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-qualification-2026-10-03.json",
-    "bytes": 14623,
-    "sha256": "08549b5ca89fd68e06487dd62c75dc9cef2f0a4a5d2c9900beeb28071e57b942"
+    "bytes": 14605,
+    "sha256": "a1973988a5abef61b05ed6213b6a14ad3033df2a9dae162505ca0bf1595548c8",
+    "original": {
+      "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-qualification-2026-10-03.json",
+      "bytes": 14623,
+      "sha256": "08549b5ca89fd68e06487dd62c75dc9cef2f0a4a5d2c9900beeb28071e57b942",
+      "artifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/originals/08549b5ca89fd68e06487dd62c75dc9cef2f0a4a5d2c9900beeb28071e57b942.json"
+      }
+    }
   },
   "acceptanceLimits": [
     "Historical R1/R2 producer failures remain unchanged.",

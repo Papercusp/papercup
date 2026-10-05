@@ -59,7 +59,9 @@ describe('governed byte-input process', () => {
     expect(selectGovernedByteProcessFailure(childError, closedStdin, 0, 0)).toBe(childError);
 
     const result = await executeGovernedByteProcess(process.execPath,
-      ['-e', 'process.exit(0)'], Buffer.alloc(0), options(async (_input, run) => run(context)));
+      ['-e', 'process.exit(0)'], Buffer.alloc(0), options(async (
+        _input: unknown, run: (admitted: typeof context) => Promise<unknown>,
+      ) => run(context)));
     expect(result).toMatchObject({ status: 0, error: undefined });
   });
 

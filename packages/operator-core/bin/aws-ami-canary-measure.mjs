@@ -307,6 +307,8 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
   };
   let failure = null;
   let bootstrapDiagnostics = null;
+  let bootstrapWaitFailed = false;
+  let plan = null;
   try {
     observed.instanceId = await deps.runInstance({
       imageId: input.imageId,
@@ -327,11 +329,20 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     await waitFor(deps, budgets.ssmOnlineMs, budgets.pollMs, 'SSM agent Online', () => deps.ssmPingStatus(instanceId), (s) => s === 'Online');
     observed.ssmOnline = true;
 
-    const plan = ssmScriptPlan(input.fixture);
+    plan = ssmScriptPlan(input.fixture);
     for (const [index, commands] of plan.uploads.entries()) {
       requireSsmSuccess(await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, `upload ${index + 1}/${plan.uploads.length}`), 'script upload');
     }
-    const bootstrap = await runSsm(deps, instanceId, plan.run, budgets.bootstrapMs, budgets.pollMs, 'bootstrap');
+    let bootstrap;
+    try {
+      bootstrap = await runSsm(deps, instanceId, plan.run, budgets.bootstrapMs, budgets.pollMs, 'bootstrap');
+    } catch (error) {
+      // A nonterminal GetCommandInvocation wait throws before the usual terminal-failure
+      // branch below. The guest log still has useful partial evidence, so read it before the
+      // finally block terminates the instance.
+      bootstrapWaitFailed = true;
+      throw error;
+    }
     if (bootstrap.status !== 'Success') {
       bootstrapDiagnostics = await readBootstrapDiagnostics(deps, instanceId, plan.readDiagnostics, budgets);
     }
@@ -342,6 +353,9 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     observed.serviceHealthy = service.status === 'Success' && String(service.stdout ?? '').trim() === 'active';
   } catch (error) {
     failure = error;
+    if (bootstrapWaitFailed && observed.instanceId && bootstrapDiagnostics === null && plan) {
+      bootstrapDiagnostics = await readBootstrapDiagnostics(deps, observed.instanceId, plan.readDiagnostics, budgets);
+    }
   } finally {
     if (observed.instanceId) {
       const instanceId = observed.instanceId;

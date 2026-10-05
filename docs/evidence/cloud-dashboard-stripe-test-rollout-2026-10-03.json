@@ -4,9 +4,9 @@
   "name": "Both deployed Papercusp LLC Stripe TEST cloud subscription lifecycles",
   "framework": "playwright",
   "command": [
-    "PORTAL_BILLING_LIVE_E2E=1 PLAYWRIGHT_JSON_OUTPUT_FILE=/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:browser -- e2e/portal-billing-live.spec.ts --reporter=list,json --output=test-results/billing-live-pinned-20261003-0745"
+    "PORTAL_BILLING_LIVE_E2E=1 PLAYWRIGHT_JSON_OUTPUT_FILE=$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:browser -- e2e/portal-billing-live.spec.ts --reporter=list,json --output=test-results/billing-live-pinned-20261003-0745"
   ],
-  "cwd": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+  "cwd": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
   "exitCode": 0,
   "startedAt": "2026-10-03T07:45:06.415Z",
   "finishedAt": "2026-10-03T07:45:58.261Z",
@@ -59,7 +59,7 @@
         "schemaVersion": 2,
         "buildId": "oiltmrEZ_nKIlt6H_E7ch",
         "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
-        "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+        "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
         "publishedAt": "2026-10-03T07:20:23.676Z",
         "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
       },
@@ -97,7 +97,7 @@
         "schemaVersion": 2,
         "buildId": "oiltmrEZ_nKIlt6H_E7ch",
         "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
-        "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+        "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
         "publishedAt": "2026-10-03T07:20:23.676Z",
         "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
       },
@@ -128,52 +128,52 @@
   ],
   "publicOrigin": "https://app.papercusp.com",
   "rawReport": {
-    "sourcePath": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json",
+    "sourcePath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json",
     "sha256": "2bbb66d1131785415e26afcee8de06699c2417078adf5aafa5781326cbad029b"
   },
   "measuredBlobs": [
     {
-      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "root": "$HOME/papercupai-workspace/papercusp",
       "path": "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.ts",
       "sha256": "eeb8ce14f355b123c2d1e179d141ae22b7cddb8bf3c400af170d8e257b2778ea"
     },
     {
-      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "root": "$HOME/papercupai-workspace/papercusp",
       "path": "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.test.ts",
       "sha256": "48aa238c85b66b1831a69a3ab0b51d0ce8bac9c7d46f90d9fa2bc160d0e58bea"
     },
     {
-      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "root": "$HOME/papercupai-workspace/papercusp",
       "path": "packages/operator-core/lib/auth/hosted/self-signup.ts",
       "sha256": "6492f96249807c33c7c1883e0895fa1ed79055bf25eff2b83431496bb5d239b1"
     },
     {
-      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "root": "$HOME/papercupai-workspace/papercusp",
       "path": "packages/operator-core/lib/auth/hosted/self-signup.integration.test.ts",
       "sha256": "934fd3728d5656af5b2b33bcc52ff2f8b876e3f829f6a7346c079cb82ce9e42e"
     },
     {
-      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "root": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "path": "packages/ui/src/billing.tsx",
       "sha256": "35f71c717cfa79359c25c3816682894490f4ab9e8f6620458d88ad7abebe2b72"
     },
     {
-      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "root": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "path": "tests/billing-ui.test.tsx",
       "sha256": "df140a929859b729e00266a4c8ccb6a3e2ed0dc749bcb20f3ea02ed793aa0877"
     },
     {
-      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "root": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "path": "e2e/portal-billing.spec.ts",
       "sha256": "21ab4bf74516bcbbf2b8fe7764eb4b4be94d8721f3c228102764c3ae6d8fdae1"
     },
     {
-      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "root": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "path": "e2e/portal-billing-live.spec.ts",
       "sha256": "ec865b362bf2f78af8729d29bf93d2236939aa6cfb1dbc11deef4d6ccdf4166b"
     },
     {
-      "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "root": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "path": "playwright.config.ts",
       "sha256": "911fb2120d0d44b1dca7535240f3b471953f17420b39f345ce702145671ada7b"
     }
@@ -222,7 +222,7 @@
       "schemaVersion": 2,
       "buildId": "oiltmrEZ_nKIlt6H_E7ch",
       "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
-      "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
       "publishedAt": "2026-10-03T07:20:23.676Z",
       "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
     }

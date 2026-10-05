@@ -203,6 +203,7 @@ export function startParentDeathWatch(
     },
     {
       category: "watchdog",
+      classification: "must-sample",
       // This watchdog has an explicit fake-timer regression test for the
       // healthy-arm -> parent-dies interval path. The scheduled registry is
       // inert under Vitest unless a deliberately exercised timer opts in.

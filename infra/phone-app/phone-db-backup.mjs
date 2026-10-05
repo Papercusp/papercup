@@ -8,6 +8,7 @@ import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } fr
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 process.umask(0o077);
 const DUMP_BIN = process.env.PHONE_PG_DUMP_BIN || 'pg_dump';
@@ -253,7 +254,9 @@ async function drill(archive) {
   const work = await mkdtemp(join(tmpdir(), 'phone-db-restore-drill-'));
   // The embedded PG package may unref its child while an async bootstrap is
   // pending. Keep the one-shot CLI alive until the drill has proof or fails.
-  const keepAlive = setInterval(() => {}, 1_000);
+  const keepAlive = managedSetInterval('phone-db-restore-lifetime', 1_000, () => {}, {
+    category: 'lifecycle', classification: 'timeout-reaper', ref: true,
+  });
   let server;
   try {
     // A fresh embedded cluster pre-installs extensions in public. The dump's
@@ -287,7 +290,7 @@ async function drill(archive) {
   } finally {
     try { if (server) await server.stop(); }
     finally {
-      clearInterval(keepAlive);
+      keepAlive.stop();
       await rm(work, { recursive: true, force: true });
     }
   }
