@@ -11,12 +11,14 @@ import { hostname } from 'node:os';
 import postgres from 'postgres';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { execFileViaSidecar } from '../packages/operator-core/lib/fleet/git-via-sidecar.ts';
+import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 import { goalOwnerReportFixture, goalReportBrowserFeedProbeScript, seedGoalReportFixturePresence } from '../packages/operator-core/test/fixtures/goal-owner-report.ts';
 import { getReport, publishReport } from '../packages/operator-core/lib/report-library.ts';
 import { makeGoalReportReferenceReads, persistGoalReportReference } from '../packages/operator-core/lib/goal-owner-report-reference.ts';
 
+async function runGoalReportNative() {
 assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Refusing fixture writes outside isolated verifier DB');
 const pid = process.env.VERIFY_TAURI_PID!;
 const origin = process.env.VERIFY_TAURI_DEV_URL!;
@@ -339,3 +341,21 @@ try {
   await stopRecording();
   await sql.end();
 }
+}
+
+const selection = parseSelectionArgs(process.argv.slice(2));
+const result = await runHarness({
+  contract: {
+    name: 'goal-report-tauri',
+    phases: [{ id: 'native', description: 'Persisted, pinned GOAL report in the isolated Tauri shell' }],
+  },
+  evidenceRoot: defaultEvidenceRoot('goal-report-tauri'),
+  selection,
+  reuseFrom: selection.reuse,
+  async runPhase(ctx) {
+    ctx.markStep('isolated-runtime-preconditions');
+    await runGoalReportNative();
+    return { ok: true };
+  },
+});
+process.exitCode = result.verdict === 'pass' ? 0 : 1;
