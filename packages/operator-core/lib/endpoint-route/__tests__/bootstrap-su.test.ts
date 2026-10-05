@@ -1180,6 +1180,69 @@ describe('bootstrap-su', () => {
     expect(port.metadata.sourceCoordOwnerId).toBe('su-source-owner');
   });
 
+  it.each([
+    { preparedAccount: 'auto', requestedAccount: 'auto', gatewayOn: true, status: 200 },
+    { preparedAccount: 'default', requestedAccount: 'default', gatewayOn: true, status: 200 },
+    { preparedAccount: 'aviynw6', requestedAccount: 'aviynw6', gatewayOn: true, status: 200 },
+    { preparedAccount: 'auto', requestedAccount: 'default', gatewayOn: true, status: 409 },
+    { preparedAccount: 'auto', requestedAccount: 'auto', gatewayOn: false, status: 409 },
+    { preparedAccount: 'aviynw6', requestedAccount: 'auto', gatewayOn: true, status: 409 },
+  ])('honors prepared Claude account $preparedAccount with requested $requestedAccount and gateway $gatewayOn', async ({
+    preparedAccount, requestedAccount, gatewayOn, status,
+  }) => {
+    getFlagMock.mockResolvedValue(gatewayOn);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }] });
+    const seed = renderSessionPortSeed({
+      portId: SESSION_PORT_ID, sourceBackend: 'claude', targetBackend: 'claude',
+      fidelity: 'full', transcript: 'ported history',
+    });
+    const port = sessionPortRow({ targetBackend: 'claude', targetModel: 'sonnet', renderedHash: seed.hash });
+    port.metadata.summary.target = {
+      ...port.metadata.summary.target, backend: 'claude', provider: 'anthropic', model: 'sonnet',
+      account: preparedAccount, ownerId: 'su-answer-owner',
+    } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    readSessionPortArtifactMock.mockResolvedValueOnce(seed.seed);
+    try {
+      const response = await callPost({
+        agent: 'claude', model: 'sonnet', account: requestedAccount, owner_id: 'su-answer-owner',
+        bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+        session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+        session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+        session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+      });
+      const body = await response.json();
+      expect(response.status, JSON.stringify(body)).toBe(status);
+      expect(recordAdvSessionMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(setModeMock).not.toHaveBeenCalled();
+      if (status === 200) {
+        expect(body.envelopeEnv.PAPERCUSP_SID).toBe('su-answer-owner');
+        expect(body.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe(
+          preparedAccount === 'aviynw6' ? 'pin' : preparedAccount,
+        );
+        if (preparedAccount === 'auto') {
+          expect(body.envelopeEnv.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+          expect(body.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+          expect(body.envelopeEnv.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('account');
+        } else if (preparedAccount === 'aviynw6') {
+          expect(body.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
+        }
+        expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(expect.objectContaining({
+          target: expect.objectContaining({ agent: 'claude', coordOwnerId: 'su-answer-owner' }),
+        }));
+        expect(recordSessionPortBootstrapReceiptMock).toHaveBeenCalled();
+      } else {
+        expect(body.error).toMatch(gatewayOn ? /immutable prepared request/ : /gateway is off.*refusing to fall back/i);
+        expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+        expect(recordSessionPortBootstrapReceiptMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      readSessionPortArtifactMock.mockReset().mockResolvedValue(SESSION_PORT_ARTIFACT.seed);
+      getFlagMock.mockResolvedValue(false);
+    }
+  });
+
   it.each(['su-source-owner', 'su-unprepared-answer'])('refuses isolated bootstrap owner substitution %s before reservation', async (ownerId) => {
     const port = sessionPortRow();
     port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;
@@ -1908,6 +1971,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
     expect(r.accountId).toBeNull();
     expect(r.provider).toBe('claude');
+    expect(r.gatewayAuto).toBe(true);
     expect(r.notice).toMatch(/auto.*selects an available pool account and fails over/i);
     // Auto remains unpinned, but the pool is validated so a missing provider
     // cannot silently degrade to the default system login.
@@ -1918,6 +1982,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     getFlagMock.mockResolvedValue(true);
     const r = await pin('gateway');
     expect(r.accountId).toBeNull();
+    expect(r.gatewayAuto).toBe(true);
     expect(r.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
     expect(r.notice).toMatch(/auto/i);
   });

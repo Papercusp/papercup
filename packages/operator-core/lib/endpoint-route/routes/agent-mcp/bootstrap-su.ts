@@ -354,9 +354,10 @@ export async function resolveAccountPin(
   /** Present only when an explicit nondefault route could not be honored. Route
    * handlers reject the launch before recording/spawning anything. */
   error?: string;
-  /** WI-3645: explicit-auto routing for a config-FILE-carried backend (codex) — the CODEX_HOME
-   *  writers translate this into an UNPINNED gateway provider block (codexGatewayAuto). Claude
-   *  auto needs no marker (its routing rides entirely in `env`); absent on pins/default/fail. */
+  /** Unpinned gateway routing for every backend. Session-port bootstrap uses this
+   * marker to verify the canonical prepared account independently of how each
+   * backend carries its credentials. CODEX_HOME writers also translate it into
+   * codexGatewayAuto; absent on pins/default/fail. */
   gatewayAuto?: boolean;
 }> {
   const raw = requested?.trim();
@@ -493,6 +494,7 @@ export async function resolveAccountPin(
             : 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
           accountId: null,
           provider: expected,
+          gatewayAuto: true,
         };
       }
       if (expected === 'codex' && agent !== 'omp') {
