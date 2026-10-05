@@ -420,6 +420,23 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     }).ok).toBe(true);
   });
 
+  it('checks only the imported binding that feeds a dynamic URL, keeping unrelated helper configs out of its data cohort', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\nimport { DATA } from './data';\nimport { prepare } from './helper';\nprepare();\nconst values = Object.values(DATA).map(block => readFileSync(new URL(block.file, import.meta.url), 'utf8'));\n",
+      'lib/data.ts': "export const DATA = { item: { file: 'real.json' } };\nexport const UNRELATED = 'unused.json';\n",
+      'lib/helper.ts': "export const prepare = () => writeFileSync('settings.json', '{}');\n",
+      'lib/real.json': '{}\n',
+    }, 'data binding and generated configs');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+    const paths = ['lib/reader.ts', 'lib/data.ts', 'lib/helper.ts'];
+    const missing = admit(root, candidate, paths, { preflight });
+    expect(missing).toMatchObject({ ok: false, code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/real.json', relation: 'runtime-data' })] });
+    if (!missing.ok && 'missing' in missing) expect(missing.missing).toHaveLength(1);
+    expect(admit(root, candidate, [...paths, 'lib/real.json'], { preflight }).ok).toBe(true);
+  });
+
   it('refuses a whole-blob admission until differing reverse-importing tests and their imported modules share its pinned source', () => {
     const { root, candidate } = repo();
     const sourceCommit = sweep(root, {

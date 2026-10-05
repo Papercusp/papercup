@@ -186,25 +186,30 @@ export function extractRelativeImportSpecifiers(source: string): string[] {
   return out;
 }
 
-interface RuntimeDataFileScan {
+interface RuntimeDataDependencies {
   specifiers: string[];
-  urlSpecifiers: string[];
-  hasUrlRead: boolean;
+  imports: Array<{ specifier: string; name: string }>;
+}
+
+interface RuntimeDataFileScan {
+  url: RuntimeDataDependencies;
+  exports: Map<string, RuntimeDataDependencies>;
 }
 
 /**
  * Read local data-file names from source literals. A whole-blob admission can include a module
  * that names data files while an admitted test or runner reads them through a dynamic expression
  * such as `readFileSync(new URL('./study/' + block.file, import.meta.url))`. The reader and the
- * literal names need not be in the same file, so the caller follows the reader's imports.
+ * literal names need not be in the same file, so the caller follows the imported bindings
+ * that feed the URL expression, then those bindings' exported declarations.
  * Unrelated admitted tests and fixture filenames in the reader are not runtime dependencies.
  */
 function scanRuntimeDataFiles(source: string): RuntimeDataFileScan {
-  const specifiers = new Set<string>();
-  const urlSpecifiers = new Set<string>();
-  let hasUrlRead = false;
   const ast = ts.createSourceFile('admission.ts', source, ts.ScriptTarget.Latest, true);
   const bindings = new Map<string, ts.Expression[]>();
+  const importedBindings = new Map<string, { specifier: string; name: string }>();
+  const exportedBindings = new Map<string, ts.Expression[]>();
+  const reexports = new Map<string, { specifier: string; name: string }>();
   const filenames: ts.Expression[] = [];
   const bind = (name: string, value: ts.Expression): void => {
     bindings.set(name, [...(bindings.get(name) ?? []), value]);
@@ -212,9 +217,35 @@ function scanRuntimeDataFiles(source: string): RuntimeDataFileScan {
   const isLocalData = (value: string): boolean =>
     /\.(?:json|jsonl|md)$/i.test(value) && !/^(?:\/)/.test(value) && !/[\\:?#\s]/.test(value);
   const visit = (node: ts.Node): void => {
-    if (ts.isStringLiteralLike(node) && isLocalData(node.text)) specifiers.add(node.text);
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const specifier = node.moduleSpecifier.text;
+      const clause = node.importClause;
+      if (clause?.name) importedBindings.set(clause.name.text, { specifier, name: 'default' });
+      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const binding of clause.namedBindings.elements) {
+          importedBindings.set(binding.name.text, { specifier, name: (binding.propertyName ?? binding.name).text });
+        }
+      } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        importedBindings.set(clause.namedBindings.name.text, { specifier, name: '*' });
+      }
+    }
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       bind(node.name.text, node.initializer);
+      const statement = node.parent.parent;
+      if (ts.isVariableStatement(statement) && statement.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) {
+        exportedBindings.set(node.name.text, [node.initializer]);
+      }
+    }
+    if (ts.isExportAssignment(node)) exportedBindings.set('default', [node.expression]);
+    if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+      for (const binding of node.exportClause.elements) {
+        const name = (binding.propertyName ?? binding.name).text;
+        if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+          reexports.set(binding.name.text, { specifier: node.moduleSpecifier.text, name });
+        } else {
+          exportedBindings.set(binding.name.text, [ts.factory.createIdentifier(name)]);
+        }
+      }
     }
     // Object.values(DATA).map(block => readFile(new URL(prefix + block.file, ...)))
     // carries filenames from DATA even when its declaration is local to the reader.
@@ -233,7 +264,6 @@ function scanRuntimeDataFiles(source: string): RuntimeDataFileScan {
           ts.isIdentifier(url.expression) && url.expression.text === 'URL' && base &&
           ts.isPropertyAccessExpression(base) && base.name.text === 'url' &&
           ts.isMetaProperty(base.expression) && base.expression.keywordToken === ts.SyntaxKind.ImportKeyword) {
-        hasUrlRead = true;
         const filename = url.arguments?.[0];
         if (filename) filenames.push(filename);
       }
@@ -241,19 +271,58 @@ function scanRuntimeDataFiles(source: string): RuntimeDataFileScan {
     ts.forEachChild(node, visit);
   };
   visit(ast);
-  const followed = new Set<ts.Node>();
-  const collectFilename = (node: ts.Node): void => {
-    if (followed.has(node)) return;
-    followed.add(node);
-    if (ts.isStringLiteralLike(node) && isLocalData(node.text)) urlSpecifiers.add(node.text);
-    if (ts.isIdentifier(node) &&
-        !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)) {
-      for (const value of bindings.get(node.text) ?? []) collectFilename(value);
+  const staticString = (node: ts.Node, seen = new Set<ts.Node>()): string | undefined => {
+    if (seen.has(node)) return undefined;
+    seen.add(node);
+    if (ts.isStringLiteralLike(node)) return node.text;
+    if (ts.isParenthesizedExpression(node)) return staticString(node.expression, seen);
+    if (ts.isIdentifier(node)) {
+      const values = bindings.get(node.text);
+      return values?.length === 1 ? staticString(values[0]!, seen) : undefined;
     }
-    ts.forEachChild(node, collectFilename);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = staticString(node.left, new Set(seen));
+      const right = staticString(node.right, new Set(seen));
+      return left !== undefined && right !== undefined ? left + right : undefined;
+    }
+    return undefined;
   };
-  filenames.forEach(collectFilename);
-  return { specifiers: [...specifiers], urlSpecifiers: [...urlSpecifiers], hasUrlRead };
+  const dependencies = (expressions: ts.Expression[]): RuntimeDataDependencies => {
+    const specifiers = new Set<string>();
+    const imports = new Map<string, { specifier: string; name: string }>();
+    const followed = new Set<ts.Node>();
+    const addImport = (binding: { specifier: string; name: string }): void => {
+      imports.set(binding.specifier + ':' + binding.name, binding);
+    };
+    const collect = (node: ts.Node): void => {
+      if (followed.has(node)) return;
+      followed.add(node);
+      const literal = staticString(node);
+      if (literal !== undefined) {
+        if (isLocalData(literal)) specifiers.add(literal);
+        return;
+      }
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+        const binding = importedBindings.get(node.expression.text);
+        if (binding?.name === '*') {
+          addImport({ specifier: binding.specifier, name: node.name.text });
+          return;
+        }
+      }
+      if (ts.isIdentifier(node) &&
+          (!node.parent || !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node))) {
+        const binding = importedBindings.get(node.text);
+        if (binding) addImport(binding);
+        for (const value of bindings.get(node.text) ?? []) collect(value);
+      }
+      ts.forEachChild(node, collect);
+    };
+    expressions.forEach(collect);
+    return { specifiers: [...specifiers], imports: [...imports.values()] };
+  };
+  const exports = new Map([...exportedBindings].map(([name, expressions]) => [name, dependencies(expressions)]));
+  for (const [name, binding] of reexports) exports.set(name, { specifiers: [], imports: [binding] });
+  return { url: dependencies(filenames), exports };
 }
 
 /**
@@ -468,34 +537,30 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
 
   const importCount = asks.length;
   const sourceByPath = new Map(sources.map(source => [source.path, source]));
-  const dataCohort = new Set<string>();
-  const pending = sources.filter(source => source.runtimeData.hasUrlRead);
+  const pending = sources.map(source => ({ path: source.path, data: source.runtimeData.url }));
   const visited = new Set<string>();
+  const dataAsks = new Set<string>();
   while (pending.length > 0) {
-    const source = pending.pop()!;
-    if (visited.has(source.path)) continue;
-    visited.add(source.path);
-    for (const specifier of source.imports) {
-      const imported = resolveImportCandidates(source.path, specifier)?.find(path => sourceByPath.has(path));
-      if (!imported) continue;
-      dataCohort.add(imported);
-      pending.push(sourceByPath.get(imported)!);
+    const { path, data } = pending.shift()!;
+    const source = sourceByPath.get(path)!;
+    const imports = new Set(source.imports);
+    for (const specifier of data.specifiers) {
+      const key = path + ':' + specifier;
+      if (imports.has(specifier) || dataAsks.has(key)) continue;
+      dataAsks.add(key);
+      const candidates = resolveImportCandidates(path, specifier);
+      if (!candidates) skipped.push({ path, reason: 'escapes-repo', specifier });
+      else asks.push({ from: path, specifier, candidates, relation: 'runtime-data' });
     }
-  }
-  for (const source of sources) {
-    const specifiers = dataCohort.has(source.path) ? source.runtimeData.specifiers : source.runtimeData.urlSpecifiers;
-    if (specifiers.length > 0) {
-      const imports = new Set(source.imports);
-      for (const specifier of specifiers) {
-        // The normal import scan already checks statically imported data files.
-        if (imports.has(specifier)) continue;
-        const candidates = resolveImportCandidates(source.path, specifier);
-        if (!candidates) {
-          skipped.push({ path: source.path, reason: 'escapes-repo', specifier });
-          continue;
-        }
-        asks.push({ from: source.path, specifier, candidates, relation: 'runtime-data' });
-      }
+    for (const binding of data.imports) {
+      const imported = resolveImportCandidates(path, binding.specifier)?.find(candidate => sourceByPath.has(candidate));
+      if (!imported) continue;
+      const key = imported + ':' + binding.name;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const exports = sourceByPath.get(imported)!.runtimeData.exports;
+      const values = binding.name === '*' ? [...exports.values()] : [exports.get(binding.name)];
+      for (const value of values) if (value) pending.push({ path: imported, data: value });
     }
   }
   const runtimeDataCount = asks.length - importCount;
