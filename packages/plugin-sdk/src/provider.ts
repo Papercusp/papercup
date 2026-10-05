@@ -133,6 +133,36 @@ export interface ProviderAdapter {
   invoke(request: ProviderInvokeRequest, host: ProviderHost): Promise<unknown>;
 }
 
+/**
+ * JSON-RPC wire protocol between the host and a `daemon` provider (D-006).
+ * Newline-delimited JSON-RPC 2.0 on the daemon's stdin/stdout.
+ *
+ * host→daemon: `describe` (no params) → ProviderDescriptor;
+ *   `syncPage` / `invoke` with {@link ProviderDaemonCallParams}.
+ * daemon→host: `hostFetch` with {@link ProviderDaemonFetchParams} →
+ *   HostFetchResponse. The `callToken` is valid only while the host call that
+ *   issued it is in flight, and only for that call's `source`; the host
+ *   injects the credential, so the daemon never sees a token.
+ * The daemon must also answer `papercup.ping` (supervisor health check).
+ */
+export const PROVIDER_DAEMON_METHODS = {
+  describe: 'provider.describe',
+  syncPage: 'provider.syncPage',
+  invoke: 'provider.invoke',
+  hostFetch: 'host.fetch',
+} as const;
+
+export interface ProviderDaemonCallParams<R = ProviderSyncRequest | ProviderInvokeRequest> {
+  request: R;
+  callToken: string;
+}
+
+export interface ProviderDaemonFetchParams {
+  callToken: string;
+  source: string;
+  request: HostFetchRequest;
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
