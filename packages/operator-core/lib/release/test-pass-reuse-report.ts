@@ -872,6 +872,26 @@ export interface TestPassReuseHealth extends TestPassReuseRoundSummary {
   /** The sha the round judged. */
   judgedSha: string;
   recordedAtMs: number;
+  /** Actual candidate-suite invocation; absence in historical records means unmeasured. */
+  suite?: TestPassReuseSuite | null;
+}
+
+export interface TestPassReuseSuite {
+  command: string;
+  runGroupId: string;
+  startedAtMs: number;
+  completedAtMs: number;
+}
+
+function parseReuseSuite(value: unknown, recordedAtMs: number): TestPassReuseSuite | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.command !== 'string' || !v.command.trim() ||
+      typeof v.runGroupId !== 'string' || !v.runGroupId.trim() ||
+      !isCount(v.startedAtMs) || !isCount(v.completedAtMs) ||
+      v.startedAtMs > v.completedAtMs || v.completedAtMs > recordedAtMs) return null;
+  return { command: v.command, runGroupId: v.runGroupId,
+    startedAtMs: v.startedAtMs, completedAtMs: v.completedAtMs };
 }
 
 export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | null {
@@ -896,6 +916,7 @@ export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | 
   return {
     judgedSha: v.judgedSha,
     recordedAtMs: v.recordedAtMs,
+    ...(v.suite === undefined ? {} : { suite: parseReuseSuite(v.suite, v.recordedAtMs) }),
     invocations: v.invocations,
     candidates: v.candidates,
     reused: v.reused,
@@ -977,6 +998,7 @@ function parseArchivedAuditRuns(value: unknown): TestPassReuseRun[] | null {
 /** Parse the compact append-only checkpoint archive, not the mutable display health slot. */
 export function parseTestPassReuseAuditArchive(value: unknown): {
   judgedSha: string; recordedAtMs: number; auditRuns: TestPassReuseRun[]; auditedFiles: TestPassReuseAuditFile[];
+  suite?: TestPassReuseSuite | null;
 } | null {
   if (!value || typeof value !== 'object') return null;
   const v = value as Record<string, unknown>;
@@ -990,7 +1012,8 @@ export function parseTestPassReuseAuditArchive(value: unknown): {
   const derived = summarizeReuseAudits(runs)!;
   if (Object.keys(derived).some((k) => derived[k as keyof TestPassReuseAuditSummary] !==
       summary[k as keyof TestPassReuseAuditSummary])) return null;
-  return { judgedSha: audit.judgedSha, recordedAtMs: audit.recordedAtMs, auditRuns: runs, auditedFiles: files };
+  return { judgedSha: audit.judgedSha, recordedAtMs: audit.recordedAtMs, auditRuns: runs, auditedFiles: files,
+    ...(v.suite === undefined ? {} : { suite: parseReuseSuite(v.suite, audit.recordedAtMs) }) };
 }
 
 /** Storage caps for `gate_health.testPassReuse`. The headline keeps the full alarm COUNT, so a
@@ -1014,6 +1037,7 @@ export function buildTestPassReuseHealth(
   suiteOutput: string,
   judgedSha: string | null | undefined,
   recordedAtMs: number,
+  suite?: TestPassReuseSuite | null,
 ): TestPassReuseHealth | null {
   if (!judgedSha || !/^[0-9a-f]{7,64}$/.test(judgedSha)) return null;
   if (!isCount(recordedAtMs)) return null;
@@ -1038,5 +1062,6 @@ export function buildTestPassReuseHealth(
     headline: summary.headline.slice(0, HEALTH_HEADLINE_MAX_CHARS),
     judgedSha,
     recordedAtMs,
+    ...(suite === undefined ? {} : { suite: parseReuseSuite(suite, recordedAtMs) }),
   };
 }
