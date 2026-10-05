@@ -3280,7 +3280,21 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property User --value)" == "$SERVICE_USER" ]] || die "workspace service is not running under the dedicated service user"',
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property Group --value)" == "$SERVICE_GROUP" ]] || die "workspace service is not running under the dedicated service group"',
     '[[ "$(stat -c %U "$RUNTIME_ROOT")" == "root" ]] || die "runtime root must be owned by root"',
-    '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type f -o -type d \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? [
+          '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type f -o -type d \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
+        ]
+      : [
+          // WI-10006110 / chain10: the bootc image (workspace-host.Containerfile, D-314) keeps
+          // EXECUTABLE files a+rx on purpose, because embedded-postgres checks all 0555 bits, and
+          // carries confidentiality on the 0750 root:papercusp-runtime-read parents instead. The
+          // ubuntu predicate above can never pass on that tree: measured on image A r62b, all 163
+          // world-readable entries were executables, with 0 world-readable directories and 0
+          // world-readable non-executable files. So assert the bootc contract: the three parents
+          // admit no other-class access, and nothing else under them is world-readable.
+          '[[ "$(stat -c %a "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" "$(readlink -f "$RUNTIME_ROOT/current")" | sort -u)" == "750" ]] || die "runtime release tree must not be world-readable"',
+          '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type d -o \\( -type f ! -perm /111 \\) \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
+        ]),
     // The two halves of D-248, asserted together because either one alone is satisfiable by the
     // broken shape. D-043 (owner ruling) requires the SSH account to be locked out of the runtime
     // tree; D-246 measured that the account running the agents must read it. Both are true, and

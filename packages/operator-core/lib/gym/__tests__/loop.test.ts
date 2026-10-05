@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createCandidateVersionVerdict, runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
-import type { VariantEval } from '../gate-engine';
+import { decideAccept, type VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
 import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { TurnError } from '../../agent-chat-stream';
@@ -66,6 +66,43 @@ function baseDeps(over: Partial<LoopDeps> = {}): { d: LoopDeps; calls: string[] 
 }
 
 describe('runOptimizationLoop', () => {
+  it('retains the evaluated candidate, distinct parent and champion, run identities and gate configuration', async () => {
+    const recorded: LoopProposalRecord[] = [];
+    const evaluations = new Map<string, { evalResult: VariantEval; runIds: string[]; costUsd: number }>();
+    const { d } = baseDeps({
+      async evaluate(variantId) {
+        const agg = variantId === 'baseline' ? 7 : variantId === 'cand-1' ? 7.5 : 8;
+        const evaluation = {
+          evalResult: { ...evalOf(variantId, agg), trainVector: variantId === 'baseline' ? [7, 7] : [agg + 1, agg - 1] },
+          runIds: [`run:${variantId}`], costUsd: agg / 10,
+        };
+        evaluations.set(variantId, evaluation);
+        return { ...evaluation, worstTraces: [] };
+      },
+      recordProposal: async (record) => { recorded.push(record); },
+    });
+    await runOptimizationLoop({ ...config, maxCycles: 2 }, d);
+    const baseline = evaluations.get('baseline')!;
+    const first = evaluations.get('cand-1')!;
+    const second = evaluations.get('cand-2')!;
+    // Both variants remain on the frontier: the lower-fitness baseline is the
+    // second parent, while the accepted first candidate is the champion.
+    expect(recorded[1].parentId).toBe('baseline');
+    expect(recorded[1].candidateVersion).toMatchObject({
+      evaluation: { candidate: second, parent: baseline, champion: first,
+        thresholds: config.thresholds, baselineMeanCost: config.baselineMeanCost },
+      hashes: { evaluationHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    expect(recorded[1].candidateVersion.gateResults).toEqual(
+      decideAccept(second.evalResult, baseline.evalResult, first.evalResult, config.baselineMeanCost, config.thresholds).results,
+    );
+    const retained = JSON.stringify(recorded[1].candidateVersion);
+    second.evalResult.trainVector[0] = -100;
+    baseline.runIds.push('later-run');
+    first.evalResult.probeEvidence = { ...MEASURED_PASS, status: 'not-measured' };
+    expect(JSON.stringify(recorded[1].candidateVersion)).toBe(retained);
+  });
+
   it('runs maxCycles, accepts improving candidates, and promotes the champion', async () => {
     const { d, calls } = baseDeps();
     const res = await runOptimizationLoop(config, d);
@@ -202,6 +239,8 @@ describe('runOptimizationLoop', () => {
       provenance: { evaluatorHash: 'e', rubricHash: 'r', taskHash: 't', codeHash: 'c' },
     });
     expect(verdict.verdict).toBe('reject');
+    expect(verdict).not.toHaveProperty('evaluation');
+    expect(verdict.hashes).not.toHaveProperty('evaluationHash');
     expect(verdict.hashes).toEqual({
       variantHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       parentHash: expect.stringMatching(/^[0-9a-f]{64}$/),

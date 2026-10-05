@@ -406,15 +406,28 @@ describe('applyResultDoor', () => {
       },
       { toolName: 'recipes:run', workspaceId: 'ws-1', runId: RUN_ID },
     );
-    const reference = boundedBody(doored);
+    const envelope = boundedBody(doored) as any;
     expect((doored as any)._meta?.resultDoor).toMatchObject({
       truncated: true,
       spillUri: expect.any(String),
+      upstreamProjected: true,
     });
-    expect(reference._projection.next).toContain('capability:read');
-    expect(reference._projection.next).toContain("payloadTier:'full'");
+    expect(envelope).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+      incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      content: [expect.objectContaining({ kind: expect.stringMatching(/reference/), uri: expect.any(String) })],
+    });
+    expect(envelope.incomplete.note).toContain('capability:read');
+    expect(envelope.incomplete.note).toContain("payloadTier:'full'");
+    expect((doored as any)._meta.resultDoor.outputEnvelope).toEqual(envelope);
+    expect((doored as any)._meta.resultDoor.spillUri).toBe(envelope.content[0].uri);
 
-    const emitted = JSON.parse(readSpill('ws-1', 'recipes:run', RUN_ID)) as any;
+    const spill = JSON.parse(readSpill('ws-1', 'recipes:run', RUN_ID)) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(spill.content).toHaveLength(1);
+    const emitted = JSON.parse(spill.content[0].text) as any;
     const emittedRows = emitted.results[0].result.summary as any[];
     expect(emittedRows).toHaveLength(expectedIds.length);
     expect(emittedRows.map((row) => row.results[0].id)).toEqual(expectedIds);

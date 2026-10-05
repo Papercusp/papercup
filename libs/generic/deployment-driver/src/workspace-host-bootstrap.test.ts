@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -1483,6 +1483,63 @@ describe('buildWorkspaceHostBootstrap', () => {
       '    die "workspace service failed to start"',
     ]);
     expect(repair).not.toContain('systemctl enable --now "$SERVICE_NAME.service"');
+  });
+
+  /**
+   * WI-10006110 / chain10: once the bootc service started, attest-health died on 'runtime release
+   * tree must not be world-readable'. The bootc image keeps executables a+rx on purpose
+   * (embedded-postgres checks all 0555 bits) and carries confidentiality on its 0750 parents, so
+   * the ubuntu predicate can never pass there. The bootc render must assert that contract
+   * instead, and still refuse every other world-readable shape.
+   */
+  it('attests bootc runtime confidentiality without refusing the image a+rx executables', () => {
+    const oldShape = '-type f -o -type d \\) -perm -0004';
+    const ubuntuLines = buildWorkspaceHostBootstrap(input()).split('\n');
+    const bootcLines = buildWorkspaceHostBootstrap(bootcInput()).split('\n');
+    const oldGuard = ubuntuLines.find((l) => l.includes(oldShape));
+    const parents = bootcLines.find((l) => l.startsWith('[[ "$(stat -c %a "$RUNTIME_ROOT"'));
+    const tree = bootcLines.find((l) => l.includes('-type f ! -perm /111 \\) \\) -perm -0004'));
+    expect(oldGuard).toBeDefined();
+    expect(bootcLines.some((l) => l.includes(oldShape))).toBe(false);
+    expect(parents).toBeDefined();
+    expect(tree).toBeDefined();
+    expect(parents).toContain('die "runtime release tree must not be world-readable"');
+    expect(tree).toContain('die "runtime release tree must not be world-readable"');
+
+    // A tree shaped like the image (measured on image A r62b): parents 0750, inner dirs 0750,
+    // executables 0755, data 0640, current -> releases/<version>.
+    const runGuards = (guards: string[], mutate: (root: string) => void = () => {}) => {
+      const root = mkdtempSync(join(tmpdir(), 'wh-runtime-perms-'));
+      try {
+        const release = join(root, 'releases', '0.0.21-test');
+        mkdirSync(join(release, 'bin'), { recursive: true });
+        writeFileSync(join(release, 'bin', 'node'), '#!/bin/sh\n');
+        writeFileSync(join(release, 'serve.mjs'), 'export {};\n');
+        symlinkSync('releases/0.0.21-test', join(root, 'current'));
+        for (const d of [root, join(root, 'releases'), release, join(release, 'bin')]) chmodSync(d, 0o750);
+        chmodSync(join(release, 'bin', 'node'), 0o755);
+        chmodSync(join(release, 'serve.mjs'), 0o640);
+        mutate(root);
+        const script = [`RUNTIME_ROOT=${JSON.stringify(root)}`, 'die() { echo "$1" >&2; exit 1; }', ...guards].join('\n');
+        return spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 10_000 });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    const bootcGuards = [parents as string, tree as string];
+    const release = (root: string) => join(root, 'releases', '0.0.21-test');
+
+    // Positive control: the ubuntu predicate rejects the image shape, which is the chain10 failure.
+    expect(runGuards([oldGuard as string]).status).not.toBe(0);
+    expect(runGuards(bootcGuards).status).toBe(0);
+    // Every other world-readable shape is still refused.
+    expect(runGuards(bootcGuards, (r) => chmodSync(join(release(r), 'serve.mjs'), 0o644)).status).not.toBe(0);
+    expect(runGuards(bootcGuards, (r) => chmodSync(join(release(r), 'bin'), 0o755)).status).not.toBe(0);
+    expect(runGuards(bootcGuards, (r) => chmodSync(join(r, 'releases'), 0o755)).status).not.toBe(0);
+    expect(runGuards(bootcGuards, (r) => chmodSync(release(r), 0o751)).status).not.toBe(0);
+    const refused = runGuards(bootcGuards, (r) => chmodSync(r, 0o755));
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain('runtime release tree must not be world-readable');
   });
 
   /**

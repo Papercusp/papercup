@@ -151,9 +151,10 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
       ab.store.finishRun = async (id) => { finished.push(id); };
       ab.store.recordScore = async (id) => { scored.push(id); };
       const { deps } = makeDeps({ runId, abDeps: ab, repeats: 2 });
-      await deps.evaluate('baseline', { promptOverrides: {} });
+      const evaluated = await deps.evaluate('baseline', { promptOverrides: {} });
       expect(finished).toEqual(started);
       expect(scored).toEqual(started);
+      expect(evaluated).toMatchObject({ runIds: started });
       expect(new Set(started).size).toBe(TASKS.length * 2);
       return started;
     };

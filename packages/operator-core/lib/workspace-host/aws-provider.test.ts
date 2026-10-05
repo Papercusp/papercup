@@ -12,6 +12,7 @@ import {
 } from '@papercusp/deployment-driver';
 import {
   AWS_SPOT_MARKET_OPTIONS,
+  AWS_VOLUME_INITIALIZATION_RATE_MIBPS,
   AWS_WORKSPACE_HOST_CLIENT_TOKEN_LENGTH,
   AwsInstanceLaunchFailedError,
   awsWorkspaceHostClientToken,
@@ -646,6 +647,63 @@ describe('AWS spot hosts (WI-10005389)', () => {
       ),
     ).rejects.toThrow(/provisioningModel must be one of standard, spot/);
   });
+});
+
+describe('AWS volume initialization rate (WI-10006140: lazy EBS hydration of snapshot-restored volumes)', () => {
+  async function planWith(volumeInitializationRateMiBps: unknown, key: string) {
+    const base = desired();
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      {
+        action: 'provision',
+        operationId: key,
+        idempotencyKey: key,
+        desired: { ...base, provider: { ...base.provider, volumeInitializationRateMiBps } },
+      },
+      context(),
+    );
+    const volume = plan.steps.find((step) => step.id === 'create-data-volume')!.input as unknown as {
+      request: AwsCreateVolumeInput;
+    };
+    const instance = plan.steps.find((step) => step.id === 'run-instance')!.input as unknown as {
+      request: AwsRunInstancesInput;
+    };
+    return { volume: volume.request, rootEbs: instance.request.BlockDeviceMappings[0].Ebs };
+  }
+
+  it('defaults to the maximum rate AWS accepts, which is what made the canary host start', () => {
+    expect(AWS_VOLUME_INITIALIZATION_RATE_MIBPS).toEqual({ min: 100, max: 300, default: 300 });
+  });
+
+  it('applies an explicit in-range rate to the AMI-restored root volume only', async () => {
+    const { volume, rootEbs } = await planWith(150, 'rate-150');
+    expect(rootEbs.VolumeInitializationRate).toBe(150);
+    expect(volume).not.toHaveProperty('VolumeInitializationRate');
+  });
+
+  it('accepts both bounds of the AWS range', async () => {
+    expect((await planWith(100, 'rate-100')).rootEbs.VolumeInitializationRate).toBe(100);
+    expect((await planWith(300, 'rate-300')).rootEbs.VolumeInitializationRate).toBe(300);
+  });
+
+  it('null opts out: the root volume carries no rate, so EBS uses its default lazy hydration', async () => {
+    const { volume, rootEbs } = await planWith(null, 'rate-null');
+    expect(rootEbs).not.toHaveProperty('VolumeInitializationRate');
+    expect(volume).not.toHaveProperty('VolumeInitializationRate');
+  });
+
+  it.each([
+    ['below the AWS minimum', 99],
+    ['above the AWS maximum', 301],
+    ['fractional', 150.5],
+    ['zero', 0],
+    ['a numeric string', '300'],
+    ['a boolean', true],
+  ])('refuses a rate that is %s at plan time', async (_label, value) => {
+    await expect(planWith(value, `rate-bad-${String(value)}`)).rejects.toThrow(
+      /volumeInitializationRateMiBps must be an integer from 100 to 300 MiB\/s, or null/,
+    );
+  });
 
   it('cancels the persistent spot request before terminating the instance, so EC2 cannot relaunch it', async () => {
     const { client, provider } = providerAndClient();
@@ -693,6 +751,8 @@ describe('AWS workspace-host provider planning', () => {
       Size: 100,
       VolumeType: 'gp3',
     });
+    // A NEW data volume is not snapshot-backed, and EBS refuses a rate on it (WI-10006140).
+    expect(volume.request).not.toHaveProperty('VolumeInitializationRate');
     expect(volume.request.ClientToken).toHaveLength(AWS_WORKSPACE_HOST_CLIENT_TOKEN_LENGTH);
 
     const instance = first.steps[1].input as unknown as { request: AwsRunInstancesInput; vpcId: string };
@@ -720,6 +780,8 @@ describe('AWS workspace-host provider planning', () => {
             KmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/key-123',
             VolumeSize: 40,
             VolumeType: 'gp3',
+            // The AMI-restored root hydrates at the default provisioned rate (WI-10006140).
+            VolumeInitializationRate: 300,
           },
         },
       ],
@@ -1498,6 +1560,8 @@ describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', ()
     const { known } = await applyPlan(provider, plan, []);
     const restoredVolume = client.createVolumeCalls.at(-1)!;
     expect(restoredVolume.SnapshotId).toBe(snapshotId);
+    // A snapshot-restored data volume hydrates lazily too; restore sets the rate (WI-10006140).
+    expect(restoredVolume.VolumeInitializationRate).toBe(AWS_VOLUME_INITIALIZATION_RATE_MIBPS.default);
     expect(known.map((item) => item.kind).sort()).toEqual(['disk', 'vm']);
     // The source host is untouched: its instance and volume are distinct from the restored ones.
     expect(known.some((item) => host.resources.some((source) => source.providerId === item.providerId))).toBe(false);
