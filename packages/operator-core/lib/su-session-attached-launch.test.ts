@@ -400,6 +400,29 @@ describe('engine ownership across cluster workers', () => {
     expect(mocks.callOwner).not.toHaveBeenCalled();
   });
 
+  // agent-chat-pty P-003, 2026-10-05: recording the owner is real I/O, so an
+  // engine that fails at once rejects `ready` while the launch is still
+  // writing. The launch's exit bookkeeping handles that failure; it must not
+  // escape as an unhandled rejection in the meantime (observeReadiness).
+  it('an engine that fails at once is handled, not left unhandled, while its owner is written', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      mocks.recordOwner.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(true), 25)));
+      const base = mocks.engine();
+      // Rejected when the engine starts, not when the mock is set up.
+      mocks.engine.mockImplementation(() => ({ ...base, ready: Promise.reject(new Error('engine exited during initialization')) }));
+      const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'fails-at-once' });
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(mocks.reconcile).toHaveBeenCalledWith(expect.objectContaining({ expected: false })));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('runs a re-attach on the worker that holds the engine instead of starting a second one', async () => {
     mocks.owner.mockResolvedValue(remoteOwner);
     mocks.forwardable.mockReturnValue(true);
