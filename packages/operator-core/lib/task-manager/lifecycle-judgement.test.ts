@@ -346,7 +346,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('live.exactScopeUnitMatches');
     expect(summary).toContain('An empty result is not proof by itself');
     expect(summary).toContain('only live.exactScopeUnitMatches entries with kind "unaccounted"');
-    expect(summary).toContain('same-kind unaccounted control from an unfiltered live census');
+    expect(summary).toContain('same-kind unaccounted positive control from an unfiltered census');
     expect(summary).toContain('Do not infer death from these shell readings');
     expect(summary).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in the same call');
     expect(summary).toContain('if $$ is tiny or only a few PIDs are visible, discard every /proc absence');
