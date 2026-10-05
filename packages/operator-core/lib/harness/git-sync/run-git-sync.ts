@@ -45,6 +45,7 @@ import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, r
 import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
 import { detectUnsafeDeletions, normalizeModulePath, RESOLVABLE_EXTS } from './deletion-import-guard';
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
+import { runSyncBack, type SyncBackConfig, type SyncBackResult } from './sync-back';
 import { detectQuarantineImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import { armedMigrationFilename } from '../../migration-reservation';
@@ -4812,8 +4813,8 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
 
 /** JSON-serializable — checkpointed as the superproject `git-sync:push` step output. */
 type ReconcilePushResult =
-  | { status: 'nothing'; mergeCompleted?: boolean }
-  | { status: 'synced'; pushed: boolean; merged: boolean; mergeCompleted?: boolean }
+  | { status: 'nothing'; mergeCompleted?: boolean; syncBack?: SyncBackResult }
+  | { status: 'synced'; pushed: boolean; merged: boolean; mergeCompleted?: boolean; syncBack?: SyncBackResult }
   | { status: 'conflict'; conflictedFiles: string[] }
   | { status: 'error'; message: string; mergeCompleted?: boolean };
 
@@ -5271,8 +5272,8 @@ async function reconcileAndPushOneRepo(
     }
   }
 
-  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing', mergeCompleted };
-  return { status: 'synced', pushed, merged: mergedNew, mergeCompleted };
+  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing', mergeCompleted, ...(syncBack ? { syncBack } : {}) };
+  return { status: 'synced', pushed, merged: mergedNew, mergeCompleted, ...(syncBack ? { syncBack } : {}) };
 }
 
 /**
