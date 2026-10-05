@@ -166,10 +166,42 @@ try {
     { stdio: ['ignore', 'ignore', 'pipe'] });
   recordingExit = new Promise((resolve, reject) => { recording!.once('error', reject); recording!.once('exit', resolve); });
   recording.stderr!.on('data', chunk => process.stderr.write(chunk));
-  const attentionResponse = await fetch(`${origin}/api/admin/plans/attention`);
-  save('attention-preflight.json', { status: attentionResponse.status, data: await attentionResponse.json() });
+  // Boot has already warmed plans:attention. Its message source deliberately
+  // has a 20s SWR window, and this fixture writes through the real transaction
+  // from another process. A first read can therefore precede convergence.
+  // Verify the exact durable pin at the actual UI read seam BEFORE the card
+  // gate, preserving each response rather than retrying an opaque DOM failure.
+  const feedAttempts: unknown[] = [];
+  const deadline = Date.now() + 90_000;
+  let feedReady = false;
+  while (Date.now() < deadline) {
+    const attentionResponse = await fetch(`${origin}/api/admin/plans/attention`, {
+      headers: { 'x-papercusp-workspace': workspaceId }, signal: AbortSignal.timeout(15_000),
+    });
+    const data = await attentionResponse.json() as { groups?: Array<{ items?: Array<{ id?: string; report?: unknown }> }> };
+    const item = data.groups?.flatMap(group => group.items ?? [])
+      .find(item => item.id === `coord-message:${envelope.msg_id}`);
+    const measured = { observedAt: new Date().toISOString(), status: attentionResponse.status, data };
+    save(`attention-preflight-${feedAttempts.length}.json`, measured);
+    save('attention-preflight.json', measured);
+    feedReady = false;
+    if (item && attentionResponse.status === 200) {
+      try { assert.deepEqual(item.report, envelope.report); feedReady = true; } catch { feedReady = false; }
+    }
+    feedAttempts.push({ observedAt: measured.observedAt, status: measured.status, exactPinPresent: feedReady });
+    if (feedReady) break;
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+  }
+  save('attention-convergence.json', { feedAttempts, result: feedReady ? 'pass' : 'fail',
+    expectedMessageId: envelope.msg_id, expectedReport: envelope.report });
+  assert.ok(feedReady, 'Exact persisted GOAL pin never reached the UI feed; refusing card verification');
   save('navigation.json', JSON.parse(native('navigate',
     `/inbox?opci=all&opcis=${encodeURIComponent(`coord-message:${envelope.msg_id}`)}`, '--json')));
+  // The existing desktop subscription may still hold its pre-fixture snapshot.
+  // Exercise a real fresh load from the converged feed, not a forged DOM card.
+  native('eval', 'setTimeout(()=>location.reload(),0);true');
+  await new Promise(resolve => setTimeout(resolve, 500));
+  poll('location.pathname === "/inbox" && !!document.querySelector(".op-inbox")', '.op-inbox');
   captureUi('after-navigation');
   const card = '[data-component="report-block"]';
   poll(`Array.from(document.querySelectorAll('${card} button')).some(b=>b.textContent==='Expand full report')`, card);
