@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Pr, PrHostResult } from '../../pr-host/types';
 import { STANDING_PR_BRANCH } from './decide-standing-pr';
-import { findStandingPr, publishStandingPr, type PublishStandingPrInput, type StandingPrDeps } from './standing-pr';
+import {
+  findStandingPr,
+  publishStandingPr,
+  standingPrBody,
+  type PublishStandingPrInput,
+  type StandingPrDeps,
+} from './standing-pr';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -161,5 +167,14 @@ describe('findStandingPr', () => {
     ];
     expect(findStandingPr(prs, 'main')?.ref.number).toBe(5);
     expect(findStandingPr([], 'main')).toBeNull();
+  });
+});
+
+describe('standingPrBody', () => {
+  it('asks for a merge commit, because sync-back recognises merged work by commit id (P-016)', () => {
+    const body = standingPrBody('Acme', 'abcdef0123456789');
+    expect(body).toContain('Create a merge commit');
+    expect(body).toMatch(/not "Squash and merge"/);
+    expect(body).toContain('abcdef012345');
   });
 });
