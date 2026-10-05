@@ -119,6 +119,34 @@ export function lintAsCommittedChildEnv(environment = process.env) {
   };
 }
 
+/**
+ * The Android producer is a separate sibling repository, rather than a gitlink.
+ * Its source contract must read an identified committed blob even when the
+ * candidate checkout lives under tmpdir. Keep the snapshot inside clone metadata
+ * and reuse the release tooling's existing PAPERCUSP_MOBILE_ROOT override.
+ */
+export function materializeMobileSourceContract(repoRoot, workRoot, environment = process.env) {
+  const requestedRoot = environment.PAPERCUSP_MOBILE_ROOT;
+  const sourceRoot = requestedRoot || join(dirname(repoRoot), 'papercup-rust-mobile');
+  if (!existsSync(sourceRoot)) {
+    if (requestedRoot) throw new Error(`lint-as-committed: explicit mobile source root is missing: ${sourceRoot}`);
+    return null;
+  }
+  const sourceRepoRoot = git(['rev-parse', '--show-toplevel'], sourceRoot);
+  const sourceCommit = git(['rev-parse', '--verify', 'HEAD^{commit}'], sourceRepoRoot);
+  const sourcePath = 'tools/build-scripts/build-android.sh';
+  const content = gitShowOrNull(sourceRepoRoot, `${sourceCommit}:${sourcePath}`);
+  if (content === null) {
+    throw new Error(`lint-as-committed: mobile source contract ${sourcePath} is absent at ${sourceCommit}`);
+  }
+  const root = join(workRoot, '.git', 'mobile-source-contract');
+  mkdirSync(join(root, dirname(sourcePath)), { recursive: true });
+  writeFileSync(join(root, sourcePath), content);
+  const provenance = { schemaVersion: 1, sourceRepoRoot, sourceCommit, paths: [sourcePath] };
+  writeFileSync(join(root, 'source-provenance.json'), `${JSON.stringify(provenance, null, 2)}\n`);
+  return { root, ...provenance };
+}
+
 /* ─────────────────────── extracted-tree lifecycle (WI-10005705) ─────────────────────── */
 
 /**
@@ -920,6 +948,15 @@ function main() {
       bail(2);
     }
 
+    const childEnvironment = lintAsCommittedChildEnv(process.env);
+    if (args.scripts.some((script) => script.startsWith('test:'))) {
+      const mobileSource = materializeMobileSourceContract(repoRoot, workRoot, process.env);
+      if (mobileSource) {
+        childEnvironment.PAPERCUSP_MOBILE_ROOT = mobileSource.root;
+        console.log(`  mobile producer source: ${mobileSource.sourceRepoRoot} @ ${mobileSource.sourceCommit} -> ${mobileSource.root}`);
+      }
+    }
+
     for (const script of args.scripts) {
       const command = refScripts[script];
       console.log(`\n─── ${script} ───`);
@@ -965,7 +1002,7 @@ function main() {
         // Astro reads clone-specific Vite resolution from this marker. Keep Node's own
         // symlink resolution unchanged: --preserve-symlinks makes Node 25 reject remapped
         // workspace TypeScript imports under node_modules before lints can execute.
-        env: lintAsCommittedChildEnv(process.env),
+        env: childEnvironment,
       });
 
       if (run.error) {

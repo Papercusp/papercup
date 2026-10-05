@@ -59,6 +59,7 @@ const {
   cloneWorkspaceTarget,
   linkNodeModulesShadow,
   lintAsCommittedChildEnv,
+  materializeMobileSourceContract,
   owningSubmodule,
   showAtRef,
   summarize,
@@ -72,6 +73,11 @@ const {
     workRoot: string,
   ) => { entries: number; remapped: number; fallback: number };
   lintAsCommittedChildEnv: (environment?: Record<string, string | undefined>) => Record<string, string | undefined>;
+  materializeMobileSourceContract: (
+    repoRoot: string,
+    workRoot: string,
+    environment?: Record<string, string | undefined>,
+  ) => { root: string; sourceRepoRoot: string; sourceCommit: string; paths: string[] } | null;
   owningSubmodule: (path: string, submodulePaths: unknown) => string | null;
   showAtRef: (repoRoot: string, ref: string, path: string) => string | null;
   parseArgs: (argv: string[]) => {
@@ -96,6 +102,82 @@ const {
   };
   isDirectCliInvocation: (entryPath?: string) => boolean;
 };
+
+describe('committed mobile producer source contract (WI-10006121)', () => {
+  const sourcePath = 'tools/build-scripts/build-android.sh';
+
+  function withFixture(run: (fixture: { parent: string; source: string; repo: string; clone: string; sha: string }) => void) {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-mobile-source-'));
+    const source = join(parent, 'papercup-rust-mobile');
+    const repo = join(parent, 'papercusp');
+    const clone = join(parent, 'isolated', 'candidate');
+    mkdirSync(source);
+    mkdirSync(repo);
+    mkdirSync(clone, { recursive: true });
+    const git = (args: string[], input?: string) => execFileSync('git', args, { cwd: source, input, encoding: 'utf8' }).trim();
+    try {
+      git(['init', '--quiet', '--initial-branch=staging']);
+      const blob = git(['hash-object', '-w', '--stdin'], 'committed Android producer\n');
+      git(['update-index', '--add', '--cacheinfo', '100644', blob, sourcePath]);
+      const tree = git(['write-tree']);
+      const sha = git(['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-m', 'mobile contract fixture']);
+      git(['update-ref', 'refs/heads/staging', sha]);
+      mkdirSync(dirname(join(source, sourcePath)), { recursive: true });
+      writeFileSync(join(source, sourcePath), 'dirty Android producer\n');
+      run({ parent, source, repo, clone, sha });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }
+
+  it('copies the committed sibling blob and records its independent source commit', () => {
+    withFixture(({ source, repo, clone, sha }) => {
+      const snapshot = materializeMobileSourceContract(repo, clone, {});
+      expect(snapshot).not.toBeNull();
+      expect(readFileSync(join(snapshot!.root, sourcePath), 'utf8')).toBe('committed Android producer\n');
+      expect(snapshot!.sourceRepoRoot).toBe(realpathSync(source));
+      expect(snapshot!.sourceCommit).toBe(sha);
+      expect(JSON.parse(readFileSync(join(snapshot!.root, 'source-provenance.json'), 'utf8'))).toEqual({
+        schemaVersion: 1, sourceRepoRoot: realpathSync(source), sourceCommit: sha, paths: [sourcePath],
+      });
+      expect(readFileSync(join(source, sourcePath), 'utf8')).toBe('dirty Android producer\n');
+    });
+  });
+
+  it('honors the existing explicit mobile root outside the candidate parent', () => {
+    withFixture(({ source, clone, sha }) => {
+      const snapshot = materializeMobileSourceContract(join(clone, 'unrelated'), clone, { PAPERCUSP_MOBILE_ROOT: source });
+      expect(snapshot!.sourceCommit).toBe(sha);
+      expect(readFileSync(join(snapshot!.root, sourcePath), 'utf8')).toBe('committed Android producer\n');
+    });
+  });
+
+  it('refuses an explicit missing source instead of silently using a sibling', () => {
+    withFixture(({ repo, clone, parent }) => {
+      expect(() => materializeMobileSourceContract(repo, clone, { PAPERCUSP_MOBILE_ROOT: join(parent, 'absent') })).toThrow('explicit mobile source root is missing');
+    });
+  });
+
+  it('refuses a source contract absent at HEAD rather than copying a dirty file', () => {
+    withFixture(({ repo, clone, source }) => {
+      execFileSync('git', ['update-index', '--force-remove', sourcePath], { cwd: source });
+      const tree = execFileSync('git', ['write-tree'], { cwd: source, encoding: 'utf8' }).trim();
+      const sha = execFileSync('git', ['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-m', 'missing source'], { cwd: source, encoding: 'utf8' }).trim();
+      execFileSync('git', ['update-ref', 'refs/heads/staging', sha], { cwd: source });
+      expect(() => materializeMobileSourceContract(repo, clone, {})).toThrow('is absent at');
+      expect(existsSync(join(source, sourcePath))).toBe(true);
+    });
+  });
+
+  it('leaves repositories without a mobile sibling available for ordinary checks', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-without-mobile-'));
+    try {
+      expect(materializeMobileSourceContract(join(parent, 'repo'), join(parent, 'clone'), {})).toBeNull();
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('isolated clone module identity (EI-24824919200711849)', () => {
   it('marks only the child environment for clone-specific Vite resolution', () => {
@@ -143,8 +225,9 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       const { normalizeFilename } = await import(astroUtilsPath);
       const cloneAppRoot = resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs');
       const cloneRootUrl = pathToFileURL(`${cloneAppRoot}/`);
-      const normalizedVirtualStyleId = normalizer?.resolveId?.(virtualStyleId);
+      const normalizedVirtualStyleId = await normalizer?.resolveId?.(virtualStyleId);
       expect(normalizedVirtualStyleId).toBe(`/@fs${virtualStyleId}`);
+      if (typeof normalizedVirtualStyleId !== 'string') throw new Error('style resolution must return an id string');
       expect(normalizer?.resolveId?.(`/@fs${virtualStyleId}`)).toBe(`/@fs${virtualStyleId}`);
       expect(normalizeFilename(normalizedVirtualStyleId?.split('?', 1)[0] ?? '', cloneRootUrl)).toBe(mainComponentId);
 
@@ -180,8 +263,9 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
 
       const relativeTraversalRoute = `${relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute)}${virtualRouteQuery}`;
       expect(relativeTraversalRoute).toContain('../');
-      const normalizedTraversalRoute = normalizer?.resolveId?.(relativeTraversalRoute);
+      const normalizedTraversalRoute = await normalizer?.resolveId?.(relativeTraversalRoute);
       expect(normalizedTraversalRoute).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
+      if (typeof normalizedTraversalRoute !== 'string') throw new Error('route resolution must return an id string');
       expect(normalizer?.resolveId?.(normalizedTraversalRoute ?? '')).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
 
       const localComponent = resolve(repoRoot, 'apps/papercusp-docs/src/components/Local.astro');

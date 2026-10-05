@@ -865,7 +865,8 @@ describe('validateRecordChangelog — fail closed on accidental changelog omissi
 
 describe('Android release producer/consumer source contract (D-004)', () => {
   const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
-  const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
+  const mobileDir = process.env.PAPERCUSP_MOBILE_ROOT
+    ?? path.resolve(__dirname, '../../../../../papercup-rust-mobile');
 
   it('build-android deletes the old pair/manifest and writes provenance only after verification', () => {
     const script = fs.readFileSync(
