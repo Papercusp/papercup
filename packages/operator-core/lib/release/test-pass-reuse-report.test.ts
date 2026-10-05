@@ -22,6 +22,7 @@ import {
   formatDurationMs,
   parseTestPassReuse,
   parseTestPassReuseHealth,
+  parseTestPassReuseAuditArchive,
   summarizeExecutedSourceMapRecorder,
   summarizeTestPassReuse,
   TEST_PASS_REUSE_HEALTH_MAX_ALARMS,
@@ -283,6 +284,13 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint', dirty: false });
     expect(archived.auditedFiles?.[0]?.evidenceRef).toMatch(/^suite-output:line:/);
     expect(window({ invocations: [{ ...invocation(), auditedFiles: archived.auditedFiles! }] }).verdict).toBe('pass');
+    const compact = { audit: { ...archived.audit, judgedSha: archived.judgedSha, recordedAtMs: archived.recordedAtMs },
+      auditRuns: archived.auditRuns, auditedFiles: archived.auditedFiles };
+    expect(parseTestPassReuseAuditArchive(JSON.parse(JSON.stringify(compact))))
+      .toMatchObject({ judgedSha: invocation().judgedSha, recordedAtMs: 120,
+        auditRuns: archived.auditRuns, auditedFiles: archived.auditedFiles });
+    expect(parseTestPassReuseAuditArchive({ ...compact, auditRuns: null })).toBeNull();
+    expect(parseTestPassReuseAuditArchive({ ...compact, audit: { ...compact.audit, audited: 99 } })).toBeNull();
   });
 
   it('retains an inline-retry miss even without a console FAIL row or soundness alarm', () => {

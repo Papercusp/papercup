@@ -71,6 +71,20 @@ describe('SPA shell pre-hydration globals', () => {
     }
   });
 
+  it('reloads a bare Inbox URL in the process-pinned workspace and honors an explicit window workspace', async () => {
+    const previous = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = 'verify-tauri-isolated-fixture';
+    try {
+      const bare = await spaRoutes.request('/inbox?opci=all&opcis=coord-message%3Afixture');
+      expect(await bare.text()).toContain('window.__PAPERCUSP_WS__="verify-tauri-isolated-fixture";');
+      const scoped = await spaRoutes.request('/inbox?ws=another-window&opci=all');
+      expect(await scoped.text()).toContain('window.__PAPERCUSP_WS__="another-window";');
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = previous;
+    }
+  });
+
   it('seeds resolved feature flags so gated UI does not flash defaults', async () => {
     setFlagOverridesForTest({ 'papercusp-testing': true });
     const res = await spaRoutes.request('/');
