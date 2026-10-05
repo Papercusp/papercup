@@ -78,6 +78,7 @@ import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-
  *   description?: string,
  *   inputSchema?: Record<string, unknown>,
  *   outputSchema?: Record<string, unknown>,
+ *   _meta?: Record<string, unknown> & {'papercusp/servingGeneration'?: string},
  *   annotations?: {readOnlyHint?: boolean},
  * }} ToolCatalogEntry
  */
@@ -1218,9 +1219,9 @@ function readToken({ tokenFile = null, env = process.env, home = homedir() } = {
  *  so ptool still emits a lossless scripting payload.
  *  @param {string} toolName
  *  @param {any} callArgs
- *  @param {{outputSchema?: {type?: string}, idempotencyKey?: string}} [options]
+ *  @param {{outputSchema?: {type?: string}, idempotencyKey?: string, servingGeneration?: string}} [options]
  */
-export function buildCallToolParams(toolName, callArgs, { outputSchema, idempotencyKey } = {}) {
+export function buildCallToolParams(toolName, callArgs, { outputSchema, idempotencyKey, servingGeneration } = {}) {
   const projected = Boolean(
     callArgs &&
     typeof callArgs === 'object' &&
@@ -1230,6 +1231,9 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
   const objectRooted = outputSchema?.type === 'object' && !projected;
   const meta = objectRooted ? { structured: true } : { format: 'json' };
   if (idempotencyKey) meta.idempotencyKey = idempotencyKey;
+  if (typeof servingGeneration === 'string' && servingGeneration.trim()) {
+    meta['papercusp/servingGeneration'] = servingGeneration;
+  }
   // EI-21669966698063758: tools:invoke is a second JSON boundary. Keep its
   // target args as one JSON string so shell-heavy code:run payloads survive
   // the host/MCP serialization path exactly once. Direct calls must retain
@@ -3592,6 +3596,11 @@ async function main() {
       process.exit(1);
     }
 
+    // Echo the generation attached by tools/list. The MCP host uses it to
+    // reject stateless calls when the server's loaded code, applied schema,
+    // or projected tool contracts moved after this catalog was fetched.
+    const servingGeneration = tool._meta?.['papercusp/servingGeneration'];
+
     // Assemble args from the input parsed before connect, or prompt
     // interactively when no scripted source was provided.
     let callArgs = inputKind != null ? inputArgs : await collectArgs(tool.inputSchema);
@@ -3621,6 +3630,7 @@ async function main() {
         client,
         buildCallToolParams(toolName, callArgs, {
           outputSchema: tool.outputSchema,
+          servingGeneration,
           // One key belongs to this logical CLI invocation. Reconnect recovery
           // deliberately reuses these params so the server can deduplicate it.
           idempotencyKey,
@@ -3640,6 +3650,7 @@ async function main() {
           await connectOperator({ preferredIndex: 1 }),
           buildCallToolParams(toolName, callArgs, {
             outputSchema: tool.outputSchema,
+            servingGeneration,
             idempotencyKey,
           }),
           {

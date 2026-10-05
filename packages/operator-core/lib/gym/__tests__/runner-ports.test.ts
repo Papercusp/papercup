@@ -239,6 +239,10 @@ describe('createGymRunnerPorts', () => {
       expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
       for (const receipt of [pre, post]) {
         expect(receipt.execution).toMatchObject({ configSources: {
+          loaded: { basis: 'node-load-hook', status: 'stable', reasons: [],
+            sources: expect.arrayContaining([
+              { path: 'config-helper.mjs', sha256: digest(configHelper), currentSha256: digest(configHelper) },
+            ]) },
           reference: { pinCommit, sources: expect.arrayContaining([
             { path: 'config-helper.mjs', sha256: digest(configHelper) },
           ]) },
@@ -247,7 +251,7 @@ describe('createGymRunnerPorts', () => {
               { path: 'config-helper.mjs', sha256: digest(configHelper), currentSha256: digest(configHelper) },
             ]) },
         } });
-        expect(receipt.execution!.unresolved).toContain('oracle-config-original-load-unmeasured');
+        expect(receipt.execution!.unresolved).not.toContain('oracle-config-original-load-unmeasured');
       }
       expect(JSON.parse(post.execution!.report).testResults[0].assertionResults[0].status).toBe('failed');
       for (const receipt of [pre, post]) {

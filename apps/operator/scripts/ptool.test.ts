@@ -1318,6 +1318,26 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     });
   });
 
+  it('echoes the serving generation advertised by tools/list in tools/call metadata', () => {
+    const listedTool = {
+      name: 'work_items:get',
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:listed' },
+    };
+    expect(buildCallToolParams(listedTool.name, { id: 'EI-1' }, {
+      outputSchema: { type: 'object' },
+      idempotencyKey: 'ptool-generation-1',
+      servingGeneration: listedTool._meta['papercusp/servingGeneration'],
+    })).toEqual({
+      name: 'work_items:get',
+      arguments: { id: 'EI-1' },
+      _meta: {
+        structured: true,
+        idempotencyKey: 'ptool-generation-1',
+        'papercusp/servingGeneration': 'serving-generation-v1:listed',
+      },
+    });
+  });
+
   it('negotiates projected object-schema calls as JSON instead of requesting the unprojected structured twin', () => {
     expect(buildCallToolParams(
       'sessions:read',

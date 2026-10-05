@@ -71,6 +71,9 @@ function oracleExecution(implementationHash = 'b'.repeat(64)) {
     } } as { path: string; sourceHashes: { pinned: string | null; before: string | null; after: string | null } } | undefined,
     configSources: { reference: { pinCommit: makeSpec().harnessCommit,
       sources: [{ path: 'vitest.config.ts', sha256: 'e'.repeat(64) }] },
+      loaded: { schemaVersion: 'node-loaded-config-sources-v1', scope: 'repository-vite-config-dependencies',
+        basis: 'node-load-hook', status: 'stable', reasons: [],
+        sources: [{ path: 'vitest.config.ts', sha256: 'e'.repeat(64), currentSha256: 'e'.repeat(64) }] },
       evidence: { schemaVersion: 'vitest-config-disk-snapshots-v1', scope: 'repository-vite-config-dependencies',
         basis: 'reporter-init-disk', status: 'unchanged', reasons: [],
         sources: [{ path: 'vitest.config.ts', sha256: 'e'.repeat(64), currentSha256: 'e'.repeat(64) }] },
@@ -445,6 +448,36 @@ describe('runGymPipeline', () => {
     expect(result.deterministicSignals?.taskPassed).toBeUndefined();
     expect(result.deterministicSignals?.regressions).toBeUndefined();
     expect(result.deterministicSignals?.oracle).toMatchObject({ configSnapshotsCurrent: false });
+  });
+
+  it.each(['missing', 'unknown', 'changed', 'unpinned', 'wrong-basis', 'duplicate', 'missing-source',
+    'changed-between-runs'] as const)('withholds positive claims when originally loaded config is %s', async (mode) => {
+    const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+    let run = 0;
+    ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
+      const execution = oracleExecution();
+      const measured = execution.configSources!;
+      const loaded = measured.loaded!;
+      run += 1;
+      if (mode === 'missing') measured.loaded = null;
+      else if (mode === 'unknown') loaded.status = 'unknown';
+      else if (mode === 'changed') loaded.sources[0]!.currentSha256 = 'f'.repeat(64);
+      else if (mode === 'unpinned') loaded.sources[0]!.sha256 = 'f'.repeat(64);
+      else if (mode === 'wrong-basis') loaded.basis = 'reporter-init-disk';
+      else if (mode === 'duplicate') loaded.sources.push({ ...loaded.sources[0]! });
+      else if (mode === 'missing-source') loaded.sources = [];
+      else if (mode === 'changed-between-runs' && run === 2) loaded.sources[0]!.sha256 = 'f'.repeat(64);
+      return { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }],
+        testPath, pinCommit: pinCommit!, sourceHashes: {
+          pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64),
+        }, implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
+    };
+    const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+      oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+        pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+    expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+    expect(result.deterministicSignals?.regressions).toBeUndefined();
+    expect(result.deterministicSignals?.oracle).toMatchObject({ configLoadedCurrent: false });
   });
 
   it('withholds authority from legacy unpinned oracle results even with complete passing coverage', async () => {
