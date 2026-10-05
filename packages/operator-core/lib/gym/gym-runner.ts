@@ -34,6 +34,14 @@ export interface GymOracleRun {
     npmManifest?: { path: string; sourceHashes: {
       pinned: string | null; before: string | null; after: string | null;
     } };
+    /** Config dependency disk snapshots begin at reporter initialization, after
+     * config loading. Matching pins do not establish original loaded bytes. */
+    configSources?: {
+      reference: { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> };
+      evidence: { schemaVersion: string; scope: string; basis: string; status: string;
+        sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }>;
+        reasons: string[] } | null;
+    };
     /** Original worker sources from the existing framework OUT channel. This
      * scope excludes runner/config/native code and the remote pipeline. */
     workerSources?: { report: string | null;
@@ -290,6 +298,34 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
               ['npm', 'run', 'test:file', '--', spec.task.oracle!.testPath].every((arg, index) =>
                 execution?.command?.[index] === arg);
           });
+        const configSnapshots = (receipt: GymOracleRun | undefined): Map<string, string> | null => {
+          const measured = receipt?.execution?.configSources;
+          const evidence = measured?.evidence;
+          const reference = measured?.reference;
+          if (evidence?.schemaVersion !== 'vitest-config-disk-snapshots-v1' ||
+              evidence.scope !== 'repository-vite-config-dependencies' || evidence.basis !== 'reporter-init-disk' ||
+              evidence.status !== 'unchanged' || !Array.isArray(evidence.reasons) || evidence.reasons.length > 0 ||
+              !Array.isArray(evidence.sources) || evidence.sources.length === 0 ||
+              reference?.pinCommit !== spec.task.oracle!.pinCommit || !Array.isArray(reference.sources)) return null;
+          const hashes = new Map<string, string>();
+          const pins = new Map<string, string>();
+          for (const source of evidence.sources) {
+            if (!source || typeof source.path !== 'string' || typeof source.sha256 !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(source.sha256) || source.currentSha256 !== source.sha256 || hashes.has(source.path)) return null;
+            hashes.set(source.path, source.sha256);
+          }
+          for (const source of reference.sources) {
+            if (!source || typeof source.path !== 'string' || typeof source.sha256 !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(source.sha256) || pins.has(source.path)) return null;
+            pins.set(source.path, source.sha256);
+          }
+          return pins.size === hashes.size && [...hashes].every(([path, hash]) => pins.get(path) === hash) ? hashes : null;
+        };
+        const preConfigSnapshots = configSnapshots(preOracle);
+        const postConfigSnapshots = configSnapshots(postOracle);
+        const configSnapshotsCurrent = preConfigSnapshots !== null && postConfigSnapshots !== null &&
+          preConfigSnapshots.size === postConfigSnapshots.size &&
+          [...preConfigSnapshots].every(([path, hash]) => postConfigSnapshots.get(path) === hash);
         const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
         // A JSON report may exist even when the command is killed or fails after
         // writing it. Retain witnessed failures, but require a successful process
@@ -304,11 +340,11 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
-            sourceCurrent, implementationCurrent, workerSourcesCurrent, npmManifestCurrent,
+            sourceCurrent, implementationCurrent, workerSourcesCurrent, npmManifestCurrent, configSnapshotsCurrent,
             executionCompleted, populationComplete, regressionPopulation },
-          ...(regression === true || (regression === false && workerSourcesCurrent && npmManifestCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
+          ...(regression === true || (regression === false && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
             ? { regressions: regression } : {}),
-          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent && npmManifestCurrent))
+          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent))
             ? { taskPassed } : {}),
         };
       }

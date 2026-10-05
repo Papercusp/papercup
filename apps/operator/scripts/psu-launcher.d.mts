@@ -2188,7 +2188,7 @@ export function storeClaudeOAuthToken(token: any, { home }?: {
  * Deps are injected for tests (psu-launcher.test.ts) — `fetchImpl`/`sleep`/`now`
  * make the retry timing deterministic without real timers or sockets.
  */
-export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now, onNotice, timeoutMs, connectBudgetMs, timeoutRetries, retryBootstrapFailures, bootstrapReplayMaxAttempts, bootstrapReplayBudgetMs, label, target, resolveFallback, onFailover, healthProbeTimeoutMs, }?: {
+export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now, onNotice, timeoutMs, connectBudgetMs, timeoutRetries, retryBootstrapFailures, bootstrapReplayMaxAttempts, bootstrapReplayBudgetMs, label, target, resolveFallback, onFailover, healthProbeTimeoutMs, slowRequestNotice, slowNoticeAfterMs, }?: {
     fetchImpl?: typeof fetch | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
     now?: (() => number) | undefined;
@@ -2208,6 +2208,8 @@ export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now
     resolveFallback?: typeof resolveFallbackOperatorTargets | undefined;
     onFailover?: typeof adoptOperatorTarget | undefined;
     healthProbeTimeoutMs?: number | undefined;
+    slowRequestNotice?: typeof slowRequestNoticeOncePerLaunch | undefined;
+    slowNoticeAfterMs?: number | undefined;
 }): Promise<Response>;
 /** Turn a structured operator/proxy failure into an actionable launcher error.
  * Keep the stable error code, but retain the server's detail and retry hint so
@@ -4709,6 +4711,9 @@ export type RunWrapperOptions = {
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 declare function api(path: any, opts?: {}): Promise<any>;
+declare function slowRequestNoticeOncePerLaunch({ url }: {
+    url: any;
+}): Promise<string | null>;
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 declare function defaultListProcPids(): number[];

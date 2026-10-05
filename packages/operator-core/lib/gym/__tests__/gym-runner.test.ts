@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { runGymPipeline } from '../gym-runner';
-import type { GymRunnerPorts, GymRunSpec } from '../gym-runner';
+import type { GymOracleRun, GymRunnerPorts, GymRunSpec } from '../gym-runner';
 
 /**
  * The runner orchestrates one hermetic run: clone → register throwaway harness →
@@ -69,6 +69,12 @@ function oracleExecution(implementationHash = 'b'.repeat(64)) {
     npmManifest: { path: 'package.json', sourceHashes: {
       pinned: 'd'.repeat(64), before: 'd'.repeat(64), after: 'd'.repeat(64),
     } } as { path: string; sourceHashes: { pinned: string | null; before: string | null; after: string | null } } | undefined,
+    configSources: { reference: { pinCommit: makeSpec().harnessCommit,
+      sources: [{ path: 'vitest.config.ts', sha256: 'e'.repeat(64) }] },
+      evidence: { schemaVersion: 'vitest-config-disk-snapshots-v1', scope: 'repository-vite-config-dependencies',
+        basis: 'reporter-init-disk', status: 'unchanged', reasons: [],
+        sources: [{ path: 'vitest.config.ts', sha256: 'e'.repeat(64), currentSha256: 'e'.repeat(64) }] },
+    } as NonNullable<GymOracleRun['execution']>['configSources'],
     exitCode: 0, signal: null,
     workerSources: { report: '{}', reference: { pinCommit: makeSpec().harnessCommit, sources: [
       { path: 'oracle.test.js', sha256: 'a'.repeat(64) }, { path: 'impl.js', sha256: 'b'.repeat(64) },
@@ -408,6 +414,38 @@ describe('runGymPipeline', () => {
       expect(result.deterministicSignals?.regressions).toBeUndefined();
       expect(result.deterministicSignals?.oracle).toMatchObject({ npmManifestCurrent: false });
     });
+
+  it.each(['missing', 'unknown', 'changed', 'unpinned', 'missing-reference', 'wrong-basis', 'duplicate',
+    'changed-between-runs'] as const)('withholds positive claims when config snapshots are %s', async (mode) => {
+    const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+    let run = 0;
+    ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
+      const execution = oracleExecution();
+      run += 1;
+      const measured = execution.configSources!;
+      if (mode === 'missing') execution.configSources = undefined;
+      else if (mode === 'unknown') measured.evidence!.status = 'unknown';
+      else if (mode === 'changed') measured.evidence!.sources[0]!.currentSha256 = 'f'.repeat(64);
+      else if (mode === 'unpinned') measured.reference.sources[0]!.sha256 = null;
+      else if (mode === 'missing-reference') Object.assign(measured, { reference: undefined });
+      else if (mode === 'wrong-basis') measured.evidence!.basis = 'after-run-disk';
+      else if (mode === 'duplicate') measured.evidence!.sources.push({ ...measured.evidence!.sources[0]! });
+      else if (mode === 'changed-between-runs' && run === 2) {
+        measured.evidence!.sources.push({ path: 'other.config.ts', sha256: 'f'.repeat(64), currentSha256: 'f'.repeat(64) });
+        measured.reference.sources.push({ path: 'other.config.ts', sha256: 'f'.repeat(64) });
+      }
+      return { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }],
+        testPath, pinCommit: pinCommit!, sourceHashes: {
+          pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64),
+        }, implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
+    };
+    const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+      oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+        pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+    expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+    expect(result.deterministicSignals?.regressions).toBeUndefined();
+    expect(result.deterministicSignals?.oracle).toMatchObject({ configSnapshotsCurrent: false });
+  });
 
   it('withholds authority from legacy unpinned oracle results even with complete passing coverage', async () => {
     const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });

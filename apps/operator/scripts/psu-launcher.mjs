@@ -130,6 +130,10 @@ import {
 // import the SAME definition.
 import { PSU_REQUEST_TIMEOUT_MS } from "../lib/mcp-proxy/budgets.mjs";
 import {
+  slowOperatorNotice,
+  withOperatorDownDiagnosis,
+} from "./psu-operator-down-diagnosis.mjs";
+import {
   RUNTIME_OVERHEAD_TOKENS,
   buildContextBudget,
   codexContextConfigArgs,
@@ -793,6 +797,17 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw)
 // operator.json on come-up, so a fresh record = plausibly mid-boot).
 const STALE_DISCOVERY_MS = 10 * 60_000;
 const STALE_FAST_FAIL_BUDGET_MS = 5_000;
+// WI-10006057: while the operator behind the MCP proxy is down, the proxy holds
+// a request for its whole ~90s retry window and psu printed nothing. A request
+// still pending after this long checks the operator's health once per launch,
+// and if it is refusing, says which systemd unit is down and why.
+const SLOW_REQUEST_NOTICE_MS = 5_000;
+let slowRequestNoticeShown = false;
+async function slowRequestNoticeOncePerLaunch({ url }) {
+  if (slowRequestNoticeShown) return null;
+  slowRequestNoticeShown = true;
+  return slowOperatorNotice(url);
+}
 
 // The MCP proxy marks admission shedding with HTTP 429 + Retry-After. Treat that
 // response as a bounded, safe-to-replay front-door condition: the proxy sheds
@@ -7856,6 +7871,10 @@ export async function fetchWithResilience(
     resolveFallback = resolveFallbackOperatorTargets,
     onFailover = adoptOperatorTarget,
     healthProbeTimeoutMs = 2_000,
+    // Called once a request has been pending slowNoticeAfterMs; resolves to a
+    // notice to print, or null to stay silent (WI-10006057).
+    slowRequestNotice = slowRequestNoticeOncePerLaunch,
+    slowNoticeAfterMs = SLOW_REQUEST_NOTICE_MS,
   } = {},
 ) {
   // A caller-supplied AbortSignal owns the request lifetime — never retry it.
@@ -7888,11 +7907,29 @@ export async function fetchWithResilience(
   let lastErr;
   for (;;) {
     try {
-      const response = await fetchImpl(url, {
-        ...init,
-        // Without a timeout a wedged operator hangs psu indefinitely. Fail fast.
-        signal: callerSignal ?? AbortSignal.timeout(timeoutMs),
-      });
+      let pending = true;
+      const slowTimer =
+        slowRequestNotice && slowNoticeAfterMs > 0
+          ? setTimeout(() => {
+              Promise.resolve(slowRequestNotice({ url, target }))
+                .then((notice) => {
+                  if (notice && pending) onNotice(notice);
+                })
+                .catch(() => {});
+            }, slowNoticeAfterMs)
+          : null;
+      slowTimer?.unref?.();
+      let response;
+      try {
+        response = await fetchImpl(url, {
+          ...init,
+          // Without a timeout a wedged operator hangs psu indefinitely. Fail fast.
+          signal: callerSignal ?? AbortSignal.timeout(timeoutMs),
+        });
+      } finally {
+        pending = false;
+        if (slowTimer) clearTimeout(slowTimer);
+      }
       if (retryable && isRetryableMcpProxyOverload(response)) {
         const remaining = overloadDeadline - now();
         const retryAfter = response.headers.get("retry-after");
@@ -8035,9 +8072,12 @@ export async function fetchWithResilience(
   }
   if (target?.source === "env") {
     throw new Error(
-      `the operator URL this shell pins via PAPERCUSP_OPERATOR_URL (${shownUrl}) refused connections for ` +
-        `${Math.ceil(effectiveConnectBudgetMs / 1000)}s. The explicit target was preserved; no other operator was tried. ` +
-        `Restore that operator, or \`unset PAPERCUSP_OPERATOR_URL\` to opt into discovery (~/.papercusp/operator.json).`,
+      withOperatorDownDiagnosis(
+        `the operator URL this shell pins via PAPERCUSP_OPERATOR_URL (${shownUrl}) refused connections for ` +
+          `${Math.ceil(effectiveConnectBudgetMs / 1000)}s. The explicit target was preserved; no other operator was tried. ` +
+          `Restore that operator, or \`unset PAPERCUSP_OPERATOR_URL\` to opt into discovery (~/.papercusp/operator.json).`,
+        { url: shownUrl },
+      ),
     );
   }
   if (isDesktop) {
@@ -8051,8 +8091,11 @@ export async function fetchWithResilience(
     );
   }
   throw new Error(
-    `could not reach the operator at ${shownUrl} after ${Math.ceil(effectiveConnectBudgetMs / 1000)}s (${e?.message || e}). ` +
-      `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL.`,
+    withOperatorDownDiagnosis(
+      `could not reach the operator at ${shownUrl} after ${Math.ceil(effectiveConnectBudgetMs / 1000)}s (${e?.message || e}). ` +
+        `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL.`,
+      { url: shownUrl },
+    ),
   );
 }
 
@@ -8104,7 +8147,13 @@ async function api(path, opts = {}) {
     json = { status: "error", error: text.slice(0, 200) };
   }
   if (!res.ok || json.status === "error") {
-    const failure = new Error(formatApiFailureMessage(json, res.status, path));
+    const message = formatApiFailureMessage(json, res.status, path);
+    // WI-10006057: the proxy's refusal names a port; say which unit is down and why.
+    const failure = new Error(
+      json?.error === "mcp_proxy_upstream_unavailable"
+        ? withOperatorDownDiagnosis(message, { detail: json.detail })
+        : message,
+    );
     failure.status = res.status;
     failure.path = path;
     throw failure;

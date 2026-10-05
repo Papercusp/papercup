@@ -326,12 +326,14 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           t.file ? { ...t, file: (isAbsolute(t.file) ? relative(clonePath, t.file) : t.file).split('\\').join('/') } : t);
         let sourceReport: string | null = null;
         let modules: NonNullable<NonNullable<GymOracleRun['execution']>['workerSources']>['modules'] = [];
+        let configEvidence: NonNullable<NonNullable<GymOracleRun['execution']>['configSources']>['evidence'] = null;
         // Keep the raw report even if it is malformed; do not rebuild original
         // module hashes from a later checkout when the reporter is unavailable.
         try { sourceReport = readFileSync(sourceReportPath, 'utf8'); } catch { /* unknown */ }
         try {
           const parsed = sourceReport && JSON.parse(sourceReport);
           if (Array.isArray(parsed?.diagnostics)) modules = parsed.diagnostics;
+          if (parsed?.configSources && typeof parsed.configSources === 'object') configEvidence = parsed.configSources;
         } catch { /* retain malformed raw source report */ }
         const sourcePaths = new Set(modules.flatMap((module) =>
           Array.isArray(module?.sourceEvidence?.sources) ? module.sourceEvidence.sources
@@ -339,6 +341,12 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         const referenceSources: Array<{ path: string; sha256: string | null }> = [];
         for (const path of [...sourcePaths].sort()) {
           referenceSources.push({ path, sha256: path === testPath ? pinned : await referenceHash(path) });
+        }
+        const configReferenceSources: Array<{ path: string; sha256: string | null }> = [];
+        const configPaths = new Set(Array.isArray(configEvidence?.sources) ? configEvidence.sources
+          .filter(source => typeof source?.path === 'string').map(source => source.path) : []);
+        for (const path of [...configPaths].sort()) {
+          configReferenceSources.push({ path, sha256: await referenceHash(path) });
         }
         const manifestAfter = fileHash('package.json');
         const manifestUnknown = [manifestPinned, manifestBefore, manifestAfter].some((hash) => hash === null);
@@ -350,7 +358,11 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
               pinned: manifestPinned, before: manifestBefore, after: manifestAfter,
             } },
             workerSources: { report: sourceReport, modules, reference: { pinCommit, sources: referenceSources } },
+            configSources: { evidence: configEvidence, reference: { pinCommit, sources: configReferenceSources } },
             unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+              'oracle-config-original-load-unmeasured',
+              ...(!configEvidence || configReferenceSources.length === 0 ? ['oracle-config-snapshot-evidence-unavailable'] : []),
+              ...(configReferenceSources.some(source => source.sha256 === null) ? ['oracle-config-reference-unavailable'] : []),
               ...(manifestUnknown ? ['oracle-npm-manifest-evidence-unavailable'] :
                 manifestBefore !== manifestPinned || manifestAfter !== manifestPinned ? ['oracle-npm-manifest-changed'] : []),
               ...(referenceSources.some((source) => source.sha256 === null) ? ['oracle-worker-source-reference-unavailable'] : []),
