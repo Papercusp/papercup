@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-vi.mock('../../code-intelligence/lsp-daemon-client', () => ({ readLspDaemonAdmission: vi.fn() }));
+vi.mock('../../code-intelligence/lsp-daemon-client', () => ({ readLspDaemonAdmission: vi.fn(),
+  readLspDaemonHealth: vi.fn(async () => { throw new Error('runtime not measured in queue-only test'); }) }));
 import { buildLspAdmissionStatePayload, buildLspRuntimeStatePayload } from './lsp-admission';
 import { LspAdmissionController } from '../../code-intelligence/lsp-admission';
 import { LSP_ADMISSION_CELL, LSP_READINESS_CELL, LSP_WARM_SERVERS_CELL } from '../../cell-registrations';

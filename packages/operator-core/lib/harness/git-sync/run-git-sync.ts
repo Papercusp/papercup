@@ -4096,6 +4096,11 @@ type ReconcileRepoOpts = Pick<
   doPush: boolean;
   /** A child repo's stale remote-tracking ref cannot prove its current pin is publishable. */
   requireRemoteVerification?: boolean;
+  /**
+   * pot-review-integration-mode P-016: a working-copy pot absorbs the MAIN repository's
+   * branch into its staging before pushing the fork. Set only by working-copy mode.
+   */
+  syncBack?: SyncBackConfig;
 };
 
 /** JSON-serializable — checkpointed as the superproject `git-sync:pointer-bump` step output. */
@@ -5172,6 +5177,23 @@ async function reconcileAndPushOneRepo(
   // fails: conflict resolution and push success are independent facts.
   let mergeCompleted = true;
   let mergedNew = seedTransplanted || !/Already up to date/i.test(merge.stdout);
+
+  // P-016 sync-back: a working-copy pot pushes its fork, so the main repository's
+  // branch (including our merged standing PR) must be merged into staging here, or the
+  // next PR re-lists already-merged work. A conflict aborts to a clean tree and is
+  // reported on the result; it never blocks pushing the copy's own work.
+  let syncBack: SyncBackResult | undefined;
+  if (o.syncBack && doPush && branch === 'staging') {
+    syncBack = await runSyncBack(runGit, repoPath, {
+      ...o.syncBack,
+      integrationBranch: branch,
+      runNetworkGit: (args, cwd) => runNetworkGitWithGitHubHttpsFallback(runGit, args, cwd, o.log),
+      identityArgs: GIT_SYNC_IDENTITY_ARGS,
+      log: o.log,
+    });
+    if (syncBack.status === 'merged') mergedNew = true;
+    if (syncBack.status === 'error') o.log(`[git-sync] ${repoPath}: sync-back skipped this tick — ${syncBack.message}`);
+  }
 
   // Frozen repair heads are allowed to prove a patch, but canonical staging remains
   // the only branch git-sync publishes. If a previously-promoted repair head is a

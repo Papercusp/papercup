@@ -1942,8 +1942,8 @@ export const LSP_WARM_SERVERS_CELL: CellSpec = {
   unknownHoist: 'runtimeUnknown',
   provenance: {
     obtainedBy: 'daemon health RPC → lspHealth() → lspClientInventory(), including the owning PID and measurement timestamp',
-    liveExercised: false,
-    evidence: 'state/lsp-admission.test.ts rejects stale/failed health readback independently of the admission queue.',
+    liveExercised: true,
+    evidence: 'lsp-admission.pinned.integration.test.ts measures the real daemon health inventory at nine replay boundaries with migrated PG; state/lsp-admission.test.ts rejects stale/failed readback independently of the queue.',
   },
   resolver: 'lsp:admission_snapshot → readLspDaemonHealth → lspClientInventory()',
   assessment: {
@@ -1964,6 +1964,15 @@ export const LSP_READINESS_CELL: CellSpec = {
   ...LSP_WARM_SERVERS_CELL,
   cell: 'lsp.readiness',
   headline: 'readiness',
+  assessment: {
+    path: 'readinessAssessment',
+    codes: {
+      reported: { meaning: 'The daemon reported its exact per-intent proof sets; missing intents are not certified.', safeAction: 'Use only the listed certified intents when interpreting absence.' },
+      unproven: { meaning: 'At least one measured intent is unproven or its server is still indexing.', safeAction: 'Retain honest degraded answers and inspect the per-intent evidence.' },
+      unknown: { meaning: 'An enabled server readiness population could not be established.', safeAction: 'Inspect runtimeUnknown; do not promote missing readiness into a proof.' },
+    },
+    evidence: ['runtimeMeasurement'],
+  },
   changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'readiness' },
   shape: '[{ language, rootPath, taskId, certified, unproven, quiescent, pendingProgress, progressGeneration }]; process health never promotes an intent proof',
 };

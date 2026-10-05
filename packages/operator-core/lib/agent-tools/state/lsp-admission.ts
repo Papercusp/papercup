@@ -18,9 +18,11 @@ export async function buildLspRuntimeStatePayload(
       taskId: server.taskId, certified: server.certifiedReadiness, unproven: server.unprovenReadiness,
       quiescent: server.quiescent, pendingProgress: server.pendingProgress, progressGeneration: server.progressGeneration }));
     return { runtime, readiness, runtimeAssessment: runtime.enabled ? runtime.overall : 'unknown',
+      readinessAssessment: !runtime.enabled || !runtime.servers.length ? 'unknown' :
+        readiness.some(server => server.unproven.length || server.pendingProgress || server.quiescent === false) ? 'unproven' : 'reported',
       runtimeMeasurement: 'measured', runtimeUnknown: [] as string[] };
   } catch (error) {
-    return { runtime: null, readiness: null, runtimeAssessment: 'unknown', runtimeMeasurement: 'unknown',
+    return { runtime: null, readiness: null, runtimeAssessment: 'unknown', readinessAssessment: 'unknown', runtimeMeasurement: 'unknown',
       runtimeUnknown: [`daemon-runtime: ${error instanceof Error ? error.message : String(error)}`] };
   }
 }

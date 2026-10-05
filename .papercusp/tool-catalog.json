@@ -18499,7 +18499,7 @@
           "POST"
         ]
       },
-      "description": "Resolver for state:read lsp.admission; reads queue and feedback from the LSP daemon over its existing RPC transport.",
+      "description": "Resolver for registered LSP admission, warm-server population and per-intent readiness cells; reads their owning daemon over its existing RPC transport.",
       "capabilities": [
         "intel:read"
       ],
@@ -18517,9 +18517,9 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "As the registered resolver for lsp.admission.",
+        "when": "As the registered resolver for lsp.admission, lsp.warmServers and lsp.readiness.",
         "notWhen": "To submit code-intelligence work or mutate the daemon.",
-        "chaining": "Use state:read { cell:\"lsp.admission\" } for queue depth, fairness lanes, feedback and settlement failures."
+        "chaining": "Use state:read for lsp.admission (class queue and settlement), lsp.warmServers (actual inventory) or lsp.readiness (per-intent proof and progress)."
       }
     },
     {
@@ -20504,7 +20504,7 @@
           "POST"
         ]
       },
-      "description": "Record an explicit OWNER DIRECTIVE verbatim into the durable owner-directives store. The open row renders ABOVE your loop agenda in every wake, orient, and post-compaction anchor — across session death — until orders:disposition closes it. The verbatim text is verified against your transcript's human turns (a miss records loudly as unverified).",
+      "description": "Record an explicit OWNER DIRECTIVE verbatim into the durable owner-directives store. The open row renders ABOVE your loop agenda in every wake, orient, and post-compaction anchor — across session death — until orders:disposition closes it. A supplied sourceTurnRef is the exact idempotency key; without one, the tool can match a recent same-session capture by text. The verbatim text is verified against your transcript's human turns (a miss records loudly as unverified).",
       "capabilities": [
         "coord:write"
       ],
