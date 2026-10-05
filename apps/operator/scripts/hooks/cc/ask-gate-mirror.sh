@@ -105,7 +105,7 @@ import datetime, json, os, re, sys, time, urllib.request, urllib.parse
 
 operator_url, token_path, owner, harness, hook_dir = sys.argv[1:6]
 sys.path.insert(0, hook_dir)
-from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_hook_payload, read_token_file, with_native_session  # noqa: E402
 raw = read_hook_payload()
 token = read_token_file(token_path)
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy
@@ -185,7 +185,9 @@ def call_tool(tool, args, timeout=HTTP_TIMEOUT, retries=0, label=None):
             body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                                 'params': {'name': tool, 'arguments': args}}).encode()
             req = urllib.request.Request(
-                operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client=' + urllib.parse.quote(owner, safe=''),
+                with_native_session(
+                    operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client=' + urllib.parse.quote(owner, safe=''),
+                    session_id),
                 data=body,
                 headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                          'Accept': 'application/json, text/event-stream'},
