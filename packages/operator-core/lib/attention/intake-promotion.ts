@@ -44,7 +44,17 @@ import type { OrgSql } from '../work-items';
 // advisory locks never contended. One module record ⇒ one client.
 import { getOrgPg } from '@papercusp/db-org';
 
-import type { BulkIntakeDecision } from './bulk-dispositions';
+import {
+  intakeReproductionRefusal,
+  intakeTargetKindFor,
+  type BulkIntakeDecision,
+  type IntakeReproductionSource,
+} from './bulk-dispositions';
+import {
+  readBornVerifiedReproduction,
+  type BugReproductionReceipt,
+  type ReproductionLedgerDeps,
+} from './bug-reproduction';
 import {
   createIssue,
   getIssue,
@@ -111,7 +121,9 @@ export type IntakeExecutionRefusal =
   | 'merge-target-is-source'
   | 'already-merged-elsewhere'
   /** P-008 / D-020 §4: an investigation needs an accountable owner of its next step. */
-  | 'investigation-unowned';
+  | 'investigation-unowned'
+  /** P-013 / D-023: a bug promote needs a reproduction receipt (decision or born-verified source). */
+  | 'reproduction-missing';
 
 export type IntakeExecutionResult =
   | {
@@ -199,18 +211,49 @@ export async function currentIntakeSourceRevision(
   sourceId: string | null | undefined,
   deps: Pick<IntakePromotionDeps, 'getItem'> = defaultIntakePromotionDeps(),
 ): Promise<string | null> {
-  if (!sourceId) return null;
-  const source = await deps.getItem(sourceId);
+  const source = await readIntakeSource(sourceId, deps);
   return source ? intakeSourceRevision(source) : null;
+}
+
+/** The source a decision is being recorded against (the report path reads it once). */
+export async function readIntakeSource(
+  sourceId: string | null | undefined,
+  deps: Pick<IntakePromotionDeps, 'getItem'> = defaultIntakePromotionDeps(),
+): Promise<IntakeWorkItem | null> {
+  if (!sourceId) return null;
+  return deps.getItem(sourceId);
+}
+
+/** P-013: what the D-023 reproduction gate needs to know about a source. */
+export function intakeReproductionSourceOf(source: IntakeWorkItem): IntakeReproductionSource {
+  return {
+    kind: source.kind,
+    observation: isObservation(source),
+    bornVerified: readBornVerifiedReproduction(source.payload),
+  };
 }
 
 /** promote → bug/change (default: the candidate's own kind; observations default to a fix); investigate → task. */
 export function intakeTargetKind(decision: BulkIntakeDecision, source: IntakeWorkItem): IntakeStorageKind {
-  if (decision.disposition === 'investigate') return 'task';
-  if (decision.workKind === 'fix') return 'bug';
-  if (decision.workKind === 'build') return 'change';
-  if (!isObservation(source) && WORK_KINDS.has(source.kind)) return source.kind as IntakeStorageKind;
-  return 'bug';
+  return intakeTargetKindFor(decision, { kind: source.kind, observation: isObservation(source) });
+}
+
+/**
+ * What a promoted bug records about its reproduction (D-023 §4): the receipt whose
+ * failing test, where one exists, is the test the fix must turn green.
+ */
+export interface IntakeReproductionRecord {
+  schemaVersion: typeof INTAKE_EXECUTION_SCHEMA_VERSION;
+  receipt: BugReproductionReceipt;
+  /** `review`: supplied on the decision; `filing`: the source's born-verified encounter (D-024). */
+  origin: 'review' | 'filing';
+  decidedBy: string;
+}
+
+export function readIntakeReproduction(payload: unknown): IntakeReproductionRecord | null {
+  const stored = record(record(payload).intakeReproduction);
+  if (stored.schemaVersion !== INTAKE_EXECUTION_SCHEMA_VERSION || !stored.receipt) return null;
+  return stored as unknown as IntakeReproductionRecord;
 }
 
 function mergedProposal(
@@ -442,6 +485,24 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
         detail: `${source.id} has no recorded filer, so reviewer independence cannot be established`,
       };
     }
+    // P-013 (D-023): a BUG promote needs a reproduction receipt — on the decision, or
+    // the source's born-verified encounter receipt (D-024). Refuses before any write.
+    const reproductionSource = intakeReproductionSourceOf(source);
+    const missingReproduction = intakeReproductionRefusal(decision, reproductionSource, source.id);
+    if (missingReproduction) {
+      return { ok: false, refusal: 'reproduction-missing', detail: missingReproduction };
+    }
+    const reproductionReceipt =
+      decision.reproduction ??
+      (disposition === 'promote' && targetKind === 'bug' ? reproductionSource.bornVerified : null);
+    const reproduction: IntakeReproductionRecord | null = reproductionReceipt
+      ? {
+          schemaVersion: INTAKE_EXECUTION_SCHEMA_VERSION,
+          receipt: reproductionReceipt,
+          origin: decision.reproduction ? 'review' : 'filing',
+          decidedBy: decision.decidedBy,
+        }
+      : null;
 
     const now = deps.now().toISOString();
     const receipt: PromotionReceipt = {
@@ -478,6 +539,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
           intakeSource: { id: source.id, mode: 'in-place', revision: sourceRevision },
           intakePromotion: receipt,
           ...(disposition === 'investigate' ? { investigation: investigationRecord(sealed.contract, decision) } : {}),
+          ...(reproduction ? { intakeReproduction: reproduction } : {}),
         });
       } catch (error) {
         const converged = await convergeOnKeyConflict(error, source, input, key, deps);
@@ -520,6 +582,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
           },
           intakePromotion: receipt,
           ...(disposition === 'investigate' ? { investigation: investigationRecord(sealed.contract, decision) } : {}),
+          ...(reproduction ? { intakeReproduction: reproduction } : {}),
         },
       });
     } catch (error) {
@@ -922,6 +985,32 @@ export function defaultIntakePromotionDeps(): IntakePromotionDeps {
          WHERE canonical_work_item_id = ${id}`;
       const latest = rows[0]?.latest;
       return latest == null ? null : Number(latest);
+    },
+    now: () => new Date(),
+  };
+}
+
+/**
+ * P-013 (D-024 §5): the Postgres reads behind a reproduction receipt's ledger citation.
+ * Keyed by the row's own id and returning only status + build, so a receipt cannot be
+ * used to read another tenant's ledger contents. Not tenant-filtered on purpose: most
+ * test_runs rows carry no workspace attribution (see countUnattributedTestRunRows), so
+ * a tenant predicate would make every honest test_runs citation unresolvable.
+ */
+export function defaultReproductionLedgerDeps(): ReproductionLedgerDeps {
+  const orgSql = () => getOrgPg().sql;
+  return {
+    async readTestRun(id) {
+      const rows = await orgSql()<{ status: string | null; commit_sha: string | null; worktree_dirty: boolean | null }[]>`
+        SELECT status, commit_sha, worktree_dirty FROM harness_shared.test_runs WHERE id = ${id}`;
+      const row = rows[0];
+      return row ? { status: row.status, commitSha: row.commit_sha, worktreeDirty: row.worktree_dirty } : null;
+    },
+    async readToolInvocation(id) {
+      const rows = await orgSql()<{ status: string | null; serving_build_sha: string | null }[]>`
+        SELECT status, serving_build_sha FROM harness_shared.tool_invocations WHERE id = ${id}`;
+      const row = rows[0];
+      return row ? { status: row.status, servingBuildSha: row.serving_build_sha } : null;
     },
     now: () => new Date(),
   };

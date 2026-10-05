@@ -16,6 +16,13 @@
  * treated as resolved.
  */
 
+import {
+  bugReproductionMissingText,
+  parseBugReproductionReceipt,
+  readBugReproductionReceipt,
+  type BugReproductionReceipt,
+} from './bug-reproduction';
+
 export const BULK_CONFIDENCE_LEVELS = [
   'high',
   'medium',
@@ -767,10 +774,62 @@ export interface BulkIntakeDecision {
    * server-side when it is recorded. Executing against an edited source refuses.
    */
   sourceRevision: string | null;
+  /**
+   * P-013 (D-023): promote only — the reproduction receipt that makes a BUG promote
+   * acceptable. Null on every other decision, and on a bug whose source was born
+   * verified by its filer's encounter receipt (D-024).
+   */
+  reproduction: BugReproductionReceipt | null;
 }
 
 export const INTAKE_WORK_KINDS = ['fix', 'build'] as const;
 export type IntakeWorkKind = (typeof INTAKE_WORK_KINDS)[number];
+
+/** The storage kind an executed intake decision creates or keeps. */
+export type IntakeTargetKind = 'bug' | 'change' | 'task';
+
+const INTAKE_WORK_STORAGE_KINDS = new Set(['bug', 'change', 'task']);
+
+/**
+ * promote → bug/change (default: the candidate's own kind; observations default to a
+ * fix); investigate → task. Pure, so the report path and the executor agree on
+ * whether a promote is a BUG promote (the one D-023 gates).
+ */
+export function intakeTargetKindFor(
+  decision: Pick<BulkIntakeDecision, 'disposition' | 'workKind'>,
+  source: { kind: string; observation: boolean },
+): IntakeTargetKind {
+  if (decision.disposition === 'investigate') return 'task';
+  if (decision.workKind === 'fix') return 'bug';
+  if (decision.workKind === 'build') return 'change';
+  if (!source.observation && INTAKE_WORK_STORAGE_KINDS.has(source.kind)) return source.kind as IntakeTargetKind;
+  return 'bug';
+}
+
+/** What the reproduction gate needs to know about a decision's source. */
+export interface IntakeReproductionSource {
+  kind: string;
+  observation: boolean;
+  /** D-024: the receipt the source was born verified with, if any. */
+  bornVerified: BugReproductionReceipt | null;
+}
+
+/**
+ * P-013 (D-023 §1-2, D-024 §1): a promote that yields a BUG needs a reproduction
+ * receipt — on the decision, or the source's born-verified encounter receipt.
+ * Returns the refusal text (steering to investigate / reject / retain), or null
+ * when the decision may stand. change/task/feature acceptance is unchanged (§6).
+ */
+export function intakeReproductionRefusal(
+  decision: Pick<BulkIntakeDecision, 'disposition' | 'workKind' | 'reproduction'>,
+  source: IntakeReproductionSource,
+  subject = 'this input',
+): string | null {
+  if (decision.disposition !== 'promote') return null;
+  if (intakeTargetKindFor(decision, source) !== 'bug') return null;
+  if (decision.reproduction || source.bornVerified) return null;
+  return bugReproductionMissingText(subject);
+}
 
 /** A resolver-drafted acceptance proposal; shape only — completeness is judged at execution. */
 export interface IntakeAcceptanceProposalInput {
@@ -797,6 +856,8 @@ export interface BulkIntakeDecisionInput {
   missingInformation?: string | null;
   workKind?: string | null;
   acceptance?: IntakeAcceptanceProposalInput | null;
+  /** promote: the reproduction receipt (required when the promote yields a bug). */
+  reproduction?: unknown;
 }
 
 interface IntakeDispositionSpec {
@@ -914,6 +975,18 @@ export function parseIntakeDecision(
   if (acceptance && spec.disposition !== 'promote' && spec.disposition !== 'investigate') {
     return { ok: false, error: `acceptance applies to promote/investigate only (got it on "${spec.disposition}")` };
   }
+  let reproduction: BugReproductionReceipt | null = null;
+  if (input.reproduction !== undefined && input.reproduction !== null) {
+    if (spec.disposition !== 'promote') {
+      return {
+        ok: false,
+        error: `reproduction applies to promote only (got it on "${spec.disposition}"); an unreproduced bug is investigate, reject or retain`,
+      };
+    }
+    const parsedReceipt = parseBugReproductionReceipt(input.reproduction);
+    if (!parsedReceipt.ok) return { ok: false, error: parsedReceipt.error };
+    reproduction = parsedReceipt.receipt;
+  }
   return {
     ok: true,
     decision: {
@@ -927,6 +1000,7 @@ export function parseIntakeDecision(
       workKind: (workKindRaw as IntakeWorkKind | null) ?? null,
       acceptance,
       sourceRevision: nonBlank(ctx.sourceRevision) ?? null,
+      reproduction,
     },
   };
 }
@@ -997,5 +1071,6 @@ export function readIntakeDecision(raw: unknown): BulkIntakeDecision | null {
       : null,
     acceptance: readAcceptanceProposalInput(v.acceptance),
     sourceRevision: nonBlank(v.sourceRevision),
+    reproduction: v.disposition === 'promote' ? readBugReproductionReceipt(v.reproduction) : null,
   };
 }
