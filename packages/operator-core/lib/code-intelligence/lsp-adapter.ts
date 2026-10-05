@@ -44,6 +44,7 @@ import {
 
 import { pinModuleState } from '@papercusp/module-singleton';
 import { managedSpawn } from '../task-manager/managed-spawn.ts';
+import { recordLspWireRequest } from './lsp-query-evidence.ts';
 import {
   initializeCapabilityObservations, lspCapabilityStore, lspServerIdentity,
   requireLspCapability, requestWithLspCapability, type LspCapabilityKey,
@@ -1289,7 +1290,8 @@ function requireClientCapability(client: LspClient, intent: LspReadinessIntent):
 
 function capabilityRequest(client: LspClient, intent: LspReadinessIntent, method: string, params: unknown): Promise<unknown> {
   return requestWithLspCapability(lspCapabilityStore, capabilityKey(client, intent), method,
-    () => client.connection.sendRequest(method, params));
+    () => recordLspWireRequest({ method, taskId: client.taskId, pid: client.child.pid ?? null },
+      () => client.connection.sendRequest(method, params)));
 }
 
 async function getClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
