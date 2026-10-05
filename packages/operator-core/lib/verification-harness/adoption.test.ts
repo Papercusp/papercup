@@ -16,8 +16,10 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planSelection, validateContract } from '@papercusp/verification-harness';
-import { afterAll, describe, expect, it } from 'vitest';
+import { runInNewContext } from 'node:vm';
+import { parseSelectionArgs, planSelection, runHarness, validateContract,
+  type HarnessRunResult, type RunHarnessArgs } from '@papercusp/verification-harness';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { LLM_BATTERY_HARNESS, llmBatteryContract } from '../llm-testing/battery-harness';
 import { SCENARIOS } from '../llm-testing/scenarios';
 
@@ -132,6 +134,42 @@ describe.each(SHELL_HARNESSES)('$file adopts the contract', (h) => {
     }
     // vh_bracket_trap finalizes from the EXIT trap; vh_exit is the call from the script's own handler.
     expect(src).toMatch(/^\s*(vh_bracket_trap|.*\bvh_exit\s+"?\$)/m);
+  });
+});
+
+describe('the GOAL Tauri driver adopts the contract', () => {
+  it.each([false, true])('runs the native phase and propagates its verdict (assertion fails: %s)', async (fails) => {
+    const source = harnessSource('scripts/tauri-surface-verify-goal-report.mts');
+    const footer = source.slice(source.indexOf('const selection = parseSelectionArgs('));
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vh-adoption-goal-tauri-'));
+    tmpRoots.push(root);
+    const native = vi.fn(async () => {
+      if (fails) throw new Error('isolated native assertion refused');
+    });
+    const processFixture: { argv: string[]; exitCode?: number } = {
+      argv: ['node', 'driver.mts', '--only=native'],
+    };
+    let measured: HarnessRunResult | undefined;
+    // Execute the actual driver handoff through the real runner. The native
+    // body is the seam: these tests start no display, fixture DB or recorder.
+    await runInNewContext('(async () => {\n' + footer + '\n})()', {
+      parseSelectionArgs, defaultEvidenceRoot: () => root,
+      runGoalReportNative: native, process: processFixture,
+      runHarness: async (args: RunHarnessArgs) => {
+        measured = await runHarness({ ...args, guardRails: [] });
+        return measured;
+      },
+    });
+    expect(native).toHaveBeenCalledTimes(1);
+    expect(measured?.harness).toBe('goal-report-tauri');
+    expect(measured?.verdict).toBe(fails ? 'fail' : 'pass');
+    expect(measured?.phases).toEqual([expect.objectContaining({
+      phase: 'native', status: fails ? 'failed' : 'passed', step: 'isolated-runtime-preconditions',
+    })]);
+    expect(processFixture.exitCode).toBe(fails ? 1 : 0);
+    const persisted = JSON.parse(readFileSync(path.join(measured!.evidenceDir, 'result.json'), 'utf8'));
+    expect(persisted.verdict).toBe(measured?.verdict);
+    if (fails) expect(persisted.phases[0].detail).toContain('isolated native assertion refused');
   });
 });
 
