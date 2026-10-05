@@ -522,6 +522,62 @@ describe('P011 digest-selected cache snapshot identities', () => {
     await expect(readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: ['other'], cacheKeyDigests: [digest] })).rejects.toThrow('operator-cache owner');
     expect(f.calls).toEqual([]);
   });
+
+  it.each(['0', 'invalid', '9007199254740992'])('keeps uncaptured ID %s explicit or rejects unsafe IDs', async id => {
+    const f = fixture(); f.ids.set(f.payload, id);
+    const run = () => readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest] });
+    if (id === '0') expect((await run()).cacheEntries?.records[0].objects[1]).toEqual({ phase: 'value', status: 'not-in-snapshot' });
+    else await expect(run()).rejects.toThrow('Invalid heap object ID');
+    expect(f.handles.size).toBe(0);
+  });
+
+  it('checks the PID before target reads and releases failed setup handles', async () => {
+    const f = fixture();
+    await expect(readPinnedHeapObjectIds(f.client as any, { expectedPid: 8, owners: [owner], cacheKeyDigests: [digest] })).rejects.toThrow('PID mismatch');
+    expect(f.handles.size).toBe(0); expect(f.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+  });
+
+  it('binds the actual cache entry and value in a real private inspector', async () => {
+    const code = `
+      const value = [{ body: 'private cache payload' }];
+      globalThis.cacheState = { cache: { l1: { map: new Map([['private-cache-key', { value }]]) } } };
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+        ['${owner}', { value: globalThis.cacheState }]
+      ]);
+      console.log('ready'); setInterval(() => {}, 1000);
+    `;
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stdout!.on('data', chunk => { stdout += chunk; }); child.stderr!.on('data', chunk => { stderr += chunk; });
+    const objectGroup = 'p011-cache-identity-verification';
+    try {
+      const deadline = Date.now() + 5000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      await client.send('HeapProfiler.enable');
+      await client.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false });
+      const report = await readPinnedHeapObjectIds(client, { expectedPid: child.pid!, owners: [owner],
+        cacheKeyDigests: [createHash('sha256').update('private-cache-key').digest('hex')] });
+      expect(report.cacheEntries?.status).toBe('observed');
+      const objects = report.cacheEntries!.records[0].objects;
+      expect(new Set(objects.map(object => object.id)).size).toBe(2);
+      for (const object of objects) {
+        const { result } = await client.send('HeapProfiler.getObjectByHeapObjectId', { objectId: String(object.id), objectGroup });
+        const same = await client.send('Runtime.callFunctionOn', { objectId: result.objectId,
+          functionDeclaration: 'function () { const entry = Map.prototype.get.call(globalThis.cacheState.cache.l1.map, "private-cache-key"); return this === ' +
+            (object.phase === 'entry' ? 'entry' : 'Object.getOwnPropertyDescriptor(entry, "value").value') + '; }', returnByValue: true });
+        expect(same.result.value, object.phase).toBe(true);
+      }
+      expect(JSON.stringify(report)).not.toContain('private cache payload');
+    } finally {
+      if (client) { await client.send('Runtime.releaseObjectGroup', { objectGroup }); client.close(); }
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  }, 30_000);
 });
 
 describe('PID-bound host configuration facts', () => {
