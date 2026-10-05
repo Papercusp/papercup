@@ -64,7 +64,11 @@ function makePorts(opts: FakeOpts) {
 }
 
 function oracleExecution(implementationHash = 'b'.repeat(64)) {
-  return { command: ['fixture-oracle'], cwd: '/scratch/gym', report: '{}', unresolved: ['fixture-runtime'],
+  return { command: ['npm', 'run', 'test:file', '--', 'oracle.test.js', '--', '--reporter=json'],
+    cwd: '/scratch/gym', report: '{}', unresolved: ['fixture-runtime'],
+    npmManifest: { path: 'package.json', sourceHashes: {
+      pinned: 'd'.repeat(64), before: 'd'.repeat(64), after: 'd'.repeat(64),
+    } } as { path: string; sourceHashes: { pinned: string | null; before: string | null; after: string | null } } | undefined,
     exitCode: 0, signal: null,
     workerSources: { report: '{}', reference: { pinCommit: makeSpec().harnessCommit, sources: [
       { path: 'oracle.test.js', sha256: 'a'.repeat(64) }, { path: 'impl.js', sha256: 'b'.repeat(64) },
@@ -370,6 +374,37 @@ describe('runGymPipeline', () => {
       expect(result.deterministicSignals?.taskPassed).toBeUndefined();
       expect(result.deterministicSignals?.regressions).toBeUndefined();
       expect(result.deterministicSignals?.oracle).toMatchObject({ workerSourcesCurrent: false });
+    });
+
+  it.each(['missing', 'unknown', 'changed-during-run', 'changed-from-pin', 'wrong-path',
+    'changed-between-runs', 'wrong-command'] as const)(
+    'withholds positive claims when the npm command manifest is %s', async (mode) => {
+      const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+      let run = 0;
+      ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
+        const execution = oracleExecution();
+        run += 1;
+        if (mode === 'missing') execution.npmManifest = undefined;
+        else if (mode === 'unknown') execution.npmManifest!.sourceHashes.pinned = null;
+        else if (mode === 'changed-during-run') execution.npmManifest!.sourceHashes.after = 'e'.repeat(64);
+        else if (mode === 'changed-from-pin') {
+          execution.npmManifest!.sourceHashes.before = 'e'.repeat(64);
+          execution.npmManifest!.sourceHashes.after = 'e'.repeat(64);
+        } else if (mode === 'wrong-path') execution.npmManifest!.path = 'other/package.json';
+        else if (mode === 'changed-between-runs' && run === 2) {
+          execution.npmManifest!.sourceHashes = { pinned: 'e'.repeat(64), before: 'e'.repeat(64), after: 'e'.repeat(64) };
+        } else if (mode === 'wrong-command') execution.command[0] = 'node';
+        return { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }],
+          testPath, pinCommit: pinCommit!, sourceHashes: {
+            pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64),
+          }, implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
+      };
+      const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+        oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+          pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+      expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+      expect(result.deterministicSignals?.regressions).toBeUndefined();
+      expect(result.deterministicSignals?.oracle).toMatchObject({ npmManifestCurrent: false });
     });
 
   it('withholds authority from legacy unpinned oracle results even with complete passing coverage', async () => {

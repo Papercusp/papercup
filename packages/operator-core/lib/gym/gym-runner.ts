@@ -29,6 +29,11 @@ export interface GymOracleRun {
   implementation?: { path: string; before: string | null; after: string | null } | null;
   execution?: { command: string[]; cwd: string; report: string; unresolved: string[];
     exitCode: number | null; signal: string | null;
+    /** npm run resolves the script and its lifecycle hooks from this manifest.
+     * This covers the repository manifest, not npm/config/native runtime code. */
+    npmManifest?: { path: string; sourceHashes: {
+      pinned: string | null; before: string | null; after: string | null;
+    } };
     /** Original worker sources from the existing framework OUT channel. This
      * scope excludes runner/config/native code and the remote pipeline. */
     workerSources?: { report: string | null;
@@ -272,6 +277,19 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
         const workerSourcesCurrent = preWorkerSources !== null && postWorkerSources !== null &&
           preWorkerSources.size === postWorkerSources.size &&
           [...preWorkerSources].every(([path, hash]) => postWorkerSources.get(path) === hash);
+        // Stable worker sources alone cannot identify the command that ran them:
+        // npm scripts and their pre/post hooks come from a separate manifest.
+        const manifestPin = preOracle?.execution?.npmManifest?.sourceHashes.pinned;
+        const npmManifestCurrent = typeof manifestPin === 'string' && /^[a-f0-9]{64}$/.test(manifestPin) &&
+          [preOracle, postOracle].every((receipt) => {
+            const execution = receipt?.execution;
+            const manifest = execution?.npmManifest;
+            return manifest?.path === 'package.json' &&
+              ['pinned', 'before', 'after'].every((key) =>
+                manifest.sourceHashes[key as keyof typeof manifest.sourceHashes] === manifestPin) &&
+              ['npm', 'run', 'test:file', '--', spec.task.oracle!.testPath].every((arg, index) =>
+                execution?.command[index] === arg);
+          });
         const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
         // A JSON report may exist even when the command is killed or fails after
         // writing it. Retain witnessed failures, but require a successful process
@@ -286,10 +304,11 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
-            sourceCurrent, implementationCurrent, workerSourcesCurrent, executionCompleted, populationComplete, regressionPopulation },
-          ...(regression === true || (regression === false && workerSourcesCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
+            sourceCurrent, implementationCurrent, workerSourcesCurrent, npmManifestCurrent,
+            executionCompleted, populationComplete, regressionPopulation },
+          ...(regression === true || (regression === false && workerSourcesCurrent && npmManifestCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
             ? { regressions: regression } : {}),
-          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent))
+          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent && npmManifestCurrent))
             ? { taskPassed } : {}),
         };
       }

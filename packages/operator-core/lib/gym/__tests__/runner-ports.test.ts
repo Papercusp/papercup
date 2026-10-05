@@ -122,7 +122,8 @@ describe('createGymRunnerPorts', () => {
         sourceHashes: { pinned: digest(original), before: digest(original), after: digest(mutated ? changed : original) },
       });
       expect(commands[0]).toEqual(['git', 'show', `${pinCommit}:oracle.test.js`]);
-      expect(commands[1].slice(0, 5)).toEqual(['npm', 'run', 'test:file', '--', 'oracle.test.js']);
+      expect(commands[1]).toEqual(['git', 'show', `${pinCommit}:package.json`]);
+      expect(commands[2].slice(0, 5)).toEqual(['npm', 'run', 'test:file', '--', 'oracle.test.js']);
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   });
 
@@ -168,7 +169,7 @@ describe('createGymRunnerPorts', () => {
         execution: { cwd: clonePath, report,
           command: ['npm', 'run', 'test:file', '--', 'oracle.test.js', '--', '--reporter=json', expect.stringMatching(/^--outputFile=/)],
           unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
-            'oracle-worker-source-evidence-unavailable'], workerSources: { report: null, modules: [] } },
+            'oracle-npm-manifest-evidence-unavailable', 'oracle-worker-source-evidence-unavailable'], workerSources: { report: null, modules: [] } },
       });
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   });
@@ -222,6 +223,12 @@ describe('createGymRunnerPorts', () => {
       expect(pre.sourceHashes).toEqual(post.sourceHashes);
       expect(pre.execution).toMatchObject({ exitCode: 0, signal: null });
       expect(post.execution).toMatchObject({ exitCode: 1, signal: null });
+      const originalManifest = git(['show', `${pinCommit}:package.json`]);
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution).toMatchObject({ npmManifest: { path: 'package.json', sourceHashes: {
+          pinned: digest(originalManifest), before: digest(originalManifest), after: digest(originalManifest),
+        } } });
+      }
       expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
       expect(JSON.parse(post.execution!.report).testResults[0].assertionResults[0].status).toBe('failed');
       for (const receipt of [pre, post]) {
@@ -261,6 +268,19 @@ describe('createGymRunnerPorts', () => {
           currentSha256: digest('export const expected = 44;'),
         })]),
       } }] });
+      // The actual npm command can change independently of the worker graph.
+      // A stable rewritten lifecycle hook remains distinct from the pinned manifest.
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 41;\n');
+      const rewrittenManifest = JSON.stringify({ ...JSON.parse(originalManifest), scripts: {
+        ...JSON.parse(originalManifest).scripts, 'pretest:file': 'node -e "process.exit(0)"',
+      } });
+      writeFileSync(join(clonePath, 'package.json'), rewrittenManifest);
+      const dirtyCommand = await port(input);
+      if (!dirtyCommand || Array.isArray(dirtyCommand)) throw new Error('Missing dirty command receipt');
+      expect(dirtyCommand.results[0]!.passed).toBe(true);
+      expect(dirtyCommand.execution).toMatchObject({ npmManifest: { path: 'package.json', sourceHashes: {
+        pinned: digest(originalManifest), before: digest(rewrittenManifest), after: digest(rewrittenManifest),
+      } } });
     } finally { rmSync(clonePath, { recursive: true, force: true }); }
   }, 30_000);
 

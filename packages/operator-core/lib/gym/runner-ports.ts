@@ -289,6 +289,8 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         } catch { return null; } // unavailable immutable source stays unknown
       };
       const pinned = await referenceHash(testPath);
+      const manifestPinned = await referenceHash('package.json');
+      const manifestBefore = fileHash('package.json');
       const before = fileHash(testPath);
       const implementationBefore = implPath ? fileHash(implPath) : null;
       const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
@@ -338,12 +340,19 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         for (const path of [...sourcePaths].sort()) {
           referenceSources.push({ path, sha256: path === testPath ? pinned : await referenceHash(path) });
         }
+        const manifestAfter = fileHash('package.json');
+        const manifestUnknown = [manifestPinned, manifestBefore, manifestAfter].some((hash) => hash === null);
         return pinCommit ? { results, testPath, pinCommit,
           sourceHashes: { pinned, before, after: fileHash(testPath) },
           implementation: implPath ? { path: implPath, before: implementationBefore, after: fileHash(implPath) } : null,
           execution: { command, cwd: clonePath, report, exitCode, signal,
+            npmManifest: { path: 'package.json', sourceHashes: {
+              pinned: manifestPinned, before: manifestBefore, after: manifestAfter,
+            } },
             workerSources: { report: sourceReport, modules, reference: { pinCommit, sources: referenceSources } },
             unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+              ...(manifestUnknown ? ['oracle-npm-manifest-evidence-unavailable'] :
+                manifestBefore !== manifestPinned || manifestAfter !== manifestPinned ? ['oracle-npm-manifest-changed'] : []),
               ...(referenceSources.some((source) => source.sha256 === null) ? ['oracle-worker-source-reference-unavailable'] : []),
               ...(!sourceReport || modules.length === 0 ? ['oracle-worker-source-evidence-unavailable'] : [])] },
         } : results;
