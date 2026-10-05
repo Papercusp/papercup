@@ -8,7 +8,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import assertTool, { truncationField, dependsOnSuggestionField } from './assert';
+import assertTool, { truncationField, dependsOnSuggestionField, dependsOnSuggestionFieldResolvingCommits } from './assert';
 import { __resetCellRegistryForTests, registerCell } from '../../cell-registry';
 import factsListTool, {
   FACTS_LIST_EXCERPT_NOTE,
@@ -181,6 +181,43 @@ describe('dependsOnSuggestionField — facts:assert suggests the dependency the 
     expect(out).not.toBeNull();
     expect(out.suggested.map((s) => s.cell)).toContain('git.pipelinePosition');
     expect(TRANSCRIBING).toContain(out.suggested[0].value);
+  });
+
+  it('does not disclose a deployment dependency for a noncommit coordination reference', () => {
+    const body = 'Live intake: ask c308 a853236d for existing-builder acceptance.';
+    expect(dependsOnSuggestionField(body, [], undefined, { resolvesToCommit: () => false })).toBeNull();
+  });
+
+  it.each([
+    'Live intake: ask c308 a853236d for existing-builder acceptance.',
+    'The live receipt has artifact fingerprint a853236d.',
+  ])('the production receipt resolves noncommit IDs before suggesting dependencies: %s', async (body) => {
+    const asked: string[] = [];
+    const out = await dependsOnSuggestionFieldResolvingCommits(body, [], undefined, async (token) => {
+      asked.push(token);
+      return false;
+    });
+    expect(asked).toEqual(['a853236d']);
+    expect(out).toBeNull();
+  });
+
+  it('keeps a real serving commit beside the rejected coordination reference', async () => {
+    const body = 'Live intake: ask c308 a853236d for acceptance; :3070 is serving 9a4319b7.';
+    const out = await dependsOnSuggestionFieldResolvingCommits(body, [], undefined, async (token) => token === '9a4319b7');
+    expect(out?.suggested).toEqual([
+      expect.objectContaining({ cell: 'git.pipelinePosition', value: '9a4319b7' }),
+    ]);
+  });
+
+  it('preserves the advisory when Git cannot answer and never resolves branch counts', async () => {
+    const unknown = await dependsOnSuggestionFieldResolvingCommits(TRANSCRIBING, [], undefined, async () => {
+      throw new Error('git unavailable');
+    });
+    expect(unknown?.suggested).toHaveLength(1);
+    const counts = await dependsOnSuggestionFieldResolvingCommits('main is 3 commits behind staging', [], undefined, async () => {
+      throw new Error('a branch count must not reach the commit resolver');
+    });
+    expect(counts?.suggested[0].value).toBe('3 commits');
   });
 
   it('does not emit a bare accept for a caller-relative suggestion — it marks the result incomplete', () => {

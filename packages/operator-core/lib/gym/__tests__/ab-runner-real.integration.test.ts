@@ -12,7 +12,7 @@ import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { applyGymSchema } from '../schema';
 import { createGymStore } from '../ab-runner-real';
 import { runAbEvaluation, type AbConfig, type AbDeps } from '../ab-runner';
-import { GYM_JUDGE_RUBRIC_V1 } from '../judge-scoring';
+import { GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -85,6 +85,14 @@ describe('runAbEvaluation over the real gym store (live PG)', () => {
     expect(runCount[0].n).toBe(4);
     const scoreCount = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_gym.gym_scores`;
     expect(scoreCount[0].n).toBe(4);
+    const params = await sql`SELECT * FROM harness_gym.gym_runs_params ORDER BY run_id`;
+    expect(params).toHaveLength(4);
+    expect(params.map((p) => p.run_id).sort()).toEqual(res.outcomes.map((r) => r.runId).sort());
+    for (const p of params) {
+      expect(p).toMatchObject({ harness_commit: COMMIT, substrate_commit: COMMIT,
+        judge_model: GYM_JUDGE_RUBRIC_V1.model, judge_temp: GYM_JUDGE_RUBRIC_V1.temperature,
+        weights: GYM_JUDGE_RUBRIC_V1.weights, rubric_hash: rubricHash(GYM_JUDGE_RUBRIC_V1), mutable_roles: null });
+    }
     const variantCount = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_gym.gym_variants`;
     expect(variantCount[0].n).toBe(2);
     const taskCorpus = await sql<{ corpus: string }[]>`
@@ -104,5 +112,13 @@ describe('runAbEvaluation over the real gym store (live PG)', () => {
 
     // Cost: 4 × (0.4 pipeline + 2.5 judge) = 11.6.
     expect(res.cost.totalUsd).toBeCloseTo(11.6);
+  });
+
+  it('keeps unknown parameters absent for callers that did not provide them', async () => {
+    const store = createGymStore(sql);
+    await store.startRun({ runId: 'unknown-params', variantId: 'baseline', taskId: 'task-a',
+      cycle: 0, repeat: 0, harnessSlug: 'controlled', workflowId: 'controlled' });
+    const rows = await sql`SELECT * FROM harness_gym.gym_runs_params WHERE run_id = 'unknown-params'`;
+    expect(rows).toEqual([]);
   });
 });

@@ -32,6 +32,7 @@ import type { GymScore } from '../judge';
 import { createGymStore } from '../ab-runner-real';
 import { buildLoopDeps } from '../loop-deps';
 import type { AbDeps } from '../ab-runner';
+import { GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_650 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/650-harness-gym-durable-run-analytics.sql');
@@ -303,12 +304,18 @@ describe('durable run-analytics copy (migration 650)', () => {
     await evaluate('first');
     await evaluate('second');
     const rows = await dst`
-      SELECT run_id, run_evidence->'deterministic_signals'->>'fixtureLoop' AS fixture_loop
+      SELECT run_id, run_evidence->'deterministic_signals'->>'fixtureLoop' AS fixture_loop, run_params
         FROM harness_gym_durable.gym_runs
        WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
          AND task_id = 'identity-task' ORDER BY fixture_loop`;
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((row) => row.run_id)).size).toBe(2);
     expect(rows.map((row) => row.fixture_loop)).toEqual(['first', 'second']);
+    for (const row of rows) {
+      expect(decode(row.run_params)).toMatchObject({ run_id: row.run_id,
+        harness_commit: 'declared-harness', substrate_commit: 'declared-source',
+        judge_model: GYM_JUDGE_RUBRIC_V1.model, judge_temp: GYM_JUDGE_RUBRIC_V1.temperature,
+        weights: GYM_JUDGE_RUBRIC_V1.weights, rubric_hash: rubricHash(GYM_JUDGE_RUBRIC_V1), mutable_roles: null });
+    }
   });
 });

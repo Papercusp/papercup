@@ -201,6 +201,14 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
 });
 
 describe('EI-24684014950807803 — a hex token that names no commit is not a sha', () => {
+  it('does not suggest a Git dependency for a coord message prefix that resolves to no commit', () => {
+    const body = 'Live intake: ask c308 a853236d for existing-builder acceptance.';
+    expect(suggestDependsOnCells(body)).toEqual([
+      expect.objectContaining({ cell: 'git.pipelinePosition', value: 'a853236d' }),
+    ]);
+    expect(suggestDependsOnCells(body, [], { resolvesToCommit: () => false })).toEqual([]);
+  });
+
   // The measured message: a peer named by its agent short id beside a real candidate sha.
   const text =
     'c0b38c83 is live on staging and owns the repair; candidate 9a4319b7 is what green-checkpoint is judging';

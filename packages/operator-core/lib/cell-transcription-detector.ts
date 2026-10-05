@@ -457,6 +457,7 @@ export const MAX_DEPENDS_ON_SUGGESTIONS = 3;
 export function suggestDependsOnCells(
   body: unknown,
   declaredCells: readonly string[] = [],
+  options: DetectOptions = {},
 ): DependsOnSuggestion[] {
   const declared = new Set(
     declaredCells.map((c) => (typeof c === 'string' ? c.trim().toLowerCase() : '')).filter(Boolean),
@@ -465,7 +466,7 @@ export function suggestDependsOnCells(
   const out: DependsOnSuggestion[] = [];
   const seenCells = new Set<string>();
 
-  for (const hit of detectCellTranscriptions(body)) {
+  for (const hit of detectCellTranscriptions(body, options)) {
     const cellKey = hit.cell.toLowerCase();
     if (declared.has(cellKey)) continue; // guard 2
     if (seenCells.has(cellKey)) continue; // guard 3

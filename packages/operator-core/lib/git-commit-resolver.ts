@@ -26,7 +26,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { cellTranscriptionHint, detectCellTranscriptions } from './cell-transcription-detector';
+import { cellTranscriptionHint, detectCellTranscriptions, type DetectOptions } from './cell-transcription-detector';
 
 const HEX_TOKEN = /^[0-9a-f]{4,40}$/i;
 
@@ -64,16 +64,15 @@ export function gitResolvesToCommit(
 }
 
 /**
- * Detect + format, vetoing sha-shaped tokens that name no commit. Two passes keep the
- * detector pure: pass 1 collects the tokens the detector would report AS SHAS, git
- * resolves them in parallel, pass 2 re-detects with those verdicts.
+ * Resolve only tokens the detector would report AS SHAS, in parallel and under
+ * the existing token cap. Return the verdicts for a caller's pure detection pass.
  *
- * Never throws and never blocks delivery: any failure falls back to the shape-only hint.
+ * Never throws: an unavailable resolver preserves shape-only detection.
  */
-export async function cellTranscriptionHintResolvingCommits(
+export async function resolveCellTranscriptionCommits(
   text: unknown,
   resolve: (token: string) => Promise<boolean | null> = (token) => gitResolvesToCommit(token),
-): Promise<string | null> {
+): Promise<DetectOptions> {
   try {
     const tokens = new Set<string>();
     detectCellTranscriptions(text, {
@@ -82,7 +81,7 @@ export async function cellTranscriptionHintResolvingCommits(
         return null;
       },
     });
-    if (tokens.size === 0) return cellTranscriptionHint(text);
+    if (tokens.size === 0) return {};
 
     const verdicts = new Map<string, boolean | null>(
       await Promise.all(
@@ -91,8 +90,16 @@ export async function cellTranscriptionHintResolvingCommits(
         ),
       ),
     );
-    return cellTranscriptionHint(text, { resolvesToCommit: (token) => verdicts.get(token.toLowerCase()) ?? null });
+    return { resolvesToCommit: (token) => verdicts.get(token.toLowerCase()) ?? null };
   } catch {
-    return cellTranscriptionHint(text);
+    return {};
   }
+}
+
+/** Use the same bounded commit verdicts for coord hints and fact dependencies. */
+export async function cellTranscriptionHintResolvingCommits(
+  text: unknown,
+  resolve: (token: string) => Promise<boolean | null> = (token) => gitResolvesToCommit(token),
+): Promise<string | null> {
+  return cellTranscriptionHint(text, await resolveCellTranscriptionCommits(text, resolve));
 }

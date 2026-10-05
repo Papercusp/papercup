@@ -63,7 +63,9 @@ import { cellReaderFromCtx } from '../cell-reader-ctx';
 import {
   suggestDependsOnCells,
   type DependsOnSuggestion,
+  type DetectOptions,
 } from '../../cell-transcription-detector';
+import { resolveCellTranscriptionCommits } from '../../git-commit-resolver';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 import {
@@ -309,13 +311,14 @@ export function dependsOnSuggestionField(
   body: string,
   declaredDependencies: readonly DependsOnInput[],
   reader: CellReader = EMPTY_CELL_READER,
+  options: DetectOptions = {},
 ): DependsOnSuggestionField | null {
   const declaredCells = declaredDependencies.map((dependency) =>
     typeof dependency === 'string' ? dependency : dependency.cell,
   );
   let suggested: DependsOnSuggestion[] = [];
   try {
-    suggested = suggestDependsOnCells(body, declaredCells);
+    suggested = suggestDependsOnCells(body, declaredCells, options);
   } catch {
     return null;
   }
@@ -361,6 +364,17 @@ export function dependsOnSuggestionField(
       'NOTHING was attached or changed by this suggestion; ' +
       'if you are deliberately recording HISTORICAL state, ignore it.',
   };
+}
+
+/** The facts receipt uses the same bounded commit verification as coord hints. */
+export async function dependsOnSuggestionFieldResolvingCommits(
+  body: string,
+  declaredDependencies: readonly DependsOnInput[],
+  reader: CellReader = EMPTY_CELL_READER,
+  resolve?: Parameters<typeof resolveCellTranscriptionCommits>[1],
+): Promise<DependsOnSuggestionField | null> {
+  const options = await resolveCellTranscriptionCommits(body, resolve);
+  return dependsOnSuggestionField(body, declaredDependencies, reader, options);
 }
 
 export function truncationField(
@@ -1295,7 +1309,10 @@ export default defineTool({
     // warn-only: no field at all on the clean case.
     const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
     const droppedDeps = declaredCells.filter((c) => !fact.dependsOn.some((d) => d.cell === c.trim()));
-    const dependsOnSuggestion = dependsOnSuggestionField(slotted.body, args.dependsOn ?? [], cellReader);
+    // Coordination already verifies SHA-shaped tokens against the integration
+    // tree. Reuse its bounded, fail-soft resolver so message/artifact IDs cannot
+    // become Git dependencies merely because nearby prose says "live".
+    const dependsOnSuggestion = await dependsOnSuggestionFieldResolvingCommits(slotted.body, args.dependsOn ?? [], cellReader);
     const dependencyWarning =
       unresolvedDeps.length > 0 || droppedDeps.length > 0
         ? {
