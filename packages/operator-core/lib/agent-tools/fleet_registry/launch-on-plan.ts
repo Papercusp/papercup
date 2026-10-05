@@ -4845,6 +4845,7 @@ export default defineTool({
       command: string;
     }> = [];
     const failed: Array<{ ownerId?: string; error: string; code: number }> = [];
+    const goalAdmissionWarnings: string[] = [];
     let persistedLaunchRevision = priorLaunchTransaction
       ? {
           transactionId: priorLaunchTransaction.transactionId,
@@ -5071,6 +5072,7 @@ export default defineTool({
               });
         },
       );
+      goalAdmissionWarnings.push(...(leaderResult.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
       if (leaderResult.status !== 'ok') {
         // Nothing else has opened yet, so release the launch slot — an immediate, legitimate
         // retry must not be suppressed for the whole 5-minute window by a launch that
@@ -5264,6 +5266,7 @@ export default defineTool({
             waveResults.forEach((result, offset) => {
               const i = indices[offset];
               const memberOwnerId = requestedMemberIds[i];
+              goalAdmissionWarnings.push(...(result.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
               if (result.status === 'ok') {
                 openedThisWave.push(memberOwnerId);
                 launchTransaction.openedMemberIds.push(memberOwnerId);
@@ -5526,7 +5529,7 @@ export default defineTool({
       );
     }
     const completionError = responseRace.value;
-    const lines: string[] = [];
+    const lines: string[] = [...goalAdmissionWarnings];
     if (ignoredRoleNote) lines.push(ignoredRoleNote);
     if (leaderSpawnRecoveryWarning) lines.push(`⚠ ${leaderSpawnRecoveryWarning}`);
     if (sizingAdvisory) lines.push(sizingAdvisory.message);

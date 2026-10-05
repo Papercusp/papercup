@@ -1330,7 +1330,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(28);
+    expect(BUILTIN_CELLS).toHaveLength(30);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1845,6 +1845,20 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       () => lspPayloads.active!.assessment,
       'a queued query must read as pressure while the same running query alone reads active',
     ],
+    [
+      'lsp.warmServers',
+      'runtime.overall',
+      () => lspRuntimePayloads.healthy!.runtimeAssessment,
+      () => lspRuntimePayloads.unhealthy!.runtimeAssessment,
+      'healthy and unhealthy warm-server populations must not collapse',
+    ],
+    [
+      'lsp.readiness',
+      'readiness[0].unproven',
+      () => lspRuntimePayloads.healthy!.readinessAssessment,
+      () => lspRuntimePayloads.unproven!.readinessAssessment,
+      'reported intent proofs must remain distinct from unproven intent readiness',
+    ],
     ['governor.health', 'health.state', 'healthy', 'degraded', 'healthy and degraded must not collapse'],
     ['governor.admission', 'admission.state', 'open', 'paused', 'open and paused admission must not collapse'],
     ['governor.queue', 'queue.trend', 'growing', 'draining', 'queue growth direction must not invert'],
@@ -2187,7 +2201,8 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...COVERAGE_CELLS.map((c) => [c.cell, c, liveCoveragePayload] as const),
     ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
-    ...LSP_ADMISSION_CELLS.map((c) => [c.cell, c, async () => lspPayloads.pressure] as const),
+    ...LSP_ADMISSION_CELLS.map((c) => [c.cell, c, async () =>
+      c.cell === 'lsp.admission' ? lspPayloads.pressure : lspRuntimePayloads.healthy] as const),
   ];
   const PAYLOADLESS = [
     ...GOAL_CELLS,

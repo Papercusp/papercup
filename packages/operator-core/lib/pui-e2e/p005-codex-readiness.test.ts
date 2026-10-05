@@ -6,6 +6,7 @@ import {
   codexStartupAction,
   codexTaskCompleted,
   isCodexPromptReady,
+  taskAnsweredAfterPrompt,
 } from './p005-codex-readiness.js';
 
 describe('P-005 Codex TUI readiness', () => {
@@ -41,5 +42,19 @@ describe('P-005 Codex TUI readiness', () => {
     expect(codexTaskCompleted(alternateGreeting, 'hi', CODEX_GREETING_EXPECTATION)).toBe(true);
     expect(codexTaskCompleted('› Ask Codex to do anything', 'hi', CODEX_GREETING_EXPECTATION)).toBe(false);
     expect(codexTaskCompleted('Agent command center\nNo tasks yet\nn new', 'hi', /what can I help you with/i)).toBe(false);
+  });
+
+  it('matches the expected answer only after the echoed prompt, never in earlier transcript text', () => {
+    const recall = 'What change did we make to calc.js earlier in this conversation? One sentence.';
+    const expected = /optional third number|third parameter|c\s*=\s*0/i;
+    const earlier = '❯ Edit calc.js so that add() accepts an optional third number and adds it too.\n● Done.\n';
+    // The P-022 false pass: the words sit in an EARLIER prompt and nothing answered the recall.
+    expect(taskAnsweredAfterPrompt(`${earlier}┌ Conversation ┐\n│ Loading earlier conversations… │\n> Message Claude`, recall, expected)).toBe(false);
+    expect(taskAnsweredAfterPrompt(`${earlier}❯ ${recall}\n✶ Thinking…`, recall, expected)).toBe(false);
+    expect(taskAnsweredAfterPrompt(`${earlier}❯ ${recall}\n● We changed add to add(a, b, c = 0).`, recall, expected)).toBe(true);
+    // A short prompt is anchored on its input echo, so "Hi!" in the reply is not mistaken for it.
+    expect(taskAnsweredAfterPrompt('❯ hi\n● Hi! What would you like to work on?', 'hi', CODEX_GREETING_EXPECTATION)).toBe(true);
+    const codexEarlier = `› Edit calc.js so add takes an optional third number\n• Updated.\n› ${recall}\n› Ask Codex to do anything`;
+    expect(codexTaskCompleted(codexEarlier, recall, expected)).toBe(false);
   });
 });

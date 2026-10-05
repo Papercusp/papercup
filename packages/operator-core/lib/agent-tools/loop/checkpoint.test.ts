@@ -1921,6 +1921,39 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b.continuation.guidance).toContain('active standing coord:inbox-wake await present');
     expect(b.continuation.guidance).not.toContain('no registered await');
   });
+
+  it('runtime wiring: does not promise a fresh next turn when an active await can preempt a cold loop', async () => {
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getLoopStatus.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      active: true,
+      carry: 'cold',
+      intervalSec: 60,
+      goal: 'test a competing event wake',
+    });
+    getModes.mockResolvedValue([{ mode: 'auto' }]);
+    getPresence.mockResolvedValue({ contextTokens: 95, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(95);
+    readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-25T04:00:00.000Z' });
+    readInbox.mockResolvedValue([]);
+    listActiveAwaits.mockResolvedValue([{ eventKey: 'work-item:claimable' }]);
+    selfCompactionAvailability.mockReturnValue({ available: false });
+    readFleetWindDownLoopEndAuthorization.mockResolvedValue(false);
+
+    const b = body(await call({ next: 'await wake may precede cold loop wake' }));
+
+    expect(b.continuation).toMatchObject({
+      rewakeGuaranteed: true,
+      activeInboxWakeAwait: false,
+      nextWakeFresh: null,
+    });
+    expect(b.continuation.guidance).not.toContain('configured for COLD carry');
+    expect(b.continuation.guidance).not.toContain('The guaranteed next wake is WARM');
+  });
 });
 
 describe('WI-7124: verify-read — the write must read back via the SAME path a cold wake uses', () => {

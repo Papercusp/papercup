@@ -351,6 +351,31 @@ describe('control-anchor kernel resolver (D-030)', () => {
     }))).resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
   });
 
+  it.each([
+    { caller: undefined, selected: 541, selection: 'owner-workspace-fallback' },
+    { caller: 541, selected: 541, selection: 'caller-row' },
+    { caller: 543, selected: 543, selection: 'caller-row' },
+  ])('audits $selection for source incarnation $selected on misses and cache hits', async ({ caller, selected, selection }) => {
+    const source = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 541, adv_session_xmin: '901', port_id: null,
+    });
+    // A same-owner port is a legitimate source incarnation, not an isolated
+    // answerer. Its presence must not force attribution to the original row.
+    const continuation = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 543, adv_session_xmin: '903', port_id: 'same-owner-port',
+    });
+    const call = request({ ctx: ctx(caller === undefined ? {} : { advSessionId: caller }) });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      db.rows.push([source, continuation]);
+      const verdict = await controlAnchorKernelResolver(call);
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.serverAudit?.identityLaunchRecord).toEqual({
+        advSessionId: String(selected), xmin: selected === 541 ? '901' : '903', selection,
+      });
+    }
+    expect(db.bodyReads).toHaveLength(1);
+  });
+
   it('carries the database-owned launch row version into identity enforcement', async () => {
     const launchRow = anchorRow({ activation: appliedActivation() }, {
       adv_session_id: 27, adv_session_xmin: '1549',

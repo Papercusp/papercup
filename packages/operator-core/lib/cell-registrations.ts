@@ -1972,6 +1972,7 @@ export const LSP_READINESS_CELL: CellSpec = {
       unknown: { meaning: 'An enabled server readiness population could not be established.', safeAction: 'Inspect runtimeUnknown; do not promote missing readiness into a proof.' },
     },
     evidence: ['runtimeMeasurement'],
+    measuredBy: { readiness: 'runtimeMeasurement' },
   },
   changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'readiness' },
   shape: '[{ language, rootPath, taskId, certified, unproven, quiescent, pendingProgress, progressGeneration }]; process health never promotes an intent proof',

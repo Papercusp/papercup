@@ -4,7 +4,12 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { goalHeadcount } from './goal-launch-settings';
+import { goalHeadcount, registerGoalLaunch, REFUSAL_SCOPES, type GoalLaunchResolution, type resolveGoalLaunchForGoal } from './goal-launch-settings';
+
+vi.mock('./modes/goal-context', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./modes/goal-context')>(),
+  resolveGoalContext: async () => 'census-goal',
+}));
 
 const oracle = vi.hoisted(() => ({ seen: [] as string[][] }));
 vi.mock('./agent-tools/coordination/liveness-oracle', () => ({
@@ -20,6 +25,39 @@ const WS = 'census-workspace';
 const GOAL = 'census-goal';
 const FLEET = 'census-fleet';
 let db: FreshPgDb;
+
+async function receipt(owner: string, overrides: Record<string, unknown> = {}) {
+  const record = {
+    schemaVersion: 1, namespace: 'agent-process', admissionClass: 'agent', state: 'running',
+    enqueuedAtMs: Date.now(), lease: { expiresAtMs: Date.now() + 60_000 },
+    metadata: { goalId: GOAL, goalReservation: true, targetOwnerId: owner, fleetSlug: FLEET },
+    ...overrides,
+  };
+  await db.sql`INSERT INTO harness_shared.work_items (feature_id, workspace_id, payload)
+    VALUES (${`receipt-${owner}`}, ${WS}, ${JSON.stringify({ resource_governor: record })}::text::jsonb)`;
+}
+
+/** Keep policy fixed so these tests distinguish registration serialization. */
+const policy = (maxAgents = 6, maxPerFleet = 10): typeof resolveGoalLaunchForGoal => async (args) => {
+  const result = await goalHeadcount({
+    workspaceId: args.workspaceId, goalId: args.goalId!, fleetSlug: args.fleetSlug,
+    excludeOwnerIds: args.excludeOwnerIds, sql: args.sql,
+  });
+  expect(result.error).toBeNull();
+  const totalFull = result.headcount.total + 1 > maxAgents;
+  const fleetFull = (result.headcount.fleet ?? 0) + 1 > maxPerFleet;
+  return {
+    goalId: args.goalId, settings: null, goalBrief: null, holderReadiness: null, effective: {},
+    ceilings: { maxAgents, maxPerFleet }, headcount: result.headcount, headcountMeasurement: result.measurement,
+    budget: null, degraded: false, degradedReasons: [],
+    refusal: totalFull || fleetFull ? {
+      reason: totalFull ? 'goal_max_agents' : 'fleet_max_agents', requested: 1,
+      limit: totalFull ? maxAgents : maxPerFleet,
+      current: totalFull ? result.headcount.total : result.headcount.fleet!, message: 'fixture ceiling reached',
+      currentScope: totalFull ? REFUSAL_SCOPES.LIVE_AGENTS_IN_GOAL : REFUSAL_SCOPES.LIVE_AGENTS_IN_FLEET,
+    } : null,
+  } satisfies GoalLaunchResolution;
+};
 
 beforeAll(async () => {
   db = await createFreshPgDb('goal_census');
@@ -133,5 +171,98 @@ describe('goalHeadcount same-query population in real Postgres', () => {
       .map((row) => row.ownerId).filter((id) => !a.measurement!.counted.some((row) => row.ownerId === id));
     expect(added(before, afterLaunch)).toEqual(['sole-new-launch']);
     expect(added(afterLaunch, afterTransition)).toEqual(['other-goal']);
+  });
+
+  it('counts an active launch receipt, but not cancelled, expired, old or foreign-goal receipts', async () => {
+    await receipt('pending');
+    await receipt('cancelled', { state: 'cancelled' });
+    await receipt('expired', { lease: { expiresAtMs: Date.now() - 1_000 } });
+    await receipt('old', { enqueuedAtMs: Date.now() - 60 * 60_000 });
+    await receipt('foreign', { metadata: { goalId: 'other-goal', goalReservation: true, targetOwnerId: 'foreign' } });
+    const result = await goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, sql: db.sql });
+    expect(result.error).toBeNull();
+    expect(result.headcount).toEqual({ total: 6, fleet: 4 });
+    expect(result.measurement?.populationComplete).toBe(true);
+    expect(result.measurement?.counted.find((row) => row.ownerId === 'pending')).toMatchObject({
+      basis: 'launch-reservation', heartbeatAt: null, inFleet: true,
+    });
+    expect(result.measurement?.counted.map((row) => row.ownerId).sort())
+      .toEqual(['boot', 'live', 'other-fleet', 'pending', 'recorded', 'replacement']);
+  });
+
+  it('reconciles a reserved identity with newer presence without counting it twice or dropping an old ended replacement', async () => {
+    await receipt('ended');
+    const waiting = await goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, sql: db.sql });
+    expect(waiting.error).toBeNull();
+    expect(waiting.headcount.total).toBe(6);
+    expect(waiting.measurement?.counted.find((row) => row.ownerId === 'ended')?.basis).toBe('launch-reservation');
+    expect(waiting.measurement?.oracleEndedOwnerIds).toEqual([]);
+    await db.sql`UPDATE harness_shared.coord_presence SET heartbeat_at = clock_timestamp() + interval '1 second'
+      WHERE owner_id = 'ended'`;
+    const registered = await goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, sql: db.sql });
+    expect(registered.error).toBeNull();
+    expect(registered.measurement?.candidate.total).toBe(6);
+    expect(registered.measurement?.populationComplete).toBe(true);
+    expect(registered.headcount.total).toBe(5);
+    expect(registered.measurement?.oracleEndedOwnerIds).toEqual(['ended']);
+  });
+
+  it('reserves exactly one remaining goal seat under concurrent registration; an unlocked control over-admits', async () => {
+    const resolve = policy();
+    let reads = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((r) => { release = r; });
+    const unlocked = async (owner: string) => {
+      const result = await resolve({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, count: 1, sql: db.sql });
+      if (++reads === 2) release();
+      await barrier;
+      if (!result.refusal) await receipt(owner);
+      return result;
+    };
+    const controls = await Promise.all([unlocked('control-a'), unlocked('control-b')]);
+    expect(controls.map((r) => r.headcount.total)).toEqual([5, 5]);
+    expect(controls.map((r) => r.refusal)).toEqual([null, null]);
+    expect((await goalHeadcount({ workspaceId: WS, goalId: GOAL, sql: db.sql })).headcount.total).toBe(7);
+    await db.sql.unsafe('TRUNCATE harness_shared.work_items');
+    const guarded = await Promise.all(['guarded-a', 'guarded-b'].map((targetOwnerId) => registerGoalLaunch({
+      workspaceId: WS, launcherOwnerId: 'fixture-launcher', targetOwnerId, fleetSlug: FLEET, sql: db.sql, resolve,
+    }, async () => { await receipt(targetOwnerId); return targetOwnerId; })));
+    expect(guarded.filter((r) => r.value !== null)).toHaveLength(1);
+    expect(guarded.filter((r) => r.resolution?.refusal?.reason === 'goal_max_agents')).toHaveLength(1);
+    expect(guarded.map((r) => r.resolution!.headcount.total).sort()).toEqual([5, 6]);
+    expect((await goalHeadcount({ workspaceId: WS, goalId: GOAL, sql: db.sql })).headcount.total).toBe(6);
+  });
+
+  it('reserves the fleet seat independently of the goal ceiling and preserves replacement exclusion', async () => {
+    const guarded = await Promise.all(['fleet-a', 'fleet-b'].map((targetOwnerId) => registerGoalLaunch({
+      workspaceId: WS, launcherOwnerId: 'fixture-launcher', targetOwnerId, fleetSlug: FLEET,
+      sql: db.sql, resolve: policy(100, 4),
+    }, async () => { await receipt(targetOwnerId); return targetOwnerId; })));
+    expect(guarded.filter((r) => r.value !== null)).toHaveLength(1);
+    expect(guarded.filter((r) => r.resolution?.refusal?.reason === 'fleet_max_agents')).toHaveLength(1);
+    const replacement = await registerGoalLaunch({
+      workspaceId: WS, launcherOwnerId: 'fixture-launcher', targetOwnerId: 'replacement-new',
+      excludeOwnerIds: ['replacement'], fleetSlug: FLEET, sql: db.sql, resolve: policy(100, 4),
+    }, async () => { await receipt('replacement-new'); return 'replacement-new'; });
+    expect(replacement.resolution?.refusal).toBeNull();
+  });
+
+  it('does not repeat registration after a callback writes its durable receipt then throws', async () => {
+    const register = vi.fn(async () => { await receipt('unknown-outcome'); throw new Error('write receipt lost'); });
+    await expect(registerGoalLaunch({ workspaceId: WS, launcherOwnerId: 'fixture-launcher',
+      targetOwnerId: 'unknown-outcome', fleetSlug: FLEET, sql: db.sql, resolve: policy(),
+    }, register)).rejects.toThrow('write receipt lost');
+    expect(register).toHaveBeenCalledTimes(1);
+    expect((await db.sql`SELECT feature_id FROM harness_shared.work_items`)).toHaveLength(1);
+  });
+
+  it('reports a pre-registration lock failure and registers exactly once under the existing fail-open policy', async () => {
+    const sql = { begin: async () => { throw new Error('fixture lock unavailable'); } } as unknown as FreshPgDb['sql'];
+    const register = vi.fn(async (goalId: string | null) => { await receipt('fail-open'); return goalId; });
+    const result = await registerGoalLaunch({ workspaceId: WS, launcherOwnerId: 'fixture-launcher', sql }, register);
+    expect(result).toEqual({ value: GOAL, resolution: null,
+      degradedReason: 'goal admission registration not enforced — fixture lock unavailable' });
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenCalledWith(GOAL);
   });
 });

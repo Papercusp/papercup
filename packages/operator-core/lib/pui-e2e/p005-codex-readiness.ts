@@ -37,11 +37,26 @@ export function isCodexPromptReady(screen: string): boolean {
   return /(?:›\s*Ask Codex to do anything|The prompt is yours\.)/i.test(screen);
 }
 
-export function codexTaskCompleted(screen: string, prompt: string, expected: RegExp): boolean {
+/**
+ * True when the screen shows `prompt` echoed after an input glyph (Codex `›`,
+ * Claude Code / pui `❯`, a `>` composer) and `expected` matches text AFTER the
+ * last such echo. Matching the whole screen is a false pass: an earlier user
+ * prompt or transcript line can contain the expected words (P-022's resume
+ * recall matched "optional third number" in the earlier edit request while the
+ * pui resume picker was still loading and nothing had been asked).
+ */
+export function taskAnsweredAfterPrompt(screen: string, prompt: string, expected: RegExp): boolean {
   const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
-  const safeExpected = new RegExp(expected.source, expected.flags.replace(/[gy]/g, ''));
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const visible = normalize(screen);
-  return isCodexPromptReady(screen)
-    && visible.includes(normalize(prompt))
-    && safeExpected.test(visible);
+  const echo = new RegExp(`[›❯>]\\s*${escape(normalize(prompt))}`, 'g');
+  let end = -1;
+  for (let m = echo.exec(visible); m; m = echo.exec(visible)) end = m.index + m[0].length;
+  if (end < 0) return false;
+  const safeExpected = new RegExp(expected.source, expected.flags.replace(/[gy]/g, ''));
+  return safeExpected.test(visible.slice(end));
+}
+
+export function codexTaskCompleted(screen: string, prompt: string, expected: RegExp): boolean {
+  return isCodexPromptReady(screen) && taskAnsweredAfterPrompt(screen, prompt, expected);
 }

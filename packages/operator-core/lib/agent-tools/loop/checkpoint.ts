@@ -1974,15 +1974,24 @@ export default defineTool({
           activeLoopRewakeBlockedReason =
             loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
           activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
+          const activeNonInboxAwaitCount = awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length;
           rewakeGuaranteed = isRewakeGuaranteed({
             autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
             machineTurn: currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface',
             loopActive: loopWake.guaranteed,
-            activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
+            activeAwaitCount: activeNonInboxAwaitCount,
           });
           // A loop can guarantee another turn without guaranteeing a fresh
-          // context. Only cold carry sheds the transcript on settle.
-          nextWakeFresh = loopWake.guaranteed ? loop?.carry === 'cold' : null;
+          // context. A deliberate await can wake the same session before a cold
+          // loop fires, so cold carry proves freshness only when it is the sole
+          // non-inbox wake source; otherwise the next wake's freshness is unknown.
+          nextWakeFresh = loopWake.guaranteed
+            ? loop?.carry === 'cold'
+              ? activeNonInboxAwaitCount === 0
+                ? true
+                : null
+              : false
+            : null;
         } catch {
           rewakeGuaranteed = null;
           nextWakeFresh = null;

@@ -55,6 +55,8 @@ export interface CanonicalDocument {
   sourceId?: string | null;
   /** Provider-native account identity retained for audit/display. */
   providerAccountId?: string | null;
+  /** Canonical datatype stamped by the Vault route (D-010); null on legacy rows. */
+  datatypeId?: string | null;
   kind: string;
   externalId: string;
   occurredAt: string | null;
@@ -101,6 +103,7 @@ export async function resolveCanonicalDocument(
       source: string;
       sourceId: string | null;
       providerAccountId: string | null;
+      datatypeId: string | null;
       kind: string;
       externalId: string | null;
       occurredAt: string | null;
@@ -114,6 +117,7 @@ export async function resolveCanonicalDocument(
            d.source,
            d.source_id::text AS "sourceId",
            d.provider_account_id AS "providerAccountId",
+           d.datatype_id AS "datatypeId",
            d.kind,
            d.external_id AS "externalId",
            d.occurred_at::text AS "occurredAt",
@@ -137,6 +141,7 @@ export async function resolveCanonicalDocument(
     source: row.source,
     sourceId: row.sourceId,
     providerAccountId: row.providerAccountId,
+    datatypeId: row.datatypeId ?? null,
     kind: row.kind,
     externalId: row.externalId ?? externalId,
     occurredAt: row.occurredAt,
