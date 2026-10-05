@@ -333,6 +333,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         let modules: NonNullable<NonNullable<GymOracleRun['execution']>['workerSources']>['modules'] = [];
         let configEvidence: NonNullable<NonNullable<GymOracleRun['execution']>['configSources']>['evidence'] = null;
         let configLoaded: NonNullable<NonNullable<GymOracleRun['execution']>['configSources']>['loaded'] = null;
+        let mainProcessEvidence: NonNullable<NonNullable<GymOracleRun['execution']>['mainProcessSources']>['evidence'] = null;
         // Keep the raw report even if it is malformed; do not rebuild original
         // module hashes from a later checkout when the reporter is unavailable.
         try { sourceReport = readFileSync(sourceReportPath, 'utf8'); } catch { /* unknown */ }
@@ -341,6 +342,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           if (Array.isArray(parsed?.diagnostics)) modules = parsed.diagnostics;
           if (parsed?.configSources && typeof parsed.configSources === 'object') configEvidence = parsed.configSources;
           if (parsed?.configLoadedSources && typeof parsed.configLoadedSources === 'object') configLoaded = parsed.configLoadedSources;
+          if (parsed?.mainProcessLoadedSources && typeof parsed.mainProcessLoadedSources === 'object') mainProcessEvidence = parsed.mainProcessLoadedSources;
         } catch { /* retain malformed raw source report */ }
         const sourcePaths = new Set(modules.flatMap((module) =>
           Array.isArray(module?.sourceEvidence?.sources) ? module.sourceEvidence.sources
@@ -355,6 +357,12 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         for (const path of [...configPaths].sort()) {
           configReferenceSources.push({ path, sha256: await referenceHash(path) });
         }
+        const mainProcessReferenceSources: Array<{ path: string; sha256: string | null }> = [];
+        const mainProcessPaths = new Set(Array.isArray(mainProcessEvidence?.sources) ? mainProcessEvidence.sources
+          .filter(source => typeof source?.path === 'string').map(source => source.path) : []);
+        for (const path of [...mainProcessPaths].sort()) {
+          mainProcessReferenceSources.push({ path, sha256: await referenceHash(path) });
+        }
         const manifestAfter = fileHash('package.json');
         const manifestUnknown = [manifestPinned, manifestBefore, manifestAfter].some((hash) => hash === null);
         return pinCommit ? { results, testPath, pinCommit,
@@ -366,7 +374,10 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
             } },
             workerSources: { report: sourceReport, modules, reference: { pinCommit, sources: referenceSources } },
             configSources: { evidence: configEvidence, loaded: configLoaded, reference: { pinCommit, sources: configReferenceSources } },
+            mainProcessSources: { evidence: mainProcessEvidence, reference: { pinCommit, sources: mainProcessReferenceSources } },
             unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+              ...(!mainProcessEvidence || mainProcessEvidence.status === 'unknown' ? ['oracle-main-process-load-unmeasured'] : []),
+              ...(mainProcessReferenceSources.some(source => source.sha256 === null) ? ['oracle-main-process-reference-unavailable'] : []),
               ...(!configLoaded || configLoaded.status === 'unknown' ? ['oracle-config-original-load-unmeasured'] : []),
               ...(!configEvidence || configReferenceSources.length === 0 ? ['oracle-config-snapshot-evidence-unavailable'] : []),
               ...(configReferenceSources.some(source => source.sha256 === null) ? ['oracle-config-reference-unavailable'] : []),
