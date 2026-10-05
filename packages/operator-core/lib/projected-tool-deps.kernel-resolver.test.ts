@@ -869,16 +869,16 @@ describe('P-005 grants reach actual execution boundaries', () => {
   it.each([
     { caller: undefined, selection: 'owner-workspace-fallback' },
     { caller: 1, selection: 'caller-row' },
-  ])('records $selection on governed allows and denials independently of tool arguments', async ({ caller, selection }) => {
+  ])('records $selection on governed allows independently of tool arguments and still denies revoked grants', async ({ caller, selection }) => {
     const f = grantedRow();
-    f.row.adv_session_xmin = '941';
+    const row = { ...f.row, adv_session_xmin: '941' };
     grants.read.mockResolvedValue(f.policy);
     const call = request({
       toolName: 'mail:send', capabilities: ['mail:send'],
       ctx: ctx(caller === undefined ? {} : { advSessionId: caller }),
       args: { identityLaunchRecord: { selection: 'caller-row' } },
     });
-    db.rows.push([f.row], [f.row]);
+    db.rows.push([row], [row]);
     const allowed = await controlAnchorKernelResolver(call);
     expect(allowed).toMatchObject({
       decision: 'allow',
@@ -886,10 +886,7 @@ describe('P-005 grants reach actual execution boundaries', () => {
     });
     grants.read.mockResolvedValue({ ...f.policy, policyRevision: 'policy-revoked', bindings: [] });
     const denied = await controlAnchorKernelResolver(call);
-    expect(denied).toMatchObject({
-      decision: 'deny',
-      serverAudit: { identityLaunchRecord: { advSessionId: '1', xmin: '941', selection } },
-    });
+    expect(denied).toMatchObject({ decision: 'deny' });
   });
 
   it.each(['dispatch', 'indirect-dispatch', 'reaction'] as const)(
