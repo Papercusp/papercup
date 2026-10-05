@@ -1465,6 +1465,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               const snapshotPath = path.join(path.dirname(e.TEST_REPORT_PATH), 'inbox-arm-' + arm + '.heapsnapshot');
               let profilerEnabled = false;
               const started = Date.now();
+              heap.snapshotStartedAt = started;
               try {
                 heap.heapOwnerBinding = await readPinnedHeapObjectIds(client, { expectedPid: host.pid,
                   owners: ['@papercusp/operator-core.operatorCache'], cacheKeyDigests: keyDigests,
