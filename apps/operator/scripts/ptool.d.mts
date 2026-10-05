@@ -9,6 +9,7 @@
  *   description?: string,
  *   inputSchema?: Record<string, unknown>,
  *   outputSchema?: Record<string, unknown>,
+ *   _meta?: Record<string, unknown> & {'papercusp/servingGeneration'?: string},
  *   annotations?: {readOnlyHint?: boolean},
  * }} ToolCatalogEntry
  */
@@ -374,13 +375,14 @@ export function resolveTokenPath(options?: {
  *  so ptool still emits a lossless scripting payload.
  *  @param {string} toolName
  *  @param {any} callArgs
- *  @param {{outputSchema?: {type?: string}, idempotencyKey?: string}} [options]
+ *  @param {{outputSchema?: {type?: string}, idempotencyKey?: string, servingGeneration?: string}} [options]
  */
-export function buildCallToolParams(toolName: string, callArgs: any, { outputSchema, idempotencyKey }?: {
+export function buildCallToolParams(toolName: string, callArgs: any, { outputSchema, idempotencyKey, servingGeneration }?: {
     outputSchema?: {
         type?: string;
     };
     idempotencyKey?: string;
+    servingGeneration?: string;
 }): {
     name: string;
     arguments: any;
@@ -875,6 +877,9 @@ export type ToolCatalogEntry = {
     description?: string;
     inputSchema?: Record<string, unknown>;
     outputSchema?: Record<string, unknown>;
+    _meta?: Record<string, unknown> & {
+        "papercusp/servingGeneration"?: string;
+    };
     annotations?: {
         readOnlyHint?: boolean;
     };
