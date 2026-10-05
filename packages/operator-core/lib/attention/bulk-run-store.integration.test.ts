@@ -291,6 +291,7 @@ describe('attention bulk-run store (real PG)', () => {
       workKind: null,
       acceptance: null,
       sourceRevision: null,
+      reproduction: null, // P-013: promote-only; null whenever the writer gave none
       ...extra,
     });
     const reported = await reportOutcomes({

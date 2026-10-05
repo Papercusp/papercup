@@ -120,10 +120,19 @@ async function promotedFrom(sourceId: string): Promise<string[]> {
   return rows.map((r) => r.feature_id);
 }
 
-/** Record a decision exactly as the report path does: bound to the revision judged now. */
+/**
+ * Record a decision exactly as the report path does: bound to the revision judged now.
+ * Every promote in this journey is a bug fix, so it carries the D-023 reproduction
+ * receipt the reviewer recorded (P-013); the receipt gate itself is covered in
+ * attention/intake-promotion.integration.test.ts.
+ */
 async function decide(sourceId: string, input: DecisionInput, decidedBy: string) {
   const sourceRevision = await currentIntakeSourceRevision(sourceId);
-  const parsed = parseIntakeDecision(input, { decidedBy, sourceRevision });
+  const withReceipt =
+    input.disposition === 'promote' && input.reproduction === undefined
+      ? { ...input, reproduction: { kind: 'failing-test', ref: 'export-tabbed-rows.test.ts', buildSha: 'abc1234def' } }
+      : input;
+  const parsed = parseIntakeDecision(withReceipt, { decidedBy, sourceRevision });
   if (!parsed.ok) throw new Error(parsed.error);
   return parsed.decision;
 }
