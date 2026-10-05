@@ -1267,8 +1267,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
       .map(observation => lspCapabilityStore.observe(observation)));
   } catch (error) {
     // A failed persistence handshake must not leave an unregistered warm child behind.
-    connection.dispose();
-    child.kill('SIGTERM');
+    await shutdownLspClient(client);
     throw new Error(`LSP capability initialization failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   client.coldStartMs = Date.now() - t0;
@@ -2416,8 +2415,12 @@ export function lspResyncDocument(absPath: string, rootPath: string, newText: st
 export async function shutdownAllLspClients(): Promise<number> {
   const clients = [...state.clients.values()];
   state.clients.clear();
-  await Promise.all(
-    clients.map(async (c) => {
+  await Promise.all(clients.map(shutdownLspClient));
+  return clients.length;
+}
+
+/** Also owns clients whose capability initialization failed before registration. */
+async function shutdownLspClient(c: LspClient): Promise<void> {
       // Only speak to a server whose pipe is actually still open. Writing to a
       // destroyed stream raises ERR_STREAM_DESTROYED as an UNHANDLED rejection
       // (vscode-jsonrpc writes asynchronously), which Vitest reports as an
@@ -2454,9 +2457,6 @@ export async function shutdownAllLspClients(): Promise<number> {
       if (!(await waitForChildExit(c.child, GRACEFUL_EXIT_WAIT_MS))) {
         if (c.child.exitCode === null && !c.child.killed) c.child.kill('SIGTERM');
       }
-    }),
-  );
-  return clients.length;
 }
 
 /** How long a server gets to honour a protocol `exit` before we signal it. */
