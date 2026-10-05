@@ -6339,7 +6339,9 @@ struct SuSendBudgets {
 
 impl SuSendBudgets {
     const LIVE: Self = Self {
-        operator: Duration::from_secs(5),
+        // The plan allows 5s from Enter to the plain sentence; 4s leaves room
+        // to draw it on a loaded box (the agent-chat-pty P-024 case times it).
+        operator: Duration::from_secs(4),
         ready: Duration::from_secs(60),
         poll: Duration::from_millis(250),
     };
