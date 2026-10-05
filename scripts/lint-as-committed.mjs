@@ -108,7 +108,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Child environment for commands executing against the isolated committed clone. */
 export function lintAsCommittedChildEnv(environment = process.env) {
@@ -450,6 +450,16 @@ export function planLinkExcludes(linkedPaths, submodulePaths) {
     (plan[owner] ??= []).push(`/${inner}`);
   }
   return plan;
+}
+
+/** Git resolves metadata for both ordinary repositories and absorbed submodules. */
+export function writeLinkExcludes(workRoot, excludePlan) {
+  for (const [repoRel, patterns] of Object.entries(excludePlan)) {
+    const repository = join(workRoot, repoRel);
+    const excludePath = resolve(repository, git(['rev-parse', '--git-path', 'info/exclude'], repository));
+    mkdirSync(dirname(excludePath), { recursive: true });
+    appendFileSync(excludePath, `\n# lint-as-committed: linked node_modules (WI-10004898)\n${patterns.join('\n')}\n`);
+  }
 }
 
 /**
@@ -940,12 +950,7 @@ function main() {
     // Keep the extracted tree CLEAN to `git status` (WI-10004898, see planLinkExcludes):
     // a run inside it must be able to record worktree_dirty=false.
     const excludePlan = planLinkExcludes(linkedPaths, submodules.map((s) => s.path));
-    for (const [repoRel, patterns] of Object.entries(excludePlan)) {
-      const repository = join(workRoot, repoRel);
-      const excludePath = resolve(repository, git(['rev-parse', '--git-path', 'info/exclude'], repository));
-      mkdirSync(dirname(excludePath), { recursive: true });
-      appendFileSync(excludePath, `\n# lint-as-committed: linked node_modules (WI-10004898)\n${patterns.join('\n')}\n`);
-    }
+    writeLinkExcludes(workRoot, excludePlan);
     console.log(
       `  linked ${linked} node_modules dir(s) (not installed, not copied; excluded from git status); ` +
         `${shadow.remapped} workspace package link(s) resolve into this tree` +

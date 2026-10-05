@@ -57,6 +57,7 @@ const {
   detectorPathsFromCommand,
   parseGitmodules,
   planLinkExcludes,
+  writeLinkExcludes,
   cloneWorkspaceTarget,
   linkNodeModulesShadow,
   lintAsCommittedChildEnv,
@@ -96,6 +97,7 @@ const {
   detectorPathsFromCommand: (command: unknown) => string[];
   parseGitmodules: (text: unknown) => { name: string; path: string; url: string | null }[];
   planLinkExcludes: (linkedPaths: unknown, submodulePaths: unknown) => Record<string, string[]>;
+  writeLinkExcludes: (workRoot: string, excludePlan: Record<string, string[]>) => void;
   summarize:(results: { script: string; status: string; note?: string }[]) => {
     exitCode: number;
     failedCount: number;
@@ -520,6 +522,42 @@ describe('planLinkExcludes (WI-10004898 — linked node_modules made every extra
   it('is total on junk input', () => {
     expect(planLinkExcludes(undefined, undefined)).toEqual({});
     expect(planLinkExcludes(['', 42, 'node_modules'], [null, ''])).toEqual({ '': ['/node_modules'] });
+  });
+});
+
+describe('writeLinkExcludes (EI-25175171560777563 — absorbed Git metadata)', () => {
+  it.each(['directory', 'pointer'] as const)('keeps infrastructure links ignored with a .git %s', (layout) => {
+    const root = mkdtempSync(join(tmpdir(), 'lint-link-excludes-'));
+    try {
+      const repository = join(root, 'libs', 'sub');
+      const metadata = join(root, 'metadata');
+      mkdirSync(repository, { recursive: true });
+      execFileSync('git', ['init', '-q', ...(layout === 'pointer' ? [`--separate-git-dir=${metadata}`] : []), repository]);
+      if (layout === 'pointer') {
+        // Absorbed submodules use a relative gitdir pointer rather than a directory.
+        writeFileSync(join(repository, '.git'), 'gitdir: ../../metadata\n');
+        expect(lstatSync(join(repository, '.git')).isFile()).toBe(true);
+      }
+      const excludePath = resolve(repository, execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+        cwd: repository, encoding: 'utf8',
+      }).trim());
+      writeFileSync(excludePath, '# existing exclusion\n/existing-link\n');
+      const dependencyRoot = join(root, 'dependencies');
+      mkdirSync(dependencyRoot);
+      symlinkSync(dependencyRoot, join(repository, 'node_modules'), 'dir');
+      writeFileSync(join(repository, 'visible.txt'), 'must remain visible\n');
+
+      writeLinkExcludes(root, planLinkExcludes(['libs/sub/node_modules'], ['libs/sub']));
+
+      expect(readFileSync(excludePath, 'utf8')).toContain('/existing-link\n');
+      expect(execFileSync('git', ['check-ignore', 'node_modules'], { cwd: repository, encoding: 'utf8' }).trim())
+        .toBe('node_modules');
+      expect(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+        cwd: repository, encoding: 'utf8',
+      }).trim()).toBe('?? visible.txt');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
