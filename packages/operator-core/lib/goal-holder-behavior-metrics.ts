@@ -417,7 +417,83 @@ export function rateGoalHolderBehavior(
 // Collection (SQL)
 // ---------------------------------------------------------------------------
 
+/** plans:new counts on its invocation alone: a call that cannot write the plan throws. */
 const PLAN_CANDIDATE_TOOLS = ['plans:new'] as const;
+
+/**
+ * WI-10006048: a holder also writes a plan through the ideation ledger.
+ * blender:route-idea { rail:'plan' } creates the draft with createScoutPlanDraft and never
+ * calls plans:new, so counting plans:new alone read holder su-a70547cc, who routed an idea
+ * onto the plan rail on 2026-10-03 at 08:08Z, as having written no plan.
+ *
+ * A route call can still settle 'ok' without writing anything (a placeholder-draft or
+ * not-found refusal, or an idempotent re-route onto an existing plan), and
+ * tool_invocations stores no result, so the call counts only when the plan it created
+ * exists: a harness_plans row in the same workspace created inside the call's own run.
+ * invoked_at is the dispatch-settle time (EI-7040), so the call ran over
+ * [invoked_at - duration_ms, invoked_at]; the slack absorbs the gap between the plan
+ * transaction's now() and the JS-stamped settle time.
+ */
+export const ROUTE_IDEA_TOOL = 'blender:route-idea';
+export const ROUTED_PLAN_CLOCK_SLACK_MS = 5_000;
+
+/** True for an invocation (alias `t`) that wrote a plan: plans:new, or a route-idea call that created one. */
+function planWritingCall(sql: Sql) {
+  return sql`(
+    t.tool_name IN ${sql([...PLAN_CANDIDATE_TOOLS])}
+    OR (t.tool_name = ${ROUTE_IDEA_TOOL}
+        AND coalesce(t.args_json ->> 'rail', 'plan') = 'plan'
+        AND EXISTS (
+          SELECT 1
+            FROM harness_shared.harness_plans p
+           WHERE p.workspace_id = t.workspace_id
+             AND p.created_at BETWEEN t.invoked_at - (coalesce(t.duration_ms, 0) + ${ROUTED_PLAN_CLOCK_SLACK_MS}::int) * interval '1 millisecond'
+                                  AND t.invoked_at + ${ROUTED_PLAN_CLOCK_SLACK_MS}::int * interval '1 millisecond'))
+  )`;
+}
+
+/**
+ * The holder's own plan calls in a window: plans written (plans:new, or a route-idea call
+ * that created a plan), plans started, and fleets launched on a plan.
+ */
+export async function readHolderPlanToolCounts(
+  window: Pick<GoalHolderWindow, 'workspaceId' | 'holderOwnerId' | 'windowStart' | 'windowEnd'>,
+  deps: { sql: Sql },
+): Promise<{ plansNew: number; plansStarted: number; planFleetLaunches: number }> {
+  const { sql } = deps;
+  const rows = await sql<{ plans_new: string; plans_started: string; fleet_launches: string }[]>`
+    SELECT count(*) FILTER (WHERE ${planWritingCall(sql)})::text AS plans_new,
+           count(*) FILTER (WHERE t.tool_name = 'plans:start')::text AS plans_started,
+           count(*) FILTER (WHERE t.tool_name = 'fleet:launch-on-plan')::text AS fleet_launches
+      FROM harness_shared.tool_invocations t
+     WHERE t.workspace_id = ${window.workspaceId}
+       AND t.coord_owner_id = ${window.holderOwnerId}
+       AND t.invoked_at BETWEEN ${new Date(window.windowStart)} AND ${new Date(window.windowEnd)}
+       AND t.status = 'ok'
+       AND t.tool_name IN ${sql([...PLAN_CANDIDATE_TOOLS, ROUTE_IDEA_TOOL, 'plans:start', 'fleet:launch-on-plan'])}`;
+  return {
+    plansNew: Number(rows[0]?.plans_new ?? 0),
+    plansStarted: Number(rows[0]?.plans_started ?? 0),
+    planFleetLaunches: Number(rows[0]?.fleet_launches ?? 0),
+  };
+}
+
+/** Plans written for one goal (any author) over [since, at]: the goal-day plan candidates. */
+async function countGoalPlansWritten(
+  input: { workspaceId: string; goalId: string; since: Date; at: Date },
+  sql: Sql,
+): Promise<number> {
+  const rows = await sql<{ n: string }[]>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.tool_invocations t
+     WHERE t.workspace_id = ${input.workspaceId}
+       AND t.goal_id = ${input.goalId}
+       AND t.status = 'ok'
+       AND t.tool_name IN ${sql([...PLAN_CANDIDATE_TOOLS, ROUTE_IDEA_TOOL])}
+       AND t.invoked_at BETWEEN ${input.since} AND ${input.at}
+       AND ${planWritingCall(sql)}`;
+  return Number(rows[0]?.n ?? 0);
+}
 
 /**
  * Which goal (and workspace) a holder stewarded in a window. A scorecard subject names
@@ -452,8 +528,8 @@ export async function resolveHolderGoalForWindow(
 
 /**
  * P-004 (D-001): the goal-day candidate count for one goal at one instant: plans proposed
- * for the goal (plans:new stamped with its goal_id, by any author) plus the ideas its
- * reviews report filing. The same population collectGoalHolderBehaviorMetrics grades, so
+ * for the goal (plans:new, or a route-idea call that created a plan, stamped with its
+ * goal_id, by any author) plus the ideas its reviews report filing. The same population collectGoalHolderBehaviorMetrics grades, so
  * the blender:ideate-pass-record receipt and the WOE ideation-yield verdict agree.
  * tool_invocations rows are written when a call settles, so a caller reading this from
  * inside its own call is not yet counted and must add its own ideas.
@@ -464,15 +540,8 @@ export async function readGoalDayCandidates(
 ): Promise<{ since: string; plansNew: number; ideasFiled: number }> {
   const { sql } = deps;
   const since = new Date(input.at.getTime() - GOAL_DAY_MS);
-  const [planRows, ideaRows] = await Promise.all([
-    sql<{ n: string }[]>`
-      SELECT count(*)::text AS n
-        FROM harness_shared.tool_invocations
-       WHERE workspace_id = ${input.workspaceId}
-         AND goal_id = ${input.goalId}
-         AND status = 'ok'
-         AND tool_name IN ${sql([...PLAN_CANDIDATE_TOOLS])}
-         AND invoked_at BETWEEN ${since} AND ${input.at}`,
+  const [plansNew, ideaRows] = await Promise.all([
+    countGoalPlansWritten({ workspaceId: input.workspaceId, goalId: input.goalId, since, at: input.at }, sql),
     sql<{ ideas_filed: unknown }[]>`
       SELECT t.args_json -> 'ideasFiled' AS ideas_filed
         FROM harness_shared.tool_invocations t
@@ -484,7 +553,7 @@ export async function readGoalDayCandidates(
   ]);
   return {
     since: since.toISOString(),
-    plansNew: Number(planRows[0]?.n ?? 0),
+    plansNew,
     ideasFiled: ideaRows.reduce((sum, row) => sum + countIdeas(row.ideas_filed), 0),
   };
 }
@@ -641,17 +710,9 @@ export async function collectGoalHolderBehaviorMetrics(
   const daySince = new Date(end.getTime() - GOAL_DAY_MS);
   const endMs = end.getTime();
 
-  const [toolRows, unplannedRows, reviewRows, plansNewDayRows, reportRows, loopRows, reminderRows, churnRows] =
+  const [planTools, unplannedRows, reviewRows, plansNewDay, reportRows, loopRows, reminderRows, churnRows] =
     await Promise.all([
-      sql<{ tool_name: string; n: string }[]>`
-        SELECT tool_name, count(*)::text AS n
-          FROM harness_shared.tool_invocations
-         WHERE workspace_id = ${window.workspaceId}
-           AND coord_owner_id = ${window.holderOwnerId}
-           AND invoked_at BETWEEN ${start} AND ${end}
-           AND status = 'ok'
-           AND tool_name IN ('plans:new', 'plans:start', 'fleet:launch-on-plan')
-         GROUP BY tool_name`,
+      readHolderPlanToolCounts(window, { sql }),
       sql<{ n: string }[]>`
         SELECT count(*)::text AS n
           FROM harness_shared.work_items w
@@ -683,14 +744,7 @@ export async function collectGoalHolderBehaviorMetrics(
            AND t.args_json -> 'goalReview' ->> 'goalId' = ${window.goalId}
            AND t.invoked_at BETWEEN ${daySince} AND ${end}
          ORDER BY t.invoked_at`,
-      sql<{ n: string }[]>`
-        SELECT count(*)::text AS n
-          FROM harness_shared.tool_invocations
-         WHERE workspace_id = ${window.workspaceId}
-           AND goal_id = ${window.goalId}
-           AND status = 'ok'
-           AND tool_name IN ${sql([...PLAN_CANDIDATE_TOOLS])}
-           AND invoked_at BETWEEN ${daySince} AND ${end}`,
+      countGoalPlansWritten({ workspaceId: window.workspaceId, goalId: window.goalId, since: daySince, at: end }, sql),
       sql<{ ts: Date; cost: string | null; owner_walled: string | null }[]>`
         SELECT e.ts,
                e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'cost' AS cost,
@@ -728,7 +782,6 @@ export async function collectGoalHolderBehaviorMetrics(
            AND cancel_reason IS NULL`,
     ]);
 
-  const toolCount = (name: string) => Number(toolRows.find((row) => row.tool_name === name)?.n ?? 0);
   const reviews = summarizeGoalReviews(
     reviewRows.map((row) => ({
       invokedAt: new Date(row.invoked_at).toISOString(),
@@ -745,9 +798,7 @@ export async function collectGoalHolderBehaviorMetrics(
     version: GOAL_HOLDER_METRICS_VERSION,
     window,
     planAuthorship: {
-      plansNew: toolCount('plans:new'),
-      plansStarted: toolCount('plans:start'),
-      planFleetLaunches: toolCount('fleet:launch-on-plan'),
+      ...planTools,
       unplannedOpenGoalItems: Number(unplannedRows[0]?.n ?? 0),
       unplannedClusters: clusters.total,
       overdueUnplannedClusters: clusters.overdue,
@@ -755,7 +806,7 @@ export async function collectGoalHolderBehaviorMetrics(
       dissolvedOverdueClusters: clusters.dissolved,
       overdueClustersNudged: clusters.nudged,
     },
-    ideation: { since: daySince.toISOString(), plansNew: Number(plansNewDayRows[0]?.n ?? 0), ...reviews },
+    ideation: { since: daySince.toISOString(), plansNew: plansNewDay, ...reviews },
     ownerReports: summarizeOwnerReports(
       reportRows.map((row) => ({ ts: new Date(row.ts).toISOString(), cost: row.cost, ownerWalled: row.owner_walled })),
     ),
