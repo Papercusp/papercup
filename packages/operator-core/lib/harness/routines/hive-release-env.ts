@@ -306,3 +306,39 @@ export async function resolveCheckpointRouting(
   // and OPERATES ON the hive. (Earlier this returned the hive root → script-not-found.)
   return { root: defaultRoot, extraEnv: hive.env, clearEnv: hive.clearEnv };
 }
+
+/**
+ * The pot's REAL test-suite command, or null when it has none (plan
+ * pot-review-integration-mode-2026-10-05 P-015). Same precedence as the gate's
+ * `greenCmd` above — owner override → blueprint `releaseGate.greenCmd` → detected
+ * `testCommand` — but WITHOUT the `DEFAULT_GREEN_CMD` build fallback: "it builds" is not
+ * a test suite, so a working-copy pot whose only gate is the build fallback must not be
+ * allowed (its PRs would claim "passed the test suite" off a build). Pure, so the surfaces
+ * that offer working-copy mode can test the rule without a registry.
+ */
+export function pickPotSuiteCommand(input: {
+  override?: string | null;
+  greenCmd?: string | null;
+  testCommand?: string | null;
+}): string | null {
+  for (const candidate of [input.override, input.greenCmd, input.testCommand]) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim();
+  }
+  return null;
+}
+
+/** Resolve {@link pickPotSuiteCommand} for a registered pot (null when not found / no blueprint). */
+export async function resolvePotSuiteCommand(slug: string, workspaceId: string): Promise<string | null> {
+  const reg = await loadHarnessRegistry(workspaceId);
+  const entry = reg.projects.find((p) => p.slug === slug);
+  if (!entry) return null;
+  const gate = resolveHiveReleaseGate(entry.path, entry.github_default_branch);
+  let override: string | null = null;
+  try {
+    const { getReleaseGreenCmdOverride } = await import('../../hive-settings-store');
+    override = await getReleaseGreenCmdOverride(workspaceId, slug);
+  } catch {
+    override = null;
+  }
+  return pickPotSuiteCommand({ override, greenCmd: gate?.greenCmd ?? null, testCommand: gate?.testCommand ?? null });
+}
