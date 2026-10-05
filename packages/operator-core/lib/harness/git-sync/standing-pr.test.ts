@@ -1,0 +1,165 @@
+import { describe, expect, it } from 'vitest';
+import type { Pr, PrHostResult } from '../../pr-host/types';
+import { STANDING_PR_BRANCH } from './decide-standing-pr';
+import { findStandingPr, publishStandingPr, type PublishStandingPrInput, type StandingPrDeps } from './standing-pr';
+
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+
+function pr(over: Partial<Pr> & { number: number }): Pr {
+  const { number, ...rest } = over;
+  return {
+    ref: { remote: 'github.com/up/repo', number },
+    state: 'open',
+    title: 't',
+    body: null,
+    head_ref: STANDING_PR_BRANCH,
+    base_ref: 'main',
+    head_sha: SHA_A,
+    merge_commit_sha: null,
+    author: { github_user_id: 1, github_login: 'bot' },
+    reviewers_requested: [],
+    review_decision: 'none',
+    checks_state: 'none',
+    mergeable_state: 'unknown',
+    is_draft: false,
+    url: `https://github.com/up/repo/pull/${number}`,
+    updated_at: 0,
+    ...rest,
+  } as Pr;
+}
+
+function input(over: Partial<PublishStandingPrInput> = {}): PublishStandingPrInput {
+  return {
+    integration: { mode: 'review', source: 'set' },
+    forkRemote: 'https://github.com/potbot/repo.git',
+    forkOwner: 'potbot',
+    upstreamRemote: 'github.com/up/repo',
+    upstreamOwner: 'up',
+    baseBranch: 'main',
+    promotedSha: SHA_B,
+    trigger: 'promotion',
+    potName: 'demo',
+    ...over,
+  };
+}
+
+function fakeDeps(opts: {
+  open?: Pr[];
+  listFails?: boolean;
+  pushFails?: string;
+  openFails?: boolean;
+} = {}) {
+  const calls: { list: number; push: Array<{ sha: string; branch: string }>; open: unknown[] } = {
+    list: 0,
+    push: [],
+    open: [],
+  };
+  const deps: StandingPrDeps = {
+    async listOpenPrs() {
+      calls.list++;
+      if (opts.listFails) return { ok: false, error: { kind: 'network_error', message: 'boom' } } as PrHostResult<Pr[]>;
+      return { ok: true, data: opts.open ?? [] };
+    },
+    async openPr(args) {
+      calls.open.push(args);
+      if (opts.openFails) return { ok: false, error: { kind: 'unauthorized', message: 'no' } } as PrHostResult<Pr>;
+      return { ok: true, data: pr({ number: 42, head_sha: SHA_B }) };
+    },
+    async pushHead(args) {
+      calls.push.push(args);
+      if (opts.pushFails) throw new Error(opts.pushFails);
+    },
+  };
+  return { deps, calls };
+}
+
+describe('publishStandingPr', () => {
+  it('a direct pot touches nothing — no listing, no push, no PR', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await publishStandingPr(input({ integration: { mode: 'direct', source: 'set' } }), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'skip', reason: 'not-working-copy' } });
+    expect(calls).toEqual({ list: 0, push: [], open: [] });
+  });
+
+  it('an unreadable mode fails closed without network', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await publishStandingPr(input({ integration: { mode: 'direct', source: 'error' } }), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'skip', reason: 'mode-unknown' } });
+    expect(calls.list).toBe(0);
+  });
+
+  it('no standing PR yet: pushes the promoted sha to the standing branch, then opens a cross-fork PR', async () => {
+    const { deps, calls } = fakeDeps({ open: [pr({ number: 7, head_ref: 'feature/x' })] });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'open' }, prNumber: 42 });
+    expect(calls.push).toEqual([{ sha: SHA_B, branch: STANDING_PR_BRANCH }]);
+    expect(calls.open).toEqual([
+      expect.objectContaining({
+        remote: 'github.com/up/repo',
+        head_ref: STANDING_PR_BRANCH,
+        base_ref: 'main',
+        head_owner: 'potbot',
+      }),
+    ]);
+  });
+
+  it('same-owner fork opens without head_owner', async () => {
+    const { deps, calls } = fakeDeps();
+    await publishStandingPr(input({ forkOwner: 'up' }), deps);
+    expect(calls.open[0]).not.toHaveProperty('head_owner');
+  });
+
+  it('an open standing PR on an older sha is updated by pushing only', async () => {
+    const { deps, calls } = fakeDeps({ open: [pr({ number: 9, head_sha: SHA_A })] });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'update', fromSha: SHA_A, headSha: SHA_B }, prNumber: 9 });
+    expect(calls.push).toEqual([{ sha: SHA_B, branch: STANDING_PR_BRANCH }]);
+    expect(calls.open).toEqual([]);
+  });
+
+  it('an open standing PR already at the promoted sha is a noop', async () => {
+    const { deps, calls } = fakeDeps({ open: [pr({ number: 9, head_sha: SHA_B })] });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'noop' }, prNumber: 9 });
+    expect(calls.push).toEqual([]);
+  });
+
+  it('a failed listing never opens a (possibly duplicate) PR', async () => {
+    const { deps, calls } = fakeDeps({ listFails: true });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: false, stage: 'list' });
+    expect(calls.push).toEqual([]);
+    expect(calls.open).toEqual([]);
+  });
+
+  it('a rejected push is reported (token redacted) and no PR is opened', async () => {
+    const { deps, calls } = fakeDeps({ pushFails: 'rejected https://x-access-token:ghs_SECRET123@github.com/potbot/repo.git' });
+    const res = await publishStandingPr(input(), deps);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.stage).toBe('push');
+    expect(res.error).not.toContain('ghs_SECRET123');
+    expect(calls.open).toEqual([]);
+  });
+
+  it('a failed open is reported as stage open', async () => {
+    const { deps } = fakeDeps({ openFails: true });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: false, stage: 'open' });
+  });
+});
+
+describe('findStandingPr', () => {
+  it('matches head branch + base branch + open, lowest number first', () => {
+    const prs = [
+      pr({ number: 12 }),
+      pr({ number: 5 }),
+      pr({ number: 3, base_ref: 'develop' }),
+      pr({ number: 2, head_ref: 'other' }),
+      pr({ number: 1, state: 'closed' }),
+    ];
+    expect(findStandingPr(prs, 'main')?.ref.number).toBe(5);
+    expect(findStandingPr([], 'main')).toBeNull();
+  });
+});
