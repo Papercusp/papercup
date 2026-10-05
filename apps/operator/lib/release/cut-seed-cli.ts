@@ -114,7 +114,7 @@ import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SEED_REA
 export { mergeReleaseSeedRedactionValues } from './seed-identity-guard.js';
 import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, realpath } from 'node:fs/promises';
 import Corestore from 'corestore';
-import { exportSeedUuidIdempotencySource, SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
+import { exportSeedUuidIdempotencySource } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -380,10 +380,11 @@ export async function exportSeedUuidIdempotencyCensus(input: {
   const entries = manifest.stores.filter(entry => entry.kind === 'corestore');
   if (entries.length !== 1) throw new Error('UUID source must contain exactly one Corestore entry');
   const meta = entries[0]!.meta as { coreKeys?: unknown; coreLengths?: Record<string, unknown> };
+  const coreLengths = meta?.coreLengths;
   if (!Array.isArray(meta?.coreKeys) || !meta.coreKeys.length
-      || new Set(meta.coreKeys).size !== meta.coreKeys.length || !meta.coreLengths
+      || new Set(meta.coreKeys).size !== meta.coreKeys.length || !coreLengths
       || meta.coreKeys.some(key => typeof key !== 'string' || !/^[0-9a-f]{64}$/.test(key)
-        || !Number.isSafeInteger(meta.coreLengths?.[key]) || (meta.coreLengths[key] as number) <= 0)) {
+        || !Number.isSafeInteger(coreLengths[key]) || (coreLengths[key] as number) <= 0)) {
     throw new Error('UUID source core coverage incomplete');
   }
   const store = new Corestore(input.storeDir, { readOnly: true });
