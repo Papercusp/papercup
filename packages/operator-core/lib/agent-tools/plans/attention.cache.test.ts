@@ -20,6 +20,8 @@ const M = vi.hoisted(() => ({
   // WI-3348: the request-ALS workspace observed INSIDE each open-questions read.
   seenConversationsWs: [] as Array<string | undefined>,
   groupsOverride: null as unknown[] | null,
+  inboxByWorkspace: new Map<string, unknown[]>(),
+  seenInboxWs: [] as Array<string | undefined>,
 }));
 
 vi.mock("../../attention/group", async (orig) => {
@@ -54,13 +56,24 @@ vi.mock("../coordination/conversations", async () => {
       M.seenConversationsWs.push(currentRequestWorkspaceId());
       return [];
     }),
-    conversationsScopeWorkspace: vi.fn(() => "default"),
+    conversationsScopeWorkspace: vi.fn(() => currentRequestWorkspaceId() ?? "default"),
   };
 });
-vi.mock("../coordination/messages", () => ({
-  readInbox: vi.fn(async () => []),
-  readAckedMsgIds: vi.fn(async () => new Set()),
-}));
+vi.mock("../coordination/messages", async () => {
+  const { currentRequestWorkspaceId } = await import("../../workspace-als");
+  return {
+    readInbox: vi.fn(async () => {
+      const workspace = currentRequestWorkspaceId();
+      M.seenInboxWs.push(workspace);
+      return M.inboxByWorkspace.get(workspace ?? '') ?? [];
+    }),
+    readAckedMsgIds: vi.fn(async () => new Set()),
+  };
+});
+// Exercise the real HTTP dispatcher without importing the unrelated catalog or
+// production telemetry hooks. attention above registers the actual reader.
+vi.mock('../index', () => ({}));
+vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 vi.mock("../coordination/identity", () => ({ ADMIN_COORD_UI_OWNER: "admin" }));
 vi.mock("@papercusp/db-org", async (orig) => {
   const actual = await orig<typeof import("@papercusp/db-org")>();
@@ -87,6 +100,8 @@ vi.mock("../../attention/triage-store", () => ({
 }));
 
 import tool from "./attention";
+import { callPlansReadRaw } from './read-dispatch';
+import { runWithWorkspace } from '../../workspace-als';
 import { deriveAttentionRefs } from '../../sync-resolver/attention-counts';
 import {
   getOperatorCache,
@@ -136,11 +151,14 @@ beforeEach(async () => {
   __setCachedReadEnabledForTests(true);
   M.readAllPlans.mockClear();
   M.groupsOverride = null;
+  M.inboxByWorkspace.clear();
+  M.seenInboxWs.length = 0;
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   __setCachedReadEnabledForTests(false);
   setFlagOverridesForTest(null);
   await _refreshCacheLayerForTests();
@@ -149,6 +167,49 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  const reportMessage = {
+    msg_id: 'goal-report-exact-pin', from: 'goal-report-fixture', to: ['human'],
+    kind: 'message', ts: '2026-10-05T18:00:00Z', summary: 'Canonical GOAL fixture',
+    body: 'MOVED: verified fixture', expects: 'none',
+    report: { plans: [], goalReport: { schemaVersion: 1, goalId: 'goal-fixture',
+      reportId: 'rpt_fixture', bodySha256: 'a'.repeat(64) } },
+  };
+  const wrapperRead = (workspace: string) => runWithWorkspace(workspace,
+    () => callPlansReadRaw('attention', {}, { uiProjection: false }));
+  const wrapperItems = (result: Awaited<ReturnType<typeof wrapperRead>>) => {
+    expect(result.status).toBe(200);
+    return (result.data as { groups: Array<{ items: Array<{ id: string; report?: unknown }> }> })
+      .groups.flatMap(group => group.items);
+  };
+
+  it('the exact nested HTTP wrapper preserves the viewed workspace for report messages', async () => {
+    M.inboxByWorkspace.set('ws-native-fixture', [reportMessage]);
+    const own = wrapperItems(await wrapperRead('ws-native-fixture'));
+    expect(own.find(item => item.id === 'coord-message:goal-report-exact-pin')?.report).toEqual(reportMessage.report);
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture']);
+    expect(wrapperItems(await wrapperRead('ws-other'))).not.toContainEqual(expect.objectContaining({
+      id: 'coord-message:goal-report-exact-pin',
+    }));
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-other']);
+  });
+
+  it('a post-boot direct persistence needs feed convergence: fresh cache omits it, SWR then exposes the same pin', async () => {
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const pinned = expect.objectContaining({ id: 'coord-message:goal-report-exact-pin', report: reportMessage.report });
+    expect(wrapperItems(await wrapperRead('ws-native-fixture'))).not.toContainEqual(pinned);
+    M.inboxByWorkspace.set('ws-native-fixture', [reportMessage]);
+    expect(wrapperItems(await wrapperRead('ws-native-fixture'))).not.toContainEqual(pinned);
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture']);
+    now += 20_001;
+    // The first expired read serves stale data and starts the actual rebuild.
+    expect(wrapperItems(await wrapperRead('ws-native-fixture'))).not.toContainEqual(pinned);
+    await vi.waitFor(async () => {
+      expect(wrapperItems(await wrapperRead('ws-native-fixture'))).toContainEqual(pinned);
+    });
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-native-fixture']);
+  });
+
   it("accepts the popup's exact owner-scoped query without stripping its owner (WI-2147274)", () => {
     const args = { ownerAgentId: "su-mine", limit: 100, offset: 0 };
     expect(tool.args.parse(args)).toEqual(args);
