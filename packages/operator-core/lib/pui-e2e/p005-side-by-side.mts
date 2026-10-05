@@ -188,10 +188,17 @@ const frame = (name: string) => writeFileSync(path.join(out, `${name}.txt`), scr
 // PAPERCUSP_* / Claude-session variable it inherits makes the child act AS that
 // session (measured 2026-09-29: an inherited PAPERCUSP_SID let the reviewed
 // Claude re-declare the driver's intent and raise owner permission notices).
+// `--claude-auth env` keeps ONLY the inference route (base URL, token, headers)
+// so stock Claude Code can answer when the box's own login is at its usage
+// limit (measured 2026-10-05: "You've hit your weekly limit"). The UI is still
+// the stock install; only who pays for the tokens changes.
+const keepClaudeRoute = cliName === 'claude' && arg('claude-auth') === 'env';
+const CLAUDE_ROUTE_VARS = new Set(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']);
 function stockEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
+    if (keepClaudeRoute && CLAUDE_ROUTE_VARS.has(k) && v) { env[k] = v; continue; }
     if (/^(PAPERCUSP_|PSU_|CLAUDECODE$|CLAUDE_CODE_|ANTHROPIC_|OPENAI_|CODEX_)/.test(k)) continue;
     env[k] = v;
   }
