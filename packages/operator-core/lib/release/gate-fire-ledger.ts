@@ -44,6 +44,7 @@
  * fallback because their historical rows cannot be correlated after the fact.
  */
 import { randomUUID } from 'node:crypto';
+import { isCheckpointCandidateSource } from './checkpoint-candidate-source';
 import type { Sql } from 'postgres';
 import { appendPipelineEvent, readGatePipelineWindow, type PipelineEventWindowRead, type PipelineEventRow } from '../harness/git-sync/pipeline-events';
 import { evaluateTestPassReuseAuditWindow, parseTestPassReuseAuditArchive,
@@ -336,12 +337,15 @@ export function evaluateFirstPostCaptureGateReuse(input: {
   if (!source?.some((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status) &&
       r.detail.runId === capture.runId && typeof r.detail.candidate === 'string' &&
       /^[0-9a-f]{12,40}$/.test(r.detail.candidate) && capture.judgedSha.startsWith(r.detail.candidate) &&
+      isCheckpointCandidateSource(r.detail.candidateSource) && r.detail.candidateSource !== 'pinned' &&
+      r.detail.diagnostic === undefined &&
       r.createdAtMs <= capture.capture!.evidence.startedAtMs)) {
     return result('unknown', 'The capture is not bound to its canonical recorded gate outcome.');
   }
   const runners = new Set(capture.capture.evidence.proofs.map((p) => p.runnerIdentity));
   attempts.sort((a, b) => a.anchor.createdAtMs - b.anchor.createdAtMs);
   const later = attempts.filter((a) => a.anchor.createdAtMs > capture.capture!.evidence.completedAtMs);
+  const seenRunIds = new Set([capture.runId]);
   if (later.some((a, i) => i > 0 && a.anchor.createdAtMs === later[i - 1]!.anchor.createdAtMs)) {
     return result('unknown', 'Subsequent fire ordering is ambiguous.');
   }
@@ -349,21 +353,33 @@ export function evaluateFirstPostCaptureGateReuse(input: {
     const outcomes = rows.filter((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status));
     if (!outcomes.length) return result('unknown', 'An earlier subsequent attempt has no completed outcome.');
     const identity = (r: PipelineEventRow) => JSON.stringify([
-      r.status, r.detail.runId, r.detail.candidate, r.detail.testPassReuse,
+      r.status, r.detail.runId, r.detail.candidate, r.detail.candidateSource, r.detail.diagnostic, r.detail.testPassReuse,
     ]);
     if (new Set(outcomes.map(identity)).size !== 1) {
       return result('unknown', 'An earlier subsequent attempt has conflicting terminal archives.');
     }
     const outcome = outcomes.reduce((a, b) => a.createdAtMs <= b.createdAtMs ? a : b);
     if (classifyGateOutcomeStatus(outcome.status) === 'skip' && outcome.detail.testPassReuse === undefined) continue;
+    if (outcome.detail.candidateSource === 'pinned' || outcome.detail.diagnostic === 'candidate-pinned') {
+      if (typeof outcome.detail.runId !== 'string' || !outcome.detail.runId.trim()) {
+        return result('unknown', 'A diagnostic attempt lacks a measured run identity.');
+      }
+      excludedRunIds.push(outcome.detail.runId);
+      continue;
+    }
+    if (!isCheckpointCandidateSource(outcome.detail.candidateSource) || outcome.detail.diagnostic !== undefined) {
+      return result('unknown', 'An earlier subsequent attempt lacks live candidate provenance.');
+    }
     const archive = parseTestPassReuseAuditArchive(outcome.detail.testPassReuse);
     const suite = archive?.suite;
     if (!archive || !suite || suite.runGroupId !== outcome.detail.runId ||
+        seenRunIds.has(suite.runGroupId) ||
         suite.startedAtMs < anchor.createdAtMs || archive.recordedAtMs > outcome.createdAtMs ||
         typeof outcome.detail.candidate !== 'string' || !/^[0-9a-f]{12,40}$/.test(outcome.detail.candidate) ||
         !archive.judgedSha.startsWith(outcome.detail.candidate)) {
       return result('unknown', 'An earlier subsequent suite lacks measured command, run or source boundaries.');
     }
+    seenRunIds.add(suite.runGroupId);
     if (suite.command !== input.requiredCommand) { excludedRunIds.push(suite.runGroupId); continue; }
     const workspaces = archive.auditRuns.flatMap((r) => r.workspaces);
     if (workspaces.some((w) => !w.runtime || w.runtime.runGroupId !== suite.runGroupId ||

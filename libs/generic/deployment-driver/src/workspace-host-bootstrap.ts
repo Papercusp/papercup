@@ -3050,6 +3050,11 @@ export function buildWorkspaceHostBootstrap(
     // = remove that wait, tracked on WI-10006110. The budget is explicit so a slow start is
     // a measured number in the bootstrap log, never systemd's silent default.
     "SERVICE_START_TIMEOUT_SEC=600",
+    // ExecStartPost's papercusp-health has its OWN budget (PAPERCUSP_HEALTH_TIMEOUT_SEC,
+    // default 120s, max 600). chain8 measured it giving up at 120s, long before the 600s
+    // TimeoutStartSec, so the start budget above never applied. Derive it from the start budget,
+    // 30s short, so the probe reports its own error before systemd kills it.
+    "SERVICE_HEALTH_TIMEOUT_SEC=$((SERVICE_START_TIMEOUT_SEC - 30))",
     'cat > "/etc/systemd/system/$SERVICE_NAME.service" <<PAPERCUSP_SERVICE',
     "[Unit]",
     "Description=Papercusp durable workspace host",
@@ -3059,6 +3064,7 @@ export function buildWorkspaceHostBootstrap(
     "[Service]",
     "Type=simple",
     "TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC",
+    "Environment=PAPERCUSP_HEALTH_TIMEOUT_SEC=$SERVICE_HEALTH_TIMEOUT_SEC",
     "User=$SERVICE_USER",
     "Group=$SERVICE_GROUP",
     "WorkingDirectory=$STATE_ROOT",

@@ -100,6 +100,18 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
     expect(r.tiers).not.toContain('test');
   });
 
+  it('does NOT credit a fixture mention beside execution of a different guard', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: cmd,
+      corpora: corpora({
+        test: `const fixture = "npm run lint:x; scripts/check-x.mjs";\nspawnSync('node', ['scripts/check-y.mjs']);`,
+      }),
+    });
+    expect(r.tiers).not.toContain('test');
+    expect(r.blocking).toBe(false);
+  });
+
   it('does NOT credit a guard off a SHARED runner path that names no guard in particular', () => {
     // `scripts/test-files.mjs` is the implementation of lint:tool-prompts, lint:plane-guards
     // AND lint:design-primitives, so any test naming that runner credited all three.
@@ -129,10 +141,19 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
   });
 
   it('DOES credit a test that runs the guard by npm name, including argv spelling', () => {
-    for (const invocation of ["npm run lint:x", "spawnSync('npm', ['run', 'lint:x'])"]) {
+    for (const invocation of ["execSync('npm run lint:x')", "spawnSync('npm', ['run', 'lint:x'])"]) {
       const r = classifyGuard({ name: 'lint:x', command: cmd, corpora: corpora({ test: invocation }) });
       expect(r.tiers, invocation).toContain('test');
     }
+  });
+
+  it('DOES credit runGuardScript when its executable arguments name this guard', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: cmd,
+      corpora: corpora({ test: "runGuardScript('node', ['scripts/check-x.mjs'], { cwd: REPO_ROOT })" }),
+    });
+    expect(r.tiers).toContain('test');
   });
 
   it('does not let a LONGER guard name credit its own prefix', () => {
@@ -140,7 +161,7 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
     const r = classifyGuard({
       name: 'lint:x',
       command: 'node scripts/check-x.mjs',
-      corpora: corpora({ test: 'npm run lint:x-extended' }),
+      corpora: corpora({ test: "spawnSync('npm', ['run', 'lint:x-extended'])" }),
     });
     expect(r.tiers).not.toContain('test');
   });

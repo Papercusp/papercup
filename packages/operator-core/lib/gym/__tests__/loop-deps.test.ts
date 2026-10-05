@@ -122,6 +122,29 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
 }
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
+  it('keeps independent baseline evaluations distinct through start, finish and score persistence', async () => {
+    const evaluateBaseline = async (runId: string) => {
+      const ab = fakeAbDeps(ALL_MEASURED);
+      const started: string[] = [];
+      const finished: string[] = [];
+      const scored: string[] = [];
+      ab.store.startRun = async (run) => { started.push(run.runId); };
+      ab.store.finishRun = async (id) => { finished.push(id); };
+      ab.store.recordScore = async (id) => { scored.push(id); };
+      const { deps } = makeDeps({ runId, abDeps: ab, repeats: 2 });
+      await deps.evaluate('baseline', { promptOverrides: {} });
+      expect(finished).toEqual(started);
+      expect(scored).toEqual(started);
+      expect(new Set(started).size).toBe(TASKS.length * 2);
+      return started;
+    };
+    const first = await evaluateBaseline('independent-first');
+    const second = await evaluateBaseline('independent-second');
+    // The durable copy upserts by this identity. A collision would replace the
+    // earlier run's oracle signals and recorded parameters with the later run.
+    expect(first.filter((id) => second.includes(id))).toEqual([]);
+  });
+
   it('rolls per-pool composites into trainAgg/devAnchorAgg/trainVector + meanCost', async () => {
     const { deps } = makeDeps({}, { ...ALL_MEASURED, 't-train-lo': { regressions: true } });
     const { evalResult, worstTraces, costUsd } = await deps.evaluate('baseline', { promptOverrides: {} });

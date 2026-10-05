@@ -37,7 +37,7 @@ describe('first required suite after named pure capture', () => {
     const counts = { candidates: 1, reused, audited: 0, noProof: 1 - reused, otherContext: 0,
       otherRunner: 0, expired: 0, notCaptured: 0, opaque: 0, unknownDrift: 0, globalInput: 0,
       inputChanged: 0, expiredClean: 0 };
-    const runtime = { version: 1, judgedSha: sha, runnerIdentity: 'runner-1',
+    const runtime = { version: 1 as const, judgedSha: sha, runnerIdentity: 'runner-1',
       runContext: 'green-checkpoint', runGroupId: runId, dirty: false };
     const output = [formatTestReuseLine('core::test:unit:pure', counts, ' auditRate=0.05 lane=pure', runtime),
       formatTestReuseTotalLine({ tasks: 1, summaries: [counts], savedMs: 1, unmeasured: 0 })].join('\n');
@@ -46,7 +46,7 @@ describe('first required suite after named pure capture', () => {
     return [{ id: `${runId}-anchor`, kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: start,
       detail: { gateFireId: runId } },
     { id: `${runId}-outcome`, kind: 'green_checkpoint', status: 'not-green', createdAtMs: start + 50,
-      detail: { gateFireId: runId, runId, candidate: sha.slice(0, 12), testPassReuse: {
+      detail: { gateFireId: runId, runId, candidate: sha.slice(0, 12), candidateSource: 'tip', testPassReuse: {
         audit: { ...health.audit, judgedSha: sha, recordedAtMs: health.recordedAtMs },
         auditRuns: health.auditRuns, auditedFiles: health.auditedFiles, suite: health.suite } } }];
   };
@@ -55,7 +55,7 @@ describe('first required suite after named pure capture', () => {
       { id: 'capture-anchor', kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: 0,
         detail: { gateFireId: 'capture-fire' } },
       { id: 'capture-outcome', kind: 'green_checkpoint', status: 'not-green', createdAtMs: 80,
-        detail: { gateFireId: 'capture-fire', runId: 'capture-run', candidate: sha.slice(0, 12) } },
+        detail: { gateFireId: 'capture-fire', runId: 'capture-run', candidate: sha.slice(0, 12), candidateSource: 'tip' } },
       ...rows('first', 300, 1), ...rows('second', 400, 1) ];
     return { capture: capture(), captureRef: 'checkpoint-artifact:capture-run', requiredCommand: command,
       read: { status: 'complete' as const, windowStartMs: 0, windowEndMs: 1000,
@@ -73,13 +73,18 @@ describe('first required suite after named pure capture', () => {
     const input = fixture(); input.read.rows.splice(2, 2, ...rows('first', 300, 0, 'npm run test:file -- one.test.ts'));
     expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'pass', runId: 'second', excludedRunIds: ['first'] });
   });
+  it('does not count a pinned diagnostic using the same command as a live gate observation', () => {
+    const input = fixture(); input.read.rows[3]!.detail.candidateSource = 'pinned';
+    expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'pass', runId: 'second', excludedRunIds: ['first'] });
+  });
   it.each(['capped', 'missing-first-outcome', 'historical-scope', 'foreign-run', 'foreign-capture',
-    'missing-verdict', 'empty-proofs', 'unknown-lane', 'late-suite', 'duplicate-event'])(
+    'missing-verdict', 'empty-proofs', 'unknown-lane', 'late-suite', 'duplicate-event',
+    'historical-provenance', 'diagnostic-capture'])(
     'keeps %s unknown instead of choosing a later passing suite', (condition) => {
       const input = fixture();
       const first = input.read.rows[3]!.detail.testPassReuse as Record<string, any>;
       if (condition === 'capped') input.read.status = 'capped';
-      if (condition === 'missing-first-outcome') { input.read.rows.splice(3, 1); input.read.total--; }
+      if (condition === 'missing-first-outcome') { input.read.rows.splice(3, 1); input.read.total = input.read.rows.length; }
       if (condition === 'historical-scope') delete first.suite;
       if (condition === 'foreign-run') first.suite.runGroupId = 'other';
       if (condition === 'foreign-capture') input.capture.runId = 'other';
@@ -88,6 +93,8 @@ describe('first required suite after named pure capture', () => {
       if (condition === 'unknown-lane') first.auditRuns[0].workspaces[0].lane = null;
       if (condition === 'late-suite') first.suite.completedAtMs = 900;
       if (condition === 'duplicate-event') input.read.rows[3]!.id = input.read.rows[2]!.id;
+      if (condition === 'historical-provenance') delete input.read.rows[3]!.detail.candidateSource;
+      if (condition === 'diagnostic-capture') input.read.rows[1]!.detail.candidateSource = 'pinned';
       expect(evaluateFirstPostCaptureGateReuse(input).verdict).toBe('unknown');
     });
 });
