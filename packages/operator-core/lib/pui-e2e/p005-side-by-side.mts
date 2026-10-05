@@ -3,11 +3,19 @@
 // tasks and writes the rendered frames + timings to --out. The PUI leg of the
 // same five tasks is recorded by agent-chat-pty.integration.test.ts
 // ("P-005: the five side-by-side review tasks work in a fresh launch directory").
-//   npx tsx packages/operator-core/lib/pui-e2e/p005-side-by-side.mts --cli claude|codex|pui --out DIR [--pui-bin PATH] [--operator URL]
+//   npx tsx packages/operator-core/lib/pui-e2e/p005-side-by-side.mts --cli claude|codex|pui --out DIR [--pui-bin PATH] [--operator URL] [--battery p005|parity]
+// --battery parity (P-022) records one probe per behaviour in the parity
+// checklist instead: time to a usable prompt, "hi" frames at +150ms/+1s/+3s,
+// streaming, a tool call, an approval, interrupt, the / menu, /model, ?,
+// history (Up), multiline (Ctrl+J and a trailing backslash), bracketed paste,
+// @ mention, status/context commands, an unknown command, Ctrl+C with a draft,
+// and resume. Keys are the bytes a plain terminal sends (lone ESC, \n for
+// Ctrl+J), so what each CLI does with them is the observation.
 // --out must be OUTSIDE any git work tree: both CLIs read instruction files
 // (CLAUDE.md / AGENTS.md) from every parent directory up to the repository root,
 // so a project inside this repo would load the papercusp agent guide.
 import { spawn, type IPty } from '@lydell/node-pty';
+import { execFileSync } from 'node:child_process';
 import xtermHeadless from '@xterm/headless';
 import {
   CODEX_GREETING_EXPECTATION,
@@ -56,6 +64,12 @@ type Cli = {
   dismiss?: Array<{ when: RegExp; keys: string }>;
   afterResume?: string[];
   env?: Record<string, string>;
+  // Parity battery (P-022): the idle composer that accepts typing, the
+  // commands that show status/context, and (pui only) the key that puts focus
+  // back in the message box after an Esc left it.
+  ready: RegExp;
+  statusCmds: string[];
+  refocus?: { unless: RegExp; key: string };
 };
 
 // A stock Codex install reads its config, AGENTS.md, hooks, skills and MCP
@@ -107,22 +121,33 @@ const CLIS: Record<string, Cli> = {
     // An update relaunch re-execs WITHOUT the launch argv, which would drop the
     // stock-install flags above mid-run.
     env: { DISABLE_AUTOUPDATER: '1' },
+    ready: /\? for shortcuts|^\s*❯\s/m,
+    statusCmds: ['/status', '/context'],
   },
   codex: {
     launch: ['codex'], resume: ['codex', 'resume', '--last'], exit: '/quit',
     busy: /esc to interrupt|Working \(/i,
     approve: { when: /Would you like to (run|make)|Allow command|Yes, proceed/i, key: 'y' },
     startup: [],
+    ready: /^\s*›\s/m,
+    statusCmds: ['/status'],
   },
   pui: {
     launch: [arg('pui-bin', 'pui')!], resume: [arg('pui-bin', 'pui')!], exit: '/exit',
-    busy: /Running — Enter queues|Starting|Connecting/i,
+    busy: /Running — Enter queues|Starting|Connecting|esc to interrupt/i,
     approve: { when: /Approve.*Decline|1 Approve|\[1\] Approve/i, key: '1' },
     startup: [],
     afterResume: ['/resume'],
     env: { PUI_OPERATOR: arg('operator', 'http://127.0.0.1:3170')! },
+    ready: /Message — Enter send|Enter sends|\? for shortcuts/,
+    statusCmds: ['/status'],
+    // Esc with nothing running leaves pui's message box (app.rs, the composing
+    // branch's `KeyCode::Esc => self.chat_composing = false`); `i` re-enters it.
+    refocus: { unless: /Message — Enter send|Enter sends|\? for shortcuts/, key: 'i' },
   },
 };
+const battery = (arg('battery', 'p005') ?? 'p005') as 'p005' | 'parity';
+if (battery !== 'p005' && battery !== 'parity') throw new Error('--battery must be p005|parity');
 const cli = CLIS[cliName];
 if (!cli) throw new Error('--cli must be claude|codex|pui');
 
@@ -198,16 +223,28 @@ function assertStockScreen(label: string, now: string) {
   }
 }
 
-async function settle(label: string, maxMs: number, opts: { approve?: boolean } = {}) {
+async function settle(label: string, maxMs: number, opts: { approve?: boolean; film?: boolean; tickMs?: number } = {}) {
   const t0 = Date.now();
   let last = screen();
   let stableSince = Date.now();
   let firstChangeMs: number | null = null;
   let approvals = 0;
   const base = last;
+  // Every distinct screen, timestamped, so streaming and tool rows can be read
+  // after the fact (parity battery only; capped so a runaway stays small).
+  const film: Array<{ ms: number; screen: string }> = [];
+  try {
+    return await settleLoop();
+  } finally {
+    if (opts.film && film.length) {
+      writeFileSync(path.join(out, `${label}.film.txt`), film.map((f) => `=== +${f.ms}ms ===\n${f.screen}`).join('\n') + '\n');
+    }
+  }
+  async function settleLoop() {
   while (Date.now() - t0 < maxMs && !exited) {
-    await sleep(500);
+    await sleep(opts.tickMs ?? 500);
     const now = screen();
+    if (opts.film && now !== last && film.length < 160) film.push({ ms: Date.now() - t0, screen: now });
     assertStockScreen(label, now);
     const popup = cli.dismiss?.find((d) => d.when.test(now));
     if (popup) {
@@ -228,7 +265,8 @@ async function settle(label: string, maxMs: number, opts: { approve?: boolean } 
     }
     if (!cli.busy.test(now) && Date.now() - stableSince > 6000) break;
   }
-  return { firstChangeMs, totalMs: Date.now() - t0, approvals, timedOut: Date.now() - t0 >= maxMs };
+  return { firstChangeMs, totalMs: Date.now() - t0, approvals, timedOut: Date.now() - t0 >= maxMs, film: film.map((f) => f.screen) };
+  }
 }
 
 async function send(text: string) {
@@ -251,7 +289,7 @@ async function task(label: string, prompt: string, maxMs = 240_000, expected?: R
   const finalScreen = screen();
   frame(label);
   const completed = cliName !== 'codex' || !expected || codexTaskCompleted(finalScreen, prompt, expected);
-  log.push({ label, prompt, ...r, exited, ...(expected ? { taskCompleted: completed } : {}) });
+  log.push({ label, prompt, ...omitFilm(r), exited, ...(expected ? { taskCompleted: completed } : {}) });
   if (exited) throw new Error(`${cliName} exited during ${label}; see ${label}.txt`);
   if (cliName === 'codex' && expected && !completed) {
     throw new Error(`Codex did not complete ${label}; inspect ${label}.txt (the screen must show the prompt, expected answer, and idle composer)`);
@@ -293,7 +331,7 @@ async function waitForCodexPrompt(prefix: string, maxMs: number, allowFirstTask:
   throw new Error(`Codex did not reach an interactive prompt within ${maxMs}ms; see ${prefix}.NOT_READY.txt`);
 }
 
-try {
+async function runP005() {
   start(cli.launch);
   const boot = cliName === 'codex'
     ? await waitForCodexPrompt('00', 90_000, true)
@@ -340,6 +378,345 @@ try {
   await send(cli.exit);
   await sleep(3000);
   try { pty.kill(); } catch { /* gone */ }
+}
+
+// ---- P-022 parity battery ---------------------------------------------------
+// Each probe records frames under --out and one log row in summary.json. The
+// booleans below are first-pass readings for the checklist; the frames are the
+// evidence, and a row is graded by reading them.
+const INDICATOR = {
+  elapsed: /\(\s*\d+s\b|\b\d+s\s*[·•)]|\b\d+m\s*\d+s\b/,
+  tokens: /\btokens?\b|[↑↓]\s*[\d.]+k?\b/i,
+  esc: /esc to interrupt/i,
+};
+const PARITY_PASTE = Array.from({ length: 40 }, (_, i) => `line ${i + 1}: the quick brown fox jumps over the lazy dog`).join('\n');
+
+function omitFilm<T extends { film?: unknown }>(r: T): Omit<T, 'film'> {
+  const { film: _film, ...rest } = r;
+  return rest;
+}
+
+function indicatorIn(frames: string[]) {
+  return {
+    busy: frames.some((f) => cli.busy.test(f)),
+    elapsed: frames.some((f) => INDICATOR.elapsed.test(f)),
+    tokens: frames.some((f) => INDICATOR.tokens.test(f)),
+    escHint: frames.some((f) => INDICATOR.esc.test(f)),
+  };
+}
+
+// The highest bare count (1..40) on screen: streaming shows it climbing across
+// frames, a reply that lands all at once shows one value.
+function maxCount(f: string): number {
+  let m = 0;
+  for (const x of f.matchAll(/(?:^|[\s●•⏺])(\d{1,2})\s*$/gm)) {
+    const n = Number(x[1]);
+    if (n <= 40) m = Math.max(m, n);
+  }
+  return m;
+}
+
+// Time to the message box (promptMs) and to an idle one (idleMs). Claude's
+// folder-trust screen is answered on the way and counted in startupScreens.
+async function waitReady(prefix: string, maxMs: number) {
+  const t0 = Date.now();
+  if (cliName === 'codex') {
+    const r = await waitForCodexPrompt(prefix, maxMs, prefix === '00');
+    return { promptMs: Date.now() - t0, idleMs: Date.now() - t0, startupScreens: null, timedOut: r.timedOut };
+  }
+  let promptMs: number | null = null;
+  let startupScreens = 0;
+  while (!exited && Date.now() - t0 < maxMs) {
+    const now = screen();
+    assertStockScreen(prefix, now);
+    const hit = cli.startup.find((s) => s.when.test(now));
+    if (hit && startupScreens < 4) {
+      startupScreens += 1;
+      frame(`${prefix}-startup-${startupScreens}`);
+      pty.write(hit.keys);
+      await sleep(800);
+      continue;
+    }
+    const popup = cli.dismiss?.find((d) => d.when.test(now));
+    if (popup) { frame(`${prefix}.dismissed`); pty.write(popup.keys); await sleep(1000); continue; }
+    if (promptMs === null && cli.ready.test(now)) promptMs = Date.now() - t0;
+    if (cli.ready.test(now) && !cli.busy.test(now)) return { promptMs, idleMs: Date.now() - t0, startupScreens, timedOut: false };
+    await sleep(100);
+  }
+  frame(`${prefix}.NOT_READY`);
+  throw new Error(`${cliName} did not reach an idle prompt within ${maxMs}ms (exited=${exited}); see ${prefix}.NOT_READY.txt`);
+}
+
+async function snapAt(label: string, t0: number, offsets: number[]) {
+  const shots: Record<string, string> = {};
+  for (const ms of offsets) {
+    const wait = t0 + ms - Date.now();
+    if (wait > 0) await sleep(wait);
+    shots[`t${ms}`] = screen();
+    writeFileSync(path.join(out, `${label}.t${ms}.txt`), shots[`t${ms}`] + '\n');
+  }
+  return shots;
+}
+
+/** Type, pause like a person, press Enter; returns the instant of the Enter byte. */
+async function enter(text: string) {
+  pty.write(text);
+  await sleep(400);
+  const t0 = Date.now();
+  pty.write('\r');
+  return t0;
+}
+
+async function keys(bytes: string, waitMs = 900) {
+  pty.write(bytes);
+  await sleep(waitMs);
+}
+
+/** A lone ESC, spaced so two never land inside a double-Esc window. */
+async function esc(label: string) {
+  pty.write('\x1b');
+  await sleep(1500);
+  if (cli.refocus && !exited && !cli.refocus.unless.test(screen())) {
+    frame(`${label}.after-esc-unfocused`);
+    pty.write(cli.refocus.key);
+    await sleep(600);
+    return { escLeftMessageBox: true };
+  }
+  return { escLeftMessageBox: false };
+}
+
+async function clearComposer(label: string, n: number) {
+  if (exited) return;
+  pty.write('\x7f'.repeat(n));
+  await sleep(900);
+  frame(`${label}.cleared`);
+}
+
+async function drainIfBusy(label: string) {
+  if (exited || !cli.busy.test(screen())) return false;
+  await settle(`${label}.drain`, 180_000, { approve: true });
+  return true;
+}
+
+async function relaunch(label: string) {
+  log.push({ label: `${label}.relaunch`, reason: `${cliName} had exited before this probe` });
+  try { pty.kill(); } catch { /* gone */ }
+  start(cli.resume);
+  log.push({ label: `${label}.relaunched`, ...(await waitReady(`${label}-relaunch`, 90_000)) });
+}
+
+async function probe(label: string, fn: () => Promise<Record<string, unknown>>) {
+  if (exited) await relaunch(label);
+  const t0 = Date.now();
+  try {
+    log.push({ label, ...(await fn()), probeMs: Date.now() - t0, exited });
+  } catch (error) {
+    if (String(error).includes('not a stock install')) throw error;
+    frame(`${label}.ERROR`);
+    log.push({ label, error: String(error), probeMs: Date.now() - t0, exited });
+  }
+}
+
+async function runParity() {
+  try {
+    log.push({ label: 'version', version: execFileSync(cli.launch[0], ['--version'], { encoding: 'utf8', env: stockEnv(), timeout: 20_000 }).trim() });
+  } catch (error) {
+    log.push({ label: 'version', error: String(error) });
+  }
+  start(cli.launch);
+  log.push({ label: '00-ready', ...(await waitReady('00', 120_000)) });
+  frame('00-ready');
+
+  await probe('10-hi', async () => {
+    const t0 = await enter('hi');
+    const shots = await snapAt('10-hi', t0, [150, 1000, 3000]);
+    const s = await settle('10-hi', 180_000, { approve: true, film: true, tickMs: 250 });
+    frame('10-hi');
+    return {
+      ...omitFilm(s),
+      indicatorAt150: indicatorIn([shots.t150]),
+      indicatorAt1000: indicatorIn([shots.t1000]),
+      indicatorAt3000: indicatorIn([shots.t3000]),
+      indicatorAny: indicatorIn([...Object.values(shots), ...s.film]),
+    };
+  });
+  await probe('11-stream', async () => {
+    await enter('Count from 1 to 40, one number per line, and nothing else.');
+    const s = await settle('11-stream', 180_000, { approve: true, film: true, tickMs: 250 });
+    frame('11-stream');
+    const counts = s.film.map(maxCount).filter((n) => n > 0);
+    return { ...omitFilm(s), distinctCountsSeen: new Set(counts).size, countsSeen: counts.slice(0, 40), indicator: indicatorIn(s.film) };
+  });
+  await probe('12-tool', async () => {
+    await enter('Read calc.js and tell me in one sentence what mul does.');
+    const s = await settle('12-tool', 180_000, { approve: true, film: true });
+    frame('12-tool');
+    return omitFilm(s);
+  });
+  await probe('13-edit-approval', async () => {
+    const before = readFileSync(path.join(proj, 'calc.js'), 'utf8');
+    await enter('Edit calc.js so that add() accepts an optional third number and adds it too.');
+    const s = await settle('13-edit-approval', 240_000, { approve: true, film: true });
+    frame('13-edit-approval');
+    return { ...omitFilm(s), fileChanged: readFileSync(path.join(proj, 'calc.js'), 'utf8') !== before };
+  });
+  await probe('14-interrupt', async () => {
+    const t0 = await enter('Write a 600-word story about a lighthouse keeper, in plain prose.');
+    await snapAt('14-interrupt', t0, [1500, 4000]);
+    const busyBeforeEsc = cli.busy.test(screen());
+    const tEsc = Date.now();
+    pty.write('\x1b');
+    await snapAt('14-interrupt.esc', tEsc, [500, 2000]);
+    let stoppedMs: number | null = null;
+    while (Date.now() - tEsc < 15_000) {
+      if (!cli.busy.test(screen())) { stoppedMs = Date.now() - tEsc; break; }
+      await sleep(200);
+    }
+    const s = await settle('14-interrupt', 60_000);
+    frame('14-interrupt');
+    let escLeftMessageBox = false;
+    if (cli.refocus && !cli.refocus.unless.test(screen())) {
+      escLeftMessageBox = true;
+      frame('14-interrupt.unfocused');
+      pty.write(cli.refocus.key);
+      await sleep(600);
+    }
+    await clearComposer('14-interrupt', 200);
+    return { ...omitFilm(s), busyBeforeEsc, stoppedMs, escLeftMessageBox };
+  });
+  await probe('15-slash', async () => {
+    await keys('/', 1500);
+    frame('15-slash');
+    await keys('mo', 1000);
+    frame('15-slash.filtered');
+    await clearComposer('15-slash', 10);
+    return {};
+  });
+  await probe('16-model', async () => {
+    const t0 = await enter('/model');
+    await snapAt('16-model', t0, [2500]);
+    const e = await esc('16-model');
+    frame('16-model.closed');
+    const drained = await drainIfBusy('16-model');
+    await clearComposer('16-model', 20);
+    return { ...e, startedATurn: drained };
+  });
+  await probe('17-shortcuts', async () => {
+    await keys('?', 1500);
+    frame('17-shortcuts');
+    const e = await esc('17-shortcuts');
+    frame('17-shortcuts.closed');
+    await clearComposer('17-shortcuts', 5);
+    return e;
+  });
+  await probe('18-history', async () => {
+    await keys('\x1b[A', 1200);
+    frame('18-history.up-1');
+    await keys('\x1b[A', 900);
+    frame('18-history.up-2');
+    await clearComposer('18-history', 300);
+    return {};
+  });
+  await probe('19-multiline', async () => {
+    await keys('line one', 300);
+    await keys('\n', 500);
+    await keys('line two', 1200);
+    frame('19-multiline.ctrl-j');
+    const ctrlJSubmitted = await drainIfBusy('19-multiline.ctrl-j');
+    await clearComposer('19-multiline.ctrl-j', 60);
+    await keys('line one\\', 300);
+    await keys('\r', 600);
+    await keys('line two', 1200);
+    frame('19-multiline.backslash');
+    const backslashSubmitted = await drainIfBusy('19-multiline.backslash');
+    await clearComposer('19-multiline.backslash', 60);
+    return { ctrlJSubmitted, backslashSubmitted };
+  });
+  await probe('20-paste', async () => {
+    pty.write(`\x1b[200~${PARITY_PASTE}\x1b[201~`);
+    await sleep(2000);
+    frame('20-paste');
+    const submitted = await drainIfBusy('20-paste');
+    await clearComposer('20-paste', PARITY_PASTE.length + 50);
+    return { submitted, pastedChars: PARITY_PASTE.length, pastedLines: 40 };
+  });
+  await probe('21-mention', async () => {
+    await keys('@cal', 1800);
+    frame('21-mention');
+    await keys('\t', 1000);
+    frame('21-mention.tab');
+    const e = await esc('21-mention');
+    frame('21-mention.closed');
+    await clearComposer('21-mention', 40);
+    return e;
+  });
+  for (const cmd of cli.statusCmds) {
+    const slug = cmd.replace(/\W+/g, '');
+    await probe(`22-${slug}`, async () => {
+      const t0 = await enter(cmd);
+      await snapAt(`22-${slug}`, t0, [1500, 4000]);
+      const e = await esc(`22-${slug}`);
+      frame(`22-${slug}.closed`);
+      const drained = await drainIfBusy(`22-${slug}`);
+      await clearComposer(`22-${slug}`, 20);
+      return { ...e, startedATurn: drained };
+    });
+  }
+  await probe('23-unknown-command', async () => {
+    const t0 = await enter('/notacommand');
+    await snapAt('23-unknown-command', t0, [1500]);
+    const drained = await drainIfBusy('23-unknown-command');
+    const e = await esc('23-unknown-command');
+    await clearComposer('23-unknown-command', 20);
+    return { ...e, startedATurn: drained };
+  });
+  await probe('24-idle-footer', async () => {
+    frame('24-idle-footer');
+    return { lastLines: screen().split('\n').slice(-4) };
+  });
+  await probe('25-ctrl-c', async () => {
+    await keys('draft text', 800);
+    pty.write('\x03');
+    await sleep(1200);
+    frame('25-ctrl-c.with-draft');
+    const exitedOnDraft = exited;
+    let exitedOnSecond = false;
+    let exitedOnThird = false;
+    if (!exited) { pty.write('\x03'); await sleep(700); frame('25-ctrl-c.second'); exitedOnSecond = exited; }
+    if (!exited) { pty.write('\x03'); await sleep(2000); frame('25-ctrl-c.third'); exitedOnThird = exited; }
+    writeFileSync(path.join(out, 'scrollback-before-exit.txt'), scrollback());
+    return { exitedOnDraft, exitedOnSecond, exitedOnThird };
+  });
+  if (!exited) {
+    await send(cli.exit);
+    const t = Date.now();
+    while (!exited && Date.now() - t < 15_000) await sleep(250);
+  }
+  try { pty.kill(); } catch { /* gone */ }
+
+  start(cli.resume);
+  log.push({ label: '26-resume-ready', ...(await waitReady('26-resume', 120_000)) });
+  frame('26-resume');
+  for (const step of cli.afterResume ?? []) {
+    await send(step);
+    await settle('26-resume-picker', 20_000);
+    frame('26-resume-picker');
+    pty.write('\r');
+    await settle('26-resume-picked', 30_000);
+    frame('26-resume-picked');
+  }
+  await probe('26-resume-recall', async () => {
+    await task('26-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.', 240_000, /optional third number|third parameter|c\s*=\s*0/i);
+    return {};
+  });
+  await send(cli.exit);
+  await sleep(3000);
+  try { pty.kill(); } catch { /* gone */ }
+}
+
+try {
+  if (battery === 'parity') await runParity();
+  else await runP005();
 } catch (error) {
   log.push({ label: 'fatal', error: String(error) });
   throw error;
@@ -352,7 +729,7 @@ try {
     log.push({ label: 'codex-login', login });
     console.log('P005_CODEX_LOGIN', login);
   }
-  writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ cli: cliName, cols, rows, log }, null, 2) + '\n');
+  writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ cli: cliName, battery, cols, rows, log }, null, 2) + '\n');
 }
-console.log('P005_DONE', cliName, JSON.stringify(log.map((l) => [l.label, l.firstChangeMs ?? null, l.totalMs ?? null, l.approvals ?? null, l.timedOut ?? null])));
+console.log(battery === 'parity' ? 'P022_DONE' : 'P005_DONE', cliName, JSON.stringify(log.map((l) => [l.label, l.firstChangeMs ?? null, l.totalMs ?? null, l.approvals ?? null, l.timedOut ?? null])));
 process.exit(0);
