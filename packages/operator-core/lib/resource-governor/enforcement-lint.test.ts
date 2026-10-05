@@ -273,6 +273,23 @@ describe('resource governor enforcement lint', () => {
     expect(launcher.match(/\bslowOperatorNotice\s*\(/g)).toHaveLength(1);
   });
 
+  it('keeps the GOAL-report Tauri recorder inside its isolated, bounded P-016 disposition', () => {
+    const path = 'scripts/tauri-surface-verify-goal-report.mts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = path + ':resource-start-outside-admission';
+    const disposition = P016_DISPOSITION_REGISTRY.get(path + '::resource-start-outside-admission');
+    expect(disposition?.disposition).toBe('bypass');
+    expect(disposition?.reason).toMatch(/^P-016 reviewed bypass disposition/);
+    expect(disposition?.matchesSource?.(source)).toBe(true);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'] })).toEqual([]);
+    expect(
+      scanInventory([[path, source + "\nspawn('extra-worker', []);"]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+    expect(
+      scanInventory([[path, source.replace("recording.kill('SIGINT');", '')]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+  });
+
   it('requires an explicit reviewed disposition for every active P-016 finding and excludes only scanner self-code', () => {
     const { files } = listTrackedFiles(ROOT);
     const p016Rows = RESOURCE_GOVERNOR_INVENTORY.filter((row) => row.migration === 'P-016');

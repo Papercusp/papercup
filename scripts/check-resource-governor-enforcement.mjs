@@ -427,6 +427,30 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/verify-cloud-workspaces-aws.mjs (WI-10005277): this is an isolated Tauri UI acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1, a private display >= :90, a live bridge PID, and verifier binaries before acting. Cloud list and mutation responses are intercepted by `window.__cwNative` fixtures; the evidence explicitly records `syntheticCloudResponses=true` and `realAwsLifecycleProven=false`, so the script starts no AWS worker or resource. Its only process-start primitive is `command()`, synchronous `execFileSync` with a 120-second per-child timeout. Every tauri-agent-tools, poll, bash, xdotool, and screenshot child is awaited to exit before the next call; it retains output only for this acceptance run, detaches no child, and holds no resident queue. It adds no independently managed runtime capacity for Governor.admit to meter.",
   },
   {
+    path: "scripts/tauri-surface-verify-goal-report.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-goal-report.mts: this is an isolated Tauri UI acceptance driver launched by tauri-surface-verify-suite.sh through verify-tauri-headless.sh, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1. Its native and DOM-poll execFileSync calls are awaited with 60s/90s timeouts, and its sole longer-lived child is one ffmpeg screen recorder explicitly stopped in finally with SIGINT, awaited for exit, then SIGKILLed after a 10s bound. It creates no detached worker or resident work queue; the finite recorder exists only for this disposable acceptance run and adds no independently managed application capacity for Governor.admit to meter.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return (
+        [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 4 &&
+        source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+        source.includes("timeout: 60_000") &&
+        source.includes("timeout: 90_000") &&
+        code.includes("recording = spawn(") &&
+        source.includes("recording.kill('SIGINT')") &&
+        source.includes("recording!.once('exit'") &&
+        source.includes("recording!.kill('SIGKILL')") &&
+        source.includes("}, 10_000).unref()") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code)
+      );
+    },
+  },
+  {
     path: "scripts/fixmic.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

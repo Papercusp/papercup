@@ -195,8 +195,13 @@ describe('createGymRunnerPorts', () => {
       const mainSource = 'export const allow = true;\n';
       writeFileSync(join(mainDir, 'index.mjs'), mainSource);
       symlinkSync(mainDir, join(clonePath, 'node_modules', 'runner-support'), 'dir');
+      const commandSource = `import { spawnSync } from 'node:child_process';
+        const child = spawnSync(process.execPath, [${JSON.stringify(join(vitestDir, 'vitest.mjs'))},
+          'run', '--config', 'vitest.config.mjs', ...process.argv.slice(2)], { stdio: 'inherit', env: process.env });
+        process.exit(child.status ?? 1);\n`;
+      writeFileSync(join(clonePath, 'command.mjs'), commandSource);
       writeFileSync(join(clonePath, 'package.json'), JSON.stringify({ name: 'gym-oracle-fixture', type: 'module', scripts: {
-        'test:file': `node ${JSON.stringify(join(vitestDir, 'vitest.mjs'))} run --config vitest.config.mjs`,
+        'test:file': 'node command.mjs',
       } }));
       const configHelper = 'export const workers = 1;\n';
       writeFileSync(join(clonePath, 'config-helper.mjs'), configHelper);
@@ -222,7 +227,7 @@ describe('createGymRunnerPorts', () => {
         });\n`);
       const git = (args: string[]) => execFileSync('git', args, { cwd: clonePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       git(['init', '--quiet']);
-      git(['add', 'package.json', 'vitest.config.mjs', 'config-helper.mjs', 'impl.mjs', 'helper.mjs', 'oracle.test.mjs', 'libs/runner-support']);
+      git(['add', 'package.json', 'command.mjs', 'vitest.config.mjs', 'config-helper.mjs', 'impl.mjs', 'helper.mjs', 'oracle.test.mjs', 'libs/runner-support']);
       git(['-c', 'user.name=Gym fixture', '-c', 'user.email=gym-fixture@example.invalid', 'commit', '--quiet', '-m', 'Pinned oracle fixture']);
       const pinCommit = git(['rev-parse', 'HEAD']).trim();
       const port = createGymRunnerPorts(cfg().config).runOracle!;
@@ -245,6 +250,17 @@ describe('createGymRunnerPorts', () => {
         } } });
       }
       expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution).toMatchObject({ commandProcessSources: {
+          report: expect.any(String),
+          processes: expect.arrayContaining([expect.objectContaining({ entrypoint: 'command.mjs',
+            schemaVersion: 'node-loaded-process-sources-v1', status: 'stable',
+            sources: expect.arrayContaining([{ path: 'command.mjs', sha256: digest(commandSource), currentSha256: digest(commandSource) }]),
+          })]),
+          reference: { pinCommit, sources: expect.arrayContaining([{ path: 'command.mjs', sha256: digest(commandSource) }]) },
+          unresolved: expect.arrayContaining(['node-process-descendant-population-unmeasured', 'node-preload-self-unmeasured']),
+        } });
+      }
       for (const receipt of [pre, post]) {
         expect(receipt.execution).toMatchObject({ mainProcessSources: {
           evidence: { scope: 'repository-node-main-process-sources', sources: expect.arrayContaining([
