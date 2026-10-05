@@ -16,8 +16,6 @@
  * and WORKSPACE ISOLATION (a datatype in ws-A is invisible from ws-B).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   upsertDatatype,
@@ -33,12 +31,6 @@ import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const profileMigrationArmed = fileURLToPath(
-  new URL('../../../libs/papercusp/libs/db/sql/1154-prose-embedding-profile-identity.sql', import.meta.url),
-);
-const profileMigration = existsSync(profileMigrationArmed)
-  ? profileMigrationArmed
-  : `${profileMigrationArmed}.DRAFT`;
 
 /**
  * A throwaway embedding (only presence/cosine is exercised, not a real vector).
@@ -65,7 +57,8 @@ describe('datatype_registry store (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
+    // Profile columns also come from the migrated fixture. Replaying 1154 here
+    // would ALTER personal_documents after 1327 has made it a compatibility view.
     // createOrgTestDb applies the FULL migration set (incl. 421/425 and the D-007
     // pot-rename 506/523), so datatype_registry already exists in its post-rename
     // (pot_slug) shape — a broken 421 would fail the fixture setup itself, so the
