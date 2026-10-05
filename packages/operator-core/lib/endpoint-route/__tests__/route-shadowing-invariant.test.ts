@@ -87,4 +87,14 @@ describe('route registration order — no parametric route shadows a literal sib
     const app = new Hono().basePath('/api');
     expect(() => registerAllRoutes(app)).not.toThrow();
   });
+
+  it('resolves wrong plugin methods after loading the registry and preserves unknown-path 404s', async () => {
+    const app = new Hono().basePath('/api');
+    registerAllRoutes(app);
+    const wrongMethod = await app.request('/api/plugins/global', { method: 'DELETE' });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get('allow')?.split(', ')).toContain('GET');
+    const unknownPath = await app.request('/api/plugins/__route_invariant_missing__', { method: 'DELETE' });
+    expect(unknownPath.status).toBe(404);
+  });
 });

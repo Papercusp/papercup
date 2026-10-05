@@ -338,6 +338,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief).toContain(JSON.stringify(baseInput.patch));
     expect(brief).toContain('R-1 (bar-meaning: falsifier)');
     expect(brief).toContain('Tighten the falsifier.');
+    expect(brief).toContain('Read the current criteria with rubrics:get and compare');
+    expect(brief).toContain('Do not call rubrics:amend or pass reviewPreviewPost');
+    expect(brief).not.toContain('rubrics:amend { rubricRef');
     // The first non-empty reviewer line is the pointer; later verification prose is allowed.
     expect(brief).toContain("the first non-empty body line must be exactly approve thread-post:42. You may add verification notes on later lines");
     expect(brief).toContain('any later approval pointer must name the same preview.');
