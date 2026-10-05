@@ -38,6 +38,11 @@ export interface GymOracleRun {
      * config loading. Matching pins do not establish original loaded bytes. */
     configSources?: {
       reference: { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> };
+      /** Original config input bytes witnessed by the Node load hook. Kept
+       * separate from later reporter-init disk observations. */
+      loaded?: { schemaVersion: string; scope: string; basis: string; status: string;
+        sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }>;
+        reasons: string[] } | null;
       evidence: { schemaVersion: string; scope: string; basis: string; status: string;
         sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }>;
         reasons: string[] } | null;
