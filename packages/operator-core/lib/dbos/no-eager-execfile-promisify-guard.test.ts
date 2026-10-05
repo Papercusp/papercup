@@ -8,10 +8,57 @@
  * `const x = promisify(execFile)` while NOT flagging an already-lazy (function-body)
  * promisify call, a differently-named promisify target, or a prose mention.
  */
-import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { promisify } from 'node:util';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
+import { describe, it, expect, vi } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
 import { usesEagerExecFilePromisify } from '../../../../scripts/check-no-eager-execfile-promisify.mjs';
+
+describe.each([
+  ['pot-integration-mode', 'execFileAsync'],
+  ['standing-pr-merge-deps', 'execFileP'],
+  ['standing-pr-merge-live', 'execFileP'],
+])('%s subprocess wrapper', (module, binding) => {
+  function loadWrapper(execFile: unknown, wrap = promisify) {
+    const source = readFileSync(new URL(`../harness/git-sync/${module}.ts`, import.meta.url), 'utf8');
+    const tree = ts.createSourceFile(`${module}.ts`, source, ts.ScriptTarget.Latest, true);
+    const declarations = tree.statements.filter((statement) =>
+      ts.isVariableStatement(statement) && statement.declarationList.declarations.some((declaration) =>
+        ts.isIdentifier(declaration.name) && declaration.name.text.startsWith(binding),
+      ),
+    );
+    expect(declarations.length).toBeGreaterThan(0);
+    const { outputText } = ts.transpileModule(declarations.map((statement) => statement.getText(tree)).join('\n'), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    });
+    return runInNewContext(`${outputText}\n${binding}`, { execFile, promisify: wrap });
+  }
+
+  it('loads the real wrapper without resolving a missing execFile in a narrow subprocess mock', () => {
+    expect(typeof loadWrapper(undefined)).toBe('function');
+  });
+
+  it('memoizes promisify at first use and forwards calls and callback failures', async () => {
+    const result = { stdout: 'git output', stderr: '' };
+    const failure = new Error('git failed');
+    const execFile = vi.fn((file: string, args: string[], options: object,
+      callback: (error: Error | null, output?: typeof result) => void) => {
+      callback(args.includes('fail') ? failure : null, result);
+    });
+    const wrap = vi.fn(promisify);
+    const wrapper = loadWrapper(execFile, wrap);
+    expect(wrap).not.toHaveBeenCalled();
+    const options = { cwd: '/repo' };
+    await expect(wrapper('git', ['status'], options)).resolves.toEqual(result);
+    await expect(wrapper('git', ['fail'], options)).rejects.toBe(failure);
+    expect(wrap).toHaveBeenCalledTimes(1);
+    expect(execFile).toHaveBeenCalledTimes(2);
+    expect(execFile.mock.calls[0].slice(0, 3)).toEqual(['git', ['status'], options]);
+  });
+});
 
 describe('no-eager-execfile-promisify guard predicate (EI-10161)', () => {
   it('FLAGS a module-scope `const x = promisify(execFile)`', () => {

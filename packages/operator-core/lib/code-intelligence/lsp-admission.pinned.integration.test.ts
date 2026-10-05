@@ -1,7 +1,7 @@
 /** Current-source daemon + pinned TypeScript server + migrated real PG stores; flag and DB routing are isolated. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -38,7 +38,6 @@ import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { lspClientInventory, resolveServerBin, shutdownAllLspClients } from './lsp-adapter';
 import { corpusCase } from './acceptance-corpus';
 import { buildLspAdmissionStatePayload } from '../agent-tools/state/lsp-admission';
-import { BENCH_PROBES, resolveProbeCursor } from './code-intel-bench';
 import { MAX_SITES_PER_ANSWER } from './lsp-daemon-facade';
 
 const rootPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -46,6 +45,7 @@ const workspaceId = `test-lsp-admission-pinned-${process.pid}`;
 const previousSocket = process.env[LSP_DAEMON_SOCKET_ENV];
 let server: Server | undefined;
 let socketRoot: string | undefined;
+let corpusRoot: string | undefined;
 let db: OrgTestDb | undefined;
 beforeAll(async () => {
   db = await createOrgTestDb();
@@ -56,6 +56,7 @@ afterAll(async () => {
   await shutdownAllLspClients();
   if (server) await new Promise<void>(done => server!.close(() => done()));
   if (socketRoot) rmSync(socketRoot, { recursive: true, force: true });
+  if (corpusRoot) rmSync(corpusRoot, { recursive: true, force: true });
   if (previousSocket === undefined) delete process.env[LSP_DAEMON_SOCKET_ENV];
   else process.env[LSP_DAEMON_SOCKET_ENV] = previousSocket;
   storage.sql = undefined;
@@ -113,18 +114,30 @@ describe('daemon admission against the pinned TypeScript server', () => {
         WHERE workspace_id = ${workspaceId} AND receipt_id = ${receipt.receiptId!}`;
       expect(rows).toEqual([{ state: 'completed' }]);
     }
-    const probe = BENCH_PROBES.find(probe => probe.symbol === 'managedSetInterval')!;
-    const cursor = resolveProbeCursor(probe, rootPath);
-    const hotArgs = { file: cursor.file, line1: cursor.line1, character: cursor.character, rootPath };
+    // This is a protocol/full-set precondition, not the repository-hot-class BAR.
+    // A source-authored oracle cannot inherit missing sites from a warmup answer.
+    corpusRoot = mkdtempSync(join(tmpdir(), 'lsp-archive-corpus-'));
+    const corpusFile = join(corpusRoot, 'hot.ts');
+    const callCount = MAX_SITES_PER_ANSWER + 20;
+    writeFileSync(join(corpusRoot, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true }, files: ['hot.ts'] }));
+    writeFileSync(corpusFile, ['export function archiveHot() { return 1; }',
+      ...Array.from({ length: callCount }, () => 'archiveHot();'), ''].join('\n'));
+    const hotArgs = { file: corpusFile, line1: 2, character: 1, rootPath: corpusRoot };
+    const preflight = await callLspDaemonRpc(socket, { workspaceId, op: 'symbol', args: hotArgs, archive: true }, 90_000, 'pinned/corpus/preflight');
+    expect(preflight.error, JSON.stringify(preflight)).toBeNull();
+    expect(preflight.sites.map(site => ({ path: site.path, line1: site.line1 }))).toEqual([{ path: 'hot.ts', line1: 1 }]);
     const request = { workspaceId, op: 'references' as const, args: hotArgs, deadlineAtMs: Date.now() + 90_000 };
     const full = await callLspDaemonRpc(socket, { ...request, archive: true }, 90_000, 'pinned/hot/archive');
-    expect(full.error).toBeNull();
+    expect(full.error, JSON.stringify(full)).toBeNull();
     expect(full.sites.length).toBeGreaterThan(MAX_SITES_PER_ANSWER);
+    expect(full.sites.map(site => ({ path: site.path, line1: site.line1 })).sort((a, b) => (a.line1 ?? 0) - (b.line1 ?? 0)))
+      .toEqual(Array.from({ length: callCount + 1 }, (_, line) => ({ path: 'hot.ts', line1: line + 1 })));
     expect(full.truncation.truncated).toBe(false);
     const bounded = await callLspDaemonRpc(socket, { ...request, args: { ...hotArgs, limit: Number.MAX_SAFE_INTEGER } }, 90_000);
     expect(bounded.daemonEvidence).toBeUndefined();
     expect(bounded.sites).toHaveLength(MAX_SITES_PER_ANSWER);
     expect(bounded.truncation).toMatchObject({ truncated: true, totalAvailable: full.sites.length });
-    expect(lspClientInventory().filter(client => client.language === 'typescript')).toHaveLength(1);
+    expect(lspClientInventory().filter(client => client.language === 'typescript' && client.rootPath === rootPath)).toHaveLength(1);
+    expect(lspClientInventory().filter(client => client.language === 'typescript' && client.rootPath === corpusRoot)).toHaveLength(1);
   }, 120_000);
 });

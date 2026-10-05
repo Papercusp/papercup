@@ -156,13 +156,16 @@ export interface GovernedSpendAttemptInput<T> {
 }
 
 export type GovernedSpendAttemptOutcome<T> =
-  | { ok: true; value: T; costUsd: number; reservationId: string; clamped: boolean; cancelled: boolean }
+  | { ok: true; value: T; costUsd: number; reservationId: string; clamped: boolean; cancelled: boolean;
+      /** Actual store response, including refusals. Null means the outcome could not be confirmed. */
+      settlement: SettleLearningSpendResult | null; settlementError?: string }
   /** The governor refused BEFORE the work ran — nothing was spent. */
   | { ok: false; reason: 'refused'; refusal: Extract<ReserveLearningSpendResult, { ok: false }>['reason']; headroomUsd: number | null }
   /** The governor is dark (kill-switch) — the work did not run. */
   | { ok: false; reason: 'governor-dark' }
   /** The work threw. The attempt is settled 'failed' with whatever it burned. */
-  | { ok: false; reason: 'failed'; error: string; costUsd: number; reservationId: string | null };
+  | { ok: false; reason: 'failed'; error: string; costUsd: number; reservationId: string | null;
+      settlement: SettleLearningSpendResult | null; settlementError?: string };
 
 function burnedCostOf(e: unknown): number {
   const c = (e as { costUsd?: unknown } | null)?.costUsd;
@@ -181,9 +184,10 @@ function burnedCostOf(e: unknown): number {
  * whole.
  *
  * A settlement failure never masks the work: the value is returned and the
- * failure is logged. That leaves the reservation OPEN, which is the honest
- * state — it shows up in `unsettledUsd` as work whose cost is unknown, rather
- * than silently reading as free.
+ * failure is logged. The actual store response is retained separately from
+ * the work's reported cost. If the call throws, settlement stays unknown: a
+ * transport error may occur before or after commit, so it cannot prove that
+ * the reservation is either open or closed.
  */
 export async function runGovernedSpendAttempt<T>(
   input: GovernedSpendAttemptInput<T>,
@@ -206,13 +210,15 @@ export async function runGovernedSpendAttempt<T>(
     return { ok: false, reason: 'refused', refusal: reserved.reason, headroomUsd: reserved.headroomUsd };
   }
   const reservationId = reserved.reservation.id;
+  let settlement: SettleLearningSpendResult | null = null;
+  let settlementError: string | undefined;
   const settle = async (
     disposition: 'used' | 'cancelled' | 'failed',
     usedUsd: number,
     note?: string,
   ): Promise<void> => {
     try {
-      await d.settle(sql, {
+      settlement = await d.settle(sql, {
         workspaceId: input.workspaceId,
         reservationId,
         disposition,
@@ -220,10 +226,15 @@ export async function runGovernedSpendAttempt<T>(
         ...(note ? { note } : {}),
         ...(input.accumulate === undefined ? {} : { accumulate: input.accumulate }),
       });
+      if (!settlement.ok) {
+        d.log(`settlement refused for reservation ${reservationId}: ${settlement.reason} ` +
+          `(stored status: ${settlement.reservation?.status ?? 'unknown'})`);
+      }
     } catch (e) {
+      settlementError = e instanceof Error ? e.message : String(e);
       d.log(
-        `settlement failed for reservation ${reservationId} (${disposition}, $${usedUsd}) — ` +
-          `it stays OPEN and visible as unsettled spend: ${e instanceof Error ? e.message : e}`,
+        `settlement outcome unconfirmed for reservation ${reservationId} (${disposition}, $${usedUsd}): ` +
+          settlementError,
       );
     }
   };
@@ -234,7 +245,8 @@ export async function runGovernedSpendAttempt<T>(
     const burned = burnedCostOf(e);
     const error = e instanceof Error ? e.message : String(e);
     await settle('failed', burned, `attempt failed: ${error}`);
-    return { ok: false, reason: 'failed', error, costUsd: burned, reservationId };
+    return { ok: false, reason: 'failed', error, costUsd: burned, reservationId,
+      settlement, ...(settlementError === undefined ? {} : { settlementError }) };
   }
   const cancelled = report.cancelled === true;
   await settle(cancelled ? 'cancelled' : 'used', report.costUsd);
@@ -245,6 +257,8 @@ export async function runGovernedSpendAttempt<T>(
     reservationId,
     clamped: reserved.clamped,
     cancelled,
+    settlement,
+    ...(settlementError === undefined ? {} : { settlementError }),
   };
 }
 

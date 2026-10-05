@@ -29,6 +29,7 @@ import {
   sumOpenReservedUsd,
 } from './store';
 import { setPotLearningScope } from '../learning/pot-gate/store';
+import { runGovernedSpendAttempt } from './registrants';
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -532,6 +533,37 @@ describe('the one visible number (P-003 verification)', () => {
 });
 
 /* ── reservation + settlement (P-005), migration 1116 ────────────────────── */
+
+describe('governed attempt persisted settlement receipts', () => {
+  it.each([
+    { label: 'completed', costUsd: 0.4, status: 'settled' },
+    { label: 'partial', costUsd: 0.1, status: 'settled' },
+    { label: 'cancelled', costUsd: 0, status: 'cancelled' },
+    { label: 'failed', costUsd: 0.02, status: 'failed' },
+  ])('returns the actual $label reservation and charge event', async ({ label, costUsd, status }) => {
+    const loopId = `frontier:receipt-${randomUUID()}`;
+    const runRef = `receipt-run:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+      requestedUsd: 1, runRef, run: async () => {
+        if (label === 'failed') throw Object.assign(new Error('partial evaluation failed'), { costUsd });
+        return { costUsd, value: label, cancelled: label === 'cancelled' };
+      },
+    }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    if ((!out.ok && out.reason !== 'failed') || !out.reservationId) throw new Error('attempt was not reserved');
+    const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    const events = await listLearningSpendEvents(sql, { workspaceId: WS, loopId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: out.reservationId, requestedUsd: 1, reservedUsd: 1,
+      usedUsd: costUsd, status, runRef });
+    expect(out.settlement).toMatchObject({ ok: true, reservation: rows[0],
+      event: costUsd === 0 ? null : events[0] });
+    expect(events).toHaveLength(costUsd === 0 ? 0 : 1);
+    expect(rows[0].settledAt).not.toBeNull();
+    expect((await getLearningSpendPositions(sql, { workspaceId: WS, loopId })).spend)
+      .toMatchObject({ requestedUsd: 1, reservedUsd: 1, usedUsd: costUsd, unsettledUsd: 0 });
+  });
+});
 
 describe('spend reservation + settlement — every attempt closes', () => {
   const LOOP = 'frontier:reserve-test';

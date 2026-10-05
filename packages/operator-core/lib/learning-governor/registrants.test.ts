@@ -22,6 +22,7 @@ import type {
   RecordLearningSpendInput,
   RegisterLearningLoopInput,
   ReserveLearningSpendResult,
+  SettleLearningSpendResult,
 } from './store';
 
 const SQL = {} as Sql;
@@ -52,7 +53,7 @@ function fakeDeps(opts: { enabled?: boolean } = {}) {
  * with which disposition.
  */
 function fakeAttemptDeps(
-  opts: { enabled?: boolean; reserve?: ReserveLearningSpendResult; settleThrows?: boolean } = {},
+  opts: { enabled?: boolean; reserve?: ReserveLearningSpendResult; settleThrows?: boolean; settlement?: SettleLearningSpendResult } = {},
 ) {
   const settlements: Array<{ disposition: string; usedUsd?: number }> = [];
   const logs: string[] = [];
@@ -84,7 +85,16 @@ function fakeAttemptDeps(
     settle: async (_sql, input) => {
       if (opts.settleThrows) throw new Error('settlement write failed');
       settlements.push({ disposition: input.disposition, usedUsd: input.usedUsd });
-      return { ok: false, reason: 'not-found', reservation: null };
+      if (opts.settlement) return opts.settlement;
+      if (!granted.ok) throw new Error('cannot settle a refused reservation');
+      return {
+        ok: true,
+        reservation: { ...granted.reservation, usedUsd: input.usedUsd ?? 0,
+          status: input.disposition === 'used' ? 'settled' : input.disposition, settledAt: 123 },
+        event: null,
+        releasedUsd: granted.reservation.reservedUsd - (input.usedUsd ?? 0),
+        overrunUsd: 0,
+      };
     },
     log: (m) => logs.push(m),
   };
@@ -107,15 +117,19 @@ describe('runGovernedSpendAttempt — every attempt settles exactly once', () =>
       deps,
     );
     expect(out).toMatchObject({ ok: true, value: 'lessons', costUsd: 0.4, cancelled: false });
+    expect(out).toMatchObject({ settlement: { ok: true, reservation: {
+      id: 'res-1', requestedUsd: 1, reservedUsd: 1, usedUsd: 0.4, status: 'settled', settledAt: 123,
+    } } });
     expect(settlements).toEqual([{ disposition: 'used', usedUsd: 0.4 }]);
   });
 
   it('settles a PARTIAL attempt at the partial cost, not the reservation', async () => {
     const { deps, settlements } = fakeAttemptDeps();
-    await runGovernedSpendAttempt(
+    const out = await runGovernedSpendAttempt(
       attempt(async () => ({ costUsd: 0.1, value: '3 of 10 tasks' })),
       deps,
     );
+    expect(out).toMatchObject({ settlement: { ok: true, reservation: { usedUsd: 0.1, status: 'settled' } } });
     expect(settlements).toEqual([{ disposition: 'used', usedUsd: 0.1 }]);
   });
 
@@ -126,6 +140,7 @@ describe('runGovernedSpendAttempt — every attempt settles exactly once', () =>
       deps,
     );
     expect(out).toMatchObject({ ok: true, cancelled: true });
+    expect(out).toMatchObject({ settlement: { ok: true, reservation: { usedUsd: 0, status: 'cancelled' } } });
     expect(settlements).toEqual([{ disposition: 'cancelled', usedUsd: 0 }]);
   });
 
@@ -140,6 +155,7 @@ describe('runGovernedSpendAttempt — every attempt settles exactly once', () =>
       deps,
     );
     expect(out).toMatchObject({ ok: false, reason: 'failed', error: 'bad JSON', costUsd: 0.02 });
+    expect(out).toMatchObject({ settlement: { ok: true, reservation: { usedUsd: 0.02, status: 'failed' } } });
     expect(settlements).toEqual([{ disposition: 'failed', usedUsd: 0.02 }]);
   });
 
@@ -185,16 +201,47 @@ describe('runGovernedSpendAttempt — every attempt settles exactly once', () =>
     expect(out).toEqual({ ok: false, reason: 'governor-dark' });
   });
 
-  it('a settlement write failure never masks the work — the value returns, the row stays OPEN', async () => {
-    // Leaving it open is the honest state: it shows up as unsettled spend
-    // rather than silently reading as free.
+  it('a settlement write failure preserves the work and leaves settlement explicitly unknown', async () => {
+    // A transport failure may happen before or after commit; it proves neither
+    // a closed reservation nor an open one.
     const { deps, logs } = fakeAttemptDeps({ settleThrows: true });
     const out = await runGovernedSpendAttempt(
       attempt(async () => ({ costUsd: 0.3, value: 'lessons' })),
       deps,
     );
     expect(out).toMatchObject({ ok: true, value: 'lessons', costUsd: 0.3 });
-    expect(logs.join('\n')).toMatch(/settlement failed.*stays OPEN/s);
+    expect(out).toMatchObject({ settlement: null, settlementError: 'settlement write failed' });
+    expect(logs.join('\n')).toMatch(/settlement outcome unconfirmed/s);
+  });
+
+  it.each(['not-found', 'already-settled', 'exact-settlement-required'] as const)(
+    'retains the actual %s settlement refusal without masking the work', async (reason) => {
+      const settlement: SettleLearningSpendResult = { ok: false, reason, reservation: null };
+      const { deps, logs } = fakeAttemptDeps({ settlement });
+      const out = await runGovernedSpendAttempt(attempt(async () => ({ costUsd: 0.4, value: 'lessons' })), deps);
+      expect(out).toMatchObject({ ok: true, value: 'lessons', costUsd: 0.4, settlement });
+      expect(logs.join('\n')).toContain(reason);
+    },
+  );
+
+  it('retains the persisted charge rather than rebuilding it from the work report', async () => {
+    const { deps } = fakeAttemptDeps();
+    const settle = deps.settle!;
+    deps.settle = async (sql, input) => {
+      const result = await settle(sql, { ...input, usedUsd: 0.25 });
+      return result;
+    };
+    const out = await runGovernedSpendAttempt(attempt(async () => ({ costUsd: 0.4, value: 'lessons' })), deps);
+    expect(out).toMatchObject({ costUsd: 0.4, settlement: { ok: true, reservation: { usedUsd: 0.25 } } });
+  });
+
+  it('retains settlement uncertainty when the spending work also failed', async () => {
+    const { deps } = fakeAttemptDeps({ settleThrows: true });
+    const out = await runGovernedSpendAttempt(attempt(async () => {
+      throw Object.assign(new Error('bad JSON'), { costUsd: 0.02 });
+    }), deps);
+    expect(out).toMatchObject({ ok: false, reason: 'failed', error: 'bad JSON', costUsd: 0.02,
+      settlement: null, settlementError: 'settlement write failed' });
   });
 });
 
