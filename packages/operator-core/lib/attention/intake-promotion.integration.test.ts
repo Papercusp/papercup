@@ -30,8 +30,11 @@ const {
   readIntakeDispositionState,
   readIntakeInvestigation,
   readIntakePromotionReceipt,
+  readIntakeReproduction,
+  defaultReproductionLedgerDeps,
 } = await import('./intake-promotion');
 const { parseIntakeDecision } = await import('./bulk-dispositions');
+const { stampFiledBugReproduction } = await import('./bug-reproduction');
 const { createImplementationReadiness, evaluateImplementationAcceptance, readImplementationReadiness } = await import(
   '../harness/improvements/agent-review-policy'
 );
@@ -76,9 +79,10 @@ async function file(opts: {
   observation?: boolean;
   createdBy?: string;
   outcome?: string;
+  payload?: Record<string, unknown>;
 }) {
   const t = tag();
-  const payload: Record<string, unknown> = {};
+  const payload: Record<string, unknown> = { ...opts.payload };
   if (opts.observation) payload.lane = 'observation';
   if (opts.outcome) {
     payload.implementationReadiness = createImplementationReadiness({
@@ -99,10 +103,19 @@ async function file(opts: {
   });
 }
 
-/** Record a decision exactly as the report path does: bound to the revision judged now. */
+/** A review-time reproduction receipt (P-013 / D-023). */
+const REPRO = { kind: 'failing-test', ref: 'npm run test:file -- gate-legs.test.ts', buildSha: 'abc1234def' } as const;
+
+/**
+ * Record a decision exactly as the report path does: bound to the revision judged now.
+ * A promote carries {@link REPRO} unless the case passes `reproduction` itself (null =
+ * none), so cases about other properties are not refused by the D-023 bug gate.
+ */
 async function decide(sourceId: string, input: DecisionInput, decidedBy = REVIEWER): Promise<Decision> {
   const sourceRevision = await currentIntakeSourceRevision(sourceId);
-  const parsed = parseIntakeDecision(input, { decidedBy, sourceRevision });
+  const withReceipt =
+    input.disposition === 'promote' && !('reproduction' in input) ? { ...input, reproduction: REPRO } : input;
+  const parsed = parseIntakeDecision(withReceipt, { decidedBy, sourceRevision });
   if (!parsed.ok) throw new Error(parsed.error);
   return parsed.decision;
 }
@@ -390,6 +403,119 @@ describe('refusals write nothing', () => {
     const payload = await payloadOf(cand.id);
     expect(payload.intakePromotion).toBeUndefined();
     expect(readImplementationReadiness(payload)?.status).toBe('unknown');
+  });
+});
+
+// P-013 (D-023 / D-024): a bug is accepted only with a reproduction on the current build.
+describe('bug reproduction receipt', () => {
+  const BUILD = 'abc1234def5678';
+
+  async function stampedPayload(ref: string, buildSha = BUILD) {
+    const stamp = await stampFiledBugReproduction({ ref, buildSha }, { filedBy: FILER }, defaultReproductionLedgerDeps());
+    if (!stamp.ok) throw new Error(stamp.error);
+    return { reproduction: stamp.stored };
+  }
+
+  async function testRun(status: 'fail' | 'pass', commitSha = BUILD): Promise<number> {
+    const [row] = await db.adminSql<{ id: string }[]>`
+      INSERT INTO harness_shared.test_runs (file_path, framework, status, commit_sha, worktree_dirty)
+      VALUES (${`p013/${tag()}.test.ts`}, 'vitest', ${status}, ${commitSha}, false)
+      RETURNING id`;
+    return Number(row!.id);
+  }
+
+  it('refuses a bug promote without a receipt and writes nothing', async () => {
+    const cand = await file({ kind: 'bug' });
+    const decision = await decide(cand.id, {
+      disposition: 'promote',
+      reason: 'looks real',
+      acceptance: FULL_ACCEPTANCE,
+      reproduction: null,
+    });
+    const refused = await exec(cand.id, decision);
+    expect(refused).toMatchObject({ ok: false, refusal: 'reproduction-missing' });
+    expect(refused.ok ? '' : refused.detail).toContain('investigate');
+    const payload = await payloadOf(cand.id);
+    expect(payload.intakePromotion).toBeUndefined();
+    expect(readIntakeReproduction(payload)).toBeNull();
+    expect(readImplementationReadiness(payload)?.status).toBe('unknown');
+
+    // An observation promoted as a fix is a bug promote too.
+    const obs = await file({ observation: true });
+    const obsDecision = await decide(obs.id, {
+      disposition: 'promote',
+      reason: 'r',
+      workKind: 'fix',
+      acceptance: FULL_ACCEPTANCE,
+      reproduction: null,
+    });
+    expect(await exec(obs.id, obsDecision)).toMatchObject({ ok: false, refusal: 'reproduction-missing' });
+    expect(await promotedFrom(obs.id)).toEqual([]);
+  });
+
+  it('records the review receipt on the promoted bug (origin review)', async () => {
+    const obs = await file({ observation: true });
+    const decision = await decide(obs.id, { disposition: 'promote', reason: 'r', workKind: 'fix', acceptance: FULL_ACCEPTANCE });
+    const result = await exec(obs.id, decision);
+    expect(result).toMatchObject({ ok: true, created: true, mode: 'distinct' });
+    if (!result.ok) return;
+    expect(readIntakeReproduction(await payloadOf(result.workItemId!))).toMatchObject({
+      receipt: { kind: 'failing-test', buildSha: 'abc1234def' },
+      origin: 'review',
+      decidedBy: REVIEWER,
+    });
+  });
+
+  it('a bug filed with a verified encounter (a failing test_runs row) promotes with no review receipt (D-024)', async () => {
+    const runId = await testRun('fail');
+    const cand = await file({ kind: 'bug', payload: await stampedPayload(`test_runs:${runId}`) });
+    expect((cand.payload as Record<string, { verification: { status: string } }>).reproduction.verification.status).toBe(
+      'verified',
+    );
+    const decision = await decide(cand.id, {
+      disposition: 'promote',
+      reason: 'encountered',
+      acceptance: FULL_ACCEPTANCE,
+      reproduction: null,
+    });
+    expect(await exec(cand.id, decision)).toMatchObject({ ok: true, mode: 'in-place', workItemId: cand.id });
+    expect(readIntakeReproduction(await payloadOf(cand.id))).toMatchObject({
+      receipt: { kind: 'encounter', ref: `test_runs:${runId}` },
+      origin: 'filing',
+    });
+  });
+
+  it('an encounter the ledger refutes (a passing run, or another build) is not born verified and still needs review', async () => {
+    for (const stamped of [
+      await stampedPayload(`test_runs:${await testRun('pass')}`),
+      await stampedPayload(`test_runs:${await testRun('fail', 'fedcba9876543')}`),
+    ]) {
+      expect(stamped.reproduction.verification.status).toBe('refuted');
+      const cand = await file({ kind: 'bug', payload: stamped });
+      const decision = await decide(cand.id, {
+        disposition: 'promote',
+        reason: 'r',
+        acceptance: FULL_ACCEPTANCE,
+        reproduction: null,
+      });
+      expect(await exec(cand.id, decision)).toMatchObject({ ok: false, refusal: 'reproduction-missing' });
+    }
+  });
+
+  it('leaves a change promote and an investigation of a bug ungated (D-023 §6)', async () => {
+    const change = await file({ kind: 'change' });
+    const changeDecision = await decide(change.id, {
+      disposition: 'promote',
+      reason: 'r',
+      acceptance: FULL_ACCEPTANCE,
+      reproduction: null,
+    });
+    expect(await exec(change.id, changeDecision)).toMatchObject({ ok: true, mode: 'in-place' });
+    expect(readIntakeReproduction(await payloadOf(change.id))).toBeNull();
+
+    const bug = await file({ kind: 'bug' });
+    const investigate = await decide(bug.id, { disposition: 'investigate', reason: 'cannot reproduce yet', acceptance: FULL_ACCEPTANCE });
+    expect(await exec(bug.id, investigate)).toMatchObject({ ok: true, created: true });
   });
 });
 
