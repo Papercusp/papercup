@@ -29748,7 +29748,7 @@
       "guidance": {
         "when": "Read emitted scorecards for trend/freshness and completeness. Filter by scalar `subjectRef` (stored observation.subject.ref), not emit's `subject:{kind,ref}`; spec-quality uses exact composite `spec-set:<classRef>:<specSetHash>:<planKey>` subject ref, not a plan slug.",
         "notWhen": "Need a rubric definition — rubrics:get/list; cross-corpus ideation rollup — curation:state-of-pot; or filing a scorecard — scorecards:emit.",
-        "chaining": "scorecards:list { rubricRef, subjectRef: \"EI-123\", since } → inspect missingKeys/ratings → drill row with work_items:get { id: issueId } or rubric criteria with rubrics:get { rubricRef }."
+        "chaining": "scorecards:list { rubricRef, subjectRef: \"EI-123\", since } → while nextCursor is non-null, call scorecards:list again with the same filters and cursor: nextCursor → inspect missingKeys/ratings → drill row with work_items:get { id: issueId } or rubric criteria with rubrics:get { rubricRef }."
       }
     },
     {

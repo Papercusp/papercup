@@ -45,8 +45,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { appendPipelineEvent, readGatePipelineWindow, type PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import { appendPipelineEvent, readGatePipelineWindow, type PipelineEventWindowRead, type PipelineEventRow } from '../harness/git-sync/pipeline-events';
 import { evaluateTestPassReuseAuditWindow, parseTestPassReuseAuditArchive,
+  parsePureProofCaptureArchive,
   type TestPassReuseAuditInvocation } from './test-pass-reuse-report';
 
 /** The anchor kind. See the module doc — DO NOT fold anchors into 'green_checkpoint'. */
@@ -279,6 +280,103 @@ export function evaluateGateReuseAuditWindow(read: PipelineEventWindowRead) {
   const result = evaluateTestPassReuseAuditWindow({ windowStartMs: read.windowStartMs,
     windowEndMs: read.windowEndMs, expectedRunIds: [...seenRuns], invocations });
   return { ...result, fireIds, excludedFireIds, evidenceRefs };
+}
+
+/**
+ * R-3: select the FIRST later configured suite from complete immutable history. The required
+ * command comes from the qualified gate configuration, not from whichever run reused files.
+ * Unknown/incomplete earlier attempts block the answer; a later success cannot replace them.
+ */
+export function evaluateFirstPostCaptureGateReuse(input: {
+  capture: unknown;
+  captureRef: string;
+  requiredCommand: string;
+  read: PipelineEventWindowRead;
+}) {
+  const { read } = input;
+  const evidenceRefs = [input.captureRef, ...read.rows.map((r) => `pipeline-event:${r.id}`)];
+  const excludedRunIds: string[] = [];
+  const result = (verdict: 'pass' | 'fail' | 'unknown', reason: string,
+    runId: string | null = null, pureReused: number | null = null) =>
+    ({ verdict, reason, runId, pureReused, excludedRunIds, evidenceRefs });
+  const capture = parsePureProofCaptureArchive(input.capture);
+  if (!capture || !input.captureRef.trim() || !input.requiredCommand.trim() || !capture.gateFireId ||
+      capture.verdictRecordedAtMs === null || !capture.promotion || capture.capture?.state !== 'done' ||
+      !capture.capture.evidence.proofs?.length || capture.capture.rows === 0) {
+    return result('unknown', 'A named, nonempty clean capture with measured verdict and promotion boundaries is required.');
+  }
+  if (read.status !== 'complete' || read.total !== read.rows.length || !read.rows.length ||
+      !Number.isSafeInteger(read.windowStartMs) || !Number.isSafeInteger(read.windowEndMs) ||
+      read.windowStartMs < 0 || read.windowStartMs > capture.processStartedAtMs ||
+      read.windowEndMs < capture.archivedAtMs || read.windowStartMs >= read.windowEndMs) {
+    return result('unknown', 'Complete history must span the capture process and subsequent attempts.');
+  }
+  const groups = new Map<string, typeof read.rows>();
+  const eventIds = new Set<string>();
+  for (const row of read.rows) {
+    if (!isGateFireId(row.detail.gateFireId) || !row.id.trim() || eventIds.has(row.id) ||
+        !Number.isSafeInteger(row.createdAtMs) || row.createdAtMs < read.windowStartMs ||
+        row.createdAtMs > read.windowEndMs) {
+      return result('unknown', 'A historical event is duplicated or lacks a scoped identity or timestamp.');
+    }
+    eventIds.add(row.id);
+    const rows = groups.get(row.detail.gateFireId) ?? [];
+    rows.push(row);
+    groups.set(row.detail.gateFireId, rows);
+  }
+  const attempts: Array<{ anchor: PipelineEventRow; rows: PipelineEventRow[] }> = [];
+  for (const rows of groups.values()) {
+    const anchors = rows.filter((r) => r.kind === GATE_FIRE_KIND && r.status === GATE_FIRE_STATUS);
+    if (anchors.length !== 1 || rows.some((r) => r.createdAtMs < anchors[0]!.createdAtMs)) {
+      return result('unknown', 'A historical attempt lacks a unique preceding fire anchor.');
+    }
+    attempts.push({ anchor: anchors[0]!, rows });
+  }
+  const source = groups.get(capture.gateFireId);
+  if (!source?.some((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status) &&
+      r.detail.runId === capture.runId && typeof r.detail.candidate === 'string' &&
+      /^[0-9a-f]{12,40}$/.test(r.detail.candidate) && capture.judgedSha.startsWith(r.detail.candidate) &&
+      r.createdAtMs <= capture.capture!.evidence.startedAtMs)) {
+    return result('unknown', 'The capture is not bound to its canonical recorded gate outcome.');
+  }
+  const runners = new Set(capture.capture.evidence.proofs.map((p) => p.runnerIdentity));
+  attempts.sort((a, b) => a.anchor.createdAtMs - b.anchor.createdAtMs);
+  const later = attempts.filter((a) => a.anchor.createdAtMs > capture.capture!.evidence.completedAtMs);
+  if (later.some((a, i) => i > 0 && a.anchor.createdAtMs === later[i - 1]!.anchor.createdAtMs)) {
+    return result('unknown', 'Subsequent fire ordering is ambiguous.');
+  }
+  for (const { anchor, rows } of later) {
+    const outcomes = rows.filter((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status));
+    if (!outcomes.length) return result('unknown', 'An earlier subsequent attempt has no completed outcome.');
+    const identity = (r: PipelineEventRow) => JSON.stringify([
+      r.status, r.detail.runId, r.detail.candidate, r.detail.testPassReuse,
+    ]);
+    if (new Set(outcomes.map(identity)).size !== 1) {
+      return result('unknown', 'An earlier subsequent attempt has conflicting terminal archives.');
+    }
+    const outcome = outcomes.reduce((a, b) => a.createdAtMs <= b.createdAtMs ? a : b);
+    if (classifyGateOutcomeStatus(outcome.status) === 'skip' && outcome.detail.testPassReuse === undefined) continue;
+    const archive = parseTestPassReuseAuditArchive(outcome.detail.testPassReuse);
+    const suite = archive?.suite;
+    if (!archive || !suite || suite.runGroupId !== outcome.detail.runId ||
+        suite.startedAtMs < anchor.createdAtMs || archive.recordedAtMs > outcome.createdAtMs ||
+        typeof outcome.detail.candidate !== 'string' || !/^[0-9a-f]{12,40}$/.test(outcome.detail.candidate) ||
+        !archive.judgedSha.startsWith(outcome.detail.candidate)) {
+      return result('unknown', 'An earlier subsequent suite lacks measured command, run or source boundaries.');
+    }
+    if (suite.command !== input.requiredCommand) { excludedRunIds.push(suite.runGroupId); continue; }
+    const workspaces = archive.auditRuns.flatMap((r) => r.workspaces);
+    if (workspaces.some((w) => !w.runtime || w.runtime.runGroupId !== suite.runGroupId ||
+        w.runtime.judgedSha !== archive.judgedSha || w.runtime.runContext !== 'green-checkpoint' ||
+        w.runtime.dirty !== false || !runners.has(w.runtime.runnerIdentity) || w.lane === null ||
+        !Number.isSafeInteger(w.counts.reused) || w.counts.reused < 0)) {
+      return result('unknown', 'The first required suite lacks matching clean selector identities or lane measurements.');
+    }
+    const pureReused = workspaces.filter((w) => w.lane === 'pure').reduce((n, w) => n + w.counts.reused, 0);
+    return result(pureReused > 0 ? 'pass' : 'fail',
+      'Measured pure reuse in the first subsequent required suite.', suite.runGroupId, pureReused);
+  }
+  return result('unknown', 'No subsequent required suite is present in the complete historical window.');
 }
 
 /** Read only historical immutable records. This does not inspect, fire or monitor the live gate. */

@@ -100,6 +100,7 @@ describe('scorecards:list correctness payload', () => {
       count: 1,
       hasMore: true,
       truncatedByLimit: true,
+      nextCursor: { createdAt: scorecard.createdAt, issueId: scorecard.issueId },
     });
     const rawChars = JSON.stringify(raw).length;
     expect(rawChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
@@ -123,6 +124,7 @@ describe('scorecards:list correctness payload', () => {
       count: number;
       hasMore: boolean;
       truncatedByLimit: boolean;
+      nextCursor: { createdAt: string; issueId: string } | null;
       scorecards: Array<{
         ratings: Record<string, unknown>;
         nKeys: number;
@@ -135,10 +137,26 @@ describe('scorecards:list correctness payload', () => {
     expect(payload?.count).toBe(1);
     expect(payload?.hasMore).toBe(true);
     expect(payload?.truncatedByLimit).toBe(true);
+    expect(payload?.nextCursor).toEqual({ createdAt: scorecard.createdAt, issueId: scorecard.issueId });
     expect(payload?.scorecards[0]?.nKeys).toBe(7);
     expect(Object.keys(payload?.scorecards[0]?.ratings ?? {})).toHaveLength(7);
     expect(payload?.scorecards[0]?.missingKeys).toEqual([]);
     expect(payload?.scorecards[0]?.rerunRecipe).toEqual(rerunRecipe);
+  });
+
+  it('accepts the returned keyset cursor and passes it to the scorecard page reader', async () => {
+    const cursor = { createdAt: '2026-08-24T00:00:00.000Z', issueId: 'EI-scorecard-previous-page' };
+    listScorecardPageM.mockResolvedValueOnce({ rows: [], hasMore: false });
+
+    const result = (await listTool.handler(
+      { rubricRef: 'acceptance-test-rubric', cursor } as never,
+      { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(listScorecardPageM).toHaveBeenCalledWith(
+      expect.objectContaining({ rubricRef: 'acceptance-test-rubric', before: cursor, includeLinks: true }),
+    );
+    expect(result.data).toMatchObject({ ok: true, hasMore: false, nextCursor: null });
   });
 
   it('returns a typed retryable envelope when the bounded read exhausts contention retries', async () => {
@@ -196,6 +214,7 @@ describe('scorecards:list correctness payload', () => {
       count: 0,
       hasMore: false,
       truncatedByLimit: false,
+      nextCursor: null,
       scorecards: [],
     });
     expect(listScorecardPageM).toHaveBeenCalledWith({

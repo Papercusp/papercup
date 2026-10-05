@@ -3263,6 +3263,14 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     const named = buildCheckpointDetail({ reason: 'advanced', green: true,
       testPassReuse: { ...testPassReuse, audit, auditedFiles } });
     expect((named.testPassReuse as { auditedFiles: unknown[] }).auditedFiles).toEqual(auditedFiles);
+    const suite = { command: 'npm run test:affected', runGroupId: 'run-1',
+      startedAtMs: testPassReuse.recordedAtMs - 20, completedAtMs: testPassReuse.recordedAtMs - 10 };
+    const scoped = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, audit, auditedFiles, suite } });
+    expect(scoped.testPassReuse).toMatchObject({ suite });
+    const badScope = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, suite: { ...suite, completedAtMs: suite.startedAtMs - 1 } } });
+    expect(badScope.testPassReuse).toMatchObject({ suite: null });
     const badNamed = buildCheckpointDetail({ reason: 'advanced', green: true,
       testPassReuse: { ...testPassReuse, auditedFiles: [{ ...auditedFiles[0], evidenceRef: '' }] } });
     expect((badNamed.testPassReuse as { auditedFiles: unknown }).auditedFiles).toBeNull();

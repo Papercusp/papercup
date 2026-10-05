@@ -13,11 +13,84 @@ import {
   recordGateFire,
   reconstructGateFireDays,
   evaluateGateReuseAuditWindow,
+  evaluateFirstPostCaptureGateReuse,
   type GateOutcomeClass,
 } from './gate-fire-ledger';
 import { buildTestPassReuseHealth } from './test-pass-reuse-report';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../scripts/lib/test-pass-reuse.mjs';
+
+describe('first required suite after named pure capture', () => {
+  const sha = 'a'.repeat(40);
+  const command = 'npm run test:affected';
+  const capture = () => ({ version: 1, runId: 'capture-run', gateFireId: 'capture-fire', pid: 123,
+    processStartedAtMs: 1, judgedSha: sha, resolvedAtMs: 70, terminalEmissionCompletedAtMs: 90,
+    verdictRecordedAtMs: 80, promotion: { candidate: sha.slice(0, 12), recordedAtMs: 60,
+      reason: 'not-green', promoted: false }, archivedAtMs: 210,
+    capture: { state: 'done', reason: null, sha, slices: 1, files: 1, rows: 1, retired: 0,
+      failed: 0, isolatedFail: 0, remaining: 0, stoppedBy: 'complete',
+      evidence: { version: 1, runGroupId: 'capture-run:pure-proof-capture', startedAtMs: 100,
+        completedAtMs: 200, clean: true, proofs: [{ file: 'packages/operator-core/lib/a.test.ts',
+          testRunId: '123', recordedAtMs: 150, runnerIdentity: 'runner-1', source: 'local',
+          runContext: 'green-checkpoint', runGroupId: 'capture-run:pure-proof-capture' }] } } });
+  const rows = (runId: string, start: number, reused: number, cmd = command): PipelineEventWindowRead['rows'] => {
+    const counts = { candidates: 1, reused, audited: 0, noProof: 1 - reused, otherContext: 0,
+      otherRunner: 0, expired: 0, notCaptured: 0, opaque: 0, unknownDrift: 0, globalInput: 0,
+      inputChanged: 0, expiredClean: 0 };
+    const runtime = { version: 1, judgedSha: sha, runnerIdentity: 'runner-1',
+      runContext: 'green-checkpoint', runGroupId: runId, dirty: false };
+    const output = [formatTestReuseLine('core::test:unit:pure', counts, ' auditRate=0.05 lane=pure', runtime),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [counts], savedMs: 1, unmeasured: 0 })].join('\n');
+    const health = buildTestPassReuseHealth(output, sha, start + 40, {
+      command: cmd, runGroupId: runId, startedAtMs: start + 10, completedAtMs: start + 30 })!;
+    return [{ id: `${runId}-anchor`, kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: start,
+      detail: { gateFireId: runId } },
+    { id: `${runId}-outcome`, kind: 'green_checkpoint', status: 'not-green', createdAtMs: start + 50,
+      detail: { gateFireId: runId, runId, candidate: sha.slice(0, 12), testPassReuse: {
+        audit: { ...health.audit, judgedSha: sha, recordedAtMs: health.recordedAtMs },
+        auditRuns: health.auditRuns, auditedFiles: health.auditedFiles, suite: health.suite } } }];
+  };
+  const fixture = () => {
+    const history: PipelineEventWindowRead['rows'] = [
+      { id: 'capture-anchor', kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: 0,
+        detail: { gateFireId: 'capture-fire' } },
+      { id: 'capture-outcome', kind: 'green_checkpoint', status: 'not-green', createdAtMs: 80,
+        detail: { gateFireId: 'capture-fire', runId: 'capture-run', candidate: sha.slice(0, 12) } },
+      ...rows('first', 300, 1), ...rows('second', 400, 1) ];
+    return { capture: capture(), captureRef: 'checkpoint-artifact:capture-run', requiredCommand: command,
+      read: { status: 'complete' as const, windowStartMs: 0, windowEndMs: 1000,
+        total: history.length, reason: null, rows: history } as PipelineEventWindowRead };
+  };
+  it('selects chronological first reuse from the real writer archive, independently of row order', () => {
+    const input = fixture(); input.read.rows.reverse();
+    expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'pass', runId: 'first', pureReused: 1 });
+  });
+  it('fails on zero reuse in the first suite even when a later suite passes', () => {
+    const input = fixture(); input.read.rows.splice(2, 2, ...rows('first', 300, 0));
+    expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'fail', runId: 'first', pureReused: 0 });
+  });
+  it('excludes a measured different command without borrowing its successful count', () => {
+    const input = fixture(); input.read.rows.splice(2, 2, ...rows('first', 300, 0, 'npm run test:file -- one.test.ts'));
+    expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'pass', runId: 'second', excludedRunIds: ['first'] });
+  });
+  it.each(['capped', 'missing-first-outcome', 'historical-scope', 'foreign-run', 'foreign-capture',
+    'missing-verdict', 'empty-proofs', 'unknown-lane', 'late-suite', 'duplicate-event'])(
+    'keeps %s unknown instead of choosing a later passing suite', (condition) => {
+      const input = fixture();
+      const first = input.read.rows[3]!.detail.testPassReuse as Record<string, any>;
+      if (condition === 'capped') input.read.status = 'capped';
+      if (condition === 'missing-first-outcome') { input.read.rows.splice(3, 1); input.read.total--; }
+      if (condition === 'historical-scope') delete first.suite;
+      if (condition === 'foreign-run') first.suite.runGroupId = 'other';
+      if (condition === 'foreign-capture') input.capture.runId = 'other';
+      if (condition === 'missing-verdict') (input.capture as any).verdictRecordedAtMs = null;
+      if (condition === 'empty-proofs') input.capture.capture.evidence.proofs = [];
+      if (condition === 'unknown-lane') first.auditRuns[0].workspaces[0].lane = null;
+      if (condition === 'late-suite') first.suite.completedAtMs = 900;
+      if (condition === 'duplicate-event') input.read.rows[3]!.id = input.read.rows[2]!.id;
+      expect(evaluateFirstPostCaptureGateReuse(input).verdict).toBe('unknown');
+    });
+});
 
 describe('reuse audit population from immutable gate events', () => {
   const sha = 'c58655490ce1a3be734de61df08aa7f8159122d4';
