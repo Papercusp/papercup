@@ -161,6 +161,7 @@ describe('the GOAL Tauri driver adopts the contract', () => {
       },
     });
     expect(native).toHaveBeenCalledTimes(1);
+    expect(native).toHaveBeenCalledWith(measured?.phases[0]?.evidenceDir);
     expect(measured?.harness).toBe('goal-report-tauri');
     expect(measured?.verdict).toBe(fails ? 'fail' : 'pass');
     expect(measured?.phases).toEqual([expect.objectContaining({
