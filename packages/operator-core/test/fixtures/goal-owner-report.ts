@@ -11,6 +11,10 @@ export async function seedGoalReportFixturePresence(sql: Sql, workspaceId: strin
     (workspace_id,owner_id,owner_label,source,host,pid,heartbeat_at,last_active_at)
     VALUES (${workspaceId},${ownerId},'Isolated report assertion','isolated-report-assertion',
       ${hostname()},${process.pid},${at}::timestamptz,${at}::timestamptz)`;
+  // The oracle derives liveTurn from recorded work, not presence heartbeat.
+  // This records the assertion that this real process is now executing.
+  await sql`INSERT INTO harness_shared.agent_activity (workspace_id,owner_id,kind,summary,created_at)
+    VALUES (${workspaceId},${ownerId},'tool','Isolated canonical report assertion',${at}::timestamptz)`;
 }
 
 /** Run the real browser fetch without modifying Tauri's read-only internals.

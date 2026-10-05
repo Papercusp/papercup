@@ -21,7 +21,7 @@
  *   SPEC-P-002-store-integration-test · this file, against migration-applied PG
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,10 +76,15 @@ const AGENT_1: ReportOrigin = {
 
 describe('report_library store (real PG)', () => {
   let db: OrgTestDb;
+  let oracleConnection: ReservedSql;
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    oracleDb.sql = db.adminSql;
+    // Production oracle reads use a separate connection from the delivery
+    // transaction. Reserve one here so concurrent delivery transactions cannot
+    // occupy the entire two-connection fixture pool while awaiting the oracle.
+    oracleConnection = await db.adminSql.reserve();
+    oracleDb.sql = oracleConnection as unknown as Sql;
     // Bind this coverage to the production migration, not just the baseline.
     expect(existsSync(reportMigration), `migration missing at ${reportMigration}`).toBe(true);
     await db.adminSql.unsafe(readFileSync(reportMigration, 'utf8')).simple();
@@ -88,6 +93,7 @@ describe('report_library store (real PG)', () => {
   }, 180_000);
 
   afterAll(async () => {
+    oracleConnection?.release();
     await db?.cleanup();
     oracleDb.sql = null;
   });
@@ -136,8 +142,8 @@ describe('report_library store (real PG)', () => {
     snapshot.observedAt = new Date().toISOString();
     const report = await publishReport(db.adminSql, { workspaceId, title: 'Canonical GOAL', goalOwnerReport: snapshot, visibility: 'workspace' }, AGENT_1);
     const ref: GoalOwnerReportRefV1 = { schemaVersion: 1, goalId, reportId: report.reportId, bodySha256: report.bodySha256 };
-    const context = { workspaceId, goalId, ref, viewer: { ownerId: 'agent-1' } };
-    const envelope: CoordEnvelope = { msg_id: 'caller-identity-is-ignored', from: 'agent-1', to: ['human'], kind: 'message', ts: new Date().toISOString(),
+    const context = { workspaceId, goalId, ref, viewer: { ownerId: holderId } };
+    const envelope: CoordEnvelope = { msg_id: 'caller-identity-is-ignored', from: holderId, to: ['human'], kind: 'message', ts: new Date().toISOString(),
       body: 'Caller-supplied misleading short prose', summary: 'Caller title' };
     const persisted = () => db.adminSql`SELECT id, body, ts FROM harness_shared.coord_event_log
       WHERE workspace_id = ${workspaceId} AND surface = 'messages' ORDER BY id`;
@@ -149,6 +155,7 @@ describe('report_library store (real PG)', () => {
     const reads = makeGoalReportReferenceReads(db.adminSql, f.workspaceId, f.snapshot.goalId);
     expect(await reads.wake(f.snapshot.nextWake)).toBe(true);
     await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${f.holderId}`;
+    await db.adminSql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${f.holderId}`;
     expect(await reads.wake(f.snapshot.nextWake)).toBe(false);
     await expect(persistGoalReportReference(db.adminSql, f.envelope, f.context)).rejects.toMatchObject({ oracle: 'next-wake-evidence' });
     expect(await f.persisted()).toEqual([]);
@@ -207,13 +214,13 @@ describe('report_library store (real PG)', () => {
     const f = await deliveryFixture();
     await resolveGoalReportReference(db.adminSql, f.workspaceId, f.snapshot.goalId, f.ref, f.context.viewer);
     await db.adminSql`UPDATE harness_shared.agent_modes SET subject = 'different-goal'
-      WHERE workspace_id = ${f.workspaceId} AND owner_id = 'agent-1' AND mode = 'goal'`;
+      WHERE workspace_id = ${f.workspaceId} AND owner_id = ${f.holderId} AND mode = 'goal'`;
     await expect(persistGoalReportReference(db.adminSql, f.envelope, f.context)).rejects.toMatchObject({
       code: 'goal-owner-report-untruthful', oracle: 'current-goal-subject',
     });
     expect(await f.persisted()).toEqual([]);
     await db.adminSql`UPDATE harness_shared.agent_modes SET subject = ${f.snapshot.goalId}
-      WHERE workspace_id = ${f.workspaceId} AND owner_id = 'agent-1' AND mode = 'goal'`;
+      WHERE workspace_id = ${f.workspaceId} AND owner_id = ${f.holderId} AND mode = 'goal'`;
     await persistGoalReportReference(db.adminSql, f.envelope, f.context);
     expect(await f.persisted()).toHaveLength(1);
   });
