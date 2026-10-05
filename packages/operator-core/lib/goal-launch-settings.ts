@@ -3057,7 +3057,7 @@ interface HeadcountPresenceRow {
 export interface GoalHeadcountMember {
   ownerId: string;
   inFleet: boolean;
-  basis: 'heartbeat' | 'boot-grace';
+  basis: 'heartbeat' | 'boot-grace' | 'launch-reservation';
   heartbeatAt: string | null;
   briefUpdatedAt: string | null;
 }
@@ -3082,7 +3082,7 @@ function parseHeadcountPopulation(raw: unknown): GoalHeadcountMember[] {
     if (!item || typeof item !== 'object') return [];
     const row = item as Record<string, unknown>;
     if (typeof row.ownerId !== 'string' || !row.ownerId ||
-        (row.basis !== 'heartbeat' && row.basis !== 'boot-grace')) return [];
+        (row.basis !== 'heartbeat' && row.basis !== 'boot-grace' && row.basis !== 'launch-reservation')) return [];
     return [{
       ownerId: row.ownerId,
       inFleet: row.inFleet === true,
@@ -3202,37 +3202,81 @@ export async function goalHeadcount(args: {
     const fleetKey = args.fleetSlug || '';
     const excludedOwnerIds = [...new Set((args.excludeOwnerIds ?? []).filter((id) => id.length > 0))];
     const rows = await pg(args.sql)`
+      WITH pending_launches AS (
+        SELECT DISTINCT ON (reservation.owner_id) reservation.*
+        FROM (
+          SELECT
+            coalesce(nullif(wi.payload->'resource_governor'->'metadata'->>'targetOwnerId', ''),
+                     'reservation:' || wi.feature_id) AS owner_id,
+            coalesce(wi.payload->'resource_governor'->'metadata'->>'fleetSlug' = ${fleetKey}, false) AS in_fleet,
+            to_timestamp((wi.payload->'resource_governor'->>'enqueuedAtMs')::double precision / 1000) AS admitted_at
+          FROM harness_shared.work_items wi
+          WHERE wi.workspace_id = ${args.workspaceId}
+            AND wi.payload->'resource_governor'->>'schemaVersion' = '1'
+            AND wi.payload->'resource_governor'->>'namespace' = 'agent-process'
+            AND wi.payload->'resource_governor'->>'admissionClass' = 'agent'
+            AND wi.payload->'resource_governor'->'metadata'->>'goalReservation' = 'true'
+            AND wi.payload->'resource_governor'->'metadata'->>'goalId' = ${args.goalId}
+            AND wi.payload->'resource_governor'->>'state' IN ('leased', 'running')
+            AND CASE WHEN jsonb_typeof(wi.payload->'resource_governor'->'lease'->'expiresAtMs') = 'number'
+                THEN (wi.payload->'resource_governor'->'lease'->>'expiresAtMs')::double precision
+                     > extract(epoch FROM clock_timestamp()) * 1000 ELSE false END
+            AND CASE WHEN jsonb_typeof(wi.payload->'resource_governor'->'enqueuedAtMs') = 'number'
+                THEN (wi.payload->'resource_governor'->>'enqueuedAtMs')::double precision
+                     > extract(epoch FROM clock_timestamp() - ${`${graceSecs} seconds`}::interval) * 1000 ELSE false END
+        ) reservation
+        WHERE reservation.owner_id <> ALL(${excludedOwnerIds}::text[])
+        ORDER BY reservation.owner_id, reservation.admitted_at DESC
+      ), candidates AS (
+        SELECT b.owner_id, coalesce(p.fleet_slug = ${fleetKey}, false) AS in_fleet,
+          CASE WHEN p.owner_id IS NULL THEN 'boot-grace' ELSE 'heartbeat' END AS basis,
+          p.heartbeat_at, b.updated_at AS brief_updated_at, p.host, p.pid, p.source
+        FROM harness_shared.session_briefs b
+        LEFT JOIN harness_shared.coord_presence p ON p.owner_id = b.owner_id
+        WHERE b.workspace_id = ${args.workspaceId}
+          AND b.goal_id = ${args.goalId}
+          AND b.owner_id <> ALL(${excludedOwnerIds}::text[])
+          AND (p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval
+            OR (p.owner_id IS NULL AND b.updated_at > now() - ${`${graceSecs} seconds`}::interval))
+          AND NOT EXISTS (
+            SELECT 1 FROM pending_launches r WHERE r.owner_id = b.owner_id
+              AND (p.heartbeat_at IS NULL OR r.admitted_at > p.heartbeat_at)
+          )
+        UNION ALL
+        SELECT r.owner_id, r.in_fleet, 'launch-reservation', NULL::timestamptz,
+          r.admitted_at, NULL::text, NULL::integer, NULL::text
+        FROM pending_launches r
+        WHERE NOT EXISTS (
+          SELECT 1 FROM harness_shared.session_briefs b
+          JOIN harness_shared.coord_presence p ON p.owner_id = b.owner_id
+          WHERE b.owner_id = r.owner_id AND b.workspace_id = ${args.workspaceId}
+            AND b.goal_id = ${args.goalId} AND p.heartbeat_at >= r.admitted_at
+            AND p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval
+        )
+      )
       SELECT
         count(*)::int AS total,
-        count(*) FILTER (WHERE p.fleet_slug = ${fleetKey})::int AS fleet,
+        count(*) FILTER (WHERE c.in_fleet)::int AS fleet,
         now()::text AS measured_at,
         coalesce(json_agg(json_build_object(
-          'ownerId', b.owner_id,
-          'inFleet', coalesce(p.fleet_slug = ${fleetKey}, false),
-          'basis', CASE WHEN p.owner_id IS NULL THEN 'boot-grace' ELSE 'heartbeat' END,
-          'heartbeatAt', p.heartbeat_at,
-          'briefUpdatedAt', b.updated_at
+          'ownerId', c.owner_id,
+          'inFleet', c.in_fleet,
+          'basis', c.basis,
+          'heartbeatAt', c.heartbeat_at,
+          'briefUpdatedAt', c.brief_updated_at
         )), '[]'::json) AS population_rows,
         coalesce(
           json_agg(json_build_object(
-            'ownerId', b.owner_id,
-            'inFleet', coalesce(p.fleet_slug = ${fleetKey}, false),
-            'heartbeatAt', p.heartbeat_at,
-            'host', p.host,
-            'pid', p.pid,
-            'source', p.source
-          )) FILTER (WHERE p.owner_id IS NOT NULL),
+            'ownerId', c.owner_id,
+            'inFleet', c.in_fleet,
+            'heartbeatAt', c.heartbeat_at,
+            'host', c.host,
+            'pid', c.pid,
+            'source', c.source
+          )) FILTER (WHERE c.basis = 'heartbeat'),
           '[]'::json
         ) AS presence_rows
-      FROM harness_shared.session_briefs b
-      LEFT JOIN harness_shared.coord_presence p ON p.owner_id = b.owner_id
-      WHERE b.workspace_id = ${args.workspaceId}
-        AND b.goal_id = ${args.goalId}
-        AND b.owner_id <> ALL(${excludedOwnerIds}::text[])
-        AND (
-          p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval
-          OR (p.owner_id IS NULL AND b.updated_at > now() - ${`${graceSecs} seconds`}::interval)
-        )`;
+      FROM candidates c`;
     const r = (rows[0] ?? {}) as {
       total?: unknown; fleet?: unknown; presence_rows?: unknown;
       measured_at?: unknown; population_rows?: unknown;
@@ -3269,6 +3313,55 @@ export async function goalHeadcount(args: {
     };
   } catch (e) {
     return { headcount: empty, measurement: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Serialize the final count with registration of the existing governor receipt.
+ * The receipt reserves goal/fleet seats until bootstrap supplies newer presence,
+ * the spawn cancels, or the existing boot grace expires. No presence is forged.
+ * Only read/lock failures can fail open; a registration/commit failure is never
+ * retried, because its external durable write may already have succeeded.
+ */
+export async function registerGoalLaunch<T>(args: {
+  workspaceId: string;
+  launcherOwnerId: string;
+  targetOwnerId?: string | null;
+  fleetSlug?: string | null;
+  excludeOwnerIds?: readonly string[];
+  sql?: Sql;
+  /** Test seam: production uses the existing complete policy resolver. */
+  resolve?: typeof resolveGoalLaunchForGoal;
+}, register: (goalId: string | null) => Promise<T>): Promise<{
+  value: T | null; resolution: GoalLaunchResolution | null; degradedReason: string | null;
+}> {
+  let goalId: string | null;
+  try {
+    goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
+  } catch (error) {
+    if (isGoalHolderAuthorityError(error)) throw error;
+    return { value: await register(null), resolution: null,
+      degradedReason: `goal admission registration not enforced — ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!goalId) return { value: await register(null), resolution: null, degradedReason: null };
+  let registrationStarted = false;
+  try {
+    return await pg(args.sql).begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`goal-launch:${args.workspaceId}:${goalId}`}, 0))`;
+      const resolution = await (args.resolve ?? resolveGoalLaunchForGoal)({
+        workspaceId: args.workspaceId, launcherOwnerId: args.launcherOwnerId, goalId,
+        fleetSlug: args.fleetSlug, count: 1,
+        excludeOwnerIds: [...(args.excludeOwnerIds ?? []), ...(args.targetOwnerId ? [args.targetOwnerId] : [])],
+        sql: tx as unknown as Sql,
+      });
+      if (resolution.refusal) return { value: null, resolution, degradedReason: null };
+      registrationStarted = true;
+      return { value: await register(goalId), resolution, degradedReason: null };
+    }) as unknown as { value: T | null; resolution: GoalLaunchResolution | null; degradedReason: string | null };
+  } catch (error) {
+    if (registrationStarted || isGoalHolderAuthorityError(error)) throw error;
+    return { value: await register(goalId), resolution: null,
+      degradedReason: `goal admission registration not enforced — ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
