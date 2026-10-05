@@ -1243,6 +1243,27 @@ export function compileGoalPlanPlacement(args: {
       }
     : null;
 
+  // EI-25157449632977265: a partial receipt can describe historical worker
+  // attestation gaps after every requested process was opened and verified.
+  // Measured empty physical recovery lets CURRENT leadership/admission/member
+  // claim evidence below decide placement; it never upgrades the immutable
+  // transaction or treats live-member count as worker accountability. Inspect
+  // the raw arrays: portfolioArray would turn an absent measurement into [].
+  const requestedMemberIds = transactionRaw?.requestedMemberIds;
+  const openedMemberIds = transactionRaw?.openedMemberIds;
+  const verifiedMemberIds = transactionRaw?.verifiedMemberIds;
+  const partialLaunchPhysicallyComplete =
+    transactionState === 'partial' &&
+    Array.isArray(recoveryRaw?.retryOwnerIds) && recoveryRaw.retryOwnerIds.length === 0 &&
+    Array.isArray(transactionRaw?.failed) && transactionRaw.failed.length === 0 &&
+    (transactionRaw.unconfirmedMemberIds === undefined ||
+      (Array.isArray(transactionRaw.unconfirmedMemberIds) && transactionRaw.unconfirmedMemberIds.length === 0)) &&
+    Array.isArray(requestedMemberIds) && requestedMemberIds.length > 0 &&
+    Array.isArray(openedMemberIds) && Array.isArray(verifiedMemberIds) &&
+    requestedMemberIds.every((ownerId) =>
+      typeof ownerId === 'string' && ownerId.trim().length > 0 &&
+      openedMemberIds.includes(ownerId) && verifiedMemberIds.includes(ownerId));
+
   const normalizedStatus = args.status?.trim().toLowerCase() ?? '';
   const normalizedItems = args.itemStatuses.map((status) => status.trim().toLowerCase());
   // What the ADMINISTRATIVE records say. Historically this was the whole of
@@ -1352,7 +1373,8 @@ export function compileGoalPlanPlacement(args: {
     state = 'admitting';
     action = 'launch-spawned-leader';
     reason = `The ${activeLane!.itemId} lease is held; launch its independently led fleet with leader:'spawn'.`;
-  } else if (launchTransaction?.state === 'launching' || launchTransaction?.state === 'partial') {
+  } else if (launchTransaction?.state === 'launching' ||
+    (launchTransaction?.state === 'partial' && !partialLaunchPhysicallyComplete)) {
     state = 'admitting';
     action = 'resume-partial-launch';
     reason =
