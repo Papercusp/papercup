@@ -461,7 +461,7 @@ describe('P011 digest-selected cache snapshot identities', () => {
     const f = fixture(), send = f.client.send;
     f.client.send = async (method, params) => {
       const result = await send(method, params);
-      if (method === 'HeapProfiler.getHeapObjectId' && result.heapSnapshotObjectId === '12') f.map.delete(key);
+      if (method === 'HeapProfiler.getHeapObjectId' && 'heapSnapshotObjectId' in result && result.heapSnapshotObjectId === '12') f.map.delete(key);
       return result;
     };
     const r = await readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest] });
