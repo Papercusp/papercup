@@ -5,6 +5,7 @@ import { CaplessAdaptiveController, type CaplessControllerOptions } from '../res
 import { RollingHealthAnalyzer, type HealthVerdict } from '../resource-governor/health-analysis';
 import type { LiveHealthReading } from '../resource-governor/live-health';
 import type { CodeIntelAnswer, CodeIntelIntent } from './contracts';
+import type { LspQueryEvent } from './lsp-query-evidence';
 
 export interface LspAdmissionContext {
   readonly workspaceId: string;
@@ -22,6 +23,8 @@ export interface LspAdmissionContext {
   readonly queryKey?: string;
   /** Evidence-backed cost classification; unknown is never assumed cheap. */
   readonly symbolCost?: 'index-hit' | 'scan' | 'unknown';
+  /** Request-bound observer; queued work must never inherit the drainer's identity. */
+  readonly observe?: (event: LspQueryEvent) => void;
 }
 
 export interface LspAdmissionReceipt {
@@ -259,6 +262,7 @@ export class LspAdmissionController {
     if (context.deadlineAtMs <= this.#now()) return Promise.reject(new LspAdmissionError('deadline', 'LSP request deadline elapsed before admission'));
     context = this.classify(context);
     const classKey = lspAdmissionClass(context);
+    context.observe?.({ phase: 'admission-queued', atMs: this.#now(), classKey });
     this.#lane(classKey);
     return new Promise<T>((resolve, reject) => {
       const waiter: Waiter = {
@@ -361,10 +365,13 @@ export class LspAdmissionController {
   async #execute(waiter: Waiter, lane: ClassLane): Promise<void> {
     try {
       await waiter.receipt?.start();
+      waiter.context.observe?.({ phase: 'admission-start', atMs: this.#now(), classKey: waiter.classKey });
       if (waiter.abandoned) { await this.#settle(waiter, async () => { await waiter.receipt?.cancel('LSP caller abandoned before execution'); }); return; }
       waiter.serviceStartedAt = this.#now();
+      waiter.context.observe?.({ phase: 'service-start', atMs: waiter.serviceStartedAt, classKey: waiter.classKey });
       const result = await waiter.task(waiter.abort.signal);
       const serviceEndedAt = this.#now();
+      waiter.context.observe?.({ phase: 'service-end', atMs: serviceEndedAt, classKey: waiter.classKey });
       if (waiter.abandoned) await this.#settle(waiter, async () => { await waiter.receipt?.cancel('LSP caller abandoned during execution'); });
       else {
         await this.#settle(waiter, async () => { await waiter.receipt?.finish(); });
@@ -400,11 +407,22 @@ async function persistWaiter(context: LspAdmissionContext, classKey: string): Pr
   };
   const outcome = await deps.governor.admit(request);
   if (outcome.kind !== 'queued') throw new Error('LSP pressure wait requires a durable queued receipt');
+  const receiptId = outcome.receipt.receiptId;
+  context.observe?.({ phase: 'durable-enqueued', atMs: Date.now(), classKey, receiptId });
   let execution: Awaited<ReturnType<typeof beginGovernedExecution>> | undefined;
   return {
-    async start() { execution = await beginGovernedExecution(request, { owner: context.actor ?? 'system:lsp-daemon' }, deps); },
-    async finish() { if (execution) await execution.finish(); },
-    async cancel(reason) { if (execution) await execution.cancel(reason); else await deps.governor.cancel(request.idempotencyKey, reason); },
+    async start() {
+      execution = await beginGovernedExecution(request, { owner: context.actor ?? 'system:lsp-daemon' }, deps);
+      context.observe?.({ phase: 'durable-running', atMs: Date.now(), classKey, receiptId });
+    },
+    async finish() {
+      const confirmed = execution ? await execution.finish() : false;
+      context.observe?.({ phase: 'durable-settled', atMs: Date.now(), classKey, receiptId, confirmed });
+    },
+    async cancel(reason) {
+      const confirmed = execution ? await execution.cancel(reason) : (await deps.governor.cancel(request.idempotencyKey, reason)).cancelled;
+      context.observe?.({ phase: 'durable-cancelled', atMs: Date.now(), classKey, receiptId, confirmed });
+    },
   };
 }
 

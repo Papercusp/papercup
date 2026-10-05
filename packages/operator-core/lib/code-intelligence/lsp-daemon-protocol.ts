@@ -10,6 +10,8 @@ import {
   type LspLanguage,
 } from './lsp-adapter.ts';
 import type { LspFacadeArgs, LspFacadeOp } from './lsp-facade.ts';
+import type { CodeIntelAnswer } from './contracts.ts';
+import type { LspQueryEvidence } from './lsp-query-evidence.ts';
 
 export interface LspDaemonRequest {
   op: LspFacadeOp;
@@ -20,6 +22,12 @@ export interface LspDaemonRequest {
   priority?: number;
   /** Absolute epoch milliseconds. The daemon must enforce this, not the caller. */
   deadlineAtMs?: number;
+  /** Internal benchmark/archive delivery, never a public tool argument. */
+  archive?: boolean;
+}
+
+export interface LspDaemonAnswer extends CodeIntelAnswer {
+  readonly daemonEvidence?: LspQueryEvidence;
 }
 
 /** Internal read/refresh operations used by the operator's locked rename writer. */

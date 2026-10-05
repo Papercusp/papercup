@@ -78,7 +78,7 @@ describe('daemon admission integration', () => {
     void first.catch(() => undefined);
     try {
     await vi.waitFor(() => expect(calls).toEqual(['references']));
-    const queued = callLspDaemonRpc(socketPath, { workspaceId, op: 'references', args, actorId: 'agent-b' }, 10_000);
+    const queued = callLspDaemonRpc(socketPath, { workspaceId, op: 'references', args, actorId: 'agent-b', archive: true }, 10_000, 'replay/agent-b/0');
     pending.push(queued);
     void queued.catch(() => undefined);
     const controller = lspAdmissionController(workspaceId);
@@ -107,7 +107,18 @@ describe('daemon admission integration', () => {
     expect(calls).toEqual(['references', 'symbol']);
     release();
     expect((await first).sites).toHaveLength(1);
-    expect((await queued).sites).toHaveLength(1);
+    const archived = await queued;
+    expect(archived.sites).toHaveLength(1);
+    expect(archived.daemonEvidence).toMatchObject({ requestId: 'replay/agent-b/0', daemonPid: process.pid });
+    expect(archived.daemonEvidence!.events.map(event => event.phase)).toEqual([
+      'admission-queued', 'durable-enqueued', 'durable-running', 'admission-start',
+      'service-start', 'service-end', 'durable-settled',
+    ]);
+    const terminal = archived.daemonEvidence!.events.at(-1)!;
+    expect(terminal.confirmed).toBe(true);
+    expect(terminal.receiptId).toBeTruthy();
+    expect(archived.daemonEvidence!.respondedAtMs!).toBeGreaterThanOrEqual(terminal.atMs);
+    expect(seam.facade).toHaveBeenLastCalledWith('references', args, 'archive');
     expect(calls).toEqual(['references', 'symbol', 'references']);
     await vi.waitFor(() => expect(controller.snapshot()).toMatchObject({ assessment: 'idle', queued: 0, inFlight: 0, settlementFailures: [] }));
     expect(await readLspDaemonAdmission(workspaceId)).toMatchObject({ assessment: 'idle', queued: 0, inFlight: 0 });
@@ -115,6 +126,7 @@ describe('daemon admission integration', () => {
     // The real driver persisted one waiting request and released its lease.
     const request = admitted.mock.calls[0][0];
     expect(await seam.store!.find('lsp-query', request.idempotencyKey)).toMatchObject({ record: { state: 'completed' } });
+    expect((await seam.store!.find('lsp-query', request.idempotencyKey))!.receiptId).toBe(terminal.receiptId);
     expect(request.metadata).toMatchObject({ actor: 'agent-b', op: 'references', language: 'typescript' });
     } finally {
       release();

@@ -13,6 +13,8 @@ import { isTrustworthyEmpty } from './contracts.ts';
 import { lspDaemonCostKey } from './lsp-daemon-cost-key.ts';
 import { activeWorkspaceId } from '../workspace-registry.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
+import { newLspQueryEvidence, withLspQueryEvidence, lspEvidenceNow } from './lsp-query-evidence.ts';
+import type { LspDaemonAnswer } from './lsp-daemon-protocol.ts';
 
 interface RpcRequest { jsonrpc: '2.0'; id: string; method: 'lsp:query' | 'lsp:cancel' | 'lsp:admission' | 'lsp:rename' | 'lsp:diagnostic-count' | 'lsp:resync'; params: LspDaemonRequest | LspDaemonApplyRequest | { requestId: string } | { workspaceId: string } }
 
@@ -53,12 +55,13 @@ export async function dispatchLspDaemonRequest(
   request: LspDaemonRequest,
   requestId: string,
   signal: AbortSignal,
-): Promise<CodeIntelAnswer> {
+): Promise<LspDaemonAnswer> {
   const context = resolveLspDaemonDispatchContext(request, signal);
+  const evidence = request.archive === true ? newLspQueryEvidence(requestId) : undefined;
+  const task = () => withLspQueryEvidence(evidence, () => lspDaemonFacade(request.op, request.args, evidence ? 'archive' : 'context'));
   // The local facade owns the original exact refusals and the flag check. An
   // incomplete request never reaches admission or an adapter child.
-  if (!context) return lspDaemonFacade(request.op, request.args);
-  return runLspAdmission({
+  const answer = !context ? await task() : await runLspAdmission({
     workspaceId: request.workspaceId ?? activeWorkspaceId(),
     requestId,
     language: context.language,
@@ -70,7 +73,11 @@ export async function dispatchLspDaemonRequest(
     signal,
     query: request.args.file ?? request.args.name ?? request.op,
     queryKey: await lspDaemonCostKey(request.op, request.args),
-  }, () => lspDaemonFacade(request.op, request.args));
+    observe: evidence ? event => evidence.events.push(event) : undefined,
+  }, task);
+  if (!evidence) return answer;
+  evidence.respondedAtMs = lspEvidenceNow();
+  return { ...answer, daemonEvidence: evidence };
 }
 
 /** Start once per host; all cluster workers address the primary's pinned socket. */

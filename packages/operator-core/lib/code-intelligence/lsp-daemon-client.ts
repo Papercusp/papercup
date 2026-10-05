@@ -8,7 +8,7 @@ import { newTaskId } from '../task-manager/types.ts';
 import { resolveSidecarSpawnPlan } from '../process-supervision/sidecar-spawn-shared.ts';
 import { probeUnixSocketAlive } from '../sidecar-socket/pid-keyed-socket.ts';
 import { LSP_DAEMON_SOCKET_ENV, resolveLspDaemonSocketPath } from './lsp-daemon-socket.ts';
-import type { LspDaemonRequest, LspDaemonApplyRequest } from './lsp-daemon-protocol.ts';
+import type { LspDaemonRequest, LspDaemonApplyRequest, LspDaemonAnswer } from './lsp-daemon-protocol.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 import type { LspAdmissionSnapshot } from './lsp-admission.ts';
 import type { lspRenameWorkspaceEdit } from './lsp-adapter.ts';
@@ -76,8 +76,9 @@ async function callLspDaemonFrame<T>(
   params: LspDaemonRequest | LspDaemonApplyRequest | { workspaceId: string },
   valid: (result: unknown) => result is T,
   timeoutMs: number,
+  requestId?: string,
 ): Promise<T> {
-  const id = randomUUID();
+  const id = requestId ?? randomUUID();
   return new Promise<T>((resolveAnswer, reject) => {
     const socket = connect(socketPath);
     let settled = false;
@@ -111,11 +112,11 @@ async function callLspDaemonFrame<T>(
   });
 }
 
-export function callLspDaemonRpc(socketPath: string, request: LspDaemonRequest, timeoutMs = 90_000): Promise<CodeIntelAnswer> {
+export function callLspDaemonRpc(socketPath: string, request: LspDaemonRequest, timeoutMs = 90_000, requestId?: string): Promise<LspDaemonAnswer> {
   return callLspDaemonFrame(socketPath, 'lsp:query', request,
     (result): result is CodeIntelAnswer => !!result && typeof result === 'object' &&
       Array.isArray((result as CodeIntelAnswer).sites) && !!(result as CodeIntelAnswer).freshness,
-    timeoutMs);
+    timeoutMs, requestId);
 }
 
 /** The operator observes the daemon's live controller, never its own singleton. */

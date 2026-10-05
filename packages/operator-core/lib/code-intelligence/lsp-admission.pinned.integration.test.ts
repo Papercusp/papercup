@@ -1,11 +1,19 @@
-/** Current-source daemon + real pinned TypeScript server; only flags and receipt storage are substituted. */
-import { afterAll, describe, expect, it, vi } from 'vitest';
+/** Current-source daemon + pinned TypeScript server + migrated real PG stores; flag and DB routing are isolated. */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:net';
+import type postgres from 'postgres';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+
+const storage = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => { if (!storage.sql) throw new Error('pinned test PG not initialized'); return { sql: storage.sql }; },
+}));
 
 vi.mock('@papercusp/flags/server', async importOriginal => {
   const original = await importOriginal<typeof import('@papercusp/flags/server')>();
@@ -14,12 +22,14 @@ vi.mock('@papercusp/flags/server', async importOriginal => {
 });
 vi.mock('../resource-governor/execution', async importOriginal => {
   const original = await importOriginal<typeof import('../resource-governor/execution')>();
-  const { MemoryAdmissionQueueStore } = await import('../resource-governor/memory-admission-queue-store');
+  const { PgAdmissionCutoverQueueStore } = await import('../resource-governor/admission-cutover-store');
   const { WorkItemAdmissionQueueDriver } = await import('../resource-governor/queue');
   const { Governor } = await import('../resource-governor/admission');
-  const driver = new WorkItemAdmissionQueueDriver(new MemoryAdmissionQueueStore(), { namespace: 'lsp-query' });
-  const deps = { driver, governor: new Governor(driver) };
-  return { ...original, governedExecutionRuntime: () => deps };
+  return { ...original, governedExecutionRuntime: (workspaceId: string) => {
+    if (!storage.sql) throw new Error('pinned test PG not initialized');
+    const driver = new WorkItemAdmissionQueueDriver(new PgAdmissionCutoverQueueStore({ workspaceId, sql: storage.sql }), { namespace: 'lsp-query' });
+    return { driver, governor: new Governor(driver) };
+  } };
 });
 
 import { runLspDaemonServer } from './lsp-daemon-server';
@@ -28,19 +38,29 @@ import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { lspClientInventory, resolveServerBin, shutdownAllLspClients } from './lsp-adapter';
 import { corpusCase } from './acceptance-corpus';
 import { buildLspAdmissionStatePayload } from '../agent-tools/state/lsp-admission';
+import { BENCH_PROBES, resolveProbeCursor } from './code-intel-bench';
+import { MAX_SITES_PER_ANSWER } from './lsp-daemon-facade';
 
 const rootPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const workspaceId = `test-lsp-admission-pinned-${process.pid}`;
 const previousSocket = process.env[LSP_DAEMON_SOCKET_ENV];
 let server: Server | undefined;
 let socketRoot: string | undefined;
+let db: OrgTestDb | undefined;
+beforeAll(async () => {
+  db = await createOrgTestDb();
+  storage.sql = db.adminSql;
+  expect((await db.adminSql`SELECT to_regclass('harness_shared.lsp_capabilities') AS name`)[0].name).toBeTruthy();
+}, 120_000);
 afterAll(async () => {
   await shutdownAllLspClients();
   if (server) await new Promise<void>(done => server!.close(() => done()));
   if (socketRoot) rmSync(socketRoot, { recursive: true, force: true });
   if (previousSocket === undefined) delete process.env[LSP_DAEMON_SOCKET_ENV];
   else process.env[LSP_DAEMON_SOCKET_ENV] = previousSocket;
-});
+  storage.sql = undefined;
+  await db?.cleanup();
+}, 30_000);
 
 describe('daemon admission against the pinned TypeScript server', () => {
   it('answers tracked cross-package ground truth through learned cost lanes and live RPC readback', async () => {
@@ -57,8 +77,8 @@ describe('daemon admission against the pinned TypeScript server', () => {
     process.env[LSP_DAEMON_SOCKET_ENV] = socket;
     server = runLspDaemonServer();
     await once(server, 'listening');
-    const query = (actorId: string) => callLspDaemonRpc(socket, { workspaceId, op: 'symbol', args, actorId,
-      deadlineAtMs: Date.now() + 90_000 }, 90_000);
+    const query = (actorId: string) => callLspDaemonRpc(socket, { workspaceId, op: 'symbol', args, actorId, archive: true,
+      deadlineAtMs: Date.now() + 90_000 }, 90_000, `pinned/${actorId}`);
     const warm = await query('warmup');
     expect(warm.error).toBeNull();
     expect(warm.freshness.health).toBe('healthy');
@@ -78,5 +98,33 @@ describe('daemon admission against the pinned TypeScript server', () => {
     expect(inventory).toHaveLength(1);
     expect(inventory[0].taskId).toBeTruthy();
     expect(inventory[0].health).toBe('healthy');
+    for (const [index, answer] of answers.entries()) {
+      expect(answer.daemonEvidence!.requestId).toBe(`pinned/agent-${index}`);
+      const wire = answer.daemonEvidence!.wire.filter(row => row.method === 'textDocument/definition');
+      expect(wire).toHaveLength(1);
+      expect(wire[0]).toMatchObject({ taskId: inventory[0].taskId, pid: inventory[0].pid, outcome: 'response' });
+      expect(wire[0].endedAtMs!).toBeGreaterThanOrEqual(wire[0].startedAtMs);
+    }
+    const receipts = answers.flatMap(answer => answer.daemonEvidence!.events.filter(event => event.phase === 'durable-settled'));
+    expect(receipts.length).toBeGreaterThan(0);
+    for (const receipt of receipts) {
+      expect(receipt.confirmed).toBe(true);
+      const rows = await db!.adminSql`SELECT state FROM harness_shared.resource_governor_admissions
+        WHERE workspace_id = ${workspaceId} AND receipt_id = ${receipt.receiptId!}`;
+      expect(rows).toEqual([{ state: 'completed' }]);
+    }
+    const probe = BENCH_PROBES.find(probe => probe.symbol === 'managedSetInterval')!;
+    const cursor = resolveProbeCursor(probe, rootPath);
+    const hotArgs = { file: cursor.file, line1: cursor.line1, character: cursor.character, rootPath };
+    const request = { workspaceId, op: 'references' as const, args: hotArgs, deadlineAtMs: Date.now() + 90_000 };
+    const full = await callLspDaemonRpc(socket, { ...request, archive: true }, 90_000, 'pinned/hot/archive');
+    expect(full.error).toBeNull();
+    expect(full.sites.length).toBeGreaterThan(MAX_SITES_PER_ANSWER);
+    expect(full.truncation.truncated).toBe(false);
+    const bounded = await callLspDaemonRpc(socket, { ...request, args: { ...hotArgs, limit: Number.MAX_SAFE_INTEGER } }, 90_000);
+    expect(bounded.daemonEvidence).toBeUndefined();
+    expect(bounded.sites).toHaveLength(MAX_SITES_PER_ANSWER);
+    expect(bounded.truncation).toMatchObject({ truncated: true, totalAvailable: full.sites.length });
+    expect(lspClientInventory().filter(client => client.language === 'typescript')).toHaveLength(1);
   }, 120_000);
 });

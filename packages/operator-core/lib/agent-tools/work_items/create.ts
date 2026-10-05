@@ -56,6 +56,8 @@ import { resolveGoalContext } from '../../modes/goal-context';
 import { evaluateStewardHandDispatch } from '../../goals/steward-hand-dispatch';
 import { gateWorkScope } from '../../work-scope-policy';
 import { canonicalizeAssigneeOwnerId } from '../../work-item-holder-identity';
+import { stampFiledBugReproduction } from '../../attention/bug-reproduction';
+import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -463,6 +465,26 @@ export default defineTool({
         // available when the semantic probe is unavailable; feature/chunk/bug/change
         // still inherit the resolved GOAL fail-closed rail.
         spec.goalDedupGate = goalDedupGate && spec.kind !== 'task';
+        // P-013 / D-024: `payload.reproduction` is a SERVER-computed stamp — it is what
+        // lets an encountered bug skip the bulk-review reproduction step. A caller value
+        // is never stored verbatim: re-stamp it under the caller's identity (ledger refs
+        // resolved, any caller-written verdict discarded), or refuse one that won't parse.
+        const callerPayload =
+          typeof spec.payload === 'object' && spec.payload !== null ? (spec.payload as Record<string, unknown>) : null;
+        if (callerPayload && callerPayload.reproduction !== undefined) {
+          const raw = callerPayload.reproduction;
+          const receiptInput =
+            raw && typeof raw === 'object' && !Array.isArray(raw) && 'receipt' in raw
+              ? (raw as { receipt: unknown }).receipt
+              : raw;
+          const stamp = await stampFiledBugReproduction(
+            receiptInput,
+            { filedBy: ident.ownerId },
+            defaultReproductionLedgerDeps(),
+          );
+          if (!stamp.ok) throw new Error(`payload.reproduction: ${stamp.error}`);
+          spec.payload = { ...callerPayload, reproduction: stamp.stored };
+        }
         // EI-18784357226895330: a claim spec governs what a member may PULL from the
         // shared claimable pool. It must NOT govern what a member may FILE. This block
         // used to refuse the whole create, which meant a member who discovered an

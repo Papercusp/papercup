@@ -192,10 +192,13 @@ function applyBudget(input: CodeIntelAnswer, limit: number): CodeIntelAnswer {
 export async function lspDaemonFacade(
   op: LspFacadeOp,
   args: LspFacadeArgs = {},
+  delivery: 'context' | 'archive' = 'context',
 ): Promise<CodeIntelAnswer> {
   const started = Date.now();
   const rootPath = args.rootPath ?? process.cwd();
-  const limit = Math.min(args.limit ?? MAX_SITES_PER_ANSWER, MAX_SITES_PER_ANSWER);
+  // Only the typed internal daemon seam selects archive delivery. Public limit
+  // arguments cannot evade the existing context budget or the policy checks.
+  const limit = delivery === 'archive' ? Infinity : Math.min(args.limit ?? MAX_SITES_PER_ANSWER, MAX_SITES_PER_ANSWER);
 
   if (!LSP_FACADE_OPS.includes(op)) {
     return refusal(
