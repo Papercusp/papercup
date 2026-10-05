@@ -361,6 +361,49 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
         const mainProcessCurrent = preMainProcess !== null && postMainProcess !== null &&
           preMainProcess.size === postMainProcess.size &&
           [...preMainProcess].every(([path, hash]) => postMainProcess.get(path) === hash);
+        const commandSourceHashes = (receipt: GymOracleRun | undefined): Map<string, string> | null => {
+          const measured = receipt?.execution?.commandProcessSources;
+          if (!measured || typeof measured.report !== 'string' ||
+              measured.reference?.pinCommit !== spec.task.oracle!.pinCommit ||
+              !Array.isArray(measured.reference.sources) || !Array.isArray(measured.processes) ||
+              measured.processes.length === 0) return null;
+          const hashes = new Map<string, string>();
+          const pins = new Map<string, string>();
+          const pids = new Set<number>();
+          const safePath = (path: unknown): path is string => typeof path === 'string' && path.length > 0 &&
+            !path.startsWith('/') && !/^[a-zA-Z]:/.test(path) && !path.includes('\\') &&
+            !path.split('/').some(part => part === '..' || part === '.' || part === '');
+          for (const process of measured.processes) {
+            if (!process || process.schemaVersion !== 'node-loaded-process-sources-v1' ||
+                process.scope !== 'repository-node-process-sources' || process.basis !== 'node-load-hook' ||
+                process.status !== 'stable' || !Number.isInteger(process.pid) || process.pid <= 0 || pids.has(process.pid) ||
+                !Number.isInteger(process.exitCode) || (process.exitCode !== 0 && process.exitCode !== 1) ||
+                !safePath(process.entrypoint) || !Array.isArray(process.reasons) || process.reasons.length > 0 ||
+                !Array.isArray(process.sources) || process.sources.length === 0) return null;
+            pids.add(process.pid);
+            if (!process.sources.some(source => source?.path === process.entrypoint && source.sha256 !== null)) return null;
+            for (const source of process.sources) {
+              if (!source || !safePath(source.path) || typeof source.sha256 !== 'string' ||
+                  !/^[a-f0-9]{64}$/.test(source.sha256) || source.currentSha256 !== source.sha256 ||
+                  (hashes.has(source.path) && hashes.get(source.path) !== source.sha256)) return null;
+              hashes.set(source.path, source.sha256);
+            }
+          }
+          for (const source of measured.reference.sources) {
+            if (!source || !safePath(source.path) || typeof source.sha256 !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(source.sha256) || pins.has(source.path)) return null;
+            pins.set(source.path, source.sha256);
+          }
+          if (pins.size !== hashes.size || [...hashes].some(([path, hash]) =>
+              !pins.has(path) || (path !== spec.task.oracle!.implPath && pins.get(path) !== hash))) return null;
+          hashes.delete(spec.task.oracle!.implPath);
+          return hashes;
+        };
+        const preCommandSources = commandSourceHashes(preOracle);
+        const postCommandSources = commandSourceHashes(postOracle);
+        const commandProcessesCurrent = preCommandSources !== null && postCommandSources !== null &&
+          preCommandSources.size === postCommandSources.size &&
+          [...preCommandSources].every(([path, hash]) => postCommandSources.get(path) === hash);
         const regression = sourceCurrent && implementationCurrent ? regressionsFromTests(pre, post) : undefined;
         // A JSON report may exist even when the command is killed or fails after
         // writing it. Retain witnessed failures, but require a successful process
@@ -375,11 +418,11 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
           // Collector/store preserve this receipt in the existing trace/signals.
           oracle: { sourceRef: spec.task.oracle.sourceRef, testPath: spec.task.oracle.testPath,
             pinCommit: spec.task.oracle.pinCommit, pre: preOracle ?? null, post: postOracle ?? null,
-            sourceCurrent, implementationCurrent, workerSourcesCurrent, npmManifestCurrent, configSnapshotsCurrent, configLoadedCurrent, mainProcessCurrent,
+            sourceCurrent, implementationCurrent, workerSourcesCurrent, npmManifestCurrent, configSnapshotsCurrent, configLoadedCurrent, mainProcessCurrent, commandProcessesCurrent,
             executionCompleted, populationComplete, regressionPopulation },
-          ...(regression === true || (regression === false && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && configLoadedCurrent && mainProcessCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
+          ...(regression === true || (regression === false && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && configLoadedCurrent && mainProcessCurrent && commandProcessesCurrent && executionCompleted && populationComplete && regressionPopulation > 0)
             ? { regressions: regression } : {}),
-          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && configLoadedCurrent && mainProcessCurrent))
+          ...(sourceCurrent && implementationCurrent && populationComplete && (!taskPassed || (executionCompleted && workerSourcesCurrent && npmManifestCurrent && configSnapshotsCurrent && configLoadedCurrent && mainProcessCurrent && commandProcessesCurrent))
             ? { taskPassed } : {}),
         };
       }
