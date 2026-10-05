@@ -1574,6 +1574,13 @@ export type GitSyncOutcome = {
    * stage ran without a conflict and is safe for escalation clearing.
    */
   mergeCompleted?: string[];
+  /**
+   * P-016: the superproject's sync-back result for this pass — upstream `main`
+   * merged into the working copy's `staging` (review integration mode only).
+   * Absent when sync-back is not configured or did not run this pass. The
+   * action layer files a fix-it work-item when `status === 'conflict'`.
+   */
+  syncBack?: SyncBackResult;
 } & (
   | { status: 'nothing' }
   | { status: 'synced'; headSha: string; pushed: string[]; merged: string[] }
@@ -5751,6 +5758,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // push"; now the code does only that.
   const supr = emptyPhase();
   let superHeadSha: string | undefined;
+  // P-016: the superproject reconcile's sync-back result, surfaced on every final outcome.
+  let superSyncBack: SyncBackResult | undefined;
   const pushBlocked = sub.conflicts.length > 0 || sub.errors.length > 0;
   // A submodule-relative protected path is valid for `git add` inside that
   // submodule, but Git rejects the same pathspec from the superproject with
@@ -5957,6 +5966,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       headSha: await headSha(runGit, repo),
     }));
     superHeadSha = pushRes.headSha;
+    superSyncBack = pushRes.syncBack;
     repoResult = {
       ...pushRes,
       ...commitMetrics,
@@ -5982,6 +5992,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const dirtyPathCount = (sub.dirtyPathCount ?? 0) + (supr.dirtyPathCount ?? 0);
   const committedCount = (sub.committedCount ?? 0) + (supr.committedCount ?? 0);
   const didSomething = sub.didSomething || supr.didSomething;
+  // P-016: present on every status so a sync-back conflict is reported even when the
+  // pass itself is otherwise clean ('nothing' / 'synced' are the common cases).
+  const syncBackField = superSyncBack ? { syncBack: superSyncBack } : {};
 
   if (conflicts.length > 0)
     return {
@@ -5998,6 +6011,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       contentErrors,
       skippedPaths,
       strandedSubmodules,
+      ...syncBackField,
     };
   if (errors.length > 0)
     return {
@@ -6013,6 +6027,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       contentErrors,
       skippedPaths,
       strandedSubmodules,
+      ...syncBackField,
     };
   // A live lock is a partial exclusion, not a fleet-wide stop. Report the legacy
   // skipped verdict only when a live-lock path prevented progress. Migration-only
@@ -6028,6 +6043,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       bulkExcluded,
       contentErrors,
       strandedSubmodules,
+      ...syncBackField,
     };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo
@@ -6043,6 +6059,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       bulkExcluded,
       contentErrors,
       strandedSubmodules,
+      ...syncBackField,
     };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
@@ -6059,5 +6076,6 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     contentErrors,
     skippedPaths,
     strandedSubmodules,
+    ...syncBackField,
   };
 }

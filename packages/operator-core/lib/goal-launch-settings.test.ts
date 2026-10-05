@@ -2770,6 +2770,7 @@ describe('resolveGoalLaunch — degradation is REPORTED, never silent', () => {
     expect(r.refusal).toBeNull();
     expect(r.degraded).toBe(true);
     expect(r.degradedReasons.join(' ')).toMatch(/ceiling not enforced/);
+    expect(r.headcountMeasurement).toBeNull();
   });
 
   it('reports an unreadable settings document without blocking the launch', async () => {
@@ -2781,6 +2782,51 @@ describe('resolveGoalLaunch — degradation is REPORTED, never silent', () => {
     expect(r.refusal).toBeNull();
     expect(r.degraded).toBe(true);
     expect(r.degradedReasons.join(' ')).toMatch(/launch settings not applied/);
+  });
+});
+
+describe('resolveGoalLaunch — concurrent versus sequential admission evidence (EI-25166050736574344)', () => {
+  it('identifies two decisions on one pre-registration population; a sequential second read refuses', async () => {
+    const baseSql = mockSql({ modeSubject: { 'su-goal': 'g1' }, settings: { g1: { maxAgents: 6, maxPerFleet: 3 } } });
+    const existing = Array.from({ length: 5 }, (_, index) => ({
+      ownerId: `existing-${index}`, inFleet: index === 0, basis: 'boot-grace',
+      heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00',
+    }));
+    let readers = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const wrap = (countRead: () => Promise<unknown[]>) => ((strings: TemplateStringsArray, ...values: unknown[]) =>
+      strings.join('').includes('FROM harness_shared.session_briefs b')
+        ? countRead() : (baseSql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(strings, ...values)
+    ) as unknown as Sql;
+    const row = (population_rows = existing) => ({
+      total: population_rows.length, fleet: population_rows.filter((owner) => owner.inFleet).length,
+      measured_at: '2026-10-05 18:40:16+00', population_rows, presence_rows: [],
+    });
+    const concurrentSql = wrap(async () => {
+      const snapshot = row();
+      if (++readers === 2) release();
+      await barrier;
+      return [snapshot];
+    });
+    const launch = (sql: Sql) => resolveGoalLaunch({
+      workspaceId: WS, launcherOwnerId: 'su-goal', fleetSlug: 'f1', count: 1, sql,
+    });
+    // The resolver is a measurement/decision seam, not a registration or
+    // reservation. This fixture does not attribute the original Fire57 run.
+    const concurrent = await Promise.all([launch(concurrentSql), launch(concurrentSql)]);
+    expect(readers).toBe(2);
+    expect(concurrent.map((result) => result.refusal)).toEqual([null, null]);
+    expect(concurrent.map((result) => result.headcountMeasurement?.counted.map((owner) => owner.ownerId)))
+      .toEqual([existing.map((owner) => owner.ownerId), existing.map((owner) => owner.ownerId)]);
+    const sequentialFirst = await launch(wrap(async () => [row()]));
+    const sequentialSecond = await launch(wrap(async () => [row([...existing, {
+      ownerId: 'first-registration', inFleet: true, basis: 'boot-grace',
+      heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00',
+    }])]));
+    expect(sequentialFirst.refusal).toBeNull();
+    expect(sequentialSecond.refusal?.reason).toBe('goal_max_agents');
+    expect(sequentialSecond.headcountMeasurement?.counted.map((owner) => owner.ownerId)).toContain('first-registration');
   });
 });
 

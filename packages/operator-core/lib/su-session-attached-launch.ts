@@ -42,6 +42,18 @@ const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () =
   exits: new Map<string, Promise<void>>(),
 }));
 
+/**
+ * A launch awaits durable writes (the WI-10003879 host owner, the descriptor)
+ * between starting an engine and the bookkeeping that awaits `ready`. An
+ * engine that fails at once rejects `ready` inside that gap, and Node reports
+ * it as UNHANDLED even though the bookkeeping handles it a moment later
+ * (agent-chat-pty P-003's startup-exit engine, 2026-10-05). Observe it the
+ * moment the engine exists; every later `await engine.ready` still sees the error.
+ */
+export function observeReadiness(engine: Pick<ClaudeSuEngine | SuRpcEngine, 'ready'>): void {
+  engine.ready.catch(() => undefined);
+}
+
 function trackExit(key: string, exit: Promise<void>): void {
   state.exits.set(key, exit);
   void exit.finally(() => { if (state.exits.get(key) === exit) state.exits.delete(key); });
@@ -347,6 +359,7 @@ export async function launchAttachedSuSession(
                 { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }>,
                   identity: await engineIdentityForLaunch(workspaceId, resume.boot.cwd) });
             state.engines.set(key, active);
+            observeReadiness(active);
             // WI-10003879: sibling workers route this session's requests here.
             await recordSuSessionHostOwner(record.advSessionId, localSuSessionHostOwner(), workspaceId);
             await persistSuSessionDescriptor(record.advSessionId, active.adapter.host.descriptor());
@@ -482,6 +495,7 @@ export async function launchAttachedSuSession(
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
           { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) });
       state.engines.set(key, engine);
+      observeReadiness(engine);
       // WI-10003879: recorded before the launch returns, so PUI's very first
       // snapshot poll on a sibling worker is already routed here.
       await recordSuSessionHostOwner(result.sessionId, localSuSessionHostOwner(), workspaceId);

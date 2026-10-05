@@ -540,6 +540,42 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
   });
 });
 
+describe('GOAL admission receipt (EI-25166050736574344)', () => {
+  it.each([false, true])('persists the resolver measurement and unknown capacity on count failure=%s', async (countFailed) => {
+    const measurement = {
+      measuredAt: '2026-10-05 18:40:16+00', populationComplete: true,
+      candidate: { total: 5, fleet: null },
+      counted: [{ ownerId: 'original-counted-owner', inFleet: false, basis: 'boot-grace',
+        heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00' }],
+      oracleEndedOwnerIds: ['ended-owner'], excludedOwnerIds: ['replaced-owner'],
+    };
+    const resolution = {
+      goalId: 'goal-1', settings: null, goalBrief: null, effective: {},
+      ceilings: { maxAgents: 6, maxPerFleet: 3 },
+      headcount: { total: countFailed ? 0 : 5, fleet: null },
+      headcountMeasurement: countFailed ? null : measurement,
+      budget: null, refusal: null, degraded: countFailed,
+      degradedReasons: countFailed ? ['ceiling not enforced — headcount failed: fixture failure'] : [],
+    };
+    goalLaunchResolveMock.mockResolvedValueOnce(resolution);
+    const idempotencyKey = `admission-receipt-${countFailed}`;
+    const result = await launchAgent.handler({ brief: 'Hermetic receipt test', idempotencyKey }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(goalLaunchResolveMock).toHaveBeenCalledTimes(1);
+    const expected = {
+      goalId: 'goal-1', requested: 1, ceilings: resolution.ceilings,
+      headcount: countFailed ? null : resolution.headcount,
+      measurement: resolution.headcountMeasurement,
+      capacityStatus: countFailed ? 'unenforced' : 'enforced',
+      degraded: countFailed, degradedReasons: resolution.degradedReasons,
+    };
+    expect(dataOf(result)?.launch).toMatchObject({ goalAdmission: expected });
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey, summary: expect.objectContaining({ goalAdmission: expect.objectContaining(expected) }),
+    }));
+  });
+});
+
 describe('published launch args schema', () => {
   it('publishes the conditional non-empty brief requirement at the tool level', () => {
     expect(launchAgent.description).toContain('`resume`/`fork` require a non-empty top-level `brief`');

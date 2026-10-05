@@ -227,13 +227,45 @@ describe('a FULL drill cycle through the real machinery (the sandbox round-trip)
     }
   });
 
-  it('routine-engine-death round-trips out-of-band with zero substrate writes', async () => {
+  it('routine-engine-death matches, captures, and triages its synthetic metric signal without substrate writes', async () => {
     const before = await h.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM harness_shared.routines`;
     const cls = drillClassById('routine-engine-death')!;
     const result = await runDrillCycle(cls, defaultDrillCycleDeps(h.sql, LIVE_WS));
     expect(result.status, result.reason).toBe('resolved');
     expect(result.ok).toBe(true);
+    expect(result.issueId).toBeTruthy();
     expect(result.leakCheck?.passed).toBe(true);
+
+    // Keep detector matching separate from filing policy: the planted key must
+    // be detected, then its operator-scoped issue must retain drill provenance.
+    const [outcome] = await readDrillOutcomes(h.sql, {
+      workspaceId: SANDBOX_WORKSPACE_ID,
+      classId: 'routine-engine-death',
+    });
+    expect(outcome).toMatchObject({
+      status: 'resolved',
+      issueId: result.issueId,
+      detectedWatchdogKey: outcome.expectedWatchdogKey,
+    });
+    expect(outcome.expectedWatchdogKey).toMatch(/^routine-engine-death:/);
+    expect(outcome.triagedDecision).toBeTruthy();
+
+    const [issueRow] = await h.sql<{
+      signal_origin: string;
+      state: string;
+      scope: string;
+      watchdog_key: string | null;
+    }[]>`
+      SELECT signal_origin, state, scope, payload->>'watchdogKey' AS watchdog_key
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${result.issueId!}`;
+    expect(issueRow).toMatchObject({
+      signal_origin: 'drill',
+      state: 'resolved',
+      scope: SANDBOX_SCOPE,
+      watchdog_key: outcome.expectedWatchdogKey,
+    });
+
     const after = await h.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM harness_shared.routines`;
     expect(after[0].n).toBe(before[0].n); // the engine's table is untouched
   }, 60_000);

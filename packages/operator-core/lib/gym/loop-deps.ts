@@ -240,9 +240,15 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
             workspaceId: cfg.workspaceId,
             scratchRoot: cfg.scratchRoot,
           });
-          // Reserve/charge known pipeline spend before any later stage can throw.
+          // Retain the known subtotal before any later stage can throw. This is
+          // local accounting, not a governor reservation or settlement.
           const pipelineCostUsd = costUsdOf(handle.pipelineUsd);
           incurredCostUsd += pipelineCostUsd;
+          if (handle.pipelineSpend?.complete === false) {
+            throw Object.assign(new Error('Gym pipeline usage evidence is incomplete'), {
+              costUsdMeasurementMissing: true, pipelineSpend: handle.pipelineSpend,
+            });
+          }
           await ab.store.startRun({
             runId: evaluationRunId,
             variantId,

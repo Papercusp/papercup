@@ -3256,7 +3256,8 @@ export async function goalHeadcount(args: {
       },
       measurement: {
         measuredAt: typeof r.measured_at === 'string' ? r.measured_at : null,
-        populationComplete: population.length === candidate.total &&
+        populationComplete: r.population_rows != null && typeof r.measured_at === 'string' &&
+          population.length === candidate.total &&
           new Set(population.map((row) => row.ownerId)).size === candidate.total &&
           (!args.fleetSlug || population.filter((row) => row.inFleet).length === candidate.fleet),
         candidate,

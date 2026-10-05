@@ -4902,11 +4902,15 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
     const sourceOwner = 'su-consult-source';
     const answeringOwner = 'su-consult-answerer';
     const sourceNative = 'native-consult-source';
+    const sourceContinuation = 'native-consult-source-continuation';
     const answeringNative = 'native-consult-answerer';
     // Use the production row classifier, not a preselected "foreign" verdict.
     // The transport must bind each call to its owner's actual native row.
     h.nativeSessionRows = new Map([
-      [sourceOwner, [{ id: 541, session_id: sourceNative, active: true }]],
+      [sourceOwner, [
+        { id: 543, session_id: sourceContinuation, active: true },
+        { id: 541, session_id: sourceNative, active: true },
+      ]],
       [answeringOwner, [{ id: 542, session_id: answeringNative, active: true }]],
     ]);
     // Match this PG-free suite's existing native-incarnation controls. A
@@ -4923,6 +4927,13 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 541 });
 
+    // Every legitimate source incarnation remains usable; attribution cannot
+    // assume the newest row is the only native session belonging to the owner.
+    const continuationCall = await callTool('gatingtest:scoped', {}, caller(sourceOwner, sourceContinuation, sourceBackend));
+    expect(continuationCall.isError, textOf(continuationCall)).toBeUndefined();
+    expect(seen).toHaveLength(2);
+    expect(seen[1].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 543 });
+
     // A claim followed by a release could leave identical census endpoints.
     // Neither nested call may reach even the existing dispatcher witness when
     // the answerer's native session presents the source's coordination SID.
@@ -4930,25 +4941,31 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
       const attempted = await callTool(
         'tools:invoke',
         { name: 'gatingtest:scoped', args: { action, id: 'WI-source-claim' } },
-        caller(sourceOwner, answeringNative, targetBackend),
+        // Auth-failure telemetry records only an explicitly claimed workspace.
+        // Rejection precedes the kernel lookup, so this adds no fake launch row.
+        superuserExtra(
+          `&workspace=ws-test&client=${sourceOwner}${targetBackend === 'claude' ? `&native_session=${answeringNative}` : ''}`,
+          targetBackend === 'codex' ? { 'x-papercusp-native-session': answeringNative } : {},
+        ),
       );
       expect(attempted.isError).toBe(true);
       expect(textOf(attempted)).toBe('request_rejected: superuser_foreign_native_session');
-      expect(seen).toHaveLength(1);
+      expect(seen).toHaveLength(2);
       expect(h.invocations.at(-1)).toMatchObject({
         status: 'error',
         errorCode: 'mcp_auth_failed',
         errorMessage: 'superuser_foreign_native_session',
-        metadataJson: { mcpAuthFailure: { nativeSession: { candidateAdvSessionId: 541 } } },
+        metadataJson: { mcpAuthFailure: { nativeSession: { candidateAdvSessionId: 543 } } },
       });
     }
 
     const answerCall = await callTool('gatingtest:scoped', {}, caller(answeringOwner, answeringNative, targetBackend));
     expect(answerCall.isError, textOf(answerCall)).toBeUndefined();
-    expect(seen).toHaveLength(2);
-    expect(seen[1].ctx).toMatchObject({ uiClientId: answeringOwner, advSessionId: 542 });
+    expect(seen).toHaveLength(3);
+    expect(seen[2].ctx).toMatchObject({ uiClientId: answeringOwner, advSessionId: 542 });
     expect(h.nativeSessionCalls).toEqual([
       { ownerId: sourceOwner, sessionId: sourceNative },
+      { ownerId: sourceOwner, sessionId: sourceContinuation },
       { ownerId: sourceOwner, sessionId: answeringNative },
       { ownerId: sourceOwner, sessionId: answeringNative },
       { ownerId: answeringOwner, sessionId: answeringNative },

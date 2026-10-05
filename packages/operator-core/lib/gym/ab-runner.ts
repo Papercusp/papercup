@@ -29,6 +29,7 @@ import type { GymRunParams, VariantComparisonRow } from './store';
 import type { RatePauseDeps } from './rate-pause';
 import type { GymTaskCorpus } from './task-corpus';
 import type { GymOracleSpec } from './gym-runner';
+import type { HarnessPipelineSpend } from '../harness-insights/load-spend';
 
 export interface AbVariant {
   variantId: string;
@@ -88,6 +89,8 @@ export interface AbRunHandle {
   outcome: string;
   /** Cost of the harness pipeline run (its agent spawns). */
   pipelineUsd: number;
+  /** Canonical native receipts; omitted by older injected/custom runners. */
+  pipelineSpend?: HarnessPipelineSpend;
   /** Deterministic signals measured while running the task's oracle. */
   deterministicSignals?: Record<string, unknown>;
 }
@@ -141,6 +144,7 @@ export interface AbRunOutcome {
   d3: number;
   composite: number;
   pipelineUsd: number;
+  pipelineSpend?: HarnessPipelineSpend;
   judgeUsd: number;
   /** False means judgeUsd is only the known lower bound. */
   judgeCostMeasured?: boolean;
@@ -252,7 +256,8 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
   // Map the engine's per-cell results → the gym's AbRunOutcome shape. A non-'scored'
   // cell (rate_limited / errored) carries no real composite (zeros) + its error.
   const outcomes: AbRunOutcome[] = results.map((r) => {
-    const base = { variantId: r.cell.variant.variantId, taskId: r.cell.task.taskId, repeat: r.cell.repeat, runId: r.runId, judgeCostMeasured: r.judgeCostMeasured };
+    const base = { variantId: r.cell.variant.variantId, taskId: r.cell.task.taskId, repeat: r.cell.repeat, runId: r.runId, judgeCostMeasured: r.judgeCostMeasured,
+      ...(r.handle?.pipelineSpend ? { pipelineSpend: r.handle.pipelineSpend } : {}) };
     if (r.status === 'scored' && r.score) {
       return {
         ...base,
@@ -306,7 +311,7 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
   // 3. A-vs-B comparison (variant[0] = A/baseline, variant[1] = B/candidate when present).
   const a = config.variants[0]?.variantId;
   const b = config.variants[1]?.variantId ?? a;
-  const costMeasured = results.every((r) => r.judgeCostMeasured);
+  const costMeasured = results.every((r) => r.judgeCostMeasured && r.handle?.pipelineSpend?.measured !== false);
   const comparison = a && costMeasured ? await deps.store.comparison(a, b, rh) : [];
 
   return {

@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freezeCompilerReplayConfig, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
-  replaySourceFingerprint, replayWireOverlap, validateDaemonReplayConfig, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
+  replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
+  validateDaemonReplayConfig, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
+import { scopeUnitForTaskId } from '../task-manager/types';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 
@@ -102,5 +104,68 @@ describe('daemon replay qualification', () => {
     expect(oracle.corpus.definition.oracle.sites).toEqual([{ path: 'source.ts', line1: 1 }]);
     expect(oracle.corpus['hot-references'].oracle.sites).toEqual([{ path: 'consumer.ts', line1: 1 },
       { path: 'consumer.ts', line1: 2 }, { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]);
+  });
+  it('freezes inherited config and declaration dependencies that determine symbol binding', () => {
+    const frozen = config();
+    const root = frozen.rootPath;
+    writeFileSync(join(root, 'base.json'), JSON.stringify({ compilerOptions: { strict: true } }));
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ extends: './base.json', files: ['source.ts', 'ambient.d.ts'] }));
+    writeFileSync(join(root, 'ambient.d.ts'), 'declare const ambient: string;\n');
+    const oracle = freezeCompilerReplayConfig({ runId: 'config-closure', rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'source.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [], evidenceRef: 'config-closure-fixture' });
+    expect(oracle.files[join(root, 'base.json')]).toBe(replayHash(readFileSync(join(root, 'base.json'))));
+    expect(oracle.files[join(root, 'ambient.d.ts')]).toBeTruthy();
+    writeFileSync(join(root, 'base.json'), '{}');
+    expect(() => validateDaemonReplayConfig(oracle)).toThrow('changed-file');
+  });
+});
+
+describe('kernel replay process provenance', () => {
+  const taskId = 'replay-server';
+  const cgroup = `/papercusp.slice/${scopeUnitForTaskId(taskId)}`;
+  function fixture() {
+    const identities = new Map([[10, 'linux:boot:100'], [11, 'linux:boot:101']]);
+    const process = {
+      identity: (pid: number) => identities.get(pid) ?? null,
+      text: (path: string) => path.endsWith('/cgroup') ? `0::${cgroup}${path.includes('/11/') ? '/worker' : ''}` : 'node\0server.js\0',
+      bytes: () => Buffer.from('actual executable inode'),
+      link: () => '/usr/bin/node',
+    };
+    const root = `/sys/fs/cgroup${cgroup}`;
+    const fs = {
+      readFile: (path: string) => path === `${root}/cgroup.procs` ? '10\n' : path === `${root}/worker/cgroup.procs` ? '11\n' : null,
+      readDir: (path: string) => path === root ? ['worker'] : [],
+      isDir: (path: string) => path === root || path === `${root}/worker`,
+    };
+    return { process, fs, identities };
+  }
+  it('censuses nested server children and retains kernel executable bytes without claiming loaded JS', () => {
+    const deps = fixture();
+    const population = replayServerPopulation(10, taskId, deps);
+    expect(population.unknown).toEqual([]);
+    expect(population.processes.map(row => row.pid)).toEqual([10, 11]);
+    expect(population.processes[1]).toMatchObject({ identity: 'linux:boot:101',
+      executable: { path: '/usr/bin/node', sha256: replayHash(Buffer.from('actual executable inode')) }, loadedModules: 'unmeasured' });
+    deps.identities.set(11, 'linux:boot:999');
+    expect(replayPopulationFingerprint(replayServerPopulation(10, taskId, deps))).not.toBe(replayPopulationFingerprint(population));
+  });
+  it('rejects PID reuse during reads and unavailable executable evidence', () => {
+    const deps = fixture();
+    let calls = 0;
+    deps.process.identity = () => ++calls === 1 ? 'linux:boot:100' : 'linux:boot:999';
+    expect(replayProcessIdentity(10, deps.process).unknown).toContain('process-replaced-during-snapshot');
+    expect(replayProcessIdentity(10, { ...fixture().process, bytes: () => { throw new Error('inaccessible'); } }).unknown)
+      .toEqual(['executable:Error: inaccessible']);
+  });
+  it('rejects foreign task scopes before walking them and lost or escaped descendants', () => {
+    const deps = fixture();
+    expect(replayServerPopulation(10, 'other-task', deps).groups).toEqual([]);
+    expect(replayServerPopulation(10, 'other-task', deps).unknown).toContain('server-task-cgroup-mismatch');
+    deps.identities.delete(11);
+    expect(replayServerPopulation(10, taskId, deps).unknown).toContain('pid:11:process-identity-unavailable');
+    const escaped = { ...fixture().process, text: (path: string) => path.endsWith('/cgroup') ? `0::${path.includes('/11/') ? '/foreign' : cgroup}` : 'node\0' };
+    expect(replayServerPopulation(10, taskId, { ...fixture(), process: escaped }).unknown).toContain('process-outside-server-cgroup:11');
   });
 });

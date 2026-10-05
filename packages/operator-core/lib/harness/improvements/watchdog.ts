@@ -5306,8 +5306,12 @@ async function runWatchdogTickBody(
   // fixes. Those signals stay fully collected and are still written to watchdog_ticks, so
   // they continue to reach ideation via scout/watchdog-health-lane.ts (the Blender corpus
   // digest); they simply never mint a work item. Defect-lane signals are unaffected.
-  const fileable = partition.fresh.filter((s) => sourceFilesWorkItem(s.source));
-  const metricSuppressed = partition.fresh.filter((s) => !sourceFilesWorkItem(s.source));
+  // Synthetic Red-Queen drills are explicitly exercising the detector and
+  // capture path, even when their source is normally a metric. Keep the shared
+  // source classification unchanged; organic metric signals remain suppressed.
+  const isFileable = (s: WatchdogSignal) => s.origin === 'drill' || sourceFilesWorkItem(s.source);
+  const fileable = partition.fresh.filter(isFileable);
+  const metricSuppressed = partition.fresh.filter((s) => !isFileable(s));
 
   const planCap = Math.max(0, opts.maxPerTick ?? 3);
   // Reuses the single prior-tick read above (P-011: `ran` only, so a skipped tick can't wipe

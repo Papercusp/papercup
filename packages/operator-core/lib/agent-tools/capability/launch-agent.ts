@@ -2370,7 +2370,7 @@ export default defineTool({
         fleet: fleetSlug,
         requested: count,
         ceilings: goalLaunch.ceilings,
-        headcount: goalLaunch.headcount,
+        headcount: goalLaunch.headcountMeasurement ? goalLaunch.headcount : null,
         measurement: goalLaunch.headcountMeasurement ?? null,
         capacityStatus: goalLaunch.degradedReasons.some((reason) => reason.startsWith('ceiling not enforced'))
           ? 'unenforced' : goalLaunch.headcountMeasurement ? 'enforced' : 'not-checked',

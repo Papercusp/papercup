@@ -4,7 +4,7 @@
  * Binds the injected `AbDeps` to the SAME smoke-proven operations the single-run spine
  * uses, so a bounded real A/B reuses validated pieces:
  *   runPipeline       → runGymPipeline (P-001) over real GymRunnerPorts (createGymRunnerPorts)
- *                       + pipelineUsd = Σ agent_runs_consolidated.cost_usd for the harness (P-027)
+ *                       + attributed canonical pipeline usage (P-027)
  *   collectAndDistill → collectTrace (P-002) + distillTrace (P-029) over the gym PG + clone
  *   judge             → the caller's `llmCall` (real anthropic-direct opus-4-8, or a fake for tests)
  *   store             → store.ts over the gym PG (createGymStore)
@@ -34,6 +34,7 @@ import {
 } from './store';
 import type { AbStore, AbDeps, AbRunInput, AbRunHandle } from './ab-runner';
 import type { JudgeLlmCall } from './judge';
+import { loadHarnessPipelineSpend } from '../harness-insights/load-spend';
 
 const execFileP = promisify(execFileCb);
 
@@ -140,20 +141,18 @@ export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
         pollIntervalMs: cfg.pollIntervalMs,
       };
       const result = await runGymPipeline(spec, cfg.ports);
-      // pipelineUsd = Σ of the harness's agent-run costs (P-027). Fake agents → 0.
-      // Workspace-scoped (cross-backend-cost-capture D-003 #1, migration 170): the
-      // consolidated table is keyed (harness_slug, run_id) across workspaces.
-      const rows = await sql<{ c: number }[]>`
-        SELECT COALESCE(SUM(cost_usd), 0)::float8 AS c
-          FROM harness_shared.agent_runs_consolidated
-         WHERE harness_slug = ${result.harnessSlug}
-           AND workspace_id = ${input.workspaceId}`;
+      const pipelineSpend = await loadHarnessPipelineSpend({
+        workspace_id: input.workspaceId, harness_slug: result.harnessSlug,
+        runQuery: async <T>(query: string, params: unknown[]) =>
+          await sql.unsafe(query, params as never[]) as unknown as T[],
+      });
       return {
         harnessSlug: result.harnessSlug,
         clonePath: result.clonePath,
         workflowID: result.workflowID,
         outcome: result.outcome,
-        pipelineUsd: Number(rows[0]?.c ?? 0),
+        pipelineUsd: pipelineSpend.knownUsd,
+        pipelineSpend,
         ...(result.deterministicSignals ? { deterministicSignals: result.deterministicSignals } : {}),
       };
     },

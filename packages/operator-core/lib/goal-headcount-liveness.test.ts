@@ -85,6 +85,61 @@ const verdicts = (byOwner: Record<string, SessionState | null>) => (subjects: re
 const count = (row: Record<string, unknown>, fleetSlug: string | null = FLEET) =>
   goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug, sql: fakeSql(row) });
 
+describe('goalHeadcount — admission population evidence (EI-25166050736574344)', () => {
+  const measuredAt = '2026-10-05 18:40:16+00';
+  const member = (ownerId: string, inFleet: boolean, basis = 'heartbeat') => ({
+    ownerId, inFleet, basis, heartbeatAt: basis === 'heartbeat' ? measuredAt : null,
+    briefUpdatedAt: measuredAt,
+  });
+
+  it('retains recorded and boot-grace owners, excluding ended and replacement owners in the SAME count', async () => {
+    oracle.fake = verdicts({ recorded: 'recorded', ended: 'ended' });
+    const query = vi.fn(async () => [{
+      total: 3, fleet: 2, measured_at: measuredAt,
+      presence_rows: [presence('recorded'), presence('ended')],
+      population_rows: [member('recorded', true), member('ended', true), member('boot', false, 'boot-grace')],
+    }]);
+    const result = await goalHeadcount({
+      workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, excludeOwnerIds: ['replacement', 'replacement'],
+      sql: query as unknown as Sql,
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.headcount).toEqual({ total: 2, fleet: 1 });
+    expect(result.measurement).toEqual({
+      measuredAt, populationComplete: true, candidate: { total: 3, fleet: 2 },
+      counted: [member('recorded', true), member('boot', false, 'boot-grace')],
+      oracleEndedOwnerIds: ['ended'], excludedOwnerIds: ['replacement'],
+    });
+    expect(oracle.seen[0].map((subject) => subject.ownerId)).toEqual(['recorded', 'ended']);
+  });
+
+  it('marks missing or inconsistent population as incomplete rather than proving an empty census', async () => {
+    oracle.fake = verdicts({});
+    for (const population_rows of [undefined, 'invalid json', [member('only-one', true)]]) {
+      const result = await count({ total: 5, fleet: 1, measured_at: measuredAt, population_rows });
+      expect(result.headcount).toEqual({ total: 5, fleet: 1 });
+      expect(result.measurement?.populationComplete).toBe(false);
+    }
+  });
+
+  it('distinguishes one new launch plus an existing actor becoming countable from two new launches', async () => {
+    oracle.fake = verdicts({});
+    const baseline = Array.from({ length: 5 }, (_, index) => member(`existing-${index}`, index === 0));
+    const launched = member('sole-new-launch', true);
+    const previouslyUncounted = member('existing-attribution-transition', true);
+    const populations = [baseline, [...baseline, launched], [...baseline, launched, previouslyUncounted]];
+    const results = await Promise.all(populations.map((population_rows) => count({
+      total: population_rows.length, fleet: population_rows.filter((row) => row.inFleet).length,
+      measured_at: measuredAt, population_rows,
+    })));
+    expect(results.map((result) => result.headcount)).toEqual([
+      { total: 5, fleet: 1 }, { total: 6, fleet: 2 }, { total: 7, fleet: 3 },
+    ]);
+    expect(results[2].measurement?.counted.map((row) => row.ownerId)).toContain('existing-attribution-transition');
+    expect(results.every((result) => result.measurement?.populationComplete)).toBe(true);
+  });
+});
+
 describe('goalHeadcount — liveness comes from the shared oracle, not a heartbeat window (WI-10005672)', () => {
   it('keeps the heartbeat/boot-grace count untouched when there is no presence row to judge', async () => {
     // Boot-grace-only population: counted by the SQL, has no presence to judge.

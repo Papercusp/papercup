@@ -1851,6 +1851,29 @@ describe('runWatchdogTick — captures through the shared core', () => {
     expect(calls[0]).toMatchObject({ scope: 'operator', origin: 'drill' });
   });
 
+  it('captures drill-origin metric signals while suppressing organic metrics', async () => {
+    const { calls, capture } = captureRecorder();
+    const drill = sig({ source: 'routine-engine-death', key: 'sandbox-engine', origin: 'drill' });
+    const organic = sig({ source: 'routine-engine-death', key: 'live-engine', origin: 'organic' });
+
+    expect(signalLaneOf('routine-engine-death')).toBe('metric');
+    expect(sourceFilesWorkItem('routine-engine-death')).toBe(false);
+
+    const res = await runTick('sandbox', {}, {
+      readKeyDups: noKeyDups,
+      pruneTicks: noPrune,
+      collect: async () => [drill, organic],
+      capture,
+      recordTick: noopRecord,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ origin: 'drill', watchdogKey: watchdogKeyOf(drill) });
+    expect(res.captured).toEqual(['EI-101']);
+    expect(res.metricSuppressed).toBe(1);
+    expect(res.metricSuppressedKeys).toEqual([watchdogKeyOf(organic)]);
+  });
+
   it('passes a per-signal findingClass through to the capture (frontier P-044 taxonomy slug)', async () => {
     const { calls, capture } = captureRecorder();
     const signals = [sig({ key: 'slo-x', findingClass: 'learning-slo:triage-degeneracy' })];

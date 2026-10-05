@@ -6556,12 +6556,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     // ui.rs draws it as `<spinner> <phase>… (<n>s[ · …] · Esc to interrupt)`.
     const WORKING_LINE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Starting Claude|Still starting Claude[^…]*|Thinking|Working)… \((\d+)s[^)]* · Esc to interrupt\)/;
     /** The working line, when at least `sent` "hi" lines sit in the transcript
-     *  above it (the composer, which draws `> ` too, is below it). */
+     *  above it. The transcript marks a sent line `❯ hi` (a held one `> hi`);
+     *  the composer, which draws `> ` too, is below the working line. */
     const working = (screen: string, sent: number): RegExpExecArray | null => {
       const lines = screen.split('\n');
       const row = lines.findIndex((line) => WORKING_LINE.test(line));
       if (row < 0) return null;
-      const hi = lines.slice(0, row).filter((line) => /(^|\s)> hi$/.test(line.replace(/[│┃]/g, ' ').trimEnd()));
+      const hi = lines.slice(0, row).filter((line) => /(^|\s)[❯>] hi$/.test(line.replace(/[│┃]/g, ' ').trimEnd()));
       return hi.length >= sent ? WORKING_LINE.exec(lines[row]) : null;
     };
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p024-launch-')));
