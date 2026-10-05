@@ -236,6 +236,41 @@ describe('llmCall backend selection', () => {
 });
 
 describe('llmCall subprocess error surfacing', () => {
+  it.each([0, 0.42])('preserves reported failure spend $%s on the classified exception', async costUsd => {
+    events.length = 0;
+    const turn = { class: 'permanent', message: 'tool failed after inference', retryable: false };
+    events.push({ type: 'error', message: turn.message, turn, costUsd });
+    try {
+      const { llmCall } = await import('../llm-client');
+      const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged' }] }).catch(e => e);
+      expect(isLlmCallError(err)).toBe(true);
+      expect(err.turn).toBe(turn);
+      expect(err).toMatchObject({ costUsd });
+    } finally { events.length = 0; }
+  });
+
+  it('preserves already-reported result spend when an error follows it', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'partial', tokensIn: 12, tokensOut: 4, costUsd: 0.42 },
+      { type: 'error', message: 'stream failed after its usage frame' });
+    try {
+      const { llmCall } = await import('../llm-client');
+      const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged' }] }).catch(e => e);
+      expect(err).toMatchObject({ costUsd: 0.42 });
+    } finally { events.length = 0; }
+  });
+
+  it.each([undefined, -1, NaN, Infinity])('keeps unreported/invalid failure spend %s unknown', async costUsd => {
+    events.length = 0;
+    events.push({ type: 'error', message: 'failure before usage', costUsd, unreportedFrames: 1 });
+    try {
+      const { llmCall } = await import('../llm-client');
+      const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged' }] }).catch(e => e);
+      expect(err).not.toHaveProperty('costUsd');
+      expect(err).toMatchObject({ unreportedFrames: 1 });
+    } finally { events.length = 0; }
+  });
+
   it('folds the stderr tail into the thrown LlmCallError message (un-governed path)', async () => {
     events.length = 0;
     events.push({

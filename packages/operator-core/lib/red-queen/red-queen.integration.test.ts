@@ -38,7 +38,7 @@ import {
   updateDrillResolved,
   updateDrillTriaged,
 } from './store';
-import { SANDBOX_WORKSPACE_ID } from './types';
+import { SANDBOX_SCOPE, SANDBOX_WORKSPACE_ID } from './types';
 
 const LIVE_WS = 'rq-live-ws-test';
 
@@ -157,7 +157,7 @@ describe('a FULL drill cycle through the real machinery (the sandbox round-trip)
 
     const result = await runDrillCycle(cls, deps);
 
-    expect(result.status).toBe('resolved');
+    expect(result.status, result.reason).toBe('resolved');
     expect(result.ok).toBe(true);
     expect(result.issueId).toBeTruthy();
     expect(result.mttsh?.totalMs).toBeGreaterThanOrEqual(0);
@@ -169,18 +169,32 @@ describe('a FULL drill cycle through the real machinery (the sandbox round-trip)
     });
 
     // The drill row carries the whole story (the FB-23 contract).
+    const expectedWatchdogKey = 'smoke-fail:red-queen-sandbox';
     const [outcome] = await readDrillOutcomes(h.sql, { workspaceId: SANDBOX_WORKSPACE_ID, classId: 'smoke-fail' });
-    expect(outcome.status).toBe('resolved');
-    expect(outcome.detectedWatchdogKey).toBe('smoke-fail:red-queen-sandbox');
+    // Pin detector matching separately from persistence: the detected key proves
+    // the planted signal matched; the issue row below proves capture accepted its
+    // scope and retained drill provenance.
+    expect(outcome).toMatchObject({
+      status: 'resolved',
+      expectedWatchdogKey,
+      detectedWatchdogKey: expectedWatchdogKey,
+      issueId: result.issueId,
+    });
     expect(outcome.triagedDecision).toBeTruthy();
     expect(outcome.resolvedWithEvidence).toBe(true);
 
-    // The captured issue is drill-tagged in PG and resolved.
-    const [issueRow] = await h.sql<{ signal_origin: string; state: string }[]>`
-      SELECT signal_origin, state FROM harness_shared.engineer_issues
+    // The real capture path persisted the matching issue under a valid operator
+    // scope and kept signal_origin='drill'.
+    const [issueRow] = await h.sql<{ signal_origin: string; state: string; scope: string; watchdog_key: string | null }[]>`
+      SELECT signal_origin, state, scope, payload->>'watchdogKey' AS watchdog_key
+        FROM harness_shared.engineer_issues
        WHERE issue_id = ${result.issueId!}`;
-    expect(issueRow.signal_origin).toBe('drill');
-    expect(issueRow.state).toBe('resolved');
+    expect(issueRow).toMatchObject({
+      signal_origin: 'drill',
+      state: 'resolved',
+      scope: SANDBOX_SCOPE,
+      watchdog_key: expectedWatchdogKey,
+    });
 
     // END-TO-END provenance: the organic default NEVER sees it; the explicit
     // drill opt-in does (the P-002 read seam, real listIssues underneath).
@@ -217,7 +231,7 @@ describe('a FULL drill cycle through the real machinery (the sandbox round-trip)
     const before = await h.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM harness_shared.routines`;
     const cls = drillClassById('routine-engine-death')!;
     const result = await runDrillCycle(cls, defaultDrillCycleDeps(h.sql, LIVE_WS));
-    expect(result.status).toBe('resolved');
+    expect(result.status, result.reason).toBe('resolved');
     expect(result.ok).toBe(true);
     expect(result.leakCheck?.passed).toBe(true);
     const after = await h.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM harness_shared.routines`;

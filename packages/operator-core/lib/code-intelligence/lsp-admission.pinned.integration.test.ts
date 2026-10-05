@@ -39,6 +39,9 @@ import { lspClientInventory, resolveServerBin, shutdownAllLspClients } from './l
 import { corpusCase } from './acceptance-corpus';
 import { buildLspAdmissionStatePayload } from '../agent-tools/state/lsp-admission';
 import { MAX_SITES_PER_ANSWER } from './lsp-daemon-facade';
+import { freezeCompilerReplayConfig, runDaemonReplay } from './lsp-fleet-replay-runtime';
+import type { ReplayReport } from './lsp-fleet-replay';
+import { classifyReplayAnswer } from './lsp-fleet-replay';
 
 const rootPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const workspaceId = `test-lsp-admission-pinned-${process.pid}`;
@@ -139,5 +142,42 @@ describe('daemon admission against the pinned TypeScript server', () => {
     expect(bounded.truncation).toMatchObject({ truncated: true, totalAvailable: full.sites.length });
     expect(lspClientInventory().filter(client => client.language === 'typescript' && client.rootPath === rootPath)).toHaveLength(1);
     expect(lspClientInventory().filter(client => client.language === 'typescript' && client.rootPath === corpusRoot)).toHaveLength(1);
+    // Exercise the maintained runner through the real socket and migrated PG,
+    // without confusing this small corpus/control with the full1000 repository BAR.
+    const replayConfig = freezeCompilerReplayConfig({ runId: 'protocol-runner', rootPath: corpusRoot,
+      socketPath: socket, workspaceId, levels: [3], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: hotArgs, references: hotArgs, runtimeFiles: [], evidenceRef: 'source-authored145-call-protocol-fixture' });
+    const replay = await runDaemonReplay(replayConfig, join(corpusRoot, 'archives'));
+    expect(replay.result.unknown).toContain('missing-1000-level');
+    const runs = readFileSync(join(replay.directory, 'runs.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as ReplayReport);
+    expect(runs).toHaveLength(9);
+    expect(runs.reduce((count, report) => count + report.population.length, 0)).toBe(54);
+    for (const report of runs) {
+      expect(report.complete, JSON.stringify(report.accountingErrors)).toBe(true);
+      for (const sample of report.samples) {
+        expect(sample.clientSettledAtMs!).toBeGreaterThanOrEqual(sample.settledAtMs);
+        const evidence = (sample.answer as typeof full).daemonEvidence!;
+        expect(evidence.requestId).toBe(sample.request.id);
+        // Exact source correctness and backend certification are separate facts.
+        // Stable correct references can remain degraded under the current canary
+        // strategy; preserve that failed BAR instead of forcing readiness green.
+        const expected = replayConfig.corpus[sample.request.queryClass].oracle;
+        expect(sample.answer!.error).toBeNull();
+        const keys = (sites: typeof expected.sites) => sites.map(site => JSON.stringify([site.path, site.line1])).sort();
+        expect(keys(sample.answer!.sites)).toEqual(keys(expected.sites));
+        const classification = classifyReplayAnswer(sample.answer, expected);
+        expect(report.failures.some(failure => failure.id === sample.request.id)).toBe(!classification.usefulCorrect);
+        for (const terminal of evidence.events.filter(event => event.phase === 'durable-settled')) {
+          expect(terminal.confirmed).toBe(true);
+          expect(await db!.adminSql`SELECT state FROM harness_shared.resource_governor_admissions
+            WHERE workspace_id = ${workspaceId} AND receipt_id = ${terminal.receiptId!}`).toEqual([{ state: 'completed' }]);
+        }
+      }
+      for (const queryClass of ['definition', 'hot-references'] as const) {
+        const useful = report.samples.filter(sample => sample.request.queryClass === queryClass &&
+          classifyReplayAnswer(sample.answer, replayConfig.corpus[queryClass].oracle).usefulCorrect).length;
+        expect(report.classes[queryClass].usefulCorrect).toBe(useful);
+      }
+    }
   }, 120_000);
 });
