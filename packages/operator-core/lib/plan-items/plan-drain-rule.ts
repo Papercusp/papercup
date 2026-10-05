@@ -70,7 +70,10 @@ export function planWhoseDrainStateMayHaveChanged(
       e.tool === 'plans:edit' ||
       e.tool === 'plans:set-content-chunk') &&
     r?.planDrainTransitionChanged === true;
-  const initialPlanStatus = typeof e.args?.status === 'string' ? e.args.status : 'draft';
+  // `ToolInvocationEvent.args` is `unknown`: narrow to an object before reading `status`.
+  const requestedStatus =
+    typeof e.args === 'object' && e.args !== null ? (e.args as { status?: unknown }).status : undefined;
+  const initialPlanStatus = typeof requestedStatus === 'string' ? requestedStatus : 'draft';
   const createMayChangeDrain = e.tool === 'plans:new' && initialPlanStatus !== 'draft';
   if (
     r?.ok === true &&
