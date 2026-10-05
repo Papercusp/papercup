@@ -13,11 +13,19 @@ import type { Plugin, ProviderAdapter, ProviderDescriptor } from '@papercusp/plu
 import {
   _injectPluginHostForTests,
   _resetPluginHostForTests,
+  isDaemonProviderPlugin,
   registerPluginProviders,
   unregisterPluginProviders,
   type ProviderRegistrationFailure,
 } from '../plugin-host-runtime';
 import { createProviderRegistry, providerRegistry } from './provider-registry';
+import {
+  daemonProviderRuntimes,
+  resolveProviderCommand,
+  stopDaemonProvider,
+  type DaemonProviderRuntime,
+  type StartDaemonProviderOptions,
+} from './daemon-provider';
 
 function descriptor(id: string): ProviderDescriptor {
   return {
@@ -39,7 +47,12 @@ function adapter(d: ProviderDescriptor): ProviderAdapter {
 
 function loaded(
   name: string,
-  opts: { provider?: ProviderDescriptor; adapter?: unknown; runtime?: 'js' | 'daemon' | 'wasm' } = {},
+  opts: {
+    provider?: ProviderDescriptor;
+    adapter?: unknown;
+    runtime?: 'js' | 'daemon' | 'wasm';
+    daemonCommand?: string[];
+  } = {},
 ): LoadedPlugin {
   const plugin = {
     name,
@@ -52,14 +65,39 @@ function loaded(
     plugin,
     path: `/tmp/${name}`,
     source: 'global',
-    runtime: { kind: opts.runtime ?? 'js' } as LoadedPlugin['runtime'],
+    runtime: { kind: opts.runtime ?? 'js', daemonCommand: opts.daemonCommand } as LoadedPlugin['runtime'],
     provider: opts.provider,
   };
 }
 
-afterEach(() => {
+/** A fake sandboxed-daemon starter: records each start and each shutdown. */
+function fakeDaemonStarter(opts: { describes?: ProviderDescriptor; fail?: Error } = {}) {
+  const starts: StartDaemonProviderOptions[] = [];
+  const shutdowns: string[] = [];
+  const start = async (o: StartDaemonProviderOptions): Promise<DaemonProviderRuntime> => {
+    starts.push(o);
+    if (opts.fail) throw opts.fail;
+    const described = opts.describes ?? o.declared!;
+    const shutdown = async () => {
+      shutdowns.push(o.pluginName);
+    };
+    return {
+      descriptor: described,
+      adapter: adapter(described),
+      handle: { request: async () => undefined as never, shutdown, pid: () => 4242 },
+      activeCalls: () => 0,
+      shutdown,
+    };
+  };
+  return { start, starts, shutdowns };
+}
+
+const flushMicrotasks = () => new Promise((r) => setImmediate(r));
+
+afterEach(async () => {
   _resetPluginHostForTests();
   providerRegistry().clear();
+  for (const name of [...daemonProviderRuntimes().keys()]) await stopDaemonProvider(name);
 });
 
 describe('registerPluginProviders', () => {
@@ -115,14 +153,11 @@ describe('registerPluginProviders', () => {
     expect(registry.list()).toEqual([]);
   });
 
-  it('defers daemon providers to the daemon bridge and refuses wasm providers', async () => {
+  it('refuses wasm providers', async () => {
     const registry = createProviderRegistry();
     const errors: ProviderRegistrationFailure[] = [];
     await registerPluginProviders(
-      [
-        loaded('d', { provider: descriptor('fixture-daemon'), runtime: 'daemon' }),
-        loaded('w', { provider: descriptor('fixture-wasm'), runtime: 'wasm' }),
-      ],
+      [loaded('w', { provider: descriptor('fixture-wasm'), runtime: 'wasm' })],
       (e) => errors.push(e),
       registry,
     );
@@ -139,6 +174,135 @@ describe('registerPluginProviders', () => {
     await registerPluginProviders([lpA, lpB], () => {}, registry);
     expect(unregisterPluginProviders([lpA], registry)).toEqual(['fixture-a']);
     expect(registry.list().map((p) => p.descriptor.id)).toEqual(['fixture-b']);
+  });
+});
+
+describe('daemon providers (P-002, D-006)', () => {
+  it('starts the daemon under the provider sandbox with the manifest command, dir and descriptor, and registers it as runtime daemon', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor('fixture-daemon');
+    const fake = fakeDaemonStarter();
+    const errors: ProviderRegistrationFailure[] = [];
+    const ids = await registerPluginProviders(
+      [loaded('d', { provider: d, runtime: 'daemon', daemonCommand: ['node', 'provider.js'] })],
+      (e) => errors.push(e),
+      registry,
+      fake.start,
+    );
+    expect(errors).toEqual([]);
+    expect(ids).toEqual(['fixture-daemon']);
+    expect(fake.starts).toHaveLength(1);
+    expect(fake.starts[0]).toMatchObject({
+      pluginName: 'd',
+      pluginDir: '/tmp/d',
+      cmd: ['node', 'provider.js'],
+      declared: d,
+    });
+    const entry = registry.get('fixture-daemon');
+    expect(entry?.runtime).toBe('daemon');
+    expect(entry?.pluginName).toBe('d');
+    expect(daemonProviderRuntimes().has('d')).toBe(true);
+  });
+
+  it('registers the MANIFEST descriptor, so a daemon cannot widen its egress hosts by describing more', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor('fixture-daemon');
+    const wider = { ...d, egressHosts: [...d.egressHosts, 'exfil.example.net'] };
+    const fake = fakeDaemonStarter({ describes: wider });
+    await registerPluginProviders(
+      [loaded('d', { provider: d, runtime: 'daemon', daemonCommand: ['node', 'p.js'] })],
+      () => {},
+      registry,
+      fake.start,
+    );
+    expect(registry.get('fixture-daemon')?.descriptor.egressHosts).toEqual(['calendar.example.com']);
+  });
+
+  it('reports a refused sandbox start by its code and registers nothing (no unsandboxed fallback)', async () => {
+    const registry = createProviderRegistry();
+    const refusal = Object.assign(new Error('provider sandbox unavailable'), { code: 'sandbox-unavailable' });
+    const fake = fakeDaemonStarter({ fail: refusal });
+    const errors: ProviderRegistrationFailure[] = [];
+    const ids = await registerPluginProviders(
+      [loaded('d', { provider: descriptor('fixture-daemon'), runtime: 'daemon', daemonCommand: ['node', 'p.js'] })],
+      (e) => errors.push(e),
+      registry,
+      fake.start,
+    );
+    expect(ids).toEqual([]);
+    expect(errors.map((e) => [e.plugin, e.code])).toEqual([['d', 'sandbox-unavailable']]);
+    expect(registry.list()).toEqual([]);
+    expect(daemonProviderRuntimes().has('d')).toBe(false);
+  });
+
+  it('shuts the daemon down when registration is refused after it started', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor('fixture-daemon');
+    // The daemon describes a different contract version than the manifest declares.
+    const fake = fakeDaemonStarter({ describes: { ...d, contractVersion: 2 } as ProviderDescriptor });
+    const errors: ProviderRegistrationFailure[] = [];
+    await registerPluginProviders(
+      [loaded('d', { provider: d, runtime: 'daemon', daemonCommand: ['node', 'p.js'] })],
+      (e) => errors.push(e),
+      registry,
+      fake.start,
+    );
+    expect(errors.map((e) => e.code)).toEqual(['descriptor-mismatch']);
+    expect(fake.shutdowns).toEqual(['d']);
+    expect(registry.list()).toEqual([]);
+    expect(daemonProviderRuntimes().has('d')).toBe(false);
+  });
+
+  it('reports a daemon provider with no command without starting anything', async () => {
+    const registry = createProviderRegistry();
+    const fake = fakeDaemonStarter();
+    const errors: ProviderRegistrationFailure[] = [];
+    await registerPluginProviders(
+      [loaded('d', { provider: descriptor('fixture-daemon'), runtime: 'daemon' })],
+      (e) => errors.push(e),
+      registry,
+      fake.start,
+    );
+    expect(errors.map((e) => e.code)).toEqual(['daemon-command-missing']);
+    expect(fake.starts).toEqual([]);
+  });
+
+  it('re-discovery stops the running daemon before starting its replacement', async () => {
+    const registry = createProviderRegistry();
+    const lp = loaded('d', { provider: descriptor('fixture-daemon'), runtime: 'daemon', daemonCommand: ['node', 'p.js'] });
+    const fake = fakeDaemonStarter();
+    const errors: ProviderRegistrationFailure[] = [];
+    await registerPluginProviders([lp], (e) => errors.push(e), registry, fake.start);
+    await registerPluginProviders([lp], (e) => errors.push(e), registry, fake.start);
+    expect(errors).toEqual([]);
+    expect(fake.starts).toHaveLength(2);
+    expect(fake.shutdowns).toEqual(['d']);
+    expect(registry.list()).toHaveLength(1);
+  });
+
+  it('unregisterPluginProviders stops the plugin’s daemon and forgets it', async () => {
+    const registry = createProviderRegistry();
+    const lp = loaded('d', { provider: descriptor('fixture-daemon'), runtime: 'daemon', daemonCommand: ['node', 'p.js'] });
+    const fake = fakeDaemonStarter();
+    await registerPluginProviders([lp], () => {}, registry, fake.start);
+    expect(unregisterPluginProviders([lp], registry)).toEqual(['fixture-daemon']);
+    expect(daemonProviderRuntimes().has('d')).toBe(false);
+    await flushMicrotasks();
+    expect(fake.shutdowns).toEqual(['d']);
+  });
+
+  it('marks only daemon plugins that declare a provider as provider daemons (no unsandboxed action daemon)', () => {
+    const d = descriptor('fixture-daemon');
+    expect(isDaemonProviderPlugin(loaded('a', { provider: d, runtime: 'daemon', daemonCommand: ['x'] }))).toBe(true);
+    expect(isDaemonProviderPlugin(loaded('b', { runtime: 'daemon', daemonCommand: ['x'] }))).toBe(false);
+    expect(isDaemonProviderPlugin(loaded('c', { provider: d, adapter: adapter(d) }))).toBe(false);
+  });
+});
+
+describe('daemon provider command resolution', () => {
+  it('maps a bare node to this host’s node and leaves other commands alone', () => {
+    expect(resolveProviderCommand(['node', 'provider.js'])).toEqual([process.execPath, 'provider.js']);
+    expect(resolveProviderCommand(['/opt/bin/prov', '--serve'])).toEqual(['/opt/bin/prov', '--serve']);
   });
 });
 

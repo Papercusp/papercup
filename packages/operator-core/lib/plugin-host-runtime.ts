@@ -61,6 +61,13 @@ import {
   ProviderRegistrationError,
   type ProviderRegistry,
 } from './integrations/provider-registry';
+import {
+  startDaemonProvider,
+  stopDaemonProvider,
+  trackDaemonProvider,
+  type DaemonProviderRuntime,
+  type StartDaemonProviderOptions,
+} from './integrations/daemon-provider';
 
 // operator-core is an ESM package (`type: module`); under the host's ESM
 // runtime (tsx) the CommonJS globals `require` and `__dirname` are UNDEFINED.
@@ -458,13 +465,17 @@ export interface ProviderRegistrationFailure {
  * dropped first, so a re-discovery (hot reload, no-op Cupboard reinstall,
  * workspace switch) re-registers instead of colliding with itself.
  *
- * `daemon` providers are registered by the daemon bridge once the sandboxed
- * process answers `describe` (P-002); WASM plugins cannot carry a provider.
+ * `daemon` providers are started here under the fixed provider sandbox
+ * (P-002, D-006) and registered once the sandboxed process answers
+ * `describe`; a refused start (no sandbox on this host, a describe that
+ * disagrees with the manifest) is reported, never retried unsandboxed. WASM
+ * plugins cannot carry a provider.
  */
 export async function registerPluginProviders(
   loaded: LoadedPlugin[],
   onError: (err: ProviderRegistrationFailure) => void,
   registry: ProviderRegistry = providerRegistry(),
+  startDaemon: (opts: StartDaemonProviderOptions) => Promise<DaemonProviderRuntime> = startDaemonProvider,
 ): Promise<string[]> {
   const registered: string[] = [];
   for (const lp of loaded) {
@@ -472,8 +483,14 @@ export async function registerPluginProviders(
     if (!descriptor) continue;
     const pluginName = lp.plugin.name;
     registry.unregisterPlugin(pluginName);
+    // A re-discovery replaces the running daemon: its code may have changed in place.
+    await stopDaemonProvider(pluginName);
     const runtimeKind = lp.runtime?.kind ?? 'js';
-    if (runtimeKind === 'daemon') continue;
+    if (runtimeKind === 'daemon') {
+      const id = await registerDaemonProvider(lp, descriptor, registry, startDaemon, onError);
+      if (id) registered.push(id);
+      continue;
+    }
     if (runtimeKind !== 'js') {
       onError({
         plugin: pluginName,
@@ -503,14 +520,73 @@ export async function registerPluginProviders(
   return registered;
 }
 
-/** Drop every provider registered by the given plugins (unload half of the lifecycle). */
+function errorCode(e: unknown, fallback: string): string {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : fallback;
+}
+
+async function registerDaemonProvider(
+  lp: LoadedPlugin,
+  descriptor: NonNullable<LoadedPlugin['provider']>,
+  registry: ProviderRegistry,
+  startDaemon: (opts: StartDaemonProviderOptions) => Promise<DaemonProviderRuntime>,
+  onError: (err: ProviderRegistrationFailure) => void,
+): Promise<string | null> {
+  const pluginName = lp.plugin.name;
+  const fail = (code: string, e: unknown): null => {
+    onError({ plugin: pluginName, provider: descriptor.id, code, error: e instanceof Error ? e.message : String(e) });
+    return null;
+  };
+  const cmd = lp.runtime?.daemonCommand;
+  if (!cmd || cmd.length === 0) return fail('daemon-command-missing', 'runtime.daemonCommand is empty');
+  let runtime: DaemonProviderRuntime;
+  try {
+    runtime = await startDaemon({
+      pluginName,
+      pluginDir: lp.path,
+      cmd,
+      declared: descriptor,
+      onLog: (line: string) => console.log(`[daemon-provider ${pluginName}] ${line}`),
+    });
+  } catch (e: unknown) {
+    return fail(errorCode(e, 'daemon-start-failed'), e);
+  }
+  try {
+    // The MANIFEST descriptor is what gets registered, so its egress hosts are
+    // the ones host.fetch enforces; the daemon cannot widen them by describing more.
+    await registry.register({ descriptor, adapter: runtime.adapter, pluginName, runtime: 'daemon' });
+  } catch (e: unknown) {
+    await runtime.shutdown().catch(() => {});
+    return fail(e instanceof ProviderRegistrationError ? e.code : 'register-threw', e);
+  }
+  trackDaemonProvider(pluginName, runtime);
+  return descriptor.id;
+}
+
+/**
+ * Drop every provider registered by the given plugins and stop their
+ * sandboxed provider daemons (unload half of the lifecycle).
+ */
 export function unregisterPluginProviders(
   loaded: LoadedPlugin[],
   registry: ProviderRegistry = providerRegistry(),
 ): string[] {
   const removed: string[] = [];
-  for (const lp of loaded) removed.push(...registry.unregisterPlugin(lp.plugin.name));
+  for (const lp of loaded) {
+    removed.push(...registry.unregisterPlugin(lp.plugin.name));
+    void stopDaemonProvider(lp.plugin.name);
+  }
   return removed;
+}
+
+/**
+ * A daemon plugin that declares a provider runs ONLY as the sandboxed provider
+ * daemon started by {@link registerPluginProviders}. The legacy action daemon
+ * must not also be started for it: that would be a second, unsandboxed copy of
+ * the same third-party code with the host's network and filesystem (D-006).
+ */
+export function isDaemonProviderPlugin(lp: LoadedPlugin): boolean {
+  return lp.runtime?.kind === 'daemon' && Boolean(lp.provider ?? lp.plugin.provider);
 }
 
 function regKey(pluginName: string, installSlug: string): string {
@@ -1120,6 +1196,10 @@ async function initializeDaemonPlugin(
   ctx: PapercuspContext,
 ): Promise<void> {
   const key = regKey(lp.plugin.name, ctx.installSlug);
+  if (isDaemonProviderPlugin(lp)) {
+    ctx.log(`daemon plugin ${lp.plugin.name} is a provider: served by its sandboxed provider daemon, no action daemon started`);
+    return;
+  }
   const cmd = lp.runtime?.daemonCommand;
   if (!cmd || cmd.length === 0) {
     throw new Error(`daemon runtime requested but runtime.daemonCommand empty on ${lp.plugin.name}`);
