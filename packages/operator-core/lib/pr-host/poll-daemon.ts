@@ -200,6 +200,10 @@ export interface PollDaemonDeps {
     installSlug: string;
     remote: string;
     pr: Pr;
+    /** The install's auto-merge setting (the policy input for an auto merge). */
+    autoMerge: boolean;
+    /** contribution-admission verdict for the PR author. */
+    authorRevoked: boolean;
   }) => Promise<StandingPrMergeOutcome>;
   now?: () => number;
   random?: () => number;
@@ -463,6 +467,8 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
           installSlug,
           remote,
           pr: { ...enriched, review_decision: 'approved' },
+          autoMerge: settings.auto_merge,
+          authorRevoked,
         });
         if (out.action === 'merged') {
           counts.merged.push(enriched.ref.number);
@@ -924,7 +930,15 @@ export async function handlePrPoll(ctx: SystemActionCtx): Promise<void> {
     console.warn(`[pr-poll] ${installSlug}: no upstream remote resolvable — skipping tick`);
     return;
   }
-  const outcome = await pollHarnessPrs({ installSlug, workspaceId, remote });
+  // The standing PR's exact-merge gate runs only on this production path (P-021 /
+  // P-024); it shares the poll store so its test records live on the routine metadata.
+  const store = makeSqlStore(getOrgPg().sql);
+  const { makeLiveStandingPrMerge } = await import('../harness/git-sync/standing-pr-merge-live');
+  const standingPrMerge = makeLiveStandingPrMerge({
+    store,
+    onError: (err) => console.warn(`[pr-poll] ${installSlug}: standing PR merge run failed:`, err),
+  });
+  const outcome = await pollHarnessPrs({ installSlug, workspaceId, remote }, { store, standingPrMerge });
   if (outcome.status === 'error') {
     console.warn(
       `[pr-poll] ${installSlug}: poll error (${outcome.error?.kind}: ${outcome.error?.message}) — backing off ${Math.round((outcome.backoffMs ?? 0) / 1000)}s`,
