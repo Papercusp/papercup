@@ -21,7 +21,11 @@ assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Refusing fixture
 const pid = process.env.VERIFY_TAURI_PID!;
 const origin = process.env.VERIFY_TAURI_DEV_URL!;
 const workspaceId = process.env.PAPERCUSP_WORKSPACE!;
-assert.ok(pid && origin && workspaceId && process.env.HARNESS_ADMIN_DATABASE_URL);
+const isolatedPg = resolveScriptPgUrl();
+assert.ok(pid && origin && workspaceId &&
+  isolatedPg.source === 'env:HARNESS_ADMIN_DATABASE_URL' &&
+  !isolatedPg.envLocal.applied.includes('HARNESS_ADMIN_DATABASE_URL'),
+  'Requires an explicitly supplied isolated admin database URL');
 const out = process.env.TAURI_GOAL_REPORT_OUT ?? `/tmp/pcv-goal-report-${Date.now()}`;
 mkdirSync(out, { recursive: true });
 const save = (name: string, value: unknown) => writeFileSync(join(out, name), JSON.stringify(value, null, 2));
@@ -55,7 +59,7 @@ const poll = (expression: string, require: string) => {
     throw error;
   }
 };
-const sql = postgres(resolveScriptPgUrl().url, { max: 1, onnotice: () => {} });
+const sql = postgres(isolatedPg.url, { max: 1, onnotice: () => {} });
 const observations: unknown[] = [];
 // Measure the same window.fetch + IPC/workspace wrappers as usePlanAttention.
 // A Node HTTP preflight with an explicit header cannot prove this request.
@@ -104,9 +108,7 @@ const sourcePaths = ['apps/operator/app/_components/chat/ReportBlockCard.tsx', '
   'packages/operator-core/test/fixtures/goal-owner-report.ts',
   'scripts/tauri-surface-verify-goal-report.mts'];
 const sourceFingerprint = sourcePaths.map(path => ({ path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }));
-const head = (await execFileViaSidecar('git', ['rev-parse', 'HEAD'], {
-  cwd: process.cwd(), timeoutMs: 60_000, subsystem: 'goal-tauri-verifier',
-})).stdout.trim();
+const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 60_000 }).trim();
 let recording: ReturnType<typeof spawn> | undefined;
 let recordingExit: Promise<number | null> | undefined;
 const stopRecording = async () => {
