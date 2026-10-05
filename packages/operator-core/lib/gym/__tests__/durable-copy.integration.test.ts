@@ -10,7 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
@@ -20,6 +20,7 @@ import {
   insertVariant,
   insertTask,
   insertRun,
+  insertRunParams,
   finishRun,
   insertScore,
   insertCycle,
@@ -32,6 +33,7 @@ import type { GymScore } from '../judge';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_650 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/650-harness-gym-durable-run-analytics.sql');
 const MIGRATION_1012 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1012-gym-durable-active-task-generation.sql');
+const RUN_EVIDENCE_MIGRATION = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1358-gym-durable-run-evidence.sql');
 
 let src: postgres.Sql;
 let dst: postgres.Sql;
@@ -111,6 +113,11 @@ beforeAll(async () => {
       END $$;
     `);
     await mig.unsafe(readFileSync(MIGRATION_1012, 'utf8')).simple();
+    const evidenceMigration = readFileSync(existsSync(RUN_EVIDENCE_MIGRATION)
+      ? RUN_EVIDENCE_MIGRATION : `${RUN_EVIDENCE_MIGRATION}.DRAFT`, 'utf8');
+    await mig.unsafe(evidenceMigration).simple();
+    // The additive migration must also be safe on an already-upgraded schema.
+    await mig.unsafe(evidenceMigration).simple();
   } finally { await mig.end({ timeout: 5 }); }
 });
 
@@ -197,5 +204,60 @@ describe('durable run-analytics copy (migration 650)', () => {
       { task_id: 'gym-train', corpus: 'synthetic', active: true },
       { task_id: 'legacy-synthetic', corpus: 'synthetic', active: false },
     ]);
+  });
+
+  it('retains actual oracle signals and recorded parameters after source rows are removed', async () => {
+    const runId = 'baseline::gym-train::c0::r0';
+    // Controlled source rows exercise retention; these are not a native acceptance verdict.
+    const signals = { regressions: false, planted_bug_caught: true,
+      oracle: { sourceRef: 'controlled-oracle', status: 'not-measured',
+        pre: { results: [{ name: 'assertion', passed: false }], sourceHashes: { pinned: 'pre-pin' } },
+        post: { results: [{ name: 'assertion', passed: true }], sourceHashes: { pinned: 'post-pin' } },
+        unresolved: ['complete-runtime-identity'] } };
+    await finishRun(src, runId, { terminalState: 'passed', deterministicSignals: signals,
+      traceRef: '/removed-scratch/trace.json', distilledRef: '/removed-scratch/distilled.txt' });
+    await insertRunParams(src, runId, { harnessCommit: 'declared-harness', substrateCommit: 'declared-substrate',
+      mutableRoles: ['worker'], judgeModel: 'recorded-model', judgeTemp: 0,
+      weights: { d1: 0.5, d2: 0.25, d3: 0.25 }, rubricHash: RH });
+    const readEvidence = () => dst`
+      SELECT deterministic_signals, trace_ref, distilled_ref, run_params
+        FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'evidence-ws' AND harness_slug = 'evidence-harness' AND run_id = ${runId}`;
+    await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'evidence-ws', harnessSlug: 'evidence-harness' });
+    const [retained] = await readEvidence();
+    const decode = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value;
+    expect(decode(retained.deterministic_signals)).toEqual(signals);
+    expect(retained.trace_ref).toBe('/removed-scratch/trace.json');
+    expect(retained.distilled_ref).toBe('/removed-scratch/distilled.txt');
+    const [originalParams] = await src`SELECT row_to_json(p) AS params FROM harness_gym.gym_runs_params p WHERE run_id = ${runId}`;
+    expect(decode(retained.run_params)).toEqual(decode(originalParams.params));
+    expect(decode(retained.run_params)).toMatchObject({ run_id: runId, harness_commit: 'declared-harness',
+      substrate_commit: 'declared-substrate', mutable_roles: ['worker'], judge_model: 'recorded-model',
+      judge_temp: 0, rubric_hash: RH });
+    // Re-copy retains the same bytes, and missing params stay unknown on the sibling run.
+    await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'evidence-ws', harnessSlug: 'evidence-harness' });
+    expect((await readEvidence())[0]).toEqual(retained);
+    const [unmeasured] = await dst`
+      SELECT run_params FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'evidence-ws' AND harness_slug = 'evidence-harness' AND run_id = 'cand-c0::gym-train::c0::r0'`;
+    expect(unmeasured.run_params).toBeNull();
+    const [foreign] = await dst`
+      SELECT deterministic_signals, run_params FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'ws1' AND harness_slug = 'h1' AND run_id = ${runId}`;
+    expect(decode(foreign.deterministic_signals)).toEqual({ regressions: false });
+    expect(foreign.run_params).toBeNull();
+    await src`DELETE FROM harness_gym.gym_runs WHERE run_id = ${runId}`;
+    expect((await readEvidence())[0]).toEqual(retained);
+  });
+
+  it('preserves SQL NULL for a run that never recorded measurements', async () => {
+    const runId = 'unmeasured-run';
+    await insertRun(src, { runId, variantId: 'baseline', taskId: 'gym-train', cycle: 9 });
+    await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'unknown-ws', harnessSlug: 'unknown-harness' });
+    const [row] = await dst`
+      SELECT deterministic_signals, trace_ref, distilled_ref, run_params
+        FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'unknown-ws' AND harness_slug = 'unknown-harness' AND run_id = ${runId}`;
+    expect(row).toEqual({ deterministic_signals: null, trace_ref: null, distilled_ref: null, run_params: null });
   });
 });

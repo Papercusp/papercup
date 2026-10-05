@@ -36,6 +36,18 @@ export interface ProviderOAuthDescriptor {
   clientRegistrationRef?: string;
   /** Optional shared-credential group (e.g. one Google Workspace grant serving mail + calendar). */
   credentialGroup?: string;
+  /**
+   * Account-identity endpoint. The HOST fetches it with the fresh access token
+   * after consent (the provider never sees the token) and reads the stable
+   * account id at `idField` (dot path). Must be https and inside `egressHosts`.
+   */
+  identity?: ProviderOAuthIdentity;
+}
+
+export interface ProviderOAuthIdentity {
+  url: string;
+  idField: string;
+  displayNameField?: string;
 }
 
 export interface ProviderDescriptor {
@@ -250,7 +262,12 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     for (const key of Object.keys(oauth)) {
       if (/secret/i.test(key)) issues.push(`provider.oauth.${key} must not carry a secret; use clientRegistrationRef`);
     }
-    for (const url of [oauth.authorizeUrl, oauth.tokenUrl]) {
+    if (oauth.identity !== undefined) {
+      const identity = oauth.identity as Partial<ProviderOAuthIdentity>;
+      if (!isHttpsUrl(identity.url)) issues.push('provider.oauth.identity.url must be an https URL');
+      if (!isNonEmptyString(identity.idField)) issues.push('provider.oauth.identity.idField must name the account id field');
+    }
+    for (const url of [oauth.authorizeUrl, oauth.tokenUrl, oauth.identity?.url]) {
       if (!isHttpsUrl(url)) continue;
       const host = new URL(url as string).hostname;
       if (host !== '127.0.0.1' && host !== 'localhost' && !providerEgressAllows(egress.filter(isNonEmptyString), host)) {

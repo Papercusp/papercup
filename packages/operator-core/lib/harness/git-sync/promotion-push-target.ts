@@ -30,6 +30,7 @@ import {
   resolveIntegrationPushRemote,
   type PotIntegrationModeRead,
 } from './pot-integration-mode';
+import { publishStandingPr, type PublishStandingPrResult, type StandingPrDeps } from './standing-pr';
 
 export type PromotionPushTarget =
   | { kind: 'origin'; reason: string }
@@ -130,4 +131,155 @@ export async function resolvePromotionPushTarget(
     return { kind: 'skip', reason: 'working_copy_fork_missing', message: decision.message };
   }
   return { kind: 'hold', reason: decision.reason, message: decision.message };
+}
+
+// ─── publishing a promotion ─────────────────────────────────────────────────
+
+/** The owner of a GitHub remote in any form the registry stores (https, ssh, bare "github.com/o/r"). */
+export function githubOwnerOf(remote: string): string | null {
+  const m = /github\.com[:/]+([A-Za-z0-9][A-Za-z0-9_.-]{0,38})\/[A-Za-z0-9][A-Za-z0-9_.-]*/.exec(remote.trim());
+  return m?.[1] ?? null;
+}
+
+export type StandingPrRefresh = PublishStandingPrResult | { ok: false; stage: 'setup'; error: string };
+
+export type PromotionPublishOutcome =
+  /** Direct mode / unowned checkout: the caller runs its existing origin push. */
+  | { kind: 'origin' }
+  /** Review mode without a fork: published nowhere; the local gate stays authoritative. */
+  | { kind: 'skipped'; message: string }
+  /** Review mode: pushed to the working copy; the standing PR refresh is best-effort. */
+  | { kind: 'fork'; potHomeSlug: string; remoteRef: string; standingPr: StandingPrRefresh };
+
+export interface PublishPromotionInput extends ResolvePromotionPushTargetInput {
+  /** The tested commit being promoted. */
+  sha: string;
+  /** The promoted branch ("main" or "refs/heads/main"); also the standing PR's base branch. */
+  ref: string;
+}
+
+export interface PublishPromotionDeps extends ResolvePromotionPushTargetDeps {
+  /** Make the checkout's `pot-fork` remote point at the fork url. */
+  ensureRemote: (repoPath: string, url: string) => Promise<unknown>;
+  /** Push `sha` to `remoteRef` on the `pot-fork` remote. Throws on rejection. */
+  pushToFork: (repoPath: string, sha: string, remoteRef: string) => Promise<void>;
+  /** The GitHub PR host seams; null when no host/token is available. */
+  createStandingPrDeps: (repoPath: string) => Promise<StandingPrDeps | null>;
+  publishStandingPr?: typeof publishStandingPr;
+  log: (line: string) => void;
+}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Publish a promoted commit according to the owning pot's integration mode.
+ *
+ * - `origin` is returned for the caller to run its existing origin push.
+ * - `hold` THROWS, so promotion is held (fail closed — never risk an upstream leak).
+ * - A failed fork push THROWS too: same contract as the origin push, a promotion
+ *   that could not be published must not advance local `main`.
+ * - The standing PR refresh never throws: the working copy's main already carries
+ *   the tested commit, and the next promotion (or an on-demand send) retries it.
+ */
+export async function publishPromotion(
+  input: PublishPromotionInput,
+  deps: PublishPromotionDeps,
+): Promise<PromotionPublishOutcome> {
+  const target = await resolvePromotionPushTarget(input, deps);
+  if (target.kind === 'origin') return { kind: 'origin' };
+  if (target.kind === 'hold') throw new Error(`promotion held (${target.reason}): ${target.message}`);
+  if (target.kind === 'skip') {
+    deps.log(`git-push: skipped — ${target.message}`);
+    return { kind: 'skipped', message: target.message };
+  }
+
+  const remoteRef = input.ref.startsWith('refs/') ? input.ref : `refs/heads/${input.ref}`;
+  await deps.ensureRemote(input.repoPath, target.url);
+  await deps.pushToFork(input.repoPath, input.sha, remoteRef);
+  deps.log(
+    `git-push: published ${input.sha.slice(0, 12)} to the working copy of ${target.potHomeSlug} ` +
+      `(${target.remoteName} ${remoteRef}) — the main repository receives it only through the standing PR`,
+  );
+
+  const standingPr = await refreshStandingPr(input, target, remoteRef, deps);
+  if (standingPr.ok) {
+    const pr = 'prUrl' in standingPr && standingPr.prUrl ? ` ${standingPr.prUrl}` : '';
+    deps.log(`standing-pr: ${standingPr.decision.action}${pr}`);
+  } else {
+    deps.log(`standing-pr: not refreshed (${standingPr.stage}) — ${standingPr.error}`);
+  }
+  return { kind: 'fork', potHomeSlug: target.potHomeSlug, remoteRef, standingPr };
+}
+
+async function refreshStandingPr(
+  input: PublishPromotionInput,
+  target: Extract<PromotionPushTarget, { kind: 'fork' }>,
+  remoteRef: string,
+  deps: PublishPromotionDeps,
+): Promise<StandingPrRefresh> {
+  const upstream = target.upstreamRemote;
+  if (!upstream) {
+    return { ok: false, stage: 'setup', error: `pot ${target.potHomeSlug} has no main-repository remote (github_remote)` };
+  }
+  const forkOwner = githubOwnerOf(target.url);
+  const upstreamOwner = githubOwnerOf(upstream);
+  if (!forkOwner || !upstreamOwner) {
+    return { ok: false, stage: 'setup', error: `not a GitHub remote pair: fork ${target.url}, main ${upstream}` };
+  }
+  let prDeps: StandingPrDeps | null;
+  try {
+    prDeps = await deps.createStandingPrDeps(input.repoPath);
+  } catch (e) {
+    return { ok: false, stage: 'setup', error: `PR host unavailable: ${errText(e)}` };
+  }
+  if (!prDeps) return { ok: false, stage: 'setup', error: 'no GitHub PR host available (missing token)' };
+  try {
+    return await (deps.publishStandingPr ?? publishStandingPr)(
+      {
+        integration: target.integration,
+        forkRemote: target.url,
+        forkOwner,
+        upstreamRemote: upstream,
+        upstreamOwner,
+        baseBranch: remoteRef.replace(/^refs\/heads\//, ''),
+        promotedSha: input.sha,
+        trigger: 'promotion',
+        potName: target.potHomeSlug,
+      },
+      prDeps,
+    );
+  } catch (e) {
+    return { ok: false, stage: 'setup', error: errText(e) };
+  }
+}
+
+/** The real seams for {@link publishPromotion}; `log` is the green-checkpoint logger. */
+export async function createDefaultPublishPromotionDeps(log: (line: string) => void): Promise<PublishPromotionDeps> {
+  const [{ loadHarnessRegistry }, mode, standing, { redactToken }] = await Promise.all([
+    import('../../harness-registry'),
+    import('./pot-integration-mode'),
+    import('./standing-pr'),
+    import('../clone-url'),
+  ]);
+  return {
+    loadProjects: async (ws) => (await loadHarnessRegistry(ws)).projects,
+    readMode: (ws, slug) => mode.readPotIntegrationMode(ws, slug),
+    ensureRemote: (repoPath, url) => mode.ensurePotForkGitRemote(repoPath, url),
+    pushToFork: async (repoPath, sha, remoteRef) => {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      try {
+        await promisify(execFile)('git', ['-C', repoPath, 'push', POT_FORK_REMOTE_NAME, `${sha}:${remoteRef}`], {
+          // green-checkpoint is the one sanctioned writer of `main` (bin/git-hooks/pre-push).
+          env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: '1' },
+        });
+      } catch (e) {
+        throw new Error(redactToken(`push to the working copy failed: ${errText(e)}`));
+      }
+    },
+    createStandingPrDeps: (repoPath) => standing.createDefaultStandingPrDeps({ repoPath }),
+    log,
+  };
 }

@@ -21013,6 +21013,22 @@ export function realCheckpointDeps(
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.
     push: async (ref, baseSha, candidateSha) => {
+      // pot-review-integration-mode P-020 (D-006/D-007): a working-copy (review) pot
+      // publishes its promoted main to ITS FORK and refreshes the standing PR — never
+      // to the main repository. Direct-mode/unowned checkouts fall through to the
+      // origin push below unchanged; an unknown mode THROWS (promotion held).
+      const { publishPromotion, createDefaultPublishPromotionDeps } =
+        await import("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target");
+      const routed = await publishPromotion(
+        {
+          repoPath: cfg.integrationRoot,
+          workspaceId: gateVerdictTargetFromEnv()?.workspaceId,
+          sha: candidateSha ?? ref,
+          ref,
+        },
+        await createDefaultPublishPromotionDeps(log),
+      );
+      if (routed.kind !== "origin") return;
       const { gitOriginUrl } =
         await import("@papercusp/operator-core/lib/cupboard/resolve-repo-coords");
       const origin = await gitOriginUrl(cfg.integrationRoot);
@@ -22226,7 +22242,8 @@ if (require.main === module) {
         claimTerminal,
         // emitResult records BEFORE marker/event/exit; capture retains the run lock.
         emitResult,
-        captureProofs: () => runPostVerdictPureProofCapture(cfg, runId, watchdog.cancel),
+        captureProofs: () => runPostVerdictPureProofCapture(cfg, runId, watchdog.cancel,
+          undefined, undefined, processStartedAtMs),
         archiveCapture: async (result, capture, boundaries) => {
           let promotion: PureProofCaptureArchive['promotion'] = null;
           try {

@@ -505,6 +505,31 @@ export async function disconnectOwnedExternalTriggerSources(
   return rows[0] ?? { sources: 0, credentialRefs: [] };
 }
 
+/**
+ * A revoked or expired grant must not leave its sources looking connected:
+ * every source on `credentialRef` moves to `reconnect_required`. Pollers only
+ * run ready/connecting/connected/degraded sources, so sync stops; cursors and
+ * synced data are kept, and a successful reconnect (upsert) restores
+ * `connected` on the same source ids.
+ */
+export async function markExternalTriggerSourcesReconnectRequired(
+  sql: postgres.Sql,
+  workspaceId: string,
+  credentialRef: string,
+  reason: string,
+): Promise<number> {
+  const rows = await sql<Array<{ id: string }>>`
+    UPDATE harness_shared.data_sources
+       SET status = 'reconnect_required',
+           last_error = ${reason.slice(0, 4000)},
+           updated_at = now()
+     WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
+       AND credential_ref = ${required(credentialRef, 'credential_ref')}
+       AND status <> 'disabled'
+    RETURNING id::text`;
+  return rows.length;
+}
+
 /** Persist one provider cursor/status transition on the source row. */
 export async function updateExternalTriggerSourceSyncState(
   sql: postgres.Sql,
