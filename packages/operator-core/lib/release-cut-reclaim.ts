@@ -37,7 +37,7 @@
  * `git worktree prune` does for that one entry, without touching others), then deletes.
  * Each removal is appended to the shared deletion-audit.tsv the release scripts write.
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -912,19 +912,70 @@ export interface ReclaimExecResult {
   ms: number;
 }
 
+/** Run git and STREAM its stdout into `out` (left open), with no size ceiling. The buffered
+ *  {@link git} helper caps stdout at GIT_MAX_BUFFER, which a staged sidecar's binary diff
+ *  (158 MB, WI-10006139) exceeds — so archive output never goes through it. Async, so the
+ *  host event loop keeps running (WI-10005315). */
+function gitStreamInto(cwd: string, args: string[], out: fs.WriteStream, timeout = GIT_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['-C', cwd, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (d: string) => {
+      if (stderr.length < 4096) stderr += d;
+    });
+    child.stdout.pipe(out, { end: false });
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`git ${args.join(' ')} in ${cwd} exited ${code ?? signal}: ${stderr.trim()}`));
+    });
+  });
+}
+
 /** Tracked diffs of the superproject and every initialized submodule, so a removal is
- *  recoverable at the patch level. Throws on any failure — the caller refuses removal. */
+ *  recoverable at the patch level. Streamed to disk, so a diff of any size archives.
+ *  Throws on any failure (and removes the partial archive) — the caller refuses removal. */
 export async function archiveTreeDiffs(tree: string, outFile: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
-  const parts: string[] = [`# reclaim archive of ${tree} at ${new Date().toISOString()}\n`];
-  parts.push(`## HEAD ${(await git(tree, ['rev-parse', 'HEAD'])).trim()}\n`, await git(tree, ['diff', '--binary', 'HEAD']));
+  const head = (await git(tree, ['rev-parse', 'HEAD'])).trim();
+  const submodules: Array<{ rel: string; sha: string }> = [];
   for (const line of (await git(tree, ['submodule', 'status', '--recursive'])).split('\n')) {
     const m = /^([ +\-U])([0-9a-f]{40}) (.+?)(?: \(.*\))?$/.exec(line);
     if (!m || m[1] === '-') continue;
-    const rel = m[3] as string;
-    parts.push(`\n## submodule ${rel} ${m[2]}\n`, await git(path.join(tree, rel), ['diff', '--binary', 'HEAD']));
+    submodules.push({ rel: m[3] as string, sha: m[2] as string });
   }
-  await fs.promises.writeFile(outFile, parts.join(''));
+  const out = fs.createWriteStream(outFile);
+  let streamError: Error | null = null;
+  out.on('error', (e) => {
+    streamError = e;
+  });
+  const check = () => {
+    if (streamError) throw streamError;
+  };
+  try {
+    out.write(`# reclaim archive of ${tree} at ${new Date().toISOString()}\n## HEAD ${head}\n`);
+    await gitStreamInto(tree, ['diff', '--binary', 'HEAD'], out);
+    check();
+    for (const { rel, sha } of submodules) {
+      out.write(`\n## submodule ${rel} ${sha}\n`);
+      await gitStreamInto(path.join(tree, rel), ['diff', '--binary', 'HEAD'], out);
+      check();
+    }
+    await new Promise<void>((resolve, reject) => {
+      if (streamError) return reject(streamError);
+      out.once('error', reject);
+      out.end(() => resolve());
+    });
+  } catch (e) {
+    out.destroy();
+    await fs.promises.rm(outFile, { force: true });
+    throw e;
+  }
 }
 
 export async function executeCutReclaim(
@@ -965,8 +1016,11 @@ export async function executeCutReclaim(
       done({ removed: false, reason: `admin dir ${adminDir ?? '?'} is not under ${commonDir}/worktrees` });
       continue;
     }
-    if (pathsOverlap(real, canonicalRoot) || real === '/' || real === os.homedir()) {
-      done({ removed: false, reason: 'refusing a path that overlaps the canonical tree or home' });
+    const pathRefusal =
+      reclaimPathRefusal(real, canonicalRoot, os.homedir()) ??
+      (offloaded ? reclaimPathRefusal(v.path, canonicalRoot, os.homedir()) : null);
+    if (pathRefusal) {
+      done({ removed: false, reason: pathRefusal });
       continue;
     }
     const fresh = await (deps.scanHolders ?? scanProcHolders)([
