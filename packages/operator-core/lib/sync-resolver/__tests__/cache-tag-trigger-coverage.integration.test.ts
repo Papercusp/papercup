@@ -46,7 +46,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolve, dirname } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
@@ -154,13 +154,6 @@ beforeAll(async () => {
       try {
         await s.unsafe(BOOT_PREREQS_DDL);
         await applyPendingMigrations({ client: s, sqlDir: SQL_DIR });
-        for (const name of ['1365-unify-work-item-dep-change-notify', '1366-mapped-report-occurrence-change-notify']) {
-          const draft = resolve(SQL_DIR, `${name}.sql.DRAFT`);
-          if (existsSync(draft)) {
-            await s.unsafe(readFileSync(draft, 'utf8'));
-            await s.unsafe(readFileSync(draft, 'utf8'));
-          }
-        }
       } finally {
         await s.end({ timeout: 5 });
       }
@@ -236,6 +229,26 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
         `  mapped-but-no-trigger: [${missing.join(', ')}]\n` +
         `  documented COVERAGE_EXEMPT: [${exempt.join(', ')}]`,
     ).toEqual(exempt);
+  });
+
+  it('reapplying the armed notification migrations preserves their single producers', async () => {
+    for (const name of ['1365-unify-work-item-dep-change-notify', '1366-mapped-report-occurrence-change-notify']) {
+      const migration = readFileSync(resolve(SQL_DIR, `${name}.sql`), 'utf8');
+      await sql.unsafe(migration);
+      await sql.unsafe(migration);
+    }
+    const rows = await sql<{ table_name: string; producers: number }[]>`
+      SELECT c.relname AS table_name, count(*)::int AS producers FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_proc p ON p.oid = t.tgfoid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'harness_shared'
+        AND c.relname IN ('work_item_deps', 'report_library', 'work_item_occurrences')
+        AND p.proname IN ('emit_change_notify', 'emit_work_item_dep_change_notify')
+        AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+      GROUP BY c.relname ORDER BY c.relname`;
+    expect(rows).toEqual(['report_library', 'work_item_deps', 'work_item_occurrences']
+      .map((table_name) => ({ table_name, producers: 1 })));
   });
 
   it('raw report and occurrence writes emit scoped INSERT, UPDATE and DELETE notifications', async () => {
