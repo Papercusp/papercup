@@ -10,7 +10,9 @@ import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { applyGymSchema } from '../schema';
-import { createGymStore } from '../ab-runner-real';
+import { buildAbDeps, createGymStore } from '../ab-runner-real';
+import { loadHarnessPipelineSpend } from '../../harness-insights/load-spend';
+import type { GymRunnerPorts } from '../gym-runner';
 import { runAbEvaluation, type AbConfig, type AbDeps } from '../ab-runner';
 import { GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
 
@@ -27,6 +29,80 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   sql = postgres(u.toString(), { max: 1, onnotice: () => {}, prepare: false });
   await applyGymSchema(sql);
+  await sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
+  await sql`CREATE TABLE harness_shared.harness_run_output (
+    workspace_id text, harness_slug text, run_id text,
+    PRIMARY KEY (workspace_id, harness_slug, run_id))`;
+  await sql`CREATE TABLE harness_shared.agent_usage_samples (
+    id bigserial PRIMARY KEY, workspace_id text, harness_slug text, run_id text,
+    source text, cost_usd numeric, cost_source text, usage_provenance jsonb)`;
+  await sql`CREATE TABLE harness_shared.agent_runs_consolidated (
+    workspace_id text, harness_slug text, run_id text, cost_usd numeric)`;
+});
+
+describe('native Gym canonical pipeline usage (private PG, controlled ports)', () => {
+  async function pipeline(costs: Array<{ run: string; usd: number | null; source: string | null }>, missingRun?: string) {
+    let slug = '';
+    const ports: GymRunnerPorts = {
+      cloneSubstrate: async () => {}, registerThrowawayHarness: async (i) => { slug = i.slug; },
+      applyPromptOverride: async () => {}, fileFeature: async () => {},
+      startPipeline: async () => ({ workflowID: 'controlled-native-workflow' }),
+      pollStatus: async () => ({ workflowStatus: 'SUCCESS', featureStatus: 'completed' }),
+      teardownHarness: async () => {}, now: () => 0, sleep: async () => {},
+    };
+    const originalStart = ports.startPipeline;
+    ports.startPipeline = async (i) => {
+      for (const run of new Set([...costs.map((c) => c.run), ...(missingRun ? [missingRun] : [])])) {
+        await sql`INSERT INTO harness_shared.harness_run_output VALUES ('gym-ws', ${slug}, ${run})`;
+      }
+      for (const c of costs) await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, harness_slug, run_id, source, cost_usd, cost_source, usage_provenance)
+        VALUES ('gym-ws', ${slug}, ${c.run}, 'jsonl', ${c.usd}, ${c.source}, ${sql.json({ backend: 'codex', costBound: c.source === 'estimated' ? 'lower' : null })})`;
+      // Cross-workspace / harness / capture-point values must not inflate this attempt.
+      for (const [ws, harness, source] of [['other-ws', slug, 'jsonl'], ['gym-ws', 'other-harness', 'jsonl'], ['gym-ws', slug, 'headers']]) {
+        await sql`INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, harness_slug, run_id, source, cost_usd, cost_source)
+          VALUES (${ws}, ${harness}, 'decoy', ${source}, 900, 'provider')`;
+      }
+      return originalStart(i);
+    };
+    const deps = buildAbDeps({ gymSql: sql, ports, llmCall: async () => { throw new Error('no paid judge'); },
+      timeoutMs: 100, pollIntervalMs: 1, scratchRoot: '/tmp/gym-controlled-scratch', traceRoot: '/tmp/gym-controlled-retained' });
+    const handle = await deps.runPipeline({ variant: cfg().variants[0],
+      task: { ...cfg().tasks[0], taskId: randomBytes(5).toString('hex') }, repeat: 0, cycle: 0,
+      harnessCommit: COMMIT, workspaceId: 'gym-ws', scratchRoot: '/tmp/gym-controlled-scratch' });
+    return handle;
+  }
+
+  it('reads PG-only costs with no filesystem mirror rows and retains estimate provenance', async () => {
+    const handle = await pipeline([{ run: 'worker', usd: 0.4, source: 'provider' },
+      { run: 'validator', usd: 0.2, source: 'estimated' }]);
+    const old = await sql`SELECT COALESCE(SUM(cost_usd), 0)::float8 AS usd
+      FROM harness_shared.agent_runs_consolidated WHERE workspace_id = 'gym-ws' AND harness_slug = ${handle.harnessSlug}`;
+    expect(old[0].usd).toBe(0);
+    expect(handle.pipelineUsd).toBeCloseTo(0.6);
+    expect(handle.pipelineSpend).toMatchObject({ complete: true, measured: false, providerUsd: 0.4, estimatedUsd: 0.2 });
+    expect(handle.pipelineSpend?.samples.find((s) => s.costSource === 'estimated')?.provenance)
+      .toMatchObject({ costBound: 'lower', backend: 'codex' });
+    await sql`INSERT INTO harness_shared.agent_runs_consolidated VALUES ('gym-ws', ${handle.harnessSlug}, 'worker', 700)`;
+    const out = await loadHarnessPipelineSpend({ workspace_id: 'gym-ws', harness_slug: handle.harnessSlug,
+      runQuery: async <T>(q: string, p: unknown[]) => await sql.unsafe(q, p as never[]) as unknown as T[] });
+    expect(out.knownUsd).toBeCloseTo(0.6);
+  });
+
+  it('preserves measured zero separately from no evidence and missing archived-run usage', async () => {
+    expect((await pipeline([{ run: 'worker', usd: 0, source: 'provider' }])).pipelineSpend)
+      .toMatchObject({ knownUsd: 0, complete: true, measured: true });
+    expect((await pipeline([])).pipelineSpend).toMatchObject({ knownUsd: 0, complete: false, measured: false });
+    expect((await pipeline([{ run: 'worker', usd: 0.3, source: 'provider' }], 'validator')).pipelineSpend)
+      .toMatchObject({ knownUsd: 0.3, complete: false, measured: false, missingRunIds: ['validator'] });
+  });
+
+  it('does not call nullable native usage a zero-cost run', async () => {
+    const handle = await pipeline([{ run: 'worker', usd: null, source: null }]);
+    expect(handle.pipelineSpend).toMatchObject({ complete: false, measured: false, missingRunIds: ['worker'],
+      samples: [{ runId: 'worker', costUsd: null, costSource: null }] });
+  });
 });
 
 afterAll(async () => {

@@ -251,10 +251,26 @@ export function replayServerPopulation(pid: number, taskId: string, deps: {
   const checked = <T>(path: string, fn: () => T, fallback: T): T => {
     try { return fn(); } catch (error) { unknown.push(`unreadable-cgroup:${path}:${String(error)}`); return fallback; }
   };
-  const fs: CgroupFs = deps.fs ?? {
-    readFile: path => checked(path, () => readFileSync(path, 'utf8'), null as string | null),
-    readDir: path => checked(path, () => readdirSync(path), [] as string[]),
-    isDir: path => checked(path, () => statSync(path).isDirectory(), false),
+  const rawFs: CgroupFs = deps.fs ?? {
+    readFile: path => readFileSync(path, 'utf8'),
+    readDir: path => readdirSync(path),
+    isDir: path => statSync(path).isDirectory(),
+  };
+  const fs: CgroupFs = {
+    readFile: path => {
+      const value = checked(path, () => rawFs.readFile(path), null);
+      if (value === null) unknown.push(`unreadable-cgroup:${path}`);
+      return value;
+    },
+    readDir: path => checked(path, () => rawFs.readDir(path), [] as string[]),
+    isDir: path => {
+      const directory = checked(path, () => rawFs.isDir(path), false);
+      if (directory && absolute && relative(absolute, path).split('/').filter(Boolean).length > 32) {
+        unknown.push(`cgroup-depth-unmeasured:${path}`);
+        return false;
+      }
+      return directory;
+    },
   };
   // Do not census a broad foreign service cgroup when task provenance failed.
   const groups = absolute && !unknown.length ? walkCgroupTree(absolute, fs) : [];
@@ -267,7 +283,11 @@ export function replayServerPopulation(pid: number, taskId: string, deps: {
     if (!childGroup || !cgroup || (childGroup !== cgroup && !childGroup.startsWith(`${cgroup}/`)))
       unknown.push(`process-outside-server-cgroup:${child.pid}`);
   }
-  if (processReader.identity(pid) !== root.identity) unknown.push('server-replaced-during-census');
+  for (const child of processes) if (processReader.identity(child.pid) !== child.identity)
+    unknown.push(`process-replaced-during-census:${child.pid}`);
+  const finalPids = absolute && cgroup && taskIdFromScopeUnit(basename(cgroup)) === taskId
+    ? [...new Set(walkCgroupTree(absolute, fs).flatMap(group => group.pids))].sort((a, b) => a - b) : [];
+  if (JSON.stringify(finalPids) !== JSON.stringify(pids)) unknown.push('cgroup-population-changed-during-census');
   return { taskId, rootPid: pid, cgroup, groups, processes, unknown: [...new Set(unknown)] };
 }
 
@@ -308,7 +328,7 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
     const admission = await readLspDaemonAdmission(config.workspaceId);
     const runtime = health.daemonRuntime;
     const processes = runtime ? [runtime.pid, ...runtime.servers.flatMap(server => server.pid ? [server.pid] : [])]
-      .map(replayProcessIdentity) : [];
+      .map(pid => replayProcessIdentity(pid)) : [];
     const populations = runtime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath))
       .flatMap(server => server.pid && server.taskId ? [replayServerPopulation(server.pid, server.taskId)] : []) ?? [];
     const snapshot = { label, atMs: Date.now(), health, admission, processes, populations, fileDrift: replayFileMismatches(config.files) };
@@ -349,6 +369,7 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
         for (const process of [...snapshot.processes, ...snapshot.populations.flatMap(population => population.processes)]) {
           if (!process.executable || config.files[process.executable.path] !== process.executable.sha256)
             problems.push(`unfrozen-running-executable:${process.pid}`);
+          if (process.loadedModules === 'unmeasured') problems.push(`unqualified-loaded-module-population:${process.pid}`);
         }
         const servers = snapshot.health.daemonRuntime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath));
         if (!servers || servers.length !== 1 || servers[0].health !== 'healthy' || !servers[0].taskId || !servers[0].pid)

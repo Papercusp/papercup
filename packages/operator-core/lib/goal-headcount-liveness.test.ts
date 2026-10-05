@@ -144,7 +144,10 @@ describe('goalHeadcount — liveness comes from the shared oracle, not a heartbe
   it('keeps the heartbeat/boot-grace count untouched when there is no presence row to judge', async () => {
     // Boot-grace-only population: counted by the SQL, has no presence to judge.
     const r = await count({ total: 2, fleet: 0 });
-    expect(r).toEqual({ headcount: { total: 2, fleet: 0 }, error: null });
+    expect(r).toEqual({ headcount: { total: 2, fleet: 0 }, error: null, measurement: {
+      measuredAt: null, populationComplete: false, candidate: { total: 2, fleet: 0 },
+      counted: [], oracleEndedOwnerIds: [], excludedOwnerIds: [],
+    } });
     expect(oracle.seen).toEqual([]); // the oracle is not even paid for
   });
 
@@ -170,7 +173,10 @@ describe('goalHeadcount — liveness comes from the shared oracle, not a heartbe
       excludeOwnerIds: ['o-old', '', 'o-old', 'o-other'],
       sql,
     });
-    expect(r).toEqual({ headcount: { total: 2, fleet: 1 }, error: null });
+    expect(r).toEqual({ headcount: { total: 2, fleet: 1 }, error: null, measurement: {
+      measuredAt: null, populationComplete: false, candidate: { total: 2, fleet: 1 },
+      counted: [], oracleEndedOwnerIds: [], excludedOwnerIds: ['o-old', 'o-other'],
+    } });
     expect(calls).toHaveLength(1);
     expect(calls[0].text).toMatch(/b\.owner_id <> ALL\(\?::text\[\]\)/);
     expect(calls[0].values).toContainEqual(['o-old', 'o-other']);

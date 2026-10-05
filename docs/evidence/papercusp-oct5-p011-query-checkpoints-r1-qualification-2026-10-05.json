@@ -84,7 +84,7 @@
     },
     "rootCause": "resourceLockDomain selected the executing repository tree for one physical staging server. The shared caller and immutable staging generation used different trees. Existing tests explicitly asserted that exclusion, so they missed the mutual-exclusion defect.",
     "durableFix": "Add staging-server and staging-server-cooldown to existing HOST_GLOBAL_RESOURCES. Add real-PG shared-probe versus exclusive-restart guard across caller trees.",
-    "runtimeAcceptance": "open; pipeline read still reports containing code absent from staging49b3ce420f and bg-hoste4478d8f5c."
+    "runtimeAcceptance": "Containing staging runtime now verified; effective lease exclusion and corrected serving cohort remain open. Earlier absent-source read preceded the owned refresh."
   },
   "limitations": [
     "Original R3 fourteen missing HTTP/query relations remain unknown; the new FIFO guard does not retroactively identify their cause.",
@@ -93,6 +93,22 @@
     "Pending native-origin owner question and historical owner-source audit are unchanged.",
     "LIVE_GATE_OPS remains peer-held; no gate action was taken."
   ],
+  "currentBuild": {
+    "builderExitCode": 0,
+    "buildSha": "4a36c9692a",
+    "pid": 613219,
+    "startTicks": "3059513",
+    "healthOk": true,
+    "containsChange": true,
+    "containmentMethod": "blob",
+    "candidateSourceEqualsCurrent": true,
+    "otherToolRuntime": {
+      "runtime": "bg-host",
+      "buildSha": "e4478d8f5c",
+      "containsChange": false
+    },
+    "next": "Use containing staging MCP for a shared lease, then one fresh R5 and independent raw reader; preserve failed R4."
+  },
   "receiptLinks": [
     {
       "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
@@ -148,6 +164,11 @@
       "path": "/tmp/su-7db4f-staging-lease-domain-r2.log",
       "bytes": 8474,
       "sha256": "af9bb0772945c5c6af311432aea5c98c8bd1e6ce3a9d8ca8c612320642eeb0e4"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-lease-domain-refresh-r1.log",
+      "bytes": 14496,
+      "sha256": "5117341307eaf91f11e13a137942c4252642fa307048094141e41132ce444b43"
     }
   ]
 }

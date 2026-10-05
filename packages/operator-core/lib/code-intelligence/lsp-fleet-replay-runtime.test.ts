@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { freezeCompilerReplayConfig, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   validateDaemonReplayConfig, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
-import { scopeUnitForTaskId } from '../task-manager/types';
+import { scopeUnitForTask } from '../task-manager/types';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 
@@ -123,8 +123,8 @@ describe('daemon replay qualification', () => {
 });
 
 describe('kernel replay process provenance', () => {
-  const taskId = 'replay-server';
-  const cgroup = `/papercusp.slice/${scopeUnitForTaskId(taskId)}`;
+  const taskId = 'replayserver';
+  const cgroup = `/papercusp.slice/${scopeUnitForTask(taskId)}`;
   function fixture() {
     const identities = new Map([[10, 'linux:boot:100'], [11, 'linux:boot:101']]);
     const process = {
@@ -167,5 +167,13 @@ describe('kernel replay process provenance', () => {
     expect(replayServerPopulation(10, taskId, deps).unknown).toContain('pid:11:process-identity-unavailable');
     const escaped = { ...fixture().process, text: (path: string) => path.endsWith('/cgroup') ? `0::${path.includes('/11/') ? '/foreign' : cgroup}` : 'node\0' };
     expect(replayServerPopulation(10, taskId, { ...fixture(), process: escaped }).unknown).toContain('process-outside-server-cgroup:11');
+  });
+  it('does not treat unreadable cgroup branches as an empty, qualified population', () => {
+    const deps = fixture();
+    const readable = deps.fs.readFile;
+    deps.fs.readFile = path => path.includes('/worker/') ? null : readable(path);
+    expect(replayServerPopulation(10, taskId, deps).unknown).toContain(`unreadable-cgroup:/sys/fs/cgroup${cgroup}/worker/cgroup.procs`);
+    expect(replayServerPopulation(10, taskId, { ...fixture(), fs: { ...fixture().fs,
+      readDir: () => { throw new Error('permission denied'); } } }).unknown.join('\n')).toContain('permission denied');
   });
 });

@@ -122,6 +122,24 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
 }
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
+  it('stops before judging incomplete pipeline usage while retaining its priced subtotal and receipt', async () => {
+    const ab = fakeAbDeps(ALL_MEASURED);
+    const run = ab.runPipeline;
+    const receipt = { knownUsd: 0.3, providerUsd: 0.3, estimatedUsd: 0,
+      complete: false, measured: false, coverageBasis: 'retained-run-output-and-usage-samples' as const,
+      missingRunIds: ['validator'], samples: [] };
+    ab.runPipeline = async (input) => ({ ...await run(input), pipelineUsd: 0.3, pipelineSpend: receipt });
+    let judged = false;
+    const { deps } = makeDeps({ abDeps: ab, tasks: [TASKS[0]], judgeCall: async () => {
+      judged = true; throw new Error('must not judge unknown pipeline spend');
+    } });
+    await expect(deps.evaluate('candidate', { promptOverrides: {} })).rejects.toMatchObject({
+      message: 'Gym pipeline usage evidence is incomplete', costUsd: 0.3,
+      costUsdMeasurementMissing: true, pipelineSpend: receipt,
+    });
+    expect(judged).toBe(false);
+  });
+
   it('records declared run parameters before judging, including when the judge fails', async () => {
     const ab = fakeAbDeps(ALL_MEASURED);
     const started: unknown[] = [];

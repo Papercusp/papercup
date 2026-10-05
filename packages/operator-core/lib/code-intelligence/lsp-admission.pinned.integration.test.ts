@@ -39,7 +39,7 @@ import { lspClientInventory, resolveServerBin, shutdownAllLspClients } from './l
 import { corpusCase } from './acceptance-corpus';
 import { buildLspAdmissionStatePayload } from '../agent-tools/state/lsp-admission';
 import { MAX_SITES_PER_ANSWER } from './lsp-daemon-facade';
-import { freezeCompilerReplayConfig, runDaemonReplay } from './lsp-fleet-replay-runtime';
+import { freezeCompilerReplayConfig, replayServerPopulation, runDaemonReplay } from './lsp-fleet-replay-runtime';
 import type { ReplayReport } from './lsp-fleet-replay';
 import { classifyReplayAnswer } from './lsp-fleet-replay';
 
@@ -102,6 +102,16 @@ describe('daemon admission against the pinned TypeScript server', () => {
     expect(inventory).toHaveLength(1);
     expect(inventory[0].taskId).toBeTruthy();
     expect(inventory[0].health).toBe('healthy');
+    const population = replayServerPopulation(inventory[0].pid!, inventory[0].taskId!);
+    expect(population.unknown, JSON.stringify(population)).toEqual([]);
+    expect(population.processes.map(process => process.pid)).toContain(inventory[0].pid);
+    expect(population.processes.some(process => process.cmdline.some(arg => /(?:^|\/)tsserver\.js$/.test(arg))),
+      JSON.stringify(population)).toBe(true);
+    for (const process of population.processes) {
+      expect(process.identity).toMatch(/^linux:[^:]+:\d+$/);
+      expect(process.executable?.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(process.loadedModules).toBe('unmeasured');
+    }
     const owningHealth = await readLspDaemonHealth(workspaceId);
     expect(owningHealth).toMatchObject({ pid: process.pid, sampledAtMs: expect.any(Number),
       servers: [{ taskId: inventory[0].taskId, pid: inventory[0].pid, certifiedReadiness: expect.any(Array),
