@@ -662,11 +662,19 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // workspace 15 → 16: `memory.cgroupAttribution` projects the existing host memory
     // resolver's owner-attribution lens with workspace visibility. LEG E's generated case
     // covers its oracle/get/list parity; this census also binds that new row's visibility.
-    ).toEqual({ workspace: 16, harness: 12 });
+    // workspace 16 → 18: `lsp.warmServers` and `lsp.readiness` reuse the daemon lens
+    // while exposing their distinct runtime and per-intent verdicts to the workspace.
+    ).toEqual({ workspace: 18, harness: 12 });
     const attribution = BUILTIN_CELLS.find((spec) => spec.cell === 'memory.cgroupAttribution');
     expect(attribution, 'the added cell must remain in the real parity walk').toBeDefined();
     expect(attribution!.visibility).toEqual({ kind: 'workspace' });
     expect(canReadCell(attribution!, stranger)).toBe(true);
+    for (const cell of ['lsp.warmServers', 'lsp.readiness']) {
+      const runtimeCell = BUILTIN_CELLS.find((spec) => spec.cell === cell);
+      expect(runtimeCell, 'the new runtime lens must participate in the real parity walk').toBeDefined();
+      expect(runtimeCell!.visibility).toEqual({ kind: 'workspace' });
+      expect(canReadCell(runtimeCell!, stranger)).toBe(true);
+    }
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than
