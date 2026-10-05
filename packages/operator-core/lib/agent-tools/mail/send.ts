@@ -48,8 +48,9 @@ export default defineTool({
         .max(320)
         .optional()
         .describe(
-          'Which connected account to send AS, e.g. "you@gmail.com"; required once more than one Google account is connected. Omit it with several connected and the send is refused `outbound_source_ambiguous:gmail`, which names the connected accounts — pass one of those back here.',
+          'Which connected account to send AS, e.g. "you@gmail.com"; required once more than one mail account is connected. Omit it with several connected and the send is refused `outbound_source_ambiguous:email-message`, which names the connected accounts — pass one of those back here.',
         ),
+      sourceId: z.string().uuid().optional().describe('The connected mail source to send through; an alternative to from.'),
       allowUndeliverable: z
         .boolean()
         .optional()
@@ -74,6 +75,7 @@ export default defineTool({
         text: args.text,
         attachments: args.attachments,
         from: args.from,
+        sourceId: args.sourceId ?? null,
         allowUndeliverable: args.allowUndeliverable,
         provenance: toProvenance(args.addressee),
         agentOwnerId: disclosureSubject(ctx),

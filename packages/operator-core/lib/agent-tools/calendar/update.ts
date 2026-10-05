@@ -36,6 +36,7 @@ export default defineTool({
       location: z.string().trim().max(1_024).optional(),
       timeZone: z.string().trim().max(64).optional(),
       calendarId: z.string().trim().max(256).optional(),
+      sourceId: z.string().uuid().optional(),
     })
     .strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -59,6 +60,7 @@ export default defineTool({
         location: args.location,
         timeZone: args.timeZone ?? null,
         calendarId: args.calendarId,
+        sourceId: args.sourceId ?? null,
         agentOwnerId: disclosureSubject(ctx),
       });
       return { data: { ok: true, ...result } };

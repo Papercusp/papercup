@@ -18,7 +18,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep'],
   description:
-    'Create a calendar event and invite attendees. Every attendee is checked before the invite goes out: an address that appears only inside message content is REFUSED, and the whole proposal fails rather than inviting a partly-trusted list. Returns who was actually invited. Provider-neutral (Google today).',
+    'Create a calendar event and invite attendees. Every attendee is checked before the invite goes out: an address that appears only inside message content is REFUSED, and the whole proposal fails rather than inviting a partly-trusted list. Returns who was actually invited. Provider-neutral: with several calendars connected, pass sourceId or from.',
   guidance: {
     when: 'The owner asks you to set up a meeting. Times are RFC3339 instants, or bare YYYY-MM-DD for an all-day event; pass timeZone with a floating local time.',
     notWhen:
@@ -37,6 +37,8 @@ export default defineTool({
       location: z.string().trim().max(1_024).optional(),
       timeZone: z.string().trim().max(64).optional(),
       calendarId: z.string().trim().max(256).optional(),
+      sourceId: z.string().uuid().optional(),
+      from: z.string().trim().min(3).max(320).optional(),
     })
     .strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
@@ -59,6 +61,8 @@ export default defineTool({
         location: args.location ?? null,
         timeZone: args.timeZone ?? null,
         calendarId: args.calendarId,
+        sourceId: args.sourceId ?? null,
+        from: args.from ?? null,
         agentOwnerId: disclosureSubject(ctx),
       });
       return { data: { ok: true, ...result } };

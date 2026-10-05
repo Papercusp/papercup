@@ -300,7 +300,18 @@ describe('resolveMailReplyCoordinates — D-020 rail 1', () => {
 
   it('refuses a non-mail document', () => {
     expect(() => resolveMailReplyCoordinates({ ...doc(inbound), source: 'slack' })).toThrow(
-      'mail_reply_source_unsupported',
+      'mail_reply_datatype_unsupported:slack',
+    );
+  });
+
+  it('judges a stamped document by its datatype, not by the provider that stored it', () => {
+    // D-014.3: a non-Google provider's email-message replies; a Gmail-stored
+    // document stamped with another datatype does not.
+    expect(
+      resolveMailReplyCoordinates({ ...doc(inbound), source: 'outlook', datatypeId: 'email-message' }).to,
+    ).toBeTruthy();
+    expect(() => resolveMailReplyCoordinates({ ...doc(inbound), datatypeId: 'calendar-event' })).toThrow(
+      'mail_reply_datatype_unsupported:calendar-event',
     );
   });
 });

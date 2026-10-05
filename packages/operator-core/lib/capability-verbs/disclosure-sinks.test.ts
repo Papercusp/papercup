@@ -29,6 +29,15 @@ vi.mock('./resolve', async (importActual) => ({
   resolveOutboundContext: resolve.resolveOutboundContext,
 }));
 
+// Mail and calendar select their source through provider dispatch (P-007),
+// which lists the owner's connected sources. One first-party Gmail and one
+// Google Calendar source, so each verb resolves exactly one target.
+const sources = vi.hoisted(() => ({ listOwnedExternalTriggerSources: vi.fn() }));
+vi.mock('../external-triggers/source-store', async (importActual) => ({
+  ...(await importActual<typeof import('../external-triggers/source-store')>()),
+  listOwnedExternalTriggerSources: sources.listOwnedExternalTriggerSources,
+}));
+
 // Rail 2 has its own suites; here every addressee is trusted so the ledger is
 // the only thing standing between the verb and the provider.
 vi.mock('./addressing', async (importActual) => {
@@ -71,25 +80,25 @@ function doc(source: string, kind: string, participants: string[], payload: Reco
   };
 }
 
-function outboundContext() {
+function sourceRow(id: string, kind: string) {
   return {
-    installSlug: 'install-1',
-    userId: USER,
-    source: {
-      id: 's1',
-      workspaceId: WORKSPACE,
-      kind: 'gmail',
-      ownerUserId: USER,
-      providerAccountId: 'owner@example.com',
-      credentialRef: 'credential:owner',
-      status: 'connected',
-      config: {},
-      cursor: {},
-      lastError: null,
-      lastConnectedAt: null,
-      updatedAt: '2026-10-01T00:00:00.000Z',
-    },
+    id,
+    workspaceId: WORKSPACE,
+    kind,
+    ownerUserId: USER,
+    providerAccountId: 'owner@example.com',
+    credentialRef: 'credential:owner',
+    status: 'connected',
+    config: { installSlug: 'install-1' },
+    cursor: {},
+    lastError: null,
+    lastConnectedAt: null,
+    updatedAt: '2026-10-01T00:00:00.000Z',
   };
+}
+
+function outboundContext() {
+  return { installSlug: 'install-1', userId: USER, source: sourceRow('s1', 'gmail') };
 }
 
 /** Every provider seam a verb can reach, as spies. */
@@ -218,6 +227,7 @@ function arrange(c: SinkCase): Providers {
     return c.document;
   });
   resolve.resolveOutboundContext.mockReset();
+  sources.listOwnedExternalTriggerSources.mockReset().mockResolvedValue([sourceRow('s1', 'gmail'), sourceRow('s2', 'gcal')]);
   if (c.verb.startsWith('social:')) resolve.resolveOutboundContext.mockRejectedValue(REACHED_CREDENTIALS);
   else resolve.resolveOutboundContext.mockResolvedValue(outboundContext());
   return providers();

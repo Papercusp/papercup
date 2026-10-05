@@ -128,7 +128,7 @@ describe('draftNewMail', () => {
         },
         DEPS,
       ),
-    ).rejects.toThrow(/outbound_source_ambiguous:gmail.*personal@example\.com.*work@example\.com/);
+    ).rejects.toThrow(/outbound_source_ambiguous:email-message.*gmail:personal@example\.com.*gmail:work@example\.com/);
   });
 
   it('selects the account named by `from`, including one still backfilling', async () => {
@@ -182,7 +182,7 @@ describe('draftNewMail', () => {
         },
         DEPS,
       ),
-    ).rejects.toThrow(/outbound_source_account_not_connected:gmail:typo@example\.com.*work@example\.com/);
+    ).rejects.toThrow(/outbound_source_account_not_connected:email-message:typo@example\.com.*gmail:work@example\.com/);
   });
 });
 
