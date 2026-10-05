@@ -3246,6 +3246,20 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       testPassReuse: { ...testPassReuse, reused: -1 },
     });
     expect('testPassReuse' in bad).toBe(false);
+    const audit = { auditRate: 0.05, audited: 2, eligible: 33, pureReused: 20, alarmCount: 23 };
+    const measured = buildCheckpointDetail({
+      reason: 'advanced', green: true, testPassReuse: { ...testPassReuse, audit },
+    });
+    expect(measured.testPassReuse).toMatchObject({
+      audit: { ...audit, judgedSha: testPassReuse.judgedSha, recordedAtMs: testPassReuse.recordedAtMs },
+    });
+    // The archive keeps the whole identity and alarm count even after the display list is capped.
+    expect((measured.testPassReuse as { audit: { judgedSha: string } }).audit.judgedSha).toHaveLength(40);
+    const malformed = buildCheckpointDetail({
+      reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, audit: { ...audit, audited: -1 } },
+    });
+    expect(malformed.testPassReuse).not.toHaveProperty('audit');
   });
 
   it('P-013: buildCheckpointDetail carries the round phase breakdown whole, and drops a malformed one', () => {

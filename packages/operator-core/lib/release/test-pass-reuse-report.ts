@@ -18,6 +18,7 @@
  * A gate round can concatenate several invocations (selective phase, full phase), so the
  * parser returns one entry per invocation, in output order.
  */
+import { auditDraw } from '../../../../scripts/lib/test-pass-reuse.mjs';
 
 export interface TestPassReuseTotal {
   tasks: number;
@@ -84,7 +85,7 @@ function int(value: string | undefined): number | null {
 }
 
 function rate(value: string | undefined): number | null {
-  if (value === undefined || !/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(value)) return null;
+  if (value === undefined || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value)) return null;
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
 }
@@ -431,7 +432,7 @@ export interface TestPassReuseAuditInvocation {
   completedAtMs: number;
   output: string;
   /** Per-file first-attempt results. null means that the archive did not retain them. */
-  auditedFiles: Array<{ ws: string; file: string; verdict: 'pass' | 'fail' | 'unknown'; evidenceRef: string }> | null;
+  auditedFiles: Array<{ invocation: number; ws: string; file: string; verdict: 'pass' | 'fail' | 'unknown'; evidenceRef: string }> | null;
 }
 
 /**
@@ -467,33 +468,43 @@ export function evaluateTestPassReuseAuditWindow(input: {
     }
     const runs = parseTestPassReuse(invocation.output);
     const summary = summarizeReuseAudits(runs);
-    alarms += runs.reduce((n, run) => n + run.alarms.length, 0);
-    if (!summary || invocation.auditedFiles === null) { incomplete = true; continue; }
+    const misses = new Set(runs.flatMap((run, i) => run.alarms.map((a) => `${i}\0${a.ws}\0${a.file}`)));
+    if (!summary || invocation.auditedFiles === null) {
+      alarms += misses.size;
+      incomplete = true;
+      continue;
+    }
     wrongRate ||= summary.auditRate !== 0.05;
     const files = invocation.auditedFiles;
     const seen = new Set<string>();
     const byWorkspace = new Map<string, number>();
     for (const file of files) {
-      const identity = `${file.ws}\0${file.file}`;
-      if (!file.ws.trim() || !file.file.trim() || !file.evidenceRef.trim() || seen.has(identity) ||
-          !['pass', 'fail'].includes(file.verdict)) incomplete = true;
+      const taskIdentity = `${file.invocation}\0${file.ws}`;
+      const identity = `${taskIdentity}\0${file.file}`;
+      const valid = isCount(file.invocation) && file.invocation < runs.length &&
+        Boolean(file.ws.trim() && file.file.trim() && file.evidenceRef.trim()) &&
+        runs[file.invocation]!.workspaces.some((w) => w.ws === file.ws && (w.counts.audited ?? 0) > 0) &&
+        // The selector hashes the repo-relative file and judged SHA; an unrelated passing
+        // file cannot be substituted for one of its actual audit draws.
+        auditDraw(file.file, invocation.judgedSha) < 0.05 &&
+        ['pass', 'fail'].includes(file.verdict);
+      if (!valid || seen.has(identity)) incomplete = true;
       seen.add(identity);
-      byWorkspace.set(file.ws, (byWorkspace.get(file.ws) ?? 0) + 1);
-      if (file.verdict === 'fail') alarms += 1;
+      byWorkspace.set(taskIdentity, (byWorkspace.get(taskIdentity) ?? 0) + 1);
+      if (valid && file.verdict === 'fail') misses.add(identity);
     }
-    // Several affected-tests invocations can occur in one suite output. Counts are aggregated
-    // by task identity, but a named file must still occur once per archived invocation.
+    // Several affected-tests invocations can occur in one suite output. A file may be audited
+    // in both, but the results must name which invocation actually executed it.
     const expected = new Map<string, number>();
-    for (const run of runs) for (const w of run.workspaces) {
-      expected.set(w.ws, (expected.get(w.ws) ?? 0) + w.counts.audited!);
-    }
+    runs.forEach((run, i) => run.workspaces.forEach((w) => expected.set(`${i}\0${w.ws}`, w.counts.audited!)));
     if (files.length !== summary.audited || [...byWorkspace.keys()].some((ws) => !expected.has(ws)) ||
         [...expected].some(([ws, count]) => (byWorkspace.get(ws) ?? 0) !== count)) incomplete = true;
     audited += files.length;
+    alarms += misses.size;
   }
   if (alarms > 0) return result('fail', 'A first-attempt reuse soundness miss was observed.', audited, alarms);
-  if (incomplete || audited === 0) return result('unknown', 'Audit files/results or nonempty observed audit coverage are missing.', audited);
   if (wrongRate) return result('fail', 'The archived selector did not use the required 5% audit rule.', audited);
+  if (incomplete || audited === 0) return result('unknown', 'Audit files/results or nonempty observed audit coverage are missing.', audited);
   return result('pass', 'Every named audit in the complete window passed under the 5% rule.', audited);
 }
 

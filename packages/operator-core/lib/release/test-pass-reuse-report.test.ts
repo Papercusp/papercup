@@ -17,12 +17,14 @@ import {
 } from '../../../../scripts/lib/executed-source-map.mjs';
 import {
   buildTestPassReuseHealth,
+  evaluateTestPassReuseAuditWindow,
   formatDurationMs,
   parseTestPassReuse,
   parseTestPassReuseHealth,
   summarizeExecutedSourceMapRecorder,
   summarizeTestPassReuse,
   TEST_PASS_REUSE_HEALTH_MAX_ALARMS,
+  type TestPassReuseAuditInvocation,
 } from './test-pass-reuse-report';
 
 const summary = (over: Record<string, number> = {}) => ({
@@ -234,6 +236,132 @@ describe('formatDurationMs', () => {
     expect(formatDurationMs(4_400)).toBe('4s');
     expect(formatDurationMs(61_000)).toBe('1m 01s');
     expect(formatDurationMs(3_720_000)).toBe('1h 02m');
+  });
+});
+
+describe('reuse outcome measurements over archived invocations (WI-10005218 / R-2)', () => {
+  const ws = '@papercusp/operator-core::test:unit:pure';
+  const counts = summary({ candidates: 100, reused: 98, audited: 2 });
+  const output = (extra = 'auditRate=0.05 lane=pure') => [
+    formatTestReuseLine(ws, counts, ` ${extra}`),
+    formatTestReuseTotalLine({ tasks: 1, summaries: [counts], savedMs: 100, unmeasured: 0 }),
+  ].join('\n');
+  const invocation = (): TestPassReuseAuditInvocation => ({
+    runId: 'archived-run-1',
+    judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',
+    runnerIdentity: 'proof-v2 node25 linux x64',
+    startedAtMs: 110,
+    completedAtMs: 120,
+    output: output(),
+    auditedFiles: ['packages/operator-core/lib/audit-36.test.ts', 'packages/operator-core/lib/audit-42.test.ts'].map((file) => ({
+      invocation: 0, ws, file, verdict: 'pass', evidenceRef: `test-run:${file}`,
+    })),
+  });
+  const window = (over: Partial<Parameters<typeof evaluateTestPassReuseAuditWindow>[0]> = {}) =>
+    evaluateTestPassReuseAuditWindow({
+      windowStartMs: 100, windowEndMs: 200, expectedRunIds: ['archived-run-1'],
+      invocations: [invocation()], ...over,
+    });
+
+  it('retains the real configured rate, audited count and explicit pure lane', () => {
+    expect(summarizeTestPassReuse(parseTestPassReuse(output())).audit).toEqual({
+      auditRate: 0.05, audited: 2, eligible: 100, pureReused: 98, alarmCount: 0,
+    });
+    // An observed 2/100 sample is valid under the configured 5% deterministic draw.
+    expect(window()).toMatchObject({ verdict: 'pass', audited: 2, alarms: 0 });
+  });
+
+  it('keeps a missing lane unmeasured rather than claiming zero subsequent pure reuse', () => {
+    expect(summarizeTestPassReuse(parseTestPassReuse(output('auditRate=0.05'))).audit)
+      .toMatchObject({ audited: 2, pureReused: null });
+  });
+
+  it.each([
+    ['old counter', (s: string) => s.replaceAll(' audited=2', '')],
+    ['missing rate', (s: string) => s.replace('auditRate=0.05', '')],
+    ['malformed rate', (s: string) => s.replace('auditRate=0.05', 'auditRate=NaN')],
+    ['malformed workspace counter', (s: string) => s.replace('audited=2', 'audited=oops')],
+    ['inconsistent total', (s: string) => s.replace('tasks=1', 'tasks=2')],
+    ['inconsistent candidates', (s: string) => s.replace('candidates=100', 'candidates=1')],
+    ['unavailable task', (s: string) => `TEST_PASS_REUSE ws=other applied=false reason=unavailable\n${s}`],
+  ])('does not qualify %s as a zero-miss measurement', (_name, change) => {
+    const log = change(output());
+    expect(summarizeTestPassReuse(parseTestPassReuse(log)).audit).toBeNull();
+    expect(window({ invocations: [{ ...invocation(), output: log }] }).verdict).toBe('unknown');
+  });
+
+  it('preserves a missing total audited counter as null at the parser boundary', () => {
+    expect(parseTestPassReuse(output().replaceAll(' audited=2', ''))[0]?.total?.audited).toBeNull();
+  });
+
+  it.each([
+    { expectedRunIds: [], invocations: [] },
+    { expectedRunIds: ['archived-run-1', 'missing'] },
+    { expectedRunIds: ['archived-run-1', 'archived-run-1'] },
+    { invocations: [invocation(), invocation()] },
+    { invocations: [{ ...invocation(), runId: 'substituted' }] },
+    { invocations: [{ ...invocation(), judgedSha: 'main' }] },
+    { invocations: [{ ...invocation(), runnerIdentity: '' }] },
+    { invocations: [{ ...invocation(), completedAtMs: 201 }] },
+    { invocations: [{ ...invocation(), completedAtMs: 109 }] },
+    { invocations: [{ ...invocation(), auditedFiles: null }] },
+    { invocations: [{ ...invocation(), auditedFiles: [] }] },
+    { invocations: [{ ...invocation(), auditedFiles: [invocation().auditedFiles![0]!] }] },
+    { invocations: [{ ...invocation(), auditedFiles: Array(2).fill(invocation().auditedFiles![0]!) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, evidenceRef: '' })) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, verdict: 'unknown' as const })) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, ws: 'foreign' })) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, invocation: 1 })) }] },
+  ])('keeps empty, partial, substituted or unqualified coverage UNKNOWN (%j)', (over) => {
+    expect(window(over).verdict).toBe('unknown');
+  });
+
+  it('requires an observed nonzero audit even if reusable files were present', () => {
+    const noAudit = output().replaceAll('audited=2', 'audited=0').replaceAll('reused=98', 'reused=100');
+    expect(window({ invocations: [{ ...invocation(), output: noAudit, auditedFiles: [] }] }).verdict).toBe('unknown');
+  });
+
+  it('fails a real first-attempt miss even if retry results or window coverage would look clean', () => {
+    const r = invocation();
+    r.output += `\n${formatReuseAlarmLine(ws, { file: r.auditedFiles![0]!.file, reason: 'audit' })}`;
+    r.auditedFiles![0]!.verdict = 'fail';
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'fail', alarms: 1 });
+    r.auditedFiles = null;
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'fail', alarms: 1 });
+  });
+
+  it.each(['0.01', '1e-7'])('fails a fully observed window with a changed audit policy (%s)', (auditRate) => {
+    expect(window({ invocations: [{ ...invocation(), output: output(`auditRate=${auditRate} lane=pure`) }] }).verdict).toBe('fail');
+  });
+
+  it('does not attribute an unqualified foreign failure to the observed audits', () => {
+    const r = invocation();
+    r.auditedFiles![0] = { ...r.auditedFiles![0]!, ws: 'foreign', verdict: 'fail' };
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'unknown', alarms: 0 });
+  });
+
+  it('rejects a passing file outside the actual selector draw', () => {
+    const r = invocation();
+    r.auditedFiles![0]!.file = 'packages/operator-core/lib/not-a-sample.test.ts';
+    expect(window({ invocations: [r] }).verdict).toBe('unknown');
+  });
+
+  it('distinguishes the same audited file in selective and full invocations', () => {
+    const r = invocation();
+    r.output += `\n${output()}`;
+    r.auditedFiles!.push(...r.auditedFiles!.map((f) => ({ ...f, invocation: 1 })));
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'pass', audited: 4 });
+  });
+
+  it('retains full alarm counts across health storage caps and degrades old health honestly', () => {
+    const alarms = Array.from({ length: TEST_PASS_REUSE_HEALTH_MAX_ALARMS + 3 }, (_, i) =>
+      formatReuseAlarmLine(ws, { file: `lib/${i}.test.ts`, reason: 'audit' }));
+    const health = buildTestPassReuseHealth([output(), ...alarms].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.alarms).toHaveLength(TEST_PASS_REUSE_HEALTH_MAX_ALARMS);
+    expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))?.audit?.alarmCount).toBe(alarms.length);
+    const { audit: _audit, ...old } = health;
+    expect(parseTestPassReuseHealth(old)?.audit).toBeUndefined();
+    expect(parseTestPassReuseHealth({ ...health, audit: { ...health.audit, audited: -1 } })?.audit).toBeNull();
   });
 });
 
