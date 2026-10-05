@@ -1428,8 +1428,10 @@ export async function pluginHostStatus(): Promise<PluginHostStatus & {
           targetCount: lp.triggerPack.targets.length,
           bindingCount: lp.triggerPack.bindings.length,
           edgeCount: lp.triggerPack.edges.length,
+          // Provider-pinned sources only: a portable (datatype) source names no
+          // provider until install binds it to a local source (D-013 §1).
           sourceKinds: [...new Set(lp.triggerPack.bindings.flatMap((binding) =>
-            binding.source.kind === 'external' ? [binding.source.sourceKind] : []))].sort(),
+            binding.source.kind === 'external' && binding.source.sourceKind ? [binding.source.sourceKind] : []))].sort(),
           armed: false as const,
         }]
       : []),
