@@ -26,7 +26,8 @@ import { promises as fs } from 'node:fs';
 import type postgres from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { providerEgressAllows, type ProviderDescriptor } from '@papercusp/plugin-sdk';
-import { getProvider, googleOAuthRedirectUri, type OAuthProvider, type TokenResponse } from '../oauth/providers';
+import { getProvider, type OAuthProvider, type TokenResponse } from '../oauth/providers';
+import { operatorApiBase } from '../operator-api-base';
 import type { OAuthFlowPrivateContext } from '../oauth/state';
 import { fsTokenStorage } from '../oauth/storage-fs';
 import { papercuspPath } from '../papercusp-root';
@@ -544,11 +545,10 @@ export async function resolveOAuthProvider(providerId: string): Promise<OAuthPro
     clientSecret = (await fs.readFile(client.clientSecretFile, 'utf8')).trim();
   }
   const scopes = [...new Set(members.flatMap((entry) => entry.descriptor.oauth?.scopes ?? []))];
-  return makeDescriptorOAuthProvider(
-    providerId,
-    { ...lead.oauth, scopes },
-    { clientId: client.clientId, clientSecret, redirectUri: client.redirectUri ?? googleOAuthRedirectUri() },
-  );
+  // Default to the operator's one provider-neutral OAuth callback; a provider that
+  // needs another redirect declares it in its client registration.
+  const redirectUri = client.redirectUri ?? new URL('/api/oauth/callback', operatorApiBase()).toString();
+  return makeDescriptorOAuthProvider(providerId, { ...lead.oauth, scopes }, { clientId: client.clientId, clientSecret, redirectUri });
 }
 
 /** Scopes to request for a managed connection, per the adapter's policy. */
