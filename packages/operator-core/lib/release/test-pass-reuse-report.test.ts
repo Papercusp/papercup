@@ -28,6 +28,7 @@ import {
   parseTestPassReuseHealth,
   parseTestPassReuseAuditArchive,
   parsePureProofCaptureResult,
+  parsePureProofCaptureArchive,
   readPureProofCaptureResult,
   summarizeExecutedSourceMapRecorder,
   summarizeTestPassReuse,
@@ -60,6 +61,40 @@ describe('named pure capture result reader (WI-10005218 / R-3)', () => {
         testRunId: String(i + 1), recordedAtMs: 150, runnerIdentity: 'runner-1',
         runContext: 'green-checkpoint', runGroupId: 'run-1:pure-proof-capture', source: 'local' })) } });
   const line = (r = record()) => `PURE_PROOF_CAPTURE_RESULT ${JSON.stringify(r)}`;
+  const archive = () => ({ version: 1, runId: 'run-1', gateFireId: 'fire-1', pid: 123,
+    processStartedAtMs: 1, judgedSha: 'a'.repeat(40), resolvedAtMs: 70,
+    terminalEmissionCompletedAtMs: 90, verdictRecordedAtMs: 80,
+    promotion: { candidate: 'a'.repeat(12), recordedAtMs: 60, reason: 'not-green', promoted: false },
+    capture: record(), archivedAtMs: 210 });
+
+  it('retains the immutable process receipt and named proofs without borrowing missing clocks', () => {
+    const r = archive();
+    expect(parsePureProofCaptureArchive(JSON.parse(JSON.stringify(r)))).toEqual(r);
+    const unknown = { ...r, verdictRecordedAtMs: null, promotion: null, capture: null };
+    expect(parsePureProofCaptureArchive(unknown)).toEqual(unknown);
+  });
+
+  it.each([
+    ['unmeasured process', (r: any) => { delete r.processStartedAtMs; }],
+    ['recycled pid without start', (r: any) => { r.processStartedAtMs = null; }],
+    ['unsafe run path', (r: any) => { r.runId = '../run'; }],
+    ['missing verdict status', (r: any) => { delete r.verdictRecordedAtMs; }],
+    ['before final resolution', (r: any) => { r.capture.evidence.startedAtMs = 65; }],
+    ['before terminal emission', (r: any) => { r.capture.evidence.startedAtMs = 85; }],
+    ['verdict after capture', (r: any) => { r.verdictRecordedAtMs = 110; }],
+    ['capture after archive', (r: any) => { r.archivedAtMs = 199; }],
+    ['foreign process group', (r: any) => { r.runId = 'other'; }],
+    ['foreign judged SHA', (r: any) => { r.judgedSha = 'b'.repeat(40); }],
+    ['foreign promotion', (r: any) => { r.promotion.candidate = 'b'.repeat(12); }],
+    ['pending promotion', (r: any) => { r.promotion.reason = 'decision-pending'; }],
+    ['discarded recursive pass', (r: any) => { r.promotion.reason = 'superseded-by-refire'; }],
+    ['promotion after resolution', (r: any) => { r.promotion.recordedAtMs = 71; }],
+    ['missing named capture population', (r: any) => { delete r.capture.evidence; }],
+  ])('rejects inconsistent archive evidence: %s', (_name, mutate) => {
+    const r = archive();
+    mutate(r);
+    expect(parsePureProofCaptureArchive(r)).toBeNull();
+  });
 
   it('preserves the complete named population through the existing process log and JSON archive', () => {
     const r = record();

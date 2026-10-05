@@ -63,6 +63,8 @@ import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-c
 import {
   buildTestPassReuseHealth,
   parsePureProofCaptureResult,
+  parsePureProofCaptureArchive,
+  type PureProofCaptureArchive,
   type PureProofCaptureResult,
   type TestPassReuseHealth,
 } from "@papercusp/operator-core/lib/release/test-pass-reuse-report";
@@ -3545,14 +3547,67 @@ export function createNormalCheckpointFinalizer(deps: {
   claimTerminal: (owner: "normal") => boolean;
   emitResult: (result: CheckpointResult) => Promise<void>;
   captureProofs: () => Promise<unknown>;
+  archiveCapture?: (result: CheckpointResult, capture: unknown, boundaries: {
+    resolvedAtMs: number; terminalEmissionCompletedAtMs: number;
+  }) => Promise<unknown>;
+  warnArchive?: (error: unknown) => void;
+  now?: () => number;
   releaseAndExit: (code: number) => void;
 }): (result: CheckpointResult) => Promise<void> {
   return async (result: CheckpointResult): Promise<void> => {
     if (!deps.claimTerminal("normal")) return;
+    const now = deps.now ?? Date.now;
+    const resolvedAtMs = now();
     await deps.emitResult(result);
-    await deps.captureProofs();
+    const terminalEmissionCompletedAtMs = now();
+    const capture = await deps.captureProofs();
+    try {
+      await deps.archiveCapture?.(result, capture, { resolvedAtMs, terminalEmissionCompletedAtMs });
+    } catch (error) {
+      deps.warnArchive?.(error);
+    }
     deps.releaseAndExit(0);
   };
+}
+
+/** The LAST canonical promotion trailer is authoritative; historical clocks remain unknown. */
+export function readGatePromotionDecision(output: string): PureProofCaptureArchive['promotion'] {
+  const line = output.split(/\r?\n/).filter((s) => s.startsWith('GATE_PROMOTION ')).at(-1);
+  if (!line) return null;
+  const entries = line.slice('GATE_PROMOTION '.length).split(' ').map((s): [string, string] => {
+    const at = s.indexOf('=');
+    return [s.slice(0, at), s.slice(at + 1)];
+  });
+  const fields = new Map(entries);
+  if (fields.size !== entries.length) return null;
+  const candidate = fields.get('candidate');
+  const reason = fields.get('reason');
+  const time = fields.get('recordedAtMs');
+  if (!candidate || !/^[0-9a-f]{12}$/.test(candidate) || !reason || !/^[a-z-]+$/.test(reason) ||
+      ['decision-pending', 'superseded-by-refire'].includes(reason) ||
+      !time || !/^\d+$/.test(time) || !Number.isSafeInteger(Number(time)) ||
+      !['true', 'false'].includes(fields.get('promoted') ?? '')) return null;
+  return { candidate, reason, recordedAtMs: Number(time), promoted: fields.get('promoted') === 'true' };
+}
+
+/** Reuse checkpoint artifacts, without minting a pipeline outcome or overwriting prior evidence. */
+export function archivePureProofCapture(
+  logDir: string,
+  receipt: PureProofCaptureArchive,
+  log: (line: string) => void,
+): string | null {
+  const parsed = parsePureProofCaptureArchive(receipt);
+  if (!parsed) { log('PURE_PROOF_CAPTURE_ARCHIVE state=unknown reason=invalid-receipt'); return null; }
+  const file = path.join(logDir, `pure-proof-capture-${parsed.runId}.json`);
+  try {
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(file, `${JSON.stringify(parsed)}\n`, { flag: 'wx', mode: 0o600 });
+    log(`PURE_PROOF_CAPTURE_ARCHIVE state=recorded path=${file}`);
+    return file;
+  } catch (error) {
+    log(`PURE_PROOF_CAPTURE_ARCHIVE state=unknown reason=${error instanceof Error ? error.message : error}`);
+    return null;
+  }
 }
 
 /** WI-10005994: the marker's `summary` cap. The human result on stderr keeps the full text. */
@@ -10393,9 +10448,11 @@ export function formatGatePromotionTrailer(v: {
   promoted: boolean;
   reason: GatePromotionReason;
   advancedTo?: string | null;
+  recordedAtMs?: number;
 }): string {
   const to = v.advancedTo ? ` advancedTo=${v.advancedTo.slice(0, 12)}` : "";
-  return `\nGATE_PROMOTION candidate=${v.candidate.slice(0, 12)} green=${v.green} promoted=${v.promoted} reason=${v.reason}${to}\n`;
+  const clock = v.recordedAtMs === undefined ? '' : ` recordedAtMs=${v.recordedAtMs}`;
+  return `\nGATE_PROMOTION candidate=${v.candidate.slice(0, 12)} green=${v.green} promoted=${v.promoted} reason=${v.reason}${to}${clock}\n`;
 }
 
 /**
@@ -10512,7 +10569,7 @@ export function stampGatePromotion(
 ): void {
   if (!logPath) return;
   try {
-    appendFileSync(logPath, formatGatePromotionTrailer(v));
+    appendFileSync(logPath, formatGatePromotionTrailer({ ...v, recordedAtMs: Date.now() }));
   } catch (e) {
     log?.(
       `warn: GATE_PROMOTION trailer not stamped on ${logPath}: ${e instanceof Error ? e.message : e}`,
@@ -21656,6 +21713,7 @@ if (require.main === module) {
 
   let stopQualificationProgress: (() => Promise<void>) | undefined;
   let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
+  let verdictRecordedAtMs: number | null = null;
   const emitResult = async (r: CheckpointResult): Promise<void> => {
     await stopQualificationProgress?.();
     // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
@@ -21670,7 +21728,11 @@ if (require.main === module) {
       // WI-10000288: recording belongs inside the one terminal seam, before the marker/event.
       // The pre-lock crash path also calls emitResult; keeping the recorder here prevents an
       // emitted inconclusive wake from leaving its logical qualification falsely `running`.
-      record: recordOwnVerdict,
+      record: async (result) => {
+        const recorded = await recordOwnVerdict(result);
+        verdictRecordedAtMs = recorded ? Date.now() : null;
+        return recorded;
+      },
       // WI-10005994: flush-awaited writes, so the stderr dump is fully in the shared `2>&1`
       // pipe before the first marker byte is written (an unawaited dump tore the marker).
       writeHuman: (result) => writeStdioFlushed(process.stderr, `${JSON.stringify(result, null, 2)}\n`),
@@ -21754,6 +21816,7 @@ if (require.main === module) {
   const scheduledRunToken = process.env[CHECKPOINT_SCHEDULED_RUN_ENV]?.trim();
   const runId = checkpointRunIdFromScheduledEnv(scheduledRunToken);
   const gateFireId = gateFireIdFromEnv();
+  const processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1000);
   let resolvedCandidateForRun: string | null = null;
 
   /**
@@ -22164,6 +22227,20 @@ if (require.main === module) {
         // emitResult records BEFORE marker/event/exit; capture retains the run lock.
         emitResult,
         captureProofs: () => runPostVerdictPureProofCapture(cfg, runId, watchdog.cancel),
+        archiveCapture: async (result, capture, boundaries) => {
+          let promotion: PureProofCaptureArchive['promotion'] = null;
+          try {
+            if (result.logPath) promotion = readGatePromotionDecision(readFileSync(result.logPath, 'utf8'));
+          } catch { /* missing artifact is unmeasured */ }
+          archivePureProofCapture(cfg.checkpointLogDir, {
+            version: 1, runId, gateFireId: gateFireId ?? null, pid: process.pid,
+            processStartedAtMs,
+            judgedSha: result.repairVerificationHead ?? result.candidate,
+            ...boundaries, verdictRecordedAtMs, promotion,
+            capture: parsePureProofCaptureResult(capture), archivedAtMs: Date.now(),
+          }, (line) => console.log(`${orchestratorStdoutTag()} ${line}`));
+        },
+        warnArchive: (error) => console.error(`${orchestratorStdoutTag()} capture archive failed: ${error}`),
         releaseAndExit,
       });
       runGreenCheckpoint(cfg, checkpointDeps, {

@@ -90,6 +90,62 @@ export function readPureProofCaptureResult(output: string): PureProofCaptureResu
   catch { return null; }
 }
 
+/** Create-only per-process receipt in the existing checkpoint-log artifact directory. */
+export interface PureProofCaptureArchive {
+  version: 1;
+  runId: string;
+  gateFireId: string | null;
+  pid: number;
+  processStartedAtMs: number;
+  judgedSha: string;
+  resolvedAtMs: number;
+  terminalEmissionCompletedAtMs: number;
+  /** null when the producing process did not confirm its durable verdict write. */
+  verdictRecordedAtMs: number | null;
+  promotion: { candidate: string; recordedAtMs: number; reason: string; promoted: boolean } | null;
+  capture: PureProofCaptureResult | null;
+  archivedAtMs: number;
+}
+
+/** Historical/missing boundaries stay null; inconsistent identities or clocks are rejected. */
+export function parsePureProofCaptureArchive(value: unknown): PureProofCaptureArchive | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (v.version !== 1 || typeof v.runId !== 'string' || !/^[A-Za-z0-9:_-]+$/.test(v.runId) ||
+      !(v.gateFireId === null || (typeof v.gateFireId === 'string' && v.gateFireId.trim())) ||
+      !isCount(v.pid) || v.pid === 0 || typeof v.judgedSha !== 'string' || !/^[0-9a-f]{40}$/.test(v.judgedSha) ||
+      !['processStartedAtMs', 'resolvedAtMs', 'terminalEmissionCompletedAtMs', 'archivedAtMs'].every((k) => isCount(v[k])) ||
+      !(v.verdictRecordedAtMs === null || isCount(v.verdictRecordedAtMs))) return null;
+  const start = v.processStartedAtMs as number;
+  const resolved = v.resolvedAtMs as number;
+  const emitted = v.terminalEmissionCompletedAtMs as number;
+  const archived = v.archivedAtMs as number;
+  if (start > resolved || resolved > emitted || emitted > archived ||
+      (v.verdictRecordedAtMs !== null && ((v.verdictRecordedAtMs as number) < resolved ||
+        (v.verdictRecordedAtMs as number) > emitted))) return null;
+  let promotion: PureProofCaptureArchive['promotion'] = null;
+  if (v.promotion !== null) {
+    if (!v.promotion || typeof v.promotion !== 'object' || Array.isArray(v.promotion)) return null;
+    const p = v.promotion as Record<string, unknown>;
+    if (typeof p.candidate !== 'string' || !/^[0-9a-f]{12}$/.test(p.candidate) ||
+        !v.judgedSha.startsWith(p.candidate) || !isCount(p.recordedAtMs) ||
+        p.recordedAtMs < start || p.recordedAtMs > resolved ||
+        typeof p.reason !== 'string' || !/^[a-z-]+$/.test(p.reason) ||
+        ['decision-pending', 'superseded-by-refire'].includes(p.reason) || typeof p.promoted !== 'boolean') return null;
+    promotion = { candidate: p.candidate, recordedAtMs: p.recordedAtMs,
+      reason: p.reason, promoted: p.promoted };
+  }
+  const capture = v.capture === null ? null : parsePureProofCaptureResult(v.capture);
+  if (v.capture !== null && !capture) return null;
+  if (capture && (capture.evidence.runGroupId !== `${v.runId}:pure-proof-capture` ||
+      (capture.sha !== null && capture.sha !== v.judgedSha) ||
+      capture.evidence.startedAtMs < emitted || capture.evidence.completedAtMs > archived)) return null;
+  return { version: 1, runId: v.runId, gateFireId: v.gateFireId as string | null,
+    pid: v.pid as number, processStartedAtMs: start, judgedSha: v.judgedSha,
+    resolvedAtMs: resolved, terminalEmissionCompletedAtMs: emitted,
+    verdictRecordedAtMs: v.verdictRecordedAtMs as number | null, promotion, capture, archivedAtMs: archived };
+}
+
 export interface TestPassReuseTotal {
   tasks: number;
   candidates: number;

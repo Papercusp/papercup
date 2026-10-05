@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parsePureProofCaptureArchive, type PureProofCaptureArchive } from
+  '@papercusp/operator-core/lib/release/test-pass-reuse-report';
 
 import {
   PURE_PROOF_CAPTURE_HARD_GRACE_MS,
   SELF_WATCHDOG_MS,
   createNormalCheckpointFinalizer,
+  archivePureProofCapture,
+  readGatePromotionDecision,
+  stampGatePromotion,
   runPostVerdictPureProofCapture,
 } from './green-checkpoint';
 
@@ -111,6 +119,81 @@ describe('CLI normal finalization and pure-proof capture', () => {
     expect(h.deps.captureProofs).not.toHaveBeenCalled();
     expect(h.deps.releaseAndExit).not.toHaveBeenCalled();
   });
+
+  it('awaits archive completion before releasing, using clocks from the final callback', async () => {
+    const archived = deferred<void>();
+    const clock = vi.fn().mockReturnValueOnce(10).mockReturnValueOnce(20);
+    const archiveCapture = vi.fn(() => archived.promise);
+    const h = finalizer({ now: clock, archiveCapture });
+    const done = h.finalize(result);
+    await vi.waitFor(() => expect(archiveCapture).toHaveBeenCalledTimes(1));
+    expect(archiveCapture).toHaveBeenCalledWith(result, undefined,
+      { resolvedAtMs: 10, terminalEmissionCompletedAtMs: 20 });
+    expect(h.deps.releaseAndExit).not.toHaveBeenCalled();
+    archived.resolve();
+    await done;
+    await h.finalize(result);
+    expect(archiveCapture).toHaveBeenCalledTimes(1);
+    expect(h.deps.releaseAndExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an archive failure without changing the recorded verdict or trapping the lock', async () => {
+    const error = new Error('artifact unavailable');
+    const warnArchive = vi.fn();
+    const h = finalizer({ archiveCapture: async () => { throw error; }, warnArchive });
+    await h.finalize(result);
+    expect(warnArchive).toHaveBeenCalledExactlyOnceWith(error);
+    expect(h.deps.releaseAndExit).toHaveBeenCalledExactlyOnceWith(0);
+  });
+});
+
+describe('immutable capture receipt in checkpoint artifacts', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'pure-capture-archive-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  const receipt = (): PureProofCaptureArchive => ({ version: 1, runId: 'run-1', gateFireId: 'fire-1',
+    pid: 123, processStartedAtMs: 1, judgedSha: 'a'.repeat(40), resolvedAtMs: 70,
+    terminalEmissionCompletedAtMs: 90, verdictRecordedAtMs: 80,
+    promotion: { candidate: 'a'.repeat(12), recordedAtMs: 60, promoted: false, reason: 'not-green' },
+    capture: null, archivedAtMs: 210 });
+
+  it('writes and reads the production receipt once and refuses to overwrite original evidence', () => {
+    const r = receipt();
+    const file = archivePureProofCapture(dir, r, () => {})!;
+    expect(parsePureProofCaptureArchive(JSON.parse(readFileSync(file, 'utf8')))).toEqual(r);
+    const bytes = readFileSync(file, 'utf8');
+    expect(archivePureProofCapture(dir, { ...r, archivedAtMs: 220 }, () => {})).toBeNull();
+    expect(readFileSync(file, 'utf8')).toBe(bytes);
+  });
+
+  it('rejects malformed receipts without creating a file outside the artifact directory', () => {
+    expect(archivePureProofCapture(dir, { ...receipt(), runId: '../foreign' }, () => {})).toBeNull();
+  });
+
+  it('measures the actual promotion writer and chooses the final trailer after pending', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(50);
+    const file = join(dir, 'suite.log');
+    writeFileSync(file, 'suite output\n');
+    stampGatePromotion(file, { candidate: 'a'.repeat(40), green: false, promoted: false, reason: 'decision-pending' });
+    expect(readGatePromotionDecision(readFileSync(file, 'utf8'))).toBeNull();
+    vi.setSystemTime(60);
+    stampGatePromotion(file, { candidate: 'a'.repeat(40), green: false, promoted: false, reason: 'not-green' });
+    const promotion = readGatePromotionDecision(readFileSync(file, 'utf8'));
+    expect(promotion).toEqual(receipt().promotion);
+    const r = { ...receipt(), promotion };
+    const archived = archivePureProofCapture(dir, r, () => {})!;
+    expect(parsePureProofCaptureArchive(JSON.parse(readFileSync(archived, 'utf8')))).toEqual(r);
+  });
+
+  it.each(['', 'GATE_PROMOTION candidate=aaaaaaaaaaaa promoted=false reason=not-green',
+    'GATE_PROMOTION candidate=aaaaaaaaaaaa promoted=false reason=not-green recordedAtMs=bad',
+    'GATE_PROMOTION candidate=aaaaaaaaaaaa promoted=false reason=not-green recordedAtMs=50 recordedAtMs=60',
+    'GATE_PROMOTION candidate=aaaaaaaaaaaa promoted=false reason=superseded-by-refire recordedAtMs=50'])(
+    'keeps historical, invalid or superseded promotion evidence unknown: %s', (output) => {
+      expect(readGatePromotionDecision(output)).toBeNull();
+    },
+  );
 });
 
 describe('runPostVerdictPureProofCapture', () => {
