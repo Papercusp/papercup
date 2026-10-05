@@ -1076,6 +1076,7 @@ export async function dispatchPendingTriggerRuns(
            WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
         result.succeeded += 1;
         await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
+        await emitTriggerPackEdge(sql, row, { actionType: 'create-work-item' }).catch(() => undefined);
         continue;
       }
 
@@ -1103,6 +1104,7 @@ export async function dispatchPendingTriggerRuns(
              WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
           result.succeeded += 1;
           await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
+          await emitTriggerPackEdge(sql, row, { actionType: 'start-goal' }).catch(() => undefined);
         } else if (started.reason === 'holder-unknown' || started.reason === 'not-ready') {
           // Heal-able refusals: liveness evidence recovers, prerequisites
           // complete. Throw → 'failed' → the outbox retries under attempts.
