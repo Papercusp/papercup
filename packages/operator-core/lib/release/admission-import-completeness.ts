@@ -442,6 +442,59 @@ function ancestors(path: string): string[] {
  * conventionally named builder whose own source names the exact output path. Merely living under
  * `dist/`, being gitignored on the shared checkout, or having an unrelated builder is not enough.
  */
+function builderNamesOutput(source: string, output: string): boolean {
+  const ast = ts.createSourceFile('builder.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  type Suffix = { text: string; complete: boolean };
+  const binding = (identifier: ts.Identifier): ts.Expression | undefined => {
+    for (let scope: ts.Node | undefined = identifier.parent; scope; scope = scope.parent) {
+      if (ts.isFunctionLike(scope)) {
+        const parameter = scope.parameters.find(p => ts.isIdentifier(p.name) && p.name.text === identifier.text);
+        if (parameter) return parameter.initializer;
+      }
+      if (ts.isBlock(scope) || ts.isSourceFile(scope)) {
+        const declarations = scope.statements.flatMap(statement => ts.isVariableStatement(statement)
+          ? [...statement.declarationList.declarations] : []);
+        const matches = declarations.filter(d => ts.isIdentifier(d.name) && d.name.text === identifier.text);
+        if (matches.length) return matches.length === 1 ? matches[0]!.initializer : undefined;
+      }
+    }
+    return undefined;
+  };
+  // An unresolved checkout prefix is allowed, but every character of the package output
+  // must be static. An unresolved directory + basename therefore cannot prove an output.
+  const suffix = (node: ts.Expression, seen = new Set<ts.Node>()): Suffix => {
+    if (seen.has(node)) return { text: '', complete: false };
+    seen.add(node);
+    if (ts.isStringLiteralLike(node)) return { text: node.text, complete: true };
+    if (ts.isParenthesizedExpression(node)) return suffix(node.expression, seen);
+    if (ts.isIdentifier(node)) {
+      const value = binding(node);
+      return value ? suffix(value, seen) : { text: '', complete: false };
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const right = suffix(node.right, new Set(seen));
+      if (!right.complete) return right;
+      const left = suffix(node.left, new Set(seen));
+      return { text: left.text + right.text, complete: left.complete };
+    }
+    return { text: '', complete: false };
+  };
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    const value = ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'outfile'
+      ? node.initializer
+      : ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === 'outfile'
+        ? node.initializer : undefined;
+    if (value) {
+      const path = suffix(value).text;
+      if (path === output || path === `dist/${posix.basename(output)}` || path.endsWith(`/${output}`)) found = true;
+    }
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  return found;
+}
+
 function trackedGeneratedPackageBuilder(
   ask: { candidates: string[] },
   input: ImportCompletenessInput,
@@ -456,7 +509,7 @@ function trackedGeneratedPackageBuilder(
   const builders = [...new Set([`${packageRoot}/build-${topic}.mjs`, `${packageRoot}/build.mjs`])];
   for (const builder of builders) {
     const blob = git(['cat-file', 'blob', `${input.commit}:${builder}`], { cwd: input.root });
-    if (blob.status === 0 && (blob.stdout.includes(output) || blob.stdout.includes(`dist/${outputBase}`))) {
+    if (blob.status === 0 && builderNamesOutput(blob.stdout, output)) {
       return builder;
     }
   }

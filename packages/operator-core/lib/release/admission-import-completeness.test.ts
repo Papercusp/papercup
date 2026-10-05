@@ -300,6 +300,34 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     });
   });
 
+  it('resolves a tracked builder output through its directory parameter default', () => {
+    const { root } = repo();
+    const generated = sweep(root, {
+      'apps/operator/tool.ts': "import native from '../../packages/demo/dist/native-client.cjs';\nexport { native };\n",
+      'packages/demo/build-native.mjs':
+        "export function nativeBuilds(root, outDir = root + 'packages/demo/dist/') {\n" +
+        "  const outputDir = outDir;\n" +
+        "  return [{ outfile: outputDir + 'native-client.cjs' }];\n}\n",
+    }, 'builder constructs output from directory and basename');
+    expect(checkAdmissionImportCompleteness({ root, commit: generated, paths: ['apps/operator/tool.ts'] }))
+      .toMatchObject({ ok: true, skipped: [{ reason: 'generated-by-tracked-builder' }] });
+  });
+
+  it.each([
+    "export function nativeBuilds(root, outDir = root + 'packages/other/dist/') { return [{ outfile: outDir + 'native-client.cjs' }]; }\n",
+    "export function nativeBuilds(root, outDir) { return [{ outfile: outDir + 'native-client.cjs' }]; }\n",
+    "const outDir = root + 'packages/demo/dist/'; function nativeBuilds(outDir) { return [{ outfile: outDir + 'native-client.cjs' }]; }\n",
+    "const outDir = root + 'packages/demo/dist/'; const doc = 'native-client.cjs'; const outfile = outDir + 'other.cjs';\n",
+  ])('refuses a split builder output without the requested directory and filename: %s', builder => {
+    const { root } = repo();
+    const commit = sweep(root, {
+      'apps/operator/tool.ts': "import native from '../../packages/demo/dist/native-client.cjs';\nexport { native };\n",
+      'packages/demo/build-native.mjs': builder,
+    }, 'builder does not prove the requested output');
+    expect(checkAdmissionImportCompleteness({ root, commit, paths: ['apps/operator/tool.ts'] }))
+      .toMatchObject({ ok: false, code: 'admission-incomplete' });
+  });
+
   it('wired as the primitive preflight (the admit door): refuses BEFORE publish naming the path, the lineage ref never moves, and both paths then publish', () => {
     const { root, candidate } = repo();
     sweep(
