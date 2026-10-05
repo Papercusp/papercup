@@ -247,6 +247,9 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
       }
     }
   }
+}).meta({
+  'x-papercusp-call-constraint':
+    'phase=activation => classRef required; items, findings, auditedSha forbidden. phase=completion (including omitted phase) => items required; classRef, sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
 });
 
 interface Problem {

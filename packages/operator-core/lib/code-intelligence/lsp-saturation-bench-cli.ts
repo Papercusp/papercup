@@ -54,8 +54,8 @@
  *   …lsp-saturation-bench-cli.ts typescript 1,8,64 references 2
  */
 import { performance } from 'node:perf_hooks';
-import { readFileSync } from 'node:fs';
-import { runDaemonReplay, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { freezeCompilerReplayConfig, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { moduleRepoRoot } from '../module-repo-root';
 
 import {
@@ -216,6 +216,16 @@ async function runLevel(
 }
 
 async function main(): Promise<void> {
+  // …lsp-saturation-bench-cli.ts --freeze-replay <authored-cursors.json> <new-frozen-config.json>
+  if (process.argv[2] === '--freeze-replay') {
+    if (!process.argv[3] || !process.argv[4]) throw new Error('--freeze-replay requires authored input and a new config path');
+    const input = JSON.parse(readFileSync(process.argv[3], 'utf8')) as ReplayOracleInput;
+    const config = freezeCompilerReplayConfig(input);
+    writeFileSync(process.argv[4], JSON.stringify(config, null, 2), { flag: 'wx' });
+    console.log(JSON.stringify({ config: process.argv[4], files: Object.keys(config.files).length,
+      expectedDefinitions: config.corpus.definition.oracle.sites.length, expectedReferences: config.corpus['hot-references'].oracle.sites.length }));
+    return;
+  }
   // P-012 execution uses the same benchmark entry point and the real daemon seam.
   // Legacy adapter saturation remains the separately labelled historical control.
   // …lsp-saturation-bench-cli.ts --fleet-replay <frozen-config.json> <archive-parent>

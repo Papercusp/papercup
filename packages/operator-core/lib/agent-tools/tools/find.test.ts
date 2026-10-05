@@ -440,6 +440,15 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     );
   });
 
+  it('publishes plans:audit phase-dependent required fields in compact discovery output', () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:audit')) ?? '';
+
+    expect(compact).toContain('constraint:$ (phase=activation => classRef required');
+    expect(compact).toContain('phase=completion (including omitted phase) => items required');
+    expect(compact).toContain('classRef');
+  });
+
   it('keeps the late plans:new BAR contract in compact discovery output', () => {
     expect(plansNew.name).toBe('plans:new');
     const { schemaByTool } = buildCorpus();

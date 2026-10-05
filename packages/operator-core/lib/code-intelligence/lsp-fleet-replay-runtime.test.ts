@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { freezeCompilerReplayConfig, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replaySourceFingerprint, replayWireOverlap, validateDaemonReplayConfig, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
@@ -88,5 +88,19 @@ describe('daemon replay qualification', () => {
     expect(durable.classes['hot-references'].elapsedMs).toBe(20);
     expect(durable.samples[0]).toMatchObject({ settledAtMs: 9, clientSettledAtMs: 22 });
     expect(replayEvidenceProblems(durable)).toEqual([]);
+  });
+  it('builds the complete source oracle across an alias while excluding comments and a same-name shadow', () => {
+    const frozen = config();
+    const root = frozen.rootPath;
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true }, files: ['source.ts', 'consumer.ts'] }));
+    writeFileSync(join(root, 'consumer.ts'), ["import { hot as alias } from './source';", 'alias();',
+      'function shadow() { const hot = () => 2; hot(); }', '// hot();', ''].join('\n'));
+    const oracle = freezeCompilerReplayConfig({ runId: 'independent', rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1, 8, 1000], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'consumer.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [], evidenceRef: 'source-authored-test' });
+    expect(oracle.corpus.definition.oracle.sites).toEqual([{ path: 'source.ts', line1: 1 }]);
+    expect(oracle.corpus['hot-references'].oracle.sites).toEqual([{ path: 'consumer.ts', line1: 1 },
+      { path: 'consumer.ts', line1: 2 }, { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]);
   });
 });

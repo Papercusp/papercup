@@ -10,6 +10,7 @@ import type { LspFacadeArgs } from './lsp-facade';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { lspEvidenceNow } from './lsp-query-evidence';
 import { taskIdFromScopeUnit } from '../task-manager/types';
+import ts from 'typescript';
 
 export interface ReplayCorpus {
   readonly cursor: Required<Pick<LspFacadeArgs, 'file' | 'line1' | 'character'>>;
@@ -32,6 +33,91 @@ export interface DaemonReplayConfig {
 export const replayHash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 export const replaySourceFingerprint = (files: DaemonReplayConfig['files']) => replayHash(JSON.stringify(Object.entries(files).sort()));
 export const replayOracleFingerprint = (oracle: Pick<ReplayOracle, 'sites' | 'staleSites'>) => replayHash(JSON.stringify(oracle));
+export interface ReplayOracleInput {
+  readonly runId: string;
+  readonly rootPath: string;
+  readonly socketPath: string;
+  readonly workspaceId: string;
+  readonly levels: readonly number[];
+  readonly requestTimeoutMs: number;
+  readonly tsconfigPath: string;
+  readonly definition: ReplayCorpus['cursor'];
+  readonly references: ReplayCorpus['cursor'];
+  /** Additional runtime binaries and loaded daemon/config source whose drift invalidates qualification. */
+  readonly runtimeFiles: readonly string[];
+  readonly evidenceRef: string;
+}
+
+/**
+ * Independent static source census: resolves lexical bindings with the compiler
+ * checker, never calls the subject adapter/server or learns sites from a warmup.
+ * The explicit config/roots bound the population and are retained in the archive.
+ */
+export function freezeCompilerReplayConfig(input: ReplayOracleInput): DaemonReplayConfig {
+  const tsconfigPath = resolve(input.rootPath, input.tsconfigPath);
+  const read = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (read.error) throw new Error(ts.flattenDiagnosticMessageText(read.error.messageText, '\n'));
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, resolve(tsconfigPath, '..'), undefined, tsconfigPath);
+  if (parsed.errors.length) throw new Error(parsed.errors.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'));
+  const roots = [...new Set([...parsed.fileNames, resolve(input.rootPath, input.definition.file), resolve(input.rootPath, input.references.file)])];
+  const program = ts.createProgram({ rootNames: roots, options: parsed.options });
+  const checker = program.getTypeChecker();
+  const canonical = (symbol: ts.Symbol | undefined): ts.Symbol | undefined => {
+    const seen = new Set<ts.Symbol>();
+    while (symbol && symbol.flags & ts.SymbolFlags.Alias && !seen.has(symbol)) { seen.add(symbol); symbol = checker.getAliasedSymbol(symbol); }
+    return symbol;
+  };
+  const sourceFiles = program.getSourceFiles().filter(source => !source.isDeclarationFile &&
+    !relative(input.rootPath, source.fileName).startsWith('..') && !source.fileName.includes('/node_modules/'));
+  const files: Record<string, string> = {};
+  for (const file of [...sourceFiles.map(source => source.fileName), tsconfigPath, ...input.runtimeFiles]) {
+    const absolute = resolve(input.rootPath, file);
+    files[absolute] = replayHash(readFileSync(absolute));
+  }
+  const sourceFingerprint = replaySourceFingerprint(files);
+  const locate = (cursor: ReplayCorpus['cursor']) => {
+    const source = program.getSourceFile(resolve(input.rootPath, cursor.file));
+    if (!source) throw new Error(`oracle cursor outside compiler population:${cursor.file}`);
+    const lines = source.getLineStarts();
+    if (cursor.line1 < 1 || cursor.line1 > lines.length) throw new Error('oracle cursor line outside source');
+    const offset = lines[cursor.line1 - 1] + cursor.character;
+    let identifier: ts.Identifier | undefined;
+    const visit = (node: ts.Node) => {
+      if (offset < node.getStart(source) || offset >= node.end) return;
+      if (ts.isIdentifier(node)) identifier = node;
+      else ts.forEachChild(node, visit);
+    };
+    visit(source);
+    const symbol = canonical(identifier ? checker.getSymbolAtLocation(identifier) : undefined);
+    if (!symbol || !symbol.declarations?.length) throw new Error(`unresolved source oracle:${cursor.file}`);
+    return symbol;
+  };
+  const site = (node: ts.Node) => ({ path: relative(input.rootPath, node.getSourceFile().fileName).replaceAll('\\', '/'),
+    line1: node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1 });
+  const unique = (sites: ReplayOracle['sites']) => [...new Map(sites.map(site => [JSON.stringify(site), site])).values()]
+    .sort((a, b) => a.path.localeCompare(b.path) || (a.line1 ?? 0) - (b.line1 ?? 0));
+  const cheap = locate(input.definition);
+  const hot = locate(input.references);
+  const definitions = unique(cheap.declarations!.map(site));
+  const references: { path: string; line1: number }[] = [];
+  for (const source of sourceFiles) {
+    const visit = (node: ts.Node) => {
+      if (ts.isIdentifier(node) && canonical(checker.getSymbolAtLocation(node)) === hot) references.push(site(node));
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  const corpus = (cursor: ReplayCorpus['cursor'], sites: ReplayOracle['sites']): ReplayCorpus => ({ cursor,
+    oracle: { sites, sourceFingerprint, oracleFingerprint: replayOracleFingerprint({ sites }) } });
+  const config: DaemonReplayConfig = { schemaVersion: 'lsp-daemon-replay-config-v1', runId: input.runId,
+    rootPath: input.rootPath, socketPath: input.socketPath, workspaceId: input.workspaceId, levels: input.levels,
+    requestTimeoutMs: input.requestTimeoutMs, files,
+    oracleProvenance: { method: 'static TypeScript symbol-binding census over the frozen compiler source population; no daemon answers',
+      evidenceRef: input.evidenceRef },
+    corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) } };
+  validateDaemonReplayConfig(config);
+  return config;
+}
 export function replayFileMismatches(files: DaemonReplayConfig['files']): string[] {
   return Object.entries(files).flatMap(([file, hash]) => {
     try { return replayHash(readFileSync(file)) === hash ? [] : [`changed-file:${file}`]; }
