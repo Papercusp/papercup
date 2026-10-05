@@ -1918,6 +1918,190 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
   });
 
+  describe('physically complete partial launch placement (EI-25157449632977265)', () => {
+    const base = {
+      plan: { harness: 'papercusp', slug: 'alpha', ambiguousMatches: 1 },
+      status: 'active',
+      itemStatuses: ['done', 'wip'],
+      actionableItemId: 'P-002',
+      now: NOW,
+    };
+    const memberSource = () => ({
+      goalHolderOwnerIds: ['su-goal'],
+      claims: [{
+        itemId: 'P-002',
+        ownerId: 'su-member',
+        fleetSlug: 'alpha-fleet',
+        holderLive: true,
+        expiresAt: '2026-08-28T02:40:00.000Z',
+        workItemId: 'WI-alpha-member',
+      }],
+      fleet: {
+        slug: 'alpha-fleet',
+        controlState: 'active',
+        leaderOwnerId: 'su-leader',
+        leaderLive: true,
+        liveMembers: 1,
+        target: 1,
+        claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'alpha' } } },
+        launchTransaction: {
+          transactionId: 'tx-physically-complete',
+          state: 'partial',
+          requestedMemberIds: ['su-member'],
+          openedMemberIds: ['su-member'],
+          verifiedMemberIds: ['su-member'],
+          failed: [],
+          // Historical readiness is NOT current worker accountability.
+          workerReadyMemberIds: [],
+          workerAttestations: [{ ownerId: 'su-member', gaps: ['scheduler-pull-missing', 'disposition-missing'] }],
+          recovery: { retryOwnerIds: [], nextAction: 'resume the first unresolved identity' },
+        },
+      },
+    });
+    const withTransaction = (patch: Record<string, unknown>) => {
+      const source = memberSource();
+      return {
+        ...source,
+        fleet: { ...source.fleet, launchTransaction: { ...source.fleet.launchTransaction, ...patch } },
+      };
+    };
+
+    it.each([{ unconfirmedMemberIds: undefined }, { unconfirmedMemberIds: [] }])(
+      'uses current accountability with legacy/empty unconfirmed=$unconfirmedMemberIds without rewriting history',
+      ({ unconfirmedMemberIds }) => {
+        const source = withTransaction({ unconfirmedMemberIds });
+        const before = structuredClone(source);
+        const placement = compileGoalPlanPlacement({ ...base, source });
+        expect(placement).toMatchObject({
+          state: 'working',
+          activeLane: { ownerId: 'su-member', workItemId: 'WI-alpha-member' },
+          reconciliation: { action: 'none', consistent: true, toolCall: null },
+        });
+        expect(placement.launchTransaction).toEqual({
+          transactionId: 'tx-physically-complete',
+          state: 'partial',
+          retryOwnerIds: [],
+          nextAction: 'resume the first unresolved identity',
+        });
+        expect(source).toEqual(before);
+      },
+    );
+
+    it('keeps the completed launch cohort separate from the current member identity', () => {
+      const source = withTransaction({
+        requestedMemberIds: ['su-original', 'su-second'],
+        openedMemberIds: ['su-original', 'su-second'],
+        verifiedMemberIds: ['su-original', 'su-second'],
+      });
+      expect(compileGoalPlanPlacement({ ...base, source })).toMatchObject({
+        state: 'working',
+        activeLane: { ownerId: 'su-member', workItemId: 'WI-alpha-member' },
+        launchTransaction: { state: 'partial' },
+        reconciliation: { action: 'none', consistent: true, toolCall: null },
+      });
+    });
+
+    it('accepts the existing JSON transaction provider and follows the current work transition', () => {
+      const source = memberSource();
+      expect(compileGoalPlanPlacement({
+        ...base,
+        itemStatuses: ['done', 'todo'],
+        source: {
+          ...source,
+          fleet: { ...source.fleet, launchTransaction: JSON.stringify(source.fleet.launchTransaction) },
+        },
+      })).toMatchObject({
+        state: 'independently-led',
+        launchTransaction: { state: 'partial' },
+        reconciliation: { action: 'none', consistent: true, toolCall: null },
+      });
+    });
+
+    it.each([
+      ['retry pending', { recovery: { retryOwnerIds: ['su-retry'] } }],
+      ['retry unmeasured', { recovery: {} }],
+      ['retry null', { recovery: { retryOwnerIds: null } }],
+      ['retry malformed', { recovery: { retryOwnerIds: 'none' } }],
+      ['recovery absent', { recovery: undefined }],
+      ['request absent', { requestedMemberIds: undefined }],
+      ['request empty', { requestedMemberIds: [] }],
+      ['request malformed', { requestedMemberIds: ['su-member', null] }],
+      ['request blank', { requestedMemberIds: [''] }],
+      ['opened unmeasured', { openedMemberIds: undefined }],
+      ['unopened member', { openedMemberIds: [] }],
+      ['opened wrong identity', { openedMemberIds: ['su-other'] }],
+      ['second member unopened', { requestedMemberIds: ['su-member', 'su-second'], verifiedMemberIds: ['su-member', 'su-second'] }],
+      ['verified unmeasured', { verifiedMemberIds: undefined }],
+      ['unverified member', { verifiedMemberIds: [] }],
+      ['verified wrong identity', { verifiedMemberIds: ['su-other'] }],
+      ['second member unverified', { requestedMemberIds: ['su-member', 'su-second'], openedMemberIds: ['su-member', 'su-second'] }],
+      ['failure recorded', { failed: [{ ownerId: 'su-member', phase: 'verify', reason: 'failed' }] }],
+      ['failure unmeasured', { failed: undefined }],
+      ['failure null', { failed: null }],
+      ['unconfirmed member', { unconfirmedMemberIds: ['su-member'] }],
+      ['unconfirmed null', { unconfirmedMemberIds: null }],
+      ['unconfirmed malformed', { unconfirmedMemberIds: 'unknown' }],
+      ['still launching', { state: 'launching' }],
+    ])('retains recovery for %s despite a live claimed lane', (_label, transactionPatch) => {
+      const placement = compileGoalPlanPlacement({ ...base, source: withTransaction(transactionPatch) });
+      expect(placement).toMatchObject({
+        state: 'admitting',
+        reconciliation: {
+          action: 'resume-partial-launch',
+          consistent: false,
+          toolCall: { tool: 'fleet:launch-on-plan', args: { name: 'alpha-fleet' } },
+        },
+      });
+    });
+
+    it.each([
+      ['no live leader', { leaderLive: false }, 'restore-spawned-leader'],
+      ['paused fleet', { controlState: 'paused' }, 'reconcile-plan-lane-holder'],
+      ['GOAL steward leader', { leaderOwnerId: 'su-goal' }, 'reconcile-plan-lane-holder'],
+      ['leader identity absent', { leaderOwnerId: null }, 'reconcile-plan-lane-holder'],
+      ['plan admission absent', { claimSpec: null }, 'reconcile-plan-lane-holder'],
+      ['other plan admitted', { claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'other' } } } }, 'reconcile-plan-lane-holder'],
+    ])('still repairs %s after physical completion', (_label, fleetPatch, action) => {
+      const source = memberSource();
+      const placement = compileGoalPlanPlacement({ ...base, source: { ...source, fleet: { ...source.fleet, ...fleetPatch } } });
+      expect(placement.reconciliation).toMatchObject({ action, consistent: false });
+      expect(placement.state).not.toBe('working');
+      expect(placement.launchTransaction?.state).toBe('partial');
+    });
+
+    it.each([
+      ['member not live', { holderLive: false }],
+      ['work item absent', { workItemId: null }],
+      ['another fleet', { fleetSlug: 'other-fleet' }],
+      ['leader-only lease', { ownerId: 'su-leader' }],
+      ['GOAL steward lease', { ownerId: 'su-goal' }],
+      ['lease expiry absent', { expiresAt: null }],
+      ['expired lease', { expiresAt: '2026-08-28T02:00:00.000Z' }],
+    ])('requires current matching member accountability: %s', (_label, claimPatch) => {
+      const source = memberSource();
+      expect(compileGoalPlanPlacement({
+        ...base,
+        source: { ...source, claims: [{ ...source.claims[0], ...claimPatch }] },
+      })).toMatchObject({
+        launchTransaction: { state: 'partial' },
+        reconciliation: { action: 'reconcile-plan-lane-holder', consistent: false, toolCall: null },
+      });
+    });
+
+    it('does not treat physical completion or live-member count as a current claim', () => {
+      const source = memberSource();
+      expect(compileGoalPlanPlacement({ ...base, source: { ...source, claims: [] } })).toMatchObject({
+        state: 'admitting',
+        reconciliation: { action: 'reconcile-plan-lane-holder', toolCall: null },
+      });
+      const { goalHolderOwnerIds: _unmeasured, ...withoutHolderIdentity } = source;
+      expect(compileGoalPlanPlacement({ ...base, source: withoutHolderIdentity })).toMatchObject({
+        state: 'blocked',
+        reconciliation: { action: 'reconcile-plan-lane-holder', toolCall: null },
+      });
+    });
+  });
+
   it('terminates the same shipped plan once its closure evidence is supplied', () => {
     // The other half of the pair above: closure is what terminates a plan now,
     // so the SAME input with evidenced closure must still reach `terminal`.
