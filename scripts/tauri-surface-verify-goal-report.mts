@@ -23,7 +23,7 @@ const origin = process.env.VERIFY_TAURI_DEV_URL!;
 const workspaceId = process.env.PAPERCUSP_WORKSPACE!;
 const isolatedPg = resolveScriptPgUrl();
 assert.ok(pid && origin && workspaceId &&
-  isolatedPg.source === 'env:HARNESS_ADMIN_DATABASE_URL' &&
+  isolatedPg.source === 'env' && isolatedPg.via === 'HARNESS_ADMIN_DATABASE_URL' &&
   !isolatedPg.envLocal.applied.includes('HARNESS_ADMIN_DATABASE_URL'),
   'Requires an explicitly supplied isolated admin database URL');
 const out = process.env.TAURI_GOAL_REPORT_OUT ?? `/tmp/pcv-goal-report-${Date.now()}`;
@@ -113,11 +113,15 @@ let recording: ReturnType<typeof spawn> | undefined;
 let recordingExit: Promise<number | null> | undefined;
 const stopRecording = async () => {
   if (!recording) return;
-  const child = recording;
-  recording = undefined;
-  child.kill('SIGINT');
-  const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
-  try { await recordingExit; } finally { clearTimeout(timeout); }
+  recording.kill('SIGINT');
+  const timeout = setTimeout(() => {
+    recording!.kill('SIGKILL');
+  }, 10_000).unref();
+  try { await recordingExit; } finally {
+    clearTimeout(timeout);
+    recording = undefined;
+    recordingExit = undefined;
+  }
 };
 // A textContent match proves the body was loaded, not that clipped lines were
 // visible. Scroll the real pre and record every line while it is in view.
