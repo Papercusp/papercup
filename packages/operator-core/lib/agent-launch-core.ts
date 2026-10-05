@@ -2358,6 +2358,7 @@ export async function verifyResumeStarted(
                   (summary.target.ownerId != null && summary.target.ownerId !== ownerId) ||
                   summary.hashes.rendered !== port.renderedHash)) ||
                 (portExpected != null && port.metadata.targetNativeSessionId !== portExpected) ||
+                (port.metadata.bootstrapReceiptTargetAdvSessionId != null && port.metadata.bootstrapReceiptTargetAdvSessionId !== target.id) ||
                 (proof?.renderedHash != null && proof.renderedHash !== port.renderedHash) ||
                 (portExpected != null && typeof proof?.nativeRef === 'string' && !proof.nativeRef.endsWith(`${portExpected}.jsonl`)) ||
                 port.status === 'failed' || port.status === 'expired') {

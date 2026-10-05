@@ -1390,6 +1390,7 @@ describe('verifyResumeStarted prepared cross-backend continuation', () => {
     ['port target', (f: ReturnType<typeof fixture>) => { f.port.targetAdvSessionId = 99; }],
     ['prepared owner', (f: ReturnType<typeof fixture>) => { f.port.metadata.targetCoordOwnerId = 'su-other'; }],
     ['prepared native', (f: ReturnType<typeof fixture>) => { f.port.metadata.targetNativeSessionId = 'other-native'; }],
+    ['bootstrap target', (f: ReturnType<typeof fixture>) => { f.port.metadata.bootstrapReceiptTargetAdvSessionId = 99; }],
     ['source native', (f: ReturnType<typeof fixture>) => { f.options.expectedSessionId = 'other-source'; }],
     ['payload hash', (f: ReturnType<typeof fixture>) => {
       (f.port.metadata.persistenceProof as Record<string, unknown>).renderedHash = 'wrong-hash';

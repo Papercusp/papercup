@@ -362,6 +362,37 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(complete.ok).toBe(true);
   });
 
+  it('does not turn unrelated generated fixture names into dependencies when the batch includes a URL reader', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\nexport const value = readFileSync(new URL('./real.json', import.meta.url), 'utf8');\n",
+      'lib/real.json': '{}\n',
+      'lib/fixtures.test.ts': "import { writeFileSync } from 'node:fs';\nwriteFileSync('generated.json', '{}');\nconst missingFixture = 'missing.md';\n",
+    }, 'reader and unrelated fixtures');
+    const outcome = admit(root, candidate, ['lib/reader.ts', 'lib/real.json', 'lib/fixtures.test.ts'], {
+      preflight: importCompletenessPreflight({ root, probeRef: 'staging' }),
+    });
+    expect(outcome.ok).toBe(true);
+  });
+
+  it('checks the actual URL path without checking generated fixture names in the reader itself', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.test.ts': "import { readFileSync, writeFileSync } from 'node:fs';\nwriteFileSync('generated.json', '{}');\nconst value = readFileSync(new URL('./real.json', import.meta.url), 'utf8');\n" +
+        'export const unrelatedTail = ' + JSON.stringify('x'.repeat(512)) + ';\n',
+      'lib/real.json': '{}\n',
+    }, 'reader with generated fixture and long tail');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+    const missing = admit(root, candidate, ['lib/reader.test.ts'], { preflight });
+    expect(missing).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/real.json', relation: 'runtime-data' })],
+    });
+    if (!missing.ok && 'missing' in missing) expect(missing.missing).toHaveLength(1);
+    expect(admit(root, candidate, ['lib/reader.test.ts', 'lib/real.json'], { preflight }).ok).toBe(true);
+  });
+
   it('refuses a whole-blob admission until differing reverse-importing tests and their imported modules share its pinned source', () => {
     const { root, candidate } = repo();
     const sourceCommit = sweep(root, {

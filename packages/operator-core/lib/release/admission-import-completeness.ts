@@ -12,8 +12,8 @@
  * admitted TS/JS blob at the proved admission commit, each RELATIVE import specifier
  * (`./x`, `../y`) is resolved the way TypeScript's bundler / node16 resolution would —
  * extension probe, `.js` → `.ts` rewrite, `/index.*` — against the commit's tree. When the
- * admitted source set contains `readFileSync(new URL(...))`, local `.json`, `.jsonl` and `.md`
- * filename literals in that set are checked as runtime data dependencies too. All candidate
+ * admitted source contains `readFileSync(new URL(...))`, its URL filename and data filenames
+ * in its imported source cohort are checked as runtime dependencies too. All candidate
  * paths share ONE `git cat-file --batch-check` call. Anything unresolved comes back with the
  * path to admit.
  *
@@ -28,6 +28,7 @@
  * that QUOTES import statements — this module's own test does — is not misread as importing.
  */
 import { posix } from 'node:path';
+import ts from 'typescript';
 
 import {
   realAdmissionGit,
@@ -187,6 +188,7 @@ export function extractRelativeImportSpecifiers(source: string): string[] {
 
 interface RuntimeDataFileScan {
   specifiers: string[];
+  urlSpecifiers: string[];
   hasUrlRead: boolean;
 }
 
@@ -194,63 +196,35 @@ interface RuntimeDataFileScan {
  * Read local data-file names from source literals. A whole-blob admission can include a module
  * that names data files while an admitted test or runner reads them through a dynamic expression
  * such as `readFileSync(new URL('./study/' + block.file, import.meta.url))`. The reader and the
- * literal names need not be in the same file, so the caller combines these results across the
- * admitted source set.
+ * literal names need not be in the same file, so the caller follows the reader's imports.
+ * Unrelated admitted tests and fixture filenames in the reader are not runtime dependencies.
  */
 function scanRuntimeDataFiles(source: string): RuntimeDataFileScan {
-  const specifiers: string[] = [];
-  const seen = new Set<string>();
-  let code = '';
-  let i = 0;
-  while (i < source.length) {
-    const ch = source[i]!;
-    const next = source[i + 1];
-    if (ch === '/' && next === '/') {
-      const end = source.indexOf('\n', i);
-      i = end === -1 ? source.length : end;
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      const end = source.indexOf('*/', i + 2);
-      i = end === -1 ? source.length : end + 2;
-      continue;
-    }
-    if (ch === '`') {
-      i = skipTemplate(source, i);
-      code += ' `` ';
-      if (code.length > 256) code = code.slice(-96);
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      const end = scanQuoted(source, i, ch);
-      const closed = source[end - 1] === ch && end - 1 > i;
-      const value = closed ? source.slice(i + 1, end - 1) : '';
-      const localPath =
-        closed &&
-        /\.(?:json|jsonl|md)$/i.test(value) &&
-        !value.startsWith('/') &&
-        !value.includes('\\') &&
-        !value.includes(':') &&
-        !value.includes('?') &&
-        !value.includes('#') &&
-        !/\s/.test(value);
-      if (localPath && !seen.has(value)) {
-        seen.add(value);
-        specifiers.push(value);
+  const specifiers = new Set<string>();
+  const urlSpecifiers = new Set<string>();
+  let hasUrlRead = false;
+  const ast = ts.createSourceFile('admission.ts', source, ts.ScriptTarget.Latest, true);
+  const isLocalData = (value: string): boolean =>
+    /\.(?:json|jsonl|md)$/i.test(value) && !/^(?:\/)/.test(value) && !/[\\:?#\s]/.test(value);
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteralLike(node) && isLocalData(node.text)) specifiers.add(node.text);
+    if (ts.isCallExpression(node)) {
+      const name = ts.isIdentifier(node.expression) ? node.expression.text
+        : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : '';
+      const url = node.arguments[0];
+      if ((name === 'readFile' || name === 'readFileSync') && url && ts.isNewExpression(url) &&
+          ts.isIdentifier(url.expression) && url.expression.text === 'URL') {
+        hasUrlRead = true;
+        const filename = url.arguments?.[0];
+        if (filename && ts.isStringLiteralLike(filename) && isLocalData(filename.text)) {
+          urlSpecifiers.add(filename.text);
+        }
       }
-      code += ' "" ';
-      if (code.length > 256) code = code.slice(-96);
-      i = end;
-      continue;
     }
-    code += ch;
-    if (code.length > 256) code = code.slice(-96);
-    i++;
-  }
-  return {
-    specifiers,
-    hasUrlRead: /\b(?:readFile|readFileSync)\s*\(\s*new\s+URL\s*\(/.test(code),
+    ts.forEachChild(node, visit);
   };
+  visit(ast);
+  return { specifiers: [...specifiers], urlSpecifiers: [...urlSpecifiers], hasUrlRead };
 }
 
 /**
@@ -464,10 +438,26 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
   }
 
   const importCount = asks.length;
-  if (sources.some((source) => source.runtimeData.hasUrlRead)) {
-    for (const source of sources) {
+  const sourceByPath = new Map(sources.map(source => [source.path, source]));
+  const dataCohort = new Set<string>();
+  const pending = sources.filter(source => source.runtimeData.hasUrlRead);
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const source = pending.pop()!;
+    if (visited.has(source.path)) continue;
+    visited.add(source.path);
+    for (const specifier of source.imports) {
+      const imported = resolveImportCandidates(source.path, specifier)?.find(path => sourceByPath.has(path));
+      if (!imported) continue;
+      dataCohort.add(imported);
+      pending.push(sourceByPath.get(imported)!);
+    }
+  }
+  for (const source of sources) {
+    const specifiers = dataCohort.has(source.path) ? source.runtimeData.specifiers : source.runtimeData.urlSpecifiers;
+    if (specifiers.length > 0) {
       const imports = new Set(source.imports);
-      for (const specifier of source.runtimeData.specifiers) {
+      for (const specifier of specifiers) {
         // The normal import scan already checks statically imported data files.
         if (imports.has(specifier)) continue;
         const candidates = resolveImportCandidates(source.path, specifier);
