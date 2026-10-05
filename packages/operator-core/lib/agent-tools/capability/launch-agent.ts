@@ -1886,6 +1886,7 @@ export default defineTool({
               targetOwnerId,
               fleetSlug,
               headless: !!foldedConfigs[i].headless,
+              ...(respawnReplacesOwnerId ? { replacesOwnerId: respawnReplacesOwnerId } : {}),
             },
           },
           async (admissionContext) => {
@@ -1989,6 +1990,9 @@ export default defineTool({
     const openedOwnerIds = results.flatMap((result, i) =>
       result.status === 'ok' && memberOwnerIds[i] ? [memberOwnerIds[i]] : [],
     );
+    for (const result of results) {
+      notes.push(...(result.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
+    }
     let verifierCoupling: { status: 'coupled' | 'failed' | 'not-opened'; holderId: string; verifierId: string | null; error?: string } | null = null;
     if (args.goalVerifier && callerOwnerId) {
       const verifierId = openedOwnerIds[0] ?? null;
