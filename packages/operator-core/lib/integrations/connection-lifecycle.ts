@@ -491,7 +491,7 @@ export function makeDescriptorOAuthProvider(
     },
     defaultScopes: oauth.scopes,
     allowedScopes: oauth.scopes,
-    createFlowContext() {
+    createFlowContext(): OAuthFlowPrivateContext {
       return oauth.pkce ? { codeVerifier: base64Url(randomBytes(48)) } : {};
     },
     buildAuthorizeUrl(scopes, stateToken, privateContext?: OAuthFlowPrivateContext) {
