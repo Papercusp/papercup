@@ -71,6 +71,7 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import { holderCountsAsAlive, resolveHolderLiveness } from '../goals/holder';
 import {
   GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_HEADING_LIST,
   GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS,
   GOAL_OWNER_REPORT_SCHEMA_VERSION,
 } from '../goal-owner-report';
@@ -295,7 +296,7 @@ export function describeGoalOwnerReportObligation(
       ? new Date(row.lastReportTsMs).toISOString()
       : null;
   const report =
-    "send the four-element owner report NOW — coord:send { to:['human'] } with MOVED / COST / OWNER-WALLED / KILLED — before any other work";
+    `send the owner report NOW — coord:send { to:['human'] } with ${GOAL_OWNER_REPORT_HEADING_LIST} — before any other work`;
   const instruction =
     obligation === 'overdue'
       ? `OVERDUE by ${toMin(-dueInMs)} min (floor ${toMin(floorMs)} min, last owner-facing report ${lastReportAt ?? 'none since you took this goal'}): ${report}.`
@@ -331,7 +332,7 @@ export async function readGoalOwnerReportObligation(
 }
 
 /** The contract's report shape, handed to the owner as a fill-in skeleton rather
- *  than a bare scold — the four fields are the GOAL contract's own list. */
+ *  than a bare scold — including the WRITE contract's next-wake requirement. */
 export function buildReportSkeleton(alert: GoalOwnerReportAlert): Record<string, string> {
   return {
     channel:
@@ -341,6 +342,7 @@ export function buildReportSkeleton(alert: GoalOwnerReportAlert): Record<string,
       '<measured spend: goals:pots rollup vs the declared ceiling — never an invented spentCents (D-003)>',
     ownerWalled: '<queued owner asks: app-store, payments, domains, real spend, approvals>',
     whatYouKilled: '<pots/fleets killed or wound down, each with the criterion that tripped>',
+    nextWake: '<next wake trigger/event or loop cadence, with its expected time>',
   };
 }
 
@@ -512,9 +514,9 @@ async function defaultEscalate(alert: GoalOwnerReportAlert): Promise<{ coalesced
       `(workspace ${alert.workspaceId}), has produced no owner report for ~${silentHours}h ` +
       `(floor: ${floorLabel}; last reference ` +
       `${new Date(alert.referenceTsMs).toISOString()}).\n\n` +
-      `The GOAL contract's reporting clause: "REPORT on a standing cadence via ` +
-      `coord:escalate / notifyAttention: what moved, what it cost, what is owner-walled, ` +
-      `and what you killed. Without it the owner learns goal state only by asking." The ` +
+      `The GOAL reporting contract requires ${GOAL_OWNER_REPORT_HEADING_LIST} on a standing cadence via ` +
+      `coord:escalate / notifyAttention / coord:send to human. ` +
+      `Without it the owner learns goal state only by asking. The ` +
       `measured failure this instrument closes (WI-39348): exemplary reporting for 2.5h, ` +
       `then 5h of silence including at goal-met.\n\n` +
       `Remedy (subject ${alert.agentId}): send the report now on the contract's rail — ` +
@@ -542,7 +544,7 @@ async function defaultNudge(alert: GoalOwnerReportAlert): Promise<void> {
   await wakeRecipients([alert.agentId], {
     summary:
       `goal-owner-report: goal '${alert.goalId}' has had no owner report for ~${silentHours}h — ` +
-      `send one now (skeleton in payload): what moved, what it cost, what is owner-walled, what you killed`,
+      `send one now (skeleton in payload): ${GOAL_OWNER_REPORT_HEADING_LIST}`,
     payload: {
       goalId: alert.goalId,
       agentId: alert.agentId,

@@ -85,6 +85,7 @@ import {
 } from './interactive-usage/freshness';
 import {
   buildGoalOwnerReportDraft,
+  GOAL_OWNER_REPORT_HEADING_LIST,
   type GoalOwnerReportDraft,
   type GoalOwnerReportDraftInput,
 } from './goal-owner-report';
@@ -1608,7 +1609,7 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     'MOVED must include only actions with a successful result already returned, plus every goal-scoped work item that reached a terminal state after the previous report watermark. Do not report planned, queued, admission-pending, refused, or not-yet-run actions as moved.',
     'Read every named terminal artifact after its recorded update. If movement or killed evidence is truncated, degraded, or still unread, finish the missing reads or state the exact coverage gap.',
     'COST comes from the refreshed canonical spend evidence: preserve its figure, coverage, source, measured-at timestamp, and assembled/read-at timestamp. When refreshed evidence says coverage=measured, do not describe spend as unmeasured; when it is unknown or unmeasured, preserve that uncertainty and never infer zero.',
-    `Only after that final refresh, send MOVED / COST / OWNER-WALLED / KILLED to ["human"] with coord:send or use coord:escalate, naming exact goal id "${brief.goal.id}".`,
+    `Only after that final refresh, send ${GOAL_OWNER_REPORT_HEADING_LIST} to ["human"] with coord:send or use coord:escalate, naming exact goal id "${brief.goal.id}".`,
     'This snapshot is orientation, not write authority: refresh the targeted canonical read immediately before each mutation.',
   ].join('\n');
 }
