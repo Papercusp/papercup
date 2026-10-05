@@ -3,8 +3,9 @@
  * paired intervention or a census of every HTTP worker/retained-memory owner.
  */
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readlinkSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -332,6 +333,15 @@ type WorkerWindowReader = {
   }>;
 };
 
+async function readRequestWorkerResources(client: Pick<ReturnType<typeof createCdpClient>, 'evaluate'>,
+  pid: number, requestIds: string[]) {
+  const counters = await readProcessMemory(client, { expectedPid: pid, hostFacts: true, allocationDetails: true });
+  const result = await client.evaluate('(' + requestWorkerSnapshot.toString() + ')(' +
+    JSON.stringify(requestIds) + ')', { returnByValue: true });
+  if (!result?.result?.value) throw Error('Request-worker inspector snapshot unavailable');
+  return { counters, snapshot: result.result.value as ReturnType<typeof requestWorkerSnapshot> };
+}
+
 // The same bounded reader can bracket several selected workers. Inspector
 // ownership stays with the caller; this collector never opens a profiler,
 // forces GC, changes a worker count, or infers an unsampled worker's resources.
@@ -346,6 +356,8 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
     assertIdentity(initial.main, census.main);
     let row = counterTarget(census.main, census.descendants, target.pid);
     assertIdentity(target, row);
+    if (target.parentPid !== row.parentPid || target.command.sha256 !== row.command.sha256 ||
+        target.command.script !== row.command.script) throw Error('Worker-window selected ancestry pin changed');
     while (true) {
       const prior = [initial.main, ...initial.descendants].find(value => value.pid === row.pid);
       if (!prior) throw Error('Worker-window ancestry unavailable');
@@ -474,11 +486,13 @@ describe('actual current-build operator memory baseline', () => {
       expect(result.assignment.unresolvedRequestIds).toEqual([ids[1]]);
       expect(result.after.coverage.notCheckedAfter).toEqual([{ pid: 99, parentPid: 10, reason: 'cap' }]);
     });
-    it.each(['duplicate', 'foreign', 'reused'] as const)('rejects %s target selection before observing workload', async kind => {
+    it.each(['duplicate', 'foreign', 'reused', 'parent pin', 'entry pin'] as const)('rejects %s target selection before observing workload', async kind => {
       const f = setup();
       if (kind === 'duplicate') f.targets[1] = f.targets[0];
       if (kind === 'foreign') f.targets[0].parentPid = 98;
       if (kind === 'reused') f.targets[0].startTicks = 'reused';
+      if (kind === 'parent pin') f.targets[0].parentPid = 98;
+      if (kind === 'entry pin') f.targets[0].command = { ...f.targets[0].command, script: '/other/hono-host.mjs' };
       // The selected record's ancestry itself is also part of the pin.
       if (kind === 'foreign') f.children[0].parentPid = 98;
       await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow();
@@ -514,6 +528,123 @@ describe('actual current-build operator memory baseline', () => {
       await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow('target disconnected');
       expect(f.counts().workloads).toBe(0);
     });
+    it('collects actual unforced counters and HTTP relations across an isolated same-entry process tree', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'p011-worker-window-'));
+      const fixturePath = join(directory, 'hono-host.mjs');
+      const registryModule = pathToFileURL(join(root, 'libs/papercusp/libs/db/src/acquire-registry.ts')).href;
+      const stampModule = pathToFileURL(join(root, 'libs/papercusp/libs/db/src/build-stamp.ts')).href;
+      writeFileSync(fixturePath, `
+        import { createServer } from 'node:http';
+        import { spawn } from 'node:child_process';
+        import { fileURLToPath } from 'node:url';
+        import { randomUUID } from 'node:crypto';
+        import { recordPgResult, pgDiagnosticIdentity } from ${JSON.stringify(registryModule)};
+        import { setBuildStampResolver } from ${JSON.stringify(stampModule)};
+        setBuildStampResolver(() => ${JSON.stringify(build)});
+        if (process.env.P011_PRIVATE_WORKER === '1') {
+          const identity = pgDiagnosticIdentity(), poolInstanceId = randomUUID();
+          let sequence = 0;
+          const server = createServer((_request, response) => {
+            const requestId = randomUUID();
+            recordPgResult('p011-window', { connectionId: 1, queryId: ++sequence,
+              backendPid: null, query: 'select 1', rowCount: 1, wireBytes: 1, status: 'ok',
+              result: [{ value: 1 }], context: { state: 'linked', correlation: { ...identity,
+                requestId, operation: 'workItems.byHarness', attemptId: randomUUID(),
+                rowId: null, hopId: null, stage: null, boundary: 'await' } }
+            }, { ...identity, poolInstanceId });
+            response.setHeader('x-papercusp-request-id', requestId);
+            response.end(JSON.stringify({ rows: [{ value: 1 }] }));
+          });
+          server.listen(0, '127.0.0.1', () => console.log('P011_WORKER_READY ' + process.pid + ' ' + server.address().port));
+          process.on('SIGTERM', () => server.close(() => process.exit(0)));
+        } else {
+          const children = [0, 1].map(() => spawn(process.execPath,
+            ['--inspect=127.0.0.1:0', '--import', 'tsx', fileURLToPath(import.meta.url)],
+            { env: { ...process.env, P011_PRIVATE_WORKER: '1' }, stdio: ['ignore', 'pipe', 'pipe'] }));
+          for (const child of children) {
+            child.stdout.on('data', data => process.stdout.write(data));
+            child.stderr.on('data', data => {
+              const endpoint = String(data).match(new RegExp('Debugger listening on (ws://[a-zA-Z0-9:./-]+)'));
+              if (endpoint) console.log('P011_WORKER_DEBUG ' + child.pid + ' ' + endpoint[1]);
+            });
+          }
+          process.on('SIGTERM', async () => {
+            await Promise.all(children.map(child => new Promise(resolve => {
+              if (child.exitCode !== null || child.signalCode !== null) return resolve();
+              child.once('exit', resolve); child.kill('SIGTERM');
+            })));
+            process.exit(0);
+          });
+        }
+      `);
+      const clients = new Map<number, ReturnType<typeof createCdpClient>>();
+      let fixture: ReturnType<typeof spawn> | undefined;
+      let output = '';
+      let workerPids: number[] = [];
+      let failed = false;
+      try {
+        const parsed = spawnSync(process.execPath, ['--check', fixturePath], { encoding: 'utf8', timeout: 5000 });
+        if (parsed.status !== 0) throw Error('Private worker source parser preflight failed: ' +
+          (parsed.error?.message ?? parsed.stderr));
+        fixture = spawn(process.execPath, ['--import', 'tsx', fixturePath], { cwd: root,
+          env: { ...process.env, PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_SUBSTRATE_SIDECAR_MODE: '0',
+            PAPERCUSP_SPAWNER_SIDECAR_MODE: '0', PAPERCUSP_GATEWAY_SIDECAR_MODE: '0',
+            PAPERCUSP_EMBED_SIDECAR_MODE: '0', PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE: '0' },
+          stdio: ['ignore', 'pipe', 'pipe'] });
+        for (const stream of [fixture.stdout!, fixture.stderr!]) stream.setEncoding('utf8').on('data', data => {
+          output = (output + data).slice(-16000);
+        });
+        const deadline = Date.now() + 20000;
+        while ([...output.matchAll(/P011_WORKER_READY (\d+) (\d+)/g)].length < 2 ||
+            [...output.matchAll(/P011_WORKER_DEBUG (\d+) (ws:\/\/\S+)/g)].length < 2) {
+          if (fixture.exitCode !== null || fixture.signalCode !== null || Date.now() > deadline)
+            throw Error('Private worker tree readiness failed: ' + output);
+          await wait(50);
+        }
+        const ready = [...output.matchAll(/P011_WORKER_READY (\d+) (\d+)/g)]
+          .map(row => ({ pid: Number(row[1]), port: Number(row[2]) }));
+        workerPids = ready.map(row => row.pid);
+        for (const row of output.matchAll(/P011_WORKER_DEBUG (\d+) (ws:\/\/\S+)/g)) {
+          const client = createCdpClient(row[2]); clients.set(Number(row[1]), client); await client.connect();
+        }
+        const targets = workerPids.map(processSample);
+        const result = await collectRequestWorkerWindow(targets, build, {
+          census: () => ({ main: processSample(fixture!.pid!), descendants: workerPids.map(processSample), notChecked: [] }),
+          read: (pid, ids) => readRequestWorkerResources(clients.get(pid)!, pid, ids),
+        }, async () => Promise.all(ready.map(async target => {
+          const response = await fetch('http://127.0.0.1:' + target.port, { signal: AbortSignal.timeout(5000) });
+          expect(response.status).toBe(200); expect(await response.json()).toEqual({ rows: [{ value: 1 }] });
+          return response.headers.get('x-papercusp-request-id');
+        })));
+        expect(result.assignment.status).toBe('observed');
+        expect(result.assignment.assignments.map(row => row.pid)).toEqual(workerPids);
+        expect(result.resources).toHaveLength(2);
+        expect(result.resources.every(row => row.allocatedBytes > 0 && row.pssBytesBefore > 0 && row.pssBytesAfter > 0)).toBe(true);
+        expect(result.resources.every(row => row.countersBefore.heapSpaces.length > 0 && row.countersAfter.heapSpaces.length > 0)).toBe(true);
+        expect(result.before.coverage.unsampledPids).toEqual([fixture.pid]);
+        expect(result.after.coverage.population).toContain('population remains unknown');
+      } catch (error) {
+        failed = true;
+        throw new Error('Private worker-window failed: ' + (error instanceof Error ? error.message : String(error)) +
+          '\nBounded fixture output: ' + output, { cause: error });
+      } finally {
+        for (const client of clients.values()) client.close();
+        // Include partial readiness: a failed second child must not strand the first.
+        workerPids = [...new Set([...workerPids, ...[...output.matchAll(/P011_WORKER_(?:READY|DEBUG) (\d+)/g)].map(row => Number(row[1]))])];
+        if (fixture && fixture.exitCode === null && fixture.signalCode === null) {
+          const exited = new Promise<void>(resolve => fixture!.once('exit', () => resolve()));
+          fixture.kill('SIGTERM'); await Promise.race([exited, wait(3000)]);
+          if (fixture.exitCode === null && fixture.signalCode === null) {
+            for (const pid of workerPids) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already exited. */ } }
+            fixture.kill('SIGKILL'); await exited;
+          }
+        }
+        try {
+          for (const pid of workerPids) expect(existsSync('/proc/' + pid)).toBe(false);
+          if (fixture && !failed) expect(fixture.exitCode === 0 || fixture.signalCode === 'SIGKILL').toBe(true);
+        } finally { rmSync(directory, { recursive: true, force: true }); }
+      }
+    }, 60000);
   });
   describe('exact request-worker assignment', () => {
     const build = 'abcdef1234';
