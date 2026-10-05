@@ -895,7 +895,7 @@ describe('P011 independent cache retained-owner evidence', () => {
       cohorts: ['baseline', 'shared', 'shared', 'baseline'].map((mode, arm) => {
         const count = mode === 'baseline' ? 8 : 1, heap = cacheHeapFixture(count, false), pid = 7 + arm;
         heap.pid = heap.inspector.pid = heap.heapOwnerBinding.pid = heap.heapSnapshot.pid = heap.heapRetainers.pid = pid;
-        const digests = expected(heap), os = { ...heap.samples[0].processes[0], pid };
+        const digests: string[] = expected(heap), os = { ...heap.samples[0].processes[0], pid };
         return { arm, mode, pid, identity: { pid, startTicks: os.startTicks }, reaped: true, forcedCleanup: false,
           unreaped: [], pauses: 0, bundleSha256: 'b'.repeat(64), loadedHealth: { sha: '12345678' },
           samples: [1, 2].map(at => ({ at, pid, os: structuredClone(os), phase: at === 2 ? 'completion-idle' : 'before',
