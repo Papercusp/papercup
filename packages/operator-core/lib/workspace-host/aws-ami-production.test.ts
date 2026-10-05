@@ -14,6 +14,7 @@ import {
   type AwsAmiReleaseRequest,
 } from './aws-ami-release';
 import {
+  AWS_AMI_COMMAND_ERROR_DETAIL_CHARS,
   SdkAwsAmiReleaseAdapter,
   executeConfiguredAwsAmiRelease,
   probeAwsAmiCredential,
@@ -174,6 +175,33 @@ describe('SdkAwsAmiReleaseAdapter.scanImage', () => {
     // Positive control: with no override the scan child still gets the adapter's default, not nothing.
     await adapterWith([], runs).scanImage(scanInput as Parameters<SdkAwsAmiReleaseAdapter['scanImage']>[0]).catch(() => undefined);
     expect((runs[1] as { env: Record<string, string> }).env.PAPERCUSP_AWS_AMI_SCAN_COLDSNAP).toBe('coldsnap');
+  });
+});
+
+describe('SdkAwsAmiReleaseAdapter.launchCleanAccountCanary failure output', () => {
+  it('keeps the trailing bootstrap diagnostics of a long canary error payload (P-012 chain5)', async () => {
+    // The canary serializes { error, details } with bootstrapDiagnostics LAST; the old 2,000-char
+    // tail dropped the journal that explained why the service would not start.
+    const journal = 'journal: Error: EACCES: permission denied, open /var/lib/papercusp/state.db';
+    const payload = JSON.stringify({
+      tool: 'papercusp-aws-ami-clean-account-canary',
+      error: 'SSM bootstrap ended Failed',
+      details: { stdoutTail: 'x'.repeat(2_000), runId: 'r1', bootstrapDiagnostics: `${'status-line\n'.repeat(400)}${journal}` },
+    });
+    expect(payload.length).toBeGreaterThan(5_000);
+    const adapter = new SdkAwsAmiReleaseAdapter({
+      ec2: () => fakeSender({}, []),
+      ssm: () => fakeSender({}, []),
+      childCredentials: async () => ({}),
+      commands: { run: async () => ({ exitCode: 1, stdout: '', stderr: payload }) },
+    });
+    const error = await adapter
+      .launchCleanAccountCanary({ region: 'us-east-1' } as Parameters<SdkAwsAmiReleaseAdapter['launchCleanAccountCanary']>[0])
+      .catch((e: unknown) => e as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('clean-account canary exited 1');
+    expect((error as Error).message).toContain(journal);
+    expect(AWS_AMI_COMMAND_ERROR_DETAIL_CHARS).toBeGreaterThanOrEqual(24_000);
   });
 });
 

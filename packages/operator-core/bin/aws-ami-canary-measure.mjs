@@ -23,6 +23,8 @@ export const CANARY_FIXTURE_TAG = 'papercusp:ami-canary-fixture';
 export const CANARY_RUN_DIR = '/run/papercusp-ami-canary';
 /** base64 characters per SSM SendCommand upload; keeps each command well under SSM's size cap. */
 export const SSM_CHUNK_CHARS = 32_000;
+/** Bound on the service diagnostics read back after a failed bootstrap (GetCommandInvocation caps stdout at 24,000 chars). */
+export const DIAGNOSTICS_MAX_CHARS = 16_000;
 export const CANARY_BUDGETS = Object.freeze({
   runningMs: 10 * 60_000,
   ssmOnlineMs: 15 * 60_000,
@@ -175,7 +177,39 @@ export function ssmScriptPlan(fixture, chunkChars = SSM_CHUNK_CHARS) {
     ],
     readAttestation: [`grep '^${ATTESTATION_PREFIX}' ${CANARY_RUN_DIR}/out.log | tail -n 1`],
     serviceCheck: [`systemctl is-active ${fixture.serviceName}`],
+    // Read on a FAILED bootstrap, before teardown: the service status + journal section the
+    // bootstrap's service_diagnostics printed (falling back to the log tail when that section is
+    // absent), then the bootstrap's own ERROR lines. Never fails, so it cannot mask the real
+    // failure it exists to explain.
+    readDiagnostics: [
+      'set +e',
+      `f=${CANARY_RUN_DIR}/out.log`,
+      `d="$(awk '/--- systemctl status /{on=1} /--- native addon inventory /{on=0} on' "$f" 2>/dev/null)"`,
+      `if [ -n "$d" ]; then printf '%s\\n' "$d" | tail -c ${DIAGNOSTICS_MAX_CHARS}; else tail -c ${DIAGNOSTICS_MAX_CHARS} "$f"; fi`,
+      "echo '--- bootstrap ERROR lines ---'",
+      `grep -n 'ERROR' "$f" | tail -n 10`,
+      'exit 0',
+    ],
   };
+}
+
+/**
+ * Read the service's own failure output off the instance BEFORE teardown. The bootstrap run
+ * returns only a bounded tail of its log, and the systemctl status + journal that explain WHY
+ * the service would not start are printed EARLIER than that tail (the native-addon inventory and
+ * load probe come after them). Once the instance is terminated they are gone. Measured on P-012
+ * chain5 (2026-10-05): the clean-room report carried only the addon inventory and "workspace
+ * service failed to start", never the cause. Never throws: an unreadable diagnostic is reported
+ * as such and never replaces the bootstrap failure it accompanies.
+ */
+async function readBootstrapDiagnostics(deps, instanceId, commands, budgets) {
+  try {
+    const result = await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, 'bootstrap diagnostics');
+    const text = String(result.stdout ?? '').slice(-(DIAGNOSTICS_MAX_CHARS + 2_000));
+    return result.status === 'Success' ? text : `diagnostics read ended ${result.status}: ${text}`;
+  } catch (error) {
+    return `diagnostics unreadable: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 /** Decode the attestation marker; a missing or undecodable marker is a hard failure. */
@@ -272,6 +306,7 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     teardownErrors: [],
   };
   let failure = null;
+  let bootstrapDiagnostics = null;
   try {
     observed.instanceId = await deps.runInstance({
       imageId: input.imageId,
@@ -296,7 +331,11 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     for (const [index, commands] of plan.uploads.entries()) {
       requireSsmSuccess(await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, `upload ${index + 1}/${plan.uploads.length}`), 'script upload');
     }
-    requireSsmSuccess(await runSsm(deps, instanceId, plan.run, budgets.bootstrapMs, budgets.pollMs, 'bootstrap'), 'bootstrap');
+    const bootstrap = await runSsm(deps, instanceId, plan.run, budgets.bootstrapMs, budgets.pollMs, 'bootstrap');
+    if (bootstrap.status !== 'Success') {
+      bootstrapDiagnostics = await readBootstrapDiagnostics(deps, instanceId, plan.readDiagnostics, budgets);
+    }
+    requireSsmSuccess(bootstrap, 'bootstrap');
     const marker = requireSsmSuccess(await runSsm(deps, instanceId, plan.readAttestation, budgets.shortCommandMs, budgets.pollMs, 'attestation read'), 'attestation read');
     observed.attestation = extractAttestation(marker.stdout);
     const service = await runSsm(deps, instanceId, plan.serviceCheck, budgets.shortCommandMs, budgets.pollMs, 'service check');
@@ -331,6 +370,9 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
       terminated: observed.terminated,
       residualResourceIds: observed.residualResourceIds,
       teardownErrors: observed.teardownErrors,
+      // LAST on purpose: callers keep the TAIL of this serialized payload, so the cause of a
+      // failed service start must sit at the end to survive that cut.
+      ...(bootstrapDiagnostics !== null ? { bootstrapDiagnostics } : {}),
     };
     throw new ToolError(failure instanceof Error ? failure.message : String(failure), details);
   }

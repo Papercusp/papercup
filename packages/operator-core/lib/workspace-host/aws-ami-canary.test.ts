@@ -4,13 +4,19 @@
  * through injected fake cloud deps. The round trip through executeAwsAmiRelease's validator
  * lives in aws-ami-release.test.ts.
  */
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import {
   ATTESTATION_PREFIX,
+  CANARY_RUN_DIR,
   CANARY_RUN_TAG,
+  DIAGNOSTICS_MAX_CHARS,
   buildAwsAmiCanaryProof,
   canaryRoleArn,
   extractAttestation,
@@ -57,7 +63,11 @@ interface FakeOptions {
   terminateThrows?: boolean;
   leftover?: string[];
   censusThrows?: boolean;
+  bootstrapFails?: boolean;
+  diagnosticsThrows?: boolean;
 }
+
+const JOURNAL_CAUSE = 'journal: Error: EACCES: permission denied, open /var/lib/papercusp/state.db';
 
 function fakeDeps(options: FakeOptions = {}) {
   let clock = 0;
@@ -90,11 +100,21 @@ function fakeDeps(options: FakeOptions = {}) {
     },
     ssmPingStatus: async () => (options.ssmNeverOnline ? 'ConnectionLost' : 'Online'),
     sendCommand: async ({ commands }) => {
+      if (commands.join('\n').includes('--- bootstrap ERROR lines ---')) {
+        calls.push('diagnostics');
+        if (options.diagnosticsThrows) throw new Error('SendCommand throttled');
+      }
       sent.push([...commands]);
       return `cmd-${sent.length}`;
     },
     getInvocation: async ({ commandId }) => {
       const joined = sent[Number(commandId.slice(4)) - 1].join('\n');
+      if (joined.includes('--- bootstrap ERROR lines ---')) {
+        return { status: 'Success', stdout: `${JOURNAL_CAUSE}\n--- bootstrap ERROR lines ---\n9:ERROR: workspace service failed to start\n` };
+      }
+      if (options.bootstrapFails && joined.includes('bootstrap.sh > ')) {
+        return { status: 'Failed', stdout: 'ADDON LOADED OK\nPAPERCUSP_CANARY_BOOTSTRAP_EXIT=1\n', responseCode: 1 };
+      }
       if (joined.includes(`grep '^${ATTESTATION_PREFIX}'`)) {
         return {
           status: 'Success',
@@ -173,6 +193,45 @@ describe('ssmScriptPlan', () => {
     expect(plan.run.join('\n')).toContain(`${sha(big)}  /run/papercusp-ami-canary/bootstrap.sh' | sha256sum -c -`);
     expect(plan.serviceCheck).toEqual(['systemctl is-active svc.service']);
   });
+
+  it('readDiagnostics extracts the status + journal section, not the addon inventory, and falls back to the log tail', () => {
+    const fixture = { fixtureId: 'f', bootstrapScript: SCRIPT, bootstrapScriptSha256: sha(SCRIPT), serviceName: 'svc.service' };
+    const plan = ssmScriptPlan(fixture);
+    const dir = mkdtempSync(join(tmpdir(), 'aws-ami-canary-diag-'));
+    try {
+      const run = () =>
+        spawnSync('bash', ['-c', plan.readDiagnostics.join('\n').replaceAll(CANARY_RUN_DIR, dir)], { encoding: 'utf8' });
+      writeFileSync(
+        join(dir, 'out.log'),
+        [
+          '[workspace-host-bootstrap] phase:configure-service',
+          '[workspace-host-bootstrap] --- systemctl status svc.service ---',
+          'Active: failed (Result: exit-code)',
+          '[workspace-host-bootstrap] --- journalctl -u svc.service (service output) ---',
+          JOURNAL_CAUSE,
+          '[workspace-host-bootstrap] --- native addon inventory under /opt/papercusp/releases/x ---',
+          'inventory-noise rocksdb-native.node',
+          '[workspace-host-bootstrap] ERROR: workspace service failed to start',
+          '',
+        ].join('\n'),
+      );
+      const out = run();
+      expect(out.status).toBe(0);
+      expect(out.stdout).toContain('Active: failed (Result: exit-code)');
+      expect(out.stdout).toContain(JOURNAL_CAUSE);
+      expect(out.stdout).not.toContain('inventory-noise');
+      expect(out.stdout).toContain('ERROR: workspace service failed to start');
+
+      // No diagnostics section (the bootstrap died earlier): the raw tail is returned instead.
+      writeFileSync(join(dir, 'out.log'), 'phase:install-runtime\nmanifest fetch failed\n');
+      const fallback = run();
+      expect(fallback.status).toBe(0);
+      expect(fallback.stdout).toContain('manifest fetch failed');
+      expect(fallback.stdout.length).toBeLessThanOrEqual(DIAGNOSTICS_MAX_CHARS + 200);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('extractAttestation', () => {
@@ -235,6 +294,28 @@ describe('runAwsAmiCleanAccountCanary', () => {
   it('never reads an unmeasured census as zero residue', async () => {
     const observed = await runAwsAmiCleanAccountCanary(input, fakeDeps({ censusThrows: true }).deps);
     expect(observed.residualResourceIds).toEqual(['census-unmeasured:run0001']);
+  });
+
+  it('reads the service diagnostics off the instance BEFORE teardown when bootstrap fails, and carries them last', async () => {
+    const { deps, calls } = fakeDeps({ bootstrapFails: true });
+    const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & { details: Record<string, unknown> };
+    expect(error.message).toContain('SSM bootstrap ended Failed');
+    expect(calls.slice(-3)).toEqual(['diagnostics', 'terminate', 'census:run0001']);
+    expect(error.details.bootstrapDiagnostics).toContain(JOURNAL_CAUSE);
+    // Callers keep the TAIL of the serialized payload, so the cause must be the last key.
+    expect(Object.keys(error.details).at(-1)).toBe('bootstrapDiagnostics');
+  });
+
+  it('never lets an unreadable diagnostic mask the bootstrap failure, and reads none on success', async () => {
+    const { deps, calls } = fakeDeps({ bootstrapFails: true, diagnosticsThrows: true });
+    const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & { details: Record<string, unknown> };
+    expect(error.message).toContain('SSM bootstrap ended Failed');
+    expect(String(error.details.bootstrapDiagnostics)).toMatch(/^diagnostics unreadable: SendCommand throttled/);
+    expect(calls.slice(-2)).toEqual(['terminate', 'census:run0001']);
+
+    const healthy = fakeDeps();
+    await runAwsAmiCleanAccountCanary(input, healthy.deps);
+    expect(healthy.calls).not.toContain('diagnostics');
   });
 
   it('reports an unhealthy attestation and an inactive service as observed, not as success', async () => {

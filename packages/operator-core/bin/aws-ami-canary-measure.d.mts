@@ -6,6 +6,7 @@ export declare const CANARY_RUN_TAG: string;
 export declare const CANARY_FIXTURE_TAG: string;
 export declare const CANARY_RUN_DIR: string;
 export declare const SSM_CHUNK_CHARS: number;
+export declare const DIAGNOSTICS_MAX_CHARS: number;
 export interface AwsAmiCanaryBudgets {
   runningMs: number;
   ssmOnlineMs: number;
@@ -81,6 +82,7 @@ export interface AwsAmiCanaryPlan {
   run: string[];
   readAttestation: string[];
   serviceCheck: string[];
+  readDiagnostics: string[];
 }
 
 export declare function sha256Hex(value: string): string;
