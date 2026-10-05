@@ -5899,7 +5899,7 @@ async function armTestPassReuse(taskList) {
           label,
           summary,
           ` rows=${rows} narrowed=${Array.isArray(t.relatedFiles)} ` +
-            `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs}${laneNote}`,
+            `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs} auditRate=${auditRate}${laneNote}`,
         ),
       );
     }
