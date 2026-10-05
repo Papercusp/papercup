@@ -19,6 +19,8 @@ import {
   isIntakeAttentionKind,
   parseIntakeDecision,
   readIntakeDecision,
+  intakeReproductionRefusal,
+  intakeTargetKindFor,
 } from './bulk-dispositions';
 
 // observation-candidate-acceptance-promotion-2026-09-30 P-004 (R-3/R-18/R-19).
@@ -73,6 +75,7 @@ describe('intake dispositions', () => {
         workKind: null,
         acceptance: null,
         sourceRevision: null,
+        reproduction: null,
       },
     });
     const owned = parseIntakeDecision({ disposition: 'promote', reason: 'real', owner: 'owner' }, ctx);
@@ -150,6 +153,7 @@ describe('intake dispositions', () => {
       workKind: null,
       acceptance: null,
       sourceRevision: null,
+      reproduction: null,
     };
     expect(readIntakeDecision(stored)).toEqual(stored);
     expect(readIntakeDecision(JSON.stringify(stored))).toEqual(stored);
@@ -164,6 +168,101 @@ describe('intake dispositions', () => {
     expect(readIntakeDecision('{not json')).toBeNull();
     expect(readIntakeDecision({ ...stored, reason: '' })).toBeNull();
     expect(readIntakeDecision({ ...stored, disposition: 'ignore' })).toBeNull();
+  });
+});
+
+// observation-candidate-acceptance-promotion-2026-09-30 P-013 (D-023 / D-024).
+describe('bug reproduction gate on intake decisions', () => {
+  const ctx = { decidedBy: 'su-resolver', now: new Date('2026-10-05T22:00:00Z') };
+  const receipt = { kind: 'failing-test', ref: 'test_runs:42', buildSha: 'ABCDEF1234' };
+  const bugSource = { kind: 'bug', observation: false, bornVerified: null };
+  const decide = (input: Parameters<typeof parseIntakeDecision>[0]) => {
+    const parsed = parseIntakeDecision(input, ctx);
+    if (!parsed.ok) throw new Error(parsed.error);
+    return parsed.decision;
+  };
+
+  it('parses a promote receipt (sha lower-cased) and refuses a receipt on any other disposition or a malformed one', () => {
+    expect(decide({ disposition: 'promote', reason: 'reproduced', reproduction: receipt }).reproduction).toEqual({
+      kind: 'failing-test',
+      ref: 'test_runs:42',
+      buildSha: 'abcdef1234',
+    });
+    expect(
+      parseIntakeDecision({ disposition: 'investigate', reason: 'r', reproduction: receipt }, ctx),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('promote only') });
+    expect(
+      parseIntakeDecision({ disposition: 'promote', reason: 'r', reproduction: { ...receipt, buildSha: 'main' } }, ctx),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('buildSha') });
+    expect(
+      parseIntakeDecision({ disposition: 'promote', reason: 'r', reproduction: { ...receipt, kind: 'hunch' } }, ctx),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('reproduction.kind') });
+    expect(
+      parseIntakeDecision({ disposition: 'promote', reason: 'r', reproduction: { ...receipt, ref: '  ' } }, ctx),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('reproduction.ref') });
+  });
+
+  it('refuses a bug promote without a receipt and steers to investigate / reject / retain', () => {
+    const refusal = intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'looks real' }), bugSource, 'EI-1');
+    expect(refusal).toContain('EI-1 is a bug');
+    expect(refusal).toContain('investigate');
+    expect(refusal).toContain('reject');
+    // An observation promoted with no workKind defaults to a fix, so it is gated too.
+    expect(
+      intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'r' }), {
+        kind: 'improvement',
+        observation: true,
+        bornVerified: null,
+      }),
+    ).not.toBeNull();
+    // workKind: 'fix' turns a change candidate into a bug promote.
+    expect(
+      intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'r', workKind: 'fix' }), {
+        kind: 'change',
+        observation: false,
+        bornVerified: null,
+      }),
+    ).not.toBeNull();
+  });
+
+  it('accepts a bug promote with a review receipt or a born-verified source (D-024)', () => {
+    expect(
+      intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'r', reproduction: receipt }), bugSource),
+    ).toBeNull();
+    expect(
+      intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'r' }), {
+        ...bugSource,
+        bornVerified: { kind: 'encounter', ref: 'tool_invocations:7', buildSha: 'abcdef1' },
+      }),
+    ).toBeNull();
+  });
+
+  it('leaves change/task promotes and every non-promote disposition ungated (D-023 §6)', () => {
+    const changeSource = { kind: 'change', observation: false, bornVerified: null };
+    expect(intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'r' }), changeSource)).toBeNull();
+    expect(
+      intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'r', workKind: 'build' }), bugSource),
+    ).toBeNull();
+    expect(
+      intakeReproductionRefusal(decide({ disposition: 'promote', reason: 'r' }), {
+        kind: 'task',
+        observation: false,
+        bornVerified: null,
+      }),
+    ).toBeNull();
+    for (const disposition of ['investigate', 'retain', 'reject'] as const) {
+      expect(intakeReproductionRefusal(decide({ disposition, reason: 'r' }), bugSource)).toBeNull();
+    }
+    expect(intakeTargetKindFor({ disposition: 'investigate', workKind: null }, bugSource)).toBe('task');
+  });
+
+  it('round-trips a stored receipt and drops it from a non-promote or malformed record', () => {
+    const stored = decide({ disposition: 'promote', reason: 'r', reproduction: receipt });
+    expect(readIntakeDecision(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+    expect(readIntakeDecision({ ...stored, reproduction: { ...receipt, buildSha: 'zz' } })?.reproduction).toBeNull();
+    expect(
+      readIntakeDecision({ ...stored, disposition: 'reject', reproduction: stored.reproduction })?.reproduction,
+    ).toBeNull();
   });
 });
 
