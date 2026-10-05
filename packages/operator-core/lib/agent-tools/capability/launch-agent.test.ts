@@ -1513,6 +1513,11 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it.each([false, true])('pins each fork reservation to its bootstrap identity (headless=%s)', async (headless) => {
     resolveResumeTargetMock.mockResolvedValue(dead);
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: null, settings: null, effective: {}, refusal: null, budget: null, goalBrief: null,
+      ceilings: { maxAgents: 6, maxPerFleet: 3 }, headcount: { total: 5, fleet: null },
+      degraded: false, degradedReasons: [],
+    });
     const result = await launchAgent.handler({
       resume: { agentId: dead.ownerId }, fork: true, headless,
       brief: 'branch the recovery', count: 2,
@@ -1536,6 +1541,11 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it('excludes only the retained owner from the batch preflight for an in-place resume', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: null, settings: null, effective: {}, refusal: null, budget: null, goalBrief: null,
+      ceilings: { maxAgents: 6, maxPerFleet: 3 }, headcount: { total: 5, fleet: null },
+      degraded: false, degradedReasons: [],
+    });
     await launchAgent.handler({ resume: { agentId: dead.ownerId }, brief: 'resume at the ceiling' }, ctx);
     expect(goalLaunchResolveMock).toHaveBeenCalledWith(expect.objectContaining({
       count: 1, excludeOwnerIds: [dead.ownerId],
@@ -1557,7 +1567,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(dataOf(result)?.launch).toMatchObject({ opened: 1, failed: 1, partial: true });
     expect(textOf(result)).toContain('goal seat already reserved');
     expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
-    expect(recordAgentLaunchSummaryMock).toHaveBeenCalled();
+    expect(recordAgentLaunchResultMock).toHaveBeenCalled();
   });
 
   it('starts an identity-preserving fresh successor for an ended critical source', async () => {
