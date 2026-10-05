@@ -1461,15 +1461,77 @@ describe('buildWorkspaceHostBootstrap', () => {
     const switchAt = lines.indexOf('mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"');
     const reloadAt = lines.indexOf('systemctl daemon-reload');
     const enableAt = lines.indexOf('systemctl enable "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to enable"; }');
-    const restartAt = lines.indexOf('  systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }');
+    const restartAt = lines.indexOf('  if systemctl restart "$SERVICE_NAME.service"; then');
 
     // Calibration: no missing command may pass the ordering assertions through a -1 index.
     expect(switchAt).toBeGreaterThanOrEqual(0);
     expect(reloadAt).toBeGreaterThan(switchAt);
     expect(enableAt).toBeGreaterThan(reloadAt);
     expect(restartAt).toBeGreaterThan(enableAt);
-    expect(lines[restartAt - 1]).toBe('if service_restart_needed; then');
+    // WI-10006110: the restart runs under the in-flight start sampler, and a failed start
+    // carries both the post-mortem and the in-flight diagnostics before dying.
+    expect(lines.slice(restartAt - 3, restartAt)).toEqual([
+      'if service_restart_needed; then',
+      '  start_sampler',
+      '  SERVICE_START_T0=$SECONDS',
+    ]);
+    const elseAt = lines.indexOf('  else', restartAt);
+    expect(lines.slice(elseAt + 1, elseAt + 5)).toEqual([
+      '    stop_sampler',
+      '    service_diagnostics',
+      '    start_diagnostics',
+      '    die "workspace service failed to start"',
+    ]);
     expect(repair).not.toContain('systemctl enable --now "$SERVICE_NAME.service"');
+  });
+
+  /**
+   * WI-10006110: every AWS bootc clean room died at systemd's DEFAULT 90s start timeout
+   * ("start-post operation timed out") with nothing to say what the server was waiting on,
+   * because service_diagnostics only runs after systemd has killed it. The unit must
+   * declare its own start budget, and the start must be sampled while it is in flight.
+   */
+  it('declares a start budget and samples the service start in flight (WI-10006110)', () => {
+    const script = buildWorkspaceHostBootstrap(input({ action: 'upgrade' }));
+    const lines = script.split('\n');
+    const unitAt = lines.indexOf('cat > "/etc/systemd/system/$SERVICE_NAME.service" <<PAPERCUSP_SERVICE');
+    const unitEnd = lines.indexOf('PAPERCUSP_SERVICE', unitAt + 1);
+    const budgetAt = lines.indexOf('SERVICE_START_TIMEOUT_SEC=600');
+    expect(unitAt).toBeGreaterThanOrEqual(0);
+    expect(budgetAt).toBeGreaterThanOrEqual(0);
+    expect(budgetAt).toBeLessThan(unitAt);
+    expect(lines.slice(unitAt, unitEnd)).toContain('TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC');
+
+    const from = lines.indexOf('START_SAMPLE_LOG=""');
+    const to = lines.indexOf('if service_restart_needed; then');
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(to).toBeGreaterThan(from);
+    const stateRoot = mkdtempSync(join(tmpdir(), 'wh-start-diag-'));
+    try {
+      writeFileSync(join(stateRoot, 'server.log'), 'embedded-pg: waiting for postmaster\n');
+      const harness = [
+        'set -euo pipefail',
+        `STATE_ROOT=${JSON.stringify(stateRoot)}`,
+        ...lines.slice(from, to),
+        'start_sampler',
+        'sleep 1',
+        'stop_sampler',
+        'start_diagnostics',
+      ].join('\n');
+      const started = Date.now();
+      const run = spawnSync('bash', ['-c', harness], { encoding: 'utf8', timeout: 20_000 });
+      expect(run.status).toBe(0);
+      // The stopped sampler must not hold the caller's output pipe open (its sleep is 10s).
+      expect(Date.now() - started).toBeLessThan(8_000);
+      expect(run.stderr).toContain('--- start samples: first, then last');
+      expect(run.stderr).toMatch(/=== start sample t\+\d+s/);
+      expect(run.stderr).toContain('cpustat cpu');
+      expect(run.stderr).toContain(`## ${join(stateRoot, 'server.log')}`);
+      expect(run.stderr).toContain('embedded-pg: waiting for postmaster');
+      expect(run.stderr).toContain('--- SELinux denials this boot ---');
+    } finally {
+      rmSync(stateRoot, { recursive: true, force: true });
+    }
   });
 
   /**

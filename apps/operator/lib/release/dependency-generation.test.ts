@@ -3296,6 +3296,48 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     ...extra,
   });
 
+  it('acquires a lock released while the progress sample becomes unmeasurable', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'released-during-sample.lock');
+    const release = join(root, 'release-holder');
+    const held = await holdLock(
+      lock,
+      release,
+      'while [ ! -e "$WORK" ]; do sleep 0.02; done',
+    );
+    try {
+      // The first sample starts the stall clock. The second explicitly releases
+      // the holder and waits for the real lock to become free before returning
+      // no measurement, as /proc does when the sampled holder has exited.
+      const result = runShell(
+        [
+          'dependency_generation_subtree_io() {',
+          '  if [ ! -e "$FIRST_SAMPLE" ]; then',
+          '    touch "$FIRST_SAMPLE"',
+          '    sleep 1.1',
+          "    printf '0\\n'",
+          '  else',
+          '    touch "$WORK"',
+          '    while ! flock -n "$DEPENDENCY_GENERATION_COPY_LOCK_FILE" true; do sleep 0.02; done',
+          '  fi',
+          '}',
+          'dependency_generation_acquire_copy_lock waiter && echo ACQUIRED',
+        ].join('\n'),
+        waitEnv(lock, {
+          WORK: release,
+          FIRST_SAMPLE: join(root, 'first-sample'),
+          DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+        }),
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('ACQUIRED');
+      expect(result.stderr).not.toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('keeps waiting past the stall budget while the holder is making progress', async () => {
     const { root } = copyFixture();
     const lock = join(root, 'progress.lock');

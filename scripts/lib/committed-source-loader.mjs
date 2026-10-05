@@ -36,6 +36,7 @@ import { appendFileSync, existsSync } from 'node:fs';
 import Module, { register } from 'node:module';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { threadId } from 'node:worker_threads';
 
 /** When set to a file path, one JSON line per judged module is appended there (tests, debugging). */
 export const COMMITTED_SOURCE_AUDIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_AUDIT';
@@ -149,13 +150,33 @@ function toBuffer(source) {
   return Buffer.from(source.buffer, source.byteOffset, source.byteLength);
 }
 
+/** Observe this hook's return boundary only. A later hook (for example tsx)
+ * can transform these bytes; this is not the final executed runtime identity.
+ * Hash the actual supplied/returned buffers, never disk or a later HEAD read. */
+function auditLoad(file, result, verdict, input, returned) {
+  // The channel is optional; do not hash an entire module graph when disabled.
+  if (!process.env[COMMITTED_SOURCE_AUDIT_ENV]) return;
+  audit({
+    via: 'esm', kind: verdict.kind, file, rel: verdict.rel ?? null,
+    schemaVersion: 'committed-source-load-receipt-v1', boundary: 'node-esm-load-return',
+    pid: process.pid, threadId, format: result.format ?? null,
+    inputSha256: createHash('sha256').update(input).digest('hex'),
+    returnedSha256: returned === null ? null : createHash('sha256').update(returned).digest('hex'),
+    returnedByteLength: returned === null ? null : returned.length,
+    unresolved: ['later-loader-transforms-unmeasured', 'loader-self-unmeasured'],
+  });
+}
+
 /** ES `load` hook (hooks thread). */
 export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context);
   if (!url.startsWith('file:') || result.source == null) return result;
   const file = fileURLToPath(url);
-  const verdict = judgeModuleBytes(file, toBuffer(result.source));
-  audit({ via: 'esm', kind: verdict.kind, file, rel: verdict.rel ?? null });
+  const input = toBuffer(result.source);
+  const verdict = judgeModuleBytes(file, input);
+  const returned = verdict.kind === 'uncommitted' ? null :
+    verdict.kind === 'substituted' ? verdict.head : input;
+  auditLoad(file, result, verdict, input, returned);
   if (verdict.kind === 'uncommitted') {
     throw new Error(
       `${COMMITTED_SOURCE_MARKER} refused ${verdict.rel}: it has no committed version and git does not ignore it, so it may be a held restricted write (checkout ${verdict.top})`,

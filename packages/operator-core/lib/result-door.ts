@@ -1552,6 +1552,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
       ...(opts.toolName === 'coord:send' ? COORD_SEND_DELIVERY_PRESERVE_PATHS : []),
+      ...(opts.toolName === 'work_items:links'
+        ? [
+            'coverage.selectedCount',
+            'coverage.checkedCount',
+            'coverage.complete',
+            'coverage.linkedCount',
+          ]
+        : []),
       // work_items:complete writes these fields before its bulky echoes, and its
       // tier shaper deliberately spreads them through unchanged. The generic
       // result-door is a later, independent projection seam, though: without an

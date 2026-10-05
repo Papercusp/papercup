@@ -6481,6 +6481,14 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const completionRef = '#/$defs/work-items-completion-record-v1';
 
       expect(json.$defs).toHaveProperty('work-items-completion-record-v1');
+      expect(json.$defs).toHaveProperty('work-items-completion-coverage-v1');
+      expect(json.$defs!['work-items-completion-coverage-v1']).toHaveProperty('x-papercusp-call-constraint');
+      const record = json.$defs!['work-items-completion-record-v1'] as {
+        properties: { coverage: { $ref: string }; verification: { properties: { coverage: { $ref: string } } } };
+      };
+      const coverageRef = '#/$defs/work-items-completion-coverage-v1';
+      expect(record.properties.coverage.$ref).toBe(coverageRef);
+      expect(record.properties.verification.properties.coverage.$ref).toBe(coverageRef);
       expect(branches).toHaveLength(2);
       for (const branch of branches) expect(branch.properties?.completion?.$ref).toBe(completionRef);
       const bulkBranch = branches.find(

@@ -138,6 +138,28 @@ describe('work_items:links handler', () => {
     expect(b.results[1].links).toHaveLength(2);
   });
 
+  it('omits empty successes and reports exact checked-set coverage for a 100-id selection', async () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `EI-${50_000 + i}`);
+    const linkedIds = ids.filter((_, i) => i % 10 === 0);
+    getM.mockImplementation(async (id: string) => ({ family: 'issue', harness: 'papercusp', id }) as never);
+    refM.mockImplementation((item) => ({ kind: 'issue', ref: item.id }) as never);
+    issueOutM.mockImplementation(async (ref: { ref: string }) =>
+      Number(ref.ref.split('-').at(-1)) % 10 === 0 ? [row({ dst: { kind: 'issue', ref: `${ref.ref}-linked` } })] as never : [],
+    );
+
+    const b = await run({ id: undefined, ids, limit: 100 });
+
+    expect(b.counts).toEqual({ ok: 100, failed: 0 });
+    expect(b.results.map((result: { id: string }) => result.id)).toEqual(linkedIds);
+    expect(b.coverage).toEqual({
+      selectedCount: 100,
+      checkedCount: 100,
+      complete: true,
+      linkedCount: linkedIds.length,
+    });
+    expect(getM).toHaveBeenCalledTimes(100);
+  });
+
   it('defaults and caps the per-item limit, and rejects an empty id selection', () => {
     expect(tool.args.parse({ id: 'EI-1' })).toMatchObject({ direction: 'out', limit: 20 });
     expect(() => tool.args.parse({ id: 'EI-1', limit: 101 })).toThrow();

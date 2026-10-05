@@ -34240,7 +34240,7 @@
           "POST"
         ]
       },
-      "description": "Read typed links for one OR many work-items. `direction:\"out\"` returns what each item points to; `direction:\"in\"` returns what points to each item. Pass `id` or `ids`, with a shared per-item `limit` (default 20, max 100). Topic-tag edges are omitted. Successful items with no links are omitted from `results`; `coverage` reports selected/checked/link-bearing counts, whether every selection was checked, and the IDs with links in groups of up to 12. Failures stay in `results`.",
+      "description": "Read typed links for one OR many work-items. `direction:\"out\"` returns what each item points to; `direction:\"in\"` returns what points to each item. Pass `id` or `ids`, with a shared per-item `limit` (default 20, max 100). Topic-tag edges are omitted. Successful items with no links are omitted from `results`; `coverage` reports selected, checked, and link-bearing counts, plus whether every selected item was checked. Failures stay in `results`.",
       "capabilities": [
         "work_items:read"
       ],

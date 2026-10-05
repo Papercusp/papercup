@@ -243,7 +243,7 @@ export function buildAmendmentReviewBrief(
       ? `Requested patch excerpt: all changed criteria and other patch fields are complete; ${shownPatch.omittedCriteria} unchanged criteria omitted. Read the full current criteria with rubrics:get and compare the changed BARs before judging. This excerpt is not a complete replacement patch and must not be submitted to rubrics:amend.`
       : answerOn
         ? 'Requested patch. Read the current criteria with rubrics:get and judge what the patch changes; the apply guard itself checks the approval JSON below against the live delta:'
-        : 'Requested patch. Reproduce the preview with rubrics:amend { rubricRef, dryRun:true, ...patch } and read the criteria with rubrics:get before judging:',
+        : 'Requested patch. Read the current criteria with rubrics:get and compare them with the supplied patch and approval JSON above. Do not call rubrics:amend or pass reviewPreviewPost; this review is already open and the apply guard rechecks the live delta before judging:',
     '```json',
     shownPatch.patch,
     '```',

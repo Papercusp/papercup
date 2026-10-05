@@ -13,6 +13,7 @@
  * imports the loader: importing it registers process-wide hooks. It only spawns node with it.
  */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -29,7 +30,11 @@ import {
 const REPO = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const AUDIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_AUDIT';
 
-type AuditRecord = { via: 'esm' | 'cjs'; kind: string; file: string; rel: string | null };
+type AuditRecord = { via: 'esm' | 'cjs'; kind: string; file: string; rel: string | null;
+  schemaVersion?: string; boundary?: string; pid?: number; threadId?: number; format?: string;
+  inputSha256?: string; returnedSha256?: string | null; returnedByteLength?: number | null;
+  unresolved?: string[] };
+const sha256 = (source: string): string => createHash('sha256').update(source).digest('hex');
 
 /** process.env without git's repository-selecting variables, so `git -C <dir>` means that dir. */
 function cleanEnv(): NodeJS.ProcessEnv {
@@ -155,6 +160,57 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(loaded.status).toBe(0);
     expect(loaded.stdout).toContain('V=HEAD');
     expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted ts/mod.ts');
+  }, 60_000);
+
+  it('records the exact returned committed bytes separately from its dirty input', () => {
+    const audit = join(scratch, 'returned.audit');
+    expect(underLoader('entry.mjs', audit).status).toBe(0);
+    const records = readAudit(audit);
+    const dirty = records.find((record) => record.rel === 'mod.mjs');
+    const entry = records.find((record) => record.rel === 'entry.mjs');
+    expect(dirty).toMatchObject({
+      schemaVersion: 'committed-source-load-receipt-v1', boundary: 'node-esm-load-return',
+      kind: 'substituted', format: 'module',
+      inputSha256: sha256("export const v = 'DIRTY';\n"),
+      returnedSha256: sha256("export const v = 'HEAD';\n"),
+      returnedByteLength: Buffer.byteLength("export const v = 'HEAD';\n"),
+      unresolved: ['later-loader-transforms-unmeasured', 'loader-self-unmeasured'],
+    });
+    expect(dirty?.pid).toBeGreaterThan(0);
+    expect(dirty?.threadId).toBeGreaterThan(0);
+    expect(entry?.returnedSha256).toBe(sha256(readFileSync(join(fixture, 'entry.mjs'), 'utf8')));
+    expect(entry?.inputSha256).toBe(entry?.returnedSha256);
+  }, 60_000);
+
+  it('records refused input without claiming any returned bytes', () => {
+    const audit = join(scratch, 'refused.audit');
+    expect(underLoader('new-entry.mjs', audit).status).not.toBe(0);
+    expect(readAudit(audit).find((record) => record.rel === 'new.mjs')).toMatchObject({
+      kind: 'uncommitted', inputSha256: sha256("console.log('NEW-RAN');\n"),
+      returnedSha256: null, returnedByteLength: null,
+    });
+  }, 60_000);
+
+  it('does not label its returned bytes as the final execution after another loader transforms them', () => {
+    const audit = join(scratch, 'transformed.audit');
+    const transformer = join(scratch, 'transformer.mjs');
+    const original = "export const v = 'HEAD';\n";
+    const transformed = "export const v = 'TRANSFORMED';\n";
+    writeFileSync(transformer, [
+      "import { register } from 'node:module';",
+      "if (!new URL(import.meta.url).searchParams.has('hook')) register(import.meta.url + '?hook');",
+      'export async function load(url, context, nextLoad) {',
+      '  const result = await nextLoad(url, context);',
+      `  return url.endsWith('/mod.mjs') ? { ...result, source: ${JSON.stringify(transformed)} } : result;`,
+      '}',
+    ].join('\n'));
+    const result = run(['--import', COMMITTED_SOURCE_LOADER, '--import', transformer, 'entry.mjs'], cleanEnv(), audit);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('V=TRANSFORMED');
+    const receipt = readAudit(audit).find((record) => record.rel === 'mod.mjs');
+    expect(receipt).toMatchObject({ boundary: 'node-esm-load-return', returnedSha256: sha256(original) });
+    expect(receipt?.returnedSha256).not.toBe(sha256(transformed));
+    expect(receipt?.unresolved).toContain('later-loader-transforms-unmeasured');
   }, 60_000);
 
   it('refuses a module with no committed version that git does not ignore, before any code runs', () => {

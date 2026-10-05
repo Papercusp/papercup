@@ -3,7 +3,7 @@
  * durable job, wait for fast completion, and yield that same job at the bounded
  * response window without killing or relaunching it.
  */
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -206,16 +206,21 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
 
   it('treats caller abort as cancellation of that same whole process tree', async () => {
     const orphanMarker = join(STATE, `abort-orphan-${crypto.randomUUID()}.txt`);
+    const releaseMarker = join(STATE, `abort-release-${crypto.randomUUID()}.txt`);
+    const emitted: string[] = [];
     const controller = new AbortController();
     const resultPromise = bash.handler(
       {
-        command: `(sleep 0.8; printf orphan > ${JSON.stringify(orphanMarker)}) & wait`,
+        command: `(printf 'CHILD-READY\\n'; while test ! -e ${JSON.stringify(releaseMarker)}; do sleep 0.02; done; printf orphan > ${JSON.stringify(orphanMarker)}) & wait`,
         timeout: 5_000,
-        yield_after_ms: 2_000,
+        yield_after_ms: 10_000,
       },
-      makeCtx({ signal: controller.signal, codeMode: true }),
+      makeCtx({ signal: controller.signal, codeMode: true, emitted }),
     );
-    setTimeout(() => controller.abort(), 100);
+    // Abort only after observing the child. A fixed 100ms timer can fire after
+    // its old 800ms payload already finished during synchronous job setup.
+    await vi.waitFor(() => expect(emitted.join('')).toContain('CHILD-READY'), { timeout: 5_000 });
+    controller.abort();
 
     const result = await resultPromise;
     const seen = unwrapToolResult(result as never) as Record<string, unknown>;
@@ -224,7 +229,9 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
     expect(typeof seen.bash_id).toBe('string');
     expect(getJob(String(seen.bash_id))?.status).toBe('killed');
 
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Release any survivor: a detached child would now write the orphan marker.
+    writeFileSync(releaseMarker, 'release');
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(existsSync(orphanMarker)).toBe(false);
   });
 });

@@ -1861,6 +1861,12 @@ dependency_generation_acquire_copy_lock() {
       if [ -n "$last_io" ]; then reason=stalled; else reason=unmeasurable; fi
     fi
     if [ -n "$reason" ]; then
+      # Sampling can span the holder's exit. Recheck the lock before rejecting
+      # an unmeasurable/stalled sample or an elapsed cap: a free lock is ready
+      # to acquire even when the last measurement describes its former holder.
+      if flock -n "$fd"; then
+        break
+      fi
       dependency_generation_log "DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=${waited}s idle=${idle}s timeout=${timeout_sec}s max=${max_sec}s reason=$reason holder=${holder:-unknown} op=$op lock=$lock"
       exec {fd}>&-
       return 76

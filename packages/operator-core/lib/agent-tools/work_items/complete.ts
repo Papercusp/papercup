@@ -304,7 +304,16 @@ function defaultCompletionStatus(value: unknown): unknown {
   return record.status === undefined ? { ...record, status: 'done', __statusDefaulted: true } : value;
 }
 
+// Coverage is accepted through two aliases. Register their identical field once
+// and reuse the optional wrapper, as with specAdequacyCompletionField below.
+// Two separate metadata-bearing object clones would collide during strictArgs.
+const completionCoverageField = CompletionRecordSchema.shape.coverage.meta({
+  ...CompletionRecordSchema.shape.coverage.meta(),
+  id: 'work-items-completion-coverage-v1',
+});
+
 const completionInputSchema = CompletionRecordSchema.extend({
+  coverage: completionCoverageField,
   workItem: z.string().min(1).optional(),
   // The preprocess below owns the default so Zod 4 does not publish this
   // defaulted field as required to completion callers.
@@ -319,6 +328,7 @@ const completionInputSchema = CompletionRecordSchema.extend({
     treeStamp: true,
     settlementManifest: true,
   })
+    .extend({ coverage: completionCoverageField })
     .describe(
       'Server-stamped verification metadata: the server records `treeStamp` and `settlementManifest`; ' +
         'callers must omit `treeStamp` and `settlementManifest`. Their persisted headSha is a full ' +
@@ -360,9 +370,7 @@ const completionSpec = z
     completionInputSchema,
   )
   .describe(
-    // EI-23379068490085254: this string is serialized TWICE (the single `completion`
-    // shorthand and every `items[].completion`), so each byte here is paid twice on
-    // every tools/list. It therefore carries ONLY rules the structure cannot express.
+    // EI-23379068490085254: keep only rules the structure cannot express.
     // Deliberately NOT restated: the field/type enumeration (published in this schema's
     // own `properties` — and the hand-copy that stood here had already drifted 9 fields
     // behind), `verifiedHow`'s label list and the residue rule (each field's own
@@ -390,7 +398,7 @@ const completionSpec = z
       // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
-      // EI-39573: publish the same repair shape that the schema-level string refusal returns.
+      // EI-39573: publish the repair shape used by the schema-level refusal.
       `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
       'Bug/capability-gap terminal closes also require `rootCauseVerification` (its own schema lists the keys).',
   )

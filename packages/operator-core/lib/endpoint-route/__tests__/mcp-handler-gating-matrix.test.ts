@@ -985,6 +985,17 @@ async function callTool(
   )) as CallResult;
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+
+function projectionRefusalText(result: CallResult): string {
+  const door = result._meta?.resultDoor as { reason?: string; spillPath?: string } | undefined;
+  if (!door) return textOf(result);
+  expect(door.reason).toBe('under-budget-partial-result');
+  const envelope = JSON.parse(textOf(result));
+  expect(envelope).toMatchObject({ schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete' });
+  const reference = parseScratchReference(readFileSync(door.spillPath!));
+  expect(reference).not.toBeNull();
+  return reference!.payload.toString('utf8');
+}
 /** Read one JSON payload block without concatenating separate advisory text blocks. */
 function jsonOf(r: CallResult): unknown {
   for (const item of r.content) {
@@ -1989,12 +2000,12 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
       applied: true,
       notes: expect.arrayContaining([expect.stringContaining('WITHHELD')]),
     });
-    expect(textOf(res)).toContain('projection_refused');
+    const refused = projectionRefusalText(res);
+    expect(refused).toContain('projection_refused');
     // 61 root keys: the list is bounded (40) and says how many it elided.
-    expect(textOf(res)).toContain('noise0 (string)');
-    expect(textOf(res)).toContain('… +21 more');
-    expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
-    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(refused).toContain('noise0 (string)');
+    expect(refused).toContain('… +21 more');
+    expect(refused).not.toContain(DOOR_TEST_BIG_TEXT);
   });
 });
 
@@ -2162,10 +2173,11 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
       applied: true,
       notes: expect.arrayContaining([expect.stringContaining('pick matched NOTHING')]),
     });
-    // EI-23774219620725180: the miss is REFUSED with a bounded key list, so the
-    // door has no oversized body left to truncate — and must not be mislabeled.
-    expect(textOf(res)).toContain('projection_refused');
-    expect(res._meta?.resultDoor).toBeUndefined();
+    // The partial result may use a reference envelope; its payload must remain
+    // the bounded refusal, and must never become the promoted full source.
+    const refused = projectionRefusalText(res);
+    expect(refused).toContain('projection_refused');
+    expect(refused).not.toContain(FULL_SOURCE_CHECKPOINT_TAIL);
     expect(res._meta?.resultDoor).not.toMatchObject({ reason: 'explicit-full-request-overflow' });
   });
 });

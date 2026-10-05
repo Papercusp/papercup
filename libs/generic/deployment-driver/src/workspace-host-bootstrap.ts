@@ -3247,7 +3247,9 @@ export function buildWorkspaceHostBootstrap(
     '  echo "[workspace-host-bootstrap] --- recent logs under $STATE_ROOT ---" >&2',
     '  find "$STATE_ROOT" -xdev -type f \\( -name "*.log" -o -name "logfile" -o -name "postmaster.log" \\) -mmin -20 2>/dev/null | head -n 6 | while read -r f; do echo "## $f" >&2; tail -n 15 "$f" 2>&1 | cut -c1-240 >&2; done || true',
     '  echo "[workspace-host-bootstrap] --- SELinux denials this boot ---" >&2',
-    '  journalctl -b --no-pager -o cat 2>/dev/null | grep -F "avc:" | grep -F denied | tail -n 10 >&2 || echo "(none)" >&2',
+    // Kernel ring + audit log only: AVC denials land in one of the two (auditd present or
+    // not), and a whole-boot `journalctl -b` scan measured 10.7s on a busy host.
+    '  { journalctl -b -k --no-pager -o cat 2>/dev/null; cat /var/log/audit/audit.log 2>/dev/null; } | grep -F "avc:" | grep -F denied | tail -n 10 >&2 || echo "(none)" >&2',
     '}',
     'if service_restart_needed; then',
     '  start_sampler',

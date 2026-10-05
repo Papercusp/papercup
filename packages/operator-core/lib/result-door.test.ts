@@ -228,6 +228,56 @@ describe('applyResultDoor', () => {
     expect(projected.tally).toEqual({ ok: 16, failed: 1 });
   });
 
+  it('EI-22468133965181704: work_items:links keeps the full selected-set receipt when result rows are bounded', () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `EI-${String(i + 1).padStart(18, '0')}`);
+    const results = ids.map((id) => ({
+      ok: true,
+      id,
+      direction: 'out',
+      links: [{ rel: 'relates', dst: { kind: 'issue', ref: `${id}-linked-target` } }],
+    }));
+    const source = {
+      ok: true,
+      results,
+      counts: { ok: 100, failed: 0 },
+      coverage: {
+        selectedCount: 100,
+        checkedCount: 100,
+        complete: true,
+        linkedCount: 100,
+      },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(source) }] },
+      { toolName: 'work_items:links', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as unknown as {
+      results: Array<Record<string, unknown>>;
+      coverage: {
+        selectedCount: number;
+        checkedCount: number;
+        complete: boolean;
+        linkedCount: number;
+      };
+    };
+    const visibleRows = body.results.filter((row) => row._truncated !== true);
+
+    expect(body.coverage).toEqual({
+      selectedCount: 100,
+      checkedCount: 100,
+      complete: true,
+      linkedCount: 100,
+    });
+    expect(visibleRows.length).toBeLessThan(body.coverage.linkedCount);
+    expect(body.results.at(-1)).toMatchObject({
+      kind: 'projection-truncation',
+      _truncated: true,
+      renderedCount: 100,
+    });
+  });
+
   it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
     const noise = (prefix: string) => Object.fromEntries(
       Array.from({ length: 128 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),
