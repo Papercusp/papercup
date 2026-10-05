@@ -1552,6 +1552,23 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
       ...(opts.toolName === 'coord:send' ? COORD_SEND_DELIVERY_PRESERVE_PATHS : []),
+      // Exact events:status snapshots carry the only in-band identity for the
+      // requested key. Preserving the event_inspection root alone kept that
+      // snapshot from disappearing, but an oversized history could still be
+      // cut with only an aggregate omittedCount. Keep the identity/watermark
+      // first, then name history arrays in omittedPreserved while the scratch
+      // cursor remains the route to their complete contents.
+      ...(opts.toolName === 'events:status'
+        ? [
+            'event_inspection.event',
+            'event_inspection.current_generation',
+            'event_inspection.current_state',
+            'event_inspection.resync',
+            'event_inspection.declarations',
+            'event_inspection.waiters',
+            'event_inspection.wake_outcomes',
+          ]
+        : []),
       ...(opts.toolName === 'work_items:links'
         ? [
             'coverage.selectedCount',

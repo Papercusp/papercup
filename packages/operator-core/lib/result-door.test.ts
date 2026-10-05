@@ -887,7 +887,11 @@ describe('applyResultDoor', () => {
     });
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
-    expect(JSON.stringify(body._projection)).toContain('waiters');
+    const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
+    const omittedPreserved = (body._projection as { omittedPreserved?: string[] }).omittedPreserved ?? [];
+    expect(
+      omittedPreserved.some((path) => path.includes('event_inspection.waiters')) || /omitted:/.test(visibleWaiters),
+    ).toBe(true);
 
     // The visible summary keeps the requested key/state so ok:true cannot read as
     // absence; the named cursor still recovers every row that the bounded body cut.
@@ -957,7 +961,11 @@ describe('applyResultDoor', () => {
     });
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
-    expect(JSON.stringify(body._projection)).toContain('waiters');
+    const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
+    const omittedPreserved = (body._projection as { omittedPreserved?: string[] }).omittedPreserved ?? [];
+    expect(
+      omittedPreserved.some((path) => path.includes('event_inspection.waiters')) || /omitted:/.test(visibleWaiters),
+    ).toBe(true);
 
     const spill = JSON.parse(readSpill('ws-2', 'events:status', RUN_ID)) as {
       event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };
