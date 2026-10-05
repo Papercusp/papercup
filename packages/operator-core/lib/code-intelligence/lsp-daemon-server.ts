@@ -7,7 +7,7 @@ import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sideca
 import { resolveLspDaemonSocketPath, reapOrphanedLspDaemonSockets } from './lsp-daemon-socket.ts';
 import { resolveLspDaemonDispatchContext, type LspDaemonRequest, type LspDaemonApplyRequest } from './lsp-daemon-protocol.ts';
 import { lspAdmissionController, runLspAdmission } from './lsp-admission.ts';
-import { lspDaemonFacade } from './lsp-daemon-facade.ts';
+import { lspDaemonFacade, lspHealth } from './lsp-daemon-facade.ts';
 import { languageForFile, resolveProjectRoot, lspRenameWorkspaceEdit, lspDiagnostics, lspResyncDocument } from './lsp-adapter.ts';
 import { isTrustworthyEmpty } from './contracts.ts';
 import { lspDaemonCostKey } from './lsp-daemon-cost-key.ts';
@@ -77,7 +77,9 @@ export async function dispatchLspDaemonRequest(
   }, task);
   if (!evidence) return answer;
   evidence.respondedAtMs = lspEvidenceNow();
-  return { ...answer, daemonEvidence: evidence };
+  return { ...answer, daemonEvidence: evidence,
+    ...(request.op === 'health' ? { daemonRuntime: { ...await lspHealth(), pid: process.pid,
+      node: process.version, entry: import.meta.url } } : {}) };
 }
 
 /** Start once per host; all cluster workers address the primary's pinned socket. */

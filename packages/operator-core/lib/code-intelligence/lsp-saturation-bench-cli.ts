@@ -54,6 +54,8 @@
  *   …lsp-saturation-bench-cli.ts typescript 1,8,64 references 2
  */
 import { performance } from 'node:perf_hooks';
+import { readFileSync } from 'node:fs';
+import { runDaemonReplay, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
 import { moduleRepoRoot } from '../module-repo-root';
 
 import {
@@ -214,6 +216,17 @@ async function runLevel(
 }
 
 async function main(): Promise<void> {
+  // P-012 execution uses the same benchmark entry point and the real daemon seam.
+  // Legacy adapter saturation remains the separately labelled historical control.
+  // …lsp-saturation-bench-cli.ts --fleet-replay <frozen-config.json> <archive-parent>
+  if (process.argv[2] === '--fleet-replay') {
+    if (!process.argv[3] || !process.argv[4]) throw new Error('--fleet-replay requires frozen config and archive parent');
+    const config = JSON.parse(readFileSync(process.argv[3], 'utf8')) as DaemonReplayConfig;
+    const replay = await runDaemonReplay(config, process.argv[4]);
+    console.log(JSON.stringify(replay));
+    process.exitCode = replay.result.rating === 'healthy' ? 0 : 2;
+    return;
+  }
   const wantLanguage = (process.argv[2] ?? 'typescript') as LspLanguage;
 
   const bin = resolveServerBin(wantLanguage);

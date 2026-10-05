@@ -2623,6 +2623,11 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
     markAccepted(id: any): void;
     size(): number;
 };
+/** Decide how the detached host pipeline settles one delivery ID.
+ * A busy-gate deferral remains pending only when the re-arm controller still
+ * owns that exact delivery; folded IDs that the re-arm does not own stay
+ * retryable. */
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "clear" | "pending" | "completed";
 /**
  * A minimal FIFO async mutex serializing the GATED-inject critical section within
  * a single host (EI-8822). Each control-socket connection runs its OWN async

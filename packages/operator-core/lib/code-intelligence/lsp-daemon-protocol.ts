@@ -12,6 +12,7 @@ import {
 import type { LspFacadeArgs, LspFacadeOp } from './lsp-facade.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 import type { LspQueryEvidence } from './lsp-query-evidence.ts';
+import type { lspHealth } from './lsp-daemon-facade.ts';
 
 export interface LspDaemonRequest {
   op: LspFacadeOp;
@@ -28,6 +29,8 @@ export interface LspDaemonRequest {
 
 export interface LspDaemonAnswer extends CodeIntelAnswer {
   readonly daemonEvidence?: LspQueryEvidence;
+  /** Complete existing health inventory at archive boundaries; never clipped into sites. */
+  readonly daemonRuntime?: Awaited<ReturnType<typeof lspHealth>> & { pid: number; node: string; entry: string };
 }
 
 /** Internal read/refresh operations used by the operator's locked rename writer. */
