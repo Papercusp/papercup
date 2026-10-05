@@ -1556,8 +1556,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // requested key. Preserving the event_inspection root alone kept that
       // snapshot from disappearing, but an oversized history could still be
       // cut with only an aggregate omittedCount. Keep the identity/watermark
-      // first, then name history arrays in omittedPreserved while the scratch
-      // cursor remains the route to their complete contents.
+      // first, then keep history keys selectable. If an array is too large,
+      // projectBoundedPayload places a typed truncation row in that array and
+      // names its first omitted index in `_projection.omitted`; the scratch
+      // cursor remains the route to the complete contents.
       ...(opts.toolName === 'events:status'
         ? [
             'event_inspection.event',

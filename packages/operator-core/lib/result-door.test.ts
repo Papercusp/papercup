@@ -888,10 +888,20 @@ describe('applyResultDoor', () => {
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
     const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
-    const omittedPreserved = (body._projection as { omittedPreserved?: string[] }).omittedPreserved ?? [];
-    expect(
-      omittedPreserved.some((path) => path.includes('event_inspection.waiters')) || /omitted:/.test(visibleWaiters),
-    ).toBe(true);
+    const projection = body._projection as {
+      omitted?: Array<{ path: string; reason: string }>;
+    };
+    const waiterMarker = body.event_inspection?.waiters?.find((row) =>
+      row !== null && typeof row === 'object' && (row as { kind?: string }).kind === 'projection-truncation',
+    ) as { _truncated?: boolean; omittedCount?: number; shownCount?: number; renderedCount?: number } | undefined;
+    expect(waiterMarker).toMatchObject({
+      _truncated: true,
+      omittedCount: 194,
+      shownCount: 6,
+      renderedCount: 200,
+    });
+    expect(projection.omitted?.some((entry) => entry.path.includes('event_inspection.waiters['))).toBe(true);
+    expect(visibleWaiters).toContain('projection-truncation');
 
     // The visible summary keeps the requested key/state so ok:true cannot read as
     // absence; the named cursor still recovers every row that the bounded body cut.
@@ -962,10 +972,20 @@ describe('applyResultDoor', () => {
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
     const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
-    const omittedPreserved = (body._projection as { omittedPreserved?: string[] }).omittedPreserved ?? [];
-    expect(
-      omittedPreserved.some((path) => path.includes('event_inspection.waiters')) || /omitted:/.test(visibleWaiters),
-    ).toBe(true);
+    const projection = body._projection as {
+      omitted?: Array<{ path: string; reason: string }>;
+    };
+    const waiterMarker = body.event_inspection?.waiters?.find((row) =>
+      row !== null && typeof row === 'object' && (row as { kind?: string }).kind === 'projection-truncation',
+    ) as { _truncated?: boolean; omittedCount?: number; shownCount?: number; renderedCount?: number } | undefined;
+    expect(waiterMarker).toMatchObject({
+      _truncated: true,
+      omittedCount: 194,
+      shownCount: 6,
+      renderedCount: 200,
+    });
+    expect(projection.omitted?.some((entry) => entry.path.includes('event_inspection.waiters['))).toBe(true);
+    expect(visibleWaiters).toContain('projection-truncation');
 
     const spill = JSON.parse(readSpill('ws-2', 'events:status', RUN_ID)) as {
       event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };

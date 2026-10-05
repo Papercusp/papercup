@@ -82,6 +82,8 @@ export interface BuildLoopDepsConfig {
   harnessCommit: string;
   workspaceId: string;
   scratchRoot: string;
+  /** Retained trace storage, outside every directory the host tears down. */
+  traceRoot?: string;
   timeoutMs: number;
   pollIntervalMs: number;
   maxDistillChars: number;
@@ -166,6 +168,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       timeoutMs: cfg.timeoutMs,
       pollIntervalMs: cfg.pollIntervalMs,
       scratchRoot: cfg.scratchRoot,
+      traceRoot: cfg.traceRoot,
     });
 
   // Cycle metadata for gym_runs (the baseline is evaluated first → cycle 0).

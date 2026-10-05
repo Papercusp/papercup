@@ -14,12 +14,13 @@
  * a fake. I/O (git diff, bundle write) uses execFile (no shell) + node:fs.
  */
 import { execFile as execFileCb } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { runGymPipeline, type GymRunnerPorts, type GymRunSpec } from './gym-runner';
 import { collectTraceByStrategy, type CollectStrategy } from './collect-strategies';
+import { writeTraceBundle } from './collector';
 import { distillTrace } from './distill';
 import { ratePauseEventHooks } from './rate-pause-events';
 import {
@@ -94,6 +95,8 @@ export interface RealAbDepsConfig {
   pollIntervalMs: number;
   /** Scratch root for clones + trace bundles. */
   scratchRoot: string;
+  /** Retained trace files; must outlive scratch cleanup. Defaults to ~/.papercusp/gym/traces. */
+  traceRoot?: string;
   /**
    * The TARGET blueprint's `gym.collectTrace` (D-015, P-014). `git-diff` (default)
    * diffs the clone — the coding zero-regression path; `work-item-output` collects
@@ -106,6 +109,11 @@ export interface RealAbDepsConfig {
 
 export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
   const sql = cfg.gymSql;
+  const traceRoot = resolve(cfg.traceRoot ?? join(homedir(), '.papercusp', 'gym', 'traces'));
+  const fromScratch = relative(resolve(cfg.scratchRoot), traceRoot);
+  if (fromScratch === '' || (fromScratch !== '..' && !fromScratch.startsWith(`..${sep}`) && !isAbsolute(fromScratch))) {
+    throw new Error('Gym traceRoot must be outside pipeline scratchRoot');
+  }
   // The target blueprint's collectTrace seam (D-015). `git-diff` is the coding
   // default (diff the clone); `work-item-output` is the repo-less path.
   const collectStrategy: CollectStrategy = cfg.collectStrategy ?? 'git-diff';
@@ -184,13 +192,7 @@ export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
                WHERE harness_slug = ${slug} ORDER BY started_at DESC LIMIT 1`;
             return rows[0]?.out_body ?? '';
           },
-          writeBundle: async (text) => {
-            const dir = join(cfg.scratchRoot, 'traces');
-            mkdirSync(dir, { recursive: true });
-            const p = join(dir, `${handle.harnessSlug}.trace.json`);
-            writeFileSync(p, text);
-            return p;
-          },
+          writeBundle: (text) => writeTraceBundle(traceRoot, text),
         },
       );
       const distilled = distillTrace(rawTrace, { maxChars });
