@@ -144,6 +144,7 @@ export async function readGatePipelineWindow(
     `;
     const total = rows.length ? Number(rows[0]!.population_count) : 0;
     if (!Number.isSafeInteger(total) || total < rows.length ||
+        (total <= maxRows && total !== rows.length) ||
         rows.some((r) => Number(r.population_count) !== total)) {
       return { ...base, status: 'unavailable', reason: 'The ledger population count is invalid.' };
     }

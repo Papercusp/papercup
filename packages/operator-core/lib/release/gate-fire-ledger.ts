@@ -45,7 +45,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
+import { appendPipelineEvent, readGatePipelineWindow, type PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import { evaluateTestPassReuseAuditWindow, parseTestPassReuseAuditArchive,
+  type TestPassReuseAuditInvocation } from './test-pass-reuse-report';
 
 /** The anchor kind. See the module doc — DO NOT fold anchors into 'green_checkpoint'. */
 export const GATE_FIRE_KIND = 'green_checkpoint_fire' as const;
@@ -194,6 +196,88 @@ export const NON_TERMINAL_GATE_OUTCOME_STATUSES = [
 
 export function isTerminalGateOutcomeStatus(status: string): boolean {
   return !(NON_TERMINAL_GATE_OUTCOME_STATUSES as readonly string[]).includes(status);
+}
+
+export const GATE_REUSE_AUDIT_INSTRUMENT_KEY = 'gate-test-reuse.audit-window';
+
+/** Derive the invocation population from fire anchors and terminal archives, never a grader's list. */
+export function evaluateGateReuseAuditWindow(read: PipelineEventWindowRead) {
+  const fireIds: string[] = [];
+  const excludedFireIds: string[] = [];
+  const invocations: TestPassReuseAuditInvocation[] = [];
+  const evidenceRefs = read.rows.map((r) => `pipeline-event:${r.id}`);
+  const unknown = (reason: string) => ({ verdict: 'unknown' as const, reason, fireIds, excludedFireIds,
+    runIds: invocations.map((r) => r.runId), audited: 0, alarms: 0, evidenceRefs });
+  if (read.status !== 'complete' || read.total !== read.rows.length || read.rows.length === 0 ||
+      !Number.isSafeInteger(read.windowStartMs) || !Number.isSafeInteger(read.windowEndMs) ||
+      read.windowStartMs < 0 || read.windowStartMs >= read.windowEndMs) {
+    return unknown(read.reason ?? 'A complete, nonempty canonical gate window is required.');
+  }
+  const groups = new Map<string, typeof read.rows>();
+  for (const row of read.rows) {
+    if (!isGateFireId(row.detail.gateFireId) || !row.id.trim() || !Number.isSafeInteger(row.createdAtMs)) {
+      return unknown('A historical event lacks a qualified fire identity or timestamp.');
+    }
+    const rows = groups.get(row.detail.gateFireId) ?? [];
+    rows.push(row);
+    groups.set(row.detail.gateFireId, rows);
+  }
+  const seenRuns = new Set<string>();
+  for (const [fireId, rows] of groups) {
+    fireIds.push(fireId);
+    const anchors = rows.filter((r) => r.kind === GATE_FIRE_KIND && r.status === GATE_FIRE_STATUS);
+    const outcomes = rows.filter((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status));
+    if (anchors.length !== 1 || outcomes.length === 0) return unknown('A fire has no unique anchor or completed outcome.');
+    const anchor = anchors[0]!;
+    if (anchor.createdAtMs < read.windowStartMs || anchor.createdAtMs > read.windowEndMs ||
+        outcomes.some((r) => r.createdAtMs < anchor.createdAtMs || r.createdAtMs > read.windowEndMs)) {
+      return unknown('A gate attempt crosses the exact observation boundaries.');
+    }
+    // Producer and scheduled fallback may both archive one terminal result. They may collapse
+    // only when their measurement payloads agree; host/vintage/display stamps are irrelevant.
+    const identity = (r: typeof read.rows[number]) => JSON.stringify([
+      r.status, r.detail.runId, r.detail.candidate, r.detail.testPassReuse,
+    ]);
+    if (new Set(outcomes.map(identity)).size !== 1) return unknown('Conflicting terminal archives name the same fire.');
+    const outcome = outcomes.reduce((a, b) => a.createdAtMs <= b.createdAtMs ? a : b);
+    const cls = classifyGateOutcomeStatus(outcome.status);
+    if (cls === 'skip' && outcome.detail.testPassReuse === undefined) {
+      excludedFireIds.push(fireId);
+      continue;
+    }
+    if (!['verdict-green', 'verdict-red', 'promotion-failed'].includes(cls)) {
+      return unknown('An attempt ended without a qualified suite measurement.');
+    }
+    const archive = parseTestPassReuseAuditArchive(outcome.detail.testPassReuse);
+    const runId = outcome.detail.runId;
+    const candidate = outcome.detail.candidate;
+    if (!archive || typeof runId !== 'string' || !runId.trim() || seenRuns.has(runId) ||
+        typeof candidate !== 'string' || !/^[0-9a-f]{12,64}$/.test(candidate) ||
+        !archive.judgedSha.startsWith(candidate) || archive.recordedAtMs < anchor.createdAtMs ||
+        archive.recordedAtMs > outcome.createdAtMs) {
+      return unknown('The immutable archive lacks matching run, source or suite boundaries.');
+    }
+    const runners = new Set(archive.auditedFiles.map((f) => f.runnerIdentity));
+    const runnerIdentity = archive.auditedFiles[0]?.runnerIdentity;
+    if (!runnerIdentity || runners.size !== 1) return unknown('The archived audit runner identity is unmeasured or ambiguous.');
+    seenRuns.add(runId);
+    invocations.push({ runId, judgedSha: archive.judgedSha, runnerIdentity,
+      expectedRunGroupId: runId, startedAtMs: anchor.createdAtMs, completedAtMs: archive.recordedAtMs,
+      output: '', auditRuns: archive.auditRuns, auditedFiles: archive.auditedFiles });
+  }
+  const result = evaluateTestPassReuseAuditWindow({ windowStartMs: read.windowStartMs,
+    windowEndMs: read.windowEndMs, expectedRunIds: [...seenRuns], invocations });
+  return { ...result, fireIds, excludedFireIds, evidenceRefs };
+}
+
+/** Read only historical immutable records. This does not inspect, fire or monitor the live gate. */
+export async function measureGateReuseAuditWindow(
+  input: GateFireTarget & { windowStartMs: number; windowEndMs: number },
+  sql?: Sql,
+) {
+  const read = await readGatePipelineWindow(input, { ...input,
+    nonTerminalStatuses: NON_TERMINAL_GATE_OUTCOME_STATUSES }, sql);
+  return { ...evaluateGateReuseAuditWindow(read), populationStatus: read.status, totalEvents: read.total };
 }
 
 /**

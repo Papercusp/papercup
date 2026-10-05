@@ -22,6 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
   collectGoalHolderBehaviorMetrics,
@@ -327,6 +328,7 @@ export async function resolveScorecardInstrumentSnapshots(
     list?: typeof listScorecardPage;
     rubric?: typeof getRubric;
     now?: () => number;
+    gateReuseAudit?: typeof measureGateReuseAuditWindow;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
     holderMetrics?: (input: {
       holderOwnerId: string;
@@ -341,7 +343,8 @@ export async function resolveScorecardInstrumentSnapshots(
       value.provenance === 'platform-computed' ? { ...value, provenance: 'self-reported' as const } : { ...value },
     ]),
   );
-  const registered = new Set(['woe.goal-mode-base-scorecard', ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS)]);
+  const registered = new Set(['woe.goal-mode-base-scorecard', GATE_REUSE_AUDIT_INSTRUMENT_KEY,
+    ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS)]);
   // P-013 (goal-holder-plans-ideation-truthful-reports-2026-10-03): the holder-behavior
   // criteria are measured once per call from the canonical ledgers, so a grader's claimed
   // pass is refused (verdictMismatches) when the measurement says fail.
@@ -391,6 +394,30 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    if (key === GATE_REUSE_AUDIT_INSTRUMENT_KEY) {
+      const evidenceRef = 'harness_shared.pipeline_events:gate-reuse-audit-window';
+      const scopedWindow = { ...window, workspaceId: input.rubric.workspaceId,
+        installSlug: input.rubric.subjectHarnessSlug };
+      if (!input.rubric.workspaceId || !input.rubric.subjectHarnessSlug ||
+          input.rubric.subjectPlan !== subject.ref || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('An exact completed plan window and canonical workspace/install scope are required.'),
+          evidenceRef, window: scopedWindow };
+        continue;
+      }
+      try {
+        const measurement = await (deps.gateReuseAudit ?? measureGateReuseAuditWindow)({
+          workspaceId: input.rubric.workspaceId, installSlug: input.rubric.subjectHarnessSlug,
+          windowStartMs: start, windowEndMs: end,
+        });
+        snapshots[key] = { verdict: measurement.verdict, measuredAt, provenance: 'platform-computed',
+          window: scopedWindow, evidenceRef,
+          value: { resolver: key, resolverVersion: 1, ...measurement } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Archive instrument unavailable: ${error instanceof Error ? error.message : String(error)}`),
+          evidenceRef, window: scopedWindow };
+      }
       continue;
     }
     const holderCriterion = holderBehaviorCriterionForInstrument(key);
