@@ -42,10 +42,8 @@ import {
   type IngestExternalTriggerInput,
   type IngestExternalTriggerResult,
 } from '../external-triggers/ingestion';
-import { getExternalTriggerSource } from '../external-triggers/source-store';
-import { createHostFetch } from '../integrations/host-fetch';
 import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
-import { connectionAccessToken } from '../integrations/connection-lifecycle';
+import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { createPersonalVaultExternalSinkForSource } from '../personal-vault/live-sink';
 import { createAppDeliverySinkIfConfigured } from '../app-data-producer/live-sink';
 import { DATATYPE_FOR_APP } from '../app-data-producer/app-rows';
@@ -363,24 +361,18 @@ async function defaultSinksFor(sql: postgres.Sql, source: ConnectorSourceRow, da
   return sinks;
 }
 
-/** Production `host.fetch`: the source must belong to this provider; the token is that source's account's. */
+/**
+ * Production `host.fetch`: the source must belong to this provider; the token is
+ * that source's account's. Shared with outbound dispatch (D-014.4) so there is
+ * one token path; a reconnect is a provider-declared `auth` failure here.
+ */
 function defaultHostFetchFor(provider: RegisteredProvider, sql: postgres.Sql, opts: ConnectorSyncOptions): HostFetch {
-  return createHostFetch(provider.descriptor.id, {
+  return createSourceHostFetch(sql, {
+    providerId: provider.descriptor.id,
+    workspaceId: opts.workspaceId,
+    harness: opts.harness,
     registry: providerRegistry(),
-    async resolveSource(sourceId) {
-      const row = await getExternalTriggerSource(sql, opts.workspaceId, sourceId);
-      return row ? { sourceId: row.id, providerId: row.kind } : null;
-    },
-    async accessToken(resolved) {
-      const row = await getExternalTriggerSource(sql, opts.workspaceId, resolved.sourceId);
-      const token = await connectionAccessToken(sql, {
-        workspaceId: opts.workspaceId,
-        harness: opts.harness,
-        credentialRef: row?.credentialRef ?? null,
-      });
-      if ('reconnectRequired' in token) throw new ProviderSyncFailure({ kind: 'auth', message: token.reason });
-      return token.accessToken;
-    },
+    reconnectRequired: (reason) => new ProviderSyncFailure({ kind: 'auth', message: reason }),
   });
 }
 
