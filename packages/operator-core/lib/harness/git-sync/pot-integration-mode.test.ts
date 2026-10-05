@@ -23,7 +23,9 @@ import {
   readPotIntegrationMode,
   resolveIntegrationPushRemote,
   ensurePotForkGitRemote,
+  applyIntegrationPushTarget,
   setPotIntegrationMode,
+  type IntegrationPushConfig,
   type RunGit,
 } from './pot-integration-mode';
 
@@ -121,6 +123,63 @@ describe('ensurePotForkGitRemote', () => {
     const g = fakeGit(FORK);
     expect(await ensurePotForkGitRemote('/repo', FORK, g.run)).toBe('unchanged');
     expect(g.calls).toHaveLength(1);
+  });
+});
+
+describe('applyIntegrationPushTarget (the git-sync tick rewrite)', () => {
+  const baseCfg = (): IntegrationPushConfig => ({ push: true, remote: 'origin', pushSubmoduleOrigins: true });
+  const forkDecision = resolveIntegrationPushRemote({ read: { mode: 'review', source: 'set' }, forkRemote: FORK });
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  it('leaves the config untouched for a direct pot or no decision', async () => {
+    const ensure = vi.fn();
+    for (const decision of [
+      undefined,
+      resolveIntegrationPushRemote({ read: { mode: 'direct', source: 'absent' } }),
+    ]) {
+      const cfg = baseCfg();
+      expect(await applyIntegrationPushTarget('p', cfg, decision, '/repo', ensure)).toBeNull();
+      expect(cfg).toEqual(baseCfg());
+    }
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('a fork decision pushes the pot-fork remote and stops pushing submodule origins', async () => {
+    const ensure = vi.fn().mockResolvedValue('added');
+    const cfg = baseCfg();
+    expect(await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', ensure)).toBeNull();
+    expect(ensure).toHaveBeenCalledWith('/repo', FORK);
+    expect(cfg).toEqual({ push: true, remote: POT_FORK_REMOTE_NAME, pushSubmoduleOrigins: false });
+  });
+
+  it('a commit-only decision pushes nowhere and never touches the remote', async () => {
+    const ensure = vi.fn();
+    const cfg = baseCfg();
+    const decision = resolveIntegrationPushRemote({ read: { mode: 'review', source: 'set' } });
+    expect(await applyIntegrationPushTarget('p', cfg, decision, '/repo', ensure)).toBe('working_copy_fork_missing');
+    expect(cfg).toEqual({ push: false, remote: 'origin', pushSubmoduleOrigins: false });
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('with no checkout path it pushes nowhere rather than the main repository', async () => {
+    const ensure = vi.fn();
+    const cfg = baseCfg();
+    expect(await applyIntegrationPushTarget('p', cfg, forkDecision, null, ensure)).toBe('working_copy_no_repo_path');
+    expect(cfg.push).toBe(false);
+    expect(cfg.remote).toBe('origin');
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('if the fork remote cannot be set up it pushes nowhere — never falls back to origin', async () => {
+    const ensure = vi.fn().mockRejectedValue(new Error('git remote add failed'));
+    const cfg = baseCfg();
+    expect(await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', ensure)).toBe(
+      'working_copy_fork_remote_setup_failed',
+    );
+    expect(cfg).toEqual({ push: false, remote: 'origin', pushSubmoduleOrigins: false });
   });
 });
 

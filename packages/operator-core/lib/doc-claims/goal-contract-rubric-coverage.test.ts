@@ -37,7 +37,7 @@ describe('goal contract → goal-mode-e2e coverage pin', () => {
   it('segments the contract at sub-obligation granularity (positive control)', () => {
     const ids = live.map((c) => c.id);
     // The clauses whose absence from the rubric went unnoticed must each be their own segment.
-    for (const id of ['not-in-a-plan-yet', 'already-started', 'a-launch-refusal-is-scoped-to-that-one-call-never-a-verdict-', 'the-floor-is-concrete', 'spend-accounting-has', 'scope']) {
+    for (const id of ['not-in-a-plan-yet', 'already-started', 'a-launch-refusal-is-scoped-to-that-one-call-never-a-verdict-', 'the-floor-is-concrete', 'spend-accounting-has', 'scope', 'corrections-preempt-the-report-cadence', 'before']) {
       expect(ids).toContain(id);
     }
     expect(live.length).toBeGreaterThanOrEqual(40);

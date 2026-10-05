@@ -195,6 +195,51 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     expect(open).toMatchObject({ admissible: true, refusedBy: null });
   });
 
+  it('scope authoring can include its member-held row without changing ordinary acquisition or ownership', async () => {
+    await seedIssue('EI-SCOPE-MEMBER', null);
+    await seedIssue('EI-SCOPE-FOREIGN', null);
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-member'
+       WHERE feature_id = 'EI-SCOPE-MEMBER'`;
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-foreign'
+       WHERE feature_id = 'EI-SCOPE-FOREIGN'`;
+    const ids = ['EI-SCOPE-MEMBER', 'EI-SCOPE-FOREIGN'];
+
+    const acquisition = await explainIssueClaimFloors(H, ids);
+    expect(acquisition).toEqual([
+      expect.objectContaining({ id: ids[0], admissible: false, refusedBy: 'already-taken', heldBy: 'su-member' }),
+      expect.objectContaining({ id: ids[1], admissible: false, refusedBy: 'already-taken', heldBy: 'su-foreign' }),
+    ]);
+    const scope = await explainIssueClaimFloors(H, ids, { scopeHeldBy: ['su-member'] });
+    expect(scope).toEqual([
+      expect.objectContaining({ id: ids[0], admissible: true, refusedBy: null }),
+      expect.objectContaining({ id: ids[1], admissible: false, refusedBy: 'already-taken', heldBy: 'su-foreign' }),
+    ]);
+    expect(await explainIssueClaimFloors(H, ids)).toEqual(acquisition);
+    const owners = await db.sql`
+      SELECT feature_id, taken_by FROM harness_shared.work_items
+       WHERE feature_id = ANY(${ids}::text[]) ORDER BY feature_id`;
+    expect(owners).toEqual([
+      { feature_id: 'EI-SCOPE-FOREIGN', taken_by: 'su-foreign' },
+      { feature_id: 'EI-SCOPE-MEMBER', taken_by: 'su-member' },
+    ]);
+  });
+
+  it.each([
+    ['observation-lane', { lane: 'observation' }, 'open'],
+    ['claim-hold', { _claimHold: true }, 'open'],
+    ['not-claimable-status', null, 'resolved'],
+  ] as const)('scope authoring does not hide a member-held %s floor', async (refusedBy, payload, status) => {
+    await seedIssue('EI-SCOPE-FLOORED', payload, status);
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-member'
+       WHERE feature_id = 'EI-SCOPE-FLOORED'`;
+    const [scope] = await explainIssueClaimFloors(H, ['EI-SCOPE-FLOORED'], { scopeHeldBy: ['su-member'] });
+    expect(scope).toMatchObject({ admissible: false, refusedBy });
+    expect(scope.heldBy).toBeUndefined();
+  });
+
   it('distinguishes an all-terminal id tranche from a mixed terminal/non-terminal tranche', async () => {
     const makeScope = (ids: string[]) =>
       ({

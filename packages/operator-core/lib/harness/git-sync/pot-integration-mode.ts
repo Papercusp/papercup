@@ -175,6 +175,65 @@ export async function ensurePotForkGitRemote(
   return 'unchanged';
 }
 
+/** The push-target slice of the git-sync tick config that working-copy mode rewrites. */
+export interface IntegrationPushConfig {
+  push?: boolean;
+  remote?: string;
+  pushSubmoduleOrigins?: boolean;
+}
+
+/** Why a working-copy tick commits locally and pushes nowhere. */
+export type IntegrationCommitOnlyReason =
+  | Extract<IntegrationPushDecision, { kind: 'commit-only' }>['reason']
+  | 'working_copy_no_repo_path'
+  | 'working_copy_fork_remote_setup_failed';
+
+/**
+ * pot-review-integration-mode P-014: apply this tick's working-copy push target
+ * to the git-sync config, in place.
+ *
+ * `fork` points the `pot-fork` remote at the fork and pushes there; submodule
+ * origins are NOT pushed (they are the main repositories' submodules — pushing
+ * them would leak unreviewed work past the PR). `commit-only`, or a fork remote
+ * that cannot be set up, commits locally and pushes nowhere. Never falls back to
+ * the main repository. Returns the commit-only reason, or null when it pushes.
+ */
+export async function applyIntegrationPushTarget(
+  slug: string,
+  cfg: IntegrationPushConfig,
+  decision: IntegrationPushDecision | undefined,
+  repoPath: string | null | undefined,
+  ensureRemote: (repoPath: string, url: string) => Promise<unknown> = ensurePotForkGitRemote,
+): Promise<IntegrationCommitOnlyReason | null> {
+  if (!decision || decision.kind === 'unchanged') return null;
+  const commitOnly = (reason: IntegrationCommitOnlyReason): IntegrationCommitOnlyReason => {
+    cfg.push = false;
+    cfg.pushSubmoduleOrigins = false;
+    return reason;
+  };
+  if (decision.kind === 'commit-only') {
+    console.log(`[git-sync] ${slug}: ${decision.message} (${decision.reason})`);
+    return commitOnly(decision.reason);
+  }
+  if (!repoPath) {
+    console.log(`[git-sync] ${slug}: working-copy mode but no checkout path — committing locally, pushing nowhere`);
+    return commitOnly('working_copy_no_repo_path');
+  }
+  try {
+    await ensureRemote(repoPath, decision.url);
+  } catch (err) {
+    console.log(
+      `[git-sync] ${slug}: could not set up the ${POT_FORK_REMOTE_NAME} remote ` +
+        `(${err instanceof Error ? err.message : String(err)}) — committing locally, pushing nowhere`,
+    );
+    return commitOnly('working_copy_fork_remote_setup_failed');
+  }
+  cfg.remote = decision.remoteName;
+  cfg.pushSubmoduleOrigins = false;
+  console.log(`[git-sync] ${slug}: ${decision.reason}`);
+  return null;
+}
+
 export type SetPotIntegrationModeResult =
   | { ok: true; mode: PotIntegrationMode | null }
   | { ok: false; error: 'green_cmd_required' | 'fork_required'; message: string };
