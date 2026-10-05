@@ -1684,8 +1684,11 @@ export {
   validateProviderDescriptor,
   validateProviderDeclaration,
   isProviderAdapter,
+  PROVIDER_DAEMON_METHODS,
 } from './provider';
 export type {
+  ProviderDaemonCallParams,
+  ProviderDaemonFetchParams,
   ProviderContractVersion,
   ProviderOAuthDescriptor,
   ProviderDescriptor,
