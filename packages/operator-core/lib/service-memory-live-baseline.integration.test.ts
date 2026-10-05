@@ -778,7 +778,7 @@ describe('actual current-build operator memory baseline', () => {
         return value;
       };
       const recorded: string[] = [];
-      f.reader.record = stage => { recorded.push(stage); };
+      (f.reader as WorkerWindowReader).record = stage => { recorded.push(stage); };
       const result = await collectRequestWorkerWindow(f.targets, build, f.reader, async observe => {
         await observe(ids); return f.workload();
       });
@@ -793,7 +793,8 @@ describe('actual current-build operator memory baseline', () => {
       let selectedReads = 0;
       if (kind === 'changed tuple') f.reader.read = async (pid, requested) => {
         const value = await read(pid, requested);
-        if (requested.length && selectedReads++ >= 2) value.snapshot.results[0].metadataDrift = true;
+        if (value.snapshot.status === 'observed' && requested.length && selectedReads++ >= 2)
+          value.snapshot.results[0].metadataDrift = true;
         return value;
       };
       await expect(collectRequestWorkerWindow(f.targets, build, f.reader, async observe => {
