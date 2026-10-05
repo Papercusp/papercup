@@ -777,7 +777,8 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       timeout: 150_000,
       killSignal: 'SIGKILL',
     });
-    expect(run.status).not.toBe(2);
+    expect(run.error, `runner stdout:\n${run.stdout}\nrunner stderr:\n${run.stderr}`).toBeUndefined();
+    expect(run.status, `runner stdout:\n${run.stdout}\nrunner stderr:\n${run.stderr}`).not.toBe(2);
     // Proof the new step actually engaged, not just that nothing crashed — a future
     // edit that silently skips submodule init would still reach this lint fine (it
     // never touches libs/papercusp), so this line is load-bearing, not decorative.
@@ -812,7 +813,7 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       // reporter samples for worktree_dirty, or no run inside it can ever be current proof.
       // The linked node_modules are what dirtied it, so first prove the links exist (a tree
       // with nothing linked would be trivially clean and this assertion vacuous).
-      expect(run.stdout).toMatch(/linked [1-9]\d* node_modules dir\(s\)/);
+      expect(run.stdout, `runner stderr:\n${run.stderr}`).toMatch(/linked [1-9]\d* node_modules dir\(s\)/);
       const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
         cwd: workRoot,
         encoding: 'utf8',

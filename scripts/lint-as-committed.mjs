@@ -941,9 +941,10 @@ function main() {
     // a run inside it must be able to record worktree_dirty=false.
     const excludePlan = planLinkExcludes(linkedPaths, submodules.map((s) => s.path));
     for (const [repoRel, patterns] of Object.entries(excludePlan)) {
-      const infoDir = join(workRoot, repoRel, '.git', 'info');
-      mkdirSync(infoDir, { recursive: true });
-      appendFileSync(join(infoDir, 'exclude'), `\n# lint-as-committed: linked node_modules (WI-10004898)\n${patterns.join('\n')}\n`);
+      const repository = join(workRoot, repoRel);
+      const excludePath = resolve(repository, git(['rev-parse', '--git-path', 'info/exclude'], repository));
+      mkdirSync(dirname(excludePath), { recursive: true });
+      appendFileSync(excludePath, `\n# lint-as-committed: linked node_modules (WI-10004898)\n${patterns.join('\n')}\n`);
     }
     console.log(
       `  linked ${linked} node_modules dir(s) (not installed, not copied; excluded from git status); ` +
