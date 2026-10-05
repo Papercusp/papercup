@@ -24,7 +24,9 @@
  * So the guard below is not tidiness. Each copy is a place where an already-fixed bug
  * comes back.
  */
-import { describe, expect, it } from 'vitest';
+import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
+import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -150,6 +152,36 @@ describe('resolveScriptPgUrl', () => {
       env: { HARNESS_ADMIN_DATABASE_URL: 'postgres://explicit/db', PAPERCUSP_PG_PORT: '19532' },
     });
     expect(r.source).not.toBe('isolated-pg-port');
+  });
+});
+
+describe('isolated GOAL Tauri driver database prerequisite', () => {
+  const driver = readFileSync(join(SCRIPTS_DIR, 'tauri-surface-verify-goal-report.mts'), 'utf8');
+  // Execute the real caller's prerequisite before any database or native writes.
+  const guard = driver.slice(driver.indexOf('const isolatedPg ='), driver.indexOf('const out ='));
+  const check = (root: string) => runInNewContext(guard, {
+    pid: 'isolated-test-pid', origin: 'http://isolated-test.invalid', workspaceId: 'isolated-test', assert,
+    resolveScriptPgUrl: () => resolveScriptPgUrl({ root, env: process.env }),
+  });
+
+  it.each([
+    { label: 'explicit admin DSN', admin: 'postgres://explicit.invalid/fixture', port: undefined, file: '', allowed: true },
+    { label: 'port alone', admin: undefined, port: '19532', file: '', allowed: false },
+    { label: '.env.local admin DSN', admin: undefined, port: undefined,
+      file: 'HARNESS_ADMIN_DATABASE_URL=postgres://ambient.invalid/fixture\n', allowed: false },
+  ])('accepts only the $label when explicitly supplied', ({ admin, port, file, allowed }) => {
+    const root = mkdtempSync(join(tmpdir(), 'pg-url-goal-driver-'));
+    if (file) writeFileSync(join(root, '.env.local'), file);
+    for (const name of [...PG_URL_ENV_VARS, ...PG_ISOLATION_ENV_VARS]) vi.stubEnv(name, undefined);
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', admin);
+    vi.stubEnv('PAPERCUSP_PG_PORT', port);
+    try {
+      expect(guard).toContain('resolveScriptPgUrl()');
+      if (allowed) expect(() => check(root)).not.toThrow();
+      else expect(() => check(root)).toThrow('Requires an explicitly supplied isolated admin database URL');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

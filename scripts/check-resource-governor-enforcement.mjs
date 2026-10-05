@@ -1880,6 +1880,27 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for embedding-space-parity-cases.ts: censusFilterCallSites runs one awaited execFileSync(git grep --untracked -lE) over packages/apps/libs to enumerate call-site files for an in-process AST census. It is a bounded local metadata search that exits immediately and starts no detached worker or resident queue.",
   },
   {
+    path: "packages/operator-core/lib/release/admission-import-completeness.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for admission-import-completeness.ts: pending is a function-local import-data traversal frontier, seeded only from the finite admission source map. Each entry is synchronously consumed by shift; imported bindings are restricted to sourceByPath and deduplicated by visited before their exported data enters the frontier. It starts no work and retains no queue after the probe returns. The source predicate requires that consumption and deduplication and rejects any additional queue writer.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return writers.length === 1 && writers[0][1] === "pending" &&
+        code.includes("const pending = sources.map(") &&
+        code.includes("const visited = new Set<string>();") &&
+        code.includes("while (pending.length > 0)") &&
+        code.includes("pending.shift()") &&
+        code.includes("sourceByPath.has(candidate)") &&
+        code.includes("if (visited.has(key)) continue;") &&
+        code.includes("visited.add(key);") &&
+        code.includes("pending.push({ path: imported, data: value });") &&
+        !/\b(?:async|await)\b/.test(code);
+    },
+  },
+  {
     path: "packages/operator-core/lib/release/admission-offthread.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",

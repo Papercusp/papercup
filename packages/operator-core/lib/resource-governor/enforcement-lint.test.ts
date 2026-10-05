@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { stripTypeScriptTypes } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   RESOURCE_GOVERNOR_INVENTORY,
   BYPASS_REGISTRY,
@@ -288,6 +290,72 @@ describe('resource governor enforcement lint', () => {
     expect(
       scanInventory([[path, source.replace("recording.kill('SIGINT');", '')]], { migrations: ['P-016'] }),
     ).toContain(finding);
+    expect(
+      scanInventory([[path, source.replace("recording!.kill('SIGKILL');", '')]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+    expect(
+      scanInventory([[path, source.replace('}, 10_000).unref()', '}, 10_000)')]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+  });
+
+  it('dispositions only the synchronous, deduplicated admission import traversal', () => {
+    const path = 'packages/operator-core/lib/release/admission-import-completeness.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = path + ':unbounded-resident-queue';
+    const entry = P016_DISPOSITION_REGISTRY.get(path + '::unbounded-resident-queue');
+    expect(inspectGovernorSource(source)).toContain('unbounded-resident-queue');
+    expect(entry?.disposition).toBe('semantic');
+    expect(entry?.matchesSource?.(source)).toBe(true);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'] })).toEqual([]);
+    for (const unsafe of [
+      source.replace('if (visited.has(key)) continue;', ''),
+      source.replace('visited.add(key);', ''),
+      source.replace('pending.shift()', 'pending[0]'),
+      source.replace('sourceByPath.has(candidate)', 'true'),
+      source + '\nconst workQueue = []; workQueue.push(task);',
+      source + '\nasync function enqueue() { pending.push(task); }',
+    ]) {
+      expect(scanInventory([[path, unsafe]], { migrations: ['P-016'] })).toContain(finding);
+    }
+    expect(scanInventory([['packages/operator-core/lib/release/other-import-probe.ts', source]], { migrations: ['P-016'] })).toContain(
+      'packages/operator-core/lib/release/other-import-probe.ts:unbounded-resident-queue',
+    );
+  });
+
+  it.each([false, true])('awaits and clears the real recorder teardown (requires SIGKILL: %s)', async (requiresKill) => {
+    const source = readFileSync(ROOT + 'scripts/tauri-surface-verify-goal-report.mts', 'utf8');
+    const cleanup = source.slice(source.indexOf('let recording:'), source.indexOf('// A textContent match'));
+    let resolveExit!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
+    const child = { kill: vi.fn((signal: string) => {
+      if (!requiresKill || signal === 'SIGKILL') resolveExit(0);
+      return true;
+    }) };
+    vi.useFakeTimers();
+    try {
+      // Run the actual driver cleanup without starting a display, recorder or DB.
+      const driver = runInNewContext(stripTypeScriptTypes(cleanup +
+        '\nrecording = child; recordingExit = exited; ({ stopRecording, state: () => ({ recording, recordingExit }) });'),
+      { child, exited, setTimeout, clearTimeout });
+      let finished = false;
+      const stopping = driver.stopRecording().then(() => { finished = true; });
+      expect(child.kill).toHaveBeenCalledWith('SIGINT');
+      if (requiresKill) {
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(finished).toBe(false);
+        expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      }
+      await stopping;
+      expect(driver.state()).toEqual({ recording: undefined, recordingExit: undefined });
+      expect(vi.getTimerCount()).toBe(0);
+      await driver.stopRecording();
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(child.kill).toHaveBeenCalledTimes(requiresKill ? 2 : 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('requires an explicit reviewed disposition for every active P-016 finding and excludes only scanner self-code', () => {

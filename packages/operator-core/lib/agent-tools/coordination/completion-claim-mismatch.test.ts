@@ -96,4 +96,29 @@ describe('completionClaimMismatch', () => {
   it('exports the stable envelope field name used by the send seam', () => {
     expect(COMPLETION_CLAIM_MISMATCH_FIELD).toBe('completionClaimMismatch');
   });
+
+  it('does not turn a shortened issue id in a log filename into a completion subject', () => {
+    expect(completionClaimMismatch({
+      summary: 'Real-DB holder fixture/control suite26PASS0skip; repaired fixture prerequisites now verified, changed isolated native7 starting.',
+      body: 'Terminal /tmp/ei-251616-holder-fixture-green3.log exit0 proves actual holder election/liveness. Native7 will verify the same named query.',
+      basedOn: read('work-item:EI-25161673334137018'),
+    })).toBeUndefined();
+  });
+
+  it.each(['diag-EI-251616-unlabeled', 'EI-251616-holder-fixture.log', 'fixture_EI-251616_log'])('ignores identifier fragments in %s', (filename) => {
+    expect(completionClaimMismatch({
+      summary: `Verified fixture evidence in ${filename}`,
+      basedOn: [],
+    })).toBeUndefined();
+  });
+
+  it('still detects an unread exact short id beside a log filename and a longer read id', () => {
+    expect(completionClaimMismatch({
+      summary: 'Verified EI-251616; evidence /tmp/ei-251616-holder-fixture.log',
+      basedOn: read('work-item:EI-25161673334137018'),
+    })).toMatchObject({
+      declaredRefs: ['work-item:EI-251616'],
+      missingFromBasedOn: ['work-item:EI-251616'],
+    });
+  });
 });
