@@ -10,7 +10,7 @@
 # (2026-10-03). Nothing in the bake measured free space before writing tens of GB.
 #
 # WHAT IS KEPT (the safety half — this runs on a shared box where peers bake concurrently):
-#   * --keep-tag (the bake's own tag), always;
+#   * every --keep-tag (the bake's own tag, and a local source image it reuses), always;
 #   * the BAKE_KEEP_RECENT newest OTHER tags of --repo (default 2: the previous good bake stays
 #     available for a re-render or a rollback);
 #   * ANY image or dangling layer younger than BAKE_PROTECT_MIN minutes (default 240) — that is a
@@ -19,7 +19,7 @@
 #   * every named volume (only 64-hex ANONYMOUS volumes with no container are removed).
 #
 # Usage:
-#   bake-storage-hygiene.sh prune --repo <registry>/<name> [--keep-tag <tag>]
+#   bake-storage-hygiene.sh prune --repo <registry>/<name> [--keep-tag <tag>]...
 #   bake-storage-hygiene.sh precheck [<extra path> ...]
 #
 # prune ALWAYS exits 0: hygiene must never fail a bake. Problems are reported as
@@ -79,11 +79,12 @@ cmd_precheck() {
 }
 
 cmd_prune() {
-  local repo="" keep_tag=""
+  local repo="" keep_tag="" keep_tags=" "
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) repo="${2:-}"; shift 2;;
-      --keep-tag) keep_tag="${2:-}"; shift 2;;
+      # Repeatable: the bake keeps its own tag AND the local source image it is about to reuse.
+      --keep-tag) keep_tag="${keep_tag:+$keep_tag,}${2:-}"; keep_tags="$keep_tags${2:-} "; shift 2;;
       *) warn "unknown argument $1 (prune skipped)"; return 0;;
     esac
   done
@@ -110,7 +111,7 @@ cmd_prune() {
   if [ "${#rows[@]}" -gt 0 ]; then
     while IFS=' ' read -r created tag; do
       age=$(( NOW - created ))
-      if [ "$tag" = "$keep_tag" ] || [ "$age" -lt "$protect_sec" ]; then
+      if [[ "$keep_tags" == *" $tag "* ]] || [ "$age" -lt "$protect_sec" ]; then
         kept_tags=$((kept_tags + 1)); continue
       fi
       if [ "$recent" -lt "$KEEP_RECENT" ]; then
