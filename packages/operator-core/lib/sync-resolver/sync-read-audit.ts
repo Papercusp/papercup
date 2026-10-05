@@ -195,6 +195,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'conversations.agentMessageDetail': null, // a specific coord_event_log msg_id
   'conversations.deliberationDetail': null,
   'conversations.questionDetail': null,
+  // A pinned report requires its exact reportId. There is no stable report for
+  // the generic audit; a fabricated id would measure a miss, not its payload.
+  'reports.get': null,
   'designFeatures.detail': null, // a specific featureId (WI-7232 list/detail split)
   'designSketches.byFeature': null,
   'dockLayouts.byName': null,
