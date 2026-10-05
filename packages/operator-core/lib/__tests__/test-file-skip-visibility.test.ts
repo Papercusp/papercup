@@ -249,12 +249,38 @@ describe('withInjectedJsonReport — a private report, without stealing stdout f
     });
   });
 
-  it('leaves a caller that chose its own reporter completely alone', () => {
+  it.each(['default', 'verbose', 'dot'])('retains %s human output with private assertion and ledger reports', (reporter) => {
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot, reporterPath) => {
+      for (const selected of [[`--reporter=${reporter}`], ['--reporter', reporter]]) {
+        const input = ['--silent', ...selected];
+        const { args, injectedReportPath } = withInjectedJsonReport(input, '/tmp/r.json', {
+          repoRoot,
+          env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'operator-core' },
+        });
+        expect(args).toEqual([
+          ...input,
+          '--reporter=json',
+          `--reporter=${reporterPath('admin-test-runs')}`,
+          `--reporter=${reporterPath('executed-source-map')}`,
+          '--outputFile=/tmp/r.json',
+        ]);
+        expect(injectedReportPath).toBe('/tmp/r.json');
+        expect(input).toEqual(['--silent', ...selected]);
+      }
+    });
+  });
+
+  it('leaves machine/custom reporters and caller-owned reports completely alone', () => {
     // testing:run always passes --reporter=json and its whole contract is that stdout IS the
     // report. Injecting there would rewrite output somebody is parsing.
     const chosenSets = [
       ['--reporter=json'],
       ['--reporter', 'json'],
+      ['--reporter=junit'],
+      ['--reporter=./custom-reporter.mjs'],
+      ['--reporter=verbose', '--reporter=json'],
+      ['--reporter=verbose', '--outputFile=/x.json'],
+      ['--reporter'],
       ['--outputFile=/x.json'],
       ['--outputFile', '/x.json'],
     ];

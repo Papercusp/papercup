@@ -110,6 +110,12 @@ export interface LastSeenEntry {
 export interface PollMeta {
   last_seen: Record<string, LastSeenEntry>;
   consecutive_errors: number;
+  /**
+   * Per-PR exact-merge test records for the standing PR (plan
+   * pot-review-integration-mode-2026-10-05, D-008), keyed by PR number. Owned and
+   * validated by harness/git-sync/standing-pr-merge-deps; passed through untouched.
+   */
+  standing_pr_merge_tests?: Record<string, unknown>;
 }
 
 /**
@@ -551,7 +557,7 @@ export function makeSqlStore(sql: Sql): PollStore {
     },
 
     async readMeta(installSlug) {
-      const rows = await sql<Array<{ m: { last_seen?: unknown; consecutive_errors?: unknown } | null }>>`
+      const rows = await sql<Array<{ m: Record<string, unknown> | null }>>`
         SELECT metadata->'pr_poll' AS m
           FROM harness_shared.routines
          WHERE install_slug = ${installSlug} AND target_role = ${PR_POLL_TARGET}
@@ -663,7 +669,12 @@ export function parsePollMeta(m: unknown): PollMeta {
       }
     }
   }
-  return { last_seen, consecutive_errors: Number(obj.consecutive_errors ?? 0) || 0 };
+  const meta: PollMeta = { last_seen, consecutive_errors: Number(obj.consecutive_errors ?? 0) || 0 };
+  const tests = obj.standing_pr_merge_tests;
+  if (tests && typeof tests === 'object' && !Array.isArray(tests)) {
+    meta.standing_pr_merge_tests = { ...(tests as Record<string, unknown>) };
+  }
+  return meta;
 }
 
 // ── Production default seams (lazy-imported so boot stays light) ─────────────────

@@ -1266,10 +1266,9 @@ export function formatFailedAssertionDiagnostics(failures) {
 /**
  * Whether the caller already chose a reporter or a report path.
  *
- * Injection is only safe when they chose NEITHER. A caller that named a reporter has an opinion
- * about stdout's format (`testing:run` passes `--reporter=json`, and its whole contract is that
- * stdout IS the report), and one that named an `--outputFile` already has a report this runner
- * reads. Widening past that would rewrite output somebody is parsing.
+ * Machine/custom reporters own stdout's format (`testing:run` passes `--reporter=json`), and a
+ * caller-supplied `--outputFile` already supplies the report this runner reads. The injection
+ * helper can safely add a private report alongside explicitly selected human reporters.
  */
 export function callerChoseReporting(vitestArgs) {
   const args = vitestArgs ?? [];
@@ -1292,8 +1291,8 @@ export function callerChoseReporting(vitestArgs) {
  * The workspace config still supplies the source-map importDurations settings. Missing reporter
  * files in a partial/foreign checkout must not turn this diagnostic injection into a load error.
  *
- * Returns the args unchanged when the caller already chose reporting, so this can be applied
- * unconditionally at the call site.
+ * Preserve explicit human reporters; leave machine/custom reporters and caller-owned report
+ * paths unchanged. Human formatting alone must not disable assertion receipts or the ledger.
  *
  * @param {string[]} vitestArgs
  * @param {string | null} reportPath
@@ -1302,7 +1301,19 @@ export function callerChoseReporting(vitestArgs) {
  */
 export function withInjectedJsonReport(vitestArgs, reportPath, { repoRoot = REPO_ROOT, env = process.env } = {}) {
   const args = vitestArgs ?? [];
-  if (!reportPath || callerChoseReporting(args)) return { args, injectedReportPath: null };
+  if (!reportPath) return { args, injectedReportPath: null };
+  const humanReporters = new Set(['default', 'verbose', 'dot']);
+  const selectedReporters = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--outputFile' || args[i].startsWith('--outputFile=')) {
+      return { args, injectedReportPath: null };
+    }
+    if (args[i] === '--reporter') selectedReporters.push(args[++i]);
+    else if (args[i].startsWith('--reporter=')) selectedReporters.push(args[i].slice('--reporter='.length));
+  }
+  if (selectedReporters.some((reporter) => !humanReporters.has(reporter))) {
+    return { args, injectedReportPath: null };
+  }
   const evidenceReporters = [];
   const adminReporter = join(repoRoot, 'libs/test-config/src/admin-test-runs-reporter.ts');
   if (env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER !== '1' && existsSync(adminReporter)) {
@@ -1313,7 +1324,7 @@ export function withInjectedJsonReport(vitestArgs, reportPath, { repoRoot = REPO
     evidenceReporters.push(`--reporter=${sourceMapReporter}`);
   }
   return {
-    args: [...args, '--reporter=default', '--reporter=json', ...evidenceReporters, `--outputFile=${reportPath}`],
+    args: [...args, ...(selectedReporters.length ? [] : ['--reporter=default']), '--reporter=json', ...evidenceReporters, `--outputFile=${reportPath}`],
     injectedReportPath: reportPath,
   };
 }

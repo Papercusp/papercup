@@ -171,6 +171,21 @@ export function pathsOverlap(a: string, b: string): boolean {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }
 
+/**
+ * The executor's path rail, independent of the plan: never remove the canonical tree, `/`,
+ * home, or anything that CONTAINS one of them. A tree nested INSIDE the canonical tree (e.g.
+ * `.papercusp/worktrees/desktop-release-0.0.19`) is not refused here — the caller's `.git`-file
+ * and admin-dir rails are what prove it is a registered linked worktree rather than part of
+ * the canonical checkout. (WI-10006139: the rail used {@link pathsOverlap}, which also
+ * matches descendants, so a tree the planner offered as named-only could never be removed.)
+ */
+export function reclaimPathRefusal(real: string, canonicalRoot: string, home: string): string | null {
+  const containsOrIs = (outer: string, inner: string) => outer === '/' || inner === outer || inner.startsWith(`${outer}/`);
+  if (containsOrIs(real, canonicalRoot)) return 'refusing the canonical tree or a path that contains it';
+  if (containsOrIs(real, home)) return 'refusing home or a path that contains it';
+  return null;
+}
+
 export interface StatusEntry {
   path: string;
   /** a gitlink entry — its content is judged inside the submodule itself */

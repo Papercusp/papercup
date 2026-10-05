@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -27,6 +28,7 @@ import {
   parseWorktreePorcelain,
   planCutReclaim,
   probeTree,
+  reclaimPathRefusal,
   renderReclaimPlan,
   resolveReclaimTargets,
   scanProcHolders,
@@ -122,6 +124,21 @@ describe('lastReflogEntryMs', () => {
     expect(lastReflogEntryMs(path.join(dir, 'empty'))).toBeNull();
     fs.writeFileSync(path.join(dir, 'junk'), 'not a reflog line\n');
     expect(lastReflogEntryMs(path.join(dir, 'junk'))).toBeNull();
+  });
+});
+
+describe('reclaimPathRefusal — the executor rail independent of the plan (WI-10006139)', () => {
+  const canonical = '/w/papercusp';
+  const home = '/home/u';
+  it('refuses the canonical tree, any ancestor of it, home, any ancestor of home, and /', () => {
+    for (const p of [canonical, '/w', '/', home, '/home']) expect(reclaimPathRefusal(p, canonical, home)).not.toBeNull();
+  });
+  it('allows a sibling tree and a linked worktree NESTED inside the canonical tree', () => {
+    expect(reclaimPathRefusal('/w/papercusp-relcut-0023-win', canonical, home)).toBeNull();
+    expect(reclaimPathRefusal('/w/papercusp/.papercusp/worktrees/desktop-release-0.0.19', canonical, home)).toBeNull();
+    // a shared name prefix is not containment
+    expect(reclaimPathRefusal('/w/papercusp2', canonical, home)).toBeNull();
+    expect(reclaimPathRefusal('/home/u/.papercusp/relcut', canonical, home)).toBeNull();
   });
 });
 
@@ -486,6 +503,57 @@ describe('gather + execute against a real temporary repo', () => {
     expect(fs.existsSync(path.join(offload, 'relcut-0023-win'))).toBe(false);
     expect(() => fs.lstatSync(tree)).toThrow();
   });
+
+  // WI-10006139: the planner offered `.papercusp/worktrees/desktop-release-0.0.19` (a linked
+  // worktree NESTED in the canonical tree) as named-only, and the executor then refused it as
+  // "overlaps the canonical tree" — a descendant is not the canonical tree or an ancestor.
+  it('removes a linked worktree nested INSIDE the canonical tree and leaves the canonical repo intact', async () => {
+    const tree = path.join(repo, '.papercusp', 'worktrees', 'desktop-release-0.0.19');
+    fs.mkdirSync(path.dirname(tree), { recursive: true });
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    expect(plan.verdicts.find((v) => v.path === tree)?.disposition).toBe('named-only');
+    const res = await executeCutReclaim(plan, [tree], {
+      scanHolders: () => ({ verified: true, holders: new Map() }),
+      archiveDir: path.join(ret, 'archive'),
+      appendAudit: () => {},
+    });
+    expect(res).toMatchObject({ ok: true, results: [{ path: tree, removed: true }] });
+    expect(fs.existsSync(tree)).toBe(false);
+    expect(fs.readdirSync(path.dirname(tree)).filter((n) => n.startsWith('.reclaim-trash-'))).toEqual([]);
+    expect(g(repo, 'worktree', 'list', '--porcelain')).not.toContain('desktop-release-0.0.19');
+    expect(fs.statSync(path.join(repo, '.git')).isDirectory()).toBe(true);
+    expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('staging');
+  });
+
+  // WI-10006139: archiveTreeDiffs collected `git diff --binary HEAD` through the buffered git()
+  // helper (64 MB maxBuffer), so a cut tree whose staged sidecar diff was 158 MB could never be
+  // archived — and therefore never removed. The archive must stream, with no size ceiling.
+  it('archives a tracked diff larger than 64 MB (streamed, not buffered) and then removes the tree', async () => {
+    const tree = path.join(tmp, 'relcut-big-diff');
+    const blob = path.join(repo, 'sidecar.bin');
+    // --binary emits a forward AND a reverse literal; 32 MB of incompressible bytes each way
+    // base85-encodes to well over 64 MB (asserted below, so the test cannot pass vacuously).
+    fs.writeFileSync(blob, crypto.randomBytes(32 * 1024 * 1024));
+    g(repo, 'add', 'sidecar.bin');
+    g(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'sidecar');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.writeFileSync(path.join(tree, 'sidecar.bin'), crypto.randomBytes(32 * 1024 * 1024));
+    const plan = await gather({ authoredWork: () => ({ ok: true as const, authored: [], machineWritten: 1 }) });
+    const res = await executeCutReclaim(plan, [tree], {
+      scanHolders: () => ({ verified: true, holders: new Map() }),
+      archiveDir: path.join(ret, 'archive'),
+      appendAudit: () => {},
+    });
+    expect(res).toMatchObject({ ok: true, results: [{ path: tree, removed: true }] });
+    const [archive] = fs.readdirSync(path.join(ret, 'archive'));
+    const archivePath = path.join(ret, 'archive', archive as string);
+    expect(fs.statSync(archivePath).size).toBeGreaterThan(64 * 1024 * 1024);
+    const head = fs.readFileSync(archivePath, 'utf8').slice(0, 4096);
+    expect(head).toContain('## HEAD ');
+    expect(head).toContain('GIT binary patch');
+    expect(fs.existsSync(tree)).toBe(false);
+  }, 120_000);
 
   it('refuses a protected target and removes nothing; a fresh holder hit aborts that tree', async () => {
     const tree = path.join(tmp, 'relcut-live');

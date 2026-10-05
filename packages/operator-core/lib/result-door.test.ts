@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
+import { applyPayloadTier } from '@papercusp/tooldef';
 
 // P-023: the door resolves its constants through the config surface per call — stub it
 // (the config module has its own suite) so these tests run PG-free and one case can
@@ -331,6 +332,96 @@ describe('applyResultDoor', () => {
     });
     expect(body.results.some((row) => typeof row.id === 'string')).toBe(true);
     expect((doored as any)._meta?.resultDoor).toMatchObject({ truncated: true, spillUri: expect.any(String) });
+  });
+
+  it('recipes:run nested work-item rows retain identity, state, and full-detail recovery through both shapers', () => {
+    const recipeId = 'read-existing-agent-operability-work-items';
+    const expectedIds = Array.from({ length: 10 }, (_, i) => 'WI-' + (4600 + i));
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: recipeId,
+        result: {
+          ok: true,
+          summary: expectedIds.map((id, i) => ({
+            ok: true,
+            results: [{
+              ok: true,
+              id,
+              workItem: {
+                id,
+                title: 'Operability item ' + i,
+                state: i % 2 === 0 ? 'todo' : 'passed',
+                summary: 'detail '.repeat(1_000),
+              },
+            }],
+            counts: { ok: 1, failed: 0 },
+          })),
+          logs: [],
+          dryRun: false,
+          plannedMutations: [],
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(BUDGET_CHARS);
+
+    // This is the framework's generic recipes:run payload-tier path followed by
+    // the model-facing result door. It is a producer-shape fixture, not a replay
+    // of the saved recipe: recipes:get currently reports that recipe unrunnable.
+    const tiered = applyPayloadTier({
+      toolName: 'recipes:run',
+      shape: undefined,
+      response: { data: source },
+      tier: 'trimmed',
+      args: { id: recipeId },
+      rawDispatchTemplate: "tools:invoke { name:'{tool}', args:{ …original args, payloadTier:'full' } }",
+      log: vi.fn(),
+    });
+    expect(tiered.payloadProjection).toMatchObject({ truncated: true, tier: 'trimmed' });
+
+    const tieredBody = tiered.data as any;
+    const tieredRows = tieredBody.results[0].result.summary as any[];
+    expect(tieredRows).toHaveLength(expectedIds.length);
+    expect(tieredRows.map((row) => row.results[0].id)).toEqual(expectedIds);
+    expect(tieredRows.map((row) => row.results[0].workItem.state)).toEqual(
+      expectedIds.map((_, i) => (i % 2 === 0 ? 'todo' : 'passed')),
+    );
+    for (const row of tieredRows) {
+      expect(row.results[0].workItem).toMatchObject({ _partial: true });
+      expect(row.results[0].workItem._omitted).toContain('summary');
+    }
+    expect(tieredBody._projection.cursor).toEqual({
+      kind: 'full-detail',
+      tool: 'recipes:run',
+      args: { id: recipeId, payloadTier: 'full' },
+    });
+    expect(tieredBody._projection.next).toContain("tools:invoke { name:'recipes:run'");
+
+    const doored = applyResultDoor(
+      {
+        content: [{ type: 'text' as const, text: JSON.stringify(tieredBody) }],
+        _meta: { payloadProjection: tiered.payloadProjection },
+      },
+      { toolName: 'recipes:run', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const reference = boundedBody(doored);
+    expect((doored as any)._meta?.resultDoor).toMatchObject({
+      truncated: true,
+      spillUri: expect.any(String),
+    });
+    expect(reference._projection.next).toContain('capability:read');
+    expect(reference._projection.next).toContain("payloadTier:'full'");
+
+    const emitted = JSON.parse(readSpill('ws-1', 'recipes:run', RUN_ID)) as any;
+    const emittedRows = emitted.results[0].result.summary as any[];
+    expect(emittedRows).toHaveLength(expectedIds.length);
+    expect(emittedRows.map((row) => row.results[0].id)).toEqual(expectedIds);
+    expect(emittedRows.map((row) => row.results[0].workItem.state)).toEqual(
+      expectedIds.map((_, i) => (i % 2 === 0 ? 'todo' : 'passed')),
+    );
+    expect(emitted._projection.cursor).toEqual(tieredBody._projection.cursor);
   });
 
   it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
@@ -901,7 +992,10 @@ describe('applyResultDoor', () => {
 
     // The visible summary keeps the requested key/state so ok:true cannot read as
     // absence; the named cursor still recovers every row that the bounded body cut.
-    const spill = JSON.parse(readSpill('ws-1', 'events:status', RUN_ID)) as {
+    const spillText = readSpill('ws-1', 'events:status', RUN_ID);
+    const bodyOffset = (body._projection.cursor as { bodyOffsetInPayload?: number }).bodyOffsetInPayload;
+    expect(bodyOffset).toEqual(expect.any(Number));
+    const spill = JSON.parse(Buffer.from(spillText, 'utf8').subarray(bodyOffset!).toString('utf8')) as {
       event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };
     };
     expect(spill.event_inspection).toMatchObject({
@@ -979,7 +1073,10 @@ describe('applyResultDoor', () => {
     });
     expect(visibleWaiters).toContain('projection-truncation');
 
-    const spill = JSON.parse(readSpill('ws-2', 'events:status', RUN_ID)) as {
+    const spillText = readSpill('ws-2', 'events:status', RUN_ID);
+    const bodyOffset = (body._projection.cursor as { bodyOffsetInPayload?: number }).bodyOffsetInPayload;
+    expect(bodyOffset).toEqual(expect.any(Number));
+    const spill = JSON.parse(Buffer.from(spillText, 'utf8').subarray(bodyOffset!).toString('utf8')) as {
       event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };
     };
     expect(spill.event_inspection).toMatchObject({
