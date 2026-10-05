@@ -84,8 +84,8 @@ const captureVisibleBody = async (selector: string, expectedBody: string, phase:
       for(const [index,line] of ${JSON.stringify(lines)}.entries()){
         if(line.length){const r=document.createRange();r.setStart(node,offset);r.setEnd(node,offset+line.length);
           const rects=Array.from(r.getClientRects());
-          if(rects.length && rects.every(b=>b.top>=top && b.bottom<=bottom && b.left>=0 && b.right<=innerWidth &&
-            document.elementsFromPoint((b.left+b.right)/2,(b.top+b.bottom)/2).some(e=>e===p || p.contains(e))))visible.push(index);
+          if(rects.length && rects.every(b=>{const e=document.elementFromPoint((b.left+b.right)/2,(b.top+b.bottom)/2);
+            return b.top>=top && b.bottom<=bottom && b.left>=0 && b.right<=innerWidth && (e===p || p.contains(e));}))visible.push(index);
         }offset+=line.length+1;
       }
       return {visible,scrollTop:p.scrollTop,clientHeight:p.clientHeight,scrollHeight:p.scrollHeight,viewport:{width:innerWidth,height:innerHeight},box:{top:box.top,bottom:box.bottom},atEnd:p.scrollTop+p.clientHeight>=p.scrollHeight-1};
