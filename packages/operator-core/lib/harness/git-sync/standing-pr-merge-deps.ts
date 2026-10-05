@@ -34,7 +34,9 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { MergeTestRecord } from './decide-merge-gate';
 import type { AdvanceTargetResult, StandingPrMergeDeps } from './standing-pr-merge';
 
-const execFileP = promisify(execFile);
+let execFilePMemo: typeof execFile.__promisify__ | null = null;
+const execFileP = ((...args: unknown[]) =>
+  Reflect.apply((execFilePMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 export const STANDING_PR_MERGE_TESTS_META_KEY = 'standing_pr_merge_tests';
 export const STANDING_PR_MERGE_REF_PREFIX = 'refs/papercusp/standing-merge';
