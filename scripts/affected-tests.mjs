@@ -79,6 +79,7 @@ import {
   executedMapResultPath,
   formatExecutedMapAlarmLines,
   formatExecutedMapResultLines,
+  formatTestReuseAuditResultLines,
   formatExecutedMapTotalLine,
   readExecutedMapResults,
   resolveTaskReportExpectation,
@@ -311,6 +312,8 @@ import {
 const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString("hex")}`;
 /** WI-10003603: taskKey → the executed-source-map result file its initial invocation was given. */
 const executedMapResultFiles = new Map();
+// Snapshot at initial settlement: a fresh retry must never replace a first-attempt audit miss.
+const initialExecutedMapReads = new Map();
 /** WI-10003792: taskKey → whether that task's recorder is EXPECTED to report (resolved at arming). */
 const executedMapReportExpectations = new Map();
 // WI-41782: keep one attributable entry in the SHARED TMPDIR instead of one
@@ -7468,6 +7471,12 @@ try {
     // cache does filesystem work whose environmental failures are tolerated. Ordering them
     // this way keeps a slow or failing cache write from costing the tally.
     foldSettledTaskCoverage(scheduled);
+    const initialKey = taskKey(scheduled.task.t);
+    const initialResultFile = executedMapResultFiles.get(initialKey);
+    if (initialResultFile) initialExecutedMapReads.set(initialKey, {
+      ...readExecutedMapResults(initialResultFile),
+      expectsReport: executedMapReportExpectations.get(initialKey)?.expectsReport ?? null,
+    });
     persistCleanFirstPassTaskVerdict(scheduled);
   },
   // WI-1490656: send the shared-admission queue notices through `errSync`, so they land in
@@ -7838,8 +7847,8 @@ for (const scheduled of initialPool.results) {
   // reporter's own line went to the task's stderr, which the gate discards.
   const executedMapResultFile = executedMapResultFiles.get(taskKey(t));
   if (executedMapResultFile) {
-    const read = {
-      ...readExecutedMapResults(executedMapResultFile),
+    const read = initialExecutedMapReads.get(taskKey(t)) ?? {
+      status: "no-report", results: [], malformed: 0,
       expectsReport: executedMapReportExpectations.get(taskKey(t))?.expectsReport ?? null,
     };
     executedMapReads.push(read);
@@ -7847,6 +7856,9 @@ for (const scheduled of initialPool.results) {
     for (const line of formatExecutedMapResultLines(label, read)) outSync(line);
     for (const line of formatExecutedMapAlarmLines(label, read)) errSync(line);
   }
+  for (const line of formatTestReuseAuditResultLines(
+    `${t.ws.name}::${t.script}`, initialExecutedMapReads.get(taskKey(t)), t.reuseWatch,
+  )) outSync(line);
   let r = scheduled.value;
   const prep = retryPrep.get(scheduled.index);
   const { watchdogTimedOut } = prep;
