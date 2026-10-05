@@ -2092,7 +2092,7 @@ describe('formatAdmissionProspect', () => {
     // The sibling of formatAdmissionHolder's wiring test. Without this the projection could
     // be silently dropped from the notice and every unit test above would still pass.
     expect(SCHEDULER_SRC).toMatch(
-      /formatAdmissionProspect\(owner,\s*\{\s*elapsedMs,\s*budgetMs:\s*timeoutMs\s*\}\)/,
+      /formatAdmissionProspect\(owner,\s*\{\s*elapsedMs,\s*budgetMs:\s*remainingQueueMs\s*\}\)/,
     );
   });
 });
