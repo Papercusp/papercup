@@ -27,8 +27,11 @@ import { STANDING_PR_BRANCH } from './decide-standing-pr';
 import { POT_FORK_REMOTE_NAME, type PotIntegrationModeRead } from './pot-integration-mode';
 import {
   createDefaultPublishPromotionDeps,
+  createDefaultSendStandingPrNowDeps,
   publishPromotion,
+  sendStandingPrNow,
   type PublishPromotionDeps,
+  type SendStandingPrNowDeps,
 } from './promotion-push-target';
 import type { StandingPrDeps } from './standing-pr';
 
@@ -172,6 +175,92 @@ async function realDeps(
   };
   return { deps, logs };
 }
+
+/** realDeps plus the real `git ls-remote pot-fork <ref>` reader the on-demand send uses. */
+async function realSendDeps(
+  fx: Fixture,
+  opts: { mode: PotIntegrationModeRead | Error; prHost?: StandingPrDeps | null },
+): Promise<SendStandingPrNowDeps> {
+  const { deps } = await realDeps(fx, opts);
+  const { readForkHead } = await createDefaultSendStandingPrNowDeps(() => {});
+  return { ...deps, readForkHead };
+}
+
+describe('on-demand "send what is green now" with real git (P-020)', () => {
+  let fx: Fixture;
+
+  beforeEach(() => {
+    fx = makeFixture();
+  });
+
+  afterEach(() => {
+    rmSync(fx.root, { recursive: true, force: true });
+  });
+
+  it('sends the working copy main that already passed the gate, and pushes no code of its own', async () => {
+    const first = fakePrHost(fx.checkout);
+    const publish = await realDeps(fx, { mode: { mode: 'review', source: 'set' }, prHost: first.deps });
+    await publishPromotion(
+      { repoPath: fx.checkout, workspaceId: 'ws-test', sha: fx.promotedSha, ref: 'main' },
+      publish.deps,
+    );
+    // A local commit that never passed the gate must NOT ride along on an on-demand send.
+    writeFileSync(join(fx.checkout, 'feature.txt'), 'untested\n');
+    git(fx.checkout, 'commit', '-am', 'untested local work');
+    const untestedSha = git(fx.checkout, 'rev-parse', 'HEAD');
+
+    const existing = {
+      ref: { remote: UPSTREAM_URL, number: 42 },
+      state: 'open',
+      title: 'standing',
+      body: null,
+      head_ref: STANDING_PR_BRANCH,
+      base_ref: 'main',
+      head_sha: fx.promotedSha,
+      url: 'https://github.com/acme/widgets/pull/42',
+    } as unknown as Pr;
+    const host = fakePrHost(fx.checkout, [existing]);
+    const outcome = await sendStandingPrNow(
+      { repoPath: fx.checkout, workspaceId: 'ws-test', ref: 'main' },
+      await realSendDeps(fx, { mode: { mode: 'review', source: 'set' }, prHost: host.deps }),
+    );
+
+    expect(outcome).toMatchObject({ kind: 'sent', potHomeSlug: 'widgets', sha: fx.promotedSha });
+    if (outcome.kind === 'sent') expect(outcome.standingPr).toMatchObject({ ok: true, prNumber: 42 });
+    expect(host.opened).toHaveLength(0);
+    expect(branchSha(fx.fork, STANDING_PR_BRANCH)).toBe(fx.promotedSha);
+    expect(branchSha(fx.fork, 'main')).toBe(fx.promotedSha);
+    expect(hasObject(fx.fork, untestedSha)).toBe(false);
+    expect(branchSha(fx.upstream, 'main')).toBe(fx.baseSha);
+  });
+
+  it('a working copy with no main yet: nothing has passed the gate, so nothing is sent', async () => {
+    git(fx.fork, 'symbolic-ref', 'HEAD', 'refs/heads/standby');
+    git(fx.fork, 'update-ref', '-d', 'refs/heads/main');
+    const host = fakePrHost(fx.checkout);
+    const outcome = await sendStandingPrNow(
+      { repoPath: fx.checkout, workspaceId: 'ws-test', ref: 'main' },
+      await realSendDeps(fx, { mode: { mode: 'review', source: 'set' }, prHost: host.deps }),
+    );
+
+    expect(outcome.kind).toBe('nothing-green');
+    expect(host.listed).toHaveLength(0);
+    expect(host.opened).toHaveLength(0);
+    expect(branchSha(fx.fork, STANDING_PR_BRANCH)).toBeNull();
+  });
+
+  it('direct mode: there is no standing PR to send', async () => {
+    const host = fakePrHost(fx.checkout);
+    const outcome = await sendStandingPrNow(
+      { repoPath: fx.checkout, workspaceId: 'ws-test', ref: 'main' },
+      await realSendDeps(fx, { mode: { mode: 'direct', source: 'set' }, prHost: host.deps }),
+    );
+
+    expect(outcome.kind).toBe('not-review');
+    expect(host.listed).toHaveLength(0);
+    expect(branchSha(fx.fork, STANDING_PR_BRANCH)).toBeNull();
+  });
+});
 
 describe('working-copy promotion with real git (P-020)', () => {
   let fx: Fixture;
