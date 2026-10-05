@@ -236,6 +236,7 @@ describe('reports:publish — side effects are reported, never fatal', () => {
     // several microtask ticks — a single `await Promise.resolve()` lands before it
     // and would read as "never invalidated".
     await vi.waitFor(() => expect(notifySyncInvalidateM).toHaveBeenCalledWith('reports.library', {}));
+    expect(notifySyncInvalidateM).toHaveBeenCalledWith('reports.get', {});
   });
 
   it('does NOT emit or invalidate when the publish was refused', async () => {
@@ -293,6 +294,8 @@ describe('reports:retire — write authority is narrower than the read matrix', 
     const out = body(await retireTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out);
     expect(out.results[0]).toMatchObject({ ok: true, id: 'rpt_1' });
     expect(retireReportM).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(notifySyncInvalidateM).toHaveBeenCalledWith('reports.get', {}));
+    expect(notifySyncInvalidateM).toHaveBeenCalledWith('reports.library', {});
   });
 
   it('refuses not_author for a VISIBLE report the caller did not write — and does not retire it', async () => {

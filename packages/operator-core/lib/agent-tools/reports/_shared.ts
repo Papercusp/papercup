@@ -305,7 +305,7 @@ export function toRefusal(err: unknown): ReportRefusal {
 }
 
 /**
- * Fire-and-forget the Reports-tab invalidation after a write.
+ * Fire-and-forget the Reports-tab and pinned-report invalidations after a write.
  *
  * Detached on purpose: a report IS published once the row commits, so a slow or
  * unavailable SSE bus must not fail the call or make the caller retry a write that
@@ -314,6 +314,11 @@ export function toRefusal(err: unknown): ReportRefusal {
  */
 export function invalidateReportsSync(log?: (m: string) => void): void {
   void trackDetached(import('../../sync-sse'))
-    .then(({ notifySyncInvalidate }) => notifySyncInvalidate(REPORTS_SYNC_QUERY, {}))
+    .then(({ notifySyncInvalidate }) => Promise.all([
+      notifySyncInvalidate(REPORTS_SYNC_QUERY, {}),
+      // The report store emits through this producer helper, rather than a PG
+      // table trigger. Retirement changes metadata read by an exact report pin.
+      notifySyncInvalidate('reports.get', {}),
+    ]))
     .catch((e) => log?.(`reports sync invalidate failed: ${e instanceof Error ? e.message : e}`));
 }
