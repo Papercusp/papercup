@@ -219,17 +219,23 @@ describe('durable run-analytics copy (migration 650)', () => {
     await insertRunParams(src, runId, { harnessCommit: 'declared-harness', substrateCommit: 'declared-substrate',
       mutableRoles: ['worker'], judgeModel: 'recorded-model', judgeTemp: 0,
       weights: { d1: 0.5, d2: 0.25, d3: 0.25 }, rubricHash: RH });
+    const decode = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value;
+    const [originalRun] = await src`SELECT row_to_json(r) AS evidence FROM harness_gym.gym_runs r WHERE run_id = ${runId}`;
+    const [originalParams] = await src`SELECT row_to_json(p) AS params FROM harness_gym.gym_runs_params p WHERE run_id = ${runId}`;
+    expect(decode(originalRun.evidence).deterministic_signals).toEqual(signals);
     const readEvidence = () => dst`
-      SELECT deterministic_signals, trace_ref, distilled_ref, run_params
+      SELECT run_evidence,
+             run_evidence->'deterministic_signals' AS deterministic_signals,
+             run_evidence->>'trace_ref' AS trace_ref, run_evidence->>'distilled_ref' AS distilled_ref, run_params
         FROM harness_gym_durable.gym_runs
        WHERE workspace_id = 'evidence-ws' AND harness_slug = 'evidence-harness' AND run_id = ${runId}`;
     await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'evidence-ws', harnessSlug: 'evidence-harness' });
     const [retained] = await readEvidence();
-    const decode = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value;
+    // Preserve the entire source row, including workflow/harness identity and future fields.
+    expect(decode(retained.run_evidence)).toEqual(decode(originalRun.evidence));
     expect(decode(retained.deterministic_signals)).toEqual(signals);
     expect(retained.trace_ref).toBe('/removed-scratch/trace.json');
     expect(retained.distilled_ref).toBe('/removed-scratch/distilled.txt');
-    const [originalParams] = await src`SELECT row_to_json(p) AS params FROM harness_gym.gym_runs_params p WHERE run_id = ${runId}`;
     expect(decode(retained.run_params)).toEqual(decode(originalParams.params));
     expect(decode(retained.run_params)).toMatchObject({ run_id: runId, harness_commit: 'declared-harness',
       substrate_commit: 'declared-substrate', mutable_roles: ['worker'], judge_model: 'recorded-model',
@@ -242,7 +248,7 @@ describe('durable run-analytics copy (migration 650)', () => {
        WHERE workspace_id = 'evidence-ws' AND harness_slug = 'evidence-harness' AND run_id = 'cand-c0::gym-train::c0::r0'`;
     expect(unmeasured.run_params).toBeNull();
     const [foreign] = await dst`
-      SELECT deterministic_signals, run_params FROM harness_gym_durable.gym_runs
+      SELECT run_evidence->'deterministic_signals' AS deterministic_signals, run_params FROM harness_gym_durable.gym_runs
        WHERE workspace_id = 'ws1' AND harness_slug = 'h1' AND run_id = ${runId}`;
     expect(decode(foreign.deterministic_signals)).toEqual({ regressions: false });
     expect(foreign.run_params).toBeNull();
@@ -255,7 +261,8 @@ describe('durable run-analytics copy (migration 650)', () => {
     await insertRun(src, { runId, variantId: 'baseline', taskId: 'gym-train', cycle: 9 });
     await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'unknown-ws', harnessSlug: 'unknown-harness' });
     const [row] = await dst`
-      SELECT deterministic_signals, trace_ref, distilled_ref, run_params
+      SELECT run_evidence->'deterministic_signals' AS deterministic_signals,
+             run_evidence->>'trace_ref' AS trace_ref, run_evidence->>'distilled_ref' AS distilled_ref, run_params
         FROM harness_gym_durable.gym_runs
        WHERE workspace_id = 'unknown-ws' AND harness_slug = 'unknown-harness' AND run_id = ${runId}`;
     expect(row).toEqual({ deterministic_signals: null, trace_ref: null, distilled_ref: null, run_params: null });

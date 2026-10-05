@@ -1691,6 +1691,7 @@ export type {
   ProviderDaemonFetchParams,
   ProviderContractVersion,
   ProviderOAuthDescriptor,
+  ProviderOAuthIdentity,
   ProviderDescriptor,
   ProviderSyncRequest,
   ProviderRecord,
