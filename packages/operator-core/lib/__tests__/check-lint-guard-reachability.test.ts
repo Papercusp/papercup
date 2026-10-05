@@ -168,6 +168,7 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
   it('resolves a guard path assigned through a nullish fallback before executing it', () => {
     const evidence = extractTestExecutionEvidence(
       `
+        import { join } from 'node:path';
         const GUARD_REL = 'scripts/check-x.mjs';
         const GUARD = process.env.GUARD_UNDER_TEST ?? join(ROOT, GUARD_REL);
         execFileSync('node', [GUARD, '--list']);
@@ -175,6 +176,21 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
       'packages/operator-core/lib/__tests__/x.test.ts',
     );
     expect(evidence.implementationPaths).toContain('scripts/check-x.mjs');
+  });
+
+  it('keeps a path composed from the repository root as one executed script argument', () => {
+    const evidence = extractTestExecutionEvidence(
+      `
+        import { join as pathJoin, resolve as pathResolve } from 'node:path';
+        const REPO_ROOT = pathResolve(pathJoin(__dirname, '..', '..', '..', '..'));
+        const GUARD_REL = 'scripts/check-x.mjs';
+        const GUARD = process.env.GUARD_UNDER_TEST ?? pathJoin(REPO_ROOT, GUARD_REL);
+        execFileSync('node', [GUARD, '--list']);
+      `,
+      'apps/operator/scripts/__tests__/x.test.ts',
+    );
+
+    expect([...evidence.implementationPaths]).toEqual(['../../../../scripts/check-x.mjs']);
   });
 
   it('does not let a LONGER guard name credit its own prefix', () => {

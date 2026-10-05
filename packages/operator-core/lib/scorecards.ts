@@ -2978,6 +2978,28 @@ export function computeRubricStaleness(
   };
 }
 
+/** Observation age of the bounded, retained trend cohort; independent of rubric drift. */
+export interface RubricObservationAge {
+  status: 'fresh' | 'stale' | 'mixed' | 'unknown';
+  /** Only present when the caller supplied a finite positive horizon. */
+  horizonSec?: number;
+  /** Clock used for the assessment, absent only for an invalid injected clock. */
+  asOf?: string;
+  coverage: {
+    population: 'retained-scorecards';
+    total: number;
+    timed: number;
+    missing: number;
+    invalid: number;
+    future: number;
+  };
+  /** Ages/counts cover trustworthy timestamps only; coverage may still be partial. */
+  ageSec?: { min: number; max: number };
+  freshCount?: number;
+  staleCount?: number;
+  reason: string;
+}
+
 /** A rubric's qualitative health trend — per-criterion rating time-series + direction. */
 export interface RubricTrend {
   rubricRef: string;
@@ -3001,6 +3023,8 @@ export interface RubricTrend {
   /** Filing time remains separate from the subject observation window. */
   filingWindow?: { from: string; to: string };
   observationWindow?: { from: string; to: string };
+  /** Caller-horizon observation age, never inferred from filing time or criterion staleness. */
+  observationAge: RubricObservationAge;
   filingLagMs?: { min: number; max: number; mean: number; measured: number };
   /** Exact identities behind the aggregate, opt-in alongside the rating series. */
   scorecardIdentities?: Array<Pick<ScorecardRow,
@@ -3078,6 +3102,10 @@ export interface ScorecardTrendFilter {
   since?: string;
   /** Max scorecards to aggregate (newest-first read; default 500). */
   limit?: number;
+  /** Max observation age in seconds; omitted/invalid means no age verdict. */
+  observationMaxAgeSec?: number;
+  /** Hermetic clock seam for source-build tests; the public tool uses Date.now(). */
+  nowMs?: number;
   /**
    * Include each criterion's chronological series as RLE runs (WI-2943). Default
    * FALSE: the raw per-scorecard series dominated the payload (~84% at 200
@@ -3090,6 +3118,56 @@ export interface ScorecardTrendFilter {
    * replication drills can be long, and most trend consumers need only aggregates.
    */
   includeDefinition?: boolean;
+}
+
+function computeTrendObservationAge(
+  cards: readonly ScorecardRow[],
+  maxAgeSec: number | undefined,
+  nowMs: number,
+): RubricObservationAge {
+  const horizonSec = maxAgeSec != null && Number.isFinite(maxAgeSec) && maxAgeSec > 0 ? maxAgeSec : undefined;
+  const validClock = Number.isFinite(nowMs) && Number.isFinite(new Date(nowMs).getTime());
+  const coverage: RubricObservationAge['coverage'] = {
+    population: 'retained-scorecards', total: cards.length, timed: 0, missing: 0, invalid: 0, future: 0,
+  };
+  const ages: number[] = [];
+  for (const card of cards) {
+    const subject = card.subject;
+    if (!subject?.windowEnd) {
+      coverage.missing += 1;
+      continue;
+    }
+    const end = Date.parse(subject.windowEnd);
+    const start = subject.windowStart ? Date.parse(subject.windowStart) : undefined;
+    if (!Number.isFinite(end) || (start !== undefined && (!Number.isFinite(start) || start > end))) {
+      coverage.invalid += 1;
+    } else if (validClock && end > nowMs) {
+      coverage.future += 1;
+    } else {
+      coverage.timed += 1;
+      if (validClock) ages.push((nowMs - end) / 1000);
+    }
+  }
+  const freshCount = horizonSec === undefined ? undefined : ages.filter((age) => age <= horizonSec).length;
+  const staleCount = freshCount === undefined ? undefined : ages.length - freshCount;
+  const evidence = {
+    ...(horizonSec !== undefined ? { horizonSec } : {}),
+    ...(validClock ? { asOf: new Date(nowMs).toISOString() } : {}),
+    coverage,
+    ...(ages.length ? { ageSec: { min: Math.min(...ages), max: Math.max(...ages) } } : {}),
+    ...(horizonSec !== undefined && validClock ? { freshCount, staleCount } : {}),
+  };
+  if (!validClock) return { ...evidence, status: 'unknown', reason: 'Observation age requires a valid assessment clock.' };
+  if (horizonSec === undefined) return { ...evidence, status: 'unknown', reason: 'Supply a finite positive observationMaxAgeSec to judge observation age.' };
+  if (!cards.length) return { ...evidence, status: 'unknown', reason: 'No scorecards remain in the retained trend cohort.' };
+  if (coverage.timed !== coverage.total) {
+    return { ...evidence, status: 'unknown', reason: 'Retained timestamp coverage is incomplete: missing, invalid or future observation bounds cannot certify cohort age.' };
+  }
+  const status = freshCount === cards.length ? 'fresh' : freshCount === 0 ? 'stale' : 'mixed';
+  return {
+    ...evidence, status,
+    reason: `${freshCount}/${cards.length} retained observations end within the caller's ${horizonSec}s horizon; ${staleCount} end before it.`,
+  };
 }
 
 /**
@@ -3269,6 +3347,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
     ...(filter.includeDefinition && trendRubric ? { definition: trendRubric } : {}),
     scorecardCount: finalCards.length,
+    observationAge: computeTrendObservationAge(finalCards, filter.observationMaxAgeSec, filter.nowMs ?? Date.now()),
     sample: { limit: sampleLimit, inputCount: rows.length },
     supersededExcluded,
     preContractResetExcluded,

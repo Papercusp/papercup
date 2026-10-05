@@ -283,6 +283,7 @@ import './slack-org-sync-action';
 // enterprise-data-sources-2026-10-01 P-019 / D-025: GitHub Issues ticket connector cadence
 // (repository membership sync + one bounded poll per source); inert with no source connected.
 import './github-issues-sync-action';
+import './connector-sync-action';
 import './personal-vault-import-action';
 // overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the
 // one-shot `overwatch-wake` routine fires — computes the OverwatchBrief + launches

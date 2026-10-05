@@ -317,6 +317,46 @@ export async function refreshConnectionCredential(
   return { ok: true, accessToken: tokens.accessToken };
 }
 
+/** Refresh an access token this many ms before its recorded expiry. */
+const ACCESS_TOKEN_SKEW_MS = 60_000;
+
+/**
+ * The access token for exactly one descriptor-provisioned source's account
+ * (P-004 / D-006): the host-side half of `host.fetch`. Returns null for a
+ * source that holds no descriptor credential (a provider that needs no grant).
+ * A stored token is reused until shortly before its expiry, then refreshed
+ * through {@link refreshConnectionCredential}; a revoked or missing refresh
+ * grant marks the source reconnect-required and returns `{ reconnectRequired }`
+ * so the sync driver can stop retrying until the owner reconnects.
+ */
+export async function connectionAccessToken(
+  sql: postgres.Sql,
+  input: { workspaceId: string; harness: string; credentialRef: string | null; now?: number },
+): Promise<{ accessToken: string | null } | { reconnectRequired: true; reason: string }> {
+  const ref = input.credentialRef;
+  if (!ref || !ref.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX)) return { accessToken: null };
+  const fieldSeparator = ref.indexOf(':', DESCRIPTOR_OAUTH_PLUGIN_PREFIX.length);
+  if (fieldSeparator < 0) return { reconnectRequired: true, reason: `connection_credential_ref_invalid:${ref}` };
+  const plugin = ref.slice(0, fieldSeparator);
+  const adapter = descriptorConnectionAdapter(plugin);
+  if (!adapter) return { reconnectRequired: true, reason: `connection_provider_not_registered:${plugin}` };
+  const field = adapter.oauthField(ref);
+  const stored = await fsTokenStorage.read(plugin, input.harness);
+  const token = stored[field];
+  const expiresAt = stored[`${field}_expires_at`];
+  const now = input.now ?? Date.now();
+  const fresh = typeof expiresAt !== 'number' || expiresAt - ACCESS_TOKEN_SKEW_MS > now;
+  if (typeof token === 'string' && token && stored[`${field}_expired`] !== true && fresh) {
+    return { accessToken: token };
+  }
+  const refreshed = await refreshConnectionCredential(sql, adapter, {
+    workspaceId: input.workspaceId,
+    harness: input.harness,
+    field,
+  });
+  return refreshed.ok ? { accessToken: refreshed.accessToken } : { reconnectRequired: true, reason: refreshed.reason };
+}
+
 /* ─── Descriptor-derived connections ─── */
 
 function credentialGroupOf(descriptor: ProviderDescriptor): string {

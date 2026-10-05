@@ -788,7 +788,27 @@ function callExpressionName(expression) {
   return null;
 }
 
-function staticStringValues(node, constants) {
+function isPathResolverCall(expression, pathImports) {
+  if (ts.isIdentifier(expression)) return pathImports.named.has(expression.text);
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ['join', 'resolve'].includes(expression.name.text) &&
+    ts.isIdentifier(expression.expression)
+  ) {
+    return pathImports.namespaces.has(expression.expression.text);
+  }
+  return false;
+}
+
+function appendStaticPath(prefix, part) {
+  const value = String(part).replaceAll('\\', '/');
+  if (!value) return prefix;
+  if (value.startsWith('/') || /^[A-Za-z]:\//.test(value)) return value;
+  if (!prefix) return value;
+  return `${prefix.replace(/\/+$/, '')}/${value}`;
+}
+
+function staticStringValues(node, constants, pathImports) {
   if (!node) return [];
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
   if (
@@ -797,25 +817,37 @@ function staticStringValues(node, constants) {
     ts.isTypeAssertionExpression(node) ||
     ts.isSatisfiesExpression(node)
   ) {
-    return staticStringValues(node.expression, constants);
+    return staticStringValues(node.expression, constants, pathImports);
   }
   if (ts.isIdentifier(node)) return constants.get(node.text) ?? [];
   if (ts.isArrayLiteralExpression(node)) {
-    return node.elements.flatMap((element) => staticStringValues(element, constants));
+    return node.elements.flatMap((element) => staticStringValues(element, constants, pathImports));
   }
   if (
     ts.isBinaryExpression(node) &&
     [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken].includes(node.operatorToken.kind)
   ) {
     return [
-      ...staticStringValues(node.left, constants),
-      ...staticStringValues(node.right, constants),
+      ...staticStringValues(node.left, constants, pathImports),
+      ...staticStringValues(node.right, constants, pathImports),
     ];
   }
-  if (ts.isCallExpression(node) && ['join', 'resolve'].includes(callExpressionName(node.expression))) {
-    // `resolve(ROOT, 'scripts/check-x.mjs')` is still a statically-distinguishing
-    // argument. Keep its literal path component without trying to evaluate ROOT.
-    return node.arguments.flatMap((argument) => staticStringValues(argument, constants));
+  if (ts.isCallExpression(node) && isPathResolverCall(node.expression, pathImports)) {
+    // A composed path is one argv entry. Flattening its arguments turns a root's `..`
+    // segments into apparent script arguments before the distinguishing suffix, so the
+    // actual guard call is lost (EI-24958947185653426).
+    const argumentValues = node.arguments.map((argument) =>
+      staticStringValues(argument, constants, pathImports),
+    );
+    if (!argumentValues.length || !argumentValues.at(-1)?.length) return [];
+    let candidates = [''];
+    for (const values of argumentValues) {
+      if (!values.length) continue; // Dynamic roots can be omitted; preserve known suffixes.
+      candidates = candidates.flatMap((prefix) =>
+        values.map((value) => appendStaticPath(prefix, value)),
+      );
+    }
+    return [...new Set(candidates.filter(Boolean))];
   }
   return [];
 }
@@ -907,23 +939,33 @@ export function extractTestExecutionEvidence(sourceText, testFilePath = null) {
   const constants = new Map();
   const evidence = { scriptNames: new Set(), implementationPaths: new Set() };
   const scannerImports = new Map();
+  const pathImports = { named: new Set(), namespaces: new Set() };
+  const pathModules = new Set(['path', 'node:path', 'path/posix', 'node:path/posix']);
 
   const collectScannerImports = (node) => {
-    if (
-      testFilePath &&
-      ts.isImportDeclaration(node) &&
-      ts.isStringLiteral(node.moduleSpecifier) &&
-      node.importClause &&
-      node.importClause.namedBindings &&
-      ts.isNamedImports(node.importClause.namedBindings)
-    ) {
-      const modulePath = relative(
-        ROOT,
-        resolve(dirname(resolve(ROOT, testFilePath)), node.moduleSpecifier.text),
-      ).split(sep).join('/');
-      for (const element of node.importClause.namedBindings.elements) {
-        const imported = element.propertyName?.text ?? element.name.text;
-        if (imported === 'scanTree') scannerImports.set(element.name.text, modulePath);
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.importClause) {
+      const bindings = node.importClause.namedBindings;
+      if (pathModules.has(node.moduleSpecifier.text)) {
+        if (node.importClause.name) pathImports.namespaces.add(node.importClause.name.text);
+        if (bindings && ts.isNamespaceImport(bindings)) {
+          pathImports.namespaces.add(bindings.name.text);
+        } else if (bindings && ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements) {
+            const imported = element.propertyName?.text ?? element.name.text;
+            if (['join', 'resolve'].includes(imported)) pathImports.named.add(element.name.text);
+          }
+        }
+      }
+
+      if (testFilePath && bindings && ts.isNamedImports(bindings)) {
+        const modulePath = relative(
+          ROOT,
+          resolve(dirname(resolve(ROOT, testFilePath)), node.moduleSpecifier.text),
+        ).split(sep).join('/');
+        for (const element of bindings.elements) {
+          const imported = element.propertyName?.text ?? element.name.text;
+          if (imported === 'scanTree') scannerImports.set(element.name.text, modulePath);
+        }
       }
     }
     ts.forEachChild(node, collectScannerImports);
@@ -932,7 +974,7 @@ export function extractTestExecutionEvidence(sourceText, testFilePath = null) {
 
   const collectConstants = (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const values = staticStringValues(node.initializer, constants);
+      const values = staticStringValues(node.initializer, constants, pathImports);
       if (values.length) constants.set(node.name.text, values);
     }
     ts.forEachChild(node, collectConstants);
@@ -947,12 +989,12 @@ export function extractTestExecutionEvidence(sourceText, testFilePath = null) {
       if (name && TEST_PROCESS_CALLS.has(name)) {
         const args = node.arguments;
         if (name === 'exec' || name === 'execSync') {
-          const command = staticStringValues(args[0], constants)[0];
+          const command = staticStringValues(args[0], constants, pathImports)[0];
           if (command) recordShellInvocation(command, evidence);
         } else {
-          let executable = staticStringValues(args[0], constants)[0];
+          let executable = staticStringValues(args[0], constants, pathImports)[0];
           if (!executable && args[0]?.getText(source) === 'process.execPath') executable = 'node';
-          const commandArgs = staticStringValues(args[1], constants);
+          const commandArgs = staticStringValues(args[1], constants, pathImports);
           if (name === 'runGuardScript' || executable) {
             recordTestProcessInvocation(executable, commandArgs, evidence);
           }

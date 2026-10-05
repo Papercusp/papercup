@@ -412,14 +412,28 @@ describe('gate wiring safety contract', () => {
     expect(callback, 'the task settlement callback must be wired').not.toBeNull();
     const persisted: unknown[] = [];
     const coverage: unknown[] = [];
+    const initialExecutedMapReads = new Map<string, unknown>();
+    const executedMapSnapshot = { status: 'unknown', reason: 'report-not-written' };
     const onTaskSettled = runInNewContext(`(${callback![1]})`, {
+      observedCompletedTasks: 0,
       foldSettledTaskCoverage: (task: unknown) => coverage.push(task),
       persistCleanFirstPassTaskVerdict: (task: unknown) => persisted.push(task),
+      taskKey: (task: { key: string }) => task.key,
+      executedMapResultFiles: new Map([['test-task', '/results/test-task.json']]),
+      initialExecutedMapReads,
+      executedMapReportExpectations: new Map(),
+      readExecutedMapResults: (path: string) => {
+        expect(path).toBe('/results/test-task.json');
+        return executedMapSnapshot;
+      },
     });
-    const settledTask = { task: { key: 'test-task' }, value: { code: 0 } };
+    const settledTask = { task: { t: { key: 'test-task' } }, value: { status: 0 } };
     onTaskSettled(settledTask);
     expect(persisted).toEqual([settledTask]);
     expect(coverage).toEqual([settledTask]);
+    expect(initialExecutedMapReads.get('test-task')).toEqual({
+      ...executedMapSnapshot, expectsReport: null,
+    });
     expect(AFFECTED_TESTS_SRC).not.toContain('taskVerdictCacheUpdates');
   });
 

@@ -82,6 +82,7 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
   'facebook-personal-vault-poll',
   'slack-org-sync',
   'github-issues-sync',
+  'connector-sync',
 ]);
 
 /**

@@ -63,6 +63,15 @@ function auditRequestWorkerWindows(r: any) {
       configuredSidecar: null, requestAssignment: 'unknown', allocationOwner: 'unknown' };
   };
   const pin = (row: any) => [identity(row), row.parentPid, row.command?.sha256, row.command?.script];
+  const rawOs = (row: any) => row && pid(row.pid) && /^\d+$/.test(row.startTicks) &&
+    sha(row.executableSha256) && sha(row.command?.sha256) &&
+    (row.command.script === null || typeof row.command.script === 'string') &&
+    Number.isSafeInteger(row.parentPid) && row.parentPid >= 0 &&
+    positive(row.pssBytes) && positive(row.rssBytes) && row.pssBytes <= row.rssBytes &&
+    nonnegative(row.anonymousBytes);
+  const hasCensus = r.requestWorkerWindows.some((w: any) =>
+    w.before?.census !== undefined || w.after?.census !== undefined);
+  const ancestryPins = new Map<number, any>();
   const lifetimes = new Map<number, any>();
   const loadedIdentities = new Map<number, any>();
   const previousCounters = new Map<number, number>();
@@ -81,6 +90,7 @@ function auditRequestWorkerWindows(r: any) {
       w.after.endedAt <= time(outer.endedAt), 'ordered unforced window brackets');
     lastEnd = w.after.endedAt;
     const gaps: any[] = [];
+    const ancestry: any[] = [];
     for (const phase of ['before', 'after']) {
       const sample = w[phase], coverage = sample.coverage;
       requireWorker(Array.isArray(sample.observations) && sample.observations.length === selected.length &&
@@ -96,9 +106,53 @@ function auditRequestWorkerWindows(r: any) {
       }
       gaps.push({ phase, unsampledPids: coverage.unsampledPids,
         notCheckedBefore: coverage.notCheckedBefore, notCheckedAfter: coverage.notCheckedAfter });
+      const brackets = new Map<string, Map<number, any>>();
+      if (hasCensus) {
+        for (const bracket of ['before', 'after']) {
+          const raw = sample.census?.[bracket];
+          requireWorker(raw && Array.isArray(raw.descendants) && raw.descendants.length <= 64 &&
+            Array.isArray(raw.notChecked), 'complete bounded raw census brackets');
+          const rows = [raw.main, ...raw.descendants];
+          requireWorker(rows.every(rawOs) && new Set(rows.map((x: any) => x.pid)).size === rows.length &&
+            raw.main.pid === r.pid && isDeepStrictEqual(pin(raw.main), pin(census.os)),
+            'raw census lifetime population');
+          const byPid = new Map<number, any>(rows.map((x: any) => [x.pid, x]));
+          for (const row of raw.descendants) {
+            const seen = new Set<number>(); let ancestor = row;
+            while (ancestor.pid !== r.pid) {
+              requireWorker(!seen.has(ancestor.pid) && byPid.has(ancestor.parentPid), 'raw census ancestry');
+              seen.add(ancestor.pid); ancestor = byPid.get(ancestor.parentPid);
+            }
+          }
+          requireWorker(isDeepStrictEqual(raw.notChecked, coverage[bracket === 'before' ?
+            'notCheckedBefore' : 'notCheckedAfter']), 'raw census residue conservation');
+          if (bracket === 'after') requireWorker(isDeepStrictEqual(
+            rows.filter((x: any) => !selected.includes(x.pid)).map((x: any) => x.pid),
+            coverage.unsampledPids), 'raw unsampled population conservation');
+          brackets.set(bracket, byPid);
+        }
+      }
       const instances = new Set<string>();
       for (const observation of sample.observations) {
         const id = observation.after.pid, bundle = bundles.get(id);
+        if (hasCensus) for (const bracket of ['before', 'after']) {
+          const byPid = brackets.get(bracket)!;
+          requireWorker(byPid.has(id) && isDeepStrictEqual(observation[bracket], byPid.get(id)),
+            'exact selected raw bracket correspondence');
+          const chain = []; let ancestor = byPid.get(id);
+          while (true) {
+            const saved = pin(ancestor);
+            requireWorker(!ancestryPins.has(ancestor.pid) ||
+              isDeepStrictEqual(saved, ancestryPins.get(ancestor.pid)), 'stable selected ancestor lifetime/entry');
+            ancestryPins.set(ancestor.pid, saved);
+            chain.push({ pid: ancestor.pid, startTicks: ancestor.startTicks,
+              executableSha256: ancestor.executableSha256, parentPid: ancestor.parentPid,
+              command: { sha256: ancestor.command.sha256, script: ancestor.command.script } });
+            if (ancestor.pid === r.pid) break;
+            ancestor = byPid.get(ancestor.parentPid);
+          }
+          ancestry.push({ phase, bracket, pid: id, chain });
+        }
         for (const os of [observation.before, observation.after]) {
           requireWorker(pid(os.pid) && /^\d+$/.test(os.startTicks) && sha(os.executableSha256) &&
             sha(os.command?.sha256) && os.command.script === r.bundle.argvEntry &&
@@ -182,6 +236,9 @@ function auditRequestWorkerWindows(r: any) {
       isDeepStrictEqual(projectedAssignment(r.requestWorkerAssignments?.[index]), assignment) &&
       r.requestWorkerAssignments[index].window === w.window, 'conserved one-to-many request tuples');
     return { window: w.window, resources, assignment, coverage: gaps,
+      selectedAncestry: hasCensus ? { status: 'observed', brackets: ancestry,
+        definition: 'Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census' } :
+        { status: 'unknown', reason: 'Historical raw window has no saved ancestry census brackets' },
       servingWorkerPopulation: 'unknown', queryPopulation: 'bounded terminal ring; eviction remains unknown',
       unsampledAncestorLifetimes: 'unknown', allocationOwner: 'unknown', physicalSavings: 'unmeasured' };
   });
@@ -944,6 +1001,13 @@ describe('P011 independent selected-worker resource windows', () => {
         observations: observations(false), coverage: structuredClone(coverage) };
       const after = { startedAt: 2300 + window * 3000, endedAt: 2310 + window * 3000,
         observations: observations(true), coverage: structuredClone(coverage) };
+      for (const sample of [before, after] as any[]) {
+        const census = (bracket: string) => ({ main: structuredClone(sample.observations[0][bracket]),
+          descendants: [structuredClone(sample.observations[1][bracket]),
+            { ...structuredClone(main), pid: 9, parentPid: 7, startTicks: '12' }],
+          notChecked: structuredClone(sample.coverage[bracket === 'before' ? 'notCheckedBefore' : 'notCheckedAfter']) });
+        sample.census = { before: census('before'), after: census('after') };
+      }
       const resources = after.observations.map((row: any, i: number) => ({ pid: row.after.pid,
         startTicks: row.after.startTicks, executableSha256: row.after.executableSha256,
         processInstanceId: row.snapshot.processInstanceId, buildSha: r.buildSha, role: row.role,
@@ -973,7 +1037,36 @@ describe('P011 independent selected-worker resource windows', () => {
     expect(w.coverage[0].unsampledPids).toEqual([9]);
     expect(w.coverage[1].notCheckedAfter).toHaveLength(1);
     expect(w.servingWorkerPopulation).toBe('unknown');
+    expect(w.selectedAncestry.status).toBe('observed');
+    expect(w.selectedAncestry.brackets).toHaveLength(8);
     expect(w.physicalSavings).toBe('unmeasured');
+  });
+  it('leaves legacy missing census ancestry explicitly unknown without modifying saved input', () => {
+    const r = workerFixture();
+    for (const w of r.requestWorkerWindows) { delete w.before.census; delete w.after.census; }
+    const frozen = structuredClone(r), result = auditBaseline(r);
+    expect(result.requestWorkerWindows!.every((w: any) => w.selectedAncestry.status === 'unknown')).toBe(true);
+    expect(r).toEqual(frozen);
+  });
+  it('joins an unsampled intermediate ancestor using the exact raw brackets', () => {
+    const r = workerFixture();
+    for (const s of r.samples) {
+      s.descendants[0].parentPid = 9;
+      s.descendants.push({ ...structuredClone(s.os), pid: 9, parentPid: 7, startTicks: '12',
+        command: { ...s.os.command, script: '/runtime/wrapper.mjs' } });
+    }
+    for (const w of r.requestWorkerWindows) for (const sample of [w.before, w.after]) {
+      sample.observations[1].before.parentPid = sample.observations[1].after.parentPid = 9;
+      for (const bracket of ['before', 'after']) {
+        sample.census[bracket].descendants[0].parentPid = 9;
+        sample.census[bracket].descendants[1].command.script = '/runtime/wrapper.mjs';
+      }
+    }
+    const result = auditBaseline(r).requestWorkerWindows![0];
+    expect(result.selectedAncestry.brackets.find((x: any) => x.pid === 8).chain.map((x: any) => x.pid))
+      .toEqual([8, 9, 7]);
+    expect(result.servingWorkerPopulation).toBe('unknown');
+    expect(result.unsampledAncestorLifetimes).toBe('unknown');
   });
   it('preserves evicted-ring requests as partial and missing HTTP identities as unknown', () => {
     const r = workerFixture(), w = r.requestWorkerWindows[0], id = r.requests[0].requestId;
@@ -1059,6 +1152,18 @@ describe('P011 independent selected-worker resource windows', () => {
     ['missing unknown coverage', (_r, w) => { delete w.after.coverage.notCheckedAfter; }],
     ['selected as unsampled', (_r, w) => { w.after.coverage.unsampledPids.push(7); }],
     ['unordered brackets', (_r, w) => { w.after.startedAt = w.before.startedAt - 1; }],
+    ['missing raw census phase', (_r, w) => { delete w.after.census; }],
+    ['missing raw census bracket', (_r, w) => { delete w.before.census.after; }],
+    ['duplicate raw census PID', (_r, w) => { w.before.census.before.descendants.push(w.before.census.before.main); }],
+    ['raw census cap', (_r, w) => { w.before.census.before.descendants = Array(65).fill(w.before.census.before.descendants[0]); }],
+    ['raw census root reuse', (_r, w) => { w.before.census.before.main.startTicks = '99'; }],
+    ['raw selected census PSS', (_r, w) => { w.before.census.before.descendants[0].pssBytes++; }],
+    ['raw selected census lifetime', (_r, w) => { w.after.census.after.descendants[0].startTicks = '99'; }],
+    ['raw ancestor cycle', (_r, w) => { w.before.census.before.descendants[0].parentPid = 8; }],
+    ['raw unknown ancestor', (_r, w) => { w.before.census.before.descendants[0].parentPid = 99; }],
+    ['raw capped residue dropped', (_r, w) => { w.after.census.after.notChecked = []; }],
+    ['raw unsampled coverage forged', (_r, w) => { w.after.coverage.unsampledPids = []; }],
+    ['raw unselected row invalid', (_r, w) => { w.after.census.after.descendants[1].executableSha256 = 'invalid'; }],
   ];
   it.each(corruptions)('rejects saved worker-window corruption: %s', (_name, corrupt) => {
     const r = workerFixture(); corrupt(r, r.requestWorkerWindows[0]);

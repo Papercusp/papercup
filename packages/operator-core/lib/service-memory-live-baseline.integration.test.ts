@@ -350,7 +350,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
   if (!targets.length || targets.length > 8 || new Set(targets.map(row => row.pid)).size !== targets.length ||
       targets.some(row => !Number.isSafeInteger(row.pid) || row.pid <= 0) ||
       !/^[a-f0-9]{7,64}$/i.test(expectedBuild)) throw Error('Worker-window target selection');
-  const initial = reader.census();
+  const initial = structuredClone(reader.census());
   processInventory(initial.main, initial.descendants, initial.notChecked);
   const stablePath = (census: WorkerCensus, target: ResourceRow) => {
     assertIdentity(initial.main, census.main);
@@ -373,7 +373,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
   for (const target of targets) stablePath(initial, target);
   const sample = async (requestIds: string[]) => {
     const startedAt = Date.now();
-    const before = reader.census();
+    const before = structuredClone(reader.census());
     processInventory(before.main, before.descendants, before.notChecked);
     for (const target of targets) stablePath(before, target);
     const readings = [];
@@ -388,7 +388,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
           value.counters.heap.total_allocated_bytes < 0) throw Error('Worker-window cumulative allocation unavailable');
       readings.push({ ...value, role, before: stablePath(before, target) });
     }
-    const after = reader.census();
+    const after = structuredClone(reader.census());
     processInventory(after.main, after.descendants, after.notChecked);
     const observations = readings.map((value, index) => {
       const os = stablePath(after, targets[index]);
@@ -400,6 +400,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
       throw Error('Worker-window duplicate process instance');
     const selected = new Set(targets.map(row => row.pid));
     return { startedAt, endedAt: Date.now(), observations,
+      census: { before, after },
       coverage: { selectedPids: targets.map(row => row.pid),
         unsampledPids: [after.main, ...after.descendants].filter(row => !selected.has(row.pid)).map(row => row.pid),
         notCheckedBefore: before.notChecked, notCheckedAfter: after.notChecked,
@@ -691,6 +692,12 @@ describe('actual current-build operator memory baseline', () => {
       expect(result.assignment.status).toBe('observed');
       expect(result.assignment.assignments.map(row => [row.pid, row.queryTuples.length])).toEqual([[11, 2], [12, 2]]);
       expect(result.after.coverage.unsampledPids).toEqual([10, 13]);
+      expect(result.before.census.before.descendants.map(row => row.pid)).toEqual([11, 12, 13]);
+      expect(result.before.census.after.descendants[0].pssBytes).toBe(1000);
+      expect(result.after.census.before.descendants[0].pssBytes).toBe(975);
+      expect(result.after.census.after.descendants[0].pssBytes).toBe(975);
+      expect(result.before.observations[0].before).toEqual(result.before.census.before.descendants[0]);
+      expect(result.after.observations[0].after).toEqual(result.after.census.after.descendants[0]);
       expect(result.definition).toContain('no native ownership'); expect(f.counts().workloads).toBe(1);
     });
     it('keeps evicted requests and raced census residue explicit beside successful resource rows', async () => {
@@ -702,6 +709,19 @@ describe('actual current-build operator memory baseline', () => {
       expect(result.resources).toHaveLength(2); expect(result.assignment.status).toBe('partial');
       expect(result.assignment.unresolvedRequestIds).toEqual([ids[1]]);
       expect(result.after.coverage.notCheckedAfter).toEqual([{ pid: 99, parentPid: 10, reason: 'cap' }]);
+      expect(result.after.census.after.notChecked).toEqual(result.after.coverage.notCheckedAfter);
+    });
+    it('persists census ancestry independently of later changes to reader-owned rows', async () => {
+      const f = setup();
+      const wrapper = { ...f.main, pid: 20, parentPid: f.main.pid, startTicks: '20',
+        command: { ...f.main.command, script: '/runtime/wrapper.mjs' } };
+      f.children.push(wrapper); f.children[0].parentPid = 20; f.targets[0].parentPid = 20;
+      const result = await collectRequestWorkerWindow(f.targets, build, f.reader, f.workload);
+      wrapper.command.script = '/changed/wrapper.mjs'; wrapper.startTicks = 'reused';
+      expect(result.before.census.before.descendants.find(row => row.pid === 20)?.command.script)
+        .toBe('/runtime/wrapper.mjs');
+      expect(result.after.census.after.descendants.find(row => row.pid === 20)?.startTicks).toBe('20');
+      expect(result.after.observations[0].after.parentPid).toBe(20);
     });
     it.each(['duplicate', 'foreign', 'reused', 'parent pin', 'entry pin'] as const)('rejects %s target selection before observing workload', async kind => {
       const f = setup();

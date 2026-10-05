@@ -31,6 +31,11 @@ import { goalOwnerReportFixture, seedGoalReportFixturePresence } from '../test/f
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import type { GoalOwnerReportRefV1 } from '@papercusp/chat-protocol';
 import type { CoordEnvelope } from '@papercusp/coordination';
+import { PgCoordLog } from '@papercusp/coordination/event-log';
+import { parseGoalOwnerReport, stampGoalOwnerReport } from './goal-owner-report';
+import { configureCoordLog, resetCoordLog } from './agent-tools/coordination/log';
+import { sendMessage } from './agent-tools/coordination/messages';
+import type { AgentIdentity } from './agent-tools/coordination/identity';
 import {
   makeGoalReportReferenceReads, persistGoalReportReference, resolveGoalReportReference,
   deriveGoalReportNotification, goalReportDeliveryId,
@@ -289,6 +294,103 @@ describe('report_library store (real PG)', () => {
     expect((await getReport(db.adminSql, workspaceId, original.reportId))!.bodyMd).toBe(body);
     await expect(db.adminSql`UPDATE harness_shared.report_library SET body_md = 'substitution' WHERE workspace_id = ${workspaceId} AND report_id = ${original.reportId}`).rejects.toThrow('immutable');
     await expect(db.adminSql`UPDATE harness_shared.report_library SET goal_owner_report = NULL WHERE workspace_id = ${workspaceId} AND report_id = ${original.reportId}`).rejects.toThrow('immutable');
+  });
+
+  it('REPORT-CAUSAL-IDENTITY-P004: exact-ID detector catches latest-lineage substitution and passes the pinned reader', async () => {
+    const f = await deliveryFixture();
+    const successorSnapshot = structuredClone(f.snapshot);
+    successorSnapshot.ownerWalls[0]!.exactAction = 'A different successor action';
+    const successor = await publishReport(db.adminSql, { workspaceId: f.workspaceId, title: 'Successor',
+      goalOwnerReport: successorSnapshot, supersedes: f.ref.reportId, visibility: 'workspace' }, AGENT_1);
+    const assertPinned = (record: Awaited<ReturnType<typeof getReport>>) => {
+      expect(record).toMatchObject({ reportId: f.ref.reportId, bodySha256: f.ref.bodySha256,
+        workspaceId: f.workspaceId, subject: { kind: 'goal', ref: f.snapshot.goalId },
+        bodyMd: serializeGoalOwnerReportSnapshot(f.snapshot), goalOwnerReport: f.snapshot });
+    };
+    // Wrong implementation selects the successor even though the caller pinned the original.
+    const substituted = await getReport(db.adminSql, f.workspaceId, successor.reportId, f.context.viewer);
+    expect(substituted!.bodySha256).not.toBe(f.ref.bodySha256);
+    expect(() => assertPinned(substituted)).toThrow();
+    assertPinned(await getReport(db.adminSql, f.workspaceId, f.ref.reportId, f.context.viewer));
+    expect(await f.persisted()).toEqual([]);
+  });
+
+  it('INLINE-REPORT-COMPATIBILITY-P004: real PG send keeps inline fields and structured plans beside canonical delivery', async () => {
+    const f = await deliveryFixture();
+    const log = new PgCoordLog({ getSql: () => db.adminSql, workspaceId: f.workspaceId, ensureSchema: async () => {} });
+    configureCoordLog(log);
+    try {
+      const identity = { ownerId: f.holderId, ownerLabel: 'P004 fixture', workspaceId: f.workspaceId,
+        source: 'static-client', userId: null } as AgentIdentity;
+      const text = 'MOVED: P-004 verified\nCOST: unknown (measurement unavailable)\nOWNER-WALLED: none\nKILLED: historical experiment\nNEXT WAKE: registered loop';
+      const stamp = stampGoalOwnerReport(f.snapshot.goalId, parseGoalOwnerReport(text));
+      const inline = await sendMessage(identity, { to: ['human'], summary: 'Ordinary inline report', body: text,
+        extra: { goalOwnerReport: stamp } });
+      const report = { title: 'Ordinary fleet report', plans: [{ title: 'Existing plan', status: 'wip',
+        items: [{ id: 'P-001', text: 'Existing item', status: 'done' }] }] };
+      const structured = await sendMessage(identity, { to: ['human'], summary: report.title, extra: { report } });
+      const reference = await sendMessage(identity, { to: ['human'], summary: 'Canonical delivery',
+        persistEnvelope: (envelope) => persistGoalReportReference(db.adminSql, envelope, f.context) });
+      const rows = await f.persisted();
+      expect(rows).toHaveLength(3);
+      const savedInline = rows.find((row) => row.body.msg_id === inline.msg_id)!;
+      expect(savedInline.body.body).toBe(text);
+      expect(savedInline.body.goalOwnerReport).toEqual(stamp);
+      expect(parseGoalOwnerReport(savedInline.body.body).fields).toMatchObject({ moved: 'P-004 verified',
+        cost: 'unknown (measurement unavailable)', ownerWalled: 'none', killed: 'historical experiment', nextWake: 'registered loop' });
+      expect(savedInline.body.report).toBeUndefined();
+      expect(new Date(savedInline.ts).toISOString()).toBe(inline.ts);
+      expect(rows.find((row) => row.body.msg_id === structured.msg_id)!.body.report).toEqual(report);
+      expect(reference.msg_id).toBe(goalReportDeliveryId(f.workspaceId, f.ref));
+      expect(reference.report).toEqual({ plans: [], goalReport: f.ref });
+    } finally {
+      resetCoordLog();
+    }
+  });
+
+  it('REPORT-CAUSAL-STALE-SOURCE-P004: bypassed admission persists a forbidden stamp; the real transaction refuses', async () => {
+    const f = await deliveryFixture();
+    await db.adminSql`UPDATE harness_shared.goals SET budget_cents = 2000
+      WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
+    const assertNoDelivery = async () => expect(await f.persisted()).toEqual([]);
+    await expect(persistGoalReportReference(db.adminSql, f.envelope, f.context)).rejects.toMatchObject({
+      oracle: `source-generation:goal:${f.snapshot.goalId}`,
+    });
+    await assertNoDelivery();
+    // Permanent bad control uses the real log, but omits the current-source oracle.
+    const log = new PgCoordLog({ getSql: () => db.adminSql, workspaceId: f.workspaceId, ensureSchema: async () => {} });
+    const text = deriveGoalReportNotification(f.snapshot);
+    await log.appendLine('messages', f.holderId, { ...f.envelope, body: text,
+      goalOwnerReport: stampGoalOwnerReport(f.snapshot.goalId, parseGoalOwnerReport(text)) });
+    await expect(assertNoDelivery()).rejects.toThrow();
+    expect((await f.persisted())[0]!.body.goalOwnerReport.goalId).toBe(f.snapshot.goalId);
+    const repaired = await deliveryFixture();
+    await persistGoalReportReference(db.adminSql, repaired.envelope, repaired.context);
+    expect(await repaired.persisted()).toHaveLength(1);
+  });
+
+  it('REPORT-CAUSAL-ORPHAN-CADENCE-P004: stamp-first mutant is caught and aborted real delivery leaves neither record', async () => {
+    const bad = await deliveryFixture();
+    const text = deriveGoalReportNotification(bad.snapshot);
+    const log = new PgCoordLog({ getSql: () => db.adminSql, workspaceId: bad.workspaceId, ensureSchema: async () => {} });
+    // Wrong two-step implementation commits cadence before notification creation fails.
+    await log.appendLine('messages', bad.holderId, { ...bad.envelope, body: undefined,
+      goalOwnerReport: stampGoalOwnerReport(bad.snapshot.goalId, parseGoalOwnerReport(text)) });
+    const assertNoOrphans = async (persisted: typeof bad.persisted) => {
+      for (const row of await persisted()) {
+        expect(parseGoalOwnerReport(row.body.body).complete).toBe(true);
+        expect(row.body.goalOwnerReport?.goalId).toBe(row.body.report?.goalReport?.goalId);
+      }
+    };
+    await expect(assertNoOrphans(bad.persisted)).rejects.toThrow();
+    const good = await deliveryFixture();
+    await expect(persistGoalReportReference(db.adminSql, good.envelope, good.context, { phase: async (phase) => {
+      if (phase === 'before-commit') throw new Error('notification persistence failed');
+    } })).rejects.toThrow('notification persistence failed');
+    expect(await good.persisted()).toEqual([]);
+    await persistGoalReportReference(db.adminSql, good.envelope, good.context);
+    expect(await good.persisted()).toHaveLength(1);
+    await assertNoOrphans(good.persisted);
   });
 
   it('refuses malformed snapshots and workspace/subject/body substitutions before publication', async () => {

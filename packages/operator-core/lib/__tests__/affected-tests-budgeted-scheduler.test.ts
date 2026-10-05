@@ -1657,18 +1657,31 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(callbackAt).toBeGreaterThan(runAt);
     expect(endAt).toBeGreaterThan(bodyAt);
     const countsSeenByCoverage: number[] = [];
+    const initialExecutedMapReads = new Map<string, unknown>();
+    const executedMapSnapshot = { status: 'unknown', reason: 'report-not-written' };
     const context = {
       observedCompletedTasks: 0,
       foldSettledTaskCoverage: () => countsSeenByCoverage.push(context.observedCompletedTasks),
       persistCleanFirstPassTaskVerdict: () => {},
+      taskKey: (task: { key: string }) => task.key,
+      executedMapResultFiles: new Map([['settled-task', '/results/settled-task.json']]),
+      initialExecutedMapReads,
+      executedMapReportExpectations: new Map([['settled-task', { expectsReport: true }]]),
+      readExecutedMapResults: (path: string) => {
+        expect(path).toBe('/results/settled-task.json');
+        return executedMapSnapshot;
+      },
     };
     const settle = new Script(`(scheduled) => {${AFFECTED_TESTS_SRC.slice(bodyAt, endAt)}}`).runInNewContext(context);
     for (const value of [
       { status: 0 }, { status: 1 }, { status: null, signal: 'SIGTERM' },
       { status: null }, { status: Number.NaN },
-    ]) settle({ value });
+    ]) settle({ task: { t: { key: 'settled-task' } }, value });
     expect(context.observedCompletedTasks).toBe(3);
     expect(countsSeenByCoverage).toEqual([1, 2, 3, 3, 3]);
+    expect(initialExecutedMapReads.get('settled-task')).toEqual({
+      ...executedMapSnapshot, expectsReport: true,
+    });
     // The refusal boundary reads the observation, not the later aggregate tally.
     const counterAt = AFFECTED_TESTS_SRC.lastIndexOf('readTerminalCounters = () => ({', runAt);
     const counterEnd = AFFECTED_TESTS_SRC.indexOf('\n});', counterAt) + '\n});'.length;

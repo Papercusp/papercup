@@ -3159,6 +3159,72 @@ describe('REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler', () => {
     expect((await body(args())).results[0]).toMatchObject({ ok: true });
     expect(sendM).toHaveBeenCalledTimes(2);
   });
+
+  const inlineBody = [
+    { text: 'MOVED: P-004 verified' },
+    { text: 'COST: unknown (measurement unavailable)' },
+    { text: 'OWNER-WALLED: none' },
+    { text: 'KILLED: historical experiment' },
+    { text: 'NEXT WAKE: registered loop' },
+  ];
+  const inlineArgs = () => ({ to: ['human'], expects: 'none', summary: 'Ordinary inline GOAL', body: inlineBody });
+  function assertInlineCompatibility(result: any, opts: any) {
+    expect(result.results[0]).toMatchObject({ ok: true,
+      goalOwnerReport: { status: 'stamped', goalId: snapshot.goalId, lastReportAt: 't1' } });
+    expect(opts.body).toBe(inlineBody.map((section) => section.text).join('\n\n'));
+    expect(opts.persistEnvelope).toBeUndefined();
+    expect(opts.extra?.report).toBeUndefined();
+    expect(opts.extra?.goalOwnerReport).toEqual({ schemaVersion: 'goal-owner-report-v1', goalId: snapshot.goalId,
+      moved: 'P-004 verified', cost: 'unknown (measurement unavailable)', ownerWalled: 'none',
+      killed: 'historical experiment', nextWake: 'registered loop' });
+  }
+
+  it('INLINE-REPORT-COMPATIBILITY-P004: preserves all five inline fields and cadence beside reference delivery', async () => {
+    const inline = await body(inlineArgs());
+    assertInlineCompatibility(inline, sendM.mock.calls[0]![1]);
+    expect(referenceMocks.resolve).not.toHaveBeenCalled();
+    expect(referenceMocks.persist).not.toHaveBeenCalled();
+    expect((await body(args())).results[0]).toMatchObject({ ok: true });
+    expect(sendM.mock.calls[1]![1].persistEnvelope).toEqual(expect.any(Function));
+  });
+
+  it.each(['unknown', 'throws'] as const)(
+    'INLINE-REPORT-COMPATIBILITY-P004: %s truth is inline fail-open and reference fail-closed', async (fault) => {
+      if (fault === 'unknown') readGoalOwnerReportTruthMock.mockResolvedValueOnce(null);
+      else readGoalOwnerReportTruthMock.mockRejectedValueOnce(new Error('measurement unavailable'));
+      assertInlineCompatibility(await body(inlineArgs()), sendM.mock.calls[0]![1]);
+      reads.cost = async () => { if (fault === 'throws') throw new Error('measurement unavailable'); return null; };
+      expect((await body(args())).results[0]).toMatchObject({ ok: false, error: 'goal-owner-report-untruthful' });
+      expect(sendM).toHaveBeenCalledTimes(1);
+      expect(referenceMocks.persist).not.toHaveBeenCalled();
+      reads.cost = async () => snapshot.cost;
+      expect((await body(args())).results[0]).toMatchObject({ ok: true });
+    },
+  );
+
+  it('INLINE-REPORT-COMPATIBILITY-P004: ordinary structured reports retain plan rows without a GOAL pin', async () => {
+    const report = { title: 'Ordinary fleet report', plans: [{ title: 'Existing plan', status: 'wip',
+      items: [{ id: 'P-001', text: 'Existing item', status: 'done' }] }] };
+    expect((await body({ to: ['human'], expects: 'none', summary: 'Fleet update', report })).results[0]).toMatchObject({ ok: true });
+    const opts = sendM.mock.calls[0]![1];
+    expect(opts.extra?.report).toMatchObject(report);
+    expect(opts.extra?.report).not.toHaveProperty('goalReport');
+    expect(opts.extra?.goalOwnerReport).toBeUndefined();
+    expect(opts.persistEnvelope).toBeUndefined();
+    expect(referenceMocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it('INLINE-REPORT-COMPATIBILITY-P004: causal reference-required mutant is caught while valid reference still succeeds', async () => {
+    // Permanent deliberately wrong control: never mutate the shared send source.
+    const referenceRequiredMutant = async (_inline: ReturnType<typeof inlineArgs>) => ({
+      results: [{ ok: false, error: 'report_reference_required' }],
+    });
+    assertInlineCompatibility(await body(inlineArgs()), sendM.mock.calls[0]![1]);
+    const broken = await referenceRequiredMutant(inlineArgs());
+    expect(() => assertInlineCompatibility(broken, undefined)).toThrow();
+    expect((await body(args())).results[0]).toMatchObject({ ok: true });
+    expect(sendM).toHaveBeenCalledTimes(2);
+  });
 });
 
 /**
