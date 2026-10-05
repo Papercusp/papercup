@@ -268,7 +268,7 @@ async function defaultPrevStatus(sql: Sql, workspaceId: string): Promise<RecallC
   try {
     const rows = (await sql`
       SELECT status FROM harness_shared.memory_live_recall_canary_run
-       WHERE workspace_id = ${workspaceId}
+       WHERE workspace_id = ${workspaceId} AND status IN ('ok', 'degraded')
        ORDER BY ran_at DESC LIMIT 1
     `) as Array<{ status: string }>;
     return rows.length > 0 ? (String(rows[0].status) as RecallCanaryStatus) : null;

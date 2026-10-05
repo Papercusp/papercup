@@ -411,6 +411,30 @@ describe('runRecallCanary', () => {
     expect(healed.resolved).toEqual(['memory-live-recall-canary:degraded']);
   });
 
+  it('resolves the last scored degradation after an intervening decayed run', async () => {
+    const pairs = pairsOf(10);
+    const queryTexts: string[] = [];
+    const sql = async (strings: TemplateStringsArray) => {
+      const query = strings.join('?');
+      queryTexts.push(query);
+      const history = ['decayed', 'degraded'];
+      const comparableOnly = query.includes("status IN ('ok', 'degraded')");
+      const prior = comparableOnly ? history.filter((status) => status === 'degraded') : history;
+      return prior.slice(0, 1).map((status) => ({ status }));
+    };
+    const { deps, resolved } = stubDeps({
+      sql: sql as never,
+      loadSet: async () => frozenSet(pairs, 0.9),
+      verifyTargets: async (_sql, ids) => new Map(ids.map((id) => [id, 'pool-a'])),
+      backend: { name: 'hybrid', search: async (q: string) => [entry(`mem-${q.split(' ')[1]}`)] },
+      prevStatus: undefined,
+    });
+    const out = await runRecallCanary(INPUT, deps);
+    expect(out.ran && out.status).toBe('ok');
+    expect(queryTexts[0]).toContain("status IN ('ok', 'degraded')");
+    expect(resolved).toEqual(['memory-live-recall-canary:degraded']);
+  });
+
   it('excludes forgotten targets from scoring (natural churn is not degradation)', async () => {
     const pairs = pairsOf(10);
     const { deps, notified } = stubDeps({
