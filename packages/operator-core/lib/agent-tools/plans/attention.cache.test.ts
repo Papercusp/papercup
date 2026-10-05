@@ -193,6 +193,29 @@ describe("plans:attention — cache wiring", () => {
     expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-other']);
   });
 
+  it('the sync reader shares the admin workspace cache after a post-boot report write', async () => {
+    const workspace = 'ws-native-fixture';
+    // The desktop warms the sync feed before this separately persisted report.
+    expect(wrapperItems(await wrapperRead(workspace))).not.toContainEqual(
+      expect.objectContaining({ id: 'coord-message:goal-report-exact-pin' }),
+    );
+    M.inboxByWorkspace.set(workspace, [reportMessage]);
+    // Advance past the real SWR window and let the concrete admin read converge.
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 20_001);
+    await runWithWorkspace(workspace, () => run({}, ctx(workspace)));
+    await vi.waitFor(async () => {
+      const admin = await runWithWorkspace(workspace, () => run({}, ctx(workspace)));
+      expect(admin.groups.flatMap((group: any) => group.items)).toContainEqual(
+        expect.objectContaining({ id: 'coord-message:goal-report-exact-pin', report: reportMessage.report }),
+      );
+    });
+    // A nested HTTP context must not serve its independent stale '*' cache.
+    expect(wrapperItems(await wrapperRead(workspace))).toContainEqual(
+      expect.objectContaining({ id: 'coord-message:goal-report-exact-pin', report: reportMessage.report }),
+    );
+  });
+
   it('a post-boot direct persistence needs feed convergence: fresh cache omits it, SWR then exposes the same pin', async () => {
     let now = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => now);
