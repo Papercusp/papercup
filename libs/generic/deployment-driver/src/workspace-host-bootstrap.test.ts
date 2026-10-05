@@ -1501,6 +1501,23 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(budgetAt).toBeGreaterThanOrEqual(0);
     expect(budgetAt).toBeLessThan(unitAt);
     expect(lines.slice(unitAt, unitEnd)).toContain('TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC');
+    // chain8: papercusp-health's own 120s default gave up long before the 600s start budget.
+    // Its budget must come from the start budget and stay below it, inside the probe's 1..600.
+    const healthAt = lines.indexOf('SERVICE_HEALTH_TIMEOUT_SEC=$((SERVICE_START_TIMEOUT_SEC - 30))');
+    expect(healthAt).toBeGreaterThan(budgetAt);
+    expect(healthAt).toBeLessThan(unitAt);
+    expect(lines.slice(unitAt, unitEnd)).toContain(
+      'Environment=PAPERCUSP_HEALTH_TIMEOUT_SEC=$SERVICE_HEALTH_TIMEOUT_SEC',
+    );
+    const rendered = spawnSync(
+      'bash',
+      ['-c', [...lines.slice(budgetAt, healthAt + 1), 'echo "$SERVICE_START_TIMEOUT_SEC $SERVICE_HEALTH_TIMEOUT_SEC"'].join('\n')],
+      { encoding: 'utf8', timeout: 5_000 },
+    );
+    const [startBudget, healthBudget] = rendered.stdout.trim().split(' ').map(Number);
+    expect(healthBudget).toBeGreaterThanOrEqual(1);
+    expect(healthBudget).toBeLessThanOrEqual(600);
+    expect(healthBudget).toBeLessThan(startBudget);
 
     const from = lines.indexOf('START_SAMPLE_LOG=""');
     const to = lines.indexOf('if service_restart_needed; then');
