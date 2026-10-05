@@ -2431,6 +2431,8 @@ export interface GoalLaunchResolution {
   effective: LaunchProfile;
   ceilings: { maxAgents: number | null; maxPerFleet: number | null };
   headcount: GoalHeadcount;
+  /** The exact count used for admission, including owners and boot-grace rows. Never re-read after spawn. */
+  headcountMeasurement?: GoalHeadcountMeasurement | null;
   /** P-006: the goal's budget ceiling + platform spend snapshot. Null = no goal in scope. */
   budget: GoalBudgetTruth | null;
   /** Non-null when this launch would breach a ceiling. The caller MUST NOT launch. */
@@ -3052,6 +3054,45 @@ interface HeadcountPresenceRow {
   source: string | null;
 }
 
+export interface GoalHeadcountMember {
+  ownerId: string;
+  inFleet: boolean;
+  basis: 'heartbeat' | 'boot-grace';
+  heartbeatAt: string | null;
+  briefUpdatedAt: string | null;
+}
+
+export interface GoalHeadcountMeasurement {
+  measuredAt: string | null;
+  /** False if the owner aggregate is unavailable or does not reconcile to the count. */
+  populationComplete: boolean;
+  candidate: GoalHeadcount;
+  counted: GoalHeadcountMember[];
+  oracleEndedOwnerIds: string[];
+  excludedOwnerIds: string[];
+}
+
+function parseHeadcountPopulation(raw: unknown): GoalHeadcountMember[] {
+  let parsed = raw;
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch { return []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const row = item as Record<string, unknown>;
+    if (typeof row.ownerId !== 'string' || !row.ownerId ||
+        (row.basis !== 'heartbeat' && row.basis !== 'boot-grace')) return [];
+    return [{
+      ownerId: row.ownerId,
+      inFleet: row.inFleet === true,
+      basis: row.basis,
+      heartbeatAt: typeof row.heartbeatAt === 'string' ? row.heartbeatAt : null,
+      briefUpdatedAt: typeof row.briefUpdatedAt === 'string' ? row.briefUpdatedAt : null,
+    } satisfies GoalHeadcountMember];
+  });
+}
+
 /**
  * Tolerant reader for the `presence_rows` json aggregate of `goalHeadcount`'s
  * query. An absent/malformed aggregate parses to `[]` — i.e. "no row for the
@@ -3150,10 +3191,10 @@ export async function goalHeadcount(args: {
    */
   excludeOwnerIds?: readonly string[];
   sql?: Sql;
-}): Promise<{ headcount: GoalHeadcount; error: string | null }> {
+}): Promise<{ headcount: GoalHeadcount; measurement: GoalHeadcountMeasurement | null; error: string | null }> {
   const empty: GoalHeadcount = { total: 0, fleet: args.fleetSlug ? 0 : null };
   if (!args.workspaceId || args.workspaceId === '*' || !args.goalId) {
-    return { headcount: empty, error: null };
+    return { headcount: empty, measurement: null, error: null };
   }
   const staleSecs = Math.max(1, Math.floor(GOAL_HEADCOUNT_STALE_MS / 1000));
   const graceSecs = Math.max(1, Math.floor(GOAL_HEADCOUNT_BOOT_GRACE_MS / 1000));
@@ -3164,6 +3205,14 @@ export async function goalHeadcount(args: {
       SELECT
         count(*)::int AS total,
         count(*) FILTER (WHERE p.fleet_slug = ${fleetKey})::int AS fleet,
+        now()::text AS measured_at,
+        coalesce(json_agg(json_build_object(
+          'ownerId', b.owner_id,
+          'inFleet', coalesce(p.fleet_slug = ${fleetKey}, false),
+          'basis', CASE WHEN p.owner_id IS NULL THEN 'boot-grace' ELSE 'heartbeat' END,
+          'heartbeatAt', p.heartbeat_at,
+          'briefUpdatedAt', b.updated_at
+        )), '[]'::json) AS population_rows,
         coalesce(
           json_agg(json_build_object(
             'ownerId', b.owner_id,
@@ -3184,12 +3233,19 @@ export async function goalHeadcount(args: {
           p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval
           OR (p.owner_id IS NULL AND b.updated_at > now() - ${`${graceSecs} seconds`}::interval)
         )`;
-    const r = (rows[0] ?? {}) as { total?: unknown; fleet?: unknown; presence_rows?: unknown };
+    const r = (rows[0] ?? {}) as {
+      total?: unknown; fleet?: unknown; presence_rows?: unknown;
+      measured_at?: unknown; population_rows?: unknown;
+    };
     let total = Number(r.total ?? 0);
     let fleet = Number(r.fleet ?? 0);
+    const candidate = { total, fleet: args.fleetSlug ? fleet : null };
+    const population = parseHeadcountPopulation(r.population_rows);
     // The heartbeat count above is only an UPPER BOUND; the shared oracle then
-    // removes every presence-bearing row it calls ended/recorded.
-    for (const gone of await oracleEndedHeadcountRows(parseHeadcountPresenceRows(r.presence_rows))) {
+    // removes every presence-bearing row it calls ended. Recorded stays counted.
+    const ended = await oracleEndedHeadcountRows(parseHeadcountPresenceRows(r.presence_rows));
+    const endedIds = new Set(ended.map((row) => row.ownerId));
+    for (const gone of ended) {
       total -= 1;
       if (gone.inFleet) fleet -= 1;
     }
@@ -3198,10 +3254,20 @@ export async function goalHeadcount(args: {
         total: Math.max(0, total),
         fleet: args.fleetSlug ? Math.max(0, fleet) : null,
       },
+      measurement: {
+        measuredAt: typeof r.measured_at === 'string' ? r.measured_at : null,
+        populationComplete: population.length === candidate.total &&
+          new Set(population.map((row) => row.ownerId)).size === candidate.total &&
+          (!args.fleetSlug || population.filter((row) => row.inFleet).length === candidate.fleet),
+        candidate,
+        counted: population.filter((row) => !endedIds.has(row.ownerId)),
+        oracleEndedOwnerIds: [...endedIds],
+        excludedOwnerIds,
+      },
       error: null,
     };
   } catch (e) {
-    return { headcount: empty, error: e instanceof Error ? e.message : String(e) };
+    return { headcount: empty, measurement: null, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -3919,6 +3985,7 @@ export async function resolveGoalLaunchForGoal(args: {
   // goal that has explicitly declared BOTH ceilings unlimited.
   const needsCount = !refusal && (ceilings.maxAgents != null || ceilings.maxPerFleet != null);
   let headcount: GoalHeadcount = { total: 0, fleet: args.fleetSlug ? 0 : null };
+  let headcountMeasurement: GoalHeadcountMeasurement | null = null;
   if (needsCount) {
     const counted = await goalHeadcount({
       workspaceId: args.workspaceId,
@@ -3928,6 +3995,7 @@ export async function resolveGoalLaunchForGoal(args: {
       sql: args.sql,
     });
     headcount = counted.headcount;
+    headcountMeasurement = counted.measurement;
     if (counted.error) degradedReasons.push(`ceiling not enforced — headcount failed: ${counted.error}`);
   }
 
@@ -4025,6 +4093,7 @@ export async function resolveGoalLaunchForGoal(args: {
     effective,
     ceilings,
     headcount,
+    headcountMeasurement,
     budget,
     refusal,
     degraded: degradedReasons.length > 0,
