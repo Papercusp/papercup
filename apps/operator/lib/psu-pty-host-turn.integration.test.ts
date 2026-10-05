@@ -384,7 +384,7 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
         "setInterval(()=>process.stdout.write('IDLE-REPAINT\\n'),15);",
         // The composer echoes typed text like the real Codex TUI: a fresh launch
         // kickoff is only submitted once its turn-origin marker is visible.
-        "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
+        "let line='';process.stdin.on('data',data=>{let echo='';const input=data.toString().replace(/\\x1b\\[[0-9;]*R/g,'');for(const c of input){",
         "if(c==='\\u0004')process.exit(0);",
         "if(c==='\\r'){if(line){fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');line='';process.stdout.write('SUBMITTED\\n');}}else{line+=c;echo+=c;}}",
         'if(echo)process.stdout.write(echo);});',
@@ -953,7 +953,7 @@ it('eligible quota recovery recycles once under the same owner and settles the e
     "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);b+=d;if(!b.includes('\\r'))return;",
     "const prompt=b;b='';if(!recycled){process.stdout.write(\"You've hit your usage limit.\\n\");return;}",
     "fs.mkdirSync(path.dirname(process.env.TEST_TRANSCRIPT),{recursive:true});",
-    "fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({prompt,marker:process.env.TEST_MARKER})+'\\n');",
+    "fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:prompt}]}})+'\\n');",
     "process.stdout.write('RECOVERED-TURN\\n');});",
     'setTimeout(()=>process.exit(0),20000);',
   ].join('');
@@ -969,7 +969,6 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       PAPERCUSP_LAUNCHED_BY: 'su-integration-leader',
       CODEX_HOME: codexHome,
       TEST_TRANSCRIPT: transcript,
-      TEST_MARKER: marker,
       PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
       PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '30',
       PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
@@ -2419,7 +2418,15 @@ describe(
         const done = hostThroughPty({
           command: execPath,
           // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
-          args: ['-e', busyThenIdleChildCode(900, 50, 4000)],
+          // Keep a persona flag so Claude follows the in-place clear path;
+          // without it coldResetModeForAgent correctly selects hard recycle.
+          args: [
+            '-e',
+            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000),
+            '--',
+            '--system-prompt-file',
+            'fixture.md',
+          ],
           cwd: '/tmp',
           env: {
             ...hermeticEnv(),
@@ -2442,6 +2449,7 @@ describe(
         await waitForHost(ownerId);
         expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true); // genuinely busy now
 
+        expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
         const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
         expect(ok).toBe(true);
 
@@ -2462,6 +2470,7 @@ describe(
         // purpose: it proves the carry is HELD while the child is busy, and a
         // slow box only makes that direction more likely to hold.
         expect(await waitForOutput(captured, 'ECHO:midturn-reset-carry', 6000)).toBe(true);
+        expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
 
         await injectIntoHost(sock, { mode: 'raw', data: 'QUIT\n' });
         const code = await done;
