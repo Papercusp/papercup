@@ -72,6 +72,7 @@ import {
   INTAKE_WORK_KINDS,
   intakeConfidenceRefusal,
   intakeRecommendationFor,
+  intakeReproductionRefusal,
   isIntakeAttentionKind,
   isSourceLivenessRunKind,
   parseIntakeDecision,
@@ -80,9 +81,23 @@ import {
   type BulkIntakeDecision,
   type BulkRecommendationKind,
   type BulkResponsibility,
+  type IntakeReproductionSource,
 } from '../../attention/bulk-dispositions';
+import {
+  BUG_REPRODUCTION_KINDS,
+  isAcceptedReproductionStatus,
+  parseBugReproductionReceipt,
+  verifyBugReproductionReceipt,
+  type ReproductionVerification,
+} from '../../attention/bug-reproduction';
 import { readStandingBulkAutomationPolicy, standingAutomationEligibility } from '../../attention/automation-policy';
-import { currentIntakeSourceRevision, executeIntakeDecision } from '../../attention/intake-promotion';
+import {
+  defaultReproductionLedgerDeps,
+  executeIntakeDecision,
+  intakeReproductionSourceOf,
+  intakeSourceRevision,
+  readIntakeSource,
+} from '../../attention/intake-promotion';
 
 /**
  * WI-41021 — the resolver's own verbs have to honour the kill switch.
@@ -920,6 +935,14 @@ const IntakeDecisionArg = z
       })
       .optional()
       .describe('promote/investigate: the acceptance contract you judged; all five fields are needed to execute'),
+    reproduction: z
+      .object({
+        kind: z.enum(BUG_REPRODUCTION_KINDS),
+        ref: z.string().min(1).max(2000),
+        buildSha: z.string().min(7).max(40),
+      })
+      .optional()
+      .describe('promote of a bug: the failure reproduced on the current build (test_runs:<id> / tool_invocations:<id> are checked)'),
   })
   .describe(
     'intake inputs only: promote | merge (targetRef) | investigate | retain | reject | retry (missingInformation), each with a reason',
@@ -949,6 +972,10 @@ export function applyIntakeDecision(
     now?: Date;
     /** P-006 — the source revision being judged, stamped onto the decision. */
     sourceRevision?: string | null;
+    /** P-013 (D-023/D-024) — the source facts the reproduction gate reads; null skips it (the executor re-checks). */
+    source?: IntakeReproductionSource | null;
+    /** P-013 — the ledger check of the decision's own receipt, when it cites test_runs/tool_invocations. */
+    reproductionCheck?: ReproductionVerification | null;
   },
 ): BulkOutcomeReport {
   if (!isIntakeAttentionKind(input.kind)) {
@@ -998,6 +1025,15 @@ export function applyIntakeDecision(
     report.confidenceLevel ?? (report.confidence === 'low' ? 'low' : null),
   );
   if (uncertain) throw new Error(`${report.itemId}: ${uncertain}`);
+  if (input.source) {
+    const missing = intakeReproductionRefusal(decision, input.source, report.itemId);
+    if (missing) throw new Error(`${report.itemId}: ${missing}`);
+  }
+  if (decision.reproduction && input.reproductionCheck && !isAcceptedReproductionStatus(input.reproductionCheck.status)) {
+    throw new Error(
+      `${report.itemId}: the reproduction receipt did not check out (${input.reproductionCheck.status}: ${input.reproductionCheck.detail}); cite a failure on the current build, or record investigate / reject / retain`,
+    );
+  }
   return {
     ...report,
     disposition: projected.disposition,
