@@ -207,6 +207,29 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(String(r.stdout).trim()).toBe('../../libs/generic/x');
     });
 
+    it('copy mode survives in-place writes on both sides with independent inodes', () => {
+      const t = fixture();
+      const donor = join(t, 'donor', 'node_modules', 'p', 'i.js');
+      const copied = join(t, 'snap', 'node_modules', 'p', 'i.js');
+      write(donor, 'original');
+      expect(runLib(['snapshot', join(t, 'donor'), join(t, 'snap'), 'copy']).code).toBe(0);
+      expect(statSync(copied).ino).not.toBe(statSync(donor).ino);
+      writeFileSync(donor, 'donor changed in place');
+      expect(readFileSync(copied, 'utf8')).toBe('original');
+      writeFileSync(copied, 'snapshot changed in place');
+      expect(readFileSync(donor, 'utf8')).toBe('donor changed in place');
+      expect(readFileSync(join(t, 'snap', '.papercusp-pinned-deps'), 'utf8')).toContain('mode=copy');
+    });
+
+    it('refuses an unknown snapshot mode before producing a dependency stamp', () => {
+      const t = fixture();
+      write(join(t, 'donor', 'node_modules', 'p', 'i.js'), 'original');
+      const r = runLib(['snapshot', join(t, 'donor'), join(t, 'snap'), 'unknown']);
+      expect(r.code).toBe(2);
+      expect(r.err).toContain('snapshot mode must be hardlink or copy');
+      expect(existsSync(join(t, 'snap', '.papercusp-pinned-deps'))).toBe(false);
+    });
+
     it('mirrors the donor layout rather than flattening it, so a lowerdir is prefix-checkable', () => {
       const t = fixture();
       write(join(t, 'donor', 'apps', 'operator', 'node_modules', 'p', 'i.js'), 'x');

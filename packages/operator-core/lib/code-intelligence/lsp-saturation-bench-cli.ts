@@ -55,7 +55,7 @@
  */
 import { performance } from 'node:perf_hooks';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { freezeCompilerReplayConfig, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
+import { freezeCompilerReplayConfig, materializeReplaySource, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { moduleRepoRoot } from '../module-repo-root';
 
 import {
@@ -216,6 +216,19 @@ async function runLevel(
 }
 
 async function main(): Promise<void> {
+  // Materialize first, then execute --freeze-replay with the COPIED CLI/runtime.
+  // Running the shared CLI would still load its shared compiler/default libraries.
+  if (process.argv[2] === '--materialize-replay') {
+    if (!process.argv[3] || !process.argv[4] || !process.argv[5])
+      throw new Error('--materialize-replay requires authored input, exclusive source directory and new input path');
+    const input = JSON.parse(readFileSync(process.argv[3], 'utf8')) as ReplayOracleInput;
+    const captured = materializeReplaySource(input, process.argv[4], { onProgress: progress =>
+      console.error(JSON.stringify({ event: 'replay-source-progress', runId: input.runId, atMs: Date.now(), ...progress })) });
+    writeFileSync(process.argv[5], JSON.stringify(captured, null, 2), { flag: 'wx' });
+    console.log(JSON.stringify({ input: process.argv[5], rootPath: captured.rootPath,
+      sourceSnapshot: captured.sourceSnapshot, runtimeFiles: captured.runtimeFiles, loadedRuntime: 'unmeasured' }));
+    return;
+  }
   // …lsp-saturation-bench-cli.ts --freeze-replay <authored-cursors.json> <new-frozen-config.json>
   if (process.argv[2] === '--freeze-replay') {
     if (!process.argv[3] || !process.argv[4]) throw new Error('--freeze-replay requires authored input and a new config path');

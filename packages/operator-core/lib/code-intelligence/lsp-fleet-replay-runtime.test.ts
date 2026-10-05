@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { freezeCompilerReplayConfig, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { freezeCompilerReplayConfig, materializeReplaySource, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
-  validateDaemonReplayConfig, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
+  validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { scopeUnitForTask } from '../task-manager/types';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
@@ -42,6 +42,79 @@ function report(): ReplayReport {
     classes: {} as ReplayReport['classes'], sourceFingerprint: 'source', oracleFingerprint: 'oracle',
     complete: true, accountingErrors: [], certifiedFalseEmpty: 0, certifiedStale: 0, failures: [], classesOverlap: true };
 }
+describe('independent replay source materialization', () => {
+  function fixture() {
+    const frozen = config();
+    const parent = mkdtempSync(join(tmpdir(), 'lsp-replay-snapshot-')); roots.push(parent);
+    const target = join(parent, 'source');
+    writeFileSync(join(frozen.rootPath, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], compilerOptions: { noLib: true } }));
+    const input: ReplayOracleInput = { runId: 'copied-source', rootPath: frozen.rootPath,
+      socketPath: frozen.socketPath, workspaceId: 'test', levels: [1], requestTimeoutMs: 90_000,
+      tsconfigPath: 'tsconfig.json', definition: { file: 'source.ts', line1: 2, character: 1 },
+      references: { file: 'source.ts', line1: 2, character: 1 }, runtimeFiles: [], evidenceRef: 'source-copy-fixture' };
+    const dependencies = (_donor: string, out: string) => writeFileSync(join(out, '.papercusp-pinned-deps'), 'mode=copy\ntrees=0\n');
+    const options = { enumerateSources: () => ['source.ts', 'tsconfig.json'], snapshotDependencies: dependencies };
+    return { input, target, options, parent };
+  }
+  it('uses independent source and external runtime bytes after the donor changes in place', () => {
+    const f = fixture();
+    const binary = join(f.parent, 'node-fixture');
+    writeFileSync(binary, 'original executable', { mode: 0o755 });
+    const copied = materializeReplaySource({ ...f.input, runtimeFiles: [binary],
+      definition: { ...f.input.definition, file: join(f.input.rootPath, 'source.ts') } }, f.target, f.options);
+    expect(copied.definition.file).toBe('source.ts');
+    expect(statSync(join(copied.rootPath, 'source.ts')).ino).not.toBe(statSync(join(f.input.rootPath, 'source.ts')).ino);
+    writeFileSync(join(f.input.rootPath, 'source.ts'), 'export const replacement = 1;');
+    writeFileSync(binary, 'changed executable');
+    expect(readFileSync(copied.runtimeFiles[0], 'utf8')).toBe('original executable');
+    expect(statSync(copied.runtimeFiles[0]).mode & 0o111).toBe(0o111);
+    const oracle = freezeCompilerReplayConfig(copied);
+    expect(oracle.corpus['hot-references'].oracle.sites).toEqual([{ path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]);
+    expect(() => validateDaemonReplayConfig(oracle)).not.toThrow();
+    writeFileSync(copied.sourceSnapshot!.manifestPath, '{}');
+    expect(() => validateDaemonReplayConfig(oracle)).toThrow('changed-file');
+  });
+  it('refuses a source-directory escape through the destination parent', () => {
+    const f = fixture();
+    const alias = join(f.parent, 'donor-link');
+    symlinkSync(f.input.rootPath, alias);
+    expect(() => materializeReplaySource(f.input, join(alias, 'snapshot'), f.options)).toThrow('must-be-disjoint');
+    expect(existsSync(join(f.input.rootPath, 'snapshot'))).toBe(false);
+  });
+  it('retains deletions and refuses an existing output instead of overwriting another run', () => {
+    const f = fixture();
+    const copied = materializeReplaySource(f.input, f.target, { ...f.options,
+      enumerateSources: () => ['source.ts', 'tsconfig.json', 'deleted.ts'] });
+    expect(JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8')).absent).toEqual(['deleted.ts']);
+    expect(() => materializeReplaySource(f.input, f.target, f.options)).toThrow();
+    expect(() => materializeReplaySource(copied, join(f.parent, 'again'), f.options)).toThrow('already-materialized');
+    expect(readFileSync(join(f.target, 'source.ts'), 'utf8')).toContain('hot();');
+  });
+  it('refuses a dependency symlink to the live donor before publishing the source manifest', () => {
+    const f = fixture();
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: (donor, out) => {
+      f.options.snapshotDependencies(donor, out);
+      mkdirSync(join(out, 'node_modules'));
+      symlinkSync(join(donor, 'source.ts'), join(out, 'node_modules', 'live-source'));
+    } })).toThrow('escaping-replay-snapshot-link');
+    expect(existsSync(join(f.target, '.replay-source-snapshot.json'))).toBe(false);
+  });
+  it('refuses source path escapes and hardlinked dependency mode', () => {
+    const f = fixture();
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, enumerateSources: () => ['../foreign.ts'] }))
+      .toThrow('escaping-replay-source');
+    const second = join(f.parent, 'hardlinked');
+    expect(() => materializeReplaySource(f.input, second, { ...f.options, snapshotDependencies: (_donor, out) =>
+      writeFileSync(join(out, '.papercusp-pinned-deps'), 'mode=hardlink\n') })).toThrow('not-independent-copies');
+  });
+  it('rejects a shared compiler library outside the copied population', () => {
+    const f = fixture();
+    writeFileSync(join(f.input.rootPath, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'] }));
+    const copied = materializeReplaySource(f.input, f.target, f.options);
+    // This test's compiler is intentionally the original one, like a shared CLI.
+    expect(() => freezeCompilerReplayConfig(copied)).toThrow('snapshot-input-escape');
+  });
+});
 describe('daemon replay qualification', () => {
   it('freezes source and exact oracle before querying, and rejects cursor/source drift', () => {
     const frozen = config();

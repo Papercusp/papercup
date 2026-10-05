@@ -2595,7 +2595,7 @@
           "POST"
         ]
       },
-      "description": "Create a calendar event and invite attendees. Every attendee is checked before the invite goes out: an address that appears only inside message content is REFUSED, and the whole proposal fails rather than inviting a partly-trusted list. Returns who was actually invited. Provider-neutral (Google today).",
+      "description": "Create a calendar event and invite attendees. Every attendee is checked before the invite goes out: an address that appears only inside message content is REFUSED, and the whole proposal fails rather than inviting a partly-trusted list. Returns who was actually invited. Provider-neutral: with several calendars connected, pass sourceId or from.",
       "capabilities": [
         "operator:write"
       ],

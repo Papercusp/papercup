@@ -233,6 +233,45 @@ describe('goalHeadcount same-query population in real Postgres', () => {
     expect((await goalHeadcount({ workspaceId: WS, goalId: GOAL, sql: db.sql })).headcount.total).toBe(6);
   });
 
+  it('deduplicates receipts, brief boot grace and fresh presence for the same pinned fork identity', async () => {
+    await receipt('fork-first', { metadata: {
+      goalId: GOAL, goalReservation: true, targetOwnerId: 'fork-pinned', fleetSlug: FLEET,
+    } });
+    await receipt('fork-replay', { metadata: {
+      goalId: GOAL, goalReservation: true, targetOwnerId: 'fork-pinned', fleetSlug: FLEET,
+    } });
+    await db.sql`INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, goal_id)
+      VALUES ('fork-pinned', ${WS}, ${GOAL})`;
+    const waiting = await goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, sql: db.sql });
+    expect(waiting.error).toBeNull();
+    expect(waiting.headcount).toEqual({ total: 6, fleet: 4 });
+    expect(waiting.measurement?.populationComplete).toBe(true);
+    expect(waiting.measurement?.counted.filter((row) => row.ownerId === 'fork-pinned'))
+      .toEqual([expect.objectContaining({ basis: 'launch-reservation', inFleet: true })]);
+    await db.sql`INSERT INTO harness_shared.coord_presence (owner_id, fleet_slug, heartbeat_at)
+      VALUES ('fork-pinned', ${FLEET}, clock_timestamp() + interval '1 second')`;
+    const registered = await goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, sql: db.sql });
+    expect(registered.error).toBeNull();
+    expect(registered.headcount).toEqual(waiting.headcount);
+    expect(registered.measurement?.populationComplete).toBe(true);
+    expect(registered.measurement?.counted.filter((row) => row.ownerId === 'fork-pinned'))
+      .toEqual([expect.objectContaining({ basis: 'heartbeat', inFleet: true })]);
+  });
+
+  it('admits an identity-preserving resume at both ceilings without adding a counted seat', async () => {
+    const result = await registerGoalLaunch({
+      workspaceId: WS, launcherOwnerId: 'fixture-launcher', targetOwnerId: 'live',
+      fleetSlug: FLEET, sql: db.sql, resolve: policy(5, 3),
+    }, async () => { await receipt('live'); return 'live'; });
+    expect(result.resolution?.refusal).toBeNull();
+    expect(result.resolution?.headcount).toEqual({ total: 4, fleet: 2 });
+    const counted = await goalHeadcount({ workspaceId: WS, goalId: GOAL, fleetSlug: FLEET, sql: db.sql });
+    expect(counted.error).toBeNull();
+    expect(counted.headcount).toEqual({ total: 5, fleet: 3 });
+    expect(counted.measurement?.populationComplete).toBe(true);
+    expect(counted.measurement?.counted.filter((row) => row.ownerId === 'live')).toHaveLength(1);
+  });
+
   it('reserves the fleet seat independently of the goal ceiling and preserves replacement exclusion', async () => {
     const guarded = await Promise.all(['fleet-a', 'fleet-b'].map((targetOwnerId) => registerGoalLaunch({
       workspaceId: WS, launcherOwnerId: 'fixture-launcher', targetOwnerId, fleetSlug: FLEET,

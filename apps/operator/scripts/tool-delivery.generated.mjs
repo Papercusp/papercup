@@ -9,14 +9,14 @@
 // registry in apps/operator/lib/tool-delivery-floors.ts. Editing this file
 // changes nothing durable: the next generator run overwrites it.
 //
-// Catalog measured: 945 tools.
+// Catalog measured: 946 tools.
 
-/** claude: 0 full + 63 compact = 99916 B of 100000 B. */
+/** claude: 0 full + 63 compact = 100242 B of 100000 B (OVERRUN 242 B — floors alone exceed the budget). */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99916,
-  budgetOverrun: 0,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 882 }),
+  spentBytes: 100242,
+  budgetOverrun: 242,
+  counts: Object.freeze({ full: 0, compact: 63, deferred: 883 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -217,12 +217,12 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 0 full + 63 compact = 99916 B of 100000 B. */
+/** codex: 0 full + 63 compact = 100242 B of 100000 B (OVERRUN 242 B — floors alone exceed the budget). */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99916,
-  budgetOverrun: 0,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 882 }),
+  spentBytes: 100242,
+  budgetOverrun: 242,
+  counts: Object.freeze({ full: 0, compact: 63, deferred: 883 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -423,12 +423,12 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 0 full + 63 compact = 99916 B of 100000 B. */
+/** omp: 0 full + 63 compact = 100242 B of 100000 B (OVERRUN 242 B — floors alone exceed the budget). */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99916,
-  budgetOverrun: 0,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 882 }),
+  spentBytes: 100242,
+  budgetOverrun: 242,
+  counts: Object.freeze({ full: 0, compact: 63, deferred: 883 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",

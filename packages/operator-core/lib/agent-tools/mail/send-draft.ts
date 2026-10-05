@@ -50,6 +50,7 @@ export default defineTool({
         .max(320)
         .optional()
         .describe('Which connected account holds the draft; required once more than one is connected.'),
+      sourceId: z.string().uuid().optional().describe('The connected mail source holding the draft; an alternative to from.'),
       addressee: addresseeArg,
       allowUndeliverable: z
         .boolean()
@@ -73,6 +74,7 @@ export default defineTool({
         expectedTo: args.expectedTo,
         expectedCc: args.expectedCc,
         from: args.from,
+        sourceId: args.sourceId ?? null,
         provenance: toProvenance(args.addressee),
         allowUndeliverable: args.allowUndeliverable,
         agentOwnerId: disclosureSubject(ctx),

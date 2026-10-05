@@ -1,7 +1,8 @@
 /** Daemon execution and qualification for the existing saturation CLI, P-012. */
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { classifyReplayAnswer, evaluateReplayLadder, runReplay, scoreReplay, REPLAY_CLASSES,
@@ -31,6 +32,7 @@ export interface DaemonReplayConfig {
   /** Complete declared source/config/binary population, SHA256 keyed by absolute path. */
   readonly files: Readonly<Record<string, string>>;
   readonly corpus: Readonly<Record<ReplayClass, ReplayCorpus>>;
+  readonly sourceSnapshot?: ReplayOracleInput['sourceSnapshot'];
 }
 export const replayHash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 export const replaySourceFingerprint = (files: DaemonReplayConfig['files']) => replayHash(JSON.stringify(Object.entries(files).sort()));
@@ -48,6 +50,132 @@ export interface ReplayOracleInput {
   /** Additional runtime binaries and loaded daemon/config source whose drift invalidates qualification. */
   readonly runtimeFiles: readonly string[];
   readonly evidenceRef: string;
+  /** Independent source/dependency copy; this does not establish loaded-runtime identity. */
+  readonly sourceSnapshot?: { readonly manifestPath: string; readonly sha256: string };
+}
+
+function insideReplayRoot(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../');
+}
+
+/** Read the existing Git populations, including initialized nested submodules and
+ * nonignored new source. No checkout/index/branch mutation is involved. */
+export function replayRepositorySources(root: string): string[] {
+  const files = new Set<string>();
+  const visit = (directory: string) => {
+    const git = (args: string[]) => execFileSync('git', ['-C', directory, ...args],
+      { encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
+    for (const entry of git(['ls-files', '--stage', '-z']).split('\0').filter(Boolean)) {
+      const tab = entry.indexOf('\t');
+      if (tab < 0) throw new Error('invalid-replay-git-population');
+      const path = resolve(directory, entry.slice(tab + 1));
+      if (!insideReplayRoot(root, path)) throw new Error(`escaping-replay-source:${path}`);
+      if (entry.startsWith('160000 ')) visit(path);
+      else files.add(relative(root, path));
+    }
+    for (const path of git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean))
+      files.add(relative(root, resolve(directory, path)));
+  };
+  visit(root);
+  return [...files].sort();
+}
+
+/** Extend the verifier's source-copy + locked pinned-dependency mechanism.
+ * Copies have independent inodes, never a live symlink floor or Git worktree.
+ * The manifest describes captured inputs, not an atomic commit or loaded JS. */
+export function materializeReplaySource(input: ReplayOracleInput, destination: string, options: {
+  enumerateSources?: (root: string) => string[];
+  snapshotDependencies?: (root: string, destination: string) => void;
+  onProgress?: (progress: { phase: string; completed: number; total: number }) => void;
+} = {}): ReplayOracleInput {
+  const donor = realpathSync(input.rootPath);
+  const target = join(realpathSync(dirname(resolve(destination))), basename(destination));
+  if (input.sourceSnapshot) throw new Error('replay-source-already-materialized');
+  if (insideReplayRoot(donor, target) || insideReplayRoot(target, donor))
+    throw new Error('replay-snapshot-must-be-disjoint');
+  const relocate = (file: string) => {
+    const source = resolve(donor, file);
+    if (!insideReplayRoot(donor, source)) throw new Error(`escaping-replay-cursor:${file}`);
+    return relative(donor, source);
+  };
+  const tsconfigPath = relocate(input.tsconfigPath);
+  const definition = { ...input.definition, file: relocate(input.definition.file) };
+  const references = { ...input.references, file: relocate(input.references.file) };
+  // Exclusive creation refuses a previous run; failures leave forensic inputs.
+  mkdirSync(target, { mode: 0o700 });
+  const hashes: Record<string, string> = {};
+  const absent: string[] = [];
+  const copy = (source: string, out: string) => {
+    const before = lstatSync(source, { bigint: true });
+    mkdirSync(dirname(out), { recursive: true });
+    if (before.isSymbolicLink()) {
+      const link = readlinkSync(source);
+      const resolved = realpathSync(source);
+      if (!insideReplayRoot(donor, resolved)) throw new Error(`escaping-replay-symlink:${source}`);
+      symlinkSync(isAbsolute(link) ? resolve(target, relative(donor, resolved)) : link, out);
+      hashes[relative(target, out)] = replayHash(`symlink:${readlinkSync(out)}`);
+    } else if (before.isFile()) {
+      const bytes = readFileSync(source);
+      writeFileSync(out, bytes, { flag: 'wx', mode: Number(before.mode & 0o777n) });
+      hashes[relative(target, out)] = replayHash(bytes);
+    } else throw new Error(`unsupported-replay-source:${source}`);
+    const after = lstatSync(source, { bigint: true });
+    if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key as keyof typeof before] !== after[key as keyof typeof after]))
+      throw new Error(`changed-during-replay-copy:${source}`);
+  };
+  const paths = (options.enumerateSources ?? replayRepositorySources)(donor);
+  for (const [index, path] of paths.entries()) {
+    const source = resolve(donor, path);
+    if (isAbsolute(path) || !insideReplayRoot(donor, source) || path.split('/').includes('.git'))
+      throw new Error(`escaping-replay-source:${path}`);
+    try { lstatSync(source); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      absent.push(path); continue; // tracked deletions are part of the captured population
+    }
+    if (!insideReplayRoot(donor, realpathSync(dirname(source)))) throw new Error(`escaping-replay-source:${path}`);
+    copy(source, resolve(target, path));
+    if ((index + 1) % 256 === 0 || index + 1 === paths.length)
+      options.onProgress?.({ phase: 'source-copied', completed: index + 1, total: paths.length });
+  }
+  (options.snapshotDependencies ?? ((root, out) => {
+    execFileSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
+      { stdio: 'inherit', timeout: 600_000 });
+  }))(donor, target);
+  const dependencyStamp = join(target, '.papercusp-pinned-deps');
+  if (!/^mode=copy$/m.test(readFileSync(dependencyStamp, 'utf8')))
+    throw new Error('replay-dependencies-not-independent-copies');
+  hashes[relative(target, dependencyStamp)] = replayHash(readFileSync(dependencyStamp));
+  options.onProgress?.({ phase: 'dependencies-copied', completed: 1, total: 1 });
+  const runtimeFiles = input.runtimeFiles.map(file => {
+    const source = resolve(donor, file);
+    const out = insideReplayRoot(donor, source) ? resolve(target, relative(donor, source)) :
+      join(target, '.replay-runtime', replayHash(source), basename(source));
+    if (!existsSync(out)) copy(source, out);
+    return out;
+  });
+  // Preserved workspace links must resolve into the independent population.
+  // A dependency tree may hide an absolute/live donor link several levels down.
+  const pending = [target];
+  let checked = 0;
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink() && !insideReplayRoot(target, realpathSync(path)))
+        throw new Error(`escaping-replay-snapshot-link:${path}`);
+      if (entry.isDirectory()) pending.push(path);
+      checked++;
+      if (checked % 4096 === 0) options.onProgress?.({ phase: 'symlinks-checked', completed: checked, total: checked });
+    }
+  }
+  const manifestPath = join(target, '.replay-source-snapshot.json');
+  const manifest = JSON.stringify({ schemaVersion: 'lsp-replay-source-snapshot-v1', donor, rootPath: target,
+    sourceFiles: hashes, absent, dependencyIsolation: 'independent-copy-under-install-mutex',
+    loadedRuntime: 'unmeasured' }, null, 2);
+  writeFileSync(manifestPath, manifest, { flag: 'wx' });
+  return { ...input, rootPath: target, tsconfigPath, definition, references, runtimeFiles: [...runtimeFiles, dependencyStamp, manifestPath],
+    sourceSnapshot: { manifestPath, sha256: replayHash(manifest) } };
 }
 
 /**
@@ -148,7 +276,8 @@ export function freezeCompilerReplayConfig(input: ReplayOracleInput, options: {
     requestTimeoutMs: input.requestTimeoutMs, files,
     oracleProvenance: { method: 'static TypeScript symbol-binding census over the frozen compiler source population; no daemon answers',
       evidenceRef: input.evidenceRef },
-    corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) } };
+    corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) },
+    ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}) };
   validateDaemonReplayConfig(config);
   options.onProgress?.({ phase: 'validated', completed: sourceFiles.length, total: sourceFiles.length });
   return config;
@@ -173,7 +302,11 @@ export function validateDaemonReplayConfig(config: DaemonReplayConfig): void {
     throw new Error('independent oracle provenance and frozen file population are required');
   for (const [file, hash] of Object.entries(config.files)) {
     if (!isAbsolute(file) || !/^[a-f0-9]{64}$/.test(hash)) throw new Error('invalid frozen source identity');
+    if (config.sourceSnapshot && !insideReplayRoot(config.rootPath, file)) throw new Error(`snapshot-input-escape:${file}`);
   }
+  if (config.sourceSnapshot && (!insideReplayRoot(config.rootPath, config.sourceSnapshot.manifestPath) ||
+      config.files[config.sourceSnapshot.manifestPath] !== config.sourceSnapshot.sha256))
+    throw new Error('unmatched-replay-source-snapshot');
   for (const queryClass of REPLAY_CLASSES) {
     const { cursor, oracle } = config.corpus[queryClass];
     const file = resolve(config.rootPath, cursor.file);
