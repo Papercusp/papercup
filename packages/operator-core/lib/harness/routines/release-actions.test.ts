@@ -3255,6 +3255,17 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     });
     // The archive keeps the whole identity and alarm count even after the display list is capped.
     expect((measured.testPassReuse as { audit: { judgedSha: string } }).audit.judgedSha).toHaveLength(40);
+    const auditedFiles = Array.from({ length: 23 }, (_, i) => ({
+      invocation: 0, ws: 'core::test', file: `lib/${i}.test.ts`, verdict: 'pass' as const,
+      evidenceRef: `suite-output:line:${i}`, judgedSha: testPassReuse.judgedSha,
+      runnerIdentity: 'vitest:core', runContext: 'green-checkpoint', runGroupId: null, dirty: false,
+    }));
+    const named = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, audit, auditedFiles } });
+    expect((named.testPassReuse as { auditedFiles: unknown[] }).auditedFiles).toEqual(auditedFiles);
+    const badNamed = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, auditedFiles: [{ ...auditedFiles[0], evidenceRef: '' }] } });
+    expect((badNamed.testPassReuse as { auditedFiles: unknown }).auditedFiles).toBeNull();
     const malformed = buildCheckpointDetail({
       reason: 'advanced', green: true,
       testPassReuse: { ...testPassReuse, audit: { ...audit, audited: -1 } },

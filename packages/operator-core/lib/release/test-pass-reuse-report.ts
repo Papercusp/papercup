@@ -65,6 +65,41 @@ export interface TestPassReuseRun {
   workspaces: TestPassReuseWorkspace[];
   total: TestPassReuseTotal | null;
   alarms: TestPassReuseAlarm[];
+  auditResults?: TestPassReuseAuditFile[];
+  malformedAuditResults?: number;
+}
+
+/** Exact reporter identity, retained in the existing round archive without a display cap. */
+export interface TestPassReuseAuditFile {
+  invocation: number;
+  ws: string;
+  file: string;
+  verdict: 'pass' | 'fail' | 'unknown';
+  evidenceRef: string;
+  judgedSha: string | null;
+  runnerIdentity: string | null;
+  runContext: string | null;
+  runGroupId: string | null;
+  dirty: boolean | null;
+}
+
+function parseAuditFile(value: unknown): TestPassReuseAuditFile | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(v.invocation) || (v.invocation as number) < 0 ||
+      typeof v.ws !== 'string' || !v.ws.trim() || typeof v.file !== 'string' || !v.file.trim() ||
+      v.file.startsWith('/') || v.file.includes('\\') ||
+      v.file.split('/').some((part) => !part || part === '.' || part === '..') ||
+      !['pass', 'fail', 'unknown'].includes(v.verdict as string) ||
+      typeof v.evidenceRef !== 'string' || !v.evidenceRef.trim() ||
+      !(v.judgedSha === null || (typeof v.judgedSha === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(v.judgedSha))) ||
+      !['runnerIdentity', 'runContext', 'runGroupId'].every((k) => v[k] === null || (typeof v[k] === 'string' && (v[k] as string).trim())) ||
+      !(v.dirty === null || typeof v.dirty === 'boolean')) return null;
+  return { invocation: v.invocation as number, ws: v.ws, file: v.file,
+    verdict: v.verdict as TestPassReuseAuditFile['verdict'], evidenceRef: v.evidenceRef,
+    judgedSha: v.judgedSha as string | null, runnerIdentity: v.runnerIdentity as string | null,
+    runContext: v.runContext as string | null, runGroupId: v.runGroupId as string | null,
+    dirty: v.dirty as boolean | null };
 }
 
 const LINE_RE = /^(?:\[[^\]]*\]\s*)?(TEST_PASS_REUSE(?:_TOTAL|_ALARM)?) (.*)$/;
@@ -106,7 +141,29 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
     return current;
   };
 
+  let line = 0;
   for (const raw of output.split(/\r?\n/)) {
+    line += 1;
+    const named = /^(?:\[[^\]]*\]\s*)?TEST_PASS_REUSE_AUDIT_RESULT (.*)$/.exec(raw.trimStart());
+    if (named) {
+      const run = current ?? openRun();
+      let file: TestPassReuseAuditFile | null = null;
+      try {
+        const payload = JSON.parse(named[1]!);
+        if (payload.version === 1) file = parseAuditFile({ ...payload,
+          invocation: runs.length - 1, evidenceRef: `suite-output:line:${line}` });
+      } catch { /* malformed evidence remains unknown */ }
+      if (!file) run.malformedAuditResults = (run.malformedAuditResults ?? 0) + 1;
+      else {
+        (run.auditResults ??= []).push(file);
+        // Inline retry failures may never print a final FAIL row. Preserve their actual miss.
+        if (file.verdict === 'fail' && file.dirty === false && file.judgedSha && file.runnerIdentity && file.runContext &&
+            !run.alarms.some((a) => a.ws === file.ws && a.file === file.file)) {
+          run.alarms.push({ ws: file.ws, file: file.file, proof: 'audit' });
+        }
+      }
+      continue;
+    }
     const m = LINE_RE.exec(raw.trimStart());
     if (!m) continue;
     const kind = m[1]!;
@@ -371,6 +428,8 @@ export interface TestPassReuseRoundSummary {
   recorder: ExecutedSourceMapRecorderSummary | null;
   /** Qualified counters only; null means a missing, malformed or inconsistent invocation. */
   audit?: TestPassReuseAuditSummary | null;
+  /** null means that named first-attempt audit coverage was not retained completely. */
+  auditedFiles?: TestPassReuseAuditFile[] | null;
   headline: string;
 }
 
@@ -423,6 +482,27 @@ function summarizeReuseAudits(runs: TestPassReuseRun[]): TestPassReuseAuditSumma
   return { auditRate, audited, eligible, pureReused, alarmCount: runs.reduce((n, r) => n + r.alarms.length, 0) };
 }
 
+function summarizeAuditFiles(runs: TestPassReuseRun[], summary: TestPassReuseAuditSummary | null): TestPassReuseAuditFile[] | null {
+  if (!summary) return null;
+  const files: TestPassReuseAuditFile[] = [];
+  for (const [invocation, run] of runs.entries()) {
+    if (run.malformedAuditResults) return null;
+    const results = run.auditResults ?? [];
+    const seen = new Set<string>();
+    const counts = new Map<string, number>();
+    for (const file of results) {
+      const identity = `${file.ws}\0${file.file}`;
+      if (file.invocation !== invocation || seen.has(identity) ||
+          !run.workspaces.some((w) => w.ws === file.ws)) return null;
+      seen.add(identity);
+      counts.set(file.ws, (counts.get(file.ws) ?? 0) + 1);
+      files.push(file);
+    }
+    if (run.workspaces.some((w) => (counts.get(w.ws) ?? 0) !== w.counts.audited)) return null;
+  }
+  return files.length === summary.audited ? files : null;
+}
+
 /** Archived invocation identity comes from the run ledger, not a grader's aggregate count. */
 export interface TestPassReuseAuditInvocation {
   runId: string;
@@ -432,7 +512,7 @@ export interface TestPassReuseAuditInvocation {
   completedAtMs: number;
   output: string;
   /** Per-file first-attempt results. null means that the archive did not retain them. */
-  auditedFiles: Array<{ invocation: number; ws: string; file: string; verdict: 'pass' | 'fail' | 'unknown'; evidenceRef: string }> | null;
+  auditedFiles: TestPassReuseAuditFile[] | null;
 }
 
 /**
@@ -483,6 +563,8 @@ export function evaluateTestPassReuseAuditWindow(input: {
       const identity = `${taskIdentity}\0${file.file}`;
       const valid = isCount(file.invocation) && file.invocation < runs.length &&
         Boolean(file.ws.trim() && file.file.trim() && file.evidenceRef.trim()) &&
+        file.judgedSha === invocation.judgedSha && file.runnerIdentity === invocation.runnerIdentity &&
+        file.runContext === 'green-checkpoint' && file.dirty === false &&
         runs[file.invocation]!.workspaces.some((w) => w.ws === file.ws && (w.counts.audited ?? 0) > 0) &&
         // The selector hashes the repo-relative file and judged SHA; an unrelated passing
         // file cannot be substituted for one of its actual audit draws.
@@ -562,6 +644,7 @@ export function summarizeTestPassReuse(
       (reasons.length > 0 ? `; off for some tasks: ${reasons.join(', ')}` : '');
   }
   if (recorder) headline += `; ${recorderHeadline(recorder)}`;
+  const audit = summarizeReuseAudits(runs);
   return {
     invocations: runs.length,
     candidates,
@@ -571,7 +654,8 @@ export function summarizeTestPassReuse(
     alarms,
     offReasons: reasons,
     recorder,
-    audit: summarizeReuseAudits(runs),
+    audit,
+    auditedFiles: summarizeAuditFiles(runs, audit),
     headline,
   };
 }
@@ -659,8 +743,22 @@ export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | 
     offReasons: v.offReasons as string[],
     recorder: parseRecorderSummary(v.recorder),
     ...(v.audit === undefined ? {} : { audit: parseAuditSummary(v.audit) }),
+    ...(v.auditedFiles === undefined ? {} : { auditedFiles: parseArchivedAuditFiles(v.auditedFiles) }),
     headline: v.headline,
   };
+}
+
+function parseArchivedAuditFiles(value: unknown): TestPassReuseAuditFile[] | null {
+  if (!Array.isArray(value)) return null;
+  const files = value.map(parseAuditFile);
+  if (files.some((file) => file === null)) return null;
+  const seen = new Set<string>();
+  for (const file of files as TestPassReuseAuditFile[]) {
+    const identity = `${file.invocation}\0${file.ws}\0${file.file}`;
+    if (seen.has(identity)) return null;
+    seen.add(identity);
+  }
+  return files as TestPassReuseAuditFile[];
 }
 
 function parseAuditSummary(value: unknown): TestPassReuseAuditSummary | null {

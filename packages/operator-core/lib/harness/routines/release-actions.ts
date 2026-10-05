@@ -1926,6 +1926,8 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       // Keep the qualified measurement on the EXISTING append-only event. The capped display
       // alarm list and 12-char display SHA cannot reconstruct the audit window later.
       ...(reuse.audit ? { audit: { ...reuse.audit, judgedSha: reuse.judgedSha, recordedAtMs: reuse.recordedAtMs } } : {}),
+      // Named first-attempt results are acceptance evidence, not a capped display sample.
+      ...(reuse.auditedFiles === undefined ? {} : { auditedFiles: reuse.auditedFiles }),
     };
   }
   // P-013: the round's phase breakdown rides the append-only event whole (it is capped at

@@ -267,6 +267,17 @@ export function readExecutedMapResults(filePath: string, { readFile }?: {
     readFile?: (p: string) => string;
 }): ExecutedMapResultRead;
 /**
+ * Name every actual audit draw using the initial task's reporter snapshot. Console pass rows
+ * and separate retries are never a substitute. Missing/ambiguous reporter evidence stays unknown.
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead | null | undefined} read
+ * @param {{ watch: Map<string, string> } | null | undefined} reuseWatch
+ * @returns {string[]}
+ */
+export function formatTestReuseAuditResultLines(taskLabel: string, read: ExecutedMapResultRead | null | undefined, reuseWatch: {
+    watch: Map<string, string>;
+} | null | undefined): string[];
+/**
  * The per-task RESULT lines (one per flush, or one `outcome=no-report` line).
  *
  * @param {string} taskLabel
@@ -335,6 +346,16 @@ export type TaskReportExpectation = {
     reason: "enrolled-config" | "unenrolled-config" | "no-config" | "not-vitest" | "node-test-runner" | "wrapper-unreadable" | "compound-command" | "no-command";
     config: string | null;
 };
+export type ExecutedMapFileResults = {
+    version: 1;
+    runnerIdentity: string;
+    runContext: string;
+    runGroupId: string | null;
+    files: Array<{
+        testFile: string;
+        verdict: "pass" | "fail" | "unknown";
+    }>;
+};
 export type ExecutedMapResult = {
     outcome: string;
     rows: number;
@@ -343,6 +364,8 @@ export type ExecutedMapResult = {
     dirty: boolean;
     sha: string | null;
     error: string | null;
+    workspaceName?: string | null;
+    fileResults?: ExecutedMapFileResults | null;
 };
 /**
  * `expectsReport` is stamped by the runner from `resolveTaskReportExpectation` (absent/null = unknown).

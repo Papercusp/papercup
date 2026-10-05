@@ -14,6 +14,7 @@ import {
   formatExecutedMapAlarmLines,
   formatExecutedMapLine,
   formatExecutedMapResultLines,
+  formatTestReuseAuditResultLines,
   formatExecutedMapTotalLine,
   gitChangedBetween,
   loadExecutedSourceMap,
@@ -21,6 +22,7 @@ import {
   loadReuseProofs,
   resolveExecutedMapPgUrl,
   resolveTaskReportExpectation,
+  readExecutedMapResults,
   rowsToExecutedMap,
   rowsToReuseProofs,
   scriptCommandWords,
@@ -36,6 +38,70 @@ import {
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ROOT = '/repo';
+
+describe('named first-attempt audit results', () => {
+  const file = 'packages/operator-core/lib/example.test.ts';
+  const sha = 'a'.repeat(40);
+  const payload = (verdict = 'pass') => ({
+    workspaceName: 'core', outcome: 'written', rows: 1, retired: 0, skipped: 0, dirty: false, sha, error: null,
+    fileResults: { version: 1, runnerIdentity: 'vitest:core', runContext: 'green-checkpoint',
+      runGroupId: 'initial-group', files: [{ testFile: file, verdict }] },
+  });
+  const read = (value: unknown) => readExecutedMapResults('/unused', { readFile: () => JSON.stringify(value) });
+  const emitted = (result: ReturnType<typeof readExecutedMapResults> | undefined) =>
+    JSON.parse(formatTestReuseAuditResultLines('core::test', result,
+      { watch: new Map([[file, 'audit'], ['expired.test.ts', 'expired-clean']]) })[0]!
+      .slice('TEST_PASS_REUSE_AUDIT_RESULT '.length));
+
+  it('retains actual named results/runtime and emits only selected audit files', () => {
+    const result = read(payload());
+    expect(result.results[0]?.fileResults).toEqual(payload().fileResults);
+    expect(emitted(result)).toMatchObject({ file, verdict: 'pass', judgedSha: sha,
+      runnerIdentity: 'vitest:core', runContext: 'green-checkpoint', runGroupId: 'initial-group' });
+  });
+  it('preserves an initial failure after the same result file reports a later retry pass', () => {
+    let bytes = JSON.stringify(payload('fail'));
+    const initial = readExecutedMapResults('/unused', { readFile: () => bytes });
+    bytes = JSON.stringify(payload('pass'));
+    expect(emitted(readExecutedMapResults('/unused', { readFile: () => bytes })).verdict).toBe('pass');
+    expect(emitted(initial).verdict).toBe('fail');
+  });
+  it.each(['unknown', 'pass', 'fail'])('retains the reporter verdict %s', (verdict) => {
+    expect(emitted(read(payload(verdict))).verdict).toBe(verdict);
+  });
+  it.each([
+    ['historical', { ...payload(), fileResults: undefined }],
+    ['foreign workspace', { ...payload(), workspaceName: 'other' }],
+    ['missing workspace', { ...payload(), workspaceName: undefined }],
+    ['wrong version', { ...payload(), fileResults: { ...payload().fileResults, version: 2 } }],
+    ['missing context', { ...payload(), fileResults: { ...payload().fileResults, runContext: '' } }],
+    ['missing group measurement', { ...payload(), fileResults: { ...payload().fileResults, runGroupId: undefined } }],
+    ['duplicate file', { ...payload(), fileResults: { ...payload().fileResults, files: [...payload().fileResults.files, ...payload().fileResults.files] } }],
+    ['invalid path', { ...payload(), fileResults: { ...payload().fileResults, files: [{ testFile: '../escape', verdict: 'pass' }] } }],
+    ['dirty', { ...payload(), dirty: true }],
+    ['missing dirty measurement', { ...payload(), dirty: undefined }],
+    ['abbreviated source', { ...payload(), sha: 'abcdef123456' }],
+  ])('does not certify %s evidence', (_label, value) => {
+    expect(emitted(read(value)).verdict).toBe('unknown');
+  });
+  it('keeps missing, malformed, unrelated and repeated flush evidence unknown', () => {
+    expect(emitted(undefined).verdict).toBe('unknown');
+    const repeated = readExecutedMapResults('/unused', {
+      readFile: () => `${JSON.stringify(payload())}\n${JSON.stringify(payload())}`,
+    });
+    expect(emitted(repeated).verdict).toBe('unknown');
+    expect(emitted({ ...read(payload()), malformed: 1 }).verdict).toBe('unknown');
+    expect(emitted(read({ ...payload(), fileResults: { ...payload().fileResults, files: [] } })).verdict).toBe('unknown');
+  });
+  it('snapshots at initial settlement and never re-reads after the retry pool', () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+    const initial = source.slice(source.indexOf('initialPool = await'), source.indexOf('// ── Reporting'));
+    expect(initial).toContain('initialExecutedMapReads.set(initialKey');
+    const reporting = source.slice(source.indexOf('// ── Reporting'));
+    expect(reporting).toContain('initialExecutedMapReads.get(taskKey(t))');
+    expect(reporting).not.toContain('readExecutedMapResults(executedMapResultFile)');
+  });
+});
 
 describe('rowsToExecutedMap', () => {
   it('re-anchors repo-relative rows to absolute paths and keeps the first (newest) row per file', () => {

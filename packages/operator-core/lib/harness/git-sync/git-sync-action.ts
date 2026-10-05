@@ -68,6 +68,12 @@ import { requestOnlyHost } from '../../background-workers';
 import { runCheckpointedStep } from '../../dbos/checkpointed-step';
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
 import { getPotGitMode, type PotGitMode } from './hive-git-mode';
+import {
+  applyIntegrationPushTarget,
+  readPotIntegrationMode,
+  resolveIntegrationPushRemote,
+  type IntegrationPushDecision,
+} from './pot-integration-mode';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import {
@@ -3060,6 +3066,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         hiveGitMode?: PotGitMode;
         hiveGitIdentity?: { potHomeSlug: string; repoKey: string };
         repoPath?: string;
+        /** pot-review-integration-mode P-014: this tick's push target under hiveGit.integration. */
+        integration?: IntegrationPushDecision;
       }
     > => {
       eligibilityRanLive = true;
@@ -3082,13 +3090,24 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       const potHomeSlug = entry ? (entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined)) : undefined;
       if (potHomeSlug && workspaceId) {
         const mode = await getPotGitMode(workspaceId, potHomeSlug);
+        // pot-review-integration-mode P-014 (D-005/D-006): hiveGit.integration is
+        // orthogonal to hiveGit.mode and re-read EVERY tick, so flipping a pot into
+        // working-copy mode stops main-repo pushes on the next tick. Unlike the git
+        // mode it fails CLOSED: an unreadable or malformed setting means commit-only.
+        const integration = resolveIntegrationPushRemote({
+          read: await readPotIntegrationMode(workspaceId, potHomeSlug),
+          ...(entry?.fork_remote ? { forkRemote: entry.fork_remote } : {}),
+        });
+        const withIntegration = integration.kind === 'unchanged' ? {} : { integration };
         if (mode !== 'legacy' && entry)
           return {
             ...g,
             hiveGitMode: mode,
             hiveGitIdentity: { potHomeSlug, repoKey: canonicalRepoKey(entry) },
             ...(entry.path ? { repoPath: entry.path } : {}),
+            ...withIntegration,
           };
+        return { ...g, ...(entry?.path ? { repoPath: entry.path } : {}), ...withIntegration };
       }
       return { ...g, ...(entry?.path ? { repoPath: entry.path } : {}) };
     },
@@ -3138,6 +3157,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       if (cfg.pushSubmoduleOrigins === undefined) cfg.pushSubmoduleOrigins = true;
     }
   }
+  // pot-review-integration-mode P-014 (D-006): a working-copy pot pushes its OWN
+  // fork, never the main repository. Applied after the hive-git-mode block — a
+  // bridged/p2p hive is already commit-only and its bridge leg honours fork_remote.
+  const integrationCommitOnly = cfg.push ? await applyIntegrationPushTarget(slug, cfg, gate.integration, repoPath) : null;
   // EI-18812945811758018: the EFFECTIVE push mode for this tick, recorded later as part
   // of recordOutcome's SINGLE metadata write (never its own patch — a skipped tick must
   // still write nothing, and the settle write is asserted as the only one).
@@ -3151,7 +3174,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     ? 'push'
     : gate.hiveGitMode
       ? `commit-only:${gate.hiveGitMode}`
-      : 'commit-only:config';
+      : integrationCommitOnly
+        ? `commit-only:${integrationCommitOnly}`
+        : 'commit-only:config';
 
   // P-006/WI-229179: acquire the workspace-wide restart barrier shared first,
   // then the per-slug resource (auto-registered) and the routine's extras

@@ -645,12 +645,36 @@ export function resolveTaskReportExpectation({
 }
 
 /**
- * @typedef {{ outcome: string, rows: number, retired: number, skipped: number, dirty: boolean, sha: string | null, error: string | null }} ExecutedMapResult
+ * @typedef {{ version: 1, runnerIdentity: string, runContext: string, runGroupId: string | null, files: Array<{ testFile: string, verdict: 'pass' | 'fail' | 'unknown' }> }} ExecutedMapFileResults
+ * @typedef {{ outcome: string, rows: number, retired: number, skipped: number, dirty: boolean, sha: string | null, error: string | null, workspaceName?: string | null, fileResults?: ExecutedMapFileResults | null }} ExecutedMapResult
  * @typedef {{ status: 'reported' | 'no-report', results: ExecutedMapResult[], malformed: number, expectsReport?: boolean | null }} ExecutedMapResultRead
  *   `expectsReport` is stamped by the runner from `resolveTaskReportExpectation` (absent/null = unknown).
  */
 
 const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/** A malformed or historical payload cannot prove a named first-attempt pass. */
+function parseFileResults(value) {
+  if (!value || value.version !== 1 || typeof value.runnerIdentity !== "string" ||
+      !value.runnerIdentity.trim() || typeof value.runContext !== "string" || !value.runContext.trim() ||
+      !(value.runGroupId === null || (typeof value.runGroupId === "string" && value.runGroupId.trim())) ||
+      !Array.isArray(value.files)) return null;
+  const seen = new Set();
+  for (const file of value.files) {
+    if (!file || typeof file.testFile !== "string" || !file.testFile.trim() ||
+        path.posix.isAbsolute(file.testFile) || file.testFile.includes("\\") ||
+        file.testFile.split("/").some((part) => !part || part === "." || part === "..") ||
+        !["pass", "fail", "unknown"].includes(file.verdict) || seen.has(file.testFile)) return null;
+    seen.add(file.testFile);
+  }
+  return {
+    version: 1,
+    runnerIdentity: value.runnerIdentity,
+    runContext: value.runContext,
+    runGroupId: value.runGroupId,
+    files: value.files.map(({ testFile, verdict }) => ({ testFile, verdict })),
+  };
+}
 
 /**
  * Read one task's result file. A missing or empty file is `no-report` (the reporter never flushed:
@@ -695,9 +719,44 @@ export function readExecutedMapResults(filePath, { readFile = (p) => readFileSyn
       dirty: o.dirty === true,
       sha: typeof o.sha === "string" && o.sha ? o.sha : null,
       error: typeof o.error === "string" && o.error ? o.error : null,
+      workspaceName: typeof o.workspaceName === "string" && o.workspaceName.trim() ? o.workspaceName : null,
+      fileResults: typeof o.dirty === "boolean" ? parseFileResults(o.fileResults) : null,
     });
   }
   return { status: results.length > 0 ? "reported" : "no-report", results, malformed };
+}
+
+/**
+ * Name every actual audit draw using the initial task's reporter snapshot. Console pass rows
+ * and separate retries are never a substitute. Missing/ambiguous reporter evidence stays unknown.
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead | null | undefined} read
+ * @param {{ watch: Map<string, string> } | null | undefined} reuseWatch
+ * @returns {string[]}
+ */
+export function formatTestReuseAuditResultLines(taskLabel, read, reuseWatch) {
+  const lines = [];
+  for (const [file, reason] of reuseWatch?.watch ?? []) {
+    if (reason !== "audit") continue;
+    const matches = (read?.results ?? []).flatMap((result) =>
+      (result.fileResults?.files ?? []).filter((entry) => entry.testFile === file)
+        .map((entry) => ({ result, entry })),
+    );
+    const match = read?.malformed === 0 && matches.length === 1 ? matches[0] : null;
+    const source = match?.result;
+    const qualified = source && source.workspaceName === taskLabel.split("::")[0] &&
+      !source.dirty && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(source.sha ?? "");
+    lines.push("TEST_PASS_REUSE_AUDIT_RESULT " + JSON.stringify({
+      version: 1, ws: taskLabel, file,
+      verdict: qualified ? match.entry.verdict : "unknown",
+      judgedSha: source?.sha ?? null,
+      runnerIdentity: source?.fileResults?.runnerIdentity ?? null,
+      runContext: source?.fileResults?.runContext ?? null,
+      runGroupId: source?.fileResults?.runGroupId ?? null,
+      dirty: source?.dirty ?? null,
+    }));
+  }
+  return lines;
 }
 
 /** One-line, whitespace-collapsed error text, so an alarm line stays one line. */

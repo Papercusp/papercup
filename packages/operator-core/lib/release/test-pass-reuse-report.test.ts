@@ -11,6 +11,7 @@ import {
 import {
   formatExecutedMapAlarmLines,
   formatExecutedMapResultLines,
+  formatTestReuseAuditResultLines,
   formatExecutedMapTotalLine,
   readExecutedMapResults,
   summarizeExecutedMapResults,
@@ -255,6 +256,8 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
     output: output(),
     auditedFiles: ['packages/operator-core/lib/audit-36.test.ts', 'packages/operator-core/lib/audit-42.test.ts'].map((file) => ({
       invocation: 0, ws, file, verdict: 'pass', evidenceRef: `test-run:${file}`,
+      judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4', runnerIdentity: 'proof-v2 node25 linux x64',
+      runContext: 'green-checkpoint', runGroupId: null, dirty: false,
     })),
   });
   const window = (over: Partial<Parameters<typeof evaluateTestPassReuseAuditWindow>[0]> = {}) =>
@@ -262,6 +265,62 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       windowStartMs: 100, windowEndMs: 200, expectedRunIds: ['archived-run-1'],
       invocations: [invocation()], ...over,
     });
+
+  const reporterResults = (verdict: 'pass' | 'fail' | 'unknown' = 'pass') => readExecutedMapResults('/unused', {
+    readFile: () => JSON.stringify({ workspaceName: '@papercusp/operator-core', outcome: 'written', rows: 2, retired: 0, skipped: 0,
+      dirty: false, sha: invocation().judgedSha, error: null,
+      fileResults: { version: 1, runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint',
+        runGroupId: 'initial-group', files: invocation().auditedFiles!.map((f) => ({ testFile: f.file, verdict })) } }),
+  });
+  const namedLines = (verdict: 'pass' | 'fail' | 'unknown' = 'pass') => formatTestReuseAuditResultLines(ws, reporterResults(verdict),
+    { watch: new Map(invocation().auditedFiles!.map((f) => [f.file, 'audit'])) });
+
+  it('archives named initial results end to end through the real reporter reader/formatter', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines()].join('\n'), invocation().judgedSha, 120)!;
+    const archived = parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))!;
+    expect(archived.auditedFiles).toHaveLength(2);
+    expect(archived.auditedFiles?.[0]).toMatchObject({ invocation: 0, ws, verdict: 'pass',
+      runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint', dirty: false });
+    expect(archived.auditedFiles?.[0]?.evidenceRef).toMatch(/^suite-output:line:/);
+    expect(window({ invocations: [{ ...invocation(), auditedFiles: archived.auditedFiles! }] }).verdict).toBe('pass');
+  });
+
+  it('retains an inline-retry miss even without a console FAIL row or soundness alarm', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines('fail')].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.audit?.alarmCount).toBe(2);
+    expect(health.alarms).toHaveLength(2);
+    expect(window({ invocations: [{ ...invocation(), auditedFiles: health.auditedFiles! }] }).verdict).toBe('fail');
+  });
+
+  it('keeps unknown named results rather than certifying them from the final task pass', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines('unknown'), 'Tests 2 passed'].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.auditedFiles?.map((f) => f.verdict)).toEqual(['unknown', 'unknown']);
+    expect(window({ invocations: [{ ...invocation(), auditedFiles: health.auditedFiles! }] }).verdict).toBe('unknown');
+  });
+
+  it.each([
+    ['missing', []], ['partial', namedLines().slice(0, 1)],
+    ['duplicate', [namedLines()[0]!, namedLines()[0]!]],
+    ['malformed', [namedLines()[0]!, 'TEST_PASS_REUSE_AUDIT_RESULT {oops}']],
+    ['unsupported version', namedLines().map((line) => line.replace('"version":1', '"version":2'))],
+  ])('marks %s named coverage as unmeasured', (_label, lines) => {
+    const health = buildTestPassReuseHealth([output(), ...lines].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.auditedFiles).toBeNull();
+  });
+
+  it('names separate invocations when the same file is audited twice', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines(), output(), ...namedLines()].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.auditedFiles?.map((f) => f.invocation)).toEqual([0, 0, 1, 1]);
+  });
+
+  it.each([
+    { judgedSha: 'b'.repeat(40) }, { runnerIdentity: 'foreign runner' }, { runContext: 'clean-local' },
+    { dirty: true }, { dirty: null }, { judgedSha: null }, { runnerIdentity: null },
+  ])('refuses a source/runtime mismatch as proof of a passed audit: %j', (over) => {
+    const r = invocation();
+    r.auditedFiles = r.auditedFiles!.map((file) => ({ ...file, ...over }));
+    expect(window({ invocations: [r] }).verdict).toBe('unknown');
+  });
 
   it('retains the real configured rate, audited count and explicit pure lane', () => {
     expect(summarizeTestPassReuse(parseTestPassReuse(output())).audit).toEqual({
