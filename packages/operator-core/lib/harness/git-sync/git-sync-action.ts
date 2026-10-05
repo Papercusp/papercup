@@ -3663,6 +3663,45 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         signal: liveness.signal,
       }),
     );
+    // P-016 (pot-review-integration-mode): a working-copy pot's sync-back conflict
+    // becomes ONE fix-it work-item in the pot, deduped on the sha-free title prefix
+    // (watchdogKey) so a stuck merge never re-files on every upstream advance.
+    // Best-effort: a filing failure never fails the tick.
+    if (cfg.syncBack && outcome.syncBack?.status === 'conflict') {
+      const syncBackCfg = cfg.syncBack;
+      try {
+        const keyFor = (prefix: string) => `git-sync:sync-back-conflict:${slug}:${prefix}`;
+        const filing = await fileSyncBackConflict(outcome.syncBack, syncBackCfg, {
+          findOpenByTitlePrefix: async (prefix) => {
+            const { findIssuesByWatchdogKeys } = await import('../../issues-engineer');
+            const open = (await findIssuesByWatchdogKeys([keyFor(prefix)])).find(
+              (i) => !['done', 'dropped', 'resolved', 'closed'].includes(String(i.state)),
+            );
+            return open ? String(open.id) : null;
+          },
+          create: async ({ title, summary }) => {
+            const { captureImprovement } = await import('../improvements/capture-core');
+            const res = await captureImprovement({
+              title,
+              kind: 'bug',
+              severity: 'major',
+              body: summary,
+              watchdogKey: keyFor(syncBackConflictTitlePrefix(syncBackCfg.upstreamRemote, syncBackCfg.upstreamBranch)),
+              workspaceId,
+              scope: `harness:${slug}`,
+              sourceRole: 'system',
+              filedByRole: 'git-sync',
+              createdBy: 'system:git-sync',
+              paths: outcome.syncBack?.status === 'conflict' ? outcome.syncBack.conflictedFiles.slice(0, 20) : [],
+            });
+            return String(res.issue?.id ?? '');
+          },
+        });
+        if (filing.action !== 'none') console.log(`[git-sync] ${slug}: sync-back conflict work-item ${filing.action}: ${filing.id}`);
+      } catch (err) {
+        console.warn(`[git-sync] ${slug}: could not file the sync-back conflict work-item: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     // Do not let a queued local-sync heartbeat land after the post-legs marker
     // and regress the durable phase back to local-sync.
     await guarded('flush-activity-heartbeat', () => activityHeartbeatWrite);
