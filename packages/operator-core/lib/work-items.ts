@@ -5371,6 +5371,8 @@ export async function claimWorkItem(
   assignee: string,
   opts: {
     harness?: string;
+    /** Authenticated assigning actor, supplied by a dispatch after admission checks. */
+    assignedBy?: string;
     /**
      * EI-20731607691070897 — ATOMIC SELF-HELD TRANSFER. The compare-and-claim below
      * only matches an UNHELD row, so a holder handing their own item to a named peer
@@ -5477,6 +5479,7 @@ export async function claimWorkItem(
         : null;
     const updated = await claimIssue(id, assignee, {
       workspaceId: issueWs,
+      ...(opts.assignedBy ? { assignedBy: opts.assignedBy } : {}),
       fromHolder: opts.fromHolder,
       expectedAssignee: opts.expectedAssignee,
       forceTakeoverAdmission: opts.forceTakeoverAdmission,

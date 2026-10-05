@@ -2901,6 +2901,8 @@ export async function claimIssue(
   id: string,
   assignee: string,
   opts: {
+    /** Server-derived dispatch actor; persist with the claim so reconciliation sees it. */
+    assignedBy?: string;
     /**
      * EI-1545: an explicit, ALREADY-RESOLVED issue-scope workspace — pass the SAME
      * value the caller used for its own pre-claim family/existence check (e.g.
@@ -3084,7 +3086,8 @@ export async function claimIssue(
         WHEN ${sameHolderPredicate} THEN ${stampedClaimSubjectPayload}
         ELSE ${stampedNewClaimPayload}
       END,
-      assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
+      assignee = ${assignee}, assigned_by = COALESCE(${opts.assignedBy ?? null}, assigned_by),
+      assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
        AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
          payload: 'target.payload', id: 'target.issue_id', harness: 'target.scope',

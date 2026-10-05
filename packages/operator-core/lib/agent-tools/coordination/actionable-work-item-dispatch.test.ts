@@ -82,6 +82,18 @@ function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWo
 }
 
 describe('assignActionableWorkItems', () => {
+  it('carries the authenticated dispatch actor into the atomic claim (EI-25163151398656476)', async () => {
+    const d = deps({ observe: vi.fn(async (id) => ({ item: issueWorkItem(id), available: true, claimedBy: null })) });
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['EI-dispatched'], targetAgent: 'su-member', actor: 'su-leader', harness: 'email' },
+      d,
+    );
+    expect(result.assigned).toEqual(['EI-dispatched']);
+    expect(d.claim).toHaveBeenCalledWith('EI-dispatched', 'su-member', {
+      harness: 'email', assignedBy: 'su-leader',
+    });
+  });
+
   it('claims only the current dependency frontier and preserves blocked descendants', async () => {
     const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
     const d = deps({

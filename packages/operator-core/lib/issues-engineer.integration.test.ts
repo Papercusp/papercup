@@ -417,6 +417,16 @@ describe('engineer issues surface (real PG)', () => {
     });
   });
 
+  it('persists dispatch provenance atomically and preserves it on self-reclaim (EI-25163151398656476)', async () => {
+    const issue = await issues.createIssue({ title: `dispatch-provenance-${Date.now()}`, createdBy: 'agA' });
+    const claimed = await issues.claimIssue(issue.id, 'agB', { assignedBy: 'su-leader' });
+    expect(claimed).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
+    expect(await issues.getIssue(issue.id)).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
+    expect(await issues.claimIssue(issue.id, 'agB')).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
+    expect(await issues.claimIssue(issue.id, 'agC', { assignedBy: 'su-other' })).toBeNull();
+    expect(await issues.getIssue(issue.id)).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
+  });
+
   it('bounds a contended issue release and leaves the claim intact until retry (EI-23215738429986679)', async () => {
     const issue = await issues.createIssue({ title: `release-contention-${Date.now()}`, createdBy: 'agA' });
     const claimed = await issues.claimIssue(issue.id, 'agB');

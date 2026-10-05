@@ -161,7 +161,7 @@ export interface ActionableWorkItemDispatchDeps {
   claim: (
     id: string,
     assignee: string,
-    opts: { harness?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission },
+    opts: { harness?: string; assignedBy?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission },
   ) => Promise<WorkItem | null>;
   /** The same named-id claim-floor oracle used by work_items:claim. */
   explainClaimFloors: typeof explainIssueClaimFloors;
@@ -563,6 +563,7 @@ export async function assignActionableWorkItems(
       try {
         const claimed = await deps.claim(workItemId, args.targetAgent, {
           ...(args.harness ? { harness: args.harness } : {}),
+          ...(args.actor ? { assignedBy: args.actor } : {}),
           ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
         });
         return claimed
