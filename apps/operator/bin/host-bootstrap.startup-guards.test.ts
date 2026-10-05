@@ -505,6 +505,11 @@ describe('host-bootstrap owns the packaged MCP proxy child lifecycle (EI-2110630
   })();
 
   it('tracks a non-detached child and registers a bounded graceful shutdown hook', () => {
+    // Keep the source window honest: if its end marker moves before the shutdown
+    // function, the negative child.unref assertion below would pass vacuously.
+    expect(lifecycleSrc.length).toBeGreaterThan(500);
+    expect(lifecycleSrc).toContain('async function stopPackagedMcpProxy');
+
     // The child handle must live in state that survives a MODULE SPLIT, not a
     // plain module-local. Both forms "track the child" on a single record, so
     // the original `let packagedMcpProxyProcess` assertion could not tell them

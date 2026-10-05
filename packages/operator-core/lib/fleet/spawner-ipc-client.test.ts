@@ -112,6 +112,46 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
     await expect(client.call('boom')).rejects.toThrow(/RPC error -32001: kaboom/);
   });
 
+  it('logs socket-error correlation without RPC params', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const accepted: net.Socket[] = [];
+    const captureConnection = (socket: net.Socket): void => { accepted.push(socket); };
+    server.on('connection', captureConnection);
+    let requestIdentity: { requestId: number; clientConnectionId: string } | undefined;
+    const request = client.call('hang', {
+      command: 'private-command', args: ['private-argument'], env: { TOKEN: 'private-value' },
+    }, {
+      timeoutMs: 5000,
+      onRequestId: (requestId, clientConnectionId) => { requestIdentity = { requestId, clientConnectionId }; },
+    });
+    const rejected = expect(request).rejects.toThrow('synthetic ECONNRESET');
+    try {
+      await vi.waitFor(() => expect(requestIdentity).toBeDefined());
+      const socket = (client as unknown as { socket: net.Socket | null }).socket;
+      if (!socket) throw new Error('client socket missing before synthetic error');
+      socket.emit('error', Object.assign(new Error('synthetic ECONNRESET'), { code: 'ECONNRESET' }));
+      socket.destroy();
+      await rejected;
+
+      const fault = warning.mock.calls.find(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'socket-error',
+      )?.[1] as Record<string, unknown> | undefined;
+      expect(fault).toMatchObject({
+        event: 'socket-error',
+        clientConnectionId: requestIdentity?.clientConnectionId,
+        errorCode: 'ECONNRESET',
+        errorName: 'Error',
+        activeRequests: [{ requestId: requestIdentity?.requestId, method: 'hang' }],
+      });
+      expect(JSON.stringify(fault)).not.toMatch(/private-command|private-argument|private-value|TOKEN|synthetic ECONNRESET/);
+    } finally {
+      server.off('connection', captureConnection);
+      for (const socket of accepted) socket.destroy();
+    }
+  });
+
   it('logs timeout correlation without copying command, args, or env', async () => {
     const p = socketPath();
     let received: { id: number; clientConnectionId: string } | undefined;

@@ -202,6 +202,54 @@ describe('cancellable caller with real IPC and child processes', () => {
     expect(event?.activeRequests).toContainEqual({ requestId: child.id(), method: 'process:exec' });
     await recoveryClient().call('process:drain', { ...fence, requestId: child.id() });
   });
+
+  it('logs socket errors with the active server connection and request identity', async () => {
+    const socketError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const clientWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const accepted: net.Socket[] = [];
+    const captureConnection = (socket: net.Socket): void => { accepted.push(socket); };
+    server.on('connection', captureConnection);
+    const child = runChild();
+    try {
+      await child.started;
+      const serverSocket = accepted[0];
+      if (!serverSocket) throw new Error('server socket missing after child started');
+      const fence = await executionFence(child.client);
+      const rejected = expect(child.result).rejects.toThrow();
+      serverSocket.emit('error', Object.assign(new Error('synthetic ECONNRESET'), { code: 'ECONNRESET' }));
+      serverSocket.destroy();
+      await rejected;
+      await recoveryClient().call('process:drain', { ...fence, requestId: child.id() });
+
+      const fault = socketError.mock.calls.find(([tag]) => tag === '[spawner-socket-error]')?.[1] as
+        Record<string, unknown> | undefined;
+      expect(fault).toMatchObject({
+        serverGeneration: fence.serverGeneration,
+        connectionId: fence.connectionId,
+        clientConnectionId: child.clientConnectionId(),
+        errorCode: 'ECONNRESET',
+        errorName: 'Error',
+        activeRequests: [{ requestId: child.id(), method: 'process:exec' }],
+      });
+      expect(JSON.stringify(fault)).not.toContain('synthetic ECONNRESET');
+      expect(fault).not.toHaveProperty('command');
+      expect(fault).not.toHaveProperty('args');
+      expect(fault).not.toHaveProperty('env');
+      const clientFault = clientWarning.mock.calls.find(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'peer-eof',
+      )?.[1] as Record<string, unknown> | undefined;
+      expect(clientFault).toMatchObject({
+        clientConnectionId: child.clientConnectionId(),
+        serverGeneration: fence.serverGeneration,
+        serverConnectionId: fence.connectionId,
+        activeRequests: [{ requestId: child.id(), method: 'process:exec' }],
+      });
+    } finally {
+      server.off('connection', captureConnection);
+    }
+  });
 });
 
 describe('process:drain connection-generation exit proof', () => {
