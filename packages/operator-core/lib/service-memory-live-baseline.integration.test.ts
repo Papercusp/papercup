@@ -350,8 +350,13 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
   if (!targets.length || targets.length > 8 || new Set(targets.map(row => row.pid)).size !== targets.length ||
       targets.some(row => !Number.isSafeInteger(row.pid) || row.pid <= 0) ||
       !/^[a-f0-9]{7,64}$/i.test(expectedBuild)) throw Error('Worker-window target selection');
-  const initial = structuredClone(reader.census());
-  processInventory(initial.main, initial.descendants, initial.notChecked);
+  const savedCensus = () => {
+    const census = structuredClone(reader.census());
+    if (census.descendants.length > 64) throw Error('Worker-window bounded census cap');
+    processInventory(census.main, census.descendants, census.notChecked);
+    return census;
+  };
+  const initial = savedCensus();
   const stablePath = (census: WorkerCensus, target: ResourceRow) => {
     assertIdentity(initial.main, census.main);
     let row = counterTarget(census.main, census.descendants, target.pid);
@@ -373,8 +378,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
   for (const target of targets) stablePath(initial, target);
   const sample = async (requestIds: string[]) => {
     const startedAt = Date.now();
-    const before = structuredClone(reader.census());
-    processInventory(before.main, before.descendants, before.notChecked);
+    const before = savedCensus();
     for (const target of targets) stablePath(before, target);
     const readings = [];
     for (const target of targets) {
@@ -388,8 +392,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
           value.counters.heap.total_allocated_bytes < 0) throw Error('Worker-window cumulative allocation unavailable');
       readings.push({ ...value, role, before: stablePath(before, target) });
     }
-    const after = structuredClone(reader.census());
-    processInventory(after.main, after.descendants, after.notChecked);
+    const after = savedCensus();
     const observations = readings.map((value, index) => {
       const os = stablePath(after, targets[index]);
       if (!Number.isFinite(os.pssBytes) || os.pssBytes <= 0 ||
@@ -722,6 +725,13 @@ describe('actual current-build operator memory baseline', () => {
         .toBe('/runtime/wrapper.mjs');
       expect(result.after.census.after.descendants.find(row => row.pid === 20)?.startTicks).toBe('20');
       expect(result.after.observations[0].after.parentPid).toBe(20);
+    });
+    it('rejects an oversized raw census before reading targets or running workload', async () => {
+      const f = setup();
+      f.children.push(...Array.from({ length: 62 }, (_, i) => ({ ...f.main, pid: 100 + i,
+        parentPid: f.main.pid, startTicks: String(100 + i) })));
+      await expect(collectRequestWorkerWindow(f.targets, build, f.reader, f.workload)).rejects.toThrow('census cap');
+      expect(f.counts().reads).toBe(0); expect(f.counts().workloads).toBe(0);
     });
     it.each(['duplicate', 'foreign', 'reused', 'parent pin', 'entry pin'] as const)('rejects %s target selection before observing workload', async kind => {
       const f = setup();
