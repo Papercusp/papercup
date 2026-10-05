@@ -74,6 +74,16 @@ describe('named pure capture result reader (WI-10005218 / R-3)', () => {
     expect(parsePureProofCaptureArchive(unknown)).toEqual(unknown);
   });
 
+  it('preserves an explicit moved-HEAD skip without qualifying proofs at the foreign SHA', () => {
+    const r = archive();
+    const skipped = { ...record(), state: 'skipped', reason: 'notRun(HEAD-moved)', sha: 'b'.repeat(40),
+      slices: 0, files: 0, rows: 0, evidence: { ...record().evidence, clean: true, proofs: null } };
+    const parsed = parsePureProofCaptureArchive({ ...r, capture: skipped })!;
+    expect(parsed.judgedSha).toBe(r.judgedSha);
+    expect(parsed.capture?.state).toBe('skipped');
+    expect(parsed.capture?.evidence.proofs).toBeNull();
+  });
+
   it.each([
     ['unmeasured process', (r: any) => { delete r.processStartedAtMs; }],
     ['recycled pid without start', (r: any) => { r.processStartedAtMs = null; }],

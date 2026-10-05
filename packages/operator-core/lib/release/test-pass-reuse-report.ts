@@ -138,7 +138,7 @@ export function parsePureProofCaptureArchive(value: unknown): PureProofCaptureAr
   const capture = v.capture === null ? null : parsePureProofCaptureResult(v.capture);
   if (v.capture !== null && !capture) return null;
   if (capture && (capture.evidence.runGroupId !== `${v.runId}:pure-proof-capture` ||
-      (capture.sha !== null && capture.sha !== v.judgedSha) ||
+      (capture.state === 'done' && capture.sha !== v.judgedSha) ||
       capture.evidence.startedAtMs < emitted || capture.evidence.completedAtMs > archived)) return null;
   return { version: 1, runId: v.runId, gateFireId: v.gateFireId as string | null,
     pid: v.pid as number, processStartedAtMs: start, judgedSha: v.judgedSha,
