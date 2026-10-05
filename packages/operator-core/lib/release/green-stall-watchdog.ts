@@ -3614,6 +3614,7 @@ export async function checkStrandedRepairQueue(
     // A live fixer that has stopped streaming gets an independent advisory nudge before the
     // 8h age rung. Missing output is UNKNOWN (never streamed is not evidence); this path never
     // changes releaseFixerSpawnAlive, the frozen candidate, or dispatch ownership.
+    let fixerSilencePassError: unknown;
     try {
       let lastOutputAtMs: number | null = null;
       if (diag?.fixerSpawnId) {
@@ -3720,7 +3721,13 @@ export async function checkStrandedRepairQueue(
       }
     } catch (e) {
       // Failure in the optional activity signal must not suppress the independent age alarm.
+      fixerSilencePassError = e;
       console.warn('[stranded-repair-queue-watchdog] fixer-silence pass failed (non-fatal): ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      // A healthy outer age pass must not erase this subpass's failure marker.
+      await recordWatchdogPassOutcome(
+        sql, 'stranded-repair-fixer-silence', { routineName: 'green-checkpoint', installSlug }, fixerSilencePassError,
+      );
     }
 
     const existing = await sql<{ escalation: { candidate?: string; rung?: number; stranded?: boolean } | null }[]>`
