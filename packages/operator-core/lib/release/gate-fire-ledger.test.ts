@@ -52,6 +52,50 @@ describe('reuse audit population from immutable gate events', () => {
     expect(evaluateGateReuseAuditWindow(fixture('fail'))).toMatchObject({ verdict: 'fail', alarms: 1 });
   });
 
+  const withZeroDrawFire = (runtime?: Record<string, unknown>) => {
+    const r = fixture();
+    const counts = { candidates: 1, reused: 1, audited: 0, expiredClean: 0 };
+    const identity = { version: 1 as const, judgedSha: sha, runnerIdentity: 'proof-v2 node25 linux x64',
+      runContext: 'green-checkpoint', runGroupId: 'run-2', dirty: false, ...runtime };
+    const output = [formatTestReuseLine(ws, counts, ' auditRate=0.05 lane=pure', identity),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [counts], savedMs: 1, unmeasured: 0 })].join('\n');
+    const health = buildTestPassReuseHealth(output, sha, 150)!;
+    r.rows.push({ id: 'zero-anchor', kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: 140,
+      detail: { gateFireId: 'fire-2' } },
+    { id: 'zero-outcome', kind: 'green_checkpoint', status: 'advanced', createdAtMs: 160, detail: {
+      gateFireId: 'fire-2', runId: 'run-2', candidate: sha.slice(0, 12), testPassReuse: {
+        audit: { ...health.audit, judgedSha: sha, recordedAtMs: 150 },
+        auditRuns: health.auditRuns, auditedFiles: health.auditedFiles,
+      } } });
+    r.total = r.rows.length;
+    return r;
+  };
+
+  it('includes a qualified zero-draw invocation alongside nonempty observed audits', () => {
+    expect(evaluateGateReuseAuditWindow(withZeroDrawFire())).toMatchObject({ verdict: 'pass', audited: 1,
+      runIds: ['run-1', 'run-2'], fireIds: ['fire-1', 'fire-2'] });
+  });
+
+  it.each([
+    { dirty: true }, { judgedSha: 'b'.repeat(40) }, { runGroupId: 'run-2:retry' },
+    { runContext: 'clean-local' }, { runnerIdentity: '' }, { version: 2 },
+  ])('does not borrow another invocation runtime for an unqualified zero-draw run (%j)', (runtime) => {
+    expect(evaluateGateReuseAuditWindow(withZeroDrawFire(runtime)).verdict).toBe('unknown');
+  });
+
+  it('keeps historical zero-draw runtime absence unknown', () => {
+    const r = withZeroDrawFire();
+    const archive = r.rows[3]!.detail.testPassReuse as { auditRuns: Array<{ workspaces: Array<{ runtime?: unknown }> }> };
+    delete archive.auditRuns[0]!.workspaces[0]!.runtime;
+    expect(evaluateGateReuseAuditWindow(r).verdict).toBe('unknown');
+  });
+
+  it('does not make an entirely zero-draw window an observed soundness pass', () => {
+    const r = withZeroDrawFire();
+    r.rows = r.rows.slice(2); r.total = r.rows.length;
+    expect(evaluateGateReuseAuditWindow(r)).toMatchObject({ verdict: 'unknown', audited: 0 });
+  });
+
   it.each([
     ['capped', (r: PipelineEventWindowRead) => { r.status = 'capped'; }],
     ['empty', (r: PipelineEventWindowRead) => { r.rows = []; r.total = 0; }],

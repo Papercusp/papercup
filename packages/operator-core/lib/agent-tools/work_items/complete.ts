@@ -309,7 +309,7 @@ function defaultCompletionStatus(value: unknown): unknown {
 // Two separate metadata-bearing object clones would collide during strictArgs.
 const completionCoverageField = CompletionRecordSchema.shape.coverage.meta({
   ...CompletionRecordSchema.shape.coverage.meta(),
-  id: 'completion-coverage',
+  id: 'wi-coverage',
 });
 
 const completionInputSchema = CompletionRecordSchema.extend({
@@ -405,7 +405,7 @@ const completionSpec = z
   // EI-23318249512516833: the completion record is reused by both single-item
   // branches and each `items[]` entry. Register it once so tools/list emits one
   // `$defs` entry and refs rather than copying the full nested record per branch.
-  .meta({ id: 'work-items-completion-record-v1' });
+  .meta({ id: 'wi-completion' });
 
 const SPEC_ADEQUACY_CURRENTNESS_GUIDANCE =
   '`specAdequacy.current` entries use `{ planSlug?, specId?, specRevision?, specFingerprint?, evidenceKind, evidenceRef, sourceFingerprint, testFingerprint?, fixtureFingerprint?, rubricFingerprint?, environmentFingerprint? }`; provide one entry for every selected bound evidence ref (`specAdequacy.evidenceRefs` narrows the selection; when omitted, use all bound refs) and every stored fingerprint dimension. `planSlug`, `specId`, `specRevision`, and `specFingerprint` are an all-or-none clause identity; omitted values remain unknown and cannot pass.';
@@ -506,7 +506,7 @@ const specAdequacyCompletionSpec = z
   // entry and two refs. MEASURED 1,591 B off this tool's compact definition — which is
   // what puts the derived OMP/claude/codex seed back under D-009's 100,000 B budget
   // (it was 100,189 B, floors alone, with nothing discretionary left to defer).
-  .meta({ id: 'work-items-spec-adequacy-attestation-v1' });
+  .meta({ id: 'wi-adequacy' });
 
 /**
  * ⚠ BOTH call sites MUST share THIS ONE instance — do not re-spell
@@ -928,7 +928,7 @@ function isPlanGateRejection(error: string): boolean {
 const closeAssumptionsField = z
   .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
   .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.')
-  .meta({ id: 'close-assumptions' });
+  .meta({ id: 'wi-assumptions' });
 
 const itemSpec = z.object({
   id: z.string().min(1),

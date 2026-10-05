@@ -6478,16 +6478,16 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const completionRef = '#/$defs/work-items-completion-record-v1';
+      const completionRef = '#/$defs/wi-completion';
 
-      expect(json.$defs).toHaveProperty('work-items-completion-record-v1');
-      expect(json.$defs).toHaveProperty('completion-coverage');
-      expect(json.$defs!['completion-coverage']).toHaveProperty('x-papercusp-call-constraint');
-      expect(json.$defs).toHaveProperty('close-assumptions');
-      const record = json.$defs!['work-items-completion-record-v1'] as {
+      expect(json.$defs).toHaveProperty('wi-completion');
+      expect(json.$defs).toHaveProperty('wi-coverage');
+      expect(json.$defs!['wi-coverage']).toHaveProperty('x-papercusp-call-constraint');
+      expect(json.$defs).toHaveProperty('wi-assumptions');
+      const record = json.$defs!['wi-completion'] as {
         properties: { coverage: { $ref: string }; verification: { properties: { coverage: { $ref: string } } } };
       };
-      const coverageRef = '#/$defs/completion-coverage';
+      const coverageRef = '#/$defs/wi-coverage';
       expect(record.properties.coverage.$ref).toBe(coverageRef);
       expect(record.properties.verification.properties.coverage.$ref).toBe(coverageRef);
       expect(branches).toHaveLength(2);
@@ -6497,10 +6497,10 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       );
       expect(bulkBranch?.properties?.items?.items?.properties?.completion?.$ref).toBe(completionRef);
       for (const branch of branches) {
-        expect((branch.properties as Record<string, { $ref?: string }>).assumptions.$ref).toBe('#/$defs/close-assumptions');
+        expect((branch.properties as Record<string, { $ref?: string }>).assumptions.$ref).toBe('#/$defs/wi-assumptions');
       }
       expect((bulkBranch?.properties?.items?.items?.properties as Record<string, { $ref?: string }>).assumptions.$ref)
-        .toBe('#/$defs/close-assumptions');
+        .toBe('#/$defs/wi-assumptions');
     });
 
     it('documents that assumptions are required only for terminal closes', () => {
@@ -6509,7 +6509,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         oneOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const descriptions = branches.map((branch) => branch.properties?.assumptions?.description ?? '').join('\n');
+      const descriptions = branches.map((branch) => resolveLocalSchemaRef(json, branch.properties?.assumptions).description ?? '').join('\n');
       expect(descriptions).toContain('terminal close');
       expect(descriptions).toContain('record-only');
     });

@@ -293,6 +293,31 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
     expect(parseTestPassReuseAuditArchive({ ...compact, audit: { ...compact.audit, audited: 99 } })).toBeNull();
   });
 
+  it('retains original selector runtime through the existing archive even with zero audit draws', () => {
+    const runtime = { version: 1 as const, judgedSha: invocation().judgedSha,
+      runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint',
+      runGroupId: 'initial-group', dirty: false };
+    const zero = summary({ candidates: 1, reused: 1, audited: 0 });
+    const printed = [formatTestReuseLine(ws, zero, ' auditRate=0.05 lane=pure', runtime),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [zero], savedMs: 1, unmeasured: 0 })].join('\n');
+    const health = buildTestPassReuseHealth(printed, runtime.judgedSha, 120)!;
+    const archived = parseTestPassReuseAuditArchive(JSON.parse(JSON.stringify({
+      audit: { ...health.audit, judgedSha: health.judgedSha, recordedAtMs: health.recordedAtMs },
+      auditRuns: health.auditRuns, auditedFiles: health.auditedFiles,
+    })))!;
+    expect(archived.auditRuns[0]!.workspaces[0]!.runtime).toEqual(runtime);
+    expect(archived.auditedFiles).toEqual([]);
+  });
+
+  it.each(['%', 'not-json', encodeURIComponent(JSON.stringify({ version: 2 }))])(
+    'keeps malformed selector runtime explicit instead of dropping it (%s)', (encoded) => {
+      const parsed = parseTestPassReuse(output(`auditRate=0.05 lane=pure runtime=${encoded}`));
+      expect(parsed[0]!.workspaces[0]!.runtime).toBeNull();
+      const health = buildTestPassReuseHealth(output(`auditRate=0.05 lane=pure runtime=${encoded}`),
+        invocation().judgedSha, 120)!;
+      expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))?.auditRuns?.[0]?.workspaces[0]?.runtime).toBeNull();
+    });
+
   it('retains an inline-retry miss even without a console FAIL row or soundness alarm', () => {
     const health = buildTestPassReuseHealth([output(), ...namedLines('fail')].join('\n'), invocation().judgedSha, 120)!;
     expect(health.audit?.alarmCount).toBe(2);
