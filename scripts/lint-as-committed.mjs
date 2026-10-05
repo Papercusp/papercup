@@ -92,6 +92,7 @@
  *    explicitly, so you can see WHY a working-tree run disagreed with this one.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -107,16 +108,27 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Child environment for commands executing against the isolated committed clone. */
-export function lintAsCommittedChildEnv(environment = process.env) {
-  return {
+export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
+  const child = {
     ...environment,
     npm_config_workspaces: undefined,
     PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
   };
+  // Each immutable clone has a fresh tmp path. Keep resumable verdict storage
+  // scoped to its source repository instead, separately from ordinary/gate
+  // caches. The affected runner still checks command and dependency contents.
+  if (repoRoot && !child.AFFECTED_TASK_VERDICT_CACHE_PATH) {
+    const scope = createHash('sha256').update(realpathSync(repoRoot)).digest('hex').slice(0, 16);
+    child.AFFECTED_TASK_VERDICT_CACHE_PATH = join(
+      homedir(), '.papercusp', 'cache',
+      `papercusp-affected-passing-verdicts-v2-committed-${scope}.json`,
+    );
+  }
+  return child;
 }
 
 /**
@@ -973,7 +985,7 @@ function main() {
       bail(2);
     }
 
-    const childEnvironment = lintAsCommittedChildEnv(process.env);
+    const childEnvironment = lintAsCommittedChildEnv(process.env, repoRoot);
     if (args.scripts.some((script) => script.startsWith('test:'))) {
       const mobileSource = materializeMobileSourceContract(repoRoot, workRoot, process.env);
       if (mobileSource) {

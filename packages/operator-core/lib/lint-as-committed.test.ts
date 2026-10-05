@@ -74,7 +74,7 @@ const {
     repoRoot: string,
     workRoot: string,
   ) => { entries: number; remapped: number; fallback: number };
-  lintAsCommittedChildEnv: (environment?: Record<string, string | undefined>) => Record<string, string | undefined>;
+  lintAsCommittedChildEnv: (environment?: Record<string, string | undefined>, repoRoot?: string | null) => Record<string, string | undefined>;
   materializeMobileSourceContract: (
     repoRoot: string,
     workRoot: string,
@@ -202,6 +202,30 @@ describe('committed mobile producer source contract (WI-10006121)', () => {
 });
 
 describe('isolated clone module identity (EI-24824919200711849)', () => {
+  it('shares committed verdict storage across source clones without sharing another repository cache', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-verdict-origin-'));
+    try {
+      const first = join(parent, 'first');
+      const second = join(parent, 'second');
+      const alias = join(parent, 'alias');
+      mkdirSync(first);
+      mkdirSync(second);
+      symlinkSync(first, alias, 'dir');
+      const sourceEnv = { EXAMPLE: 'kept' };
+      const a = lintAsCommittedChildEnv(sourceEnv, first);
+      const b = lintAsCommittedChildEnv(sourceEnv, alias);
+      const c = lintAsCommittedChildEnv(sourceEnv, second);
+      expect(a.AFFECTED_TASK_VERDICT_CACHE_PATH).toBe(b.AFFECTED_TASK_VERDICT_CACHE_PATH);
+      expect(a.AFFECTED_TASK_VERDICT_CACHE_PATH).not.toBe(c.AFFECTED_TASK_VERDICT_CACHE_PATH);
+      expect(a.AFFECTED_TASK_VERDICT_CACHE_PATH).toMatch(/passing-verdicts-v2-committed-[a-f0-9]{16}\.json$/);
+      expect(sourceEnv).toEqual({ EXAMPLE: 'kept' });
+      expect(lintAsCommittedChildEnv({ AFFECTED_TASK_VERDICT_CACHE_PATH: '/explicit/proof.json' }, first)
+        .AFFECTED_TASK_VERDICT_CACHE_PATH).toBe('/explicit/proof.json');
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('marks only the child environment for clone-specific Vite resolution', () => {
     const parent = { NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' };
     expect(lintAsCommittedChildEnv(parent)).toEqual({
