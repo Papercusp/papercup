@@ -22,6 +22,12 @@ describe('queryNamesForTriggerEvent', () => {
     expect(names).toHaveLength(2);
   });
 
+  it('refreshes pinned report reads when report-library metadata changes', () => {
+    expect(queryNamesForTriggerEvent('harness_shared.report_library.changed', {
+      workspace_id: 'ws1',
+    })).toEqual(['reports.get']);
+  });
+
   it('returns empty array for unknown tables', () => {
     expect(queryNamesForTriggerEvent('harness_shared.totally_unknown.changed')).toEqual([]);
   });

@@ -70,6 +70,9 @@ export type QueryNameTarget = string | { name: string; scope: ScopeKeyBuilder };
  * a bare string full-busts; `{ name, scope }` opts into per-row scoping.
  */
 export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTarget[]>> = {
+  // Reports have a composite workspace/report key, so a table event without a
+  // consumer reportId conservatively refreshes every open pinned report.
+  'harness_shared.report_library': ['reports.get'],
   // Occurrence watermarks alter the observation page and its exact summary even
   // when the canonical work-item row is unchanged.
   'harness_shared.work_item_occurrences': ['learning.observations', 'learning.observations.summary'],
