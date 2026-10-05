@@ -30,6 +30,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';
+import { parseGithubUrl } from '../clone-github';
+import type { EnsureForkOpts, EnsureForkResult } from '../ensure-fork';
+import { resolveForkPushTarget, setForkRemote, type SetForkRemoteResult } from './fork-remote';
 
 const execFileAsync = promisify(execFile);
 
@@ -125,7 +128,11 @@ export function resolveIntegrationPushRemote(input: ResolveIntegrationPushInput)
       reason: read.source === 'set' ? 'integration mode direct (explicit)' : 'integration mode direct (default — not configured)',
     };
   }
-  if (!input.forkRemote) {
+  // The fork URL comes through the shared fork-remote seam (P-014). No upstream is
+  // passed, so the seam can only answer `fork` or `none`; it can never pick the
+  // main repository for a working-copy pot.
+  const target = resolveForkPushTarget({ forkRemote: input.forkRemote });
+  if (target.target !== 'fork') {
     return {
       kind: 'commit-only',
       reason: 'working_copy_fork_missing',
@@ -137,7 +144,7 @@ export function resolveIntegrationPushRemote(input: ResolveIntegrationPushInput)
   return {
     kind: 'fork',
     remoteName: POT_FORK_REMOTE_NAME,
-    url: input.forkRemote,
+    url: target.remote,
     reason: 'working-copy mode — git-sync pushes the pot’s own fork, never the main repository (D-006)',
   };
 }
@@ -287,4 +294,97 @@ export async function setPotIntegrationMode(input: SetPotIntegrationModeInput): 
   }
   await setHiveSetting({ workspaceId, potHomeSlug, settingKey: POT_INTEGRATION_SETTING_KEY, value: mode }, sql);
   return { ok: true, mode };
+}
+
+export type ChoosePotIntegrationModeResult =
+  | { ok: true; mode: PotIntegrationMode | null; fork: { url: string; created: boolean } | null }
+  | {
+      ok: false;
+      error:
+        | 'green_cmd_required'
+        | 'fork_required'
+        | 'upstream_remote_required'
+        | 'fork_is_main_repository'
+        | 'fork_create_failed'
+        | 'fork_record_failed';
+      message: string;
+    };
+
+export interface ChoosePotIntegrationModeInput extends SetPotIntegrationModeInput {
+  /** The pot's registry slug (where `fork_remote` is recorded). */
+  harnessSlug: string;
+  /** The main repository (registry `github_remote`) the fork is made from. */
+  upstreamRemote: string | null | undefined;
+}
+
+export interface ChoosePotIntegrationModeDeps {
+  ensureFork?: (opts: EnsureForkOpts) => Promise<EnsureForkResult>;
+  setForkRemote?: (slug: string, forkUrl: string | null, workspaceId?: string) => Promise<SetForkRemoteResult>;
+  setMode?: (input: SetPotIntegrationModeInput) => Promise<SetPotIntegrationModeResult>;
+}
+
+/**
+ * P-014: choose the pot's integration mode. Choosing `review` (working copy)
+ * CREATES the pot's fork of the main repository when none is recorded
+ * (ensureFork) and records it as the registry `fork_remote` before the mode is
+ * set, so git-sync's next tick pushes to the fork. The test-command check runs
+ * first, so a refused switch never creates a fork. A fork that resolves to the
+ * main repository itself (the signed-in account owns it) is refused: working-copy
+ * mode must never push the main repository.
+ */
+export async function choosePotIntegrationMode(
+  input: ChoosePotIntegrationModeInput,
+  deps: ChoosePotIntegrationModeDeps = {},
+): Promise<ChoosePotIntegrationModeResult> {
+  const setMode = deps.setMode ?? setPotIntegrationMode;
+  if (input.mode !== 'review' || input.forkRemote) {
+    const r = await setMode(input);
+    return r.ok ? { ok: true, mode: r.mode, fork: null } : r;
+  }
+  if (!input.greenCmd || !input.greenCmd.trim()) {
+    return setMode(input) as Promise<ChoosePotIntegrationModeResult>;
+  }
+  const upstream = input.upstreamRemote ? parseGithubUrl(input.upstreamRemote) : null;
+  if (!upstream) {
+    return {
+      ok: false,
+      error: 'upstream_remote_required',
+      message: 'working-copy mode needs the pot’s main repository on GitHub, to fork it',
+    };
+  }
+  const ensure =
+    deps.ensureFork ?? (async (o: EnsureForkOpts) => (await import('../ensure-fork')).ensureFork(o));
+  let fork: EnsureForkResult;
+  try {
+    fork = await ensure({ upstreamOwner: upstream.owner, upstreamRepo: upstream.repo });
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'fork_create_failed',
+      message: `could not create the pot’s fork: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (fork.forkFullName.toLowerCase() === `${upstream.owner}/${upstream.repo}`.toLowerCase()) {
+    return {
+      ok: false,
+      error: 'fork_is_main_repository',
+      message:
+        `the signed-in GitHub account owns ${upstream.owner}/${upstream.repo}, so it cannot fork it; ` +
+        'configure a fork owned by another account or organization',
+    };
+  }
+  const recorded = await (deps.setForkRemote ?? setForkRemote)(
+    input.harnessSlug,
+    `https://github.com/${fork.forkFullName}.git`,
+    input.workspaceId,
+  );
+  if (!recorded.ok || !recorded.forkRemote) {
+    return {
+      ok: false,
+      error: 'fork_record_failed',
+      message: recorded.ok ? 'fork remote was not recorded' : recorded.message,
+    };
+  }
+  const r = await setMode({ ...input, forkRemote: recorded.forkRemote });
+  return r.ok ? { ok: true, mode: r.mode, fork: { url: recorded.forkRemote, created: fork.created } } : r;
 }
