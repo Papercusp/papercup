@@ -1500,6 +1500,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       ),
     ],
   },
+  // The human-facing sync adapter for reports:get: reuse its exact-ID store
+  // lookup and full wire projection. Never resolve a pin through its lineage.
+  'reports.get': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: z.object({ reportId: z.string().min(1).max(400) }).strict(),
+    resolve: async (args) => {
+      const [{ getOrgPg }, { activeWorkspaceId }, { getReport }, { toReportFull }] = await Promise.all([
+        import('@papercusp/db-org'), import('../workspace-registry'),
+        import('../report-library'), import('../agent-tools/reports/_shared'),
+      ]);
+      // Sync routes are operator UI reads; the workspace comes from the bound
+      // server context, while owner visibility belongs to the human UI viewer.
+      const report = await getReport(getOrgPg().sql, activeWorkspaceId(),
+        (args as { reportId: string }).reportId, { isOwner: true });
+      return report ? [toReportFull(report)] : [];
+    },
+  },
   'goals.detail': {
     backingTables: [
       'harness_shared.goals',
