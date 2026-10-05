@@ -1048,7 +1048,7 @@ describe('P011 independent selected-worker resource windows', () => {
     expect(result.requestWorkerWindows!.every((w: any) => w.selectedAncestry.status === 'unknown')).toBe(true);
     expect(r).toEqual(frozen);
   });
-  it('joins an unsampled intermediate ancestor using the exact raw brackets', () => {
+  function intermediateAncestorFixture() {
     const r = workerFixture();
     for (const s of r.samples) {
       s.descendants[0].parentPid = 9;
@@ -1062,12 +1062,28 @@ describe('P011 independent selected-worker resource windows', () => {
         sample.census[bracket].descendants[1].command.script = '/runtime/wrapper.mjs';
       }
     }
-    const result = auditBaseline(r).requestWorkerWindows![0];
-    expect(result.selectedAncestry.brackets.find((x: any) => x.pid === 8).chain.map((x: any) => x.pid))
+    return r;
+  }
+  it('joins an unsampled intermediate ancestor using the exact raw brackets', () => {
+    const result = auditBaseline(intermediateAncestorFixture()).requestWorkerWindows![0];
+    expect(result.selectedAncestry.brackets!.find((x: any) => x.pid === 8).chain.map((x: any) => x.pid))
       .toEqual([8, 9, 7]);
     expect(result.servingWorkerPopulation).toBe('unknown');
     expect(result.unsampledAncestorLifetimes).toBe('unknown');
   });
+  it.each(['startTicks', 'executable', 'command', 'entry', 'parent', 'missing', 'later window'] as const)(
+    'rejects unsampled ancestor corruption: %s', kind => {
+      const r = intermediateAncestorFixture();
+      const census = r.requestWorkerWindows[kind === 'later window' ? 1 : 0].after.census.after;
+      const ancestor = census.descendants[1];
+      if (kind === 'startTicks' || kind === 'later window') ancestor.startTicks = '99';
+      if (kind === 'executable') ancestor.executableSha256 = 'f'.repeat(64);
+      if (kind === 'command') ancestor.command.sha256 = 'f'.repeat(64);
+      if (kind === 'entry') ancestor.command.script = '/other/wrapper.mjs';
+      if (kind === 'parent') ancestor.parentPid = 8;
+      if (kind === 'missing') census.descendants.pop();
+      expect(() => auditBaseline(r)).toThrow(/P011 worker windows:/);
+    });
   it('preserves evicted-ring requests as partial and missing HTTP identities as unknown', () => {
     const r = workerFixture(), w = r.requestWorkerWindows[0], id = r.requests[0].requestId;
     w.after.observations[0].snapshot.results = w.after.observations[0].snapshot.results.filter((q: any) =>
