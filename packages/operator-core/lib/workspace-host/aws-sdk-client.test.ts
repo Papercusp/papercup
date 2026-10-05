@@ -877,6 +877,57 @@ describe('seam methods send the expected SDK command and input (AUTO-BAR-R-2-P-0
     expect(aws.commands('CancelSpotInstanceRequestsCommand')).toHaveLength(2);
   });
 
+  it('passes VolumeInitializationRate through to RunInstances and CreateVolume, and sends none when absent (WI-10006140)', async () => {
+    const { aws, client } = setup();
+    const launch = (token: string, ebs: Record<string, unknown>) =>
+      client.runInstances({
+        ClientToken: token,
+        ImageId: 'ami-0abc',
+        InstanceType: 'm7i.large',
+        MinCount: 1,
+        MaxCount: 1,
+        LaunchTemplate: { LaunchTemplateId: 'lt-1' },
+        NetworkInterfaces: [
+          { DeviceIndex: 0, SubnetId: 'subnet-1', Groups: ['sg-1'], DeleteOnTermination: true, AssociatePublicIpAddress: false },
+        ],
+        IamInstanceProfile: { Arn: 'arn:aws:iam::1:instance-profile/p' },
+        BlockDeviceMappings: [
+          {
+            DeviceName: '/dev/sda1',
+            Ebs: { DeleteOnTermination: true, Encrypted: true, KmsKeyId: 'k', VolumeSize: 20, VolumeType: 'gp3', ...ebs },
+          },
+        ],
+        TagSpecifications: [
+          { ResourceType: 'instance', Tags: [] },
+          { ResourceType: 'volume', Tags: [] },
+        ],
+      });
+    await launch('tok-rate', { VolumeInitializationRate: 300 });
+    await launch('tok-norate', {});
+    const [withRate, withoutRate] = aws.commands('RunInstancesCommand');
+    // The SDK mapping copies EBS fields one by one; a field it forgets is silently never sent.
+    expect(withRate!.input.BlockDeviceMappings[0].Ebs.VolumeInitializationRate).toBe(300);
+    expect(withoutRate!.input.BlockDeviceMappings[0].Ebs).not.toHaveProperty('VolumeInitializationRate');
+
+    const volume = (token: string, extra: Record<string, unknown>) =>
+      client.createVolume({
+        AvailabilityZone: 'us-east-2a',
+        ClientToken: token,
+        Encrypted: true,
+        KmsKeyId: 'k',
+        Size: 10,
+        VolumeType: 'gp3',
+        ...extra,
+        TagSpecifications: [{ ResourceType: 'volume', Tags: [] }],
+      });
+    await volume('vol-restore', { SnapshotId: 'snap-1', VolumeInitializationRate: 250 });
+    await volume('vol-new', {});
+    const [restored, fresh] = aws.commands('CreateVolumeCommand');
+    expect(restored!.input).toMatchObject({ SnapshotId: 'snap-1', VolumeInitializationRate: 250 });
+    expect(fresh!.input).not.toHaveProperty('VolumeInitializationRate');
+    expect(fresh!.input).not.toHaveProperty('SnapshotId');
+  });
+
   it('volumes and snapshots: find by token tag, wait, attach, delete, idempotent snapshot', async () => {
     const { aws, client } = setup();
     const { volumeId } = await client.createVolume({

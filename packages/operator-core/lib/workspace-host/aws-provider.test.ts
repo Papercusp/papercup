@@ -647,6 +647,23 @@ describe('AWS spot hosts (WI-10005389)', () => {
       ),
     ).rejects.toThrow(/provisioningModel must be one of standard, spot/);
   });
+
+  it('cancels the persistent spot request before terminating the instance, so EC2 cannot relaunch it', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider, spotDesired());
+    const results = await destroyAll(client, provider, host, resources);
+    expect(results.map((result) => result.state)).toEqual(['destroyed', 'destroyed']);
+    expect(client.cancelSpotCalls).toEqual([['sir-00000000000000001']]);
+    expect(client.destroyMutations).toEqual(['cancel-spot:sir-00000000000000001', 'terminate:i-00000000000000001']);
+  });
+
+  it('never cancels a spot request for an on-demand host (control)', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    await destroyAll(client, provider, host, resources);
+    expect(client.cancelSpotCalls).toEqual([]);
+    expect(client.destroyMutations).toEqual(['terminate:i-00000000000000001']);
+  });
 });
 
 describe('AWS volume initialization rate (WI-10006140: lazy EBS hydration of snapshot-restored volumes)', () => {
@@ -703,23 +720,6 @@ describe('AWS volume initialization rate (WI-10006140: lazy EBS hydration of sna
     await expect(planWith(value, `rate-bad-${String(value)}`)).rejects.toThrow(
       /volumeInitializationRateMiBps must be an integer from 100 to 300 MiB\/s, or null/,
     );
-  });
-
-  it('cancels the persistent spot request before terminating the instance, so EC2 cannot relaunch it', async () => {
-    const { client, provider } = providerAndClient();
-    const { host, resources } = await provision(client, provider, spotDesired());
-    const results = await destroyAll(client, provider, host, resources);
-    expect(results.map((result) => result.state)).toEqual(['destroyed', 'destroyed']);
-    expect(client.cancelSpotCalls).toEqual([['sir-00000000000000001']]);
-    expect(client.destroyMutations).toEqual(['cancel-spot:sir-00000000000000001', 'terminate:i-00000000000000001']);
-  });
-
-  it('never cancels a spot request for an on-demand host (control)', async () => {
-    const { client, provider } = providerAndClient();
-    const { host, resources } = await provision(client, provider);
-    await destroyAll(client, provider, host, resources);
-    expect(client.cancelSpotCalls).toEqual([]);
-    expect(client.destroyMutations).toEqual(['terminate:i-00000000000000001']);
   });
 });
 
