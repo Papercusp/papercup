@@ -1157,6 +1157,62 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
+  it.each((['codex', 'omp'] as const).flatMap((sourceBackend) =>
+    [true, false].map((continueSourceOwner) => ({ sourceBackend, continueSourceOwner }))))(
+    'continues $sourceBackend source identity without a prepared target owner: matching owner $continueSourceOwner',
+    async ({ sourceBackend, continueSourceOwner }) => {
+      const seed = renderSessionPortSeed({
+        portId: SESSION_PORT_ID, sourceBackend, targetBackend: 'claude',
+        fidelity: 'full', transcript: 'exact native source history',
+      });
+      const port = sessionPortRow({ sourceBackend, targetBackend: 'claude', targetModel: 'sonnet', renderedHash: seed.hash });
+      port.metadata.summary.source = {
+        ...port.metadata.summary.source, backend: sourceBackend, nativeSessionId: `${sourceBackend}-native-source`,
+      };
+      port.metadata.summary.target = {
+        ...port.metadata.summary.target, backend: 'claude', provider: 'anthropic', model: 'sonnet',
+      };
+      expect(port.metadata.summary.target).not.toHaveProperty('ownerId');
+      const sourceIdentity = { ...port.metadata.summary.source };
+      getSessionPortMock.mockResolvedValueOnce(port);
+      readSessionPortArtifactMock.mockResolvedValueOnce(seed.seed);
+      try {
+        const response = await callPost({
+          agent: 'claude', model: 'sonnet', account: 'default',
+          owner_id: continueSourceOwner ? 'su-source-owner' : 'su-unprepared-answer',
+          bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+          session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+          session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+          session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+        });
+        const body = await response.json();
+        expect(response.status, JSON.stringify(body)).toBe(continueSourceOwner ? 200 : 409);
+        if (continueSourceOwner) {
+          expect(body.envelopeEnv.PAPERCUSP_SID).toBe('su-source-owner');
+          expect(body.sessionPortKickoffFile).toBe('/managed/222.seed.md');
+          expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(expect.objectContaining({
+            portId: SESSION_PORT_ID,
+            target: expect.objectContaining({ agent: 'claude', coordOwnerId: 'su-source-owner' }),
+          }));
+          expect(recordSessionPortBootstrapReceiptMock).toHaveBeenCalledWith(expect.objectContaining({
+            portId: SESSION_PORT_ID, targetAdvSessionId: 42,
+          }));
+        } else {
+          expect(body.error).toMatch(/must continue source coordination identity/);
+          expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+          expect(recordSessionPortBootstrapReceiptMock).not.toHaveBeenCalled();
+        }
+        expect(port.metadata.summary.source).toEqual(sourceIdentity);
+        expect(port.metadata.sourceCoordOwnerId).toBe('su-source-owner');
+        expect(recordAdvSessionMock).not.toHaveBeenCalled();
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
+      } finally {
+        readSessionPortArtifactMock.mockReset().mockResolvedValue(SESSION_PORT_ARTIFACT.seed);
+      }
+    },
+  );
+
   it('bootstraps a prepared isolated answer under its bound owner without touching source identity or authority', async () => {
     const port = sessionPortRow();
     port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;

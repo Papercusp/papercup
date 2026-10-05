@@ -17,15 +17,15 @@
  * experts are now handled identically, so there is no liveness branch left to
  * get wrong, no per-responder load cap to tune, and no woken-but-silent case.
  *
- * THE WALK (D-009, measured — not a guess about what the platform can do):
- *   1. rank's backend === source's backend  → FORK (claude/codex). OMP has no
- *      native branch command, so an OMP source cannot fork at all.
- *   2. Claude source, different backend     → CONVERT (session port), and only
- *      while the source is NOT live — see `convert-needs-live-source-identity`.
- *   3. non-Claude source, different backend → NOT REACHABLE. The session-port
- *      transform is claude-source-only BY CONSTRUCTION (one adapter exists), so
- *      this is a SKIP, exactly like a walled account — never an error, and never
- *      the end of the consult.
+ * THE WALK (D-009's source-adapter follow-up, WI-10002749):
+ *   1. Current tracked Claude source, Claude rank → FORK.
+ *   2. Every other supported Claude/Codex/OMP pair, including historical
+ *      evidence and same-backend native sources → CONVERT via the maintained
+ *      session port, with a preparation-bound independent answering owner.
+ * The source keeps its coordination identity and claims, including when live.
+ * Both paths require exact tracked source evidence; an older native incarnation
+ * must still belong to that source owner. Unsupported or untracked sources are
+ * recorded skips, and the walk continues.
  *
  * FAILURE IS A STEP, NOT A STOP. Every skip/failure reason is recorded on the
  * attempt and the walk continues; only an exhausted list is terminal

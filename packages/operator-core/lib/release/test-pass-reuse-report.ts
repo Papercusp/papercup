@@ -430,6 +430,8 @@ export interface TestPassReuseRoundSummary {
   audit?: TestPassReuseAuditSummary | null;
   /** null means that named first-attempt audit coverage was not retained completely. */
   auditedFiles?: TestPassReuseAuditFile[] | null;
+  /** Uncapped per-task selector population, retained for exact archived-window qualification. */
+  auditRuns?: TestPassReuseRun[] | null;
   headline: string;
 }
 
@@ -513,6 +515,9 @@ export interface TestPassReuseAuditInvocation {
   output: string;
   /** Per-file first-attempt results. null means that the archive did not retain them. */
   auditedFiles: TestPassReuseAuditFile[] | null;
+  /** Canonical archive can retain the parsed suite evidence without the whole console log. */
+  auditRuns?: TestPassReuseRun[];
+  expectedRunGroupId?: string;
 }
 
 /**
@@ -546,7 +551,7 @@ export function evaluateTestPassReuseAuditWindow(input: {
         invocation.startedAtMs > invocation.completedAtMs) {
       return result('unknown', 'An invocation has missing or out-of-window source/runtime identity.');
     }
-    const runs = parseTestPassReuse(invocation.output);
+    const runs = invocation.auditRuns ?? parseTestPassReuse(invocation.output);
     const summary = summarizeReuseAudits(runs);
     const misses = new Set(runs.flatMap((run, i) => run.alarms.map((a) => `${i}\0${a.ws}\0${a.file}`)));
     if (!summary || invocation.auditedFiles === null) {
@@ -565,6 +570,7 @@ export function evaluateTestPassReuseAuditWindow(input: {
         Boolean(file.ws.trim() && file.file.trim() && file.evidenceRef.trim()) &&
         file.judgedSha === invocation.judgedSha && file.runnerIdentity === invocation.runnerIdentity &&
         file.runContext === 'green-checkpoint' && file.dirty === false &&
+        (invocation.expectedRunGroupId === undefined || file.runGroupId === invocation.expectedRunGroupId) &&
         runs[file.invocation]!.workspaces.some((w) => w.ws === file.ws && (w.counts.audited ?? 0) > 0) &&
         // The selector hashes the repo-relative file and judged SHA; an unrelated passing
         // file cannot be substituted for one of its actual audit draws.
@@ -656,6 +662,8 @@ export function summarizeTestPassReuse(
     recorder,
     audit,
     auditedFiles: summarizeAuditFiles(runs, audit),
+    auditRuns: audit ? runs.map(({ applied, offReason, workspaces, total, alarms }) =>
+      ({ applied, offReason, workspaces, total, alarms })) : null,
     headline,
   };
 }
@@ -744,6 +752,7 @@ export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | 
     recorder: parseRecorderSummary(v.recorder),
     ...(v.audit === undefined ? {} : { audit: parseAuditSummary(v.audit) }),
     ...(v.auditedFiles === undefined ? {} : { auditedFiles: parseArchivedAuditFiles(v.auditedFiles) }),
+    ...(v.auditRuns === undefined ? {} : { auditRuns: parseArchivedAuditRuns(v.auditRuns) }),
     headline: v.headline,
   };
 }
@@ -769,6 +778,64 @@ function parseAuditSummary(value: unknown): TestPassReuseAuditSummary | null {
       (v.pureReused !== null && (!isCount(v.pureReused) || v.pureReused > v.eligible - v.audited))) return null;
   return { auditRate: v.auditRate, audited: v.audited, eligible: v.eligible,
     pureReused: v.pureReused as number | null, alarmCount: v.alarmCount };
+}
+
+function parseArchivedAuditRuns(value: unknown): TestPassReuseRun[] | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  const runs: TestPassReuseRun[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    if (r.applied !== true || r.offReason !== null || !Array.isArray(r.workspaces) ||
+        !Array.isArray(r.alarms) || !r.total || typeof r.total !== 'object') return null;
+    const t = r.total as Record<string, unknown>;
+    if (!['tasks', 'candidates', 'reused', 'audited', 'expiredClean', 'unmeasured'].every((k) => isCount(t[k])) ||
+        !(t.minSavedTestMs === null || isCount(t.minSavedTestMs))) return null;
+    const workspaces: TestPassReuseWorkspace[] = [];
+    for (const rawWorkspace of r.workspaces) {
+      if (!rawWorkspace || typeof rawWorkspace !== 'object') return null;
+      const w = rawWorkspace as Record<string, unknown>;
+      if (typeof w.ws !== 'string' || !w.ws.trim() || w.applied !== true || w.reason !== null ||
+          !w.counts || typeof w.counts !== 'object' || Array.isArray(w.counts) ||
+          !Object.values(w.counts).every(isCount) ||
+          !(w.minSavedTestMs === null || isCount(w.minSavedTestMs)) ||
+          !(w.narrowed === null || typeof w.narrowed === 'boolean') ||
+          !(w.lane === null || w.lane === 'pure' || w.lane === 'db') ||
+          typeof w.auditRate !== 'number' || !Number.isFinite(w.auditRate) || w.auditRate < 0 || w.auditRate > 1) return null;
+      workspaces.push({ ws: w.ws, applied: true, reason: null, counts: { ...w.counts as Record<string, number> },
+        minSavedTestMs: w.minSavedTestMs as number | null, narrowed: w.narrowed as boolean | null,
+        lane: w.lane as TestPassReuseWorkspace['lane'], auditRate: w.auditRate });
+    }
+    if (new Set(workspaces.map((w) => w.ws)).size !== workspaces.length) return null;
+    const alarms: TestPassReuseAlarm[] = [];
+    for (const rawAlarm of r.alarms) {
+      if (!rawAlarm || typeof rawAlarm !== 'object') return null;
+      const a = rawAlarm as Record<string, unknown>;
+      if (!['ws', 'file', 'proof'].every((k) => typeof a[k] === 'string' && (a[k] as string).trim())) return null;
+      alarms.push({ ws: a.ws as string, file: a.file as string, proof: a.proof as string });
+    }
+    runs.push({ applied: true, offReason: null, workspaces, total: { ...t } as unknown as TestPassReuseTotal, alarms });
+  }
+  return summarizeReuseAudits(runs) ? runs : null;
+}
+
+/** Parse the compact append-only checkpoint archive, not the mutable display health slot. */
+export function parseTestPassReuseAuditArchive(value: unknown): {
+  judgedSha: string; recordedAtMs: number; auditRuns: TestPassReuseRun[]; auditedFiles: TestPassReuseAuditFile[];
+} | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (!v.audit || typeof v.audit !== 'object') return null;
+  const audit = v.audit as Record<string, unknown>;
+  const summary = parseAuditSummary(audit);
+  const runs = parseArchivedAuditRuns(v.auditRuns);
+  const files = parseArchivedAuditFiles(v.auditedFiles);
+  if (!summary || !runs || !files || !isCount(audit.recordedAtMs) ||
+      typeof audit.judgedSha !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(audit.judgedSha)) return null;
+  const derived = summarizeReuseAudits(runs)!;
+  if (Object.keys(derived).some((k) => derived[k as keyof TestPassReuseAuditSummary] !==
+      summary[k as keyof TestPassReuseAuditSummary])) return null;
+  return { judgedSha: audit.judgedSha, recordedAtMs: audit.recordedAtMs, auditRuns: runs, auditedFiles: files };
 }
 
 /** Storage caps for `gate_health.testPassReuse`. The headline keeps the full alarm COUNT, so a

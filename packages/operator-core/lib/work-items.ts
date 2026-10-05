@@ -8306,6 +8306,12 @@ export async function explainIssueClaimFloors(
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
     claimSpecReferencesGoal?: boolean;
+    /**
+     * Scope-authoring preview ONLY: evaluate the remaining shared floors for rows
+     * already held by these verified target-fleet members. Never used by a claim
+     * acquisition door; omitting it preserves the ordinary already-taken floor.
+     */
+    scopeHeldBy?: readonly string[];
   } = {},
 ): Promise<ClaimFloorAttribution[]> {
   if (ids.length === 0) return [];
@@ -8374,7 +8380,7 @@ export async function explainIssueClaimFloors(
       : // Order MATTERS: report the floor a human would act on first.
         !r.ok_status
         ? 'not-claimable-status'
-        : !r.ok_untaken
+        : !r.ok_untaken && !(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))
           ? 'already-taken'
           : !r.ok_origin
             ? 'origin'

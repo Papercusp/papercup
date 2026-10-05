@@ -178,7 +178,7 @@ describe('ingestion phase attribution', () => {
     const failed = await runSessionIngestOnce();
     expect(failed.errors).toBe(1);
     expect(failed.filesIngested).toBe(0);
-    expect(failed.phaseMs!.writes).toBe(14); // failed insert plus best-effort error bookkeeping
+    expect(failed.phaseMs!.writes).toBe(21); // failed insert and both error-bookkeeping writes
     expect(probe.queries.some((q) => q.includes('INSERT INTO harness_shared.session_ingest_state'))).toBe(false);
     probe.failInsert = false;
     const retried = await runSessionIngestOnce();

@@ -67,6 +67,7 @@ vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
   diagnoseFleetScopeTerminalExhaustion: terminalExhaustionM,
   diagnoseFleetScopePlanTerminality: planTerminalityM,
   diagnoseFleetScopeLeaderLiveness: leaderLivenessM,
+  reconcileFleetScopeLeaderSuccession: vi.fn(async () => null),
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 — none of this
   // file's fixtures do (survivors/drained are both 22), so this is a defensive stub only.
   diagnoseFleetScopeFeatureFamilyExclusions: featureFamilyBreakdownM,
@@ -199,13 +200,14 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     // diagnostic then observes terminality and leader loss and carries both
     // transitions into the miss verdict.
     planTerminalityM.mockResolvedValueOnce(activePlan).mockResolvedValueOnce(planTerminality);
-    leaderLivenessM.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    // Preflight uses the succession seam; this diagnostic reads liveness once.
+    leaderLivenessM.mockResolvedValueOnce(false);
 
     const res = await call();
 
     expect(res.ok).toBe(false);
     expect(planTerminalityM).toHaveBeenCalledTimes(2);
-    expect(leaderLivenessM).toHaveBeenCalledTimes(2);
+    expect(leaderLivenessM).toHaveBeenCalledOnce();
     expect(missOpts()).toMatchObject({ planTerminality, leaderLiveness: false });
   });
 

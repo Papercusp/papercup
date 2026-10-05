@@ -27,6 +27,7 @@ vi.mock('../workspace-registry', async () => {
 });
 
 const { explainIssueClaimFloors } = await import('../work-items');
+const { previewClaimSpecAdmission } = await import('../agent-tools/scheduler/set_claim_spec');
 const { diagnoseFleetScopeTerminalExhaustion } = await import('./fleet-scope-admission');
 
 const H = 'papercup';
@@ -46,8 +47,8 @@ async function seedIssue(id: string, payload: Record<string, unknown> | null, st
 /**
  * Seed a plan. The plan-lane floor is deliberately STATE-SENSITIVE, not merely payload-shaped:
  * a `plan_item` back-pointer reserves the row while its ordinary plan is in lifecycle
- * `draft`/`paused`/`active` or its operation is `started`/`paused` (reservedPlanLaneExclusionSql).
- * A ready plan with NULL/`done` op_status is a free control. Seeding the plan is therefore part
+ * `paused`/`active` or its operation is `started`/`paused` (reservedPlanLaneExclusionSql).
+ * An unleased draft or a ready plan with NULL/`done` op_status is a free control. Seeding the plan is therefore part
  * of the contract under test, not scaffolding: it distinguishes "reserved right now" from
  * "stamped".
  */
@@ -146,7 +147,8 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     expect(by.get('WI-9006')).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
     expect(by.get('WI-9007')).toMatchObject({ admissible: false, refusedBy: 'plan-lane-reserved' });
     expect(by.get('WI-9008')).toMatchObject({ admissible: false, refusedBy: 'external-blocker' });
-    expect(by.get('WI-9009')).toMatchObject({ admissible: false, refusedBy: 'plan-lane-reserved' });
+    // EI-21859942410973983: a draft without a live lane lease has no occupant.
+    expect(by.get('WI-9009')).toMatchObject({ admissible: true, refusedBy: null });
     expect(by.get('WI-9010')).toMatchObject({ admissible: true, refusedBy: null });
     expect(by.get('WI-9011')).toMatchObject({ admissible: true, refusedBy: null });
     // A typo'd id is the single most likely way to author a dead tranche, and the old static
@@ -217,6 +219,26 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
       expect.objectContaining({ id: ids[1], admissible: false, refusedBy: 'already-taken', heldBy: 'su-foreign' }),
     ]);
     expect(await explainIssueClaimFloors(H, ids)).toEqual(acquisition);
+    const preview = await previewClaimSpecAdmission({
+      spec: {
+        specVersion: '1.0',
+        specId: 'held-repair-wave',
+        revision: 2,
+        view: { filter: { field: 'id', op: 'in', value: [ids[0]] } },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      },
+      harness: H,
+      assignee: 'su-leader',
+      fleet: 'repair-fleet',
+      resolveFamily: async () => 'issue',
+      resolveFleetMembers: async () => ['su-member'],
+    });
+    expect(preview.errors).toEqual([]);
+    expect(preview.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [ids[0]],
+      alreadyHeldIds: [ids[0]],
+    });
     const owners = await db.sql`
       SELECT feature_id, taken_by FROM harness_shared.work_items
        WHERE feature_id = ANY(${ids}::text[]) ORDER BY feature_id`;

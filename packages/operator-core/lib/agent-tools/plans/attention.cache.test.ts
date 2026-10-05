@@ -210,6 +210,19 @@ describe("plans:attention — cache wiring", () => {
     expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-native-fixture']);
   });
 
+  it('the desktop list projection and exact first-page args retain the report pin', async () => {
+    M.inboxByWorkspace.set('ws-native-fixture', [reportMessage]);
+    const read = (workspace: string) => runWithWorkspace(workspace,
+      () => callPlansReadRaw('attention', { limit: 100, offset: 0 }));
+    expect(wrapperItems(await read('ws-native-fixture'))).toContainEqual(expect.objectContaining({
+      id: 'coord-message:goal-report-exact-pin', report: reportMessage.report,
+    }));
+    expect(wrapperItems(await read('ws-other'))).not.toContainEqual(expect.objectContaining({
+      id: 'coord-message:goal-report-exact-pin',
+    }));
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-other']);
+  });
+
   it("accepts the popup's exact owner-scoped query without stripping its owner (WI-2147274)", () => {
     const args = { ownerAgentId: "su-mine", limit: 100, offset: 0 };
     expect(tool.args.parse(args)).toEqual(args);

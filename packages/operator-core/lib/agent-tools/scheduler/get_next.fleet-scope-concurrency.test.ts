@@ -74,6 +74,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeFeatureFamilyExclusions: featureFamilyMatchM,
   diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
   diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
+  reconcileFleetScopeLeaderSuccession: vi.fn(async () => null),
   // EI-12832: a fleet-scoped pull reads the durable pause state before pulling. Unlike the
   // non-fleet suite (whose scope is null, so it never reaches this line), these tests DO —
   // stub it un-paused so the concurrency branch under test is what decides the outcome.

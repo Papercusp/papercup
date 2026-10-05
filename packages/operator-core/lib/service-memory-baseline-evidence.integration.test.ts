@@ -312,11 +312,21 @@ function auditExactOwners(r: any, additionalIds: number[] = [], ownerPopulation 
   });
   const owners = roots.map((owner: any) => ({ owner: owner.owner,
     ...verifiedNodes.find((n: any) => n.id === owner.id) }));
+  // Historical captures report remote profiler operations. Atomic captures
+  // declare one synchronous file/ID job and teardown after the saved IDs.
+  // A malformed atomic declaration cannot fall back to the historical path.
+  const qualifiedProfiler = Object.hasOwn(binding, 'identityBoundary')
+    ? binding.identityBoundary === 'snapshot and IDs in one target job; synchronous inspector callbacks only' &&
+      isDeepStrictEqual(r.profilerOperations, [
+        'local HeapProfiler.enable + v8.writeHeapSnapshot + exact IDs in one target job',
+        'local Session.disconnect after exact IDs captured',
+      ])
+    : Array.isArray(r.profilerOperations) &&
+      r.profilerOperations.includes('v8.writeHeapSnapshot (forced GC/synchronous pause)') &&
+      r.profilerOperations.includes('HeapProfiler.enable (object IDs)') &&
+      r.profilerOperations.includes('HeapProfiler.disable (object IDs)');
   requireOwner(r.hostReaped === true && r.snapshotRemoved === true &&
-    r.postSnapshotRowsPreserved === true &&
-    r.profilerOperations?.includes('v8.writeHeapSnapshot (forced GC/synchronous pause)') &&
-    r.profilerOperations.includes('HeapProfiler.enable (object IDs)') &&
-    r.profilerOperations.includes('HeapProfiler.disable (object IDs)'), 'qualified intervention and cleanup');
+    r.postSnapshotRowsPreserved === true && qualifiedProfiler, 'qualified intervention and cleanup');
   return { processIdentity, recordedBuildSha: r.buildSha, snapshotSha256: snapshot.sha256, owners,
     verifiedNodes: verifiedNodes.sort((a: any, b: any) => a.id - b.id),
     scope: 'Historical private snapshot; no new runtime measurement.',
@@ -910,6 +920,40 @@ describe('P011 independent cache retained-owner evidence', () => {
     r.cohorts[0].content.reverse();
     expect(auditInboxCacheRetainers(r)).toEqual(result);
   });
+  function atomicPairFixture(): any {
+    const r = pairFixture();
+    for (const c of r.cohorts) {
+      c.cacheHeap.heapOwnerBinding.identityBoundary =
+        'snapshot and IDs in one target job; synchronous inspector callbacks only';
+      c.cacheHeap.profilerOperations = [
+        'local HeapProfiler.enable + v8.writeHeapSnapshot + exact IDs in one target job',
+        'local Session.disconnect after exact IDs captured',
+      ];
+    }
+    return r;
+  }
+  it('qualifies atomic snapshot receipts while preserving the historical owner result', () => {
+    expect(auditInboxCacheRetainers(atomicPairFixture())).toEqual(auditInboxCacheRetainers(pairFixture()));
+  });
+  const atomicCorruptions: Array<[string, (heap: any) => void]> = [
+    ['missing job boundary', h => { delete h.heapOwnerBinding.identityBoundary; }],
+    ['asynchronous job boundary', h => { h.heapOwnerBinding.identityBoundary = 'snapshot and IDs across awaited jobs'; }],
+    ['missing file and ID operation', h => { h.profilerOperations.shift(); }],
+    ['missing teardown', h => { h.profilerOperations.pop(); }],
+    ['teardown before capture', h => { h.profilerOperations.reverse(); }],
+    ['duplicate capture', h => { h.profilerOperations.unshift(h.profilerOperations[0]); }],
+    ['unrecorded profiler intervention', h => { h.profilerOperations.push('HeapProfiler.collectGarbage'); }],
+    ['legacy operations under atomic declaration', h => {
+      h.profilerOperations = ['v8.writeHeapSnapshot (forced GC/synchronous pause)',
+        'HeapProfiler.enable (object IDs)', 'HeapProfiler.disable (object IDs)'];
+    }],
+    ['missing snapshot cleanup', h => { h.snapshotRemoved = false; }],
+    ['missing useful output after snapshot', h => { h.postSnapshotRowsPreserved = false; }],
+  ];
+  it.each(atomicCorruptions)('rejects %s in atomic cache graph evidence', (_name, corrupt) => {
+    const r = atomicPairFixture(); corrupt(r.cohorts[0].cacheHeap);
+    expect(() => auditInboxCacheRetainers(r)).toThrow('qualified intervention and cleanup');
+  });
   it.each(['foreign-host', 'source-drift', 'before-windows', 'content-drift', 'digest-drift', 'forced-cleanup'])(
     'rejects %s paired cache graph evidence', defect => {
       const r = pairFixture(), c = r.cohorts[0];
@@ -1008,11 +1052,8 @@ describe('P011 independent cache retained-owner evidence', () => {
       independentOf: 'No producer or inspector import; raw digest/content/process/snapshot/native-node correspondence.',
       limitations: ['Snapshots forced GC after resource windows; selected V8 nodes may have overlapping dominator subtrees.',
         'Native physical ownership, worker clones, full executed graph, full P011 acceptance and shipment remain open.'] }));
-  });
-  afterAll(() => {
-    const input = process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_INPUT;
-    const destination = process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_REPORT;
-    if (!input || !destination) return;
+    // Verify only an artifact this assertion actually produced. A rejected raw
+    // graph keeps its primary error instead of a second ENOENT in afterAll.
     const report = JSON.parse(readFileSync(resolve(root, destination)).toString());
     expect(report.schemaVersion).toBe('p011-inbox-cache-heap-independent-v1');
     expect(report.proof.path).toBe(input);

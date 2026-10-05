@@ -29,7 +29,10 @@ const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', pid]
 const captureUi = (name: string) => {
   save(`${name}.json`, JSON.parse(native('eval', `JSON.stringify({
     url: location.href,
+    browserWorkspace: window.__PAPERCUSP_WS__ ?? null,
+    queryWorkspace: new URL(location.href).searchParams.get('ws'),
     routerLocation: window.__TSR_ROUTER__?.state?.location,
+    ipcEvents: window.__ipcInspector?.events({path:'rest-query'}),
     selectedRows: Array.from(document.querySelectorAll('.op-inbox__row.is-selected')).map(n => n.textContent),
     reportCards: document.querySelectorAll('[data-component="report-block"]').length,
     body: document.body.innerText,
@@ -51,6 +54,33 @@ const poll = (expression: string, require: string) => {
 };
 const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
 const observations: unknown[] = [];
+// Measure the same window.fetch + IPC/workspace wrappers as usePlanAttention.
+// A Node HTTP preflight with an explicit header cannot prove this request.
+const captureBrowserFeed = async (phase: string, expectedMessageId: string, expectedReport: unknown) => {
+  const request = '/api/zero-harness/rest-query?' + new URLSearchParams({
+    name: 'plans.attention', args: JSON.stringify({ limit: 100, offset: 0 }),
+  });
+  native('eval', `(()=>{window.__goalReportFeedProbe={done:false};
+    (async()=>{try{const response=await fetch(${JSON.stringify(request)});
+      window.__goalReportFeedProbe={done:true,status:response.status,data:await response.json(),
+        browserWorkspace:window.__PAPERCUSP_WS__??null,url:location.href,request:${JSON.stringify(request)}};
+    }catch(error){window.__goalReportFeedProbe={done:true,error:String(error),url:location.href}}})();return true})()`);
+  const deadline = Date.now() + 30_000;
+  let result: any;
+  do {
+    result = JSON.parse(native('eval', 'JSON.stringify(window.__goalReportFeedProbe)'));
+    if (result.done) break;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+  save(`${phase}-browser-feed.json`, result);
+  assert.equal(result.done, true, 'Browser sync request did not settle');
+  assert.equal(result.status, 200, 'Browser sync request failed');
+  assert.equal(result.browserWorkspace, workspaceId, 'Browser workspace differs from the persisted fixture');
+  const item = result.data?.rows?.flatMap((group: any) => group.items ?? [])
+    .find((item: any) => item.id === `coord-message:${expectedMessageId}`);
+  assert.ok(item, 'Exact persisted report is absent from the actual browser sync feed');
+  assert.deepEqual(item.report, expectedReport, 'Browser sync feed changed the exact report pin');
+};
 const sourcePaths = ['apps/operator/app/_components/chat/ReportBlockCard.tsx', 'libs/generic/chat-cards/src/index.tsx',
   'apps/operator/app/globals.css', 'packages/operator-core/lib/sync-resolver/index.ts',
   'scripts/tauri-surface-verify-goal-report.mts'];
@@ -195,6 +225,7 @@ try {
   save('attention-convergence.json', { feedAttempts, result: feedReady ? 'pass' : 'fail',
     expectedMessageId: envelope.msg_id, expectedReport: envelope.report });
   assert.ok(feedReady, 'Exact persisted GOAL pin never reached the UI feed; refusing card verification');
+  captureUi('before-navigation');
   save('navigation.json', JSON.parse(native('navigate',
     `/inbox?opci=all&opcis=${encodeURIComponent(`coord-message:${envelope.msg_id}`)}`, '--json')));
   // The existing desktop subscription may still hold its pre-fixture snapshot.
@@ -203,6 +234,7 @@ try {
   await new Promise(resolve => setTimeout(resolve, 500));
   poll('location.pathname === "/inbox" && !!document.querySelector(".op-inbox")', '.op-inbox');
   captureUi('after-navigation');
+  await captureBrowserFeed('after-navigation', envelope.msg_id, envelope.report);
   const card = '[data-component="report-block"]';
   poll(`Array.from(document.querySelectorAll('${card} button')).some(b=>b.textContent==='Expand full report')`, card);
   native('screenshot', '--output', join(out, 'notification.png'));

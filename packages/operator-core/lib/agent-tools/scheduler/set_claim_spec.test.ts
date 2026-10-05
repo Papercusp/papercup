@@ -501,9 +501,12 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(result.warning).toContain('already held');
     expect(resolveFleetMembers).toHaveBeenCalledWith('repair-fleet');
     expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
-      assignee: 'su-leader',
+      assignee: 'su-member',
       states: ['open'],
       scopeHeldBy: ['su-member'],
+      claimantFleetSlug: 'repair-fleet',
+      claimSpecReferencesFleet: false,
+      claimSpecReferencesGoal: false,
     });
   });
 
@@ -558,6 +561,43 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenCalledTimes(1);
   });
 
+  it('reports unknown membership without authorizing the held cohort', async () => {
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      explain: async () => [held],
+      resolveFleetMembers: async () => { throw new Error('roster unavailable'); },
+    });
+    expect(result.errors.join('\n')).toContain('roster unavailable');
+    expect(result.preview).toMatchObject({
+      scopeAdmissibleIds: [],
+      alreadyHeldIds: [],
+      floored: [held],
+      previewError: expect.stringContaining('could not verify'),
+    });
+  });
+
+  it('retains floored and unknown cohort controls alongside admissible member-held work', async () => {
+    const unknownId = 'EI-not-found';
+    const foreign = { ...held, id: 'EI-foreign', heldBy: 'su-foreign' };
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      spec: fixedSpec([held.id, foreign.id, unknownId]),
+      resolveFamily: async (id) => id === unknownId ? null : 'issue',
+      resolveFleetMembers: async () => ['su-member'],
+      explain: async (_harness, _ids, opts) => opts?.scopeHeldBy ? [eligible] : [held, foreign],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [held.id],
+      alreadyHeldIds: [held.id],
+      floored: [foreign, expect.objectContaining({ id: unknownId, refusedBy: 'not-found' })],
+    });
+    expect(result.warning).toContain('2/3');
+    expect(result.warning).toContain('EI-foreign:already-taken');
+    expect(result.warning).toContain('EI-not-found:not-found');
+  });
+
   it('threads the validated fleet target through the handler and the control roster, not delivery preferences', async () => {
     getFleet.mockResolvedValueOnce({ slug: 'repair-fleet' });
     getClaimSpecRecord.mockResolvedValueOnce(null);
@@ -581,5 +621,18 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     });
     expect(listFleetControlMembers).toHaveBeenCalledWith('repair-fleet');
     expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'fleet:repair-fleet' }));
+  });
+
+  it('validates fleet existence before any held-cohort membership read or persistence', async () => {
+    getFleet.mockResolvedValueOnce(null);
+    listFleetControlMembers.mockClear();
+    setClaimSpec.mockClear();
+    const result = await (setClaimSpecTool as any).handler(
+      { fleet: 'typo-fleet', harness: 'papercusp', spec: args.spec },
+      { isSuperuser: true, uiClientId: 'su-leader', workspaceId: 'ws-test' },
+    );
+    expect(result.data.errors[0]).toContain('does not exist');
+    expect(listFleetControlMembers).not.toHaveBeenCalled();
+    expect(setClaimSpec).not.toHaveBeenCalled();
   });
 });

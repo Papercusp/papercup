@@ -30,11 +30,17 @@ vi.mock('@papercusp/db-org', async (orig) => ({
       if (text.includes('UPDATE harness_shared.scout_routed_ideas')) return Promise.resolve(h.updateRows);
       if (text.includes('SELECT idea_id')) return Promise.resolve(h.selectRows);
       return Promise.resolve([]);
-    }, { begin: vi.fn() }),
+    }, { begin: vi.fn(async function (this: unknown, write: (sql: unknown) => Promise<unknown>) {
+      return write(this);
+    }) }),
   }),
 }));
 
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../experiment/producer-lifecycle-store', async (original) => ({
+  ...(await original<typeof import('../experiment/producer-lifecycle-store')>()),
+  recordProducerObservation: vi.fn(async () => {}),
+}));
 
 const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome } = await import(
   './routed-ledger'
