@@ -2,10 +2,11 @@
  * plan-drain-rule.ts — P-004 of deterministic-plan-state-derivation-2026-08-31.
  *
  * When a structured item write crosses the terminal boundary/adds an item, a
- * content writer changes the currently warranted transition, or an initial
- * non-draft lifecycle write creates/converts a plan, re-read the plan and move
- * its lifecycle `status` if the graph warrants it. Creation/conversion has no
- * prior graph edge to cross, but its item graph can already be drained.
+ * content writer changes the currently warranted transition, or a lifecycle
+ * writer attaches `ready` to an already-drained graph, re-read the plan and move
+ * its lifecycle `status` if the graph warrants it. Creation/conversion and
+ * draft→ready approval have no prior graph edge to cross, but their item graph
+ * can already be drained.
  *
  * # Why matching stays cheap and synchronous
  *
@@ -78,10 +79,15 @@ export function planWhoseDrainStateMayHaveChanged(
   const initialPlanStatus = typeof requestedStatus === 'string' ? requestedStatus : 'draft';
   const initialLifecycleWriteMayChangeDrain =
     (e.tool === 'plans:new' || e.tool === 'plans:set-frontmatter') && initialPlanStatus !== 'draft';
+  const readyLifecycleWriteMayChangeDrain =
+    e.tool === 'plans:set-plan-status' && r?.changed === true && r.newStatus === 'ready';
   if (
     r?.ok === true &&
     typeof r.slug === 'string' &&
-    (itemWriteMayChangeDrain || contentWriteMayChangeDrain || initialLifecycleWriteMayChangeDrain)
+    (itemWriteMayChangeDrain ||
+      contentWriteMayChangeDrain ||
+      initialLifecycleWriteMayChangeDrain ||
+      readyLifecycleWriteMayChangeDrain)
   ) {
     // Thread the triggering call's harness through, exactly as reconcile-rule
     // does (EI-8970): re-reading under the operator-home harness would resolve
@@ -125,6 +131,16 @@ registerReactionRule({
 registerReactionRule({
   id: 'plan-drain:legacy-plan-converted',
   on: 'plans:set-frontmatter',
+  when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
+  fire: PLAN_DRAIN_TRANSITION_ACTION,
+  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-drain',
+});
+
+registerReactionRule({
+  id: 'plan-drain:plan-readied',
+  on: 'plans:set-plan-status',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
   args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
