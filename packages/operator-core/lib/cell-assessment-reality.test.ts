@@ -1356,7 +1356,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(WORK_SCOPE_CELLS).toHaveLength(1);
     expect(DIRECTIVE_CELLS).toHaveLength(1);
     expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
-    expect(LSP_ADMISSION_CELLS).toHaveLength(1);
+    expect(LSP_ADMISSION_CELLS).toHaveLength(3);
   });
 
   /**

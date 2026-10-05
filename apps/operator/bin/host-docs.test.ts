@@ -20,7 +20,10 @@
  *
  * Run: npm run test:file -- apps/operator/bin/host-docs.test.ts
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
 import { docsRoutes } from './host-docs';
 
@@ -117,6 +120,48 @@ describe('/internal/docs off vm-release (desktop + dev) is unchanged', () => {
     const res = await docsRoutes.request(DOCS_URL);
 
     expect(res.status).not.toBe(403);
+  });
+});
+
+describe('Docs documents embedded in the isolated native Quick Panel', () => {
+  let fixtureRoot: string;
+  let fixtureRoutes: typeof docsRoutes;
+
+  beforeAll(async () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'papercusp-host-docs-'));
+    writeFileSync(join(fixtureRoot, 'search-palette.html'), '<html>Docs search</html>');
+    writeFileSync(join(fixtureRoot, 'index.html'), '<html>Docs index</html>');
+    writeFileSync(join(fixtureRoot, '404.html'), '<html>Not found</html>');
+    const savedRoot = process.env.PAPERCUSP_DOCS_ROOT;
+    process.env.PAPERCUSP_DOCS_ROOT = fixtureRoot;
+    try {
+      vi.resetModules();
+      fixtureRoutes = (await import('./host-docs')).docsRoutes;
+    } finally {
+      if (savedRoot === undefined) delete process.env.PAPERCUSP_DOCS_ROOT;
+      else process.env.PAPERCUSP_DOCS_ROOT = savedRoot;
+    }
+  });
+
+  afterAll(() => {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['/internal/docs/search-palette.html', 200, 'Docs search'],
+    ['/internal/docs/search-palette', 200, 'Docs search'],
+    ['/internal/docs/', 200, 'Docs index'],
+    ['/internal/docs/missing', 404, 'Not found'],
+  ])('serves %s with a compatible iframe embedder policy', async (path, status, body) => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    const res = await fixtureRoutes.request(`http://127.0.0.1:16582${path}`);
+
+    expect(res.status).toBe(status);
+    expect(await res.text()).toContain(body);
+    // An iframe navigation must have compatible COEP even when it is same-origin.
+    // Without this, WebKit blocks Docs beneath the Quick Panel's require-corp policy.
+    expect(res.headers.get('cross-origin-embedder-policy')).toBe('require-corp');
+    expect(res.headers.get('cross-origin-opener-policy')).toBe('same-origin');
   });
 });
 

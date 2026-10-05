@@ -17881,7 +17881,7 @@
           "POST"
         ]
       },
-      "description": "Register a named resource for locks:acquire_resource. Registration is create-if-absent: an existing resource policy is never overwritten, so concurrent agents converge on one serializer.",
+      "description": "Register a named resource for locks:acquire_resource. Registration preserves an existing policy and publishes the maintained host-global domain declaration for known host resources. Refuses publication while a legacy-domain lease remains held.",
       "capabilities": [
         "locks:write"
       ],

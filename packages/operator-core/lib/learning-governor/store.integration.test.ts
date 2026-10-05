@@ -559,13 +559,23 @@ describe('governed attempt persisted settlement receipts', () => {
       harnessCommit: 'controlled', workspaceId: WS, scratchRoot: '/unused-native-fixture',
       timeoutMs: 100, pollIntervalMs: 1, maxDistillChars: 100,
       abDeps: {
-        store: { upsertVariant: async () => {}, upsertTask: async () => {} },
+        store: {
+          upsertVariant: async () => {}, upsertTask: async () => {},
+          startRun: async () => { throw new Error('must not start an incompletely priced run'); },
+          finishRun: async () => { throw new Error('must not finish an incompletely priced run'); },
+          recordScore: async () => { throw new Error('must not score incomplete pipeline usage'); },
+          comparison: async () => { throw new Error('must not compare incomplete pipeline usage'); },
+        },
         runPipeline: async () => ({ harnessSlug: 'native-fixture', clonePath: '/unused-native-fixture',
           workflowID: 'native-workflow', outcome: 'completed', pipelineUsd: costUsd,
           pipelineSpend: { knownUsd: costUsd, providerUsd: costUsd, estimatedUsd: 0,
             complete: false, measured: false, coverageBasis: 'retained-run-output-and-usage-samples',
             missingRunIds: ['validator'], samples: [] } }),
-      } as AbDeps,
+        collectAndDistill: async () => { throw new Error('must not distill incomplete pipeline usage'); },
+        llmCall: async () => { throw new Error('must not call a judge for incomplete pipeline usage'); },
+        newRunId: () => runRef,
+        now: () => 0,
+      } satisfies AbDeps,
     });
     const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
       requestedUsd: 1, runRef, accumulate: false, run: async () => {

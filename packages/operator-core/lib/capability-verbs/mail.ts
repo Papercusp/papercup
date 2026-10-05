@@ -387,6 +387,8 @@ export async function sendNewMail(
      * look like a Gmail/credential outage rather than one missing parameter.
      */
     from?: string | null;
+    /** The connected source to send through; narrows `from` when both are given. */
+    sourceId?: string | null;
     /**
      * Local files to attach, by absolute path — read here rather than by the
      * caller, so the message either carries every declared file or fails
@@ -455,13 +457,18 @@ export async function sendNewMail(
     { probe: deps.probeMailbox, allowUndeliverable: params.allowUndeliverable },
   );
 
-  const ctx = await resolveOutboundContext(sql, {
-    workspaceId: params.workspaceId,
-    userId: params.userId,
-    vaultSource: 'gmail',
-    providerAccountId: params.from,
-  });
-  const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
+  const target = await resolveCapabilitySource(
+    sql,
+    {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      datatype: 'email-message',
+      capabilities: [OUTBOUND_CAPABILITIES.mailSend],
+      sourceId: params.sourceId,
+      providerAccountId: params.from,
+    },
+    deps,
+  );
   const cleared = new Map(recipients.map((decision) => [decision.address, decision]));
   const outbound: GoogleGmailOutboundInput = {
     to: params.to.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
@@ -470,6 +477,32 @@ export async function sendNewMail(
     text,
     ...(attachments.length ? { attachments } : {}),
   };
+  if (target.provider.kind === 'registered') {
+    const capability = OUTBOUND_CAPABILITIES.mailSend;
+    const result = await invokeOutboundProvider(
+      sql,
+      target,
+      capability,
+      {
+        operation: 'message',
+        to: outbound.to,
+        cc: outbound.cc ?? [],
+        subject,
+        text,
+        attachments: providerAttachments(attachments),
+      },
+      deps,
+    );
+    return {
+      mode: 'send',
+      recipients,
+      subject,
+      threadId: resultString(result, 'threadId', target, capability, false),
+      messageId: resultString(result, 'messageId', target, capability),
+      deliverability,
+    };
+  }
+  const token = await gmailToken(target, deps);
   const sent = await (deps.sendMessage ?? sendGoogleGmailMessage)(token, outbound, {
     fetch: deps.fetch,
     apiOrigin: deps.apiOrigin,
@@ -547,6 +580,8 @@ export async function sendMailDraft(
     provenance: AddresseeProvenance;
     /** Which connected account holds the draft; required once more than one is. */
     from?: string | null;
+    /** The connected source holding the draft; narrows `from` when both are given. */
+    sourceId?: string | null;
     /**
      * Send even to a recipient whose own server has already stated the mailbox
      * does not exist. Off by default. See `sendNewMail`.
@@ -561,18 +596,42 @@ export async function sendMailDraft(
   if (!draftId) throw new Error('mail_send_draft_id_required');
   if (!params.expectedTo?.length) throw new Error('mail_send_draft_expected_to_required');
 
-  const ctx = await resolveOutboundContext(sql, {
-    workspaceId: params.workspaceId,
-    userId: params.userId,
-    vaultSource: 'gmail',
-    providerAccountId: params.from,
-  });
-  const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
+  // Both capabilities up front: reading the live draft (for the rail) and
+  // sending it. A provider that can only do one refuses before either call.
+  const target = await resolveCapabilitySource(
+    sql,
+    {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      datatype: 'email-message',
+      capabilities: [OUTBOUND_CAPABILITIES.mailDraft, OUTBOUND_CAPABILITIES.mailSend],
+      sourceId: params.sourceId,
+      providerAccountId: params.from,
+    },
+    deps,
+  );
+  const token = target.provider.kind === 'registered' ? null : await gmailToken(target, deps);
 
-  const live = await (deps.readDraftRecipients ?? readGoogleGmailDraftRecipients)(token, draftId, {
-    fetch: deps.fetch,
-    apiOrigin: deps.apiOrigin,
-  });
+  let live: { to: string[]; cc: string[]; subject: string | null };
+  if (token === null) {
+    const read = await invokeOutboundProvider(
+      sql,
+      target,
+      OUTBOUND_CAPABILITIES.mailDraft,
+      { operation: 'read', draftId },
+      deps,
+    );
+    live = {
+      to: resultStrings(read, 'to'),
+      cc: resultStrings(read, 'cc'),
+      subject: resultString(read, 'subject', target, OUTBOUND_CAPABILITIES.mailDraft, false) || null,
+    };
+  } else {
+    live = await (deps.readDraftRecipients ?? readGoogleGmailDraftRecipients)(token, draftId, {
+      fetch: deps.fetch,
+      apiOrigin: deps.apiOrigin,
+    });
+  }
   // A draft addressed to nobody cannot be sent to the right person by accident,
   // but it can be sent — Gmail decides. Refuse here so the failure names the
   // cause instead of arriving as a provider error after the attempt.
@@ -619,10 +678,20 @@ export async function sendMailDraft(
     { probe: deps.probeMailbox, allowUndeliverable: params.allowUndeliverable },
   );
 
-  const sent = await (deps.sendDraft ?? sendGoogleGmailDraft)(token, draftId, {
-    fetch: deps.fetch,
-    apiOrigin: deps.apiOrigin,
-  });
+  let sent: { threadId: string; messageId: string };
+  if (token === null) {
+    const capability = OUTBOUND_CAPABILITIES.mailSend;
+    const result = await invokeOutboundProvider(sql, target, capability, { operation: 'draft', draftId }, deps);
+    sent = {
+      threadId: resultString(result, 'threadId', target, capability, false),
+      messageId: resultString(result, 'messageId', target, capability),
+    };
+  } else {
+    sent = await (deps.sendDraft ?? sendGoogleGmailDraft)(token, draftId, {
+      fetch: deps.fetch,
+      apiOrigin: deps.apiOrigin,
+    });
+  }
   return {
     mode: 'send',
     recipients,
@@ -664,6 +733,8 @@ export async function draftNewMail(
     provenance: AddresseeProvenance;
     /** Which connected account to draft in; required once more than one is. */
     from?: string | null;
+    /** The connected source to draft in; narrows `from` when both are given. */
+    sourceId?: string | null;
     /**
      * Local files to attach, by absolute path. Read here rather than by the
      * caller so the draft either carries every declared file or fails loudly —
@@ -714,13 +785,18 @@ export async function draftNewMail(
     { probe: deps.probeMailbox, allowUndeliverable: params.allowUndeliverable },
   );
 
-  const ctx = await resolveOutboundContext(sql, {
-    workspaceId: params.workspaceId,
-    userId: params.userId,
-    vaultSource: 'gmail',
-    providerAccountId: params.from,
-  });
-  const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
+  const target = await resolveCapabilitySource(
+    sql,
+    {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      datatype: 'email-message',
+      capabilities: [OUTBOUND_CAPABILITIES.mailDraft],
+      sourceId: params.sourceId,
+      providerAccountId: params.from,
+    },
+    deps,
+  );
   const cleared = new Map(recipients.map((decision) => [decision.address, decision]));
   const outbound: GoogleGmailOutboundInput = {
     to: params.to.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
@@ -730,6 +806,34 @@ export async function draftNewMail(
     ...(attachments.length ? { attachments } : {}),
   };
   const reviseId = params.draftId?.trim();
+  if (target.provider.kind === 'registered') {
+    const capability = OUTBOUND_CAPABILITIES.mailDraft;
+    const result = await invokeOutboundProvider(
+      sql,
+      target,
+      capability,
+      {
+        operation: reviseId ? 'update' : 'create',
+        ...(reviseId ? { draftId: reviseId } : {}),
+        to: outbound.to,
+        cc: outbound.cc ?? [],
+        subject,
+        text,
+        attachments: providerAttachments(attachments),
+      },
+      deps,
+    );
+    return {
+      mode: 'draft',
+      recipients,
+      subject,
+      threadId: resultString(result, 'threadId', target, capability, false),
+      messageId: resultString(result, 'messageId', target, capability, false),
+      draftId: resultString(result, 'draftId', target, capability),
+      deliverability,
+    };
+  }
+  const token = await gmailToken(target, deps);
   const draft = reviseId
     ? await (deps.updateDraft ?? updateGoogleGmailDraft)(token, reviseId, outbound, {
         fetch: deps.fetch,

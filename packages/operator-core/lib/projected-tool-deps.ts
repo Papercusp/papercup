@@ -223,6 +223,8 @@ interface OperatorKernelState extends KernelContextState {
   identityLaunchRecord?: unknown;
   /** Selected adv_sessions row identity/version for immutable artifact replay. */
   identityLaunchRecordVersion?: { sessionId: string; rowVersion: string };
+  /** How the server selected that row; a fallback is not caller attribution. */
+  identityLaunchRecordSelection?: 'caller-row' | 'owner-workspace-fallback';
   /** The control anchor exists, but its owning adv_sessions row does not. */
   identityLaunchRecordMissing?: boolean;
   authorityUnavailable?: boolean;
@@ -528,7 +530,8 @@ export async function readControlAnchorKernelState(
     ...(stateRow?.adv_session_id != null && stateRow.adv_session_xmin != null
       ? { identityLaunchRecordVersion: {
           sessionId: String(stateRow.adv_session_id), rowVersion: String(stateRow.adv_session_xmin),
-        } } : {}),
+        }, identityLaunchRecordSelection: callerAdvSessionId !== null
+          ? 'caller-row' as const : 'owner-workspace-fallback' as const } : {}),
     ...(activation ? { activation } : {}),
     ...(activation?.applied ? { appliedRevision: activation.applied } : {}),
     ...(generation ? { policyRevision: `control:${generation}` } : {}),
@@ -720,6 +723,25 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
     : first;
 };
 
+function auditLaunchRowSelection(
+  verdict: KernelEnforcementResult,
+  state: OperatorKernelState | null,
+): KernelEnforcementResult {
+  const record = verdict.serverAudit?.identityLaunchRecord;
+  if (!state?.identityLaunchRecordSelection || !record || typeof record !== 'object' || Array.isArray(record)) {
+    return verdict;
+  }
+  // Extend the stamp for the record actually evaluated (including its loaded
+  // xmin). Never substitute a presented owner or tool argument for this source.
+  return {
+    ...verdict,
+    serverAudit: {
+      ...verdict.serverAudit,
+      identityLaunchRecord: { ...record, selection: state.identityLaunchRecordSelection },
+    },
+  };
+}
+
 async function resolveControlAnchorKernelOnce(
   request: KernelEnforcementRequest,
   onStaleArtifact?: (heal: StaleArtifactHeal) => void,
@@ -752,7 +774,7 @@ async function resolveControlAnchorKernelOnce(
           const heal = staleArtifactHealFor(state);
           if (heal) onStaleArtifact(heal);
         }
-        return grants;
+        return auditLaunchRowSelection(grants, state);
       }
     } catch {
       // The generic optional port catches throws as unavailable/allow. This
@@ -789,9 +811,10 @@ async function resolveControlAnchorKernelOnce(
       return operatorKernelDenial('policy-unavailable', 'identity policy evaluation unavailable; no effect authorized');
     }
   }
-  return ungoverned.stamp
+  const resolved = ungoverned.stamp
     ? { ...verdict, serverAudit: { ...verdict.serverAudit, identityLaunchRecord: ungoverned.stamp } }
     : verdict;
+  return auditLaunchRowSelection(resolved, state);
 };
 
 /** Install the DB-backed resolver exactly once at the host's bootstrap seam. */

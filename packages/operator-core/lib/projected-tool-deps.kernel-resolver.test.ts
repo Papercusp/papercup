@@ -346,9 +346,11 @@ describe('control-anchor kernel resolver (D-030)', () => {
       }),
     ]);
 
-    await expect(controlAnchorKernelResolver(request({
+    const denied = await controlAnchorKernelResolver(request({
       ctx: ctx({ advSessionId: 32433 }),
-    }))).resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+    }));
+    expect(denied).toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+    expect(denied?.serverAudit?.identityLaunchRecord).toBeUndefined();
   });
 
   it.each([
@@ -368,8 +370,8 @@ describe('control-anchor kernel resolver (D-030)', () => {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       db.rows.push([source, continuation]);
       const verdict = await controlAnchorKernelResolver(call);
-      expect(verdict.decision).toBe('allow');
-      expect(verdict.serverAudit?.identityLaunchRecord).toEqual({
+      expect(verdict?.decision).toBe('allow');
+      expect(verdict?.serverAudit?.identityLaunchRecord).toEqual({
         advSessionId: String(selected), xmin: selected === 541 ? '901' : '903', selection,
       });
     }
@@ -863,6 +865,32 @@ describe('P-005 grants reach actual execution boundaries', () => {
       capabilities: [], expose: { mcp: { name } }, fn,
     };
   }
+
+  it.each([
+    { caller: undefined, selection: 'owner-workspace-fallback' },
+    { caller: 1, selection: 'caller-row' },
+  ])('records $selection on governed allows and denials independently of tool arguments', async ({ caller, selection }) => {
+    const f = grantedRow();
+    f.row.adv_session_xmin = '941';
+    grants.read.mockResolvedValue(f.policy);
+    const call = request({
+      toolName: 'mail:send', capabilities: ['mail:send'],
+      ctx: ctx(caller === undefined ? {} : { advSessionId: caller }),
+      args: { identityLaunchRecord: { selection: 'caller-row' } },
+    });
+    db.rows.push([f.row], [f.row]);
+    const allowed = await controlAnchorKernelResolver(call);
+    expect(allowed).toMatchObject({
+      decision: 'allow',
+      serverAudit: { identityLaunchRecord: { advSessionId: '1', xmin: '941', selection } },
+    });
+    grants.read.mockResolvedValue({ ...f.policy, policyRevision: 'policy-revoked', bindings: [] });
+    const denied = await controlAnchorKernelResolver(call);
+    expect(denied).toMatchObject({
+      decision: 'deny',
+      serverAudit: { identityLaunchRecord: { advSessionId: '1', xmin: '941', selection } },
+    });
+  });
 
   it.each(['dispatch', 'indirect-dispatch', 'reaction'] as const)(
     'refuses an unauthorized %s before its handler',

@@ -24,6 +24,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
 import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
+import { crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
 
 /**
  * Starlight docs root. `__dirname`-relative in dev (host run via `tsx`);
@@ -83,7 +84,9 @@ function serveFile(absPath: string, status = 200): Response {
   // Buffer → Response auto-promotes via Uint8Array view.
   return new Response(body, {
     status,
-    headers: { 'content-type': contentType },
+    // Iframe navigations also need compatible COEP when they are same-origin.
+    // Quick Panel uses require-corp; without this Docs becomes a blocked document.
+    headers: { 'content-type': contentType, ...crossOriginIsolationHeaders() },
   });
 }
 
