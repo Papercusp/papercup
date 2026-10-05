@@ -980,6 +980,10 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
           Size: input.Size,
           VolumeType: input.VolumeType as Volume['VolumeType'],
           ...(input.SnapshotId ? { SnapshotId: input.SnapshotId } : {}),
+          // WI-10006140: restore-only (EBS rejects a rate on a volume not created from a snapshot).
+          ...(input.VolumeInitializationRate !== undefined
+            ? { VolumeInitializationRate: input.VolumeInitializationRate }
+            : {}),
           TagSpecifications: [
             {
               ResourceType: 'volume',
@@ -1083,6 +1087,11 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
                 KmsKeyId: disk.Ebs.KmsKeyId,
                 VolumeSize: disk.Ebs.VolumeSize,
                 VolumeType: disk.Ebs.VolumeType as Volume['VolumeType'],
+                // WI-10006140: the AMI-restored root hydrates lazily without this; see
+                // AWS_VOLUME_INITIALIZATION_RATE_MIBPS in aws-provider.ts.
+                ...(disk.Ebs.VolumeInitializationRate !== undefined
+                  ? { VolumeInitializationRate: disk.Ebs.VolumeInitializationRate }
+                  : {}),
               },
             },
           ],

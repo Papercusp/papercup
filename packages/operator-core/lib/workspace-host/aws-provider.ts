@@ -98,6 +98,11 @@ export interface AwsRunInstancesInput {
         KmsKeyId: string;
         VolumeSize: number;
         VolumeType: string;
+        /**
+         * The root volume is always restored from the AMI's snapshot, so it is valid here. Set from
+         * `volumeInitializationRateMiBps`; absent only when that setting is `null`.
+         */
+        VolumeInitializationRate?: number;
       };
     },
   ];
@@ -152,8 +157,31 @@ export interface AwsCreateVolumeInput {
   VolumeType: string;
   /** Restore only: the data volume is created from this EBS snapshot of the source host. */
   SnapshotId?: string;
+  /**
+   * Restore only, like `SnapshotId`: EBS accepts a volume initialization rate only for a volume
+   * created from a snapshot. Present iff `SnapshotId` is and `volumeInitializationRateMiBps` is not
+   * `null`.
+   */
+  VolumeInitializationRate?: number;
   TagSpecifications: readonly [{ ResourceType: 'volume'; Tags: readonly AwsTag[] }];
 }
+
+/**
+ * EBS Provisioned Rate for Volume Initialization (WI-10006140, root cause from WI-10006110).
+ *
+ * A volume restored from a snapshot is hydrated LAZILY from S3 by default: each block is fetched
+ * on first read. A workspace host's root volume always comes from the AMI's snapshot, so its first
+ * boot reads the release tree, node and the native addons at lazy-load speed, and
+ * papercusp-workspace.service missed its start and health budgets on fresh hosts. Measured in the
+ * P-012 canary [peer:su-ee96d6e7 2026-10-05]: with the rate at 300 MiB/s the service started in 56s
+ * and passed health; without it, it never bound. A restored data volume is hydrated the same way.
+ *
+ * AWS accepts 100–300 MiB/s and only for volumes created from a snapshot (the AMI root, a restored
+ * data volume) — never for a new empty data volume. The default is the maximum because the point
+ * is a predictable first boot. `null` in `aws.desired.provider.volumeInitializationRateMiBps` opts
+ * out (EBS's default lazy hydration). AWS bills this per GiB initialized, once per volume.
+ */
+export const AWS_VOLUME_INITIALIZATION_RATE_MIBPS = Object.freeze({ min: 100, max: 300, default: 300 });
 
 export interface AwsCreateSnapshotInput {
   ClientToken: string;
@@ -392,6 +420,11 @@ export interface AwsWorkspaceHostDesiredProviderSettings {
   userData?: string;
   /** `spot` launches with `AWS_SPOT_MARKET_OPTIONS`; an absent value means `standard` (on-demand). */
   provisioningModel: AwsWorkspaceHostProvisioningModel;
+  /**
+   * MiB/s for snapshot-restored volumes (the AMI root, a restored data volume); see
+   * `AWS_VOLUME_INITIALIZATION_RATE_MIBPS`. Absent means the default; `null` means EBS lazy hydration.
+   */
+  volumeInitializationRateMiBps: number | null;
 }
 
 /**
@@ -551,7 +584,20 @@ function readSettings(desired: WorkspaceHostDesiredSpec): AwsWorkspaceHostDesire
       provider.volumeType === undefined ? 'gp3' : requireString(provider.volumeType, 'aws.desired.provider.volumeType'),
     userData: provider.userData === undefined ? undefined : requireUserData(provider.userData),
     provisioningModel: provisioningModel(provider.provisioningModel),
+    volumeInitializationRateMiBps: volumeInitializationRateMiBps(provider.volumeInitializationRateMiBps),
   };
+}
+
+function volumeInitializationRateMiBps(value: unknown): number | null {
+  if (value === undefined) return AWS_VOLUME_INITIALIZATION_RATE_MIBPS.default;
+  if (value === null) return null;
+  const { min, max } = AWS_VOLUME_INITIALIZATION_RATE_MIBPS;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(
+      `aws.desired.provider.volumeInitializationRateMiBps must be an integer from ${min} to ${max} MiB/s, or null for EBS's default lazy hydration`,
+    );
+  }
+  return value;
 }
 
 function provisioningModel(value: unknown): AwsWorkspaceHostProvisioningModel {
@@ -754,6 +800,9 @@ function runInstancesRequest(
           KmsKeyId: settings.kmsKeyArn,
           VolumeSize: settings.rootVolumeGiB,
           VolumeType: settings.volumeType,
+          ...(settings.volumeInitializationRateMiBps === null
+            ? {}
+            : { VolumeInitializationRate: settings.volumeInitializationRateMiBps }),
         },
       },
     ],
@@ -974,6 +1023,10 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       Size: requirePositiveInteger(desired.data.volumeGiB, 'desired.data.volumeGiB'),
       VolumeType: settings.volumeType,
       ...(options.snapshotId ? { SnapshotId: options.snapshotId } : {}),
+      // EBS refuses a rate on a volume that is not created from a snapshot: restore only.
+      ...(options.snapshotId && settings.volumeInitializationRateMiBps !== null
+        ? { VolumeInitializationRate: settings.volumeInitializationRateMiBps }
+        : {}),
       TagSpecifications: [{ ResourceType: 'volume', Tags: tags }],
     };
     const runRequest = runInstancesRequest(desired, settings, tags, instanceKey, requireAwsAmiId(desired.image.id, 'desired.image.id'));
