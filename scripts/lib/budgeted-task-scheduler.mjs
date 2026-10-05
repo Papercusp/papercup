@@ -907,7 +907,7 @@ export function estimateBudgetedTaskWallMs(plan, options) {
  * multiplying a per-workspace cap. A one-worker/memory-token budget collapses to serial.
  * Results are returned in declaration order regardless of completion order.
  */
-async function runBudgetedTasksWithoutSharedAdmission(tasks, options) {
+function createBudgetedTaskRun(tasks, options) {
   const budget = resolveTaskBudget(options);
   const estimateMs = options.estimateMs ?? (() => null);
   const runTask = options.runTask;
@@ -1030,29 +1030,40 @@ async function runBudgetedTasksWithoutSharedAdmission(tasks, options) {
     }
   };
 
-  const runLane = async (lane, workers, take) => {
-    while (pending.length > 0 && firstError == null) {
+  const runLane = async (lane, workers, take, turn) => {
+    while (pending.length > 0 && firstError == null && !turn.yielded) {
+      // Let the initial concurrent wave start, then stop refilling when a peer
+      // is queued. Both lanes drain before the holder releases its FIFO slot.
+      if (
+        admissions - turn.startedAdmissions >= budget.maxConcurrentTasks &&
+        turn.hasWaiters && await turn.hasWaiters()
+      ) turn.yielded = true;
+      // The other lane may have settled or taken the final task during the read.
+      if (turn.yielded || firstError != null || pending.length === 0) break;
       const entry = take(pending);
       await runOne(entry, lane, admitWorkersFor(workers));
     }
   };
 
+  return async (hasWaiters) => {
+  const turn = { startedAdmissions: admissions, yielded: false, hasWaiters };
   if (budget.mode === "parallel" && pending.length > 1) {
     // Promise.all rejects before its siblings settle. A task failure must instead stop NEW
     // admission, drain the child already running in the other lane, and only then reject so the
     // caller never tears down while an unobserved child is still writing output/history.
     const lanes = await Promise.allSettled([
-      runLane("primary", budget.primaryWorkers, takeLongest),
-      runLane("reserved", budget.reserveLaneWorkers, takeShortest),
+      runLane("primary", budget.primaryWorkers, takeLongest, turn),
+      runLane("reserved", budget.reserveLaneWorkers, takeShortest, turn),
     ]);
     const rejected = lanes.find((lane) => lane.status === "rejected");
     if (rejected) throw rejected.reason;
   } else {
-    await runLane("serial", budget.effectiveWorkerBudget, takeLongest);
+    await runLane("serial", budget.effectiveWorkerBudget, takeLongest, turn);
   }
 
   return {
     results,
+    pendingTasks: pending.length,
     stats: {
       ...budget,
       observedMaxWorkers,
@@ -1064,12 +1075,13 @@ async function runBudgetedTasksWithoutSharedAdmission(tasks, options) {
       lastMemAvailableMb,
     },
   };
+  };
 }
 
 /**
  * Run one scheduler invocation behind the shared test-process admission gate.
  *
- * The lock deliberately covers the whole invocation, not just the synchronous
+ * The lock covers all active children, not just the synchronous
  * launch call: the child process and all of its Vitest descendants remain the
  * admitted resident workload until `runTask` settles.  `withFsMutex` releases
  * in a finally block and reclaims a stale/dead owner, so a failed or crashed
@@ -1254,12 +1266,17 @@ export async function runBudgetedTasks(tasks, options) {
     Number(options?.admissionTimeoutMs) > 0
       ? Number(options.admissionTimeoutMs)
       : SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS;
-  return withFsMutex(
+  const runTurn = createBudgetedTaskRun(tasks, options);
+  let queuedMs = 0;
+  let run;
+  do {
+  const remainingQueueMs = Math.max(1, timeoutMs - queuedMs);
+  run = await withFsMutex(
     // WI-1746759: the release gate rides its own lane; everyone else shares one.
     admissionMutexName(),
-    () => runBudgetedTasksWithoutSharedAdmission(tasks, options),
+    ({ hasWaiters } = {}) => runTurn(hasWaiters),
     {
-      timeoutMs,
+      timeoutMs: remainingQueueMs,
       staleMs: SHARED_TEST_PROCESS_ADMISSION_STALE_MS,
       retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
       waitingNoticeIntervalMs: SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS,
@@ -1276,27 +1293,35 @@ export async function runBudgetedTasks(tasks, options) {
         notify(
           `AFFECTED_TESTS_ADMISSION_QUEUED waiting on the shared test-process ` +
             `admission mutex (${Math.round(elapsedMs / 1000)}s so far, budget ` +
-            `${Math.round(timeoutMs / 1000)}s) — this is normal serialization under ` +
+            `${Math.round(remainingQueueMs / 1000)}s) — this is normal serialization under ` +
             `fleet load, not a hang; holder: ${formatAdmissionHolder(owner)}` +
-            formatAdmissionProspect(owner, { elapsedMs, budgetMs: timeoutMs }),
-          { kind: "queued", elapsedMs, budgetMs: timeoutMs },
+            formatAdmissionProspect(owner, { elapsedMs, budgetMs: remainingQueueMs }),
+          { kind: "queued", elapsedMs, budgetMs: remainingQueueMs },
         );
       },
       onAcquired: ({ waitedMs }) => {
+        queuedMs += waitedMs;
         // `budgetMs` is the bound THIS acquisition was actually given. Reporting it is what
         // lets a caller (and a test) see the whole-run budget spending down across shards
         // instead of silently restarting at full value on every one.
         if (options?.onAdmissionAcquired)
-          options.onAdmissionAcquired({ waitedMs, budgetMs: timeoutMs });
+          options.onAdmissionAcquired({ waitedMs, budgetMs: remainingQueueMs });
         if (waitedMs >= SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS) {
           notify(
             `AFFECTED_TESTS_ADMISSION_GRANTED after ${Math.round(waitedMs / 1000)}s queued`,
-            { kind: "granted", waitedMs, budgetMs: timeoutMs },
+            { kind: "granted", waitedMs, budgetMs: remainingQueueMs },
           );
         }
       },
     },
   );
+  if (run.pendingTasks > 0) notify(
+    `AFFECTED_TESTS_ADMISSION_YIELD completedTasks=${tasks.length - run.pendingTasks} ` +
+      `remainingTasks=${run.pendingTasks} — active children drained; rejoining the FIFO queue`,
+    { kind: "yielded", budgetMs: Math.max(0, timeoutMs - queuedMs) },
+  );
+  } while (run.pendingTasks > 0);
+  return { results: run.results, stats: run.stats };
 }
 
 /** Run deterministic shards sequentially while preserving declaration-order results. */

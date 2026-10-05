@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replaySourceFingerprint, replayWireOverlap, validateDaemonReplayConfig, type DaemonReplayConfig } from './lsp-fleet-replay-runtime';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
@@ -79,5 +79,14 @@ describe('daemon replay qualification', () => {
     expect(replayEvidenceProblems({ ...live, samples: [live.samples[0], { ...live.samples[1], answer: broken }, missing] }))
       .toEqual([`unsettled-wire:${live.samples[0].request.id}`, `unconfirmed-durable-settlement:${live.samples[1].request.id}`,
         `missing-daemon-identity:${live.samples[2].request.id}`]);
+  });
+  it('measures the whole durable settlement tail while retaining the later client completion', () => {
+    const live = report();
+    const oracle = { sites: [], sourceFingerprint: 'source', oracleFingerprint: 'oracle' };
+    const durable = replayDurableReport(live, { definition: oracle, 'hot-references': oracle });
+    expect(durable.classes.definition.elapsedMs).toBe(9);
+    expect(durable.classes['hot-references'].elapsedMs).toBe(20);
+    expect(durable.samples[0]).toMatchObject({ settledAtMs: 9, clientSettledAtMs: 22 });
+    expect(replayEvidenceProblems(durable)).toEqual([]);
   });
 });

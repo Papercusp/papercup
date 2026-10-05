@@ -1758,6 +1758,103 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
   );
 
   it(
+    'keeps a same delivery ID pending until a busy-gate turn re-arm settles',
+    async () => {
+      const busyMs = 1_500;
+      const ownerId = uniqueOwner('DEDUP-SAME-ID-REARM');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', busyThenIdleChildCode(busyMs, 50, 5_000)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        advSessionId: 35_094,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      try {
+        const host = await waitForHost(ownerId);
+        expect(host).not.toBeNull();
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+
+        const envelope = { mode: 'turn' as const, ownerId, deliveryId: 'same-id-busy-rearm' };
+        const first = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'same delivery survives re-arm',
+        });
+        expect(first).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+
+        const rearmDeadline = Date.now() + 3_000;
+        let events = '';
+        while (Date.now() < rearmDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (events.includes('"kind":"wake-rearm-queued"')) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"kind":"wake-rearm-queued"');
+
+        // The first promise has settled as deferred-busy-gate, but carryRearm
+        // still owns this same ID. A retry must report pending rather than start
+        // another gated pipeline while the re-arm is waiting for an idle prompt.
+        const retry = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'same delivery survives re-arm',
+        });
+        expect(retry).toMatchObject({ ok: true, confirmation: 'acked', reason: 'pending-delivery-id' });
+
+        expect(await waitForOutput(captured, 'ECHO:same delivery survives re-arm', 6_000)).toBe(true);
+        const settleDeadline = Date.now() + 3_000;
+        while (Date.now() < settleDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (events.includes('"kind":"wake-rearm-delivered"')) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"kind":"wake-rearm-delivered"');
+
+        const afterSettlement = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'same delivery survives re-arm',
+        });
+        expect(afterSettlement).toMatchObject({
+          ok: true,
+          confirmation: 'acked',
+          reason: 'duplicate-delivery-id',
+        });
+        await sleep(300);
+        expect((captured().match(/ECHO:same delivery survives re-arm/g) ?? []).length).toBe(1);
+      } finally {
+        await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(meta, { force: true });
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
     'a DIFFERENT deliveryId with the SAME text is a genuinely new delivery — not deduped',
     async () => {
       // Guards against an over-broad fix: dedup must key off the delivery ID, never

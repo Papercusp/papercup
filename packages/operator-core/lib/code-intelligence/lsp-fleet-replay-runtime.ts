@@ -1,14 +1,15 @@
 /** Daemon execution and qualification for the existing saturation CLI, P-012. */
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
-import { classifyReplayAnswer, evaluateReplayLadder, runReplay, REPLAY_CLASSES,
+import { classifyReplayAnswer, evaluateReplayLadder, runReplay, scoreReplay, REPLAY_CLASSES,
   type ReplayClass, type ReplayMode, type ReplayOracle, type ReplayReport, type ReplayTriplet } from './lsp-fleet-replay';
 import type { LspFacadeArgs } from './lsp-facade';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { lspEvidenceNow } from './lsp-query-evidence';
+import { taskIdFromScopeUnit } from '../task-manager/types';
 
 export interface ReplayCorpus {
   readonly cursor: Required<Pick<LspFacadeArgs, 'file' | 'line1' | 'character'>>;
@@ -108,8 +109,9 @@ export function replayEvidenceProblems(report: ReplayReport): string[] {
       event.receiptId === receipt.receiptId && event.phase === 'durable-settled' && event.confirmed === true)))
       problems.push(`unconfirmed-durable-settlement:${sample.request.id}`);
     const terminal = Math.max(...evidence.events.filter(event => event.phase === 'durable-settled').map(event => event.atMs));
-    if (!Number.isFinite(terminal) || terminal > sample.settledAtMs || evidence.respondedAtMs === null ||
-        evidence.respondedAtMs > sample.settledAtMs) problems.push(`invalid-settlement-order:${sample.request.id}`);
+    const clientEnd = sample.clientSettledAtMs ?? sample.settledAtMs;
+    if (!Number.isFinite(terminal) || terminal < sample.issuedAtMs || terminal > clientEnd || evidence.respondedAtMs === null ||
+        evidence.respondedAtMs > clientEnd) problems.push(`invalid-settlement-order:${sample.request.id}`);
   }
   return problems;
 }
@@ -119,6 +121,16 @@ export function replayProcessIdentity(pid: number) {
   try { return { pid, cmdline: readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean),
     cgroup: readFileSync(`/proc/${pid}/cgroup`, 'utf8').trim(), unknown: [] as string[] }; }
   catch (error) { return { pid, cmdline: [], cgroup: null, unknown: [String(error)] }; }
+}
+
+export function replayDurableReport(report: ReplayReport, oracles: Readonly<Record<ReplayClass, ReplayOracle>>): ReplayReport {
+  const samples = report.samples.map(sample => {
+    const events = (sample.answer as LspDaemonAnswer | null)?.daemonEvidence?.events ?? [];
+    const terminal = Math.max(...events.filter(event => event.phase === 'durable-settled' && event.confirmed === true).map(event => event.atMs));
+    return { ...sample, clientSettledAtMs: sample.settledAtMs,
+      settledAtMs: Number.isFinite(terminal) ? terminal : sample.settledAtMs };
+  });
+  return scoreReplay(report.concurrency, report.mode, report.population, samples, oracles);
 }
 
 /** Archive is append-only and exclusively created; no prior evidence is overwritten. */
@@ -163,8 +175,8 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
       const reports = new Map<ReplayMode, ReplayReport>();
       const problems = [...start.fileDrift];
       for (const mode of modes) {
-        const report = await runReplay({ concurrency, mode, runId: `${trialId}/${mode}`, oracles,
-          now: lspEvidenceNow, execute: request => query(request.queryClass, request.id, request.actorId) });
+        const report = replayDurableReport(await runReplay({ concurrency, mode, runId: `${trialId}/${mode}`, oracles,
+          now: lspEvidenceNow, execute: request => query(request.queryClass, request.id, request.actorId) }), oracles);
         // Preserve every raw answer/ID/timestamp before scoring or inspecting qualification.
         record('runs.jsonl', report);
         reports.set(mode, report);
@@ -180,6 +192,11 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
         const servers = snapshot.health.daemonRuntime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath));
         if (!servers || servers.length !== 1 || servers[0].health !== 'healthy' || !servers[0].taskId || !servers[0].pid)
           problems.push('unqualified-warm-server-population');
+        for (const server of servers ?? []) {
+          const process = snapshot.processes.find(process => process.pid === server.pid);
+          const unit = process?.cgroup?.split('\n').find(line => line.startsWith('0::'))?.slice(3);
+          if (!unit || taskIdFromScopeUnit(basename(unit)) !== server.taskId) problems.push('unqualified-server-task-cgroup');
+        }
         if (snapshot.admission.queued || snapshot.admission.inFlight || snapshot.admission.settlementFailures.length)
           problems.push('unsettled-boundary');
       }

@@ -379,7 +379,11 @@ async function waitForReaders(
  *
  * @template T
  * @param {string} name
- * @param {() => Promise<T>} fn
+ * The callback may check for live queued writers and voluntarily return early.
+ * The check uses the same ticket reclamation as acquisition; it never releases
+ * the lock itself. Reader-mode and explicitly disabled locks have no check.
+ *
+ * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
  * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, intent?: Record<string, string | number | boolean> }} [opts]
  * @returns {Promise<T>}
  */
@@ -543,7 +547,9 @@ export async function withFsMutex(name, fn, opts = {}) {
     // `timeoutMs` restarts from zero, so an N-shard run's real worst case is N × timeoutMs.
     // Fires inside the try so a throwing callback still releases the lock.
     if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
-    return await fn();
+    return await fn({
+      hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs)) != null,
+    });
   } finally {
     await rm(lockDir, { recursive: true, force: true });
   }

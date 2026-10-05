@@ -20,6 +20,8 @@ export interface ReplaySample {
   readonly request: ReplayRequest;
   readonly issuedAtMs: number;
   readonly settledAtMs: number;
+  /** Retained separately when the runtime supplies the actual durable terminal timestamp. */
+  readonly clientSettledAtMs?: number;
   readonly answer: CodeIntelAnswer | null;
   readonly transportError: string | null;
 }

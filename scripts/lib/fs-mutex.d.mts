@@ -30,11 +30,17 @@ export function resolveFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
  *
  * @template T
  * @param {string} name
- * @param {() => Promise<T>} fn
+ * The callback may check for live queued writers and voluntarily return early.
+ * The check uses the same ticket reclamation as acquisition; it never releases
+ * the lock itself. Reader-mode and explicitly disabled locks have no check.
+ *
+ * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
  * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, intent?: Record<string, string | number | boolean> }} [opts]
  * @returns {Promise<T>}
  */
-export function withFsMutex<T>(name: string, fn: () => Promise<T>, opts?: {
+export function withFsMutex<T>(name: string, fn: (context?: {
+    hasWaiters: () => Promise<boolean>;
+}) => Promise<T>, opts?: {
     mode?: "read" | "reader" | "write";
     timeoutMs?: number;
     staleMs?: number;

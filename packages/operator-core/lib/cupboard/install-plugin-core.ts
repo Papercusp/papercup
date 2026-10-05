@@ -18,6 +18,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep, dirname } from 'node:path';
 import type { PluginTriggerPack, ProviderDescriptor } from '@papercusp/plugin-sdk';
+import type { TriggerPackInstallation } from './trigger-pack-materialize';
 import { validateProviderDeclaration } from '@papercusp/plugin-sdk';
 import { isCompilableSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
@@ -38,6 +39,15 @@ export interface InstallPluginCoreInput {
    * surface. Used by capability-provider chaining so consent applies to exactly
    * the complete transitive set the caller reviewed. */
   expectedReview?: InstallPluginManifestReview;
+  /**
+   * Installer-local trigger-pack configuration (P-012, D-013): which local data
+   * source each external binding binds to, and the pack input values. Used only
+   * when the package carries a trigger pack and `harness` is given.
+   */
+  triggerPackConfig?: {
+    sourceMappings?: Record<string, string>;
+    inputs?: Record<string, unknown>;
+  };
 }
 
 export interface InstalledPluginManifest {
@@ -97,6 +107,11 @@ export interface InstallPluginCoreResult {
   granted: string[];
   /** Descriptor made discoverable by the post-copy host invalidation. */
   triggerPack?: InstalledTriggerPackReceipt;
+  /**
+   * The materialized pack in `harness` (P-012): installation id, owned plan and
+   * disarmed binding ids, and unmet source/input requirements.
+   */
+  triggerPackInstallation?: TriggerPackInstallation;
   /** Integration provider the owner consented to (registered on host discovery). */
   provider?: InstalledProviderReceipt;
   /** Stable install-review material derived before any destination write. */
@@ -265,6 +280,18 @@ export interface InstallPluginCoreDeps {
     installable: { tools: string[]; packs: string[]; plugins: string[]; events?: ManifestEventDep[] };
     messages: string[];
   }>;
+  /**
+   * Materialize a trigger pack into `harnessSlug` (P-012, D-013). Optional: when
+   * absent, a trigger pack installs as manifest data only. Refusals carry a
+   * stable `code` and happen before any write.
+   */
+  materializeTriggerPack?: (args: {
+    manifest: InstalledPluginManifest & { triggerPack: PluginTriggerPack };
+    pluginDir: string;
+    harnessSlug: string;
+    sourceMappings?: Record<string, string>;
+    inputs?: Record<string, unknown>;
+  }) => Promise<TriggerPackInstallation>;
 }
 
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
@@ -535,6 +562,29 @@ export async function installPluginFromCupboardCore(
       );
     }
 
+    // Trigger-pack materialization (P-012, D-013 §6): with a target harness the
+    // pack becomes its plans and DISARMED bindings. Every refusal happens in the
+    // materializer's write-free preflight, so it runs before the bytes are
+    // replaced: an unsupported pack refuses the whole install cleanly.
+    let triggerPackInstallation: TriggerPackInstallation | undefined;
+    if (triggerPack && input.harness && deps.materializeTriggerPack) {
+      try {
+        triggerPackInstallation = await deps.materializeTriggerPack({
+          manifest: manifest as InstalledPluginManifest & { triggerPack: PluginTriggerPack },
+          pluginDir,
+          harnessSlug: input.harness,
+          sourceMappings: input.triggerPackConfig?.sourceMappings,
+          inputs: input.triggerPackConfig?.inputs,
+        });
+      } catch (error) {
+        const code = (error as { name?: unknown; code?: unknown })?.code;
+        if ((error as { name?: unknown })?.name === 'TriggerPackMaterializeError' && typeof code === 'string') {
+          throw new InstallPluginError((error as Error).message, 422, code);
+        }
+        throw error;
+      }
+    }
+
     const target = join(deps.globalPluginsDir(), manifest.name);
     assertInside(deps.globalPluginsDir(), target, `plugin name "${manifest.name}"`);
     // mkdir the target's PARENT (not just global-plugins) so a scoped
@@ -572,6 +622,7 @@ export async function installPluginFromCupboardCore(
       granted,
       review,
       ...(triggerPack ? { triggerPack } : {}),
+      ...(triggerPackInstallation ? { triggerPackInstallation } : {}),
       ...(provider ? { provider } : {}),
       ...(installableDependencies ? { installableDependencies } : {}),
     };

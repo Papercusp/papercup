@@ -272,7 +272,7 @@ export function admissibleWorkersForMemory(input: {
  * mutex every scheduler invocation acquires.
  */
 export interface AdmissionNoticeInfo {
-  kind: 'queued' | 'granted';
+  kind: 'queued' | 'granted' | 'yielded';
   /** Present on `queued`: how long this acquisition has been waiting so far. */
   elapsedMs?: number;
   /** Present on `granted`: how long this acquisition ended up queued. */

@@ -7225,6 +7225,21 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
   };
 }
 
+/** Decide how the detached host pipeline settles one delivery ID.
+ * A busy-gate deferral remains pending only when the re-arm controller still
+ * owns that exact delivery; folded IDs that the re-arm does not own stay
+ * retryable. */
+export function deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery = false) {
+  if (
+    deliveryOutcome?.ok === true &&
+    (deliveryOutcome.reason === 'delivered' || deliveryOutcome.reason === 'quota-recovery-delivered')
+  ) {
+    return 'completed';
+  }
+  if (deliveryOutcome?.reason === 'deferred-busy-gate' && rearmOwnsDelivery) return 'pending';
+  return 'clear';
+}
+
 /**
  * A minimal FIFO async mutex serializing the GATED-inject critical section within
  * a single host (EI-8822). Each control-socket connection runs its OWN async
@@ -11294,19 +11309,17 @@ export function hostThroughPty(o) {
         .then((deliveryOutcome) => {
           if (!coalescedDeliveryIds.size) return;
           for (const deliveryId of coalescedDeliveryIds) {
-            if (
-              deliveryOutcome?.ok === true &&
-              (deliveryOutcome.reason === "delivered" ||
-                deliveryOutcome.reason === "quota-recovery-delivered")
-            ) {
+            const rearmOwnsDelivery =
+              deliveryId === msg.deliveryId &&
+              deliveryOutcome?.reason === 'deferred-busy-gate' &&
+              carryRearm.isPendingMessage(msg);
+            const settlement = deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery);
+            if (settlement === 'completed') {
               deliveryDedup.markCompleted(deliveryId);
-            } else if (
-              msg.mode === "carry-respawn" &&
-              deliveryOutcome?.reason === "deferred-busy-gate"
-            ) {
-              // carryRearm.schedule() owns a live retry outside this promise; keep
-              // the ID pending so a client retry cannot race that re-arm.
-              if (carryRearm.isPendingMessage(msg)) deliveryDedup.markPending(deliveryId);
+            } else if (settlement === 'pending') {
+              // carryRearm owns the original ID outside this promise. Keep it
+              // pending so a client retry cannot race the turn or carry re-arm.
+              deliveryDedup.markPending(deliveryId);
             } else {
               deliveryDedup.clearPending(deliveryId);
             }
