@@ -152,6 +152,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
         // whole point is that a write path attempting to INSERT an explicit value into
         // a generated column fails here exactly as it would in production.
         '757-memory-canonical-row-kind-discriminator.sql',
+        '1312-memory-canonical-hot-surfaced-bump.sql',
       ],
       { label: 'memory-federation-privacy.integration.test.ts' },
     );
