@@ -1,0 +1,161 @@
+/** R-4: persisted canonical GOAL notification in the real, isolated Tauri shell.
+ * Run through verify-tauri-headless.sh with isolated DB + ready onboarding seed.
+ * This reuses the approved fixture and production publish/delivery/read seams.
+ */
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import postgres from 'postgres';
+import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
+import { goalOwnerReportFixture } from '../packages/operator-core/test/fixtures/goal-owner-report.ts';
+import { getReport, publishReport } from '../packages/operator-core/lib/report-library.ts';
+import { makeGoalReportReferenceReads, persistGoalReportReference } from '../packages/operator-core/lib/goal-owner-report-reference.ts';
+
+assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Refusing fixture writes outside isolated verifier DB');
+const pid = process.env.VERIFY_TAURI_PID!;
+const origin = process.env.VERIFY_TAURI_DEV_URL!;
+const workspaceId = process.env.PAPERCUSP_WORKSPACE!;
+assert.ok(pid && origin && workspaceId && process.env.HARNESS_ADMIN_DATABASE_URL);
+const out = process.env.TAURI_GOAL_REPORT_OUT ?? `/tmp/pcv-goal-report-${Date.now()}`;
+mkdirSync(out, { recursive: true });
+const save = (name: string, value: unknown) => writeFileSync(join(out, name), JSON.stringify(value, null, 2));
+const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools';
+const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 });
+const poll = (expression: string, require: string) => {
+  const result = execFileSync(process.env.VERIFY_TAURI_POLL!, ['--require', require, '--eval', expression],
+    { encoding: 'utf8', timeout: 90_000, env: { ...process.env, VERIFY_TAURI_DOM_TIMEOUT: '60' } });
+  writeFileSync(join(out, `check-${observations.length}.json`), result);
+};
+const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
+const observations: unknown[] = [];
+const sourcePaths = ['apps/operator/app/_components/chat/ReportBlockCard.tsx', 'libs/generic/chat-cards/src/index.tsx',
+  'apps/operator/app/globals.css', 'packages/operator-core/lib/sync-resolver/index.ts',
+  'scripts/tauri-surface-verify-goal-report.mts'];
+const sourceFingerprint = sourcePaths.map(path => ({ path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }));
+const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+let recording: ReturnType<typeof spawn> | undefined;
+try {
+  // SQL here is test setup only, in the disposable fully migrated database.
+  // The report and notification themselves use the actual production writers.
+  const goalId = 'goal-expandable-reports';
+  const ownerId = 'goal-report-tauri-fixture';
+  const at = new Date().toISOString();
+  const due = new Date(Date.now() + 300_000).toISOString();
+  const snapshot = goalOwnerReportFixture(workspaceId);
+  await sql`INSERT INTO harness_shared.goals
+    (workspace_id,id,install_slug,title,budget_cents,budget_window_sec,metadata,updated_at)
+    VALUES (${workspaceId},${goalId},${workspaceId},'Canonical GOAL Tauri fixture',1000,3600,
+      ${JSON.stringify({ spentCents: 125.5, spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE, spentCentsAt: at,
+        spentCentsBreakdown: { measured: true, lineageScope: 'partial; legacy unpriced' } })}::text::jsonb,${at}::timestamptz)`;
+  await sql`INSERT INTO harness_shared.agent_modes (workspace_id,owner_id,axis_key,mode,subject,set_by)
+    VALUES (${workspaceId},${ownerId},'goal','goal',${goalId},'isolated-test-fixture')`;
+  const [wake] = await sql`INSERT INTO harness_shared.event_awaits
+    (workspace_id,subscriber_id,event_key,timeout_behavior,expires_ts)
+    VALUES (${workspaceId},${ownerId},'fixture:report-progress','wake',${due}::timestamptz) RETURNING id`;
+  for (const wall of snapshot.ownerWalls) {
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,title,status,goal_id,updated_ts,payload)
+      VALUES (${workspaceId},${workspaceId},${wall.itemRef},'task','Exact owner action','needs-human',${goalId},${Date.parse(at)},
+        ${JSON.stringify({ ownerAction: wall.exactAction, ownerDecisionRefs: wall.decisionRefs, ownerArtifactRefs: wall.artifactRefs })}::text::jsonb)`;
+  }
+  await sql`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,item_kind,title,status,goal_id,updated_ts,authority,terminal_completion_ref)
+    VALUES (${workspaceId},${workspaceId},'WI-completed','task','Completed work','done',${goalId},${Date.parse(at)},'committed','receipt:complete-19'),
+      (${workspaceId},${workspaceId},'WI-observed','task','Observed work','wip',${goalId},${Date.parse(at)},NULL,NULL)`;
+  await sql`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,item_kind,title,status,goal_id,updated_ts,payload)
+    VALUES (${workspaceId},${workspaceId},'WI-killed','task','Historical direction','dropped',${goalId},${Date.parse(at)},
+      ${JSON.stringify({ disposition: 'stopped: duplicate surface', dispositionEvidenceRefs: ['decision:stop-3'] })}::text::jsonb)`;
+  const reads = makeGoalReportReferenceReads(sql, workspaceId, goalId);
+  snapshot.sources = [(await reads.source(`goal:${goalId}`))!, (await reads.source('legacy-spend'))!];
+  snapshot.cost = (await reads.cost())!;
+  snapshot.ownerWalls = (await reads.ownerWalls())!;
+  snapshot.moved = [(await reads.movement('WI-completed'))!, (await reads.movement('WI-observed'))!];
+  snapshot.killed = [{ ref: 'WI-killed', disposition: 'stopped: duplicate surface', evidenceRefs: ['decision:stop-3'], at }];
+  snapshot.nextWake = { kind: 'event', ref: 'fixture:report-progress', expectedAt: due, evidenceRef: `await:${wake!.id}` };
+  snapshot.observedAt = new Date().toISOString();
+  const report = await publishReport(sql, { workspaceId, title: 'Canonical GOAL Tauri fixture', goalOwnerReport: snapshot,
+    visibility: 'workspace' }, { authorOwnerId: ownerId });
+  const reference = { schemaVersion: 1 as const, goalId, reportId: report.reportId, bodySha256: report.bodySha256 };
+  const envelope = await persistGoalReportReference(sql,
+    { msg_id: 'fixture-input', from: ownerId, to: ['human'], kind: 'message', ts: new Date().toISOString(), expects: 'none' },
+    { workspaceId, goalId, ref: reference, viewer: { ownerId } });
+  assert.deepEqual(envelope.report, { plans: [], goalReport: reference });
+  const [{ count: plans }] = await sql`SELECT count(*) FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}`;
+  assert.equal(Number(plans), 0, 'The reference-only fixture must have zero real plan rows');
+  save('published-fixture.json', { report, envelope, snapshot, plans: Number(plans) });
+  const health = await (await fetch(`${origin}/api/health`)).json() as Record<string, unknown>;
+  save('runtime-health.json', health);
+  const runtimeIdentity = { runtime: 'desktop-shell', buildSha: health.buildSha ?? health.sha ?? head,
+    shaSource: health.buildSha || health.sha ? 'isolated host health' : 'measured source HEAD', pid, origin,
+    frozenSpa: process.env.VERIFY_TAURI_SPA_DIST, launchProvenance: process.env.VERIFY_TAURI_LAUNCH_PROVENANCE };
+  const recordingRef = join(out, 'journey.mp4');
+  recording = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'x11grab', '-framerate', '3',
+    '-video_size', '1280x800', '-i', process.env.VERIFY_TAURI_DISPLAY!, '-c:v', 'libx264', '-preset', 'ultrafast', recordingRef],
+    { stdio: ['ignore', 'ignore', 'pipe'] });
+  recording.stderr!.on('data', chunk => process.stderr.write(chunk));
+  native('navigate', `/inbox?opci=all&opcis=${encodeURIComponent(`coord-message:${envelope.msg_id}`)}`, '--json');
+  const card = '[data-component="report-block"]';
+  poll(`Array.from(document.querySelectorAll('${card} button')).some(b=>b.textContent==='Expand full report')`, card);
+  native('screenshot', '--output', join(out, 'notification.png'));
+  native('check', '--eval', `(()=>{const b=Array.from(document.querySelectorAll('${card} button')).find(b=>b.textContent==='Expand full report');if(!b)return false;b.click();return true})()`, '--json');
+  const expectedBody = serializeGoalOwnerReportSnapshot(snapshot);
+  assert.ok(expectedBody.length > 600);
+  const bodySelector = `.report-block-goal-body[data-report-id="${report.reportId}"]`;
+  poll(`document.querySelector(${JSON.stringify(bodySelector)})?.textContent===${JSON.stringify(expectedBody)}`, bodySelector);
+  // Independent transport read: actual reports:get dispatcher, distinct from the
+  // card's reports.get sync query and the fixture's direct store writer.
+  const reply = await (await fetch(`${origin}/api/agent-mcp/run-tool`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'reports:get', args: { id: report.reportId, lineage: true }, callerSid: `tauri-goal-report-${pid}` }) })).json() as any;
+  save('reports-get.json', reply);
+  assert.equal(reply.ok, true);
+  const content = reply.result.content.find((c: any) => c.type === 'text' && c.text.includes('body_md'));
+  const retrieved = JSON.parse(content.text).results.find((r: any) => r.id === report.reportId).report;
+  assert.equal(retrieved.report_id, report.reportId);
+  assert.equal(retrieved.workspace_id, workspaceId);
+  assert.equal(retrieved.body_sha256, reference.bodySha256);
+  assert.equal(retrieved.body_md, expectedBody);
+  assert.deepEqual(retrieved.goal_owner_report, snapshot);
+  assert.equal(createHash('sha256').update(retrieved.body_md, 'utf8').digest('hex'), reference.bodySha256);
+  const fields = ['exact canonical UTF-8 body', 'three exact owner actions', 'source observed/measured timestamps', 'cost measured/read timestamps',
+    'successful mutation receipt', 'historical kills', 'checked/unchecked/notApplicable/residue coverage', 'explicit unknown reasons',
+    'historical snapshot label', 'in-card expansion', 'zero fabricated plan rows', 'no parallel viewer'];
+  poll(`document.querySelector('.report-block-goal-as-of')?.textContent.includes(${JSON.stringify(snapshot.observedAt)}) &&
+    document.querySelectorAll('.report-block-plan').length===0 && location.pathname==='/inbox'`, card);
+  const unknowns = [snapshot.sources[1]!.unknownReason!, snapshot.coverage.unknowns[0]!.reason];
+  const observe = (name: string) => observations.push({ name, reportId: report.reportId, bodySha256: reference.bodySha256, workspaceId, goalId,
+    runtimeIdentity, sourceFingerprint, observedAt: new Date().toISOString(), recordingRef, exactExpectedBody: expectedBody,
+    visibleOwnerActions: snapshot.ownerWalls.map(w => w.exactAction), observedFieldCoverage: fields, explicitUnknownLabels: unknowns, result: 'pass' });
+  observe('REPORT-PINNED-DETAIL-P003 original exact notification expansion');
+  native('screenshot', '--output', join(out, 'expanded.png'));
+  save('captured-card.json', JSON.parse(native('eval', `JSON.stringify({body:document.querySelector(${JSON.stringify(bodySelector)})?.textContent,
+    label:document.querySelector('.report-block-goal-as-of')?.textContent,url:location.href})`)));
+  // The successor changes actual body and lineage, never the original pin.
+  const successorSnapshot = structuredClone(snapshot);
+  successorSnapshot.ownerWalls[0]!.exactAction = 'SUCCESSOR ONLY: this must never replace the pinned action.';
+  const successor = await publishReport(sql, { workspaceId, title: 'Successor GOAL Tauri fixture', goalOwnerReport: successorSnapshot,
+    visibility: 'workspace', supersedes: report.reportId }, { authorOwnerId: ownerId });
+  const original = await getReport(sql, workspaceId, report.reportId, { isOwner: true });
+  assert.equal(original!.bodyMd, expectedBody);
+  assert.notEqual(successor.bodySha256, report.bodySha256);
+  native('navigate', `/inbox?opci=all&opcis=${encodeURIComponent(`coord-message:${envelope.msg_id}`)}&goalReport=${encodeURIComponent(report.reportId)}`, '--json');
+  poll(`document.querySelector(${JSON.stringify(bodySelector)})?.textContent===${JSON.stringify(expectedBody)} &&
+    !document.querySelector(${JSON.stringify(bodySelector)})?.textContent.includes('SUCCESSOR ONLY')`, bodySelector);
+  observe('REPORT-PINNED-DETAIL-P003 successor/latest-lineage control');
+  native('screenshot', '--output', join(out, 'pinned-after-successor.png'));
+  save('successor-control.json', { successorId: successor.reportId, successorBodySha256: successor.bodySha256, pinnedOriginal: original });
+  save('manifest.json', { criterion: 'R-4', observations, coverage: { population: fields, checked: fields, notChecked: [], notApplicable: [], residue: [] }, result: 'pass' });
+  console.log(`GOAL_REPORT_TAURI_PASS output=${out}`);
+} catch (error) {
+  save('manifest.json', { criterion: 'R-4', observations, result: 'fail', error: String(error), sourceFingerprint });
+  throw error;
+} finally {
+  if (recording) {
+    recording.kill('SIGINT');
+    await new Promise<void>(resolve => { recording!.once('exit', () => resolve()); setTimeout(() => { recording!.kill('SIGKILL'); resolve(); }, 10_000).unref(); });
+  }
+  await sql.end();
+}
