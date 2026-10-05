@@ -9,9 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // readNonAgentWorkCategory backs the D-035 agent-work door gate (work-nature/agent-work-door-gate);
 // null = the row IS agent work, so every existing case reaches its own write path unchanged.
-const readNonAgentWorkCategory = vi.hoisted(() =>
-  vi.fn<typeof import('../../work-items').readNonAgentWorkCategory>(async () => null),
-);
+const readNonAgentWorkCategory = vi.hoisted(() => vi.fn(async () => null as { nature: string; audience: string | null } | null));
 vi.mock('../../work-items', () => ({
   getWorkItem: vi.fn(),
   setWorkItemStateWithAliasInfo: vi.fn(),
@@ -824,7 +822,7 @@ describe('work_items:set_state — non-terminal reason is recorded as a comment 
   });
 
   it('posts no comment when the state write did not land (no orphan comment)', async () => {
-    setM.mockResolvedValueOnce({ workItem: null, aliased: false, requestedState: 'wip', appliedState: 'wip' } as never);
+    setM.mockResolvedValueOnce({ workItem: null, aliased: false, requestedState: 'wip', appliedState: null });
     const out = await body({ id: 'WI-404', state: 'wip', reason: REASON });
     expect(commentM).not.toHaveBeenCalled();
     expect(out.results[0].ok).toBe(false);

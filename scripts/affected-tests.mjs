@@ -7463,7 +7463,7 @@ try {
     // Refusal can interrupt a later shard before the aggregate tally. Count
     // only outcomes whose exit is known; an unreadable result remains unknown.
     const value = scheduled?.value ?? {};
-    if (typeof value.status === "number" || value.signal) observedCompletedTasks++;
+    if ((typeof value.status === "number" && Number.isFinite(value.status)) || value.signal) observedCompletedTasks++;
     // Coverage first: it is pure bookkeeping over output already in hand, while the verdict
     // cache does filesystem work whose environmental failures are tolerated. Ordering them
     // this way keeps a slow or failing cache write from costing the tally.
@@ -7494,9 +7494,9 @@ try {
         formatRefusalCounterFields(readTerminalCounters()) + ` ${formatCoverageFields(coverage)}`,
     );
     errSync(
-      "NOT MEASURED — this run's launcher gave it a wall clock shorter than the work it was " +
-        "asked to do, so it refused before running anything rather than being killed mid-suite " +
-        "with no verdict. Nothing here is a test verdict. Re-fire with a longer timeout: the " +
+      "NOT MEASURED — this run's launcher gave it a wall clock shorter than the projected " +
+        "task work. The full plan was refused; any existing task observations remain above. " +
+        "Nothing here is a full test verdict. Re-fire with a longer timeout: the " +
       "TASK_DEADLINE_REFUSAL line above names the remaining clock and the lane-aware historical " +
         "wall projection (unknown-duration tasks are counted as zero and reported separately).",
     );
