@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -268,6 +268,25 @@ describe('createGymRunnerPorts', () => {
         expect(receipt.execution!.workerSources!.report).toBeTruthy();
       }
       expect(post.execution!.workerSources!.modules[0]!.state).toBe('failed');
+      // Config evaluation can restore a helper before the reporter starts.
+      // Both disk snapshots then match the pin although Vite loaded other bytes.
+      const originalConfig = readFileSync(join(clonePath, 'vitest.config.mjs'), 'utf8');
+      const rewrittenConfigHelper = 'export const workers = 2;\n';
+      writeFileSync(join(clonePath, 'config-helper.mjs'), rewrittenConfigHelper);
+      writeFileSync(join(clonePath, 'vitest.config.mjs'), originalConfig +
+        `import { writeFileSync } from 'node:fs';\nwriteFileSync(new URL('./config-helper.mjs', import.meta.url), ${JSON.stringify(configHelper)});\n`);
+      const selfRewritingConfig = await port(input);
+      if (!selfRewritingConfig || Array.isArray(selfRewritingConfig)) throw new Error('Missing config load receipt');
+      expect(selfRewritingConfig.execution!.configSources).toMatchObject({
+        evidence: { status: 'unchanged', sources: expect.arrayContaining([
+          { path: 'config-helper.mjs', sha256: digest(configHelper), currentSha256: digest(configHelper) },
+        ]) },
+        loaded: { status: 'changed', reasons: expect.arrayContaining(['config-loaded-source-changed:config-helper.mjs']),
+          sources: expect.arrayContaining([
+            { path: 'config-helper.mjs', sha256: digest(rewrittenConfigHelper), currentSha256: digest(configHelper) },
+          ]) },
+      });
+      writeFileSync(join(clonePath, 'vitest.config.mjs'), originalConfig);
       // A stable dirty helper must retain its immutable reference separately.
       // Comparing pre/post alone would silently accept the rewritten oracle.
       writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 41;\n');

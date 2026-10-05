@@ -109,6 +109,7 @@ import {
   checkpointRunLockDir,
   buildTerminationCheckpointResult,
   createTerminationSignalHandler,
+  createNormalCheckpointFinalizer,
   armSelfWatchdog,
   checkpointSweepTargets,
   sweepCheckpointSurvivors,
@@ -6908,10 +6909,23 @@ describe("runGreenCheckpoint", () => {
         return true;
       };
 
+      let finalized = false;
+      const finalize = createNormalCheckpointFinalizer({
+        claimTerminal: () => {
+          if (finalized) return false;
+          finalized = true;
+          return true;
+        },
+        emitResult: async () => { calls.push("finalResult"); },
+        captureProofs: async () => { calls.push("captureProofs"); },
+        releaseAndExit: () => { calls.push("releaseAndExit"); },
+      });
       const r = await runGreenCheckpoint(cfg(), deps, {
         candidate: c2,
         noPush: true,
       });
+      await finalize(r);
+      await finalize(r); // A repeated normal callback cannot re-capture or release twice.
 
       // The overall run still resolves green, advanced to the tip — recording the
       // superseded pass must not change the final outcome.
@@ -6928,6 +6942,14 @@ describe("runGreenCheckpoint", () => {
       const secondRunGreen = calls.lastIndexOf("runGreen");
       expect(calls.indexOf("recordVerdict")).toBeGreaterThanOrEqual(0);
       expect(calls.indexOf("recordVerdict")).toBeLessThan(secondRunGreen);
+      // Exercise the CLI's production finalizer on the real recursive result, after both runs.
+      expect(run).toBe(2);
+      expect(calls.indexOf("finalResult")).toBeGreaterThan(secondRunGreen);
+      expect(calls.indexOf("captureProofs")).toBeGreaterThan(calls.indexOf("finalResult"));
+      expect(calls.indexOf("releaseAndExit")).toBeGreaterThan(calls.indexOf("captureProofs"));
+      for (const event of ["finalResult", "captureProofs", "releaseAndExit"]) {
+        expect(calls.filter((call) => call === event)).toHaveLength(1);
+      }
     });
 
     it("the cheap tip re-triage runs BEFORE any prefix-salvage work", async () => {

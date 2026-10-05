@@ -3534,6 +3534,25 @@ export function createFatalCheckpointFinalizer(deps: {
   };
 }
 
+/**
+ * The CLI's normal terminal path, attached only to the final runGreenCheckpoint promise.
+ * Record the verdict before capture, and await capture before releasing the judged tree.
+ * Sharing the terminal claim with signal/crash paths also rejects duplicate callbacks.
+ */
+export function createNormalCheckpointFinalizer(deps: {
+  claimTerminal: (owner: "normal") => boolean;
+  emitResult: (result: CheckpointResult) => Promise<void>;
+  captureProofs: () => Promise<void>;
+  releaseAndExit: (code: number) => void;
+}): (result: CheckpointResult) => Promise<void> {
+  return async (result: CheckpointResult): Promise<void> => {
+    if (!deps.claimTerminal("normal")) return;
+    await deps.emitResult(result);
+    await deps.captureProofs();
+    deps.releaseAndExit(0);
+  };
+}
+
 /** WI-10005994: the marker's `summary` cap. The human result on stderr keeps the full text. */
 export const CHECKPOINT_RESULT_MARKER_SUMMARY_MAX_CHARS = 1000;
 /** POSIX PIPE_BUF on Linux: a single write of at most this many bytes into a pipe is atomic. */
@@ -22133,6 +22152,13 @@ if (require.main === module) {
         gateFireId,
       );
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
+      const finalizeNormalResult = createNormalCheckpointFinalizer({
+        claimTerminal,
+        // emitResult records BEFORE marker/event/exit; capture retains the run lock.
+        emitResult,
+        captureProofs: () => runPostVerdictPureProofCapture(cfg, runId, watchdog.cancel),
+        releaseAndExit,
+      });
       runGreenCheckpoint(cfg, checkpointDeps, {
         candidate: candidateArg,
         candidateHint: prewarmedDependencyGeneration.candidate,
@@ -22140,18 +22166,7 @@ if (require.main === module) {
         ...(diagnostic ? { diagnostic } : {}),
         noPush: process.argv.includes("--no-push"),
       })
-        .then(async (r) => {
-          // Claim the terminal race before recording/emitting. If a managed signal already owns
-          // it, its awaited finalizer is responsible for the only marker and process exit.
-          if (!claimTerminal("normal")) return;
-          // emitResult records BEFORE marker/event/exit and stamps `recorded` on the marker, so
-          // the routine never records the same verdict twice and process.exit cannot cut it off.
-          await emitResult(r);
-          // gate-test-reuse-yield P-006 (D-005 §1): post-verdict pure-lane proof capture, while
-          // the lock still holds the tree at the judged sha. Bounded, and never throws.
-          await runPostVerdictPureProofCapture(cfg, runId, watchdog.cancel);
-          releaseAndExit(0);
-        })
+        .then(finalizeNormalResult)
         .catch(async (e) => {
           // The same awaited finalizer serves ordinary promise rejection and process-level fatal
           // events, so neither path can drift back to a bare exit without the typed marker.

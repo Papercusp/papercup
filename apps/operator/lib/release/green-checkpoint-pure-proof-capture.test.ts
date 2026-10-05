@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PURE_PROOF_CAPTURE_HARD_GRACE_MS,
   SELF_WATCHDOG_MS,
+  createNormalCheckpointFinalizer,
   runPostVerdictPureProofCapture,
 } from './green-checkpoint';
 
@@ -34,6 +35,82 @@ afterEach(() => {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
+});
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+describe('CLI normal finalization and pure-proof capture', () => {
+  const result = { green: true, candidate: 'a'.repeat(40) } as Parameters<
+    ReturnType<typeof createNormalCheckpointFinalizer>
+  >[0];
+
+  function finalizer(overrides: Partial<Parameters<typeof createNormalCheckpointFinalizer>[0]> = {}) {
+    let claimed = false;
+    const deps = {
+      claimTerminal: vi.fn(() => {
+        if (claimed) return false;
+        claimed = true;
+        return true;
+      }),
+      emitResult: vi.fn(async () => {}),
+      captureProofs: vi.fn(async () => {}),
+      releaseAndExit: vi.fn(),
+      ...overrides,
+    };
+    return { deps, finalize: createNormalCheckpointFinalizer(deps) };
+  }
+
+  it('waits for durable verdict recording, then capture, before release', async () => {
+    const recorded = deferred<void>();
+    const captured = deferred<void>();
+    const h = finalizer({ emitResult: vi.fn(() => recorded.promise), captureProofs: vi.fn(() => captured.promise) });
+    const done = h.finalize(result);
+    expect(h.deps.emitResult).toHaveBeenCalledWith(result);
+    expect(h.deps.captureProofs).not.toHaveBeenCalled();
+    expect(h.deps.releaseAndExit).not.toHaveBeenCalled();
+    recorded.resolve();
+    await recorded.promise;
+    expect(h.deps.captureProofs).toHaveBeenCalledTimes(1);
+    expect(h.deps.releaseAndExit).not.toHaveBeenCalled();
+    captured.resolve();
+    await done;
+    expect(h.deps.releaseAndExit).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('refuses a signal/crash-owned terminal path without emitting or capturing', async () => {
+    const h = finalizer({ claimTerminal: vi.fn(() => false) });
+    await h.finalize(result);
+    expect(h.deps.claimTerminal).toHaveBeenCalledExactlyOnceWith('normal');
+    expect(h.deps.emitResult).not.toHaveBeenCalled();
+    expect(h.deps.captureProofs).not.toHaveBeenCalled();
+    expect(h.deps.releaseAndExit).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate completion while the first verdict recording is in flight', async () => {
+    const recorded = deferred<void>();
+    const h = finalizer({ emitResult: vi.fn(() => recorded.promise) });
+    const first = h.finalize(result);
+    await h.finalize(result);
+    expect(h.deps.emitResult).toHaveBeenCalledTimes(1);
+    expect(h.deps.captureProofs).not.toHaveBeenCalled();
+    recorded.resolve();
+    await first;
+    await h.finalize(result);
+    expect(h.deps.captureProofs).toHaveBeenCalledTimes(1);
+    expect(h.deps.releaseAndExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves verdict-recording failures to the existing fatal handler without capturing', async () => {
+    const error = new Error('verdict write failed');
+    const h = finalizer({ emitResult: vi.fn(async () => { throw error; }) });
+    await expect(h.finalize(result)).rejects.toBe(error);
+    expect(h.deps.captureProofs).not.toHaveBeenCalled();
+    expect(h.deps.releaseAndExit).not.toHaveBeenCalled();
+  });
 });
 
 describe('runPostVerdictPureProofCapture', () => {

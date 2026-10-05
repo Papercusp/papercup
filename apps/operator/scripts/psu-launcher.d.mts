@@ -709,6 +709,17 @@ export function resolveTrackedResumeSession(sessions: any, id: any, { home }?: {
     home?: string | undefined;
 }): any;
 /**
+ * Resolve a direct resume before searching raw native stores. Numeric adv ids
+ * can fall outside the recent list; ask the existing exact-row surface rather
+ * than interpreting the missing id as an OMP thread name. Native ids keep the
+ * existing store/owner recovery path, and a missing exact row stays untracked.
+ * Read errors propagate so an unavailable operator cannot bless a raw source.
+ */
+export function resolveDirectTrackedResumeSession(sessions: any, id: any, { apiImpl, home }?: {
+    apiImpl?: typeof api | undefined;
+    home?: string | undefined;
+}): Promise<any>;
+/**
  * Find a session the user did NOT launch via psu, by searching each agent's
  * OWN session store for the id — NOT a filesystem crawl: claude keeps every
  * session under `~/.claude/projects/<dir>/<id>.jsonl`, codex under

@@ -3044,6 +3044,32 @@ export function resolveTrackedResumeSession(
 }
 
 /**
+ * Resolve a direct resume before searching raw native stores. Numeric adv ids
+ * can fall outside the recent list; ask the existing exact-row surface rather
+ * than interpreting the missing id as an OMP thread name. Native ids keep the
+ * existing store/owner recovery path, and a missing exact row stays untracked.
+ * Read errors propagate so an unavailable operator cannot bless a raw source.
+ */
+export async function resolveDirectTrackedResumeSession(
+  sessions,
+  id,
+  { apiImpl = api, home = homedir() } = {},
+) {
+  const cached = resolveTrackedResumeSession(sessions, id, { home });
+  if (cached) return cached;
+  const wanted = String(id ?? "");
+  if (!/^\d+$/.test(wanted)) return null;
+  const exactId = Number(wanted);
+  if (!Number.isSafeInteger(exactId) || exactId <= 0) return null;
+  const exact = await apiImpl(
+    `/api/adv/sessions/resumable?id=${encodeURIComponent(String(exactId))}`,
+  );
+  return resolveTrackedResumeSession(exact?.sessions ?? [], String(exactId), {
+    home,
+  });
+}
+
+/**
  * Find a session the user did NOT launch via psu, by searching each agent's
  * OWN session store for the id — NOT a filesystem crawl: claude keeps every
  * session under `~/.claude/projects/<dir>/<id>.jsonl`, codex under
@@ -15290,7 +15316,7 @@ async function resumeFlow(args = {}) {
     //    id (OMP), or discovered rollout UUID in the tracked CODEX_HOME
     //    (Codex). Resuming by any handle finds the tracked row with NO false
     //    "not started by psu" warning.
-    const tracked = resolveTrackedResumeSession(sessions, args.resumeId);
+    const tracked = await resolveDirectTrackedResumeSession(sessions, args.resumeId);
     if (tracked) {
       // A tracked row alone doesn't prove resumability — a launch that died
       // (or was closed) before its first persisted message has NO transcript,
