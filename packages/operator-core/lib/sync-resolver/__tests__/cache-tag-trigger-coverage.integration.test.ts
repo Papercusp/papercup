@@ -45,6 +45,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolve, dirname } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
@@ -152,6 +153,8 @@ beforeAll(async () => {
       try {
         await s.unsafe(BOOT_PREREQS_DDL);
         await applyPendingMigrations({ client: s, sqlDir: SQL_DIR });
+        const draft = resolve(SQL_DIR, '1365-unify-work-item-dep-change-notify.sql.DRAFT');
+        if (existsSync(draft)) await s.unsafe(readFileSync(draft, 'utf8'));
       } finally {
         await s.end({ timeout: 5 });
       }
@@ -166,8 +169,8 @@ afterAll(async () => {
 });
 
 describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the change-notify trigger', () => {
-  /** harness_shared tables with an emit_change_notify trigger attached (match on
-   *  FUNCTION, not trigger NAME — robust to per-table trigger names). */
+  /** Active generic producers, plus work_item_deps' semantic producer. Its real
+   *  notification contract is covered by work-item-deps.integration.test.ts. */
   async function notifyTriggerTables(): Promise<Set<string>> {
     const rows = await sql<Array<{ table_name: string }>>`
       SELECT DISTINCT c.relname AS table_name
@@ -175,9 +178,13 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
         JOIN pg_class c ON c.oid = t.tgrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
         JOIN pg_proc p ON p.oid = t.tgfoid
+        JOIN pg_namespace pn ON pn.oid = p.pronamespace
        WHERE n.nspname = 'harness_shared'
-         AND p.proname = ${NOTIFY_FUNCTION}
+         AND pn.nspname = 'harness_shared'
+         AND (p.proname = ${NOTIFY_FUNCTION}
+           OR (c.relname = 'work_item_deps' AND p.proname = 'emit_work_item_dep_change_notify'))
          AND NOT t.tgisinternal
+         AND t.tgenabled <> 'D'
     `;
     return new Set(rows.map((r) => r.table_name));
   }
@@ -191,6 +198,18 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
       withTrigger.has('harness_plans'),
       'change-notify trigger introspection returned nothing — query/migration broken',
     ).toBe(true);
+  });
+
+  it('credits one active semantic dependency producer without a redundant generic notifier', async () => {
+    const rows = await sql<{ producer: string }[]>`
+      SELECT p.proname AS producer FROM pg_trigger t
+      JOIN pg_proc p ON p.oid = t.tgfoid
+      JOIN pg_namespace pn ON pn.oid = p.pronamespace
+      WHERE t.tgrelid = 'harness_shared.work_item_deps'::regclass
+        AND pn.nspname = 'harness_shared' AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+        AND p.proname IN ('emit_change_notify', 'emit_work_item_dep_change_notify')`;
+    expect(rows).toEqual([{ producer: 'emit_work_item_dep_change_notify' }]);
+    expect((await notifyTriggerTables()).has('work_item_deps')).toBe(true);
   });
 
   it('every TABLE_TO_QUERY_NAMES table has emit_change_notify, except the documented COVERAGE_EXEMPT set', async () => {

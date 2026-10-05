@@ -11,6 +11,7 @@ import { isLlmCallError } from '@papercusp/testing-shell/llm';
 
 const events: unknown[] = [];
 const diagnostics: Array<Record<string, unknown>> = [];
+let streamFailure: Error | undefined;
 // EI-315: captures the opts of the LAST runAgentChat call so a test can assert on the
 // priority label threaded through (the anthropic-direct path has no HTTP layer to spy
 // on the way the codex-gateway test spies on `fetch`).
@@ -26,6 +27,7 @@ vi.mock('../../agent-chat-stream', async (importOriginal) => {
         (opts.onTransportDiagnostic as ((value: unknown) => void) | undefined)?.(diagnostic);
       }
       yield* events as never[];
+      if (streamFailure) throw streamFailure;
     },
   };
 });
@@ -258,6 +260,19 @@ describe('llmCall subprocess error surfacing', () => {
       const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged' }] }).catch(e => e);
       expect(err).toMatchObject({ costUsd: 0.42 });
     } finally { events.length = 0; }
+  });
+
+  it('preserves reported spend and original exception when the event iterator throws', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'partial', tokensIn: 12, tokensOut: 4, costUsd: 0.42 });
+    const failure = new Error('iterator failed after reporting usage');
+    streamFailure = failure;
+    try {
+      const { llmCall } = await import('../llm-client');
+      const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged' }] }).catch(e => e);
+      expect(err).toBe(failure);
+      expect(err).toMatchObject({ costUsd: 0.42 });
+    } finally { events.length = 0; streamFailure = undefined; }
   });
 
   it.each([undefined, -1, NaN, Infinity])('keeps unreported/invalid failure spend %s unknown', async costUsd => {

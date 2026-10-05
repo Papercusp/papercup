@@ -431,8 +431,12 @@ beforeEach(async () => {
 describe('WI-10006159 solo decision reservations', () => {
   const decision = async (title: string, body: string, refs: string[] = []) => {
     await seedPlan('solo-route-plan', 'ready');
-    await writePlanIndexRows(db.sql, { workspaceId: WS, harnessSlug: H, planSlug: 'solo-route-plan' }, {
-      decisions: [{ id: 'D-005', title, body, itemRefs: refs }],
+    await db.sql.begin(async (tx) => {
+      await writePlanIndexRows(
+        tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+        { workspaceId: WS, harnessSlug: H, planSlug: 'solo-route-plan' },
+        { decisions: [{ id: 'D-005', title, body, date: '2026-10-05', itemRefs: refs }] },
+      );
     });
   };
   const floors = async (id: string) => {

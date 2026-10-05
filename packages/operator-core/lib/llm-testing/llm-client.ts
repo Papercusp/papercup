@@ -281,6 +281,8 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let inputTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
+  let reportedCostUsd: number | undefined;
+  let unreportedFrames: number | undefined;
   let stopReason: string | null | undefined;
   let servedAccount: string | undefined;
   let lastErrMsg: string | undefined;
@@ -308,95 +310,116 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     system: opts.system ?? null, messages: opts.messages,
   })).digest('hex');
 
-  for await (const ev of runAgentChat({
-    backend,
-    model,
-    systemPromptText: opts.system,
-    messages: opts.messages,
-    promptText,
-    maxTokens: opts.maxTokens,
-    temperature: opts.temperature,
-    thinkingBudgetTokens: opts.thinkingBudgetTokens,
-    signal: opts.signal,
-    // Inference-gateway admission-tier label (gateway-priority-tiers): attached as
-    // the `x-papercusp-priority` header on the in-process anthropic-direct call so
-    // the pacing gateway tiers this caller (e.g. 'scout' → tier 1) instead of the
-    // first-shed default band. No-op for the subprocess backends.
-    // EI-315: this used to pass `opts.priority` through UNDEFAULTED — every llm-testing
-    // scenario run (sim-user + judge calls) is unlabeled, so it fell through tierOf()'s
-    // fallback to the map's bottom `default` band (tier 5), the most aggressively AIMD-shed
-    // tier under fleet load. That's the literal root cause of "17/17 attempts 429-capped over
-    // 7h": llm-testing traffic was competing for gateway slots from the WORST possible
-    // priority band. Defaulting to 'llm-testing' (mapped to tier 4, alongside `gym`/
-    // `benchmark` — DEFAULT_GATEWAY_PRIORITY_MAP) gives it the same batch-lane floor those
-    // callers already get, without a new dedicated account/quota (the original 2026-06-11
-    // triage's proposed fix, gated on an owner capacity decision that predates this tier
-    // system entirely — gateway-priority-tiers-2026-06-22 landed after this item was filed).
-    priority: opts.priority ?? 'llm-testing',
-    // WI-4475 / EI-11417: `governorMaxWaitMs` bounds the process-local governor;
-    // `onAdmitted` observes that local permit, while `onResponseStart` fires only after the
-    // request has also cleared the inference gateway and response headers arrive. A caller's
-    // generation timer belongs on the latter boundary.
-    governorMaxWaitMs: opts.governorMaxWaitMs,
-    // WI-5391: bounds the anthropic-direct transient-retry LADDER (all attempts + backoff),
-    // the layer governorMaxWaitMs (one admission wait) never covered.
-    retryDeadlineMs: opts.retryDeadlineMs,
-    onAdmitted: opts.onAdmitted,
-    onResponseStart: opts.onResponseStart,
-    onTransportDiagnostic: diagnostic => {
-      if (transportDiagnostics.length === 64) transportDiagnostics.shift();
-      transportDiagnostics.push(diagnostic);
-      // Synchronous output survives callers that throw before writing a
-      // successful-call receipt. No credentials, text, bodies or arbitrary headers.
-      writeSync(1, `[llm-transport] ${JSON.stringify({ ...diagnostic, promptSha256,
-        model, ownerId: opts.ownerId ?? null })}\n`);
-    },
-    ownerId: opts.ownerId,
-    // Usage attribution: the priority label already names the caller ('gym',
-    // 'scout'); reuse it so this client's header samples stop being anonymous.
-    // WI-2144763: forward the caller's harness too. Every `source:'headers'` row left
-    // harness_slug NULL (18,228 rows / ~$755, 0.00%) — not because the column or the
-    // writer was missing it, but because the attribution TYPE had no field for it. Undefined
-    // when the caller did not say, which the host binds as an honest NULL.
-    usageAttribution: { role: opts.priority ?? 'llm-testing', harnessSlug: opts.harnessSlug },
-    // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
-    // the host ~/.claude. No-op for the default `anthropic-direct` backend (HTTP, no
-    // subprocess). Without this, each sim-user/judge `claude` spawn does a
-    // 13-server MCP init (context7/github/cloudflare plugins via npx +
-    // papercusp-su + connectors) and runs the host SessionStart/PreToolUse
-    // hooks — under a real run, sim + judge + brain spawn `claude`
-    // concurrently and those heavy inits flake/exit-1, so the sim-user emits
-    // unparseable output and gives up at turn 0 (turns=0). The clean config
-    // dir cuts the init to 4 servers and drops the hooks → reliable JSON.
-    isolateConfig: true,
-  })) {
-    if (ev.type === 'delta') {
-      // Preserve every emitted text fragment. The terminal `result.finalText`
-      // below remains authoritative when a backend supplies the complete text,
-      // so accumulating deltas cannot double the final response.
-      finalText += ev.text;
-    } else if (ev.type === 'result') {
-      sawResult = true;
-      if (ev.finalText) finalText = ev.finalText;
-      inputTokens = ev.tokensIn;
-      outputTokens = ev.tokensOut;
-      costUsd = ev.costUsd;
-      stopReason = ev.stopReason;
-      servedAccount = ev.servedAccount ?? servedAccount;
-    } else if (ev.type === 'error') {
-      // Fold the subprocess stderr tail into the message: the un-governed CLI path attaches
-      // no classified turn, so a bare `<backend> exited 1` is undiagnosable — and the
-      // fallback classifier below only sees the message string.
-      lastErrMsg = ev.stderr?.trim() ? `${ev.message} — stderr: ${ev.stderr.trim()}` : ev.message;
-      // Prefer the structured turn the governed path attaches; else classify the message so a
-      // rate-limit is still detected on the un-governed path (RB-006).
-      lastErrTurn = ev.turn;
+  try {
+    for await (const ev of runAgentChat({
+      backend,
+      model,
+      systemPromptText: opts.system,
+      messages: opts.messages,
+      promptText,
+      maxTokens: opts.maxTokens,
+      temperature: opts.temperature,
+      thinkingBudgetTokens: opts.thinkingBudgetTokens,
+      signal: opts.signal,
+      // Inference-gateway admission-tier label (gateway-priority-tiers): attached as
+      // the `x-papercusp-priority` header on the in-process anthropic-direct call so
+      // the pacing gateway tiers this caller (e.g. 'scout' → tier 1) instead of the
+      // first-shed default band. No-op for the subprocess backends.
+      // EI-315: this used to pass `opts.priority` through UNDEFAULTED — every llm-testing
+      // scenario run (sim-user + judge calls) is unlabeled, so it fell through tierOf()'s
+      // fallback to the map's bottom `default` band (tier 5), the most aggressively AIMD-shed
+      // tier under fleet load. That's the literal root cause of "17/17 attempts 429-capped over
+      // 7h": llm-testing traffic was competing for gateway slots from the WORST possible
+      // priority band. Defaulting to 'llm-testing' (mapped to tier 4, alongside `gym`/
+      // `benchmark` — DEFAULT_GATEWAY_PRIORITY_MAP) gives it the same batch-lane floor those
+      // callers already get, without a new dedicated account/quota (the original 2026-06-11
+      // triage's proposed fix, gated on an owner capacity decision that predates this tier
+      // system entirely — gateway-priority-tiers-2026-06-22 landed after this item was filed).
+      priority: opts.priority ?? 'llm-testing',
+      // WI-4475 / EI-11417: `governorMaxWaitMs` bounds the process-local governor;
+      // `onAdmitted` observes that local permit, while `onResponseStart` fires only after the
+      // request has also cleared the inference gateway and response headers arrive. A caller's
+      // generation timer belongs on the latter boundary.
+      governorMaxWaitMs: opts.governorMaxWaitMs,
+      // WI-5391: bounds the anthropic-direct transient-retry LADDER (all attempts + backoff),
+      // the layer governorMaxWaitMs (one admission wait) never covered.
+      retryDeadlineMs: opts.retryDeadlineMs,
+      onAdmitted: opts.onAdmitted,
+      onResponseStart: opts.onResponseStart,
+      onTransportDiagnostic: diagnostic => {
+        if (transportDiagnostics.length === 64) transportDiagnostics.shift();
+        transportDiagnostics.push(diagnostic);
+        // Synchronous output survives callers that throw before writing a
+        // successful-call receipt. No credentials, text, bodies or arbitrary headers.
+        writeSync(1, `[llm-transport] ${JSON.stringify({ ...diagnostic, promptSha256,
+          model, ownerId: opts.ownerId ?? null })}\n`);
+      },
+      ownerId: opts.ownerId,
+      // Usage attribution: the priority label already names the caller ('gym',
+      // 'scout'); reuse it so this client's header samples stop being anonymous.
+      // WI-2144763: forward the caller's harness too. Every `source:'headers'` row left
+      // harness_slug NULL (18,228 rows / ~$755, 0.00%) — not because the column or the
+      // writer was missing it, but because the attribution TYPE had no field for it. Undefined
+      // when the caller did not say, which the host binds as an honest NULL.
+      usageAttribution: { role: opts.priority ?? 'llm-testing', harnessSlug: opts.harnessSlug },
+      // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
+      // the host ~/.claude. No-op for the default `anthropic-direct` backend (HTTP, no
+      // subprocess). Without this, each sim-user/judge `claude` spawn does a
+      // 13-server MCP init (context7/github/cloudflare plugins via npx +
+      // papercusp-su + connectors) and runs the host SessionStart/PreToolUse
+      // hooks — under a real run, sim + judge + brain spawn `claude`
+      // concurrently and those heavy inits flake/exit-1, so the sim-user emits
+      // unparseable output and gives up at turn 0 (turns=0). The clean config
+      // dir cuts the init to 4 servers and drops the hooks → reliable JSON.
+      isolateConfig: true,
+    })) {
+      if (ev.type === 'delta') {
+        // Preserve every emitted text fragment. The terminal `result.finalText`
+        // below remains authoritative when a backend supplies the complete text,
+        // so accumulating deltas cannot double the final response.
+        finalText += ev.text;
+      } else if (ev.type === 'result') {
+        sawResult = true;
+        if (ev.finalText) finalText = ev.finalText;
+        inputTokens = ev.tokensIn;
+        outputTokens = ev.tokensOut;
+        costUsd = ev.costUsd;
+        if (Number.isFinite(ev.costUsd) && ev.costUsd >= 0) reportedCostUsd = ev.costUsd;
+        if (ev.unreportedFrames !== undefined) unreportedFrames = Math.max(unreportedFrames ?? 0, ev.unreportedFrames);
+        stopReason = ev.stopReason;
+        servedAccount = ev.servedAccount ?? servedAccount;
+      } else if (ev.type === 'error') {
+        // Fold the subprocess stderr tail into the message: the un-governed CLI path attaches
+        // no classified turn, so a bare `<backend> exited 1` is undiagnosable — and the
+        // fallback classifier below only sees the message string.
+        lastErrMsg = ev.stderr?.trim() ? `${ev.message} — stderr: ${ev.stderr.trim()}` : ev.message;
+        // Prefer the structured turn the governed path attaches; else classify the message so a
+        // rate-limit is still detected on the un-governed path (RB-006).
+        lastErrTurn = ev.turn;
+        if (ev.costUsd !== undefined && Number.isFinite(ev.costUsd) && ev.costUsd >= 0) reportedCostUsd = ev.costUsd;
+        if (ev.unreportedFrames !== undefined) unreportedFrames = Math.max(unreportedFrames ?? 0, ev.unreportedFrames);
+      }
     }
+  } catch (error) {
+    if (reportedCostUsd !== undefined) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      const existingCost = (failure as Error & { costUsd?: unknown }).costUsd;
+      if (typeof existingCost !== 'number' || !Number.isFinite(existingCost) || existingCost < 0)
+        Object.assign(failure, { costUsd: reportedCostUsd });
+      if (unreportedFrames !== undefined && unreportedFrames > 0) Object.assign(failure, { unreportedFrames });
+      throw failure;
+    }
+    throw error;
   }
 
   if (lastErrMsg !== undefined) {
     const turn = lastErrTurn ?? classifyHttpError({ message: lastErrMsg }, providerForBackend(backend));
     const error = new LlmCallError(turn);
+    // Preserve the existing classified error identity/message while letting
+    // Gym and the governed-attempt seam retain money spent before the failure.
+    // Missing usage must stay absent rather than become an invented free call.
+    if (reportedCostUsd !== undefined) Object.assign(error, { costUsd: reportedCostUsd });
+    if (unreportedFrames !== undefined && unreportedFrames > 0) Object.assign(error, { unreportedFrames });
     if (transportDiagnostics.length) Object.defineProperties(error, {
       transportDiagnostics: { value: Object.freeze([...transportDiagnostics]), enumerable: true },
       promptSha256: { value: promptSha256, enumerable: true },

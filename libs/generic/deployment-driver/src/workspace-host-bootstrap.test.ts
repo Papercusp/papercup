@@ -18,6 +18,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
   WORKSPACE_HOST_MODELS,
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP,
   WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH,
   WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET,
@@ -1492,6 +1493,52 @@ describe('buildWorkspaceHostBootstrap', () => {
    * the ubuntu predicate can never pass there. The bootc render must assert that contract
    * instead, and still refuse every other world-readable shape.
    */
+  it('keeps the bootc agent identity in exactly the runtime-read group the image declares (WI-10006173)', () => {
+    // The image is the source of truth: sysusers.conf makes the agent a member of the group that
+    // owns the 0750 /opt/papercusp parents, and host-prepare re-verifies it every boot. Clearing
+    // the agent's supplementary groups (the ubuntu shape) left bin/claude unexecutable on bootc.
+    const sysusers = readFileSync(
+      new URL('../../../../infra/images/bootc/papercusp-sysusers.conf', import.meta.url),
+      'utf8',
+    );
+    const declared = sysusers
+      .split('\n')
+      .map((l) => l.trim().split(/\s+/))
+      .filter((f) => f[0] === 'm' && f[1] === DEFAULT_WORKSPACE_HOST_AGENT_USER)
+      .map((f) => f[2]);
+    expect(declared).toEqual([WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP]);
+
+    const agentUsermod = (script: string) =>
+      script.split('\n').filter((l) => /^usermod\b/.test(l) && l.endsWith('"$AGENT_USER"'));
+    const bootc = agentUsermod(buildWorkspaceHostBootstrap(bootcInput()));
+    const ubuntu = agentUsermod(buildWorkspaceHostBootstrap(input()));
+    expect(bootc).toHaveLength(1);
+    expect(ubuntu).toHaveLength(1);
+    expect(ubuntu[0]).toContain('--groups ""');
+    expect(bootc[0]).not.toContain('--groups ""');
+
+    // Run the rendered line against a recording usermod: the argv must carry the declared group
+    // as the value of --groups, so the shell quoting cannot silently drop it.
+    const dir = mkdtempSync(join(tmpdir(), 'wh-agent-groups-'));
+    try {
+      const log = join(dir, 'argv');
+      writeFileSync(join(dir, 'usermod'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(log)}\n`);
+      chmodSync(join(dir, 'usermod'), 0o755);
+      const script = [
+        `PATH=${JSON.stringify(dir)}:$PATH`,
+        'AGENT_GROUP=papercusp-agent AGENT_HOME=/home/papercusp-agent AGENT_USER=papercusp-agent',
+        bootc[0],
+      ].join('\n');
+      const run = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 10_000 });
+      expect(run.status).toBe(0);
+      const argv = readFileSync(log, 'utf8').trim().split('\n');
+      expect(argv[argv.indexOf('--groups') + 1]).toBe(declared.join(','));
+      expect(argv.at(-1)).toBe('papercusp-agent');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('attests bootc runtime confidentiality without refusing the image a+rx executables', () => {
     const oldShape = '-type f -o -type d \\) -perm -0004';
     const ubuntuLines = buildWorkspaceHostBootstrap(input()).split('\n');

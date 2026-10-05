@@ -7,7 +7,7 @@
  * recordLearningSpend accumulate modes, governorCheck against live rows
  * (the spend-until-exhausted lifecycle), and the ledger reads.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import postgres from 'postgres';
@@ -30,6 +30,15 @@ import {
 } from './store';
 import { setPotLearningScope } from '../learning/pot-gate/store';
 import { runGovernedSpendAttempt } from './registrants';
+import { llmCall } from '../llm-testing/llm-client';
+
+const failureUsage = vi.hoisted(() => ({ costUsd: 0 }));
+vi.mock('../agent-chat-stream', async importOriginal => ({
+  ...await importOriginal<typeof import('../agent-chat-stream')>(),
+  runAgentChat: async function* () {
+    yield { type: 'error', message: 'tool failed after paid inference', costUsd: failureUsage.costUsd };
+  },
+}));
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -535,6 +544,28 @@ describe('the one visible number (P-003 verification)', () => {
 /* ── reservation + settlement (P-005), migration 1116 ────────────────────── */
 
 describe('governed attempt persisted settlement receipts', () => {
+  it.each([0, 0.42])('persists actual LLM failure spend $%s without accumulating a mirror twice', async costUsd => {
+    failureUsage.costUsd = costUsd;
+    const loopId = `gym:failure-receipt-${randomUUID()}`;
+    const runRef = `llm-failure:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+      requestedUsd: 1, runRef, accumulate: false, run: async () => {
+        const value = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'synthetic failure fixture' }] });
+        return { costUsd: value.costUsd, value };
+      },
+    }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    if (out.ok || out.reason !== 'failed' || !out.reservationId) throw new Error('expected a reserved failed attempt');
+    const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    const events = await listLearningSpendEvents(sql, { workspaceId: WS, loopId });
+    expect(out).toMatchObject({ costUsd, settlement: { ok: true, reservation: { status: 'failed', usedUsd: costUsd } } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: out.reservationId, status: 'failed', usedUsd: costUsd, runRef });
+    expect(out.settlement).toMatchObject({ event: costUsd === 0 ? null : events[0] });
+    expect(events).toHaveLength(costUsd === 0 ? 0 : 1);
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+  });
+
   it.each([
     { label: 'completed', costUsd: 0.4, status: 'settled' },
     { label: 'partial', costUsd: 0.1, status: 'settled' },

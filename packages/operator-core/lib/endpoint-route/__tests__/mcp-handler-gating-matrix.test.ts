@@ -4916,7 +4916,7 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
 
     // Independent source work is valid even during a consult window.
     const sourceCall = await callTool('gatingtest:scoped', {}, caller(sourceOwner, sourceNative, sourceBackend));
-    expect(sourceCall.isError).toBeUndefined();
+    expect(sourceCall.isError, textOf(sourceCall)).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 541 });
 
@@ -4941,7 +4941,7 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
     }
 
     const answerCall = await callTool('gatingtest:scoped', {}, caller(answeringOwner, answeringNative, targetBackend));
-    expect(answerCall.isError).toBeUndefined();
+    expect(answerCall.isError, textOf(answerCall)).toBeUndefined();
     expect(seen).toHaveLength(2);
     expect(seen[1].ctx).toMatchObject({ uiClientId: answeringOwner, advSessionId: 542 });
     expect(h.nativeSessionCalls).toEqual([
