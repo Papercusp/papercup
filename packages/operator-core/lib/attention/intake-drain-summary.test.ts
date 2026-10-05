@@ -33,6 +33,7 @@ function decision(disposition: BulkIntakeDisposition): BulkIntakeDecision {
     workKind: null,
     acceptance: null,
     sourceRevision: 'src-v1:abc',
+    reproduction: null,
   };
 }
 

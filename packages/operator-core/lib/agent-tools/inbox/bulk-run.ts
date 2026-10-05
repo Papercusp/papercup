@@ -1339,16 +1339,28 @@ export const bulkRunReport = defineTool({
           intakeDecision: null,
         };
         const intakeKind = kindById.get(r.itemId) ?? null;
+        // P-006 + P-013: read the judged source once — its revision binds the decision,
+        // and its kind / born-verified receipt drive the D-023 reproduction gate.
+        const intakeSource =
+          r.intakeDecision && isIntakeAttentionKind(intakeKind)
+            ? await readIntakeSource(intakeSourceById.get(r.itemId) ?? null)
+            : null;
+        const reviewReceipt = r.intakeDecision?.reproduction
+          ? parseBugReproductionReceipt(r.intakeDecision.reproduction)
+          : null;
+        const reproductionCheck =
+          reviewReceipt?.ok === true
+            ? await verifyBugReproductionReceipt(reviewReceipt.receipt, defaultReproductionLedgerDeps())
+            : null;
         accepted.push(
           kindById.has(r.itemId)
             ? applyIntakeDecision(base, {
                 kind: intakeKind,
                 intakeDecision: r.intakeDecision,
                 decidedBy: identity.ownerId,
-                sourceRevision:
-                  r.intakeDecision && isIntakeAttentionKind(intakeKind)
-                    ? await currentIntakeSourceRevision(intakeSourceById.get(r.itemId) ?? null)
-                    : null,
+                sourceRevision: intakeSource ? intakeSourceRevision(intakeSource) : null,
+                source: intakeSource ? intakeReproductionSourceOf(intakeSource) : null,
+                reproductionCheck,
               })
             : base,
         );
