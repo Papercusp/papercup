@@ -114,6 +114,34 @@ describe('CLI normal finalization and pure-proof capture', () => {
 });
 
 describe('runPostVerdictPureProofCapture', () => {
+  const namedResult = () => ({ state: 'done', reason: null, sha: 'a'.repeat(40), slices: 1,
+    files: 1, rows: 1, retired: 0, failed: 0, isolatedFail: 0, remaining: 0, stoppedBy: 'complete',
+    evidence: { version: 1, runGroupId: 'run-1:pure-proof-capture', startedAtMs: 100, completedAtMs: 200,
+      clean: true, proofs: [{ file: 'packages/operator-core/lib/a.test.ts', testRunId: '1',
+        recordedAtMs: 150, runnerIdentity: 'runner', runContext: 'green-checkpoint',
+        runGroupId: 'run-1:pure-proof-capture', source: 'local' }] }, lines: [] });
+
+  it('returns the validated named producer population through the production wrapper', async () => {
+    const result = namedResult();
+    const capture = vi.fn(async () => result);
+    const parsed = await runPostVerdictPureProofCapture(cfg, 'run-1', () => {}, () => {}, capture as never);
+    const { lines: _lines, ...expected } = result;
+    expect(parsed).toEqual(expected);
+  });
+
+  it.each(['aggregate-only', 'foreign process group', 'dirty proof', 'partial population'])(
+    'returns unknown for %s instead of archiving a qualified population', async (condition) => {
+      const r = namedResult();
+      if (condition === 'foreign process group') {
+        r.evidence.runGroupId = 'other:pure-proof-capture';
+        r.evidence.proofs[0]!.runGroupId = r.evidence.runGroupId;
+      } else if (condition === 'dirty proof') r.evidence.clean = false;
+      else if (condition === 'partial population') r.evidence.proofs = [];
+      const capture = vi.fn(async () => condition === 'aggregate-only' ? { rows: 1 } : r);
+      expect(await runPostVerdictPureProofCapture(cfg, 'run-1', () => {}, () => {}, capture as never)).toBeNull();
+    },
+  );
+
   it('honours the kill switch: no capture, and the watchdog stays armed', async () => {
     process.env.PC_PURE_PROOF_CAPTURE = '0';
     const cancel = vi.fn();
@@ -162,7 +190,7 @@ describe('runPostVerdictPureProofCapture', () => {
     });
     await expect(
       runPostVerdictPureProofCapture(cfg, 'run-1', () => {}, (l) => logs.push(l), capture as never),
-    ).resolves.toBeUndefined();
+    ).resolves.toBeNull();
     expect(logs).toContain('PURE_PROOF_CAPTURE state=error reason=boom_went_the_capture');
   });
 

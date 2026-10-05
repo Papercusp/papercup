@@ -73,6 +73,9 @@ const h = vi.hoisted(() => {
     /** Runs inside rebuildSuLaunchArtifact — i.e. between the launch-record read and the CAS. */
     duringRebuild: null as null | (() => Promise<void>),
     goalAuthorityFailure: null as null | Error,
+    tagFailure: null as null | Error,
+    liveHost: null as null | { ownerId: string; pid: number; sock: string },
+    injected: [] as Array<{ sock: string; msg: unknown }>,
   };
 });
 
@@ -96,9 +99,23 @@ vi.mock('./agent-identities/source', () => ({
 vi.mock('./spawn-config', () => ({ resolveProjectDir: vi.fn(async () => null) }));
 
 vi.mock('./events/await/psu-pty-discovery', () => ({
-  findLiveHost: vi.fn(() => null),
-  injectIntoHost: vi.fn(async () => false),
+  findLiveHost: vi.fn(() => h.liveHost),
+  injectIntoHost: vi.fn(async (sock: string, msg: unknown) => {
+    h.injected.push({ sock, msg });
+    return false;
+  }),
 }));
+
+vi.mock('./turn-provenance/turn-provenance', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./turn-provenance/turn-provenance')>();
+  return {
+    ...actual,
+    tagTurnForInjection: vi.fn(async (args: Parameters<typeof actual.tagTurnForInjection>[0]) => {
+      if (h.tagFailure) throw h.tagFailure;
+      return actual.tagTurnForInjection(args);
+    }),
+  };
+});
 
 vi.mock('./su-persona-render', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./su-persona-render')>();
@@ -219,6 +236,9 @@ afterAll(async () => db?.cleanup(), 300_000);
 beforeEach(() => {
   h.duringRebuild = null;
   h.goalAuthorityFailure = null;
+  h.tagFailure = null;
+  h.liveHost = null;
+  h.injected = [];
 });
 
 /** Seed one live session running `stack`, with that revision already APPLIED. */
@@ -296,6 +316,22 @@ const mutate = (owner: string, action: 'switch' | 'rollback', identityId?: strin
   });
 
 describe('mutateIdentityStack against real Postgres (R-4 integration layer)', () => {
+  it('does not inject raw identity text when turn-provenance tagging throws', async () => {
+    const owner = 'su-identity-nudge-tag-error';
+    await seedSession(owner, ENGINEER);
+    h.liveHost = { ownerId: owner, pid: 7, sock: '/run/test-identity-nudge.sock' };
+    h.tagFailure = new Error('synthetic tagger failure');
+
+    const result = await mutate(owner, 'switch', 'writer');
+
+    expect(result.ok).toBe(true);
+    expect(result.nudge).toMatchObject({
+      queued: false,
+      reason: expect.stringContaining('turn-provenance tagging failed'),
+    });
+    expect(h.injected).toEqual([]);
+  });
+
   it('clears a named root on explicit switch and restores its exact pin on rollback', async () => {
     const owner = 'su-p006-named-selection';
     const selectedIdentity = { ref: 'composition:review-suite', sourceRevision: 'a'.repeat(64) };

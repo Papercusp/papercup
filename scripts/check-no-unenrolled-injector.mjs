@@ -159,16 +159,19 @@ function localDefinitions(t, name, callNode, sourceFile) {
   const definitions = [];
   function visit(node) {
     if (node !== scope && isFunctionLike(t, node)) return;
-    if (t.isVariableDeclaration(node) && t.isIdentifier(node.name) && node.name.text === name && node.initializer) {
-      definitions.push(node.initializer);
-    }
     if (
-      t.isBinaryExpression(node) &&
-      node.operatorToken.kind === t.SyntaxKind.EqualsToken &&
-      t.isIdentifier(unwrap(t, node.left)) &&
-      unwrap(t, node.left).text === name
+      t.isVariableDeclaration(node) &&
+      t.isIdentifier(node.name) &&
+      node.name.text === name &&
+      node.initializer &&
+      t.isVariableDeclarationList(node.parent) &&
+      (node.parent.flags & t.NodeFlags.Const) !== 0
     ) {
-      definitions.push(node.right);
+      // Only immutable bindings prove that the injected value is the tagged
+      // value. Collecting every assignment made `let data = raw; try { data =
+      // tag(raw) } catch {}` look enrolled even though the catch injects raw.
+      // Mutable aliases stay unknown and must be made explicit by the caller.
+      definitions.push(node.initializer);
     }
     t.forEachChild(node, visit);
   }
@@ -205,14 +208,34 @@ function propertyValue(t, object, name) {
   return null;
 }
 
+function functionHasLocalBinding(t, fn, name) {
+  const body = fn.body;
+  if (!body) return false;
+  let found = false;
+  function visit(node) {
+    if (node !== body && isFunctionLike(t, node)) return;
+    if (t.isVariableDeclaration(node) && t.isIdentifier(node.name) && node.name.text === name) {
+      found = true;
+      return;
+    }
+    t.forEachChild(node, visit);
+  }
+  visit(body);
+  return found;
+}
+
 function isEnrolledParameter(t, name, callNode) {
   for (let current = callNode; current; current = current.parent) {
     if (!isFunctionLike(t, current)) continue;
+    // Stop at the nearest lexical binding. A same-named raw local or parameter
+    // must not inherit an outer function's enrollment brand.
+    if (functionHasLocalBinding(t, current, name)) return false;
     const parameter = current.parameters?.find((entry) => t.isIdentifier(entry.name) && entry.name.text === name);
-    if (!parameter || !parameter.type || !t.isTypeReferenceNode(parameter.type)) continue;
+    if (!parameter) continue;
+    if (!parameter.type || !t.isTypeReferenceNode(parameter.type)) return false;
     const typeName = parameter.type.typeName;
     // This brand marks text that crossed wake-executor's enrollment boundary.
-    if (t.isIdentifier(typeName) && typeName.text === 'EnrolledWakeText') return true;
+    return t.isIdentifier(typeName) && typeName.text === 'EnrolledWakeText';
   }
   return false;
 }
@@ -236,10 +259,14 @@ function containsTagHelper(t, node, callNode, sourceFile, seen = new Set()) {
   return found;
 }
 
-function promptMode(t, object, callee) {
+function promptMode(t, object, callee, optionsArg) {
   if (callee === 'injectTurn') return 'turn';
   const modeNode = propertyValue(t, object, 'mode');
-  if (!modeNode) return object && propertyValue(t, object, 'data') ? 'unknown' : null;
+  if (!modeNode) {
+    // An unresolved options alias may still carry a prompt. Keep it in the
+    // measured population and fail closed instead of silently skipping it.
+    return (object && propertyValue(t, object, 'data')) || (!object && optionsArg) ? 'unknown' : null;
+  }
   const mode = unwrap(t, modeNode);
   if (t.isStringLiteral(mode) || t.isNoSubstitutionTemplateLiteral(mode)) {
     return PROMPT_MODES.has(mode.text) ? mode.text : null;
@@ -276,7 +303,7 @@ export function findTurnInjectionSites(source, fileName = 'source.ts') {
       const isTransport = name && (importedNames.has(name) || aliasNames.has(name));
       if (isTransport) {
         const options = findObjectLiteral(t, node.arguments[1], node, sourceFile);
-        const mode = promptMode(t, options, name);
+        const mode = promptMode(t, options, name, node.arguments[1]);
         if (mode) {
           const data = dataExpression(t, options, node, sourceFile, name);
           const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;

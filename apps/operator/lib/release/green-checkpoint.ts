@@ -62,6 +62,8 @@ import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name"
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
   buildTestPassReuseHealth,
+  parsePureProofCaptureResult,
+  type PureProofCaptureResult,
   type TestPassReuseHealth,
 } from "@papercusp/operator-core/lib/release/test-pass-reuse-report";
 import {
@@ -3542,7 +3544,7 @@ export function createFatalCheckpointFinalizer(deps: {
 export function createNormalCheckpointFinalizer(deps: {
   claimTerminal: (owner: "normal") => boolean;
   emitResult: (result: CheckpointResult) => Promise<void>;
-  captureProofs: () => Promise<void>;
+  captureProofs: () => Promise<unknown>;
   releaseAndExit: (code: number) => void;
 }): (result: CheckpointResult) => Promise<void> {
   return async (result: CheckpointResult): Promise<void> => {
@@ -9354,10 +9356,10 @@ export async function runPostVerdictPureProofCapture(
     );
     return readGreenCheckpointNextFireInSec();
   },
-): Promise<void> {
+): Promise<PureProofCaptureResult | null> {
   if (!pureProofCaptureEnabled(process.env)) {
     log("PURE_PROOF_CAPTURE state=skipped reason=disabled-by-env");
-    return;
+    return null;
   }
   cancelWatchdog();
   log("GATE_RUN_PHASE phase=pure-proof-capture");
@@ -9386,7 +9388,7 @@ export async function runPostVerdictPureProofCapture(
   );
   let timer: NodeJS.Timeout | undefined;
   try {
-    await Promise.race([
+    const result = await Promise.race([
       capture({
         root: cfg.checkpointRoot,
         env,
@@ -9416,6 +9418,10 @@ export async function runPostVerdictPureProofCapture(
         }, hardDeadlineMs);
       }),
     ]);
+    // Retain the producer's named population for archive consumers; historical aggregates,
+    // timeout completion and malformed records stay unknown instead of becoming zero proofs.
+    const parsed = parsePureProofCaptureResult(result);
+    return parsed?.evidence.runGroupId === `${runId}:pure-proof-capture` ? parsed : null;
   } catch (e) {
     log(
       `PURE_PROOF_CAPTURE state=error reason=${String(e instanceof Error ? e.message : e)
@@ -9425,6 +9431,7 @@ export async function runPostVerdictPureProofCapture(
   } finally {
     if (timer) clearTimeout(timer);
   }
+  return null;
 }
 
 /**

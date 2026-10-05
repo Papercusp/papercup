@@ -38,6 +38,34 @@ describe('no-unenrolled-injector guard predicate (EI-21903660573830465)', () => 
     expect(found[0]?.enrolled).toBe(false);
   });
 
+  it('does not trust a mutable alias that can fall back to raw text', () => {
+    const found = sites(`
+      async function send(raw: string) {
+        let data = raw;
+        try {
+          data = (await tagTurnForInjection({ sid: owner, origin: 'wake-pump', text: raw })).taggedText;
+        } catch {
+          // The injector below still sees raw when enrollment fails.
+        }
+        await injectIntoHost(sock, { mode: 'turn', data, ownerId: owner });
+      }
+    `);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.enrolled).toBe(false);
+  });
+
+  it('keeps an unresolved options alias in the measured population', () => {
+    const found = sites(`
+      function send(options: { mode: 'turn'; data: string }) {
+        injectIntoHost(sock, options);
+      }
+    `);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ enrolled: false, mode: 'unknown', dataText: '<missing-data>' });
+  });
+
   it('follows a tagged payload through the transport options object', () => {
     const found = sites(`
       async function send(raw: string) {
@@ -77,11 +105,26 @@ describe('no-unenrolled-injector guard predicate (EI-21903660573830465)', () => 
     expect(found[0]?.enrolled).toBe(false);
   });
 
+  it('does not inherit an outer enrollment brand through a shadowing raw parameter', () => {
+    const found = sites(`
+      declare const enrolled: unique symbol;
+      type EnrolledWakeText = string & { readonly [enrolled]: true };
+      function send(warmText: EnrolledWakeText) {
+        const injectWarm = (warmText: string) =>
+          injectIntoHost(sock, { mode: 'turn', data: warmText });
+        return injectWarm('raw payload');
+      }
+    `);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.enrolled).toBe(false);
+  });
+
   it('resolves shorthand data after the local variable is enrolled', () => {
     const found = sites(`
       async function send(raw: string) {
-        let data = raw;
-        data = (await tagTurnForInjection({ sid: owner, origin: 'wake-pump', text: raw })).taggedText;
+        const tagged = (await tagTurnForInjection({ sid: owner, origin: 'wake-pump', text: raw })).taggedText;
+        const data = tagged;
         await injectIntoHost(sock, { mode: 'turn', data });
       }
     `);
