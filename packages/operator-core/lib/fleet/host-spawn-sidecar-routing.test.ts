@@ -22,6 +22,48 @@ beforeEach(() => {
 });
 
 describe('bg-host spawn sites route through the spawner sidecar seam (WI-10004975)', () => {
+  it('release-cut async unit-state reads use the sidecar and keep state text on a non-zero exit', async () => {
+    const { readUnitActiveStateAsync } = await import('../release-cut-launch');
+    const err = Object.assign(new Error('systemctl exited 3'), {
+      code: 3,
+      stdout: 'inactive\n',
+      stderr: '',
+    });
+    execFileViaSidecar.mockRejectedValueOnce(err);
+    await expect(readUnitActiveStateAsync('papercup-release-cut')).resolves.toBe('inactive');
+    expect(execFileViaSidecar).toHaveBeenCalledWith(
+      'systemctl',
+      ['--user', 'is-active', 'papercup-release-cut'],
+      { timeoutMs: 5000, subsystem: 'release-cut-launch' },
+    );
+  });
+
+  it('single-primary async LoadState reads use the sidecar and preserve non-zero stdout', async () => {
+    const { readBackgroundPrimaryLoadStateAsync } = await import('../system-health/single-primary-check');
+    execFileViaSidecar.mockResolvedValueOnce({ stdout: 'masked\n', stderr: '' });
+    await expect(readBackgroundPrimaryLoadStateAsync('papercusp-bg-host.service')).resolves.toBe('masked');
+    expect(execFileViaSidecar).toHaveBeenNthCalledWith(
+      1,
+      'systemctl',
+      ['--user', 'show', 'papercusp-bg-host.service', '-p', 'LoadState', '--value'],
+      { timeoutMs: 5000, subsystem: 'single-primary-check' },
+    );
+
+    const err = Object.assign(new Error('systemctl exited 3'), {
+      code: 3,
+      stdout: 'not-found\n',
+      stderr: '',
+    });
+    execFileViaSidecar.mockRejectedValueOnce(err);
+    await expect(readBackgroundPrimaryLoadStateAsync('papercusp-bg-host.service')).resolves.toBe('not-found');
+    expect(execFileViaSidecar).toHaveBeenNthCalledWith(
+      2,
+      'systemctl',
+      ['--user', 'show', 'papercusp-bg-host.service', '-p', 'LoadState', '--value'],
+      { timeoutMs: 5000, subsystem: 'single-primary-check' },
+    );
+  });
+
   it('task-manager scope-terminal-state: systemctl', async () => {
     const { defaultScopeTerminalExec, SCOPE_TERMINAL_SIDECAR_VAR } = await import('../task-manager/scope-terminal-state');
     await defaultScopeTerminalExec('systemctl', ['--user', 'reset-failed', 'x.scope'], { timeout: 4321 });

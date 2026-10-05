@@ -48,6 +48,20 @@ describe('staging-first activation guard', () => {
     },
   );
 
+  it('does not treat a negated green-main requirement in item-scoped Now text as a release-plane gate', () => {
+    const parsed = plan(
+      [
+        '- **P-001** \x60todo\x60 Restore the API artifact and verify service health.',
+        '- **P-002** \x60todo\x60 Restore model weights and verify the model is served.',
+        '- **P-003** \x60todo\x60 Build the module and verify loaded state.',
+      ],
+      '',
+      '## Now\nP-001, P-002 and P-003 use stage-neutral live-host acceptance and contain no green-main requirement.',
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
   it.each(['deployment ownership', 'deployment configuration', 'deployment topology', 'deployment source'])(
     'allows a source prerequisite that inventories %s',
     (metadata) => {

@@ -1929,6 +1929,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       // Named first-attempt results are acceptance evidence, not a capped display sample.
       ...(reuse.auditedFiles === undefined ? {} : { auditedFiles: reuse.auditedFiles }),
       ...(reuse.auditRuns === undefined ? {} : { auditRuns: reuse.auditRuns }),
+      ...(reuse.suite === undefined ? {} : { suite: reuse.suite }),
     };
   }
   // P-013: the round's phase breakdown rides the append-only event whole (it is capped at
