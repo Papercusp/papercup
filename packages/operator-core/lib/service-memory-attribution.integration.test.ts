@@ -1335,7 +1335,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       (async () => {
         if (!e.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-') || e.PAPERCUSP_BACKGROUND_WORKERS !== '0')
           throw Error('Private request-only operator-api profile required');
-        const { createCdpClient, readProcessMemory, readPinnedHeapObjectIds, withFunctionCallTrace } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
+        const { createCdpClient, readProcessMemory, capturePinnedHeapSnapshot, withFunctionCallTrace } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
         const cacheRetainers = e.TEST_CACHE_HEAP_RETAINERS === '1';
         const traceOnly = e.TEST_ID_LIFETIME_TRACE === '1';
         report.traceOnly = traceOnly;
@@ -1474,23 +1474,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   JSON.stringify(keyDigests) !== JSON.stringify(cohort.samples.at(-1).cache.keyDigests))
                 throw Error('Exact inbox cache digest population changed before snapshot');
               const snapshotPath = path.join(path.dirname(e.TEST_REPORT_PATH), 'inbox-arm-' + arm + '.heapsnapshot');
-              let profilerEnabled = false;
               const started = Date.now();
               heap.snapshotStartedAt = started;
               try {
-                const captureIds = () => readPinnedHeapObjectIds(client, { expectedPid: host.pid,
-                  owners: ['@papercusp/operator-core.operatorCache'], cacheKeyDigests: keyDigests,
-                  captureSnapshot: async metadata => {
-                    heap.cacheBeforeSnapshot = metadata.cacheEntries; publish();
-                    await client.send('HeapProfiler.enable'); profilerEnabled = true;
-                    heap.profilerOperations.push('HeapProfiler.enable (object IDs)');
-                    const writeStarted = Date.now();
-                    heap.profilerOperations.push('v8.writeHeapSnapshot (forced GC/synchronous pause)');
-                    const captured = (await client.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
-                      JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
-                    if (captured !== snapshotPath) throw Error('Inbox snapshot destination mismatch');
-                    heap.heapSnapshotWriteMs = Date.now() - writeStarted; publish();
-                  } });
+                const captureIds = async () => {
+                  heap.profilerOperations.push('local HeapProfiler.enable + v8.writeHeapSnapshot + exact IDs in one target job');
+                  const captured = await capturePinnedHeapSnapshot(client, { expectedPid: host.pid,
+                    owners: ['@papercusp/operator-core.operatorCache'], cacheKeyDigests: keyDigests, snapshotPath });
+                  heap.cacheBeforeSnapshot = captured.cacheBeforeSnapshot;
+                  heap.heapSnapshotWriteMs = captured.writeMs;
+                  heap.profilerOperations.push('local Session.disconnect after exact IDs captured');
+                  publish();
+                  return captured;
+                };
                 if (traceOnly) {
                   const measured = await withFunctionCallTrace(client, { expectedPid: host.pid,
                     durationMs: 30000, maxCalls: 64, maxStacks: 8, maxStackChars: 4096,
@@ -1501,8 +1497,6 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   heap.sessionLifecycle = { trace: measured.trace, limits: measured.limits };
                   publish();
                 } else heap.heapOwnerBinding = await captureIds();
-                await client.send('HeapProfiler.disable'); profilerEnabled = false;
-                heap.profilerOperations.push('HeapProfiler.disable (object IDs)');
                 if (traceOnly) {
                   heap.postSnapshotRowsPreserved = JSON.stringify((await client.evaluate(contentExpression,
                     { returnByValue: true })).result.value) === JSON.stringify(content);
@@ -1536,10 +1530,6 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   { returnByValue: true })).result.value) === JSON.stringify(content);
                 if (!heap.postSnapshotRowsPreserved) throw Error('Inbox useful cache content changed after snapshot');
               } finally {
-                if (profilerEnabled) {
-                  await client.send('HeapProfiler.disable');
-                  heap.profilerOperations.push('HeapProfiler.disable (object IDs)');
-                }
                 fs.rmSync(snapshotPath, { force: true }); heap.snapshotRemoved = !fs.existsSync(snapshotPath); publish();
               }
             }
