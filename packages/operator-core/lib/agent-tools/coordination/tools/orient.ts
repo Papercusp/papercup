@@ -3288,6 +3288,10 @@ export default defineTool({
       fleet: z.unknown().optional(),
       leaderBrief: z.unknown().optional(),
       recovery: z.unknown().optional(),
+      // The GOAL recovery recipes read this best-effort fold. Passthrough accepts
+      // it at runtime but recipe preflight needs an explicit optional declaration.
+      obligations: z.unknown().optional(),
+      obligationsWithheldBy: z.literal('experiment-arm').optional(),
       warning: z.string().optional(),
     })
     .passthrough(),

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { ProjectedTool } from '@papercusp/tooldef';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
+import orientTool from '../coordination/tools/orient';
 import '../pre-prompt-registry-config';
 
 const tool = (
@@ -18,6 +20,29 @@ const tool = (
 });
 
 describe('validateRecipeScriptAgainstCatalog', () => {
+  it('accepts the saved obligation recovery read against the actual orient output contract', async () => {
+    const catalog = [tool('coord:orient', z.toJSONSchema(orientTool.args), z.toJSONSchema(orientTool.result!))];
+    const guarded = await validateRecipeScriptAgainstCatalog(
+      'const orient = await tools.coord.orient({ afterCompaction: false });\n' +
+        'const ob = orient.obligations || {};\n' +
+        'return { evaluations: ob.evaluations || [], withheld: orient.obligationsWithheldBy || null };',
+      catalog,
+    );
+    expect(guarded).toEqual({ ok: true, issues: [], staticToolNames: ['coord:orient'] });
+
+    // The fold is still optional: publishing it must not make an unguarded read safe.
+    const unguarded = await validateRecipeScriptAgainstCatalog(
+      'const orient = await tools.coord.orient({}); return orient.obligations;',
+      catalog,
+    );
+    expect(unguarded.ok).toBe(false);
+    expect(unguarded.issues[0]).toMatchObject({
+      tool: 'coord:orient',
+      path: 'result.obligations',
+      message: expect.stringContaining('optional in the current output schema'),
+    });
+  });
+
   it('rejects a literal enum value removed from the current tool schema', async () => {
     const result = await validateRecipeScriptAgainstCatalog(
       'return await tools.release.checkpointRun({ op: "status" });',
