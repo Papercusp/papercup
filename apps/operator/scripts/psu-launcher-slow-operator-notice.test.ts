@@ -27,7 +27,10 @@ async function launch(fetchDelayMs: number, noticeDelayMs = 0) {
   let asked = 0;
   const res = await fetchWithResilience(URL, {}, {
     fetchImpl: respondAfter(fetchDelayMs) as unknown as typeof fetch,
-    onNotice: (msg: string) => notices.push(msg),
+    onNotice: (msg: string) => {
+      notices.push(msg);
+      return true;
+    },
     slowNoticeAfterMs: 5,
     slowRequestNotice: async ({ url }: { url: string }) => {
       asked += 1;
