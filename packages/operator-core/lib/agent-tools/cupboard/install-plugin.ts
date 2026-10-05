@@ -48,6 +48,13 @@ export default defineTool({
       .record(z.string(), z.unknown())
       .optional()
       .describe('Echo data.review from a provider_install_consent_required refusal (with acceptCapabilities).'),
+    triggerPackConfig: z
+      .object({
+        sourceMappings: z.record(z.string(), z.string().uuid()).optional(),
+        inputs: z.record(z.string(), z.unknown()).optional(),
+      })
+      .optional()
+      .describe('Trigger pack in `harness`: pack binding id → local source id, and pack inputs.'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
@@ -80,6 +87,7 @@ export default defineTool({
       ...(args.expectedReview
         ? { expectedReview: args.expectedReview as unknown as InstallPluginManifestReview }
         : {}),
+      ...(args.triggerPackConfig ? { triggerPackConfig: args.triggerPackConfig } : {}),
     });
 
     if (!outcome.ok) {
@@ -100,6 +108,7 @@ export default defineTool({
       kind: r.kind,
       installedTo: r.installedTo,
       granted: r.granted,
+      ...(r.triggerPackInstallation ? { triggerPackInstallation: r.triggerPackInstallation } : {}),
       ...(r.installableDependencies ? { installableDependencies: r.installableDependencies } : {}),
     });
   },

@@ -42,6 +42,7 @@ export default defineTool({
       harness?: string;
       acceptCapabilities?: boolean;
       expectedReview?: unknown;
+      triggerPackConfig?: { sourceMappings?: unknown; inputs?: unknown };
     };
     try {
       body = await req.json();
@@ -57,6 +58,16 @@ export default defineTool({
       acceptCapabilities: body.acceptCapabilities === true,
       ...(isPlainObject(body.expectedReview)
         ? { expectedReview: body.expectedReview as unknown as InstallPluginManifestReview }
+        : {}),
+      ...(isPlainObject(body.triggerPackConfig)
+        ? {
+            triggerPackConfig: {
+              ...(isPlainObject(body.triggerPackConfig.sourceMappings)
+                ? { sourceMappings: body.triggerPackConfig.sourceMappings as Record<string, string> }
+                : {}),
+              ...(isPlainObject(body.triggerPackConfig.inputs) ? { inputs: body.triggerPackConfig.inputs } : {}),
+            },
+          }
         : {}),
     });
 
