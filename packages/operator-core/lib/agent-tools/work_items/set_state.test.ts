@@ -724,6 +724,44 @@ describe('work_items:set_state — reason/note alias for completionRef (EI-19961
     expect(parse({ id: 'WI-1', state: 'wip', reason: EVIDENCE, reson: 'x' }).success).toBe(false);
     expect(messages({ id: 'WI-1', state: 'wip', reason: EVIDENCE, reson: 'x' })).not.toContain('set_blocker');
   });
+
+  // ── ambiguity is reported, never silently resolved (the _body-alias rule) ──────
+  it('REFUSES completionRef + reason carrying DIFFERENT values', () => {
+    expect(
+      parse({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: 'something else', assumptions: 'none' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('ACCEPTS completionRef + reason carrying the SAME value', () => {
+    expect(
+      parse({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: EVIDENCE, assumptions: 'none' }).success,
+    ).toBe(true);
+  });
+
+  it('REFUSES reason + note carrying DIFFERENT values', () => {
+    expect(
+      parse({ id: 'WI-1', state: 'done', reason: EVIDENCE, note: 'something else', assumptions: 'none' }).success,
+    ).toBe(false);
+  });
+
+  // ── load-bearing: the aliased value REACHES the write. Without this the schema
+  //    could accept `reason` and the handler still persist undefined — an accepted
+  //    argument that vanishes, i.e. the exact bug, dressed as the fix ─────────────
+  it('passes the aliased value through to the write as completionRef', async () => {
+    await body({ id: 'WI-1', state: 'done', reason: EVIDENCE, assumptions: 'none' });
+    expect(setM).toHaveBeenCalledWith('WI-1', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
+  });
+
+  it('passes the aliased value through for every id in ids[]', async () => {
+    await body({ ids: ['WI-1', 'WI-2'], state: 'done', note: EVIDENCE, assumptions: 'none' });
+    expect(setM).toHaveBeenCalledWith('WI-2', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
+  });
+
+  it('prefers an explicit completionRef over the alias when both agree', async () => {
+    await body({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: EVIDENCE, assumptions: 'none' });
+    expect(setM).toHaveBeenCalledWith('WI-1', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
+  });
 });
 
 /**
@@ -804,43 +842,5 @@ describe('work_items:set_state — non-terminal reason is recorded as a comment 
 
   it('still REFUSES completionRef on a non-terminal write', () => {
     expect(parse({ id: 'WI-1', state: 'wip', completionRef: REASON }).success).toBe(false);
-  });
-
-  // ── ambiguity is reported, never silently resolved (the _body-alias rule) ──────
-  it('REFUSES completionRef + reason carrying DIFFERENT values', () => {
-    expect(
-      parse({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: 'something else', assumptions: 'none' })
-        .success,
-    ).toBe(false);
-  });
-
-  it('ACCEPTS completionRef + reason carrying the SAME value', () => {
-    expect(
-      parse({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: EVIDENCE, assumptions: 'none' }).success,
-    ).toBe(true);
-  });
-
-  it('REFUSES reason + note carrying DIFFERENT values', () => {
-    expect(
-      parse({ id: 'WI-1', state: 'done', reason: EVIDENCE, note: 'something else', assumptions: 'none' }).success,
-    ).toBe(false);
-  });
-
-  // ── load-bearing: the aliased value REACHES the write. Without this the schema
-  //    could accept `reason` and the handler still persist undefined — an accepted
-  //    argument that vanishes, i.e. the exact bug, dressed as the fix ─────────────
-  it('passes the aliased value through to the write as completionRef', async () => {
-    await body({ id: 'WI-1', state: 'done', reason: EVIDENCE, assumptions: 'none' });
-    expect(setM).toHaveBeenCalledWith('WI-1', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
-  });
-
-  it('passes the aliased value through for every id in ids[]', async () => {
-    await body({ ids: ['WI-1', 'WI-2'], state: 'done', note: EVIDENCE, assumptions: 'none' });
-    expect(setM).toHaveBeenCalledWith('WI-2', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
-  });
-
-  it('prefers an explicit completionRef over the alias when both agree', async () => {
-    await body({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: EVIDENCE, assumptions: 'none' });
-    expect(setM).toHaveBeenCalledWith('WI-1', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
   });
 });

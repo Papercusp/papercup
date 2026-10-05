@@ -47,7 +47,7 @@ export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdp
     captureSnapshot?: (metadata: any) => Promise<void>;
 }): Promise<{
     definition: string;
-    cacheEntries?: any;
+    cacheEntries?: CacheHeapReport | undefined;
     queries?: {
         definition: string;
         selection?: string | undefined;
@@ -268,6 +268,38 @@ export class CdpTransportClosedError extends Error {
     constructor(method: any);
     method: any;
 }
+export type CacheHeapObject = {
+    phase: string;
+    status: string;
+    id?: number;
+};
+export type CacheHeapRecord = {
+    keyDigest: string;
+    status: string;
+    objects: CacheHeapObject[];
+};
+export type CacheHeapMetadata = {
+    owner: string;
+    path: string;
+    status: string;
+    population: number | null;
+    scanned: number;
+    scanComplete: boolean;
+    undigestibleKeys: number;
+    limits: {
+        maxScanned: number;
+        maxKeyCodeUnits: number;
+    };
+    records: {
+        keyDigest: string;
+        status: string;
+    }[];
+};
+export type CacheHeapReport = Omit<CacheHeapMetadata, "records"> & {
+    selectionStatus: string;
+    records: CacheHeapRecord[];
+    definition: string;
+};
 export type PgHeapObject = {
     phase: string;
     status: string;

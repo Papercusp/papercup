@@ -215,6 +215,15 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
   } finally { await client.send('Runtime.releaseObjectGroup', { objectGroup }); }
 }
 
+/** @typedef {{ phase: string, status: string, id?: number }} CacheHeapObject */
+/** @typedef {{ keyDigest: string, status: string, objects: CacheHeapObject[] }} CacheHeapRecord */
+/** @typedef {{ owner: string, path: string, status: string, population: number|null,
+ *   scanned: number, scanComplete: boolean, undigestibleKeys: number,
+ *   limits: { maxScanned: number, maxKeyCodeUnits: number },
+ *   records: { keyDigest: string, status: string }[] }} CacheHeapMetadata */
+/** @typedef {Omit<CacheHeapMetadata, 'records'> & { selectionStatus: string,
+ *   records: CacheHeapRecord[], definition: string }} CacheHeapReport */
+
 // Shared target-side selection/fence. Never calls cache.get(), getters, custom
 // iterators, or a proxy. The temporary selection holds no strong row/value refs.
 function cacheHeapReader(expectedPid, digests, digest, phase) {
@@ -296,13 +305,16 @@ async function selectCacheHeapEntries(client, { expectedPid, cacheKeyDigests, ob
   return { objectId: remote.objectId, metadata };
 }
 
+/** @returns {Promise<CacheHeapReport>} */
 async function readCacheHeapObjectIds(client, { expectedPid, objectGroup, selection }) {
+  /** @type {CacheHeapRecord[]} */
   const records = [];
   const read = (digest, phase, returnByValue) => client.send('Runtime.callFunctionOn', {
     objectId: selection.objectId, functionDeclaration: 'function () { return (' + cacheHeapReader.toString() +
       ').call(this, ' + expectedPid + ', null, ' + JSON.stringify(digest) + ', ' + JSON.stringify(phase) + '); }',
     returnByValue, objectGroup });
   for (const row of selection.metadata.records) {
+    /** @type {CacheHeapObject[]} */
     const objects = [];
     if (row.status === 'selected') for (const phase of ['entry', 'value']) {
       const remote = (await read(row.keyDigest, phase, false)).result;
