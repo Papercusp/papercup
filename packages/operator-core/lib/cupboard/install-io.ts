@@ -286,7 +286,13 @@ export async function installPluginFromCupboard(input: {
     return { ok: true, result };
   } catch (e) {
     if (e instanceof InstallPluginError) {
-      return { ok: false, status: e.status, error: e.message };
+      return {
+        ok: false,
+        status: e.status,
+        error: e.message,
+        ...(e.code ? { code: e.code } : {}),
+        ...(e.data ? { data: e.data } : {}),
+      };
     }
     return {
       ok: false,

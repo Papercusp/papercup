@@ -56,6 +56,11 @@ import { InMemoryAuditWriter as _InMemoryAuditWriter } from '@papercusp/plugin-l
 import { cooperativeYield } from './event-loop-lag-monitor';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { trackDetached } from './detached-imports';
+import {
+  providerRegistry,
+  ProviderRegistrationError,
+  type ProviderRegistry,
+} from './integrations/provider-registry';
 
 // operator-core is an ESM package (`type: module`); under the host's ESM
 // runtime (tsx) the CommonJS globals `require` and `__dirname` are UNDEFINED.
@@ -359,6 +364,17 @@ async function discover(): Promise<HostState> {
     loadErrors = [{ error: `discovery threw: ${e?.message ?? e}`, path: '<discovery>' }];
   }
 
+  // Register integration providers (generalized-integrations D-006 / P-001).
+  // Runs before the tool sweep so a provider is resolvable by the time any
+  // plugin tool or connector driver reaches for it. A refused registration is
+  // recorded on the host status and leaves the rest of the plugin loaded.
+  await registerPluginProviders(loaded, (err) => {
+    loadErrors.push({
+      error: `provider registration failed for "${err.provider}" in plugin "${err.plugin}" (${err.code}): ${err.error}`,
+      path: err.plugin,
+    });
+  });
+
   // Wire plugin-contributed tools into agent-mcp's projected-tool registry
   // (PR 0c.A-E). Each manifest tools[] entry is mounted on both HTTP and
   // MCP transports automatically, with sensible defaults derived from
@@ -425,6 +441,76 @@ async function discover(): Promise<HostState> {
   }
 
   return { loaded, loadErrors, initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map() };
+}
+
+export interface ProviderRegistrationFailure {
+  plugin: string;
+  provider: string;
+  code: string;
+  error: string;
+}
+
+/**
+ * Register every loaded plugin's integration provider into the process-wide
+ * provider registry. The manifest descriptor (validated by the loader) is
+ * authoritative; an entry-exported `provider` is the fallback for plugins
+ * that declare it only in code. Each plugin's previous registrations are
+ * dropped first, so a re-discovery (hot reload, no-op Cupboard reinstall,
+ * workspace switch) re-registers instead of colliding with itself.
+ *
+ * `daemon` providers are registered by the daemon bridge once the sandboxed
+ * process answers `describe` (P-002); WASM plugins cannot carry a provider.
+ */
+export async function registerPluginProviders(
+  loaded: LoadedPlugin[],
+  onError: (err: ProviderRegistrationFailure) => void,
+  registry: ProviderRegistry = providerRegistry(),
+): Promise<string[]> {
+  const registered: string[] = [];
+  for (const lp of loaded) {
+    const descriptor = lp.provider ?? lp.plugin.provider;
+    if (!descriptor) continue;
+    const pluginName = lp.plugin.name;
+    registry.unregisterPlugin(pluginName);
+    const runtimeKind = lp.runtime?.kind ?? 'js';
+    if (runtimeKind === 'daemon') continue;
+    if (runtimeKind !== 'js') {
+      onError({
+        plugin: pluginName,
+        provider: descriptor.id,
+        code: 'unsupported-runtime',
+        error: `runtime "${runtimeKind}" cannot host a provider adapter (use js or daemon)`,
+      });
+      continue;
+    }
+    try {
+      await registry.register({
+        descriptor,
+        adapter: lp.plugin.providerAdapter,
+        pluginName,
+        runtime: 'js',
+      });
+      registered.push(descriptor.id);
+    } catch (e: unknown) {
+      onError({
+        plugin: pluginName,
+        provider: descriptor.id,
+        code: e instanceof ProviderRegistrationError ? e.code : 'register-threw',
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return registered;
+}
+
+/** Drop every provider registered by the given plugins (unload half of the lifecycle). */
+export function unregisterPluginProviders(
+  loaded: LoadedPlugin[],
+  registry: ProviderRegistry = providerRegistry(),
+): string[] {
+  const removed: string[] = [];
+  for (const lp of loaded) removed.push(...registry.unregisterPlugin(lp.plugin.name));
+  return removed;
 }
 
 function regKey(pluginName: string, installSlug: string): string {
@@ -1353,6 +1439,10 @@ async function buildContextFor(lp: LoadedPlugin, harnessSlug: string): Promise<P
 }
 
 export function _resetPluginHostForTests(): void {
+  // Every unload path (uninstall, host refresh, Cupboard install, hot reload,
+  // workspace switch) funnels through this reset, so it is where providers
+  // leave the registry. The next discovery re-registers the survivors.
+  if (__cache.state) unregisterPluginProviders(__cache.state.loaded);
   __cache.promise = null;
   __cache.state = null;
   // Also clear Node's CJS require.cache for plugin entry files so

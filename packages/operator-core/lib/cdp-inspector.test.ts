@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -578,6 +581,64 @@ describe('P011 digest-selected cache snapshot identities', () => {
     }
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
   }, 30_000);
+
+  it.each(['file-only', 'neighbor-session-disconnect'] as const)(
+    'distinguishes file snapshot IDs from %s without inferring collection', async mode => {
+      const directory = mkdtempSync(join(tmpdir(), 'p011-cache-id-lifetime-'));
+      const snapshotPath = join(directory, 'heap.heapsnapshot');
+      const code = `
+        globalThis.cacheState = { cache: { l1: { map: new Map([
+          ['private-cache-key', { value: [{ body: 'private payload' }] }]
+        ]) } } };
+        globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+          ['${owner}', { value: globalThis.cacheState }]
+        ]);
+        console.log('ready'); setInterval(() => {}, 1000);
+      `;
+      const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '', stderr = '', client: ReturnType<typeof createCdpClient> | undefined;
+      child.stdout!.on('data', chunk => { stdout += chunk; }); child.stderr!.on('data', chunk => { stderr += chunk; });
+      try {
+        const deadline = Date.now() + 5000;
+        while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+        expect(stdout, stderr).toContain('ready');
+        client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+        const report = await readPinnedHeapObjectIds(client, { expectedPid: child.pid!, owners: [owner],
+          cacheKeyDigests: [createHash('sha256').update('private-cache-key').digest('hex')],
+          captureSnapshot: async () => {
+            await client!.send('HeapProfiler.enable');
+            const captured = await client!.evaluate(`(() => {
+              const file = process.getBuiltinModule('v8').writeHeapSnapshot(${JSON.stringify(snapshotPath)});
+              if (${JSON.stringify(mode)} === 'neighbor-session-disconnect') {
+                const neighbor = new (process.getBuiltinModule('inspector').Session)();
+                neighbor.connect(); neighbor.disconnect();
+              }
+              return file;
+            })()`, { returnByValue: true });
+            expect(captured.result.value).toBe(snapshotPath);
+          } });
+        const q = report.cacheEntries!;
+        expect(q.records[0].status).toBe('selected'); // Both actual objects still belong to the same map.
+        expect(q.records[0].objects.map(object => object.status)).toEqual(mode === 'file-only'
+          ? ['found', 'found'] : ['not-in-snapshot', 'not-in-snapshot']);
+        expect(report.roots[0].status).toBe(mode === 'file-only' ? 'found' : 'not-in-snapshot');
+        const snapshot = JSON.parse(readFileSync(snapshotPath).toString());
+        const width = snapshot.snapshot.meta.node_fields.length, idField = snapshot.snapshot.meta.node_fields.indexOf('id');
+        const ids = new Set<number>();
+        for (let i = idField; i < snapshot.nodes.length; i += width) ids.add(snapshot.nodes[i]);
+        if (mode === 'file-only') for (const object of q.records[0].objects) expect(ids.has(object.id!)).toBe(true);
+        const membership = await client.evaluate('globalThis.cacheState.cache.l1.map.size', { returnByValue: true });
+        expect(membership.result.value).toBe(1);
+        expect(JSON.stringify(report)).not.toContain('private payload');
+      } finally {
+        client?.close();
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+        }
+        rmSync(directory, { recursive: true, force: true });
+      }
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    }, 30_000);
 });
 
 describe('PID-bound host configuration facts', () => {

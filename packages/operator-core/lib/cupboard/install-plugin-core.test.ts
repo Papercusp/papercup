@@ -645,3 +645,116 @@ status: draft
     });
   });
 });
+
+describe('installPluginFromCupboardCore — integration providers (generalized-integrations P-001)', () => {
+  const provider = {
+    id: 'outlook-mail',
+    contractVersion: 1,
+    datatypes: ['email-message', 'calendar-event'],
+    capabilities: ['mail.read', 'calendar.read'],
+    egressHosts: ['login.microsoftonline.com', 'graph.microsoft.com'],
+    oauth: {
+      authorizeUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+      tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      scopes: ['Mail.Read', 'Calendars.Read'],
+      pkce: true,
+    },
+  };
+
+  async function writeProviderPlugin(over: Record<string, unknown> = {}): Promise<void> {
+    await writeManifest(fixtureRepo, {
+      name: 'outlook-provider',
+      version: '0.1.0',
+      capabilities: [],
+      runtime: { kind: 'daemon', daemonCommand: ['node', 'daemon.cjs'] },
+      provider,
+      ...over,
+    });
+    await fs.writeFile(join(fixtureRepo, 'daemon.cjs'), '// daemon', 'utf8');
+  }
+
+  async function refusal(promise: Promise<unknown>): Promise<InstallPluginError> {
+    const e = await promise.then(() => null, (err: unknown) => err);
+    expect(e).toBeInstanceOf(InstallPluginError);
+    return e as InstallPluginError;
+  }
+
+  it('refuses without consent and returns the provider review: datatypes, capabilities, scopes, egress', async () => {
+    await writeProviderPlugin();
+    const e = await refusal(
+      installPluginFromCupboardCore({ githubUrl: 'https://github.com/acme/outlook-provider', harness: 'h' }, makeDeps()),
+    );
+    expect(e.status).toBe(409);
+    expect(e.code).toBe('provider_install_consent_required');
+    const review = (e.data as { review: { provider: Record<string, unknown> } }).review;
+    expect(review.provider).toEqual({
+      id: 'outlook-mail',
+      contractVersion: 1,
+      runtime: 'daemon',
+      datatypes: ['calendar-event', 'email-message'],
+      capabilities: ['calendar.read', 'mail.read'],
+      oauthScopes: ['Calendars.Read', 'Mail.Read'],
+      egressHosts: ['graph.microsoft.com', 'login.microsoftonline.com'],
+    });
+    // Refusal writes nothing.
+    expect(existsSync(join(globalDir, 'outlook-provider'))).toBe(false);
+    expect(invalidated).toBe(0);
+  });
+
+  it('installs when the consent re-call pins the exact review', async () => {
+    await writeProviderPlugin();
+    const first = await refusal(
+      installPluginFromCupboardCore({ githubUrl: 'https://github.com/acme/outlook-provider', harness: 'h' }, makeDeps()),
+    );
+    const review = (first.data as { review: never }).review;
+    const res = await installPluginFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/outlook-provider',
+        harness: 'h',
+        acceptCapabilities: true,
+        expectedReview: review,
+      },
+      makeDeps(),
+    );
+    expect(res.provider?.id).toBe('outlook-mail');
+    expect(res.review.provider?.egressHosts).toEqual(['graph.microsoft.com', 'login.microsoftonline.com']);
+    expect(existsSync(join(globalDir, 'outlook-provider', 'papercusp.json'))).toBe(true);
+    expect(invalidated).toBe(1);
+  });
+
+  it('refuses when the provider widened its egress after consent', async () => {
+    await writeProviderPlugin();
+    const first = await refusal(
+      installPluginFromCupboardCore({ githubUrl: 'https://github.com/acme/outlook-provider', harness: 'h' }, makeDeps()),
+    );
+    const review = (first.data as { review: never }).review;
+    await writeProviderPlugin({ provider: { ...provider, egressHosts: [...provider.egressHosts, 'exfil.example.com'] } });
+    const e = await refusal(
+      installPluginFromCupboardCore(
+        { githubUrl: 'https://github.com/acme/outlook-provider', harness: 'h', acceptCapabilities: true, expectedReview: review },
+        makeDeps(),
+      ),
+    );
+    expect(e.code).toBe('plugin_review_changed');
+    expect(existsSync(join(globalDir, 'outlook-provider'))).toBe(false);
+  });
+
+  it('refuses an in-process js provider from the Cupboard', async () => {
+    await writeProviderPlugin({ runtime: { kind: 'js' } });
+    const e = await refusal(
+      installPluginFromCupboardCore({ githubUrl: 'https://github.com/acme/outlook-provider' }, makeDeps()),
+    );
+    expect(e.status).toBe(422);
+    expect(e.code).toBe('provider_runtime_not_sandboxed');
+  });
+
+  it('refuses an invalid provider declaration before anything is copied', async () => {
+    await writeProviderPlugin({ provider: { ...provider, contractVersion: 7 } });
+    const e = await refusal(
+      installPluginFromCupboardCore({ githubUrl: 'https://github.com/acme/outlook-provider' }, makeDeps()),
+    );
+    expect(e.status).toBe(422);
+    expect(e.code).toBe('provider_invalid');
+    expect(existsSync(join(globalDir, 'outlook-provider'))).toBe(false);
+  });
+});

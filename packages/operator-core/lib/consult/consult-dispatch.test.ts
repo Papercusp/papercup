@@ -207,6 +207,49 @@ function makeFakes(
   return { deps, calls };
 }
 
+describe('consult child runtime routing (EI-25158565040432475)', () => {
+  it.each([
+    { port: '3170', target: 'claude', operation: 'fork' },
+    { port: '3170', target: 'codex', operation: 'convert' },
+    { port: '3271', target: 'claude', operation: 'fork' },
+    { port: '3271', target: 'codex', operation: 'convert' },
+  ] as const)('keeps $operation preparation on its spawning :$port runtime', async ({ port, target, operation }) => {
+    const originalHono = process.env.PAPERCUSP_HONO_PORT;
+    const originalDesktop = process.env.OPERATOR_DEV_PORT;
+    const originalOperator = process.env.PAPERCUSP_OPERATOR_URL;
+    try {
+      process.env.PAPERCUSP_HONO_PORT = port;
+      delete process.env.OPERATOR_DEV_PORT;
+      process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:9071';
+      const inputs: Array<Parameters<ConsultDispatchDeps['buildConsoleEnvelope']>[0]> = [];
+      const { deps } = makeFakes({
+        loadRanks: async () => [{ rank: 1, agent: target, model: target === 'codex' ? 'sol' : 'opus' }],
+      });
+      const buildEnvelope = deps.buildConsoleEnvelope;
+      deps.buildConsoleEnvelope = async (input) => {
+        inputs.push(input);
+        return buildEnvelope(input);
+      };
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result).toMatchObject({ dispatched: true, operation });
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]).toMatchObject({
+        operatorBaseUrl: `http://localhost:${port}`,
+        agentMcpBaseUrl: `http://localhost:${port}`,
+      });
+    } finally {
+      for (const [key, value] of Object.entries({
+        PAPERCUSP_HONO_PORT: originalHono,
+        OPERATOR_DEV_PORT: originalDesktop,
+        PAPERCUSP_OPERATOR_URL: originalOperator,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});
+
 describe('planDispatchOperation (D-009 walk shape)', () => {
   it('a claude source forks; claude → other backend converts', () => {
     expect(planDispatchOperation({ agent: 'claude', live: false }, { agent: 'claude' })).toEqual({ operation: 'fork' });
@@ -1016,6 +1059,18 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
   it('reports the LAST failure when a log holds several', () => {
     const log = 'psu: tracked resume failed: first\npsu: refusing fork: second\n';
     expect(launchLogFailureReason(log)).toBe('psu: refusing fork: second');
+  });
+
+  it.each([
+    'psu: V1 targetBackend must be codex|omp',
+    'psu: consult evidence refs are not all present in the exact source session (0/1)',
+  ])('preserves the session-port validation refusal: %s', (failure) => {
+    const log = 'psu: last active model in this session: gpt-6-luna:max\n' +
+      `${failure}\n[ papercusp greeting ]\n` +
+      '[papercusp] initial terminal command exited with status 1; headless launch exiting.\n';
+    expect(launchLogFailureReason(log)).toBe(
+      `${failure} · [papercusp] initial terminal command exited with status 1`,
+    );
   });
 
   it('falls back to the exit status alone, and is null for a log with no failure', () => {

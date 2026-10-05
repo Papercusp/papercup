@@ -3,7 +3,7 @@
  * env set → proxy base (deploy-restart-resilient); env unset → operator base unchanged
  * (so a no-proxy env can never break). Run: npx vitest run mcp-base-url
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   resolveAgentMcpBaseUrl,
   resolveInheritedOperatorBaseUrl,
@@ -19,6 +19,13 @@ const ORIGINAL_ENV = {
   targetPort: process.env[TARGET_PORT_KEY],
   stagingProxyPort: process.env[STAGING_PROXY_PORT_KEY],
 };
+beforeEach(() => {
+  // Each fixture declares its complete routing configuration. A background
+  // session's inherited target=3271 must not become an unstated test input.
+  delete process.env[KEY];
+  delete process.env[TARGET_PORT_KEY];
+  delete process.env[STAGING_PROXY_PORT_KEY];
+});
 afterEach(() => {
   if (ORIGINAL_ENV.proxy === undefined) delete process.env[KEY];
   else process.env[KEY] = ORIGINAL_ENV.proxy;

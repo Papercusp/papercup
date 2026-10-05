@@ -665,7 +665,7 @@ function stripTerminalControl(text: string): string {
 
 /** psu prints its own refusals as whole `psu: …` lines, so the whole line is the reason. */
 const PSU_FAILURE_LINE =
-  /^psu(?:-pty-host)?: .*(?:refus|requires|could not|cannot|can only|failed|no session|not found|unavailable|DROPPED|still in progress)/i;
+  /^psu(?:-pty-host)?: .*(?:refus|requires|must|could not|cannot|can only|failed|no session|not found|not all present|unavailable|DROPPED|still in progress)/i;
 /**
  * The CLI's own failures arrive inside TUI output drawn with cursor-movement
  * escapes, not newlines, so they sit mid-way through one long rendered "line"
@@ -1284,10 +1284,15 @@ async function launchAnsweringSession(
 
   let envelope: Awaited<ReturnType<typeof buildConsoleEnvelope>>;
   try {
+    const operatorBaseUrl = resolveSpawnHostOperatorBaseUrl();
     envelope = await d.buildConsoleEnvelope({
       workspaceId: ctx.workspaceId,
       slug: ctx.harnessSlug,
-      operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
+      operatorBaseUrl,
+      // The default console MCP endpoint is the long-lived live proxy. A
+      // consult must prepare and answer on its spawning runtime: staging and
+      // background source guards may differ from the deployed live build.
+      agentMcpBaseUrl: operatorBaseUrl,
       // The answering session is an MCP-connected agent (it must call
       // consult:reply), not a bare command.
       skipMcpJson: false,
