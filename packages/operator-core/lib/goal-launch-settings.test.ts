@@ -21,6 +21,7 @@
  * DECISION logic sitting on top of it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { GOAL_OWNER_REPORT_HEADING_LIST } from './goal-owner-report';
 import type { Sql } from 'postgres';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 import {
@@ -1683,6 +1684,9 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(actionPrioritiesMarker).toBeGreaterThan(mandatoryPlacementMarker);
     expect(postActionReportMarker).toBeGreaterThan(actionPrioritiesMarker);
     expect(ownerReportRefreshInstruction).toBeGreaterThan(postActionReportMarker);
+    expect(rendered).toContain(
+      `Only after that final refresh, send ${GOAL_OWNER_REPORT_HEADING_LIST} to ["human"] with coord:send or use coord:escalate, naming exact goal id "goal-1".`,
+    );
     expect(rendered).toContain('OWNER REPORT DRAFT — provisional snapshot');
     expect(rendered).toContain('only actions with a successful result already returned');
     expect(rendered).toContain('every goal-scoped work item that reached a terminal state after the previous report watermark');

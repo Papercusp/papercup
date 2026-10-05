@@ -5,6 +5,7 @@ import type { Sql } from 'postgres';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import {
   GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_HEADING_LIST,
   GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS,
   GOAL_OWNER_REPORT_SCHEMA_VERSION,
 } from '../goal-owner-report';
@@ -32,6 +33,17 @@ const NOW = 1_800_000_000_000;
 const FLOOR = GOAL_OWNER_REPORT_MAX_SILENCE_MS;
 const STANDING_FLOOR = GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS;
 const HOUR = 3600_000;
+
+const defaultRails = vi.hoisted(() => ({
+  openEscalation: vi.fn(),
+  wakeRecipients: vi.fn(),
+}));
+vi.mock('../agent-tools/coordination/escalations', () => ({
+  openEscalation: defaultRails.openEscalation,
+}));
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: defaultRails.wakeRecipients,
+}));
 
 function makeRow(over: Partial<GoalOwnerReportRowLike> = {}): GoalOwnerReportRowLike {
   return {
@@ -97,6 +109,7 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     expect(v.lastReportAt).toBe(new Date(NOW - 90 * MIN).toISOString());
     expect(v.instruction).toMatch(/^OVERDUE by 30 min/);
     expect(v.instruction).toContain("coord:send { to:['human'] }");
+    expect(v.instruction).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
     // Agreement with the sweep: the sweep would nudge exactly this row.
     expect(findOverdueReports([row], NOW)).toHaveLength(1);
   });
@@ -108,6 +121,7 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     expect(v.dueInMin).toBe(4);
     expect(v.dueAt).toBe(new Date(NOW + 4 * MIN).toISOString());
     expect(v.instruction).toMatch(/^DUE NOW \(4 min to the 60-min floor\)/);
+    expect(v.instruction).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
     // Not yet overdue for the sweep — the holder is told first, the human second.
     expect(findOverdueReports([row], NOW)).toHaveLength(0);
     expect(GOAL_OWNER_REPORT_DUE_SOON_MARGIN_MS).toBe(5 * MIN);
@@ -421,7 +435,7 @@ describe('the STANDING-goal cadence floor (WI-2091959: two graded FAILs sat BELO
 });
 
 describe('buildReportSkeleton', () => {
-  it("carries the GOAL contract's four report fields and points at the sanctioned rail", () => {
+  it("carries every GOAL WRITE report field and points at the sanctioned rail", () => {
     const skeleton = buildReportSkeleton({
       workspaceId: 'ws',
       goalId: 'g-1',
@@ -437,9 +451,12 @@ describe('buildReportSkeleton', () => {
       'whatItCost',
       'ownerWalled',
       'whatYouKilled',
+      'nextWake',
     ]);
     expect(skeleton.channel).toContain('coord:escalate');
     expect(skeleton.whatMoved).toContain('g-1');
+    expect(skeleton.nextWake).toMatch(/trigger|event|cadence/i);
+    expect(skeleton.nextWake).toMatch(/time/i);
   });
 });
 
@@ -448,6 +465,30 @@ describe('runGoalOwnerReportSweepOnce', () => {
   // fixtures anchor there — the fixed NOW constant above is for the pure tests,
   // and a row anchored to it would sit in the future and never be overdue.
   const overdueRow = makeRow({ baselineTsMs: Date.now() - 24 * HOUR }); // 24h silent — overdue by construction
+
+  it('default escalation and directed nudge require the complete canonical WRITE headings', async () => {
+    defaultRails.openEscalation.mockReset().mockResolvedValue({ coalesced: false });
+    defaultRails.wakeRecipients.mockReset().mockResolvedValue(undefined);
+    const { readGoalModeOwners, resolveLiveness, flagEnabled } = makeDeps({
+      readGoalModeOwners: vi.fn(async () => [overdueRow]),
+    });
+    // Exercise the real producers; only their outbound transport seams are mocked.
+    const result = await runGoalOwnerReportSweepOnce(sqlNever, {
+      readGoalModeOwners, resolveLiveness, flagEnabled,
+    });
+    expect(result.nudged).toBe(1);
+    expect(defaultRails.openEscalation).toHaveBeenCalledTimes(1);
+    expect(defaultRails.wakeRecipients).toHaveBeenCalledTimes(1);
+    const escalation = defaultRails.openEscalation.mock.calls[0][1] as { body: string };
+    const nudge = defaultRails.wakeRecipients.mock.calls[0][1] as {
+      summary: string;
+      payload: { reportSkeleton: Record<string, string> };
+    };
+    expect(escalation.body).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
+    expect(nudge.summary).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
+    expect(defaultRails.wakeRecipients.mock.calls[0][0]).toEqual([overdueRow.agentId]);
+    expect(nudge.payload.reportSkeleton.nextWake).toMatch(/trigger|event|cadence/i);
+  });
 
   it('flag off ⇒ skipped, and nothing is read', async () => {
     const deps = makeDeps({ flagEnabled: vi.fn(async () => false) });
