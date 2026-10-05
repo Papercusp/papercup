@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
 import { types } from 'node:util';
@@ -206,6 +206,66 @@ describe('P011 exact request weak-target heap-ID reader', () => {
       captureSnapshot: async () => { throw new Error('capture failed'); } })).rejects.toThrow('capture failed');
     expect(client.handles.size).toBe(0);
     expect(client.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+  });
+
+  it.each(['decodedResult', 'resolvedRows', 'responseValue'] as const)(
+    'rejects an unregistered %s weak phase before snapshot or dereference', async phase => {
+      const client = fixture();
+      Reflect.deleteProperty(client.row.objectRefs, phase);
+      const dereference = vi.spyOn(WeakRef.prototype, 'deref');
+      let snapshots = 0;
+      try {
+        const error = await readPinnedHeapObjectIds(client as any, {
+          expectedPid: 7, owners: [owner], pgRequestIds: [requestId],
+          captureSnapshot: async () => { snapshots++; },
+        }).catch(error => error);
+        expect(error.message).toContain('pre-snapshot PG weak phases unobserved');
+        expect(error.diagnostic).toMatchObject({ kind: 'pg-weak-phase-presence',
+          registryBeforeSnapshot: { records: [{ requestId, source,
+            weakPhasePresence: { decodedResult: true, resolvedRows: true, responseValue: true, [phase]: false } }] } });
+        expect(JSON.stringify(error.diagnostic)).not.toContain('mapped');
+        expect(snapshots).toBe(0);
+        expect(dereference).not.toHaveBeenCalled();
+        expect(client.calls).not.toContain('HeapProfiler.getHeapObjectId');
+        expect(client.handles.size).toBe(0);
+        expect(client.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+      } finally { dereference.mockRestore(); }
+    });
+
+  it.each(['getter', 'proxy'] as const)('rejects a %s weak phase without invoking its traps', async kind => {
+    const client = fixture();
+    const ref = client.row.objectRefs.resolvedRows;
+    if (kind === 'getter') Object.defineProperty(client.row.objectRefs, 'resolvedRows', {
+      get() { client.calls.push('phase-getter'); return ref; },
+    });
+    else client.row.objectRefs.resolvedRows = new Proxy(ref, {
+      getPrototypeOf() { client.calls.push('phase-proxy'); return WeakRef.prototype; },
+    });
+    let snapshots = 0;
+    await expect(readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId],
+      captureSnapshot: async () => { snapshots++; } })).rejects.toThrow('weak phases unobserved');
+    expect(snapshots).toBe(0);
+    expect(client.calls).not.toContain('phase-getter');
+    expect(client.calls).not.toContain('phase-proxy');
+    expect(client.handles.size).toBe(0);
+  });
+
+  it('records registered weak phases without dereference and leaves collected targets as gaps', async () => {
+    const client = fixture();
+    const dereference = vi.spyOn(WeakRef.prototype, 'deref').mockReturnValue(undefined);
+    let snapshots = 0;
+    try {
+      const report = await readPinnedHeapObjectIds(client as any, { expectedPid: 7, owners: [owner], pgRequestIds: [requestId],
+        captureSnapshot: async metadata => {
+          snapshots++;
+          expect(dereference).not.toHaveBeenCalled();
+          expect(metadata.records[0].weakPhasePresence).toEqual({ decodedResult: true, resolvedRows: true, responseValue: true });
+          expect(JSON.stringify(metadata)).not.toContain('mapped');
+        } });
+      expect(snapshots).toBe(1);
+      expect(report.queries?.records[0].objects.map(object => object.status)).toEqual(['collected', 'collected', 'collected']);
+      expect(client.handles.size).toBe(0);
+    } finally { dereference.mockRestore(); }
   });
 
   it('survives the actual diagnostic FIFO writer on a real inspector without pinning a collected decoded result', async () => {
