@@ -66,6 +66,7 @@
  */
 
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { readFileSync, statSync } from 'node:fs';
@@ -128,6 +129,8 @@ const GATEWAY_RESTART_PID_POLL_MS = 250;
  */
 const STAGING_RESTART_OBSERVE_MS = 10_000;
 const STAGING_RESTART_POLL_MS = 250;
+const BG_HOST_RESTART_OBSERVE_MS = 30_000;
+const BG_HOST_RESTART_POLL_MS = 250;
 const STAGING_SYNC_LOCK_HANDOFF_TIMEOUT_MS = 5_000;
 const STAGING_SYNC_LOCK_HANDOFF_READY = 'papercup-staging-sync-lock-acquired';
 
@@ -927,11 +930,109 @@ export type StagingRestartReadiness = {
   waitedMs: number;
 };
 
+export type BgHostRestartReadiness = {
+  ready: boolean;
+  observed: boolean;
+  outcome: 'ready' | 'starting' | 'failed' | 'not-observed';
+  pidChanged: boolean;
+  observedPid: number | null;
+  activeState: string | null;
+  result: string | null;
+  waitedMs: number;
+};
+
 const gatewayPort = () => Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788;
 const gatewayHealthUrl = () => `http://127.0.0.1:${gatewayPort()}/healthz`;
 
 function isLiveMainPid(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * Observe the bg-host systemd transition after dev:restart schedules it.
+ * A command launch or an accepted systemd job is not completion: success
+ * requires a known pre-request state, a changed live MainPID, and ActiveState
+ * back at active. Keep the changed PID sticky while systemd finishes starting.
+ */
+export async function waitForBgHostRestartReadiness(
+  before: ServiceStartInfo,
+): Promise<BgHostRestartReadiness> {
+  const startedAt = Date.now();
+  const deadline = startedAt + BG_HOST_RESTART_OBSERVE_MS;
+  const baselineKnown = before.ok && typeof before.mainPid === 'number';
+  let current: ServiceStartInfo | null = null;
+  let changedPid: number | null = null;
+  let observed = false;
+
+  while (Date.now() <= deadline) {
+    try {
+      current = await probeServiceStart(RESTART_TARGET_UNITS['bg-host']);
+    } catch {
+      current = null;
+    }
+    const currentPid = current?.mainPid;
+    if (
+      baselineKnown &&
+      isLiveMainPid(currentPid) &&
+      (!isLiveMainPid(before.mainPid) || currentPid !== before.mainPid)
+    ) {
+      changedPid = currentPid;
+      observed = true;
+    }
+    if (current?.activeState === 'activating' && before.ok && before.activeState !== 'activating') {
+      observed = true;
+    }
+    if (current?.activeState === 'failed') {
+      return {
+        ready: false,
+        observed,
+        outcome: 'failed',
+        pidChanged: changedPid !== null,
+        observedPid: changedPid,
+        activeState: current.activeState,
+        result: current.result ?? null,
+        waitedMs: Date.now() - startedAt,
+      };
+    }
+    if (changedPid !== null && currentPid === changedPid && current?.activeState === 'active') {
+      return {
+        ready: true,
+        observed: true,
+        outcome: 'ready',
+        pidChanged: true,
+        observedPid: changedPid,
+        activeState: current.activeState,
+        result: current.result ?? null,
+        waitedMs: Date.now() - startedAt,
+      };
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(BG_HOST_RESTART_POLL_MS, remainingMs)));
+  }
+
+  return {
+    ready: false,
+    observed,
+    outcome: observed ? 'starting' : 'not-observed',
+    pidChanged: changedPid !== null,
+    observedPid: changedPid,
+    activeState: current?.activeState ?? null,
+    result: current?.result ?? null,
+    waitedMs: Date.now() - startedAt,
+  };
+}
+
+export type BgHostRestartReadinessReader = (before: ServiceStartInfo) => Promise<BgHostRestartReadiness>;
+const defaultBgHostRestartReadinessReader: BgHostRestartReadinessReader = waitForBgHostRestartReadiness;
+let bgHostRestartReadinessReader = defaultBgHostRestartReadinessReader;
+
+/** Test seam: confirmed bg-host restart tests must not wait on or inspect systemd. */
+export function configureBgHostRestartReadinessReaderForTests(
+  reader: BgHostRestartReadinessReader = defaultBgHostRestartReadinessReader,
+): void {
+  bgHostRestartReadinessReader = reader;
 }
 
 /**
@@ -1253,7 +1354,7 @@ export async function waitForGatewayRestartReadiness(
  * never throws (mirrors process-kill.ts / flag-audit.ts's canonical
  * full-column shape) — the restart itself must never be blocked on this.
  */
-async function writeRestartAudit(
+  async function writeRestartAudit(
   actor: string,
   details: {
     target: RestartTarget;
@@ -1285,8 +1386,24 @@ async function writeRestartAudit(
     /** WI-2140796: a real restart that deliberately crossed an active bg-host
      *  quiesce (override_quiesce:true) is attributable from the durable audit row. */
     quiesceOverridden?: { marker: QuiesceMarker | null } | null;
+    /** A paired bg-host request/outcome audit record shares this correlation id. */
+    requestId?: string;
+    phase?: 'request' | 'outcome';
+    beforeMainPid?: number | null;
+    restartCommand?: string;
+    restartLauncherPid?: number | null;
+    restartCommandExitCode?: number | null;
+    restartCommandSignal?: string | null;
+    restartCommandError?: string | null;
+    systemdJobAccepted?: boolean;
+    restartObserved?: boolean;
+    restarted?: boolean;
+    observedMainPid?: number | null;
+    observedActiveState?: string | null;
+    observedResult?: string | null;
+    observationWaitedMs?: number;
   },
-): Promise<void> {
+): Promise<boolean> {
   try {
     const { sql } = getOrgPg();
     const id = `restart-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1295,10 +1412,12 @@ async function writeRestartAudit(
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
       [id, Date.now(), actor, 'dev:restart', details.target, JSON.stringify(details), activeWorkspaceId()],
     );
+    return true;
   } catch (err) {
-    // Best-effort: the restart already fired: never block/fail it on the audit write.
+    // Best-effort: the audit write must never block/fail the restart operation.
 
     console.warn('[dev:restart] audit write failed:', (err as Error)?.message);
+    return false;
   }
 }
 
@@ -1462,6 +1581,8 @@ export default defineTool({
     const restartCmd =
       target === 'desktop-dev'
         ? 'SIGUSR2 recycle verified desktop-dev listener on :3270 (wait for verified wrapper respawn)'
+        : target === 'bg-host'
+          ? `systemctl --user --no-block restart ${cfg.unit}`
         : `systemctl --user restart ${cfg.unit}`;
     const activationCmd = target === 'desktop-dev' ? restartCmd : `systemctl --user daemon-reload && ${restartCmd}`;
     // EI-13307: per-target, not global — computed up front so both the
@@ -2301,11 +2422,24 @@ export default defineTool({
                 : `Restart REFUSED — the detached command could not acquire and transfer the shared staging-sync lock (${stagingLockPath}). The staging-server drain has been released; no restart was scheduled and the cooldown marker was released.`,
             });
           }
+          let requestId: string | null = null;
+          let requestAuditPersisted = true;
+          let restartAuditDetails: Parameters<typeof writeRestartAudit>[1] | null = null;
+          let restartProcess: ReturnType<typeof spawn> | null = null;
+          let restartSpawnError: string | null = null;
+          let restartObservationError: string | null = null;
+          let restartCommandExitCode: number | null = null;
+          let restartCommandSignal: string | null = null;
+          let restartCommandExited = false;
+          let restartCommandClosedResolve: (() => void) | null = null;
+          const restartCommandClosed = new Promise<void>((resolve) => {
+            restartCommandClosedResolve = resolve;
+          });
           try {
             // The staging child is holding the shared lease and waits on fd 4.
             // Invoke the audit before releasing that wait, so audit refusal is
             // never confused with a restart that was actually scheduled.
-            void writeRestartAudit(ownerId, {
+            restartAuditDetails = {
               target,
               unit: cfg.unit,
               viaEnv: enabledByEnv,
@@ -2340,7 +2474,7 @@ export default defineTool({
               gitSyncBarrier:
                 gitSyncBarrier?.acquired === true
                   ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
-                  : null,
+                : null,
               systemdDaemonReloaded,
               ...(bgHostEnvironmentDropInDrift
                 ? {
@@ -2351,7 +2485,19 @@ export default defineTool({
                   }
                 : {}),
               quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
-            });
+            };
+            if (target === 'bg-host') {
+              requestId = randomUUID();
+              requestAuditPersisted = await writeRestartAudit(ownerId, {
+                ...restartAuditDetails,
+                requestId,
+                phase: 'request',
+                beforeMainPid: before.mainPid ?? null,
+                restartCommand: scheduledRestartCmd,
+              });
+            } else {
+              void writeRestartAudit(ownerId, restartAuditDetails);
+            }
             if (stagingHandoff?.acquired) {
               restartScheduled = true;
               stagingHandoff.start();
@@ -2360,17 +2506,149 @@ export default defineTool({
                 detached: true,
                 stdio: 'ignore',
               });
+              restartProcess = child;
+              if (target === 'bg-host') {
+                child.once('error', (error) => {
+                  restartSpawnError = error.message;
+                  restartCommandExited = true;
+                  restartCommandClosedResolve?.();
+                });
+                child.once('close', (code, signal) => {
+                  restartCommandExitCode = code;
+                  restartCommandSignal = signal;
+                  restartCommandExited = true;
+                  restartCommandClosedResolve?.();
+                });
+              }
               child.unref();
               restartScheduled = true;
             }
           } catch (error) {
             restartScheduled = false;
             if (stagingHandoff?.acquired) stagingHandoff.abort();
-            throw error;
+            if (target === 'bg-host') {
+              restartSpawnError = error instanceof Error ? error.message : String(error);
+              restartCommandExited = true;
+              restartCommandClosedResolve?.();
+            } else {
+              throw error;
+            }
           }
           const gatewayReadiness =
             target === 'gateway' ? await waitForGatewayRestartReadiness(before.mainPid ?? null) : null;
           const stagingReadiness = target === 'staging' ? await stagingRestartReadinessReader(before) : null;
+          let bgHostReadiness: BgHostRestartReadiness | null = null;
+          if (target === 'bg-host') {
+            if (restartSpawnError) {
+              bgHostReadiness = {
+                ready: false,
+                observed: false,
+                outcome: 'not-observed',
+                pidChanged: false,
+                observedPid: null,
+                activeState: null,
+                result: null,
+                waitedMs: 0,
+              };
+            } else {
+              try {
+                bgHostReadiness = await bgHostRestartReadinessReader(before);
+              } catch (error) {
+                restartObservationError = error instanceof Error ? error.message : String(error);
+                bgHostReadiness = {
+                  ready: false,
+                  observed: false,
+                  outcome: 'not-observed',
+                  pidChanged: false,
+                  observedPid: null,
+                  activeState: null,
+                  result: null,
+                  waitedMs: 0,
+                };
+              }
+            }
+            if (restartProcess && !restartCommandExited) {
+              await Promise.race([
+                restartCommandClosed,
+                new Promise<void>((resolve) => setTimeout(resolve, 250)),
+              ]);
+            }
+            const systemdJobAccepted = restartCommandExitCode === 0 && restartSpawnError === null;
+            const bgHostRestarted = bgHostReadiness.ready && systemdJobAccepted;
+            const outcomeAuditPersisted = await writeRestartAudit(ownerId, {
+              ...(restartAuditDetails ?? { target, unit: cfg.unit, viaEnv: enabledByEnv, viaAuthorizeArg: enabledByArg,
+                reason: args.reason ?? null, fenceSeq: fence.seq, phantomCoalesceBroken: phantomCoalesceBroken !== null,
+                systemdDaemonReloaded }),
+              requestId: requestId ?? 'request-id-unavailable',
+              phase: 'outcome',
+              beforeMainPid: before.mainPid ?? null,
+              restartCommand: scheduledRestartCmd,
+              restartLauncherPid: restartProcess?.pid ?? null,
+              restartCommandExitCode,
+              restartCommandSignal,
+              restartCommandError: restartSpawnError,
+              systemdJobAccepted,
+              restartObserved: bgHostReadiness.observed,
+              restarted: bgHostRestarted,
+              observedMainPid: bgHostReadiness.observedPid,
+              observedActiveState: bgHostReadiness.activeState,
+              observedResult: bgHostReadiness.result,
+              observationWaitedMs: bgHostReadiness.waitedMs,
+            });
+            const restartWasScheduled = restartProcess !== null && restartSpawnError === null;
+            const restartNote = bgHostRestarted
+              ? 'bg-host restart transition observed at active MainPID ' + bgHostReadiness.observedPid +
+                ' after ' + bgHostReadiness.waitedMs + 'ms.'
+              : restartSpawnError
+                ? 'bg-host restart command could not be started: ' + restartSpawnError
+                : restartObservationError
+                  ? 'bg-host systemd outcome could not be measured: ' + restartObservationError
+                  : !systemdJobAccepted
+                    ? 'bg-host restart command did not confirm systemd job acceptance (exit code ' +
+                      (restartCommandExitCode === null ? 'unknown' : restartCommandExitCode) +
+                      '); do not report it as restarted.'
+                    : 'bg-host restart was scheduled, but a changed active MainPID was not observed; do not report it as restarted.';
+            return json({
+              ok: bgHostRestarted,
+              target,
+              drained: true,
+              restarted: bgHostRestarted,
+              restartScheduled: restartWasScheduled,
+              systemdJobAccepted,
+              restartObserved: bgHostReadiness.observed,
+              restartRequestId: requestId,
+              restartReadiness: bgHostReadiness,
+              restartedFromPid: before.mainPid ?? null,
+              enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+              audited: requestAuditPersisted && outcomeAuditPersisted,
+              requestAuditPersisted,
+              outcomeAuditPersisted,
+              systemdDaemonReloaded,
+              ...(environmentDropInFreshnessAtGuard
+                ? {
+                    unitEnvFreshnessVerified: environmentDropInFreshnessAtGuard.checked,
+                    unitEnvChangedSinceRestart: environmentDropInFreshnessAtGuard.changedPaths.length > 0,
+                    ...(environmentDropInFreshnessAtGuard.changedPaths.length > 0
+                      ? { unitEnvChangedDropIns: environmentDropInFreshnessAtGuard.changedPaths }
+                      : {}),
+                  }
+                : {}),
+              ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+              ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
+              ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
+              ...(gitSync?.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
+              ...(quiesce?.overridden ? { quiesceOverridden: { marker: quiesce.marker } } : {}),
+              ...(peerInFlightEdits?.checked && peerInFlightEdits.total > 0 ? { peerInFlightEdits } : {}),
+              ...(restartSpawnError
+                ? { reason: 'bg_host_restart_command_spawn_failed' }
+                : !bgHostRestarted
+                  ? { reason: 'bg_host_restart_not_observed' }
+                  : {}),
+              verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null, before.nRestarts),
+              note: restartNote + ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.' +
+                peerInFlightEditsNote(peerInFlightEdits, cfg.unit),
+            });
+          }
           if (gatewayReadiness && !gatewayReadiness.ready) {
             return json({
               ok: false,

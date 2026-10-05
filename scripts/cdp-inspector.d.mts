@@ -69,6 +69,39 @@ export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdp
         id?: number;
     }[];
 }>;
+/** Capture a file snapshot and its exact cache IDs before yielding the target's
+ * job. A neighboring inspector disconnect clears V8's isolate-wide ID map, so
+ * separate socket requests cannot safely join IDs to a completed snapshot.
+ * Selection is made in an EARLIER target job and retains only WeakRefs. Creating
+ * or dereferencing those WeakRefs in the snapshot job would keep their targets
+ * alive through GC. Reuse the existing selectors and membership fences, then
+ * release every local/remote handle. This deliberately forces GC, after resource
+ * windows; it is not an ordinary allocation measurement.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
+ * @param {{expectedPid: number, owners: string[], cacheKeyDigests: string[], snapshotPath: string}} options
+ * @returns {Promise<{pid: number, roots: {owner: string, status: string, id?: number}[],
+ *   cacheEntries: CacheHeapReport, cacheBeforeSnapshot: CacheHeapMetadata,
+ *   file: string, writeMs: number, identityBoundary: string, definition: string}>}
+ */
+export function capturePinnedHeapSnapshot(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners, cacheKeyDigests, snapshotPath }: {
+    expectedPid: number;
+    owners: string[];
+    cacheKeyDigests: string[];
+    snapshotPath: string;
+}): Promise<{
+    pid: number;
+    roots: {
+        owner: string;
+        status: string;
+        id?: number;
+    }[];
+    cacheEntries: CacheHeapReport;
+    cacheBeforeSnapshot: CacheHeapMetadata;
+    file: string;
+    writeMs: number;
+    identityBoundary: string;
+    definition: string;
+}>;
 /**
  * Inspect logical payloads reachable from existing module-singleton roots.
  * No GC, queryObjects, getters, proxy traps or application iterators run.

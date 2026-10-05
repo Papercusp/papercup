@@ -179,7 +179,19 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
     if (captureSnapshot) await captureSnapshot(selection
       ? { ...selection.metadata, ...(cacheSelection ? { cacheEntries: cacheSelection.metadata } : {}) }
       : { cacheEntries: cacheSelection.metadata });
-    for (const owner of owners) {
+    roots.push(...await readHeapRoots(client, { expectedPid, owners, objectGroup }));
+    const queries = pgRequestIds ? await readPgHeapObjectIds(client, { expectedPid, pgRequestIds, objectGroup, selection }) : undefined;
+    const cacheEntries = cacheSelection ? await readCacheHeapObjectIds(client,
+      { expectedPid, objectGroup, selection: cacheSelection }) : undefined;
+    return { pid: expectedPid, roots, ...(queries ? { queries } : {}), ...(cacheEntries ? { cacheEntries } : {}),
+      definition: 'Numeric IDs bind existing singleton values to preceding snapshot nodes; no physical memory estimate.' };
+  } finally { await client.send('Runtime.releaseObjectGroup', { objectGroup }); }
+}
+
+/** @returns {Promise<{owner: string, status: string, id?: number}[]>} */
+async function readHeapRoots(client, { expectedPid, owners, objectGroup }) {
+  const roots = [];
+  for (const owner of owners) {
       const remote = (await client.evaluate(`(() => {
         if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
         const types = process.getBuiltinModule('util').types;
@@ -206,12 +218,86 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
       if (!/^[1-9]\d*$/.test(heapSnapshotObjectId) || !Number.isSafeInteger(id))
         throw new TypeError('Invalid heap object ID');
       roots.push({ owner, status: 'found', id });
-    }
-    const queries = pgRequestIds ? await readPgHeapObjectIds(client, { expectedPid, pgRequestIds, objectGroup, selection }) : undefined;
-    const cacheEntries = cacheSelection ? await readCacheHeapObjectIds(client,
-      { expectedPid, objectGroup, selection: cacheSelection }) : undefined;
-    return { pid: expectedPid, roots, ...(queries ? { queries } : {}), ...(cacheEntries ? { cacheEntries } : {}),
-      definition: 'Numeric IDs bind existing singleton values to preceding snapshot nodes; no physical memory estimate.' };
+  }
+  return roots;
+}
+
+/** Capture a file snapshot and its exact cache IDs before yielding the target's
+ * job. A neighboring inspector disconnect clears V8's isolate-wide ID map, so
+ * separate socket requests cannot safely join IDs to a completed snapshot.
+ * Selection is made in an EARLIER target job and retains only WeakRefs. Creating
+ * or dereferencing those WeakRefs in the snapshot job would keep their targets
+ * alive through GC. Reuse the existing selectors and membership fences, then
+ * release every local/remote handle. This deliberately forces GC, after resource
+ * windows; it is not an ordinary allocation measurement.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
+ * @param {{expectedPid: number, owners: string[], cacheKeyDigests: string[], snapshotPath: string}} options
+ * @returns {Promise<{pid: number, roots: {owner: string, status: string, id?: number}[],
+ *   cacheEntries: CacheHeapReport, cacheBeforeSnapshot: CacheHeapMetadata,
+ *   file: string, writeMs: number, identityBoundary: string, definition: string}>}
+ */
+export async function capturePinnedHeapSnapshot(client, { expectedPid, owners, cacheKeyDigests, snapshotPath }) {
+  validatePinnedStateOptions({ expectedPid, owners, operatorCacheEntries: true, cacheKeyDigests });
+  if (!owners || !owners.includes('@papercusp/operator-core.operatorCache') || !cacheKeyDigests ||
+      cacheKeyDigests.length > 32 || typeof snapshotPath !== 'string' || !snapshotPath.startsWith('/') ||
+      !snapshotPath.endsWith('.heapsnapshot') || snapshotPath.length > 4096 || snapshotPath.includes('\0'))
+    throw new TypeError('Exact bounded cache digests and absolute heap snapshot path required');
+  const objectGroup = 'p011-atomic-heap-' + randomUUID();
+  const key = '__papercuspHeapSelection_' + randomUUID();
+  try {
+    const selected = await selectCacheHeapEntries(client, { expectedPid, cacheKeyDigests, objectGroup });
+    if (selected.metadata.status !== 'selected' || selected.metadata.records.some(row => row.status !== 'selected'))
+      throw Object.assign(new Error('Exact pre-snapshot cache selection incomplete or unsafe'), {
+        diagnostic: { kind: 'cache-entry-selection', cacheBeforeSnapshot: selected.metadata },
+      });
+    const captured = await client.send('Runtime.callFunctionOn', { objectId: selected.objectId,
+      functionDeclaration: `async function () {
+        if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
+        const readHeapRoots = ${readHeapRoots.toString()};
+        const readCacheHeapObjectIds = ${readCacheHeapObjectIds.toString()};
+        const cacheHeapReader = ${cacheHeapReader.toString()};
+        const key = ${JSON.stringify(key)}, objectGroup = ${JSON.stringify(objectGroup)};
+        const session = new (process.getBuiltinModule('inspector').Session)();
+        const send = (method, params = {}) => {
+          let settled = false, result, failure;
+          session.post(method, params, (error, value) => { settled = true; failure = error; result = value; });
+          if (!settled) throw new Error('Atomic snapshot requires synchronous inspector callbacks: ' + method);
+          if (failure) throw failure;
+          if (result?.exceptionDetails) throw new Error('Atomic target evaluation failed: ' + result.exceptionDetails.text);
+          return Promise.resolve(result);
+        };
+        const local = { send, evaluate: (expression, options = {}) => send('Runtime.evaluate', { expression, ...options }) };
+        let connected = false;
+        try {
+          session.connect(); connected = true;
+          // Only the weak selection facade crosses inspector sessions.
+          globalThis[key] = this;
+          const remote = (await local.evaluate('globalThis[' + JSON.stringify(key) + ']', { objectGroup })).result;
+          delete globalThis[key];
+          if (!remote.objectId) throw new Error('Atomic weak selection unavailable');
+          await send('HeapProfiler.enable');
+          const started = Date.now();
+          const file = process.getBuiltinModule('v8').writeHeapSnapshot(${JSON.stringify(snapshotPath)});
+          const writeMs = Date.now() - started;
+          const roots = await readHeapRoots(local, { expectedPid: ${expectedPid},
+            owners: ${JSON.stringify(owners)}, objectGroup });
+          const cacheEntries = await readCacheHeapObjectIds(local, { expectedPid: ${expectedPid}, objectGroup,
+            selection: { objectId: remote.objectId, metadata: this.metadata } });
+          return { pid: process.pid, roots, cacheEntries, cacheBeforeSnapshot: this.metadata, file, writeMs,
+            identityBoundary: 'snapshot and IDs in one target job; synchronous inspector callbacks only',
+            definition: 'Numeric IDs bind exact selected cache objects to this file; no physical memory estimate.' };
+        } finally {
+          delete globalThis[key];
+          if (connected) {
+            try { await send('Runtime.releaseObjectGroup', { objectGroup }); }
+            finally { session.disconnect(); }
+          }
+        }
+      }`, returnByValue: true, awaitPromise: true, objectGroup }, 120_000);
+    if (captured.exceptionDetails) throw new CdpEvaluationError('atomic pinned heap snapshot', captured.exceptionDetails);
+    if (captured.result?.value?.pid !== expectedPid || captured.result.value.file !== snapshotPath)
+      throw new Error('Atomic heap snapshot identity/destination mismatch');
+    return captured.result.value;
   } finally { await client.send('Runtime.releaseObjectGroup', { objectGroup }); }
 }
 

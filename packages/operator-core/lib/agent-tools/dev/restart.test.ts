@@ -39,16 +39,25 @@ vi.mock('node:child_process', async (importOriginal) => {
   const { PassThrough } = await import('node:stream');
   return {
     ...actual,
-    spawn: vi.fn(() => {
+    spawn: vi.fn((...spawnArgs: unknown[]) => {
+      const commandArgs = Array.isArray(spawnArgs[1]) ? spawnArgs[1].map(String) : [];
       const acquired = new PassThrough();
       const release = new PassThrough();
       const child = Object.assign(new EventEmitter(), {
         unref: vi.fn(),
         kill: vi.fn(),
         pid: undefined,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
         stdio: [null, null, null, acquired, release],
       });
-      queueMicrotask(() => acquired.write('papercup-staging-sync-lock-acquired\n'));
+      queueMicrotask(() => {
+        acquired.write('papercup-staging-sync-lock-acquired\n');
+        if (commandArgs.join(' ').includes('papercusp-bg-host.service')) {
+          child.exitCode = 0;
+          child.emit('close', 0, null);
+        }
+      });
       return child as unknown as ReturnType<typeof actual.spawn>;
     }),
   };
@@ -150,7 +159,7 @@ import {
 } from '../../release/gate-collision-guard';
 import { checkBgHostQuiesce } from './bg-host-quiesce-guard';
 import { mockImplementationTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
-import type { StagingRestartReadiness } from './restart';
+import type { BgHostRestartReadiness, StagingRestartReadiness } from './restart';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
@@ -284,6 +293,7 @@ const {
   bgHostIntegrationRootFromUnitProperties,
   configureBgHostEnvironmentDropInFreshnessReaderForTests,
   configureBgHostIntegrationRootResolverForTests,
+  configureBgHostRestartReadinessReaderForTests,
   configureBgHostRestartFreshnessReaderForTests,
   configurePeerInFlightEditsReaderForTests,
   configureStagingRestartReadinessReaderForTests,
@@ -351,6 +361,18 @@ const stagingReadinessM = vi.fn(
     waitedMs: 5,
   }),
 );
+const bgHostRestartReadinessM = vi.fn(
+  async (before: { mainPid?: number }): Promise<BgHostRestartReadiness> => ({
+    ready: true,
+    observed: true,
+    outcome: 'ready',
+    pidChanged: true,
+    observedPid: (before.mainPid ?? 0) + 1,
+    activeState: 'active',
+    result: 'success',
+    waitedMs: 5,
+  }),
+);
 /** Drive guardResource's mock as `(spec, run) => run(fence)` — a thin,
  *  explicitly-typed stand-in for the real drain+fence primitive (which has
  *  its own coverage elsewhere) so `run` never infers to `never` through the
@@ -396,6 +418,7 @@ beforeEach(() => {
   peerEditsM.mockResolvedValue({ checked: true, tree: BG_HOST_UNIT_ROOT, total: 0, files: [] });
   configurePeerInFlightEditsReaderForTests(peerEditsM);
   configureStagingRestartReadinessReaderForTests(stagingReadinessM);
+  configureBgHostRestartReadinessReaderForTests(bgHostRestartReadinessM);
   configureSystemdDaemonReloaderForTests(systemdDaemonReloadM);
   releaseM.mockResolvedValue({
     released: 1,
@@ -445,6 +468,7 @@ afterAll(() => {
   configureBgHostIntegrationRootResolverForTests();
   configurePeerInFlightEditsReaderForTests();
   configureStagingRestartReadinessReaderForTests();
+  configureBgHostRestartReadinessReaderForTests();
   configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   else process.env.PAPERCUSP_ALLOW_DEV_RESTART = ORIGINAL_ENV;
@@ -628,7 +652,7 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target: 'bg-host',
-      would_run: 'systemctl --user daemon-reload && systemctl --user restart papercusp-bg-host.service',
+      would_run: 'systemctl --user daemon-reload && systemctl --user --no-block restart papercusp-bg-host.service',
     });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~13min/);
@@ -718,7 +742,10 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target,
-      would_run: `systemctl --user daemon-reload && systemctl --user restart ${unit}`,
+      would_run:
+        target === 'bg-host'
+          ? `systemctl --user daemon-reload && systemctl --user --no-block restart ${unit}`
+          : `systemctl --user daemon-reload && systemctl --user restart ${unit}`,
     });
     if (coalesces) expect(b.note).toMatch(/coalesced/);
     else expect(b.note).not.toMatch(/coalesced/);
@@ -1085,10 +1112,16 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
       }),
     );
     expect(b).toMatchObject({ ok: true, restarted: true, quiesceOverridden: { marker: { pid: 4242 } } });
-    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
-    const [, params] = auditUnsafeM.mock.calls[0]!;
-    const details = JSON.parse(params[5] as string);
-    expect(details.quiesceOverridden).toMatchObject({ marker: { pid: 4242 } });
+    expect(auditUnsafeM).toHaveBeenCalledTimes(2);
+    const request = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    const outcome = JSON.parse(auditUnsafeM.mock.calls[1]![1][5] as string);
+    expect(request.quiesceOverridden).toMatchObject({ marker: { pid: 4242 } });
+    expect(outcome).toMatchObject({
+      requestId: request.requestId,
+      phase: 'outcome',
+      restarted: true,
+      quiesceOverridden: { marker: { pid: 4242 } },
+    });
   });
 
   it('previews the quiesce block in the DRY RUN, where the decision is actually made', async () => {
@@ -2572,6 +2605,81 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host (EI-13307 widened cooldown)', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
+  });
+
+  it('correlates the request and outcome audit rows and reports restarted only after the active PID changes', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(21)));
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restartScheduled: true,
+      systemdJobAccepted: true,
+      restartObserved: true,
+      restarted: true,
+      restartedFromPid: 4321,
+      restartReadiness: { ready: true, observedPid: 4322, activeState: 'active' },
+    });
+    expect(typeof b.restartRequestId).toBe('string');
+    expect(auditUnsafeM).toHaveBeenCalledTimes(2);
+    const request = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    const outcome = JSON.parse(auditUnsafeM.mock.calls[1]![1][5] as string);
+    expect(request).toMatchObject({
+      requestId: b.restartRequestId,
+      phase: 'request',
+      beforeMainPid: 4321,
+      restartCommand: 'systemctl --user --no-block restart papercusp-bg-host.service',
+    });
+    expect(outcome).toMatchObject({
+      requestId: request.requestId,
+      phase: 'outcome',
+      restartCommandExitCode: 0,
+      systemdJobAccepted: true,
+      restartObserved: true,
+      restarted: true,
+      observedMainPid: 4322,
+      observedActiveState: 'active',
+    });
+  });
+
+  it('keeps restarted false and records the outcome when systemd accepts the job but no PID transition is observed', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(22)));
+    bgHostRestartReadinessM.mockResolvedValueOnce({
+      ready: false,
+      observed: false,
+      outcome: 'not-observed',
+      pidChanged: false,
+      observedPid: null,
+      activeState: 'active',
+      result: 'success',
+      waitedMs: 30_000,
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'bg-host',
+      restartScheduled: true,
+      systemdJobAccepted: true,
+      restartObserved: false,
+      restarted: false,
+      reason: 'bg_host_restart_not_observed',
+    });
+    const request = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    const outcome = JSON.parse(auditUnsafeM.mock.calls[1]![1][5] as string);
+    expect(outcome).toMatchObject({
+      requestId: request.requestId,
+      phase: 'outcome',
+      restartObserved: false,
+      restarted: false,
+      observedMainPid: null,
+      systemdJobAccepted: true,
+    });
   });
 
   it('uses bounded startup polling for the portless bg-host and labels MainPID=0/activating as transient', () => {

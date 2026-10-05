@@ -87,6 +87,13 @@ function oracleExecution(implementationHash = 'b'.repeat(64)) {
       evidence: { schemaVersion: string; scope: string; basis: string; status: string; reasons: string[];
         sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }> } } | undefined,
     exitCode: 0, signal: null,
+    commandProcessSources: { report: '{}', unresolved: ['node-process-descendant-population-unmeasured'],
+      reference: { pinCommit: makeSpec().harnessCommit, sources: [{ path: 'scripts/command.mjs', sha256: '1'.repeat(64) }] },
+      processes: [{ schemaVersion: 'node-loaded-process-sources-v1', scope: 'repository-node-process-sources',
+        basis: 'node-load-hook', status: 'stable', entrypoint: 'scripts/command.mjs', pid: 123, parentPid: 122, exitCode: 0,
+        reasons: [], unresolved: ['node-process-descendant-population-unmeasured'],
+        sources: [{ path: 'scripts/command.mjs', sha256: '1'.repeat(64), currentSha256: '1'.repeat(64) }] }],
+    } as NonNullable<GymOracleRun['execution']>['commandProcessSources'],
     workerSources: { report: '{}', reference: { pinCommit: makeSpec().harnessCommit, sources: [
       { path: 'oracle.test.js', sha256: 'a'.repeat(64) }, { path: 'impl.js', sha256: 'b'.repeat(64) },
     ] } as { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> } | undefined,
@@ -521,6 +528,42 @@ describe('runGymPipeline', () => {
       expect(result.deterministicSignals?.taskPassed).toBeUndefined();
       expect(result.deterministicSignals?.regressions).toBeUndefined();
       expect(result.deterministicSignals?.oracle).toMatchObject({ mainProcessCurrent: false });
+    });
+
+  it.each(['missing', 'empty', 'unknown', 'self-restored', 'dirty', 'missing-entrypoint', 'duplicate-process', 'wrong-pin', 'changed-between-runs'] as const)
+    ('withholds positive claims when command child-process inputs are %s', async mode => {
+      const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+      let run = 0;
+      ports.runOracle = async ({ testPath, pinCommit, implPath }) => {
+        run++;
+        const execution = oracleExecution();
+        const measured = execution.commandProcessSources!;
+        if (mode === 'missing') execution.commandProcessSources = undefined;
+        else if (mode === 'empty') measured.processes = [];
+        else if (mode === 'unknown') measured.processes[0].status = 'unknown';
+        else if (mode === 'self-restored') measured.processes[0].sources[0].sha256 = '2'.repeat(64);
+        else if (mode === 'dirty') {
+          measured.processes[0].sources[0].sha256 = '2'.repeat(64);
+          measured.processes[0].sources[0].currentSha256 = '2'.repeat(64);
+        } else if (mode === 'missing-entrypoint') measured.processes[0].entrypoint = null;
+        else if (mode === 'duplicate-process') measured.processes.push(structuredClone(measured.processes[0]));
+        else if (mode === 'wrong-pin') measured.reference.pinCommit = makeSpec().task.commit;
+        else if (mode === 'changed-between-runs' && run === 2) {
+          const extra = { path: 'scripts/extra.mjs', sha256: '2'.repeat(64), currentSha256: '2'.repeat(64) };
+          measured.processes[0].sources.push(extra);
+          measured.reference.sources.push(extra);
+        }
+        return { results: [{ name: 'task', passed: true }, { name: 'preserved', passed: true }],
+          testPath, pinCommit: pinCommit!, sourceHashes: {
+            pinned: 'a'.repeat(64), before: 'a'.repeat(64), after: 'a'.repeat(64),
+          }, implementation: { path: implPath!, before: 'b'.repeat(64), after: 'b'.repeat(64) }, execution };
+      };
+      const result = await runGymPipeline(makeSpec({ task: { ...makeSpec().task,
+        oracle: { testPath: 'oracle.test.js', implPath: 'impl.js',
+          pinCommit: makeSpec().harnessCommit, sourceRef: 'WI-ORACLE' } } }), ports);
+      expect(result.deterministicSignals?.taskPassed).toBeUndefined();
+      expect(result.deterministicSignals?.regressions).toBeUndefined();
+      expect(result.deterministicSignals?.oracle).toMatchObject({ commandProcessesCurrent: false });
     });
 
   it('withholds authority from legacy unpinned oracle results even with complete passing coverage', async () => {
