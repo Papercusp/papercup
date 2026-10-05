@@ -1511,6 +1511,55 @@ describe('resume + fork (D-004/D-007)', () => {
     }
   });
 
+  it.each([false, true])('pins each fork reservation to its bootstrap identity (headless=%s)', async (headless) => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const result = await launchAgent.handler({
+      resume: { agentId: dead.ownerId }, fork: true, headless,
+      brief: 'branch the recovery', count: 2,
+    }, ctx);
+    expect(isError(result)).toBe(false);
+    const owners = spawnGovernedAgentProcessMock.mock.calls.map(([input]) =>
+      (input as { metadata: { targetOwnerId: string } }).metadata.targetOwnerId);
+    expect(owners).toHaveLength(2);
+    expect(new Set(owners).size).toBe(2);
+    const spawns = headless ? spawnHeadlessMock : spawnConsoleMock;
+    for (const [i, owner] of owners.entries()) {
+      expect(owner).toMatch(/^su-[0-9a-f-]{36}$/);
+      expect(owner).not.toBe(dead.ownerId);
+      expect(spawnGovernedAgentProcessMock.mock.calls[i][0]).toMatchObject({ owner });
+      expect(spawns.mock.calls[i][0].envelope.greetingCmd).toContain(`--owner-id=${owner}`);
+      if (headless) expect(spawns.mock.calls[i][0]).toMatchObject({ coordOwnerId: owner });
+    }
+    expect(dataOf(result)?.launch).toMatchObject({ ownerIds: owners });
+    expect(goalLaunchResolveMock.mock.calls[0][0]).not.toHaveProperty('excludeOwnerIds');
+  });
+
+  it('excludes only the retained owner from the batch preflight for an in-place resume', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    await launchAgent.handler({ resume: { agentId: dead.ownerId }, brief: 'resume at the ceiling' }, ctx);
+    expect(goalLaunchResolveMock).toHaveBeenCalledWith(expect.objectContaining({
+      count: 1, excludeOwnerIds: [dead.ownerId],
+    }));
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ targetOwnerId: dead.ownerId }),
+    }), expect.any(Function));
+    expect(spawnedCommand()).not.toContain('--owner-id=');
+  });
+
+  it('preserves a started member and its claim when another member loses final goal admission', async () => {
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) =>
+      spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }));
+    spawnGovernedAgentProcessMock.mockResolvedValueOnce({
+      status: 'error', error: 'goal seat already reserved', code: 409,
+    });
+    const result = await launchAgent.handler({ brief: 'bounded batch', count: 2, idempotencyKey: 'partial-seat' }, ctx);
+    expect(spawnConsoleMock).toHaveBeenCalledOnce();
+    expect(dataOf(result)?.launch).toMatchObject({ opened: 1, failed: 1, partial: true });
+    expect(textOf(result)).toContain('goal seat already reserved');
+    expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+    expect(recordAgentLaunchSummaryMock).toHaveBeenCalled();
+  });
+
   it('starts an identity-preserving fresh successor for an ended critical source', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);
