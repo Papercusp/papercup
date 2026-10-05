@@ -16,6 +16,7 @@ import {
 import { getReport, reportBodySha256, type ReportRecord, type ReportViewer } from './report-library';
 import { ownerWallActionSql, openOwnerWallPredicateSql } from './goal-owner-report-truth';
 import { GOAL_OWNER_REPORT_FIELD, parseGoalOwnerReport, stampGoalOwnerReport } from './goal-owner-report';
+import { resolveGoalHolders } from './goals/holder';
 
 type Snapshot = GoalOwnerReportSnapshotV1;
 type Db = Sql | TransactionSql;
@@ -128,11 +129,15 @@ export function makeGoalReportReferenceReads(sql: Db, workspaceId: string, goalI
         completionEvidenceRefs: verified ? [row.terminal_completion_ref] : [], verification: verified ? 'verified' : 'unverified' };
     },
     async wake(wake) {
+      const holders = await resolveGoalHolders(sql as Sql, { workspaceId, goalId });
+      const liveOwnerId = holders.live[0]?.ownerId;
+      if (!liveOwnerId) return false;
       if (wake.kind === 'loop') {
         const rows = await sql`SELECT r.id, r.next_fire_at, r.updated_at FROM harness_shared.routines r
           JOIN harness_shared.agent_modes m ON m.workspace_id = r.workspace_id AND m.owner_id = r.target_owner_id
            AND m.mode = 'goal' AND m.subject = ${goalId}
-          WHERE r.workspace_id = ${workspaceId} AND r.id = ${wake.ref} AND r.active = true`;
+          WHERE r.workspace_id = ${workspaceId} AND r.id = ${wake.ref} AND r.active = true
+            AND r.target_owner_id = ${liveOwnerId}`;
         return rows.length === 1 && iso(rows[0].next_fire_at) === wake.expectedAt &&
           wake.evidenceRef === `routine:${rows[0].id}@${iso(rows[0].updated_at)}`;
       }
@@ -143,6 +148,7 @@ export function makeGoalReportReferenceReads(sql: Db, workspaceId: string, goalI
         JOIN harness_shared.agent_modes m ON m.workspace_id = a.workspace_id AND m.owner_id = a.subscriber_id
          AND m.mode = 'goal' AND m.subject = ${goalId}
         WHERE a.workspace_id = ${workspaceId} AND a.id = ${Number(wake.evidenceRef!.slice(6))}
+         AND a.subscriber_id = ${liveOwnerId}
          AND a.fired_at IS NULL AND a.cancelled_at IS NULL AND a.timeout_behavior = 'wake' AND a.policy = 'wake'`;
       return rows.length === 1 && rows[0].event_key === wake.ref && rows[0].expires_ts !== null && iso(rows[0].expires_ts) === wake.expectedAt;
     },

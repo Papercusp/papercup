@@ -875,6 +875,7 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     const { sql } = pgReturning([2]);
     let t = 0;
     await expect(
+      // idle-window-ok: this pure drain fixture advances an injected clock by100ms; no child boots.
       waitForOperatorDrain({ ...base, pg: sql, stallMs: 10, now: () => (t += 100), sleep: async () => {}, warn: () => {} }),
     ).rejects.toThrow(/cannot drain on its behalf without corrupting delivery state/);
   });

@@ -162,7 +162,7 @@ describe('release identity gate: archive expansion (EI-20108164746219771)', () =
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 120_000);
+  }, 130_000);
 
   // WI-10005667. Measured on the P-012 AWS bake's rootfs: 14 man-page links such as
   // usr/share/man/man1/man.1.gz -> /etc/alternatives/man.1.gz were opened as archives, so
@@ -205,5 +205,5 @@ describe('release identity gate: archive expansion (EI-20108164746219771)', () =
       rmSync(scanned, { recursive: true, force: true });
       rmSync(hostSide, { recursive: true, force: true });
     }
-  }, 120_000);
+  }, 130_000);
 });

@@ -6505,6 +6505,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     it('documents that assumptions are required only for terminal closes', () => {
       const json = z.toJSONSchema(complete.args as never) as {
+        $defs?: Record<string, JsonSchemaNode>;
         anyOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
         oneOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
       };
