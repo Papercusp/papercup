@@ -1656,9 +1656,11 @@ describe('listIssues watchdogCloseRoutes selects closing routes in SQL, not a re
     const repaired = await create('repeated-tool-error:fixed', {
       toolFailureProbation: { repairEvidence: { kind: 'contract-change' } },
     });
+    // WI-10005125 retired watchdog-key duplicate closing. Sharing a key alone
+    // supplies no closing evidence, even when both rows are still open.
     const dupA = await create('tool-failure-signature:dup');
     const dupB = await create('tool-failure-signature:dup');
-    // A duplicate whose partner is TERMINAL is not a duplicate group (nothing to dedupe).
+    // A terminal same-key partner supplies no closing evidence either.
     const lonely = await create('tool-failure-signature:closed-pair');
     const closedPartner = await create('tool-failure-signature:closed-pair');
     await issues.setIssueState(closedPartner.id, 'resolved', 'agA', 'test');
@@ -1672,14 +1674,16 @@ describe('listIssues watchdogCloseRoutes selects closing routes in SQL, not a re
 
     const census = await issues.listIssues({ state: 'open', watchdogKeyed: true, watchdogCloseRoutes: routes, limit });
     expect(new Set(census.map((i) => i.id))).toEqual(
-      new Set([absence.id, redTest.id, repaired.id, dupA.id, dupB.id]),
+      new Set([absence.id, redTest.id, repaired.id]),
     );
+    expect(census.map((i) => i.id)).not.toContain(dupA.id);
+    expect(census.map((i) => i.id)).not.toContain(dupB.id);
     expect(census.map((i) => i.id)).not.toContain(lonely.id);
 
     // Every reader honours the fragment (issues-engineer-filter-parity), so the count agrees.
     await expect(
       issues.countIssues({ state: 'open', watchdogKeyed: true, watchdogCloseRoutes: routes }),
-    ).resolves.toBe(5);
+    ).resolves.toBe(3);
   });
 
   it('is inert without watchdogKeyed (the route filter refines that predicate, it does not replace it)', async () => {
