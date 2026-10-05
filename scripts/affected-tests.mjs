@@ -6930,7 +6930,7 @@ function runCapturedTask(
         allocation,
         journalLabel,
       );
-      rawErrSync(
+      errSync(
         `AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=0 ` +
           `stalledForSec=0 timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
@@ -6971,9 +6971,10 @@ function runCapturedTask(
       signal = null,
       settled = false,
     ) => {
-      // Deliberately bypass the ordered replay buffer: this tiny, self-identifying marker is
-      // the live pulse consumed by green-checkpoint while the child output remains captured.
-      // It contains no child bytes, so concurrent tasks cannot misattribute test output.
+      // Bypass ordered task-output replay, but retain the live pulse in the canonical
+      // run log as well as stderr. A resumed observer may only have RUN_LOG_PATH:
+      // rawErrSync alone made a progressing suite look silent until phase C replayed it.
+      // capturedBytes/stalledForSec, not the pulse's mtime alone, establish progress.
       const outcome = formatTaskOutcomeFields({ status, signal, settled });
       // Deliberately narrow: only an UNAMBIGUOUS non-clean settlement counts — a nonzero
       // numeric status, or death by signal. A settled beat carrying neither (status null,
@@ -6986,7 +6987,7 @@ function runCapturedTask(
         countedNonzeroExit = true;
         observedNonzeroExits++;
       }
-      rawErrSync(
+      errSync(
         `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
           // WI-41180: `elapsedSec` rises identically whether the task is working or
