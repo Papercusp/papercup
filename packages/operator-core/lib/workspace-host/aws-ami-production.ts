@@ -190,9 +190,17 @@ export async function verifyBootcAmiArtifact(
   return path;
 }
 
+/**
+ * Tail of a failed executable's output kept in the thrown message. The external tools write a
+ * JSON error payload whose evidence (e.g. the canary's bootstrapDiagnostics, placed last) is
+ * tens of KB; a 2,000-char tail cut the cause of a failed clean-room service start out of the
+ * report (P-012 chain5, 2026-10-05).
+ */
+export const AWS_AMI_COMMAND_ERROR_DETAIL_CHARS = 24_000;
+
 function assertSuccess(result: AwsAmiCommandResult, operation: string): string {
   if (result.exitCode !== 0) {
-    const detail = (result.stderr.trim() || result.stdout.trim()).slice(-2000);
+    const detail = (result.stderr.trim() || result.stdout.trim()).slice(-AWS_AMI_COMMAND_ERROR_DETAIL_CHARS);
     fail(`${operation} exited ${result.exitCode}${detail ? `: ${detail}` : ''}`);
   }
   return result.stdout;
