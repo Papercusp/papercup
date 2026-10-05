@@ -4608,6 +4608,7 @@ async function completeOne(
       countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
       ...(completionEvidenceFindings ? { completionEvidenceFindings } : {}),
       ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
+      ...(terminalCriteriaWarning ? { terminalCriteriaWarning } : {}),
       completionContract: completionContract(),
     };
   }
@@ -5151,6 +5152,8 @@ async function completeOne(
                 // Keep the rule-level text rather than inventing a per-path story we do not have.
                 (contentIdentityDetail ??
                 `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`)
+          : terminalCriteriaUnmet
+            ? `Its evidence fields are complete; terminal criteria lowered the grade. ${terminalCriteriaWarning}`
           : insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
             ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
               `be true: if this close added or changed tests, it changed at least one file, and a completion ` +
