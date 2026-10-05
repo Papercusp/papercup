@@ -529,6 +529,7 @@ export async function runCommandViaSpawnerSidecar(
   let fence: { serverGeneration: string; connectionId: string } | undefined;
   let containment: SidecarContainment | undefined;
   let requestId: number | undefined;
+  let clientConnectionId: string | undefined;
   let cancelSent = false;
   const onAbort = (): void => {
     if (requestId === undefined || cancelSent) return;
@@ -566,8 +567,9 @@ export async function runCommandViaSpawnerSidecar(
       {
         timeoutMs: opts.timeoutMs + 35_000,
         onOutputActivity: opts.onProgress,
-        onRequestId: (id) => {
+        onRequestId: (id, connectionId) => {
           requestId = id;
+          clientConnectionId = connectionId;
           if (opts.signal?.aborted) onAbort();
         },
       },
@@ -579,6 +581,22 @@ export async function runCommandViaSpawnerSidecar(
     recordSidecarExecLatency({ command, args }, performance.now() - execStartedAt);
     return res;
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorCode = (error as NodeJS.ErrnoException | null)?.code;
+    const timedOut = /^RPC request timeout: /.test(errorMessage);
+    const isTransportFault = Boolean(errorCode) || timedOut || /^(Socket error:|Sidecar socket |Sidecar connection |Connection timeout dialing)/.test(errorMessage);
+    if (requestId !== undefined && isTransportFault) {
+      console.warn('[spawner-process-exec-fault]', {
+        event: timedOut ? 'rpc-timeout' : 'transport-error',
+        clientConnectionId: clientConnectionId ?? null,
+        serverGeneration: fence?.serverGeneration ?? null,
+        connectionId: fence?.connectionId ?? null,
+        requestId,
+        method: 'process:exec',
+        errorCode: errorCode ?? null,
+        errorName: error instanceof Error ? error.name : null,
+      });
+    }
     // Before dispatch a rejection is safe for local fallback. Afterwards keep
     // the caller's repository lease until this exact execution cannot run.
     if (!isolated || !fence || !containment || requestId === undefined) throw error;

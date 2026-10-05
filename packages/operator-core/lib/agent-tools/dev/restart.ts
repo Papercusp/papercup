@@ -2645,7 +2645,13 @@ export default defineTool({
                   ? { reason: 'bg_host_restart_not_observed' }
                   : {}),
               verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null, before.nRestarts),
-              note: restartNote + ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.' +
+              note: restartNote +
+                (environmentDropInFreshnessAtGuard?.changedPaths.length
+                  ? ` — restarted to load the newer Environment= drop-in(s): ${environmentDropInFreshnessAtGuard.changedPaths.join(', ')}.`
+                  : bgHostEnvironmentDropInDrift
+                    ? ' — the Environment= drop-in change was rechecked under the exclusive lease; a peer loaded it while this request drained, and this restart is for the still-stale runtime tree.'
+                    : '') +
+                ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.' +
                 peerInFlightEditsNote(peerInFlightEdits, cfg.unit),
             });
           }

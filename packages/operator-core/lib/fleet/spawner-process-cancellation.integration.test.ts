@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import * as net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:net';
@@ -79,6 +80,7 @@ function runChild(releasePath?: string) {
   const client = new SpawnerIpcClient(join(dir, 'server.sock'));
   clients.push(client);
   let requestId = 0;
+  let clientConnectionId = '';
   let pid = 0;
   let ready!: () => void;
   const started = new Promise<void>((resolve) => { ready = resolve; });
@@ -88,14 +90,14 @@ function runChild(releasePath?: string) {
   const result = client.call<{ code: number; stdout: string; stderr: string }>('process:exec', {
     command: process.execPath, args: ['-e', script], timeoutMs: 5000,
   }, {
-    onRequestId: (id) => { requestId = id; },
+    onRequestId: (id, connectionId) => { requestId = id; clientConnectionId = connectionId; },
     onPid: (value) => { pid = value; pids.add(pid); },
     onOutputActivity: () => ready(),
   });
   // Cleanup may close the socket after an earlier assertion failed. Keep that
   // secondary rejection observed without changing the result asserted by tests.
   void result.catch(() => {});
-  return { client, started, result, id: () => requestId, pid: () => pid };
+  return { client, started, result, id: () => requestId, clientConnectionId: () => clientConnectionId, pid: () => pid };
 }
 
 function recoveryClient() {
@@ -121,6 +123,8 @@ describe('cancellable caller with real IPC and child processes', () => {
     // only a transport loss; it must never try the dead-server cleanup branch.
     const snapshot = { pid: process.pid, identity: 'fixture', scopeUnit: 'pc-fixture.scope',
       cgroupPath: '/fixture', rootIdentity: 'fixture', cgroupIdentity: 'fixture' };
+    const processFaults = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const drainEvents = vi.spyOn(console, 'info').mockImplementation(() => {});
     vi.spyOn(lifetime, 'captureSidecarContainment').mockReturnValue(snapshot);
     vi.spyOn(lifetime, 'sidecarContainmentCurrent').mockReturnValue(true);
     const reap = vi.spyOn(lifetime, 'reapDeadSidecar');
@@ -152,15 +156,57 @@ describe('cancellable caller with real IPC and child processes', () => {
       expect(isSidecarInfrastructureFault(result)).toBe(false);
       expect(reap).not.toHaveBeenCalled();
       expect(alive(sibling.pid())).toBe(true);
+      const callerFault = processFaults.mock.calls.find(([tag]) => tag === '[spawner-process-exec-fault]')?.[1] as
+        Record<string, unknown> | undefined;
+      expect(callerFault).toMatchObject({
+        method: 'process:exec',
+        clientConnectionId: expect.any(String),
+        serverGeneration: expect.any(String),
+        connectionId: expect.any(String),
+        requestId: expect.any(Number),
+      });
+      const drainEvent = drainEvents.mock.calls.find(([tag]) => tag === '[spawner-process-drain]')?.[1] as
+        Record<string, unknown> | undefined;
+      expect(drainEvent).toMatchObject({
+        targetMethod: 'process:exec',
+        targetClientConnectionId: callerFault?.clientConnectionId,
+        targetServerGeneration: callerFault?.serverGeneration,
+        targetConnectionId: callerFault?.connectionId,
+        targetRequestId: callerFault?.requestId,
+      });
+      expect(JSON.stringify([callerFault, drainEvent])).not.toContain(marker);
+      expect(callerFault).not.toHaveProperty('command');
+      expect(callerFault).not.toHaveProperty('args');
+      expect(callerFault).not.toHaveProperty('env');
     } finally {
       await sibling.client.call('spawn:cancel', { requestId: sibling.id() });
       await sibling.result;
     }
   });
+
+  it('logs peer EOF with the active process request identity', async () => {
+    const child = runChild();
+    await child.started;
+    const fence = await executionFence(child.client);
+    const peerEof = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const socket = (child.client as unknown as { socket: net.Socket | null }).socket;
+    if (!socket) throw new Error('client socket missing before peer EOF');
+    socket.end();
+    await vi.waitFor(() => expect(peerEof.mock.calls.some(([tag, details]) =>
+      tag === '[spawner-socket-peer-eof]' &&
+      typeof details === 'object' && details !== null &&
+      (details as { clientConnectionId?: string }).clientConnectionId === child.clientConnectionId(),
+    )).toBe(true));
+    const event = peerEof.mock.calls.find(([tag]) => tag === '[spawner-socket-peer-eof]')?.[1] as
+      { activeRequests?: Array<{ requestId: number; method: string }> } | undefined;
+    expect(event?.activeRequests).toContainEqual({ requestId: child.id(), method: 'process:exec' });
+    await recoveryClient().call('process:drain', { ...fence, requestId: child.id() });
+  });
 });
 
 describe('process:drain connection-generation exit proof', () => {
   it('waits for disconnected command exit and settlement without cancelling another client', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const child = runChild(join(dir, 'release'));
     const sibling = runChild();
     await Promise.all([child.started, sibling.started]);
@@ -191,6 +237,7 @@ describe('process:drain connection-generation exit proof', () => {
   });
 
   it('revokes a connection before admission/PID and waits until it cannot launch the mutation', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     let admit!: (value: GovernedExecution) => void;
     h.begin.mockImplementationOnce(() => new Promise<GovernedExecution>((resolve) => { admit = resolve; }));
     const client = recoveryClient();
@@ -216,6 +263,7 @@ describe('process:drain connection-generation exit proof', () => {
   });
 
   it('refuses an old connection fence after reconnect, even if no request had reached admission', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const client = recoveryClient();
     const fence = await executionFence(client);
     expect(await recoveryClient().call('process:drain', { ...fence, requestId: 2 }))
@@ -241,6 +289,7 @@ describe('process:drain connection-generation exit proof', () => {
   });
 
   it('confirms a completed connection without replaying a completed mutation', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const client = recoveryClient();
     const fence = await executionFence(client);
     const marker = join(dir, 'mutation-count');
@@ -294,6 +343,7 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
   });
 
   it('rejects a disconnected caller and cancels its orphaned child on the server', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const child = runChild();
     await child.started;
     const rejection = expect(child.result).rejects.toThrow('Connection closed by caller');
@@ -303,6 +353,7 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
   });
 
   it('drains active command exit and admission settlement before exiting on shutdown', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const child = runChild();
     await child.started;
     let releaseSettlement!: () => void;

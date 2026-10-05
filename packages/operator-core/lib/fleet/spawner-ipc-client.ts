@@ -21,6 +21,7 @@
  */
 
 import * as net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveSpawnerSocketPath } from './spawner-socket-path';
 
@@ -38,7 +39,7 @@ export interface SpawnerCallOpts {
   onOutputActivity?: () => void;
   /** Surfaces the assigned request id back to the caller synchronously, BEFORE
    *  the call resolves — so an aborting caller can `call('spawn:cancel',{requestId})`. */
-  onRequestId?: (id: number) => void;
+  onRequestId?: (id: number, clientConnectionId: string) => void;
   /** Client-side RPC timeout (ms). Default 30_000 for short CONTROL calls. Pass 0 to
    *  DISABLE it for a long-running call: `spawn:invokeOnce` carries the ENTIRE agent
    *  run (minutes) and must NOT be capped by a fixed client timeout — the sidecar's
@@ -57,7 +58,7 @@ export class SpawnerIpcClient {
   private socketPath: string;
   private connected = false;
   private requestId = 0;
-  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private pending = new Map<number, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   /** Per-request push-notification callbacks, keyed by request id. */
   private callbacks = new Map<number, { onPid?: (pid: number) => void; onOutputActivity?: () => void }>();
   private buffer = '';
@@ -71,11 +72,39 @@ export class SpawnerIpcClient {
    */
   private decoder = new StringDecoder('utf8');
   private connectPromise: Promise<void> | null = null;
+  private clientConnectionId: string | null = null;
+  private serverFence: { serverGeneration: string; connectionId: string } | null = null;
 
   constructor(socketPath?: string) {
     // Absolute, env-pinned path (the spawner sets PAPERCUSP_SPAWNER_IPC_SOCKET
     // before forking, so client + child agree). Never CWD-relative — see P-006.
     this.socketPath = socketPath || resolveSpawnerSocketPath();
+  }
+
+  /** Emit identifiers and failure metadata only; never include RPC params. */
+  private logFault(
+    event: string,
+    details: {
+      requestId?: number;
+      method?: string;
+      relatedRequestId?: number | string;
+      error?: Error;
+      activeRequests?: Array<{ requestId: number; method: string }>;
+    } = {},
+  ): void {
+    const code = (details.error as NodeJS.ErrnoException | undefined)?.code;
+    console.warn('[spawner-ipc-client-fault]', {
+      event,
+      clientConnectionId: this.clientConnectionId,
+      serverGeneration: this.serverFence?.serverGeneration ?? null,
+      serverConnectionId: this.serverFence?.connectionId ?? null,
+      requestId: details.requestId ?? null,
+      method: details.method ?? null,
+      relatedRequestId: details.relatedRequestId ?? null,
+      errorCode: code ?? null,
+      errorName: details.error?.name ?? null,
+      activeRequests: details.activeRequests ?? [],
+    });
   }
 
   /**
@@ -102,6 +131,7 @@ export class SpawnerIpcClient {
     this.socket = null;
     this.connected = false;
     this.connectPromise = null;
+    this.serverFence = null;
     // Drop any partial line AND any partial multi-byte sequence: carrying
     // either across a reconnect would prepend garbage to the next connection's
     // first line (same reason close() resets them).
@@ -147,6 +177,9 @@ export class SpawnerIpcClient {
         if (!settled) { settled = true; reject(e); }
       };
 
+      this.clientConnectionId = randomUUID();
+      this.serverFence = null;
+      let transportFaultLogged = false;
       const sock = net.createConnection(this.socketPath, () => {
         this.connected = true;
         // Keep the persistent connection available for a long-lived host, but
@@ -157,6 +190,13 @@ export class SpawnerIpcClient {
         settleOk();
       });
       this.socket = sock;
+      const activeRequests = (): Array<{ requestId: number; method: string }> =>
+        Array.from(this.pending, ([requestId, pending]) => ({ requestId, method: pending.method }));
+      const reportTransportFault = (event: string, error?: Error): void => {
+        if (transportFaultLogged || this.socket !== sock) return;
+        transportFaultLogged = true;
+        this.logFault(event, { error, activeRequests: activeRequests() });
+      };
 
       sock.on('data', (chunk: Buffer) => {
         // Ignore a superseded socket's late data — it would be decoded into
@@ -166,6 +206,7 @@ export class SpawnerIpcClient {
 
       sock.on('error', (err) => {
         const e = err instanceof Error ? err : new Error(String(err));
+        reportTransportFault('socket-error', e);
         this.teardown(sock, e);
         settleErr(e);
       });
@@ -177,6 +218,7 @@ export class SpawnerIpcClient {
       // arrives so the next call dials a replacement.
       sock.on('end', () => {
         const e = new Error(`Sidecar socket ended (${this.socketPath})`);
+        reportTransportFault('peer-eof', e);
         this.teardown(sock, e);
         settleErr(new Error(`Sidecar connection ended before ready (${this.socketPath})`));
       });
@@ -187,6 +229,7 @@ export class SpawnerIpcClient {
         // connection closes, settleErr is a no-op (already resolved) — the
         // RESET is what lets the next ensureConnected() re-dial.
         const e = new Error(`Sidecar socket closed (${this.socketPath})`);
+        reportTransportFault('socket-close', e);
         this.teardown(sock, e);
         settleErr(new Error(`Sidecar connection closed before ready (${this.socketPath})`));
       });
@@ -196,6 +239,7 @@ export class SpawnerIpcClient {
       const timeout = setTimeout(() => {
         if (!this.connected && this.socket === sock) {
           const e = new Error(`Connection timeout dialing spawner sidecar at ${this.socketPath}`);
+          reportTransportFault('connect-timeout', e);
           this.teardown(sock, e);
           settleErr(e);
           sock.destroy();
@@ -223,17 +267,25 @@ export class SpawnerIpcClient {
     }
 
     const id = ++this.requestId;
+    const clientConnectionId = this.clientConnectionId;
+    if (!clientConnectionId) throw new Error('Spawner IPC client connection identity unavailable');
     if (opts?.onPid || opts?.onOutputActivity) {
       this.callbacks.set(id, { onPid: opts.onPid, onOutputActivity: opts.onOutputActivity });
     }
     // Hand the id back synchronously so the caller can correlate a later
     // `spawn:cancel` to THIS request before it resolves.
-    opts?.onRequestId?.(id);
+    opts?.onRequestId?.(id, clientConnectionId);
+    const relatedRequestId =
+      (method === 'spawn:cancel' || method === 'process:drain') &&
+      params !== null && typeof params === 'object'
+        ? (params as { requestId?: number | string }).requestId
+        : undefined;
     const request = {
       jsonrpc: '2.0',
       method,
       params,
       id,
+      clientConnectionId,
     };
 
     return new Promise<T>((resolve, reject) => {
@@ -245,6 +297,8 @@ export class SpawnerIpcClient {
       const timeout =
         timeoutMs > 0
           ? setTimeout(() => {
+              if (!this.pending.has(id)) return;
+              this.logFault('rpc-timeout', { requestId: id, method, relatedRequestId });
               this.pending.delete(id);
               this.callbacks.delete(id);
               reject(new Error(`RPC request timeout: ${method}`));
@@ -255,6 +309,7 @@ export class SpawnerIpcClient {
       };
 
       this.pending.set(id, {
+        method,
         resolve: (value: unknown) => {
           clear();
           this.callbacks.delete(id);
@@ -269,6 +324,7 @@ export class SpawnerIpcClient {
 
       this.socket!.write(JSON.stringify(request) + '\n', (err) => {
         if (err) {
+          this.logFault('write-error', { requestId: id, method, relatedRequestId, error: err });
           clear();
           this.pending.delete(id);
           this.callbacks.delete(id);
@@ -332,6 +388,15 @@ export class SpawnerIpcClient {
       if (msg.error) {
         pending.reject(new Error(`RPC error ${msg.error.code}: ${msg.error.message}`));
       } else {
+        const result = msg.result as { processExecFence?: { serverGeneration?: unknown; connectionId?: unknown } } | undefined;
+        const fence = result?.processExecFence;
+        if (
+          fence &&
+          typeof fence.serverGeneration === 'string' &&
+          typeof fence.connectionId === 'string'
+        ) {
+          this.serverFence = { serverGeneration: fence.serverGeneration, connectionId: fence.connectionId };
+        }
         pending.resolve(msg.result);
       }
     }

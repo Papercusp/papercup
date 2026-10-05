@@ -160,6 +160,8 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     socket: net.Socket;
     requests: Map<number | string, AbortController>;
     executions: Map<number | string, Promise<ExecResult>>;
+    requestMethods: Map<number | string, string>;
+    clientConnectionId: string | null;
   }>();
   let shuttingDown = false;
   let socketsClosed = false;
@@ -195,8 +197,10 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     // neither may cancel the other's child or leave it orphaned on disconnect.
     const requests = new Map<number | string, AbortController>();
     const executions = new Map<number | string, Promise<ExecResult>>();
+    const requestMethods = new Map<number | string, string>();
     const connectionId = randomUUID();
-    connections.set(connectionId, { socket, requests, executions });
+    const connection = { socket, requests, executions, requestMethods, clientConnectionId: null as string | null };
+    connections.set(connectionId, connection);
     const forgetDrainedConnection = (): void => {
       if (socket.destroyed && requests.size === 0) connections.delete(connectionId);
     };
@@ -214,7 +218,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
       // A recovery connection can revoke this socket while already-buffered
       // frames remain. None may create work after the drain barrier.
       if (socket.destroyed) return;
-      let req: { jsonrpc?: string; method?: string; params?: unknown; id?: number | string | null };
+      let req: { jsonrpc?: string; method?: string; params?: unknown; id?: number | string | null; clientConnectionId?: string };
       try {
         req = JSON.parse(line);
       } catch {
@@ -226,6 +230,13 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         write(rpcError(-32600, 'Invalid Request', id));
         return;
       }
+      if (
+        connection.clientConnectionId === null &&
+        typeof req.clientConnectionId === 'string' &&
+        /^[0-9a-f-]{36}$/i.test(req.clientConnectionId)
+      ) {
+        connection.clientConnectionId = req.clientConnectionId;
+      }
 
       if (req.method === 'spawn:invokeOnce') {
         if (id === null) {
@@ -236,6 +247,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         const controller = new AbortController();
         controllers.add(controller);
         requests.set(id, controller);
+        requestMethods.set(id, req.method);
         try {
           const result: SpawnInvokeOnceResult = await spawnInvokeOnce(
             p.projectDir,
@@ -259,6 +271,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         } finally {
           controllers.delete(controller);
           requests.delete(id);
+          requestMethods.delete(id);
           forgetDrainedConnection();
           exitWhenDrained();
         }
@@ -284,6 +297,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         const controller = new AbortController();
         controllers.add(controller);
         requests.set(id, controller);
+        requestMethods.set(id, req.method);
         try {
           const execution = (deps.executeProcess ?? execProcess)(params, {
             signal: controller.signal,
@@ -299,6 +313,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         } finally {
           controllers.delete(controller);
           requests.delete(id);
+          requestMethods.delete(id);
           executions.delete(id);
           forgetDrainedConnection();
           exitWhenDrained();
@@ -323,6 +338,17 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         }
         const original = connections.get(p.connectionId);
         const execution = original?.executions.get(p.requestId);
+        console.info('[spawner-process-drain]', {
+          serverGeneration,
+          recoveryConnectionId: connectionId,
+          recoveryClientConnectionId: connection.clientConnectionId,
+          targetServerGeneration: p.serverGeneration,
+          targetConnectionId: p.connectionId,
+          targetClientConnectionId: original?.clientConnectionId ?? null,
+          targetRequestId: p.requestId,
+          targetMethod: original?.requestMethods.get(p.requestId) ?? null,
+          targetExecutionPresent: execution !== undefined,
+        });
         // Close FIRST, before awaiting admission or exit: even an absent
         // request is now fenced against later delivery on the old connection.
         original?.socket.destroy();
@@ -372,9 +398,26 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         if (line) void handleLine(line);
       }
     });
-    socket.on('error', (err) => console.error('[spawner-socket-error]', err.message));
+    socket.on('error', (err) => {
+      const errno = err as NodeJS.ErrnoException;
+      console.error('[spawner-socket-error]', {
+        serverGeneration,
+        connectionId,
+        clientConnectionId: connection.clientConnectionId,
+        errorCode: errno.code ?? null,
+        errorName: err.name,
+        activeRequests: Array.from(requestMethods, ([requestId, method]) => ({ requestId, method })),
+      });
+    });
     socket.on('end', () => {
-      // Control socket closed.
+      const activeRequests = Array.from(requestMethods, ([requestId, method]) => ({ requestId, method }));
+      if (activeRequests.length === 0) return;
+      console.warn('[spawner-socket-peer-eof]', {
+        serverGeneration,
+        connectionId,
+        clientConnectionId: connection.clientConnectionId,
+        activeRequests,
+      });
     });
   });
 

@@ -85,6 +85,7 @@ afterEach(async () => {
   client.close();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   if (fs.existsSync(sock)) { try { fs.unlinkSync(sock); } catch { /* removed by server.close */ } }
+  vi.restoreAllMocks();
 });
 
 describe('SpawnerIpcClient — id-correlated request/response', () => {
@@ -109,6 +110,47 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
 
   it('rejects on an error response', async () => {
     await expect(client.call('boom')).rejects.toThrow(/RPC error -32001: kaboom/);
+  });
+
+  it('logs timeout correlation without copying command, args, or env', async () => {
+    const p = socketPath();
+    let received: { id: number; clientConnectionId: string } | undefined;
+    const stalledServer = net.createServer((socket) => {
+      let buffer = '';
+      socket.on('error', () => {});
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        const newline = buffer.indexOf('\n');
+        if (newline < 0) return;
+        received = JSON.parse(buffer.slice(0, newline)) as { id: number; clientConnectionId: string };
+      });
+    });
+    await new Promise<void>((resolve) => stalledServer.listen(p, resolve));
+    const stalledClient = new SpawnerIpcClient(p);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(stalledClient.call('process:exec', {
+        command: 'private-command', args: ['private-argument'], env: { TOKEN: 'private-value' },
+      }, { timeoutMs: 50 })).rejects.toThrow('RPC request timeout: process:exec');
+      expect(received).toBeDefined();
+      const fault = warning.mock.calls.find(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'rpc-timeout',
+      )?.[1] as Record<string, unknown> | undefined;
+      expect(fault).toMatchObject({
+        event: 'rpc-timeout', method: 'process:exec', requestId: received?.id,
+        clientConnectionId: received?.clientConnectionId,
+      });
+      expect(fault).not.toHaveProperty('command');
+      expect(fault).not.toHaveProperty('args');
+      expect(fault).not.toHaveProperty('env');
+      expect(JSON.stringify(fault)).not.toMatch(/private-command|private-argument|private-value|TOKEN/);
+    } finally {
+      stalledClient.close();
+      await new Promise<void>((resolve) => stalledServer.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* removed by close */ } }
+    }
   });
 });
 
@@ -260,6 +302,7 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
   }
 
   it('reconnects after the sidecar dies and a replacement listens on the same path', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const p = socketPath();
     let live = await startTrackedServer(p);
     const c = new SpawnerIpcClient(p);
@@ -300,6 +343,7 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
   });
 
   it('recovers on the NEXT call when one call is lost to the death→EOF race', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     // The production symptom was not "one call failed" — a call issued between
     // the sidecar's death and the kernel delivering EOF cannot succeed, and no
     // client can prevent that. It was that ALL 333 subsequent calls failed for
@@ -336,8 +380,10 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
   });
 
   it('re-dials after the peer ends a socket before the local close event', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const p = socketPath();
     let connectionCount = 0;
+    const clientConnectionIds: string[] = [];
     const sockets = new Set<net.Socket>();
     const srv = net.createServer((socket) => {
       sockets.add(socket);
@@ -353,7 +399,8 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
           const line = buffer.slice(0, newlineIndex).trim();
           buffer = buffer.slice(newlineIndex + 1);
           if (!line) continue;
-          const req = JSON.parse(line) as { id: number; params?: { value?: string } };
+          const req = JSON.parse(line) as { id: number; clientConnectionId?: string; params?: { value?: string } };
+          if (req.clientConnectionId) clientConnectionIds.push(req.clientConnectionId);
           const response = JSON.stringify({
             jsonrpc: '2.0', result: { value: req.params?.value }, id: req.id,
           }) + '\n';
@@ -378,6 +425,8 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
       await expect(c.call<{ value: string }>('echo', { value: 'after' }, { timeoutMs: 100 }))
         .resolves.toEqual({ value: 'after' });
       expect(connectionCount).toBe(2);
+      expect(clientConnectionIds).toHaveLength(2);
+      expect(new Set(clientConnectionIds).size).toBe(2);
     } finally {
       c.close();
       for (const socket of sockets) socket.destroy();
@@ -387,6 +436,7 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
   });
 
   it('does not latch on a FAILED first dial — connects once the sidecar comes up', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const p = socketPath();
     const c = new SpawnerIpcClient(p);
     let live: { server: net.Server; killConnections: () => void } | null = null;
