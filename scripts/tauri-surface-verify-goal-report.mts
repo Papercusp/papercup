@@ -9,6 +9,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import postgres from 'postgres';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { execFileViaSidecar } from '../packages/operator-core/lib/fleet/git-via-sidecar.ts';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 import { goalOwnerReportFixture, goalReportBrowserFeedProbeScript, seedGoalReportFixturePresence } from '../packages/operator-core/test/fixtures/goal-owner-report.ts';
@@ -53,7 +55,7 @@ const poll = (expression: string, require: string) => {
     throw error;
   }
 };
-const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
+const sql = postgres(resolveScriptPgUrl().url, { max: 1, onnotice: () => {} });
 const observations: unknown[] = [];
 // Measure the same window.fetch + IPC/workspace wrappers as usePlanAttention.
 // A Node HTTP preflight with an explicit header cannot prove this request.
@@ -102,7 +104,9 @@ const sourcePaths = ['apps/operator/app/_components/chat/ReportBlockCard.tsx', '
   'packages/operator-core/test/fixtures/goal-owner-report.ts',
   'scripts/tauri-surface-verify-goal-report.mts'];
 const sourceFingerprint = sourcePaths.map(path => ({ path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }));
-const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const head = (await execFileViaSidecar('git', ['rev-parse', 'HEAD'], {
+  cwd: process.cwd(), timeoutMs: 60_000, subsystem: 'goal-tauri-verifier',
+})).stdout.trim();
 let recording: ReturnType<typeof spawn> | undefined;
 let recordingExit: Promise<number | null> | undefined;
 const stopRecording = async () => {
@@ -212,8 +216,10 @@ try {
     shaSource: health.buildSha || health.sha ? 'isolated host health' : 'measured source HEAD', pid, origin,
     frozenSpa: process.env.VERIFY_TAURI_SPA_DIST, launchProvenance: process.env.VERIFY_TAURI_LAUNCH_PROVENANCE };
   const recordingRef = join(out, 'journey.mp4');
-  const displayDimensions = /dimensions:\s+(\d+x\d+)/.exec(execFileSync('xdpyinfo',
-    ['-display', process.env.VERIFY_TAURI_DISPLAY!], { encoding: 'utf8' }))?.[1];
+  const displayDimensions = /dimensions:\s+(\d+x\d+)/.exec((await execFileViaSidecar('xdpyinfo',
+    ['-display', process.env.VERIFY_TAURI_DISPLAY!], {
+      cwd: process.cwd(), timeoutMs: 60_000, subsystem: 'goal-tauri-verifier',
+    })).stdout)?.[1];
   assert.ok(displayDimensions, 'Cannot measure the full recording display');
   recording = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'x11grab', '-framerate', '3',
     '-video_size', displayDimensions, '-i', process.env.VERIFY_TAURI_DISPLAY!, '-c:v', 'libx264', '-preset', 'ultrafast', recordingRef],
@@ -311,8 +317,10 @@ try {
   native('screenshot', '--output', join(out, 'pinned-after-successor.png'));
   save('successor-control.json', { successorId: successor.reportId, successorBodySha256: successor.bodySha256, pinnedOriginal: original });
   await stopRecording();
-  const recordingProbe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height,nb_read_frames:format=duration', '-of', 'json', recordingRef], { encoding: 'utf8' }));
+  const recordingProbe = JSON.parse((await execFileViaSidecar('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height,nb_read_frames:format=duration', '-of', 'json', recordingRef], {
+      cwd: process.cwd(), timeoutMs: 60_000, subsystem: 'goal-tauri-verifier',
+    })).stdout);
   save('recording-probe.json', recordingProbe);
   assert.ok(Number(recordingProbe.streams[0]?.nb_read_frames) > 0 && Number(recordingProbe.format?.duration) > 0, 'Recording has no decoded video frames');
   assert.equal(`${recordingProbe.streams[0].width}x${recordingProbe.streams[0].height}`, displayDimensions);
