@@ -206,6 +206,36 @@ describe('managedSetInterval / listManaged', () => {
     expect(calls).toBe(1);
   });
 
+  it('keeps a requested CLI lifetime referenced across alignment and stops both interval generations', () => {
+    const timers: Array<{ unref: ReturnType<typeof vi.fn>; cleared: boolean; callback: () => void }> = [];
+    const capture = (callback: () => void) => {
+      const timer = { unref: vi.fn(), cleared: false, callback };
+      timers.push(timer);
+      return timer;
+    };
+    configureScheduledRegistry({
+      now: () => 1_000_000,
+      setIntervalImpl: capture,
+      setTimeoutImpl: capture,
+      clearIntervalImpl: handle => { (handle as typeof timers[number]).cleared = true; },
+    });
+    const background = managedSetInterval('background', 1_000, () => undefined, { category: 'lifecycle' });
+    expect(timers[0].unref).toHaveBeenCalledOnce();
+    background.stop();
+    const lifetime = managedSetInterval('cli-lifetime', 600_000, () => undefined, {
+      category: 'lifecycle', classification: 'timeout-reaper', ref: true, phase: 'aligned',
+    });
+    expect(timers.slice(1).every(timer => timer.unref.mock.calls.length === 0)).toBe(true);
+    const rephase = timers[2];
+    expect(rephase).toBeDefined();
+    rephase.callback();
+    expect(timers[1].cleared).toBe(true);
+    expect(timers[3].unref).not.toHaveBeenCalled();
+    lifetime.stop();
+    expect(timers[3].cleared).toBe(true);
+    expect(getManaged('cli-lifetime')).toBeUndefined();
+  });
+
   it('stop() clears the underlying timer and deregisters from the inventory', () => {
     const h = harness();
     const handle = managedSetInterval('x', 1000, () => undefined, { category: 'watchdog' });

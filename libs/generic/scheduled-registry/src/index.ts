@@ -63,6 +63,8 @@ export type TimerClassification = 'must-sample' | 'timeout-reaper' | 'violation'
 
 export interface ManagedTimerOptions {
   category: ManagedCategory;
+  /** Keep a one-shot CLI alive until its owner calls stop(); background timers default to unref. */
+  ref?: boolean;
   /** Heavy ticks shed a cycle under load when the injected shouldShed(name) returns true. Light ticks omit it. */
   shed?: boolean;
   /** Also run ONCE immediately on arm (heal-on-startup), not only after the first interval. */
@@ -403,7 +405,7 @@ function alignedRephaseDelayMs(name: string, intervalMs: number, opts: ManagedTi
 /**
  * Arm a NAMED, listable interval. Returns a handle whose stop() clears + deregisters it.
  * Re-arming an existing name stops the previous timer first (no duplicate names, no leak).
- * The timer is unref'd so it never holds the process open.
+ * The timer is unref'd by default; ref:true keeps a CLI alive until its owner stops it.
  */
 export function managedSetInterval(
   name: string,
@@ -461,10 +463,10 @@ export function managedSetInterval(
   const rec: InternalRecord = { entry, key, timer: { unref: undefined }, running: false, stopped: false };
   const tick = makeTick(name, fn, opts, rec);
   rec.timer = state.resolved.setIntervalImpl(tick, intervalMs);
-  rec.timer.unref?.();
+  if (!opts.ref) rec.timer.unref?.();
   if (opts.fireOnArm) {
     const t = state.resolved.setTimeoutImpl(tick, 0);
-    t.unref?.();
+    if (!opts.ref) t.unref?.();
   }
   const rephaseDelay = alignedRephaseDelayMs(name, intervalMs, opts, instanced);
   if (rephaseDelay !== null) {
@@ -475,10 +477,10 @@ export function managedSetInterval(
       if (rec.stopped) return;
       state.resolved.clearIntervalImpl(rec.timer);
       rec.timer = state.resolved.setIntervalImpl(tick, intervalMs);
-      rec.timer.unref?.();
+      if (!opts.ref) rec.timer.unref?.();
       tick();
     }, rephaseDelay);
-    t.unref?.();
+    if (!opts.ref) t.unref?.();
   }
   registry.set(key, rec);
   return { stop: () => stopManaged(key) };
