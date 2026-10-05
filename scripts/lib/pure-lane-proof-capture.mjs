@@ -321,6 +321,11 @@ export async function loadCapturedProofRows({ client, sha, runGroupId, files, si
       WHERE p.workspace_name = $1 AND p.recorded_sha = $2 AND p.run_group_id = $3
         AND p.run_context = 'green-checkpoint' AND p.test_file = ANY($5::text[])
         AND p.recorded_at >= to_timestamp($4::double precision / 1000)
+        AND NOT EXISTS (
+          SELECT 1 FROM harness_shared.test_runs bad
+           WHERE bad.file_path = p.test_file AND bad.commit_sha = p.recorded_sha
+             AND bad.run_group_id = p.run_group_id AND bad.status IN ('fail', 'error')
+        )
       ORDER BY p.test_file`,
     [PURE_PROOF_CAPTURE_WORKSPACE.name, sha, runGroupId, sinceMs, files],
   );
@@ -494,6 +499,7 @@ export async function runPureLaneProofCapture({
   if (laneFiles.length === 0) return skip("no-lane-files");
 
   const nowMs = d.now();
+  const runnerIdentity = d.runnerIdentity(root, env) ?? null;
   let plan;
   let passedInSuite;
   try {
@@ -524,7 +530,7 @@ export async function runPureLaneProofCapture({
         sha,
         nowMs,
         maxAgeMs: testReuseMaxAgeMs(env),
-        runnerIdentity: d.runnerIdentity(root, env) ?? null,
+        runnerIdentity,
       });
     });
   } catch (err) {
@@ -627,14 +633,15 @@ export async function runPureLaneProofCapture({
           }));
           const written = (read.results ?? []).reduce((n, r) => n + r.rows, 0);
           const seen = new Set(evidence.proofs.map((p) => p.file));
-          const qualified = read.status === "reported" && read.malformed === 0 && read.results.length > 0 &&
+          const qualified = !outcome.timedOut && !outcome.spawnError && !outcome.signal &&
+            read.status === "reported" && read.malformed === 0 && read.results.length > 0 &&
             read.results.every((r) => r.outcome === "written" && r.sha === sha && r.dirty === false) &&
             Number.isSafeInteger(written) && written === named.length && named.every((p) => {
               if (seen.has(p.file)) return false;
               seen.add(p.file);
               return slice.includes(p.file) && typeof p.testRunId === "string" && /^\d+$/.test(p.testRunId) &&
                 p.source === "local" && p.runContext === PURE_PROOF_CAPTURE_RUN_CONTEXT &&
-                p.runGroupId === runGroupId && p.runnerIdentity === d.runnerIdentity(root, env) &&
+                p.runGroupId === runGroupId && p.runnerIdentity === runnerIdentity &&
                 Number.isSafeInteger(p.recordedAtMs) && p.recordedAtMs >= sliceStart && p.recordedAtMs <= d.now();
             });
           evidence.proofs = qualified ? [...evidence.proofs, ...named] : null;

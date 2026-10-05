@@ -38,11 +38,14 @@ describe('capture proof archive — actual Postgres identities', () => {
     await add('capture', 'ci', false, startedAt + 2000);
     await add('capture', 'local', true, startedAt + 2000);
     await add('capture', 'local', false, startedAt - 1);
-    await add('capture', 'local', false, startedAt + 2000, 'fail');
+    await add('foreign', 'local', false, startedAt + 2000, 'fail');
     expect(await read()).toEqual([]);
     await add('capture', 'local', false, startedAt + 3000);
     expect(await read()).toEqual([{ file, testRunId: '6', recordedAtMs: startedAt + 1000,
       runnerIdentity: 'runner', runContext: 'green-checkpoint', runGroupId: 'capture', source: 'local' }]);
+    await add('capture', 'local', false, startedAt + 4000, 'fail');
+    expect(await read()).toEqual([]);
+    await db.sql`DELETE FROM harness_shared.test_runs WHERE status = 'fail'`;
     await db.sql`UPDATE harness_shared.test_executed_sources SET run_group_id = 'foreign'`;
     expect(await read()).toEqual([]);
   });

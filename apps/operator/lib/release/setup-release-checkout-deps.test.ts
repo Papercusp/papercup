@@ -520,10 +520,26 @@ describe('setup-release-checkout.sh pinned_dependency_generation_reuse_safe() �
 });
 
 describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross-device guard', () => {
-  function assertCompatible(releaseRoot: string, copyMode = 'hardlink'): { status: number | null; stdout: string; stderr: string } {
+  function assertCompatible(
+    releaseRoot: string,
+    copyMode = 'hardlink',
+    devices?: { integration: number; release: number },
+  ): { status: number | null; stdout: string; stderr: string } {
     const wrapper = [
       'set -uo pipefail',
       'source <(sed -n "/^filesystem_device()/,/^}/p; /^assert_hardlink_compatible_roots()/,/^}/p" "$SETUP_SCRIPT")',
+      // The committed-source harness puts both roots under tmpdir. Control the
+      // device lookup for negative cases instead of relying on the host mounts;
+      // assert_hardlink_compatible_roots remains the shipped implementation.
+      ...(devices ? [
+        'filesystem_device() {',
+        '  if [ "$1" = "$INTEGRATION_ROOT" ]; then',
+        '    printf "%s\\n" "$TEST_INTEGRATION_DEVICE"',
+        '  else',
+        '    printf "%s\\n" "$TEST_RELEASE_DEVICE"',
+        '  fi',
+        '}',
+      ] : []),
       'assert_hardlink_compatible_roots',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {
@@ -533,6 +549,8 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
         INTEGRATION_ROOT: REPO_ROOT,
         RELEASE_ROOT: releaseRoot,
         NODE_MODULES_COPY_MODE: copyMode,
+        TEST_INTEGRATION_DEVICE: String(devices?.integration ?? ''),
+        TEST_RELEASE_DEVICE: String(devices?.release ?? ''),
       },
       encoding: 'utf8',
     });
@@ -551,10 +569,15 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
   it('fails once with an actionable message before cross-device hardlink copy', () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), 'release-root-cross-device-'));
     try {
-      const result = assertCompatible(releaseRoot);
+      const result = assertCompatible(releaseRoot, 'hardlink', { integration: 101, release: 202 });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('same filesystem');
       expect(result.stderr).toContain('--node-modules-copy copy');
+      expect(result.stderr).toContain('device=101');
+      expect(result.stderr).toContain('device=202');
+      // Change only the measured destination device: the same predicate must
+      // accept it, so the negative case cannot pass due to a broken shell seam.
+      expect(assertCompatible(releaseRoot, 'hardlink', { integration: 101, release: 101 }).status).toBe(0);
     } finally {
       rmSync(releaseRoot, { recursive: true, force: true });
     }
@@ -563,7 +586,7 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
   it('allows explicit copy mode across filesystems', () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), 'release-root-copy-mode-'));
     try {
-      expect(assertCompatible(releaseRoot, 'copy').status).toBe(0);
+      expect(assertCompatible(releaseRoot, 'copy', { integration: 101, release: 202 }).status).toBe(0);
     } finally {
       rmSync(releaseRoot, { recursive: true, force: true });
     }

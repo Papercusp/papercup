@@ -402,7 +402,7 @@ const KICKOFF_PROOF_TOKEN_RE = /^[a-f0-9]{48}$/i;
  *
  * @param {{persisted?: boolean, nativeRef?: string | null, reason?: string | null}} proof
  * @param {EnvironmentMap} [env]
- * @returns {{published: boolean, reason?: string}}
+ * @returns {{published: boolean, reason?: string, errorMessage?: string, errorCode?: string | null}}
  */
 export function publishKickoffProofReceipt(proof, env = process.env) {
   const rawPath = env?.[KICKOFF_PROOF_PATH_ENV];
@@ -495,8 +495,13 @@ export function publishKickoffProofReceipt(proof, env = process.env) {
     renameSync(tempPath, path);
     tempPath = null;
     return { published: true };
-  } catch {
-    return { published: false, reason: 'kickoff-proof-receipt-publish-failed' };
+  } catch (error) {
+    return {
+      published: false,
+      reason: 'kickoff-proof-receipt-publish-failed',
+      errorMessage: String(error?.message ?? error).slice(0, 500),
+      errorCode: typeof error?.code === 'string' ? error.code : null,
+    };
   } finally {
     if (tempFd != null) {
       try { closeSync(tempFd); } catch { /* best-effort */ }
@@ -8219,6 +8224,18 @@ export function hostThroughPty(o) {
   const carryProofRetryMax = Number.isFinite(configuredCarryProofRetryMax) && configuredCarryProofRetryMax >= 0
     ? Math.floor(configuredCarryProofRetryMax)
     : CARRY_PROOF_RETRY_MAX;
+  const publishKickoffProof = (proof) => {
+    const result = publishKickoffProofReceipt(proof, env);
+    if (!result.published && result.reason !== 'kickoff-proof-request-missing') {
+      appendHostEvent(ownerId, 'kickoff-proof-receipt-publication-failed', {
+        persisted: proof.persisted === true,
+        reason: result.reason,
+        errorMessage: result.errorMessage ?? null,
+        errorCode: result.errorCode ?? null,
+      });
+    }
+    return result;
+  };
   let managedKickoffDisposition = null;
   const acknowledgeManagedKickoff = (proof) => {
     if (!managedKickoff) return Promise.resolve();
@@ -8229,11 +8246,11 @@ export function hostThroughPty(o) {
         // The detached parent consumes this receipt; the session-port HTTP ack
         // alone cannot prove delivery to it. Publish before that potentially slow
         // ack, under the same first-terminal guard as the child-exit failure.
-        publishKickoffProofReceipt({
+        publishKickoffProof({
           persisted: proof.persisted === true,
           nativeRef: proof.persisted === true ? proof.nativeRef ?? null : null,
           reason: proof.persisted === true ? null : proof.error ?? 'session-port-kickoff-not-persisted',
-        }, env);
+        });
         return onKickoffPersisted(proof);
       });
     }
@@ -9839,11 +9856,11 @@ export function hostThroughPty(o) {
           // even when the PTY submission never started. Otherwise the parent
           // waits out its proof window and cannot distinguish "not submitted"
           // from a host that died before it could report.
-          publishKickoffProofReceipt({
+          publishKickoffProof({
             persisted: false,
             nativeRef: null,
             reason: `kickoff-not-submitted:${r.reason ?? 'unknown'}`,
-          }, env);
+          });
           return;
         }
         let proof;
@@ -9883,11 +9900,11 @@ export function hostThroughPty(o) {
         // Publish the native transcript verdict before any caller-facing
         // handling. The detached parent owns the placeholder and uses this
         // receipt as the only authority for whether its kickoff ran.
-        publishKickoffProofReceipt({
+        publishKickoffProof({
           persisted: proof.persisted === true,
           nativeRef: proof.nativeRef ?? null,
           reason: proof.persisted ? null : proof.reason,
-        }, env);
+        });
         if (!proof.persisted) {
           const proofUnavailable =
             proof.reason === 'missing-leading-turn-origin' ||
@@ -10088,11 +10105,11 @@ export function hostThroughPty(o) {
     })().catch((error) => {
       appendHostEvent(ownerId, 'managed-kickoff-failed', hostErrorEvidence(error));
       if (!managedKickoff) {
-        publishKickoffProofReceipt({
+        publishKickoffProof({
           persisted: false,
           nativeRef: null,
           reason: 'launch-kickoff-error',
-        }, env);
+        });
       }
       try { process.stderr.write(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
       catch { /* diagnostics are best-effort */ }

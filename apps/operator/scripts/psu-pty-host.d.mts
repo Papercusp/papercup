@@ -157,7 +157,7 @@ export function interactiveAdoptionOptIn(env?: NodeJS.ProcessEnv): boolean;
  *
  * @param {{persisted?: boolean, nativeRef?: string | null, reason?: string | null}} proof
  * @param {EnvironmentMap} [env]
- * @returns {{published: boolean, reason?: string}}
+ * @returns {{published: boolean, reason?: string, errorMessage?: string, errorCode?: string | null}}
  */
 export function publishKickoffProofReceipt(proof: {
     persisted?: boolean;
@@ -166,6 +166,8 @@ export function publishKickoffProofReceipt(proof: {
 }, env?: EnvironmentMap): {
     published: boolean;
     reason?: string;
+    errorMessage?: string;
+    errorCode?: string | null;
 };
 /** Byte-accurate (not JS-code-unit) wire limit check. Exported so the exact
  * UTF-8 boundary is regression-tested without weakening the runtime guard. */
