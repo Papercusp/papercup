@@ -650,7 +650,10 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
       'orders:capture',
     ]);
     expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
-    expect(ctx).toContain('Do not create another directive with orders:record');
+    expect(ctx).toContain('orders:record');
+    expect(ctx).toContain('this same `sourceTurnRef`');
+    expect(ctx).toContain(String(captureCalls()[0]!.args.sourceTurnRef));
+    expect(ctx).not.toContain('Retry orders:capture');
     // Fail-OPEN: the owner's turn is never blocked and the stamp survives.
     expect(out.status).toBe(0);
     expect(ctx).toContain('OWNER (interactive)');

@@ -654,10 +654,10 @@ def record_owner_prompt(prompt, native_session):
 def capture_unconfirmed_notice(source_turn_ref):
     return (
         "⚠ OWNER-DIRECTIVE CAPTURE UNCONFIRMED — the hook got no usable receipt, so "
-        "this turn may already be recorded. Do not create another directive with "
-        "orders:record based on this notice alone. Retry orders:capture with the exact "
-        "owner turn and this same sourceTurnRef to recover its existing id or record it "
-        "once (the key is idempotent): " + source_turn_ref
+        "this turn may already be recorded. Use `orders:record` with the exact owner "
+        "turn as `verbatim` and this same `sourceTurnRef`; it is idempotent, so it will "
+        "return the captured directive if the hook write already committed, or record "
+        "it once if it did not: " + source_turn_ref
     )
 
 # directive-ownership-clarity-2026-09-23 D-002: the id is the ONLY way an agent

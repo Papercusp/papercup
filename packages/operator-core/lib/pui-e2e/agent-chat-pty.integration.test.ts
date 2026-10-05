@@ -1160,8 +1160,20 @@ let previousEnv: Record<string, string | undefined>;
 let sessionTraffic: Array<Record<string, unknown>> = [];
 let launchRequests: unknown[] = [];
 let attachedCapability: 'current' | 'missing' | 'disabled' | 'unsafe' = 'current';
-type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'wrong-command-ack' | 'wrong-session-ack';
+type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'wrong-command-ack' | 'wrong-session-ack'
+  | 'hang-snapshot';
 let transportFault: TransportFault = 'none';
+// 'hang-snapshot' (pui-chat-first-ux P-024): every SU-session snapshot read —
+// the readiness read a send makes first — stalls until released, as an
+// operator that accepts the connection and never answers would.
+let hungSnapshotHold: Promise<void> = Promise.resolve();
+let releaseHungSnapshots: () => void = () => {};
+let hungSnapshotReads = 0;
+function hangSnapshotReads(): void {
+  hungSnapshotHold = new Promise<void>((resolve) => { releaseHungSnapshots = resolve; });
+  hungSnapshotReads = 0;
+  transportFault = 'hang-snapshot';
+}
 let commandPosts: SuSessionCommand[] = [];
 let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
 let cardReplies: Array<{ path: string; status: number }> = [];
@@ -1718,6 +1730,11 @@ beforeAll(async () => {
         transportFault = 'none';
         return Response.json({ error: 'PUI-E2E startup connection interrupted' }, { status: 503 });
       }
+      if (transportFault === 'hang-snapshot' && request.method === 'GET'
+        && /\/agent-chats\/[^/]+\/su-session$/.test(pathname)) {
+        hungSnapshotReads += 1;
+        await hungSnapshotHold;
+      }
       const host = scriptedEngine.engines.at(-1)?.adapter.host;
       if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
       let response: Response;
@@ -1881,6 +1898,8 @@ beforeEach(async () => {
   commandPosts = [];
   commandReplies = [];
   cardReplies = [];
+  releaseHungSnapshots();
+  hungSnapshotReads = 0;
   transportFault = 'none';
   scriptedEngine.mode = 'success';
   scriptedEngine.successText = 'PUI structured engine replied';

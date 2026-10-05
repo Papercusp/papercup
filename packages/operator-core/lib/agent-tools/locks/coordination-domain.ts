@@ -348,13 +348,13 @@ export function workspaceScopedLockDomain(): string {
  * all degrade to exactly the inference above. A declaration can promote a
  * resource OUT of the caller-tree domain; nothing can demote one INTO it.
  */
-export function resourceLockDomain(resource: string): string {
+export function resourceLockDomain(resource: string, callerTree = lockCoordinationDomain()): string {
   if (HOST_GLOBAL_RESOURCES.has(resource)) return hostGlobalLockDomain();
   if (isWorkspaceScopedResource(resource)) return workspaceScopedLockDomain();
   const declared = declaredResourceDomainKind(resource);
   if (declared === 'host-global') return hostGlobalLockDomain();
   if (declared === 'workspace') return workspaceScopedLockDomain();
-  return lockCoordinationDomain();
+  return callerTree;
 }
 
 /**

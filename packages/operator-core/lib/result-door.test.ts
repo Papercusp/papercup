@@ -469,8 +469,8 @@ describe('applyResultDoor', () => {
     const criteria = Array.from({ length: 9 }, (_, index) => `criterion-${index + 1}`);
     const ratings = Object.fromEntries(criteria.map((criterion, index) => [criterion, {
       rating: index % 2 === 0 ? 'fail' : 'unknown',
-      evidence: `${criterion} evidence `.repeat(180),
-      suggestion: `${criterion} suggestion `.repeat(80),
+      evidence: `${criterion} evidence `.repeat(35),
+      suggestion: `${criterion} suggestion `.repeat(30),
     }]));
     const source = {
       ok: true,

@@ -118,11 +118,12 @@ describe('userpromptsubmit-provenance.sh', () => {
     const ctx = contextOf(out);
 
     // No receipt is UNCONFIRMED, not failed: the write may have committed before the
-    // reply was lost, so the notice names the idempotent repair (retry orders:capture
-    // with the same sourceTurnRef), not a fresh orders:record that would duplicate it.
+    // reply was lost. An agent cannot invoke hook-only orders:capture, so the notice
+    // names the agent-safe orders:record path with the exact sourceTurnRef.
     expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
-    expect(ctx).toContain('Retry orders:capture');
-    expect(ctx).toContain('Do not create another directive with orders:record');
+    expect(ctx).toContain('orders:record');
+    expect(ctx).toContain('this same `sourceTurnRef`');
+    expect(ctx).not.toContain('Retry orders:capture');
 
     // Fail-OPEN: the classification still lands and the turn is never blocked. A notice
     // that cost the owner their stamp would be a worse bug than the silence it replaced.
