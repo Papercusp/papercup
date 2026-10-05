@@ -713,6 +713,26 @@ describe('makeDeliveryDedup (EI-19311270129974785)', () => {
   });
 });
 
+describe('deliveryDedupSettlement', () => {
+  it.each(['delivered', 'quota-recovery-delivered'])(
+    'marks a committed %s outcome completed',
+    (reason) => {
+      expect(realHost.deliveryDedupSettlement({ ok: true, reason })).toBe('completed');
+    },
+  );
+
+  it('keeps a busy-gate-deferred ID pending only while its re-arm owns that delivery', () => {
+    const deferred = { ok: false, reason: 'deferred-busy-gate' };
+    expect(realHost.deliveryDedupSettlement(deferred, true)).toBe('pending');
+    expect(realHost.deliveryDedupSettlement(deferred, false)).toBe('clear');
+  });
+
+  it('clears a terminal refusal so the delivery remains retryable', () => {
+    expect(realHost.deliveryDedupSettlement({ ok: false, reason: 'turn-rearm-duplicate' }, true)).toBe('clear');
+    expect(realHost.deliveryDedupSettlement({ ok: false, reason: 'error' }, false)).toBe('clear');
+  });
+});
+
 describe('quota recovery envelope identity (measured-agent-productivity P-004)', () => {
   const valid = {
     operationId: '4102',
