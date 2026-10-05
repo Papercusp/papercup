@@ -201,10 +201,21 @@
                   {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["kind", "sourceKind"],
+                    "required": ["kind"],
+                    "description": "Provider-pinned (sourceKind, pattern ext:<sourceKind>:…) or portable (datatype + capabilities, pattern ext:*:…; bound at install to an installer-chosen local source whose provider produces the datatype).",
+                    "oneOf": [
+                      { "required": ["sourceKind"], "not": { "required": ["datatype"] } },
+                      { "required": ["datatype"], "not": { "required": ["sourceKind"] } }
+                    ],
                     "properties": {
                       "kind": { "const": "external" },
                       "sourceKind": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
+                      "datatype": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
+                      "capabilities": {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 1 },
+                        "uniqueItems": true
+                      },
                       "oauthField": { "type": "string", "minLength": 1 }
                     }
                   },

@@ -42,9 +42,7 @@ beforeAll(async () => {
   holder.sql = sql;
   await sql.unsafe('CREATE SCHEMA harness_shared');
   const migration = join(SQL_DIR, '1361-lsp-capability-matrix.sql');
-  let body: string;
-  try { body = readFileSync(migration, 'utf8'); }
-  catch { body = readFileSync(`${migration}.DRAFT`, 'utf8'); }
+  const body = readFileSync(migration, 'utf8');
   await sql.unsafe(body);
   // Real re-apply is the migration's idempotence check.
   await sql.unsafe(body);

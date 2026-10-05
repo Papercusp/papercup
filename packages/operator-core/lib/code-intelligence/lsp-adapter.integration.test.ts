@@ -10,10 +10,31 @@
  * follows a bare specifier across a package boundary.
  */
 
-import { afterAll, describe, expect, it } from 'vitest';
-import { existsSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import postgres from 'postgres';
+import { createFreshTestDb } from '@papercusp/test-config/pg';
+import type { ManagedSpawnResult } from '../task-manager/managed-spawn';
+
+const capabilityDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
+const spawnedClient = vi.hoisted(() => ({ latest: null as ManagedSpawnResult | null }));
+vi.mock('../task-manager/managed-spawn', async original => {
+  const actual = await original<typeof import('../task-manager/managed-spawn')>();
+  return { ...actual, managedSpawn: async (...args: Parameters<typeof actual.managedSpawn>) => {
+    const result = await actual.managedSpawn(...args);
+    spawnedClient.latest = result;
+    return result;
+  } };
+});
+vi.mock('./lsp-capability-matrix', async original => {
+  const actual = await original<typeof import('./lsp-capability-matrix')>();
+  return { ...actual, lspCapabilityStore: new actual.PgLspCapabilityStore(() => {
+    if (!capabilityDb.sql) throw new Error('isolated capability database is not initialized');
+    return capabilityDb.sql;
+  }) };
+});
 
 import {
   LSP_VENDOR_DIR,
@@ -26,6 +47,7 @@ import {
 } from './lsp-adapter.ts';
 import { corpusCase } from './acceptance-corpus.ts';
 import { isTrustworthyEmpty } from './contracts.ts';
+import { lspCapabilityStore } from './lsp-capability-matrix';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..', '..');
@@ -39,9 +61,12 @@ const TS_SERVER_PRESENT = resolveServerBin('typescript') !== null;
 const skipReason = TS_SERVER_PRESENT
   ? ''
   : `pinned typescript-language-server not provisioned under ${LSP_VENDOR_DIR} — run P-007 provisioning`;
+let dropCapabilityDb: (() => Promise<unknown>) | undefined;
 
 afterAll(async () => {
   await shutdownAllLspClients();
+  await capabilityDb.sql?.end({ timeout: 5 });
+  await dropCapabilityDb?.();
 });
 
 describe('adapter wiring (no server needed)', () => {
@@ -80,6 +105,31 @@ describe('adapter wiring (no server needed)', () => {
 });
 
 describe.skipIf(!TS_SERVER_PRESENT)(`LSP adapter against the pinned server ${skipReason}`, () => {
+  beforeAll(async () => {
+    const db = await createFreshTestDb({ prefix: 'lsp_pinned_caps' });
+    dropCapabilityDb = db.drop;
+    capabilityDb.sql = postgres(db.url, { max: 2, prepare: false, onnotice: () => {} });
+    await capabilityDb.sql.unsafe('CREATE SCHEMA harness_shared');
+    await capabilityDb.sql.unsafe(readFileSync(
+      join(REPO_ROOT, 'libs/papercusp/libs/db/sql/1361-lsp-capability-matrix.sql'), 'utf8',
+    ));
+  }, 120_000);
+
+  it('refuses failed capability initialization and gracefully exits the unregistered pinned server', async () => {
+    const failedWrite = vi.spyOn(lspCapabilityStore, 'observe').mockRejectedValue(new Error('capability write unavailable'));
+    try {
+      const answer = await lspQuery('definition', {
+        file: join(REPO_ROOT, 'libs/generic/search/src/leg-health.ts'), line1: 41,
+        character: 11, rootPath: REPO_ROOT,
+      });
+      expect(answer.error).toMatch(/capability initialization failed: capability write unavailable/);
+      expect(answer.freshness.health).toBe('unhealthy');
+      expect(lspClientInventory()).toHaveLength(0);
+      expect(spawnedClient.latest?.child.exitCode).toBe(0);
+      expect(spawnedClient.latest?.child.killed).toBe(false);
+    } finally { failedWrite.mockRestore(); }
+  }, 30_000);
+
   it('resolves tsserver.js despite the repo TypeScript shipping none (D-009)', () => {
     const p = resolveTsserverPath();
     expect(existsSync(p)).toBe(true);

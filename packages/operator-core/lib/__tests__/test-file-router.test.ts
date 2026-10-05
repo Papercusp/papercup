@@ -574,8 +574,16 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     });
   });
 
-  it('warns when focused test IDs will be unbindable for harness-scoped proof', () => {
-    expect(unscopedFocusedRunWarning({})).toContain('PAPERCUSP_TEST_RUN_HARNESS');
+  it('reports an unset parent harness without predicting the reporter ledger scope', () => {
+    // The child reporter can receive its scope after the parent checks its env.
+    // A missing parent pin cannot establish a NULL harness in the ledger.
+    for (const env of [{}, { PAPERCUSP_TEST_RUN_HARNESS: '   ' }]) {
+      const warning = unscopedFocusedRunWarning(env);
+      expect(warning).toContain('scope is unverified');
+      expect(warning).toContain('authoritative testing:runs row');
+      expect(warning).not.toContain('is unscoped');
+      expect(warning).not.toContain('cannot be bound');
+    }
     expect(unscopedFocusedRunWarning({ PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' })).toBeNull();
   });
 });

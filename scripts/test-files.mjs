@@ -65,7 +65,7 @@ export { testsExecutedFrom, testsSkippedFrom };
 
 export function unscopedFocusedRunWarning(env = process.env) {
   if (env.PAPERCUSP_TEST_RUN_HARNESS?.trim()) return null;
-  return 'Focused test run is unscoped: its test_runs IDs cannot be bound as harness-scoped proof. Set PAPERCUSP_TEST_RUN_HARNESS to the target harness (papercusp for this repo).';
+  return 'Focused runner has no explicit PAPERCUSP_TEST_RUN_HARNESS. Test-ledger scope is unverified here; check the authoritative testing:runs row before binding proof, or set PAPERCUSP_TEST_RUN_HARNESS to the target harness (papercusp for this repo).';
 }
 
 /**
