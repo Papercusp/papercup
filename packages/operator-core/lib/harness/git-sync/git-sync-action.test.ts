@@ -244,11 +244,17 @@ vi.mock('./hive-git-mode', () => ({
   getPotGitMode: async () => potGitMode,
 }));
 const ensurePotGitRepoMock = vi.hoisted(() => vi.fn());
+const defaultRunGitMock = vi.hoisted(() => vi.fn());
+const defaultRunGitCallHistory = vi.hoisted(() => [] as Array<{ testName: string; args: unknown[]; stack: string }>);
 vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../sync/pot-git/storage')>()),
   // The action suite does not exercise bare-store initialization. Keep cold
   // bootstrap on its fixture root instead of defaultRunGit's production sidecar.
   ensurePotGitRepo: (...args: unknown[]) => ensurePotGitRepoMock(...args),
+  // Capture every orchestration-suite reach into the real Git runner. Returning
+  // a hermetic result lets the diagnostic identify the caller without starting
+  // a sidecar or leaking a delayed child into later tests.
+  defaultRunGit: (...args: unknown[]) => defaultRunGitMock(...args),
 }));
 const listHiveMembersForLocalPotMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => []));
 vi.mock('../../federated-pot-scope', async (importOriginal) => ({
@@ -266,6 +272,8 @@ vi.mock('../github-repo-permissions', () => ({
 const tmpRoot = mkdtempSync(join(tmpdir(), 'git-sync-action-'));
 const isolatedPotGitRoot = join(tmpRoot, 'pot-git');
 const savedPotGitRoot = process.env.PAPERCUSP_POT_GIT_ROOT;
+const savedSpawnerSidecar = process.env.PAPERCUSP_SPAWNER_SIDECAR;
+const savedSpawnerSidecarMode = process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE;
 const repoDir = join(tmpRoot, 'repo');
 const noGitDir = join(tmpRoot, 'norepo');
 mkdirSync(join(repoDir, '.git'), { recursive: true });
@@ -281,6 +289,10 @@ afterAll(() => {
   else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
   if (savedPotGitRoot === undefined) delete process.env.PAPERCUSP_POT_GIT_ROOT;
   else process.env.PAPERCUSP_POT_GIT_ROOT = savedPotGitRoot;
+  if (savedSpawnerSidecar === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR;
+  else process.env.PAPERCUSP_SPAWNER_SIDECAR = savedSpawnerSidecar;
+  if (savedSpawnerSidecarMode === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE;
+  else process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE = savedSpawnerSidecarMode;
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -887,6 +899,17 @@ function definitelyDeadPid(): Promise<number> {
 beforeEach(() => {
   process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
   process.env.PAPERCUSP_POT_GIT_ROOT = isolatedPotGitRoot;
+  // Recreate the host rollout gate while the runner seam is mocked, so each
+  // recorded invocation is one that would otherwise select the sidecar path.
+  process.env.PAPERCUSP_SPAWNER_SIDECAR = '1';
+  defaultRunGitMock.mockReset().mockImplementation(async (...args: unknown[]) => {
+    defaultRunGitCallHistory.push({
+      testName: expect.getState().currentTestName ?? '<unknown>',
+      args,
+      stack: new Error('defaultRunGit test seam').stack?.split('\n').slice(1, 8).join('\n') ?? '',
+    });
+    return { code: 0, stdout: '', stderr: '' };
+  });
   listHiveMembersForLocalPotMock.mockReset().mockResolvedValue([]);
   ensurePotGitRepoMock.mockReset().mockImplementation(async (potHomeSlug: string, repoKey: string) => {
     const root = process.env.PAPERCUSP_POT_GIT_ROOT;
@@ -4885,5 +4908,11 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
     for (const good of ['WI-1: real work', 'fix the thing']) {
       expect(isGenericLockIntent(good)).toBe(false);
     }
+  });
+});
+
+describe('WI-10005972: git-sync orchestration stays off the sidecar Git runner', () => {
+  it('attributes and rejects every defaultRunGit entry from this unit suite', () => {
+    expect(defaultRunGitCallHistory).toEqual([]);
   });
 });
