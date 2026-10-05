@@ -145,5 +145,63 @@ export async function runSyncBack(
 
 /** Stable title for the fix-it work-item a sync-back conflict files in the pot (dedupe key). */
 export function syncBackConflictTitle(upstreamRemote: string, upstreamBranch: string, upstreamSha: string): string {
-  return `Sync-back conflict: merge ${upstreamRemote}/${upstreamBranch} @ ${upstreamSha.slice(0, 12)} into the working copy`;
+  return `${syncBackConflictTitlePrefix(upstreamRemote, upstreamBranch)} @ ${upstreamSha.slice(0, 12)} into the working copy`;
+}
+
+/**
+ * The sha-free head of {@link syncBackConflictTitle}. Dedupe matches on THIS, not the full
+ * title: while one conflict stays unresolved, upstream keeps advancing, and a sha-keyed
+ * dedupe would file a fresh fix-it item on every upstream push for the same stuck merge.
+ */
+export function syncBackConflictTitlePrefix(upstreamRemote: string, upstreamBranch: string): string {
+  return `Sync-back conflict: merge ${upstreamRemote}/${upstreamBranch}`;
+}
+
+export interface SyncBackConflictFilingDeps {
+  /** Id of an OPEN (non-terminal) work-item whose title starts with `titlePrefix`, or null. */
+  findOpenByTitlePrefix(titlePrefix: string): Promise<string | null>;
+  /** Create the fix-it work-item; returns its id. */
+  create(input: { title: string; summary: string }): Promise<string>;
+}
+
+export type SyncBackConflictFiling =
+  | { action: 'none' }
+  | { action: 'exists'; id: string }
+  | { action: 'filed'; id: string };
+
+/**
+ * P-016: "Conflicts become a fix-it work-item in the pot." git-sync's own conflict path
+ * (escalation + merge-resolver) merges against the PUSH remote's staging, so it cannot
+ * resolve a conflict against the MAIN repo's branch; a sync-back conflict therefore files
+ * its own work-item, once per stuck merge (deduped on the open title prefix).
+ */
+export async function fileSyncBackConflict(
+  result: SyncBackResult | undefined,
+  cfg: SyncBackConfig,
+  deps: SyncBackConflictFilingDeps,
+): Promise<SyncBackConflictFiling> {
+  if (!result || result.status !== 'conflict') return { action: 'none' };
+  const existing = await deps.findOpenByTitlePrefix(syncBackConflictTitlePrefix(cfg.upstreamRemote, cfg.upstreamBranch));
+  if (existing) return { action: 'exists', id: existing };
+  const upstreamRef = `${cfg.upstreamRemote}/${cfg.upstreamBranch}`;
+  const files = result.conflictedFiles.map((f) => `- ${f}`).join('\n');
+  const summary = [
+    `git-sync could not merge the main repository's ${upstreamRef} (${result.upstreamSha.slice(0, 12)}) into this working copy's staging branch.`,
+    `The merge was aborted, so staging is clean but stays behind the main repository until this is resolved,`,
+    `and the next pull request will keep showing changes the main repository already has.`,
+    '',
+    `Conflicted paths (${result.conflictedFiles.length}):`,
+    files,
+    '',
+    'To resolve, on the working copy checkout with staging checked out:',
+    `1. git fetch ${cfg.upstreamRemote} ${cfg.upstreamBranch}`,
+    `2. git merge ${upstreamRef}`,
+    '3. Resolve the conflicted paths and commit the merge.',
+    'git-sync pushes the merge commit on its next tick; sync-back then reports up-to-date.',
+  ].join('\n');
+  const id = await deps.create({
+    title: syncBackConflictTitle(cfg.upstreamRemote, cfg.upstreamBranch, result.upstreamSha),
+    summary,
+  });
+  return { action: 'filed', id };
 }
