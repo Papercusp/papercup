@@ -322,6 +322,17 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect(rows.find((r) => r.filename === '002-bad.sql')?.sha256).toBe(sha256(fixed));
   });
 
+  it('preserves PL/pgSQL failure context when PostgreSQL provides no outer query position', async () => {
+    const dir = await makeSqlDir({
+      '001-inner.sql': "DO $guard$ BEGIN RAISE EXCEPTION 'inner role guard'; END $guard$;",
+    });
+    await expect(applyPendingMigrations({ client: sql, sqlDir: dir })).rejects.toThrow(
+      /PostgreSQL context: PL\/pgSQL function inline_code_block line 1 at RAISE/,
+    );
+    expect(await recorded()).toEqual([]);
+    expect((await sql.unsafe('SELECT 1 AS ok'))[0].ok).toBe(1);
+  });
+
   it('failure without a query position still names the file, fresh-data context, and remedy', async () => {
     const dir = await makeSqlDir({
       '001-guarded.sql': 'CREATE TABLE mrb4b_guarded (id int);\n',

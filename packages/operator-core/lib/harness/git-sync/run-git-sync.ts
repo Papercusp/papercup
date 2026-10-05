@@ -1148,6 +1148,10 @@ export interface GitSyncConfig {
    *  does not extend to submodules, each an independent GitHub repo the bridge never
    *  touches. Non-legacy callers also require owning-hive authorization at each push. */
   pushSubmoduleOrigins?: boolean;
+  /** pot-review-integration-mode P-016: a working-copy pot merges the MAIN repository's
+   *  branch into its staging each tick (set by `applyIntegrationPushTarget`). Applied to
+   *  the SUPERPROJECT only — submodules are the main repositories' own and never absorb. */
+  syncBack?: SyncBackConfig;
   /** Reconcile the SUPERPROJECT worktree with its configured Git remote
    *  (fetch + merge) before an optional push. Default true.
    *
@@ -5943,7 +5947,13 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
     const pushRes = await step('git-sync:push', async () => ({
-      ...(await reconcileAndPushOneRepo(runGit, repo, { ...repoO, defaultBranch: branch }, commitRes.committedLocal)),
+      ...(await reconcileAndPushOneRepo(
+        runGit,
+        repo,
+        // P-016: sync-back rides the superproject reconcile only (never syncOneRepo's submodules).
+        { ...repoO, defaultBranch: branch, ...(cfg.syncBack ? { syncBack: cfg.syncBack } : {}) },
+        commitRes.committedLocal,
+      )),
       headSha: await headSha(runGit, repo),
     }));
     superHeadSha = pushRes.headSha;

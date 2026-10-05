@@ -189,7 +189,20 @@ export interface IntegrationPushConfig {
   push?: boolean;
   remote?: string;
   pushSubmoduleOrigins?: boolean;
+  /**
+   * P-016: in working-copy mode, the main repository git-sync merges back into
+   * the copy's staging each tick (so the next standing PR shows only new work).
+   * Set only on the `fork` path; absent means no sync-back.
+   */
+  syncBack?: { upstreamRemote: string; upstreamBranch: string };
 }
+
+/**
+ * The main repository's branch the standing PR targets and sync-back absorbs.
+ * The pot's green-checkpoint promotes to its own `main` and the standing PR
+ * opens against the same-named branch upstream (promotion-push-target.ts).
+ */
+export const SYNC_BACK_UPSTREAM_BRANCH = 'main';
 
 /** Why a working-copy tick commits locally and pushes nowhere. */
 export type IntegrationCommitOnlyReason =
@@ -237,6 +250,9 @@ export async function applyIntegrationPushTarget(
     );
     return commitOnly('working_copy_fork_remote_setup_failed');
   }
+  // P-016: capture the main repository's remote BEFORE repointing the push at the
+  // fork — sync-back fetches upstream from it and merges into the copy's staging.
+  cfg.syncBack = { upstreamRemote: cfg.remote ?? 'origin', upstreamBranch: SYNC_BACK_UPSTREAM_BRANCH };
   cfg.remote = decision.remoteName;
   cfg.pushSubmoduleOrigins = false;
   console.log(`[git-sync] ${slug}: ${decision.reason}`);

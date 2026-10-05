@@ -154,8 +154,13 @@ beforeAll(async () => {
       try {
         await s.unsafe(BOOT_PREREQS_DDL);
         await applyPendingMigrations({ client: s, sqlDir: SQL_DIR });
-        const draft = resolve(SQL_DIR, '1365-unify-work-item-dep-change-notify.sql.DRAFT');
-        if (existsSync(draft)) await s.unsafe(readFileSync(draft, 'utf8'));
+        for (const name of ['1365-unify-work-item-dep-change-notify', '1366-mapped-report-occurrence-change-notify']) {
+          const draft = resolve(SQL_DIR, `${name}.sql.DRAFT`);
+          if (existsSync(draft)) {
+            await s.unsafe(readFileSync(draft, 'utf8'));
+            await s.unsafe(readFileSync(draft, 'utf8'));
+          }
+        }
       } finally {
         await s.end({ timeout: 5 });
       }
@@ -231,6 +236,48 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
         `  mapped-but-no-trigger: [${missing.join(', ')}]\n` +
         `  documented COVERAGE_EXEMPT: [${exempt.join(', ')}]`,
     ).toEqual(exempt);
+  });
+
+  it('raw report and occurrence writes emit scoped INSERT, UPDATE and DELETE notifications', async () => {
+    const received: Array<{ name: string; args: { op: string; workspace_id: string } }> = [];
+    const listener = postgres(db.url, { max: 1, onnotice: () => {} });
+    const marker = `cachetrg_barrier_${Date.now()}`;
+    let flushed!: () => void;
+    const delivered = new Promise<void>((resolve) => { flushed = resolve; });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await listener.listen('sync_invalidate', (payload) => received.push(JSON.parse(payload)));
+      await listener.listen(marker, () => flushed());
+      await sql.begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', 'cachetrg-ws', true)`;
+        await tx`INSERT INTO harness_shared.report_library (workspace_id, report_id, title, lineage_id)
+          VALUES ('cachetrg-ws', 'notify-report', 'notification proof', 'notify-report')`;
+        await tx`UPDATE harness_shared.report_library SET summary = 'updated'
+          WHERE workspace_id = 'cachetrg-ws' AND report_id = 'notify-report'`;
+        await tx`DELETE FROM harness_shared.report_library
+          WHERE workspace_id = 'cachetrg-ws' AND report_id = 'notify-report'`;
+        await tx`INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool, report_kind, reported_title)
+          VALUES ('cachetrg-ws', 'papercusp', 'WI-NOTIFY', 'test', 'canonical-created', 'notification proof')`;
+        await tx`UPDATE harness_shared.work_item_occurrences SET evidence = '{"verified":true}'::jsonb
+          WHERE workspace_id = 'cachetrg-ws' AND canonical_work_item_id = 'WI-NOTIFY'`;
+        await tx`DELETE FROM harness_shared.work_item_occurrences
+          WHERE workspace_id = 'cachetrg-ws' AND canonical_work_item_id = 'WI-NOTIFY'`;
+        await tx`SELECT pg_notify(${marker}, 'complete')`;
+      });
+      await Promise.race([delivered, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('raw-write notification barrier was not delivered')), 5_000);
+      })]);
+      for (const table of ['report_library', 'work_item_occurrences']) {
+        expect(received.filter((event) => event.name === `harness_shared.${table}.changed`)
+          .map((event) => ({ op: event.args.op, workspace_id: event.args.workspace_id }))).toEqual(
+          ['INSERT', 'UPDATE', 'DELETE'].map((op) => ({ op, workspace_id: 'cachetrg-ws' })),
+        );
+      }
+    } finally {
+      clearTimeout(timeout);
+      await listener.end({ timeout: 5 });
+    }
   });
 
   it('no COVERAGE_EXEMPT entry is stale (each is a real mapped table that still lacks the trigger)', async () => {

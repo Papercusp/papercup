@@ -697,6 +697,21 @@ function isQuestionCardOpen(screen: string, question: string): boolean {
     || screenContains(screen, '┌ Question ');
 }
 
+// pui-chat-first-ux-2026-09-28 P-003 / R-03: the default chat screen shows
+// only model, directory, context and cost. These are the token classes the
+// falsifier names — session ids, sequence numbers, lifecycle and
+// reconciliation states, pot/role/store names, operator URLs, account routes
+// and "unknown" usage rows. They belong in `pui doctor` or Ctrl+O details.
+// Module scope: the P-003 chat-first cases and the P-024 case both scan for them.
+const CHAT_JARGON: readonly RegExp[] = [
+  /\badv \d/, /\bseq \d/, /reconciliation/, /waiting-for-owner/, /SU session/, /SU · /,
+  new RegExp(`pot ${HARNESS}`), /role operator/, /\bstore /, /https?:\/\//, /\baccount \S/, /unknown/,
+  // WI-10004211: the approval card once titled itself after the server that raised it.
+  /Operator asks/,
+];
+const chatJargonIn = (frame: string): string[] =>
+  CHAT_JARGON.filter((pattern) => pattern.test(frame)).map(String);
+
 class PuiPane {
   readonly pty: IPty;
   private raw = '';
@@ -3824,19 +3839,6 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   });
 
-  // pui-chat-first-ux-2026-09-28 P-003 / R-03: the default chat screen shows
-  // only model, directory, context and cost. These are the token classes the
-  // falsifier names — session ids, sequence numbers, lifecycle and
-  // reconciliation states, pot/role/store names, operator URLs, account routes
-  // and "unknown" usage rows. They belong in `pui doctor` or Ctrl+O details.
-  const CHAT_JARGON: readonly RegExp[] = [
-    /\badv \d/, /\bseq \d/, /reconciliation/, /waiting-for-owner/, /SU session/, /SU · /,
-    new RegExp(`pot ${HARNESS}`), /role operator/, /\bstore /, /https?:\/\//, /\baccount \S/, /unknown/,
-    // WI-10004211: the approval card once titled itself after the server that raised it.
-    /Operator asks/,
-  ];
-  const chatJargonIn = (frame: string): string[] =>
-    CHAT_JARGON.filter((pattern) => pattern.test(frame)).map(String);
   // pui-chat-first-ux-2026-09-28 R-01: the chrome a default launch must not
   // show — the workbench tab strip (h:Overview, 1:Agent Chat), zellij's tab bar
   // ("Zellij (<session>)") and mode bar (LOCK … PANE), and the workbench's
@@ -6505,6 +6507,141 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       }));
     } finally {
       await pane.stop().catch(() => {});
+    }
+  });
+
+  /** From `act()`, the first millisecond each named condition held on the
+   *  rendered screen, and the worker's lateness over the whole window. */
+  async function renderTimeline(
+    pane: PuiPane,
+    act: () => void,
+    marks: Record<string, (screen: string) => boolean>,
+    timeoutMs: number,
+  ): Promise<{ at: Record<string, number>; workerLateMs: number }> {
+    await lateness.begin();
+    const vt = new VtScreen(pane.size.rows, pane.size.cols);
+    vt.feed(pane.rawSince(0));
+    const names = Object.keys(marks);
+    const at: Record<string, number> = {};
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        subscription.dispose();
+        reject(new Error(`not all of ${names.join(', ')} rendered within ${timeoutMs}ms (seen ${JSON.stringify(at)}):\n${vt.text()}`));
+      }, timeoutMs);
+      const subscription = pane.pty.onData((chunk) => {
+        vt.feed(chunk);
+        const screen = vt.text();
+        for (const name of names) if (at[name] === undefined && marks[name](screen)) at[name] = performance.now() - started;
+        if (!names.every((name) => at[name] !== undefined)) return;
+        clearTimeout(timer);
+        subscription.dispose();
+        resolve();
+      });
+      const started = performance.now();
+      act();
+    });
+    return { at, workerLateMs: await lateness.end() };
+  }
+
+  // pui-chat-first-ux-2026-09-28 P-024 (D-021), R-03 of owner #1276: "I just
+  // said hi to claude and there is no indication of what was happening". P-023
+  // found the first message met a still-starting engine and was refused. Now a
+  // message shows at once with a Claude-style working line; a stalled engine
+  // says it is starting and the message goes when it is ready; a hung operator
+  // is named in one plain sentence within 5s. Never silence.
+  test('P-024: "hi" shows at once with a working line; a stalled engine and a hung operator each say so', { timeout: 240_000 }, async ({ onTestFailed }) => {
+    const ENTER_FEEDBACK_MS = 100;
+    const HUNG_OPERATOR_SENTENCE_MS = 5_000;
+    const HUNG_SENTENCE = 'Papercusp is not answering; check that it is running, then press Enter to send your message again.';
+    // ui.rs draws it as `<spinner> <phase>… (<n>s[ · …] · Esc to interrupt)`.
+    const WORKING_LINE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Starting Claude|Still starting Claude[^…]*|Thinking|Working)… \((\d+)s[^)]* · Esc to interrupt\)/;
+    /** The working line, when at least `sent` "hi" lines sit in the transcript
+     *  above it (the composer, which draws `> ` too, is below it). */
+    const working = (screen: string, sent: number): RegExpExecArray | null => {
+      const lines = screen.split('\n');
+      const row = lines.findIndex((line) => WORKING_LINE.test(line));
+      if (row < 0) return null;
+      const hi = lines.slice(0, row).filter((line) => /(^|\s)> hi$/.test(line.replace(/[│┃]/g, ' ').trimEnd()));
+      return hi.length >= sent ? WORKING_LINE.exec(lines[row]) : null;
+    };
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p024-launch-')));
+    let releaseInitialization!: () => void;
+    scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
+    let stage = 'compose';
+    const measured: Record<string, unknown> = {};
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P024_FAILURE', JSON.stringify({
+      stage, launchDir, measured, hungSnapshotReads, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      pane.write('hi');
+      await pane.waitFor('Enter sends');
+
+      // 1. The engine is stalled: its initialization does not finish until released.
+      stage = 'stalled-engine';
+      const enter = assertBudget('P-024 Enter to the message and its working line',
+        [await renderedAfter(pane, () => pane.enter(), (screen) => working(screen, 1) !== null, 10_000)], ENTER_FEEDBACK_MS);
+      measured.enterMs = enter.observedMs;
+      measured.enterWorkerLateMs = enter.maxWorkerLateMs;
+      expect(working(pane.screen(), 1)?.[1], pane.screen()).toMatch(/^(Still s|S)tarting Claude/);
+      // A live line, not a still frame: the seconds count up …
+      await vi.waitFor(() => expect(Number(working(pane.screen(), 1)?.[2] ?? -1)).toBeGreaterThanOrEqual(2),
+        { timeout: 10_000, interval: 100 });
+      // … and past 5s it says the message waits for the engine, not that it failed.
+      await pane.waitFor('your message will send when it is ready', { timeoutMs: 15_000 });
+      const stalled = pane.screen();
+      measured.stalledFrame = stalled;
+      expect(stalled).not.toMatch(/stopped before it was ready|did not become ready|taking too long|not answering/);
+      expect(chatJargonIn(stalled), stalled).toEqual([]);
+      expect(scriptedEngine.requests).toEqual([]);
+      stage = 'engine-ready';
+      releaseInitialization();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitForSendReady();
+      expect(scriptedEngine.requests).toEqual(['hi']);
+
+      // 2. The operator hangs: it holds every readiness read and never answers.
+      stage = 'hung-operator';
+      pane.write('hi');
+      await pane.waitFor('Enter sends');
+      hangSnapshotReads();
+      const hung = await renderTimeline(pane, () => pane.enter(), {
+        working: (screen) => working(screen, 2) !== null,
+        sentence: (screen) => screen.includes(HUNG_SENTENCE),
+      }, 20_000);
+      measured.hung = hung;
+      // Positive control: the reads really hung, and the sentence is the bound
+      // firing, not an early refusal.
+      expect(hungSnapshotReads).toBeGreaterThanOrEqual(1);
+      expect(hung.at.sentence).toBeGreaterThanOrEqual(3_500);
+      expect(hung.at.working).toBeLessThan(hung.at.sentence);
+      assertBudget('P-024 hung operator to its plain sentence',
+        [{ ms: hung.at.sentence, workerLateMs: hung.workerLateMs }], HUNG_OPERATOR_SENTENCE_MS);
+      const failed = pane.screen();
+      expect(chatJargonIn(failed), failed).toEqual([]);
+      expect(failed.match(/Papercusp is not answering/g)).toHaveLength(1);
+      expect(scriptedEngine.requests).toEqual(['hi']);
+
+      // The operator answers again: Enter sends the kept message, once.
+      stage = 'operator-back';
+      transportFault = 'none';
+      releaseHungSnapshots();
+      pane.enter();
+      await vi.waitFor(() => expect(scriptedEngine.requests).toEqual(['hi', 'hi']), { timeout: 30_000, interval: 100 });
+      await pane.waitForSendReady();
+      console.info('PUI_P024_INSTANT_FEEDBACK_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, optimised: optimised(), launchDir,
+        enterMs: enter.observedMs, enterWorkerLateMs: enter.maxWorkerLateMs,
+        hungWorkingMs: hung.at.working, hungSentenceMs: hung.at.sentence, hungWorkerLateMs: hung.workerLateMs,
+        stalledFrame: stalled, hungFrame: failed,
+      }));
+    } finally {
+      transportFault = 'none';
+      releaseHungSnapshots();
+      releaseInitialization();
+      await pane.stop().catch(() => {});
+      rmSync(launchDir, { recursive: true, force: true });
     }
   });
 
