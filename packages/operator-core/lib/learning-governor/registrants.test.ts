@@ -170,6 +170,36 @@ describe('runGovernedSpendAttempt — every attempt settles exactly once', () =>
     expect(settlements).toEqual([{ disposition: 'failed', usedUsd: 0 }]);
   });
 
+  it.each([0, 0.42])('keeps missing failure usage OPEN while retaining its $%s subtotal', async costUsd => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const out = await runGovernedSpendAttempt(attempt(async () => {
+      throw Object.assign(new Error('pipeline usage incomplete'), { costUsd, costUsdMeasurementMissing: true });
+    }), deps);
+    expect(out).toMatchObject({ ok: false, reason: 'failed', error: 'pipeline usage incomplete',
+      costUsd, costUsdMeasurementMissing: true, reservationId: 'res-1', settlement: null,
+      settlementError: 'usage measurement incomplete; reservation remains open' });
+    expect(settlements).toEqual([]);
+  });
+
+  it.each([false, true])('keeps incomplete successful/cancelled usage OPEN (cancelled=%s)', async cancelled => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const out = await runGovernedSpendAttempt(attempt(async () => ({
+      costUsd: 0.3, value: 'partial result', cancelled, costUsdMeasurementMissing: true,
+    })), deps);
+    expect(out).toMatchObject({ ok: true, value: 'partial result', costUsd: 0.3, cancelled,
+      costUsdMeasurementMissing: true, reservationId: 'res-1', settlement: null,
+      settlementError: 'usage measurement incomplete; reservation remains open' });
+    expect(settlements).toEqual([]);
+  });
+
+  it.each([NaN, Infinity, -1])('does not send an invalid reported cost (%s) to settlement', async costUsd => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const out = await runGovernedSpendAttempt(attempt(async () => ({ costUsd, value: 'result' })), deps);
+    expect(out).toMatchObject({ ok: true, value: 'result', costUsd: 0, costUsdMeasurementMissing: true,
+      reservationId: 'res-1', settlement: null });
+    expect(settlements).toEqual([]);
+  });
+
   it('does NOT run the work when the reservation is refused', async () => {
     let ran = false;
     const { deps, settlements } = fakeAttemptDeps({

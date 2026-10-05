@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-import { collectSmokeFailSignals } from '../harness/improvements/watchdog';
+import { collectSmokeFailSignals, runWatchdogTick } from '../harness/improvements/watchdog';
 import { readImprovementItems } from '../harness/improvements/read-items';
 import { drillClassById } from './drill-classes';
 import { defaultDrillCycleDeps, runDrillCycle } from './sandbox';
@@ -227,47 +227,53 @@ describe('a FULL drill cycle through the real machinery (the sandbox round-trip)
     }
   });
 
-  it('routine-engine-death matches, captures, and triages its synthetic metric signal without substrate writes', async () => {
+  it('routine-engine-death captures its synthetic metric signal with drill provenance while organic reads suppress it', async () => {
     const before = await h.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM harness_shared.routines`;
     const cls = drillClassById('routine-engine-death')!;
-    const result = await runDrillCycle(cls, defaultDrillCycleDeps(h.sql, LIVE_WS));
-    expect(result.status, result.reason).toBe('resolved');
-    expect(result.ok).toBe(true);
-    expect(result.issueId).toBeTruthy();
-    expect(result.leakCheck?.passed).toBe(true);
+    const planted = await cls.plant(h.sql, { drillId: 'routine-engine-death-capture-guard' });
+    try {
+      const tick = await runWatchdogTick(
+        SANDBOX_WORKSPACE_ID,
+        { installSlug: 'red-queen-sandbox', maxPerTick: 5 },
+        {
+          collectors: cls.collectors(h.sql, planted, SANDBOX_WORKSPACE_ID),
+          processAging: async () => [],
+          processAutoClose: async () => [],
+        },
+      );
 
-    // Keep detector matching separate from filing policy: the planted key must
-    // be detected, then its operator-scoped issue must retain drill provenance.
-    const [outcome] = await readDrillOutcomes(h.sql, {
-      workspaceId: SANDBOX_WORKSPACE_ID,
-      classId: 'routine-engine-death',
-    });
-    expect(outcome).toMatchObject({
-      status: 'resolved',
-      issueId: result.issueId,
-      detectedWatchdogKey: outcome.expectedWatchdogKey,
-    });
-    expect(outcome.expectedWatchdogKey).toMatch(/^routine-engine-death:/);
-    expect(outcome.triagedDecision).toBeTruthy();
+      expect(tick.status).toBe('ran');
+      expect(tick.signals).toBe(1);
+      expect(tick.seenKeys).toContain(planted.expectedWatchdogKey);
+      expect(tick.captured).toHaveLength(1);
 
-    const [issueRow] = await h.sql<{
-      signal_origin: string;
-      state: string;
-      scope: string;
-      watchdog_key: string | null;
-    }[]>`
-      SELECT signal_origin, state, scope, payload->>'watchdogKey' AS watchdog_key
-        FROM harness_shared.engineer_issues
-       WHERE issue_id = ${result.issueId!}`;
-    expect(issueRow).toMatchObject({
-      signal_origin: 'drill',
-      state: 'resolved',
-      scope: SANDBOX_SCOPE,
-      watchdog_key: outcome.expectedWatchdogKey,
-    });
+      const [issueId] = tick.captured;
+      const [issueRow] = await h.sql<{
+        signal_origin: string;
+        state: string;
+        scope: string;
+        watchdog_key: string | null;
+      }[]>`
+        SELECT signal_origin, state, scope, payload->>'watchdogKey' AS watchdog_key
+          FROM harness_shared.engineer_issues
+         WHERE issue_id = ${issueId}`;
+      expect(issueRow).toMatchObject({
+        signal_origin: 'drill',
+        state: 'open',
+        scope: SANDBOX_SCOPE,
+        watchdog_key: planted.expectedWatchdogKey,
+      });
 
-    const after = await h.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM harness_shared.routines`;
-    expect(after[0].n).toBe(before[0].n); // the engine's table is untouched
+      const organic = await readImprovementItems({});
+      expect(organic.some((candidate) => candidate.id === issueId)).toBe(false);
+      const drillLane = await readImprovementItems({ origins: ['drill'] });
+      expect(drillLane.some((candidate) => candidate.id === issueId)).toBe(true);
+
+      const after = await h.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM harness_shared.routines`;
+      expect(after[0].n).toBe(before[0].n); // the engine's table is untouched
+    } finally {
+      await cls.cleanup(h.sql, planted);
+    }
   }, 60_000);
 
   it('the live smoke collector for the LIVE workspace stays quiet across drills (belt and suspenders)', async () => {

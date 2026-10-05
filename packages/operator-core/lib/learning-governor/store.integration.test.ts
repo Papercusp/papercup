@@ -32,7 +32,7 @@ import { setPotLearningScope } from '../learning/pot-gate/store';
 import { runGovernedSpendAttempt } from './registrants';
 import { llmCall } from '../llm-testing/llm-client';
 
-const failureUsage = vi.hoisted(() => ({ costUsd: 0 }));
+const failureUsage = vi.hoisted(() => ({ costUsd: 0 as number | undefined }));
 vi.mock('../agent-chat-stream', async importOriginal => ({
   ...await importOriginal<typeof import('../agent-chat-stream')>(),
   runAgentChat: async function* () {
@@ -544,6 +544,45 @@ describe('the one visible number (P-003 verification)', () => {
 /* ── reservation + settlement (P-005), migration 1116 ────────────────────── */
 
 describe('governed attempt persisted settlement receipts', () => {
+  it.each([0, 0.42])('retains OPEN reservations for incomplete usage with known subtotal $%s', async costUsd => {
+    const loopId = `gym:unknown-usage-${randomUUID()}`;
+    const runRef = `incomplete-pipeline:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+      requestedUsd: 1, runRef, accumulate: false, run: async () => {
+        throw Object.assign(new Error('Gym pipeline usage evidence is incomplete'), {
+          costUsd, costUsdMeasurementMissing: true,
+        });
+      },
+    }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    if (out.ok || out.reason !== 'failed' || !out.reservationId) throw new Error('expected a reserved failed attempt');
+    expect(out).toMatchObject({ costUsd, costUsdMeasurementMissing: true, settlement: null });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toMatchObject([
+      { id: out.reservationId, status: 'open', usedUsd: 0, settledAt: null, runRef },
+    ]);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toEqual([]);
+    expect((await getLearningSpendPositions(sql, { workspaceId: WS, loopId })).spend)
+      .toMatchObject({ requestedUsd: 1, reservedUsd: 1, usedUsd: 0, unsettledUsd: 1 });
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+  });
+
+  it('leaves actual LLM failures with absent usage OPEN rather than declaring zero spend', async () => {
+    failureUsage.costUsd = undefined;
+    const loopId = `gym:absent-llm-usage-${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+      requestedUsd: 1, run: async () => {
+        const value = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'missing usage fixture' }] });
+        return { costUsd: value.costUsd, value };
+      },
+    }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    expect(out).toMatchObject({ ok: false, reason: 'failed', costUsdMeasurementMissing: true, settlement: null });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toMatchObject([
+      { status: 'open', settledAt: null },
+    ]);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toEqual([]);
+  });
+
   it.each([0, 0.42])('persists actual LLM failure spend $%s without accumulating a mirror twice', async costUsd => {
     failureUsage.costUsd = costUsd;
     const loopId = `gym:failure-receipt-${randomUUID()}`;
