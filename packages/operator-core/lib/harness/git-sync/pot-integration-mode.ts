@@ -34,7 +34,9 @@ import { parseGithubUrl } from '../clone-github';
 import type { EnsureForkOpts, EnsureForkResult } from '../ensure-fork';
 import { resolveForkPushTarget, setForkRemote, type SetForkRemoteResult } from './fork-remote';
 
-const execFileAsync = promisify(execFile);
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 /** Where this pot's combined work goes. */
 export type PotIntegrationMode = 'direct' | 'review';
