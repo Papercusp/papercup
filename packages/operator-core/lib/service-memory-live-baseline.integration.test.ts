@@ -3,8 +3,10 @@
  * paired intervention or a census of every HTTP worker/retained-memory owner.
  */
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readlinkSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, validatePinnedStateOptions } from '../../../scripts/cdp-inspector.mjs';
@@ -423,6 +425,89 @@ describe('actual current-build operator memory baseline', () => {
         setBuildStampResolver(previousResolver);
       }
     });
+    it('joins real HTTP identities through serialized inspector readers in two independent request targets', async () => {
+      const registryModule = pathToFileURL(join(root, 'libs/papercusp/libs/db/src/acquire-registry.ts')).href;
+      const stampModule = pathToFileURL(join(root, 'libs/papercusp/libs/db/src/build-stamp.ts')).href;
+      const source = `
+        import { createServer } from 'node:http';
+        import { randomUUID } from 'node:crypto';
+        import { recordPgResult, pgDiagnosticIdentity } from ${JSON.stringify(registryModule)};
+        import { setBuildStampResolver } from ${JSON.stringify(stampModule)};
+        setBuildStampResolver(() => ${JSON.stringify(build)});
+        const identity = pgDiagnosticIdentity(), poolInstanceId = randomUUID();
+        let sequence = 0;
+        const server = createServer((_request, response) => {
+          const requestId = randomUUID();
+          for (let i = 0; i < 2; i++) recordPgResult('p011-fixture', {
+            connectionId: 1, queryId: ++sequence, backendPid: null,
+            query: 'select * from harness_shared.spawned_agents', rowCount: 1, wireBytes: 1, status: 'ok',
+            result: [{ privateBody: 'fixture-only' }],
+            context: { state: 'linked', correlation: { ...identity, requestId,
+              operation: 'workItems.byHarness', attemptId: randomUUID(), rowId: null,
+              hopId: null, stage: null, boundary: 'await' } }
+          }, { ...identity, poolInstanceId });
+          response.setHeader('x-papercusp-request-id', requestId);
+          response.end(JSON.stringify({ rows: [{ id: 'fixture' }] }));
+        });
+        server.listen(0, '127.0.0.1', () => console.log('P011_FIXTURE_PORT ' + server.address().port));
+        process.on('SIGTERM', () => server.close(() => process.exit(0)));
+      `;
+      const targets: { child: ReturnType<typeof spawn>; output: string; client?: ReturnType<typeof createCdpClient> }[] = [];
+      try {
+        for (let i = 0; i < 2; i++) {
+          const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--import', 'tsx', '--input-type=module', '-e', source],
+            { cwd: root, env: { ...process.env, PAPERCUSP_BACKGROUND_WORKERS: '0',
+              PAPERCUSP_SUBSTRATE_SIDECAR_MODE: '0', PAPERCUSP_SPAWNER_SIDECAR_MODE: '0',
+              PAPERCUSP_GATEWAY_SIDECAR_MODE: '0', PAPERCUSP_EMBED_SIDECAR_MODE: '0',
+              PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+          const target = { child, output: '' } as typeof targets[number]; targets.push(target);
+          for (const stream of [child.stdout!, child.stderr!]) stream.setEncoding('utf8').on('data', value => {
+            target.output = (target.output + value).slice(-8000);
+          });
+        }
+        const observations = [];
+        const requestIds: string[] = [];
+        for (const target of targets) {
+          const deadline = Date.now() + 20000;
+          while (!target.output.includes('P011_FIXTURE_PORT ') ||
+              !target.output.includes('Debugger listening on ws://')) {
+            if (target.child.exitCode !== null || target.child.signalCode !== null || Date.now() > deadline)
+              throw Error('Independent request target did not become ready: ' + target.output);
+            await wait(50);
+          }
+          const port = Number(target.output.match(/P011_FIXTURE_PORT (\d+)/)![1]);
+          const endpoint = target.output.match(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+)/)![1];
+          target.client = createCdpClient(endpoint); await target.client.connect();
+          const before = processSample(target.child.pid!);
+          const response = await fetch('http://127.0.0.1:' + port);
+          expect(await response.json()).toEqual({ rows: [{ id: 'fixture' }] });
+          const requestId = response.headers.get('x-papercusp-request-id')!; requestIds.push(requestId);
+          const snapshot = (await target.client.evaluate('(' + requestWorkerSnapshot.toString() + ')(' +
+            JSON.stringify([requestId]) + ')', { returnByValue: true })).result.value;
+          const counters = await readProcessMemory(target.client, { expectedPid: target.child.pid!, hostFacts: true });
+          observations.push({ before, after: processSample(target.child.pid!),
+            role: configuredHostRole(counters.hostFacts), snapshot });
+          expect(JSON.stringify(snapshot)).not.toContain('privateBody');
+        }
+        const accepted = auditRequestWorkerAssignments(requestIds, observations.reverse(), build);
+        expect(accepted.status).toBe('observed');
+        expect(accepted.assignments.map(row => row.pid)).toEqual(targets.map(target => target.child.pid));
+        expect(accepted.assignments.map(row => row.queryTuples.length)).toEqual([2, 2]);
+        expect(new Set(accepted.assignments.map(row => row.processInstanceId)).size).toBe(2);
+      } finally {
+        await Promise.all(targets.map(async target => {
+          target.client?.close();
+          if (target.child.exitCode === null && target.child.signalCode === null) {
+            const exited = new Promise<void>(resolve => target.child.once('exit', () => resolve()));
+            target.child.kill('SIGTERM'); await Promise.race([exited, wait(3000)]);
+            if (target.child.exitCode === null && target.child.signalCode === null) {
+              target.child.kill('SIGKILL'); await exited;
+            }
+          }
+          expect(target.child.exitCode === 0 || target.child.signalCode === 'SIGKILL').toBe(true);
+        }));
+      }
+    }, 60000);
   });
   it('binds advertised spawner build to its PID and connection without borrowing disk or main identity', () => {
     const capability = { processExecIdentity: { pid: 7, buildInfo: { sha: 'loaded-source', version: '1.0.0' } },
