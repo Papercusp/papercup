@@ -9,7 +9,7 @@ import { runInNewContext } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 
-import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, capturePinnedHeapSnapshot, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
 import { types } from 'node:util';
 
 class FakeWebSocket extends EventEmitter {
@@ -582,7 +582,7 @@ describe('P011 digest-selected cache snapshot identities', () => {
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
   }, 30_000);
 
-  it.each(['file-only', 'neighbor-session-disconnect'] as const)(
+  it.each(['file-only', 'neighbor-session-disconnect', 'product-recorder-disconnect', 'atomic-product-recorder-disconnect', 'atomic-evicted'] as const)(
     'distinguishes file snapshot IDs from %s without inferring collection', async mode => {
       const directory = mkdtempSync(join(tmpdir(), 'p011-cache-id-lifetime-'));
       const snapshotPath = join(directory, 'heap.heapsnapshot');
@@ -593,9 +593,17 @@ describe('P011 digest-selected cache snapshot identities', () => {
         globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
           ['${owner}', { value: globalThis.cacheState }]
         ]);
-        console.log('ready'); setInterval(() => {}, 1000);
+        globalThis.cachePayloadWeak = new WeakRef(globalThis.cacheState.cache.l1.map.get('private-cache-key').value);
+        (async () => {
+          if (${JSON.stringify(mode)}.includes('product-recorder')) {
+            const { LoopCpuRecorder } = await import(${JSON.stringify(new URL('./event-loop-cpu-recorder.ts', import.meta.url).href)});
+            globalThis.recorder = new LoopCpuRecorder(1000, () => {});
+            if (!await globalThis.recorder.update(true, true)) throw Error('Product recorder failed to arm');
+          }
+          console.log('ready'); setInterval(() => {}, 1000);
+        })();
       `;
-      const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, ['--import', 'tsx', '--inspect=127.0.0.1:0', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '', stderr = '', client: ReturnType<typeof createCdpClient> | undefined;
       child.stdout!.on('data', chunk => { stdout += chunk; }); child.stderr!.on('data', chunk => { stderr += chunk; });
       try {
@@ -603,7 +611,36 @@ describe('P011 digest-selected cache snapshot identities', () => {
         while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
         expect(stdout, stderr).toContain('ready');
         client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
-        const report = await readPinnedHeapObjectIds(client, { expectedPid: child.pid!, owners: [owner],
+        const options = { expectedPid: child.pid!, owners: [owner],
+          cacheKeyDigests: [createHash('sha256').update('private-cache-key').digest('hex')] };
+        const measured = await withFunctionCallTrace(client, { expectedPid: child.pid!, durationMs: 30000,
+          maxCalls: 16, maxStacks: 8, maxStackChars: 4096,
+          targets: [{ name: 'inspector.Session.disconnect',
+            expression: "process.getBuiltinModule('inspector').Session.prototype.disconnect" }],
+        }, async () => {
+          if (mode === 'atomic-product-recorder-disconnect') {
+            const report = await capturePinnedHeapSnapshot(client!, { ...options, snapshotPath });
+            const samples = await client!.send('Runtime.evaluate', {
+              expression: 'globalThis.recorder.record(30).then(r => r.profile.samples.length)',
+              returnByValue: true, awaitPromise: true });
+            expect(samples.result.value).toBeGreaterThan(0);
+            await client!.evaluate('globalThis.recorder.update(false, false)', { returnByValue: true });
+            // The real product teardown did clear the live map. Saved IDs must
+            // still join the actual file; no retry or payload pin repairs them.
+            const after = await readPinnedHeapObjectIds(client!, options);
+            expect(after.roots[0].status).toBe('not-in-snapshot');
+            expect(report.identityBoundary).toContain('one target job');
+            return report;
+          }
+          if (mode === 'atomic-evicted') {
+            const intercepted = { evaluate: client!.evaluate, send: async (method: string, params: any) => {
+              if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.startsWith('async function'))
+                await client!.evaluate('globalThis.cacheState.cache.l1.map.clear()', { returnByValue: true });
+              return client!.send(method, params);
+            } };
+            return capturePinnedHeapSnapshot(intercepted, { ...options, snapshotPath });
+          }
+          return readPinnedHeapObjectIds(client!, { ...options,
           cacheKeyDigests: [createHash('sha256').update('private-cache-key').digest('hex')],
           captureSnapshot: async () => {
             await client!.send('HeapProfiler.enable');
@@ -616,19 +653,39 @@ describe('P011 digest-selected cache snapshot identities', () => {
               return file;
             })()`, { returnByValue: true });
             expect(captured.result.value).toBe(snapshotPath);
+            if (mode === 'product-recorder-disconnect')
+              await client!.evaluate('globalThis.recorder.update(false, false)', { returnByValue: true });
           } });
+        });
+        const report = measured.value;
+        const found = mode === 'file-only' || mode === 'atomic-product-recorder-disconnect';
+        if (mode.includes('product-recorder')) {
+          const traced = measured.trace.calls['inspector.Session.disconnect'];
+          expect(traced.calls).toBeGreaterThan(0);
+          expect(traced.stacks.some(stack => stack.includes('LoopCpuRecorder.suspend'))).toBe(true);
+          expect(measured.trace.limited).toBe(false);
+        }
         const q = report.cacheEntries!;
+        if (mode === 'atomic-evicted') {
+          expect(q.records[0].status).toBe('evicted');
+          expect(q.records[0].objects.map(object => object.status)).toEqual(['evicted', 'evicted']);
+          expect((await client.evaluate('globalThis.cachePayloadWeak.deref() === undefined', { returnByValue: true })).result.value).toBe(true);
+          expect(report.roots[0].status).toBe('found');
+        } else {
         expect(q.records[0].status).toBe('selected'); // Both actual objects still belong to the same map.
-        expect(q.records[0].objects.map(object => object.status)).toEqual(mode === 'file-only'
+        expect(q.records[0].objects.map(object => object.status)).toEqual(found
           ? ['found', 'found'] : ['not-in-snapshot', 'not-in-snapshot']);
-        expect(report.roots[0].status).toBe(mode === 'file-only' ? 'found' : 'not-in-snapshot');
+        expect(report.roots[0].status).toBe(found ? 'found' : 'not-in-snapshot');
         const snapshot = JSON.parse(readFileSync(snapshotPath).toString());
         const width = snapshot.snapshot.meta.node_fields.length, idField = snapshot.snapshot.meta.node_fields.indexOf('id');
         const ids = new Set<number>();
         for (let i = idField; i < snapshot.nodes.length; i += width) ids.add(snapshot.nodes[i]);
-        if (mode === 'file-only') for (const object of q.records[0].objects) expect(ids.has(object.id!)).toBe(true);
+        if (found) for (const object of [...report.roots, ...q.records[0].objects]) expect(ids.has(object.id!)).toBe(true);
+        }
+        expect((await client.evaluate('Object.getOwnPropertyNames(globalThis).filter(k => k.startsWith("__papercuspHeapSelection_")).length',
+          { returnByValue: true })).result.value).toBe(0);
         const membership = await client.evaluate('globalThis.cacheState.cache.l1.map.size', { returnByValue: true });
-        expect(membership.result.value).toBe(1);
+        expect(membership.result.value).toBe(mode === 'atomic-evicted' ? 0 : 1);
         expect(JSON.stringify(report)).not.toContain('private payload');
       } finally {
         client?.close();
