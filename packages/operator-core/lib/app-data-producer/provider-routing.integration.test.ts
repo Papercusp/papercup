@@ -91,6 +91,7 @@ async function ingest(
   kind: string,
   datatypeId: 'email-message' | 'calendar-event',
   payload: Record<string, unknown>,
+  externalId: string = NATIVE,
 ) {
   const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, sourceId);
   return ingestExternalTriggerEvent(org.adminSql, {
@@ -98,7 +99,7 @@ async function ingest(
     sourceId,
     source: kind,
     event: datatypeId === 'email-message' ? 'message.received' : 'event-created',
-    externalId: NATIVE,
+    externalId,
     datatypeId,
     adapterPayload: payload,
     normalize: (p) => p as Record<string, unknown>,
@@ -155,14 +156,18 @@ describe('P-005 provider-neutral routing (D-010)', () => {
   it('routes a non-Google email and calendar record into the Vault by datatype, keyed by source id', async () => {
     const account = 'alice@outlook.example';
     const fx = await source(FIXTURE, alice, account);
+    // One source serving two datatypes: each record has its own native id, as a
+    // real provider's mail and calendar resources do. (Cross-SOURCE reuse of one
+    // native id is the collision under test in the next two cases.)
+    const nativeFor = { 'email-message': NATIVE, 'calendar-event': `${NATIVE}-event` } as const;
 
     for (const [datatypeId, payload] of [
       ['email-message', mail(account)],
-      ['calendar-event', meeting(account)],
+      ['calendar-event', { ...meeting(account), id: nativeFor['calendar-event'] }],
     ] as const) {
-      const result = await ingest(fx, FIXTURE, datatypeId, payload);
+      const result = await ingest(fx, FIXTURE, datatypeId, payload, nativeFor[datatypeId]);
       expect(result.deliveries).toEqual(expect.arrayContaining([
-        expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'delivered' }),
+        expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'delivered', deduped: false }),
       ]));
     }
 
@@ -173,19 +178,22 @@ describe('P-005 provider-neutral routing (D-010)', () => {
     const rows = await vaultRows(alice);
     expect(rows.map((r) => r.datatype_id)).toEqual(['calendar-event', 'email-message']);
     for (const row of rows) {
-      expect(row).toMatchObject({ source_id: fx, provider_account_id: account, external_id: NATIVE });
-      const category = row.datatype_id === 'email-message' ? 'gmail' : 'calendar';
-      expect(row.dedupe_key).toBe(accountPrefix(account) + vaultDedupeKey(category, NATIVE, fx));
-      expect(row.dedupe_key).toContain(`:${fx}:${NATIVE}`);
+      const datatypeId = row.datatype_id as keyof typeof nativeFor;
+      const native = nativeFor[datatypeId];
+      expect(row).toMatchObject({ source_id: fx, provider_account_id: account, external_id: native });
+      const category = datatypeId === 'email-message' ? 'gmail' : 'calendar';
+      expect(row.dedupe_key).toBe(accountPrefix(account) + vaultDedupeKey(category, native, fx));
+      expect(row.dedupe_key).toContain(`:${fx}:${native}`);
     }
 
     // The same rows reach each app's batch through the datatype-keyed read.
     for (const app of ['email', 'calendar'] as const) {
+      const native = nativeFor[DATATYPE_FOR_APP[app] as keyof typeof nativeFor];
       const canonical = await selectCanonicalRowsAfter(org.adminSql, WS, alice, DATATYPE_FOR_APP[app], null, 50);
       expect(canonical).toHaveLength(1);
       const mapped = appRowFromSourceRecord(canonical[0]!);
       expect(mapped?.app).toBe(app);
-      expect(mapped?.row).toMatchObject({ id: appRowId(NATIVE, fx), nativeId: NATIVE });
+      expect(mapped?.row).toMatchObject({ id: appRowId(native, fx), nativeId: native });
     }
   });
 
