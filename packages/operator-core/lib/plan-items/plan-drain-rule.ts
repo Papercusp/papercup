@@ -2,16 +2,18 @@
  * plan-drain-rule.ts — P-004 of deterministic-plan-state-derivation-2026-08-31.
  *
  * When a structured item write crosses the terminal boundary/adds an item, a
- * content writer changes the currently warranted transition, or plans:new
- * creates a non-draft plan, re-read the plan and move its lifecycle `status`
- * if the graph warrants it. Creation has no prior graph edge to cross, but its
- * initial content can already be drained.
+ * content writer changes the currently warranted transition, or an initial
+ * non-draft lifecycle write creates/converts a plan, re-read the plan and move
+ * its lifecycle `status` if the graph warrants it. Creation/conversion has no
+ * prior graph edge to cross, but its item graph can already be drained.
  *
  * # Why matching stays cheap and synchronous
  *
  * The reaction matcher is pure and synchronous, so it cannot re-read the plan.
  * For `plans:set-status` it asks whether the item crossed the terminal boundary;
- * for `plans:add-item` it asks whether an item was successfully added. The
+ * for `plans:add-item` it asks whether an item was successfully added. For
+ * `plans:new` and `plans:set-frontmatter`, it asks whether the initial status
+ * is non-draft. The
  * shared whole-content evaluator marks the three raw content writers only when
  * the before/after graph changes the transition currently warranted by the
  * stored status. The ACTION performs the authoritative graph check under the
@@ -74,11 +76,12 @@ export function planWhoseDrainStateMayHaveChanged(
   const requestedStatus =
     typeof e.args === 'object' && e.args !== null ? (e.args as { status?: unknown }).status : undefined;
   const initialPlanStatus = typeof requestedStatus === 'string' ? requestedStatus : 'draft';
-  const createMayChangeDrain = e.tool === 'plans:new' && initialPlanStatus !== 'draft';
+  const initialLifecycleWriteMayChangeDrain =
+    (e.tool === 'plans:new' || e.tool === 'plans:set-frontmatter') && initialPlanStatus !== 'draft';
   if (
     r?.ok === true &&
     typeof r.slug === 'string' &&
-    (itemWriteMayChangeDrain || contentWriteMayChangeDrain || createMayChangeDrain)
+    (itemWriteMayChangeDrain || contentWriteMayChangeDrain || initialLifecycleWriteMayChangeDrain)
   ) {
     // Thread the triggering call's harness through, exactly as reconcile-rule
     // does (EI-8970): re-reading under the operator-home harness would resolve
@@ -112,6 +115,16 @@ registerReactionRule({
 registerReactionRule({
   id: 'plan-drain:plan-created',
   on: 'plans:new',
+  when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
+  fire: PLAN_DRAIN_TRANSITION_ACTION,
+  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-drain',
+});
+
+registerReactionRule({
+  id: 'plan-drain:legacy-plan-converted',
+  on: 'plans:set-frontmatter',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
   args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
