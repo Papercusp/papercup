@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 
 const exec = promisify(execFile);
+const root = fileURLToPath(new URL('../../../', import.meta.url));
 const cacheRoot = fileURLToPath(new URL('../../../libs/generic/cache/', import.meta.url));
 const fingerprint = (source: string) => createHash('sha256').update(source).digest('hex');
 const moduleUrl = (source: string) => 'data:text/javascript;base64,' +
@@ -225,7 +226,7 @@ describe('cache retained roots and resource costs in isolated processes', () => 
       } catch (error) {
         report.error = String(error); throw error;
       } finally {
-        writeFileSync(resolve(destination), serializeIdentitySafeJson(report));
+        writeFileSync(resolve(root, destination), serializeIdentitySafeJson(report));
       }
     }, 150_000);
 
