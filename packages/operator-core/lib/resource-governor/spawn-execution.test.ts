@@ -2,6 +2,10 @@ import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const beginGovernedExecutionMock = vi.fn();
+const registerGoalLaunchMock = vi.fn();
+vi.mock('../goal-launch-settings', () => ({
+  registerGoalLaunch: (...args: unknown[]) => registerGoalLaunchMock(...args),
+}));
 const governedExecutionRuntimeMock = vi.fn((_workspaceId?: string, _namespace?: string) => ({
   governor: {},
   driver: {},
@@ -39,6 +43,9 @@ describe('spawnGovernedAgentProcess', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     beginGovernedExecutionMock.mockResolvedValue({ context, finish, cancel });
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-fixture'), resolution: null, degradedReason: null,
+    }));
   });
 
   it('admits before spawning, passes nested context, and releases on child exit', async () => {
@@ -94,5 +101,43 @@ describe('spawnGovernedAgentProcess', () => {
     );
     resolveExit({ code: 0, signal: null });
     await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
+  });
+
+  it('registers the goal reservation at the shared door before starting a process', async () => {
+    const spawn = vi.fn(async () => ({ status: 'error' as const, error: 'fixture spawn failure', code: 502 }));
+    await spawnGovernedAgentProcess({
+      workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target',
+      metadata: { launchedBy: 'launcher', targetOwnerId: 'target', fleetSlug: 'fleet', replacesOwnerId: 'old-owner' },
+    }, spawn);
+    expect(registerGoalLaunchMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws', launcherOwnerId: 'launcher', targetOwnerId: 'target', fleetSlug: 'fleet', excludeOwnerIds: ['old-owner'],
+    }), expect.any(Function));
+    expect(beginGovernedExecutionMock).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ goalId: 'goal-fixture', goalReservation: true, targetOwnerId: 'target' }),
+    }), expect.anything(), expect.anything());
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledWith('fixture spawn failure');
+  });
+
+  it('refuses before governor registration and process start when the serialized count has no seat', async () => {
+    registerGoalLaunchMock.mockResolvedValue({ value: null,
+      resolution: { refusal: { message: 'goal seat already reserved' } }, degradedReason: null });
+    const spawn = vi.fn();
+    const result = await spawnGovernedAgentProcess({
+      workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target', metadata: { launchedBy: 'launcher' },
+    }, spawn);
+    expect(result).toEqual({ status: 'error', error: 'goal seat already reserved', code: 409 });
+    expect(beginGovernedExecutionMock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a degraded admission read without hiding a successful process result', async () => {
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-fixture'), resolution: null, degradedReason: 'fixture lock unavailable',
+    }));
+    const result = await spawnGovernedAgentProcess({
+      workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target', metadata: { launchedBy: 'launcher' },
+    }, async () => ({ status: 'ok', pid: 42, terminal: 'headless', child: null, display: null, desktopEnvResolvedVia: null }));
+    expect(result).toMatchObject({ status: 'ok', goalAdmissionDegraded: ['fixture lock unavailable'] });
   });
 });

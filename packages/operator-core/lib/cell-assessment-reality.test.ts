@@ -93,6 +93,7 @@ import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-br
 import { portfolioAssessmentFor } from './goals/portfolio-throughput';
 import { LspAdmissionController } from './code-intelligence/lsp-admission';
 import { buildLspAdmissionStatePayload } from './agent-tools/state/lsp-admission';
+import type { LspDaemonAnswer } from './code-intelligence/lsp-daemon-protocol';
 
 /**
  * The no-real-PG rail's DOCUMENTED opt-out, taken for the same reason the falsifier
@@ -188,6 +189,25 @@ const LSP_ADMISSION_CELLS = BUILTIN_CELLS.filter(
 // cannot detect a constant/inverted snapshot or an unavailable read becoming idle.
 type LspStatePayload = Awaited<ReturnType<typeof buildLspAdmissionStatePayload>>;
 const lspPayloads: Record<string, LspStatePayload> = {};
+const lspRuntimePayloads: Record<string, LspStatePayload> = {};
+const lspPayloadsByCell: Record<string, Record<string, LspStatePayload>> = {
+  'lsp.admission': lspPayloads,
+  'lsp.warmServers': lspRuntimePayloads,
+  'lsp.readiness': lspRuntimePayloads,
+};
+type LspRuntime = NonNullable<LspDaemonAnswer['daemonRuntime']>;
+function lspRuntime(overrides: Partial<LspRuntime> = {}): LspRuntime {
+  return {
+    enabled: true, overall: 'healthy', pid: 42, node: 'v24', entry: 'daemon', sampledAtMs: Date.now(),
+    provisioned: { typescript: true, rust: false },
+    servers: [{
+      language: 'typescript', rootPath: '/repo', taskId: 'server', health: 'healthy',
+      coldStartMs: 10, openDocs: 1, pid: 43, everSettled: true, quiescent: true,
+      pendingProgress: 0, progressGeneration: 1, certifiedReadiness: ['definition'], unprovenReadiness: [],
+    }],
+    ...overrides,
+  };
+}
 beforeAll(async () => {
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
@@ -201,7 +221,8 @@ beforeAll(async () => {
       },
     }),
   });
-  const read = () => buildLspAdmissionStatePayload('test-lsp-reality', async () => controller.snapshot());
+  const readRuntime = async () => lspRuntime();
+  const read = () => buildLspAdmissionStatePayload('test-lsp-reality', async () => controller.snapshot(), readRuntime);
   const context = {
     workspaceId: 'test-lsp-reality', language: 'typescript', projectRoot: '/repo',
     op: 'references', deadlineAtMs: Date.now() + 10_000,
@@ -221,10 +242,10 @@ beforeAll(async () => {
     lspPayloads['settlement-failed'] = await read();
     lspPayloads.unknown = await buildLspAdmissionStatePayload('test-lsp-reality', async () => {
       throw new Error('daemon socket unavailable');
-    });
+    }, readRuntime);
     lspPayloads.stale = await buildLspAdmissionStatePayload('test-lsp-reality', async () => ({
       ...controller.snapshot(), sampledAtMs: Date.now() - 30_001,
-    }));
+    }), readRuntime);
     CONTROLS['lsp.admission'] = ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'stale'].map(
       (label) => ({ label, expect: lspPayloads[label]!.assessment }),
     );
@@ -236,6 +257,29 @@ beforeAll(async () => {
     await queued?.catch(() => undefined);
     await vi.waitFor(() => expect(controller.snapshot().settlementFailures).toEqual([]), { timeout: 2_000 });
   }
+  const runtimeReaders: Record<string, () => Promise<LspRuntime>> = {
+    healthy: readRuntime,
+    degraded: async () => lspRuntime({ overall: 'degraded' }),
+    unhealthy: async () => lspRuntime({ overall: 'unhealthy' }),
+    disabled: async () => lspRuntime({ enabled: false }),
+    unknown: async () => { throw new Error('health socket unavailable'); },
+    stale: async () => lspRuntime({ sampledAtMs: Date.now() - 30_001 }),
+    empty: async () => lspRuntime({ servers: [] }),
+    unproven: async () => lspRuntime({ servers: [{ ...lspRuntime().servers[0]!, unprovenReadiness: ['references'] }] }),
+    pending: async () => lspRuntime({ servers: [{ ...lspRuntime().servers[0]!, pendingProgress: 1 }] }),
+    indexing: async () => lspRuntime({ servers: [{ ...lspRuntime().servers[0]!, quiescent: false }] }),
+  };
+  for (const [label, runtimeReader] of Object.entries(runtimeReaders)) {
+    lspRuntimePayloads[label] = await buildLspAdmissionStatePayload(
+      'test-lsp-reality', async () => controller.snapshot(), runtimeReader,
+    );
+  }
+  CONTROLS['lsp.warmServers'] = ['healthy', 'degraded', 'unhealthy', 'disabled', 'unknown', 'stale'].map(
+    label => ({ label, expect: lspRuntimePayloads[label]!.runtimeAssessment }),
+  );
+  CONTROLS['lsp.readiness'] = ['healthy', 'unproven', 'pending', 'indexing', 'empty', 'disabled', 'unknown', 'stale'].map(
+    label => ({ label, expect: lspRuntimePayloads[label]!.readinessAssessment }),
+  );
 }, 10_000);
 
 /**
@@ -1259,6 +1303,8 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'governor.resources': ['unconstrained', 'constrained', 'unknown'],
   'governor.recovery': ['stable', 'recovering', 'stalled', 'unknown'],
   'lsp.admission': ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'unknown'],
+  'lsp.warmServers': ['healthy', 'degraded', 'unhealthy', 'unknown', 'unknown', 'unknown'],
+  'lsp.readiness': ['reported', 'unproven', 'unproven', 'unproven', 'unknown', 'unknown', 'unknown', 'unknown'],
   'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
   'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
   'workspace.workScope': ['absent', 'off', 'off', 'enforce'],
@@ -1426,10 +1472,10 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
   it.each(LSP_ADMISSION_CELLS.map((c) => [c.cell, c] as const))(
     '%s — assessment and evidence paths survive measured, failed and stale daemon reads',
     (_id, spec) => {
-      for (const payload of Object.values(lspPayloads)) {
+      for (const payload of Object.values(lspPayloadsByCell[spec.cell]!)) {
         expect(missingAssessmentPaths(spec, payload)).toEqual([]);
         expect(pathExists(payload, spec.unknownHoist!).exists).toBe(true);
-        expect(Object.keys(spec.assessment!.codes)).toContain(payload.assessment);
+        expect(Object.keys(spec.assessment!.codes)).toContain(pathExists(payload, spec.assessment!.path).value);
       }
       expect(lspPayloads.pressure).toMatchObject({ measurement: 'measured', admission: { queued: 1, inFlight: 1 } });
       expect(lspPayloads.unknown).toMatchObject({ measurement: 'unknown', admission: null });
