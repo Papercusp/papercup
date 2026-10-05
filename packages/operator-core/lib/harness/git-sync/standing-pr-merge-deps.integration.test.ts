@@ -1,0 +1,265 @@
+/**
+ * standing-pr-merge-deps — the real git / record-store deps for the standing PR's
+ * exact-merge gate (plan pot-review-integration-mode-2026-10-05, P-021 / P-024, D-008),
+ * exercised against REAL git: a bare "upstream" repo with refs/pull/<n>/head, and a
+ * clone the deps run in. End-to-end cases drive stepStandingPrMerge over these deps.
+ */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Pr } from '../../pr-host/types';
+import { parsePollMeta } from '../../pr-host/poll-daemon';
+import type { MergeTestRecord } from './decide-merge-gate';
+import { STANDING_PR_BRANCH } from './decide-standing-pr';
+import {
+  createDefaultStandingPrMergeDeps,
+  isStandingPrMergeRunActive,
+  STANDING_PR_MERGE_TESTS_META_KEY,
+  type RunSuite,
+} from './standing-pr-merge-deps';
+import { stepStandingPrMerge } from './standing-pr-merge';
+
+const ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'test',
+  GIT_AUTHOR_EMAIL: 'test@example.com',
+  GIT_COMMITTER_NAME: 'test',
+  GIT_COMMITTER_EMAIL: 'test@example.com',
+  GIT_CONFIG_NOSYSTEM: '1',
+};
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: ENV }).trim();
+}
+
+const PR_NUMBER = 7;
+const INSTALL = 'upstream-install';
+
+let root: string;
+let bare: string;
+let work: string; // author's clone: makes upstream + PR commits
+let deps_repo: string; // the clone the deps run in
+
+/** In-memory PollStore slice with the daemon's real shallow-merge + parse semantics. */
+function memStore() {
+  let pollPoll: Record<string, unknown> = {};
+  return {
+    async readMeta() {
+      return parsePollMeta(pollPoll);
+    },
+    async patchMeta(_slug: string, patch: Record<string, unknown>) {
+      pollPoll = { ...pollPoll, ...JSON.parse(JSON.stringify(patch)) };
+    },
+    raw: () => pollPoll,
+  };
+}
+
+function commitFile(dir: string, file: string, content: string, msg: string): string {
+  writeFileSync(join(dir, file), content);
+  git(dir, 'add', file);
+  git(dir, 'commit', '-q', '-m', msg);
+  return git(dir, 'rev-parse', 'HEAD');
+}
+
+/** Publish `sha` as the PR head in the bare upstream (GitHub's refs/pull/<n>/head). */
+function publishPrHead(sha: string) {
+  git(work, 'push', '-q', 'origin', `${sha}:refs/pull/${PR_NUMBER}/head`, '--force');
+}
+
+function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (pred()) return resolve();
+      if (Date.now() - start > ms) return reject(new Error('waitFor timed out'));
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'standing-pr-merge-deps-'));
+  bare = join(root, 'upstream.git');
+  work = join(root, 'work');
+  deps_repo = join(root, 'deps');
+  git(root, 'init', '-q', '--bare', '-b', 'main', bare);
+  git(root, 'clone', '-q', bare, work);
+  git(work, 'checkout', '-q', '-b', 'main');
+  commitFile(work, 'a.txt', 'base\n', 'base');
+  git(work, 'push', '-q', 'origin', 'main');
+  git(root, 'clone', '-q', bare, deps_repo);
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+function makeDeps(store: ReturnType<typeof memStore>, runSuite: RunSuite = async () => true, onError?: (e: unknown) => void) {
+  return createDefaultStandingPrMergeDeps({ repoDir: deps_repo, installSlug: INSTALL, prNumber: PR_NUMBER, store, runSuite, onError });
+}
+
+/** A PR branch off main touching its own file, published as refs/pull/7/head. */
+function makePrHead(file = 'pr.txt', content = 'pr\n'): string {
+  const base = git(work, 'rev-parse', 'main');
+  git(work, 'checkout', '-q', '-b', `pr-${Date.now()}-${Math.random().toString(36).slice(2)}`, base);
+  const head = commitFile(work, file, content, 'pr change');
+  git(work, 'checkout', '-q', 'main');
+  publishPrHead(head);
+  return head;
+}
+
+/** Advance upstream main with an unrelated commit (another contributor merged). */
+function moveUpstreamMain(file = 'other.txt'): string {
+  git(work, 'checkout', '-q', 'main');
+  git(work, 'pull', '-q', '--ff-only', 'origin', 'main');
+  const sha = commitFile(work, file, `${Date.now()}\n`, 'upstream moved');
+  git(work, 'push', '-q', 'origin', 'main');
+  return sha;
+}
+
+describe('createDefaultStandingPrMergeDeps (real git)', () => {
+  it('readTargetTip reads the upstream branch tip', async () => {
+    const d = makeDeps(memStore());
+    expect(await d.readTargetTip('main')).toBe(git(bare, 'rev-parse', 'main'));
+  });
+
+  it('buildMergeResult builds the exact merge commit: parents [tip, head], pinned ref, both changes present', async () => {
+    const head = makePrHead();
+    const tip = moveUpstreamMain();
+    const d = makeDeps(memStore());
+    const merge = await d.buildMergeResult(head, tip);
+    expect(merge).toMatch(/^[0-9a-f]{40}$/);
+    expect(git(deps_repo, 'rev-list', '--parents', '-n1', merge!).split(' ').slice(1)).toEqual([tip, head]);
+    expect(git(deps_repo, 'rev-parse', `refs/papercusp/standing-merge/${PR_NUMBER}`)).toBe(merge);
+    const files = git(deps_repo, 'ls-tree', '--name-only', merge!).split('\n');
+    expect(files).toEqual(expect.arrayContaining(['a.txt', 'pr.txt', 'other.txt']));
+  });
+
+  it('buildMergeResult returns null on a conflict', async () => {
+    const head = makePrHead('a.txt', 'pr side\n');
+    git(work, 'checkout', '-q', 'main');
+    const tip = commitFile(work, 'a.txt', 'upstream side\n', 'conflicting');
+    git(work, 'push', '-q', 'origin', 'main');
+    const d = makeDeps(memStore());
+    expect(await d.buildMergeResult(head, tip)).toBeNull();
+  });
+
+  it('advanceTarget fast-forwards the base to exactly the tested sha', async () => {
+    const head = makePrHead();
+    const tip = git(bare, 'rev-parse', 'main');
+    const d = makeDeps(memStore());
+    const merge = (await d.buildMergeResult(head, tip))!;
+    expect(await d.advanceTarget({ baseBranch: 'main', sha: merge, expectedTip: tip })).toEqual({ ok: true });
+    expect(git(bare, 'rev-parse', 'main')).toBe(merge);
+  });
+
+  it('advanceTarget is refused by the lease when the target moved, and reports the new tip', async () => {
+    const head = makePrHead();
+    const tip = git(bare, 'rev-parse', 'main');
+    const d = makeDeps(memStore());
+    const merge = (await d.buildMergeResult(head, tip))!;
+    const moved = moveUpstreamMain();
+    const res = await d.advanceTarget({ baseBranch: 'main', sha: merge, expectedTip: tip });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.tipAtPush).toBe(moved);
+    expect(git(bare, 'rev-parse', 'main')).toBe(moved);
+  });
+
+  it('startTests records pass / fail; a suite that could not run clears the record', async () => {
+    for (const [suite, expected] of [
+      [async () => true, 'pass'],
+      [async () => false, 'fail'],
+      [async () => { throw new Error('spawn failed'); }, null],
+    ] as Array<[RunSuite, string | null]>) {
+      const store = memStore();
+      const errors: unknown[] = [];
+      const d = makeDeps(store, suite, (e) => errors.push(e));
+      const rec: MergeTestRecord = { mergeSha: 'm'.repeat(40), prHeadSha: 'h'.repeat(40), targetTipSha: 't'.repeat(40), result: 'running' };
+      await d.saveTest(PR_NUMBER, rec);
+      await d.startTests(PR_NUMBER, rec);
+      await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, rec.mergeSha));
+      const stored = (store.raw()[STANDING_PR_MERGE_TESTS_META_KEY] as Record<string, MergeTestRecord>)[String(PR_NUMBER)];
+      if (expected === null) {
+        expect(stored).toBeUndefined();
+        expect(errors).toHaveLength(1);
+      } else {
+        expect(stored.result).toBe(expected);
+        expect(await d.loadLastTest(PR_NUMBER)).toEqual({ ...rec, result: expected });
+      }
+    }
+  });
+
+  it('a running record with no live run in this process (restart) reads as absent', async () => {
+    const store = memStore();
+    const d = makeDeps(store);
+    const rec: MergeTestRecord = { mergeSha: 'z'.repeat(40), prHeadSha: 'h'.repeat(40), targetTipSha: 't'.repeat(40), result: 'running' };
+    await d.saveTest(PR_NUMBER, rec);
+    expect(await d.loadLastTest(PR_NUMBER)).toBeNull();
+  });
+
+  it('the record survives the daemon writing its own pr_poll keys (shallow merge)', async () => {
+    const store = memStore();
+    const d = makeDeps(store);
+    const rec: MergeTestRecord = { mergeSha: 'y'.repeat(40), prHeadSha: 'h'.repeat(40), targetTipSha: 't'.repeat(40), result: 'pass' };
+    await d.saveTest(PR_NUMBER, rec);
+    await store.patchMeta(INSTALL, { last_seen: {}, consecutive_errors: 0, last_status: 'ok' });
+    expect(await d.loadLastTest(PR_NUMBER)).toEqual(rec);
+  });
+});
+
+describe('stepStandingPrMerge over the real deps (D-008 end to end)', () => {
+  function pr(head: string): Pr {
+    return { ref: { number: PR_NUMBER }, head_ref: STANDING_PR_BRANCH, base_ref: 'main', head_sha: head, review_decision: 'approved', checks_state: 'success' } as Pr;
+  }
+  const input = (head: string, promotedSha: string | null = head) => ({ pr: pr(head), policy: 'auto' as const, promotedSha, authorRevoked: false });
+
+  it('never-tested -> testing -> merged; the target lands on exactly the tested sha', async () => {
+    const head = makePrHead();
+    const tested: string[] = [];
+    const d = makeDeps(memStore(), async ({ sha }) => (tested.push(sha), true));
+    const first = await stepStandingPrMerge(input(head), d);
+    expect(first.action).toBe('testing');
+    const mergeSha = (first as { mergeSha: string }).mergeSha;
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, mergeSha));
+    const second = await stepStandingPrMerge(input(head), d);
+    expect(second).toMatchObject({ action: 'merged', mergeSha });
+    expect(tested).toEqual([mergeSha]);
+    expect(git(bare, 'rev-parse', 'main')).toBe(mergeSha);
+  });
+
+  it('target moved after a pass -> rebuilt and re-tested on the new tip, never merged untested', async () => {
+    const head = makePrHead();
+    const tested: string[] = [];
+    const d = makeDeps(memStore(), async ({ sha }) => (tested.push(sha), true));
+    const first = (await stepStandingPrMerge(input(head), d)) as { mergeSha: string };
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, first.mergeSha));
+    const moved = moveUpstreamMain();
+    const second = await stepStandingPrMerge(input(head), d);
+    expect(second).toMatchObject({ action: 'testing', reason: 'target-moved' });
+    expect(git(bare, 'rev-parse', 'main')).toBe(moved);
+    const secondSha = (second as { mergeSha: string }).mergeSha;
+    expect(secondSha).not.toBe(first.mergeSha);
+    expect(git(deps_repo, 'rev-list', '--parents', '-n1', secondSha).split(' ')[1]).toBe(moved);
+  });
+
+  it('a failing suite never merges', async () => {
+    const head = makePrHead();
+    const before = git(bare, 'rev-parse', 'main');
+    const d = makeDeps(memStore(), async () => false);
+    const first = (await stepStandingPrMerge(input(head), d)) as { mergeSha: string };
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, first.mergeSha));
+    const second = await stepStandingPrMerge(input(head), d);
+    expect(second.action).not.toBe('merged');
+    expect(git(bare, 'rev-parse', 'main')).toBe(before);
+  });
+
+  it('a PR head that is not the promoted commit is refused before anything is built', async () => {
+    const head = makePrHead();
+    const d = makeDeps(memStore());
+    const out = await stepStandingPrMerge(input(head, 'f'.repeat(40)), d);
+    expect(out).toMatchObject({ action: 'refused', reason: 'pr-head-not-promoted' });
+  });
+});
