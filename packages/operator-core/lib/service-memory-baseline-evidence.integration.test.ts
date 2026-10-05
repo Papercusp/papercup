@@ -237,7 +237,8 @@ const exactOwners = [
   '@papercusp/operator-core.midTurnMemoryAdmission',
 ];
 
-function auditExactOwners(r: any, additionalIds: number[] = []) {
+function auditExactOwners(r: any, additionalIds: number[] = [], ownerPopulation = exactOwners,
+  planePopulation = ['isolated-current-build-operator-api']) {
   const requireOwner = (value: unknown, reason: string) => {
     if (!value) throw Error('P011 exact owner: ' + reason);
   };
@@ -245,7 +246,7 @@ function auditExactOwners(r: any, additionalIds: number[] = []) {
   const id = (x: unknown) => natural(x) && Number(x) > 0;
   const snapshot = r.heapSnapshot, graph = r.heapRetainers, binding = r.heapOwnerBinding;
   requireOwner(r.schemaVersion === 1 && r.mode === 'retainers' &&
-    r.plane === 'isolated-current-build-operator-api' && r.incomplete === false &&
+    planePopulation.includes(r.plane) && r.incomplete === false &&
     r.runner?.status === 0 && r.runner.signal === null && !r.error, 'complete private run');
   requireOwner(id(r.pid) && [snapshot?.pid, graph?.pid, binding?.pid, r.inspector?.pid]
     .every(pid => pid === r.pid), 'PID correspondence');
@@ -274,9 +275,9 @@ function auditExactOwners(r: any, additionalIds: number[] = []) {
   requireOwner(id(census?.nodeCount) && id(census.totalSelfSizeBytes) &&
     natural(graph.rootIndex) && graph.rootIndex < census.nodeCount, 'snapshot census bounds');
   const roots = binding.roots, nodes = graph.requestedNodes, limits = graph.limits;
-  requireOwner(Array.isArray(roots) && roots.length === exactOwners.length &&
-    new Set(roots.map((x: any) => x.owner)).size === exactOwners.length &&
-    exactOwners.every(owner => roots.some((x: any) => x.owner === owner)), 'exact owner population');
+  requireOwner(Array.isArray(roots) && roots.length === ownerPopulation.length &&
+    new Set(roots.map((x: any) => x.owner)).size === ownerPopulation.length &&
+    ownerPopulation.every(owner => roots.some((x: any) => x.owner === owner)), 'exact owner population');
   requireOwner(roots.every((x: any) => x.status === 'found' && id(x.id)) &&
     new Set(roots.map((x: any) => x.id)).size === roots.length, 'unique captured owner IDs');
   const requestedIds = [...roots.map((x: any) => x.id), ...additionalIds];
@@ -432,6 +433,150 @@ function ownerFixture(): any {
     hostReaped: true, snapshotRemoved: true, postSnapshotRowsPreserved: true,
     profilerOperations: ['v8.writeHeapSnapshot (forced GC/synchronous pause)',
       'HeapProfiler.enable (object IDs)', 'HeapProfiler.disable (object IDs)'] };
+}
+
+// Reuse the exact-node/native-input validator, while independently conserving
+// digest -> entry/value relations. Distinct entries may share a value ID; even
+// distinct value nodes can have overlapping dominator subtrees, so never sum them.
+function auditCacheRetainers(r: any, expectedDigests: string[]) {
+  const requireCache = (value: unknown, reason: string) => {
+    if (!value) throw Error('P011 cache heap: ' + reason);
+  };
+  const natural = (x: unknown) => Number.isSafeInteger(x) && Number(x) >= 0;
+  const id = (x: unknown) => natural(x) && Number(x) > 0;
+  const sameDigests = (a: string[], b: string[]) => isDeepStrictEqual([...a].sort(), [...b].sort());
+  requireCache(Array.isArray(expectedDigests) && expectedDigests.length > 0 && expectedDigests.length <= 32 &&
+    expectedDigests.every(sha) && new Set(expectedDigests).size === expectedDigests.length, 'expected digest population');
+  const q = r.heapOwnerBinding?.cacheEntries, before = r.cacheBeforeSnapshot;
+  const metadata = (m: any) => {
+    requireCache(m?.owner === '@papercusp/operator-core.operatorCache' && m.path === 'cache.l1.map' &&
+      natural(m.population) && m.population > 0 && m.population <= 8192 &&
+      m.scanned === m.population && m.scanComplete === true && m.undigestibleKeys === 0 &&
+      m.limits?.maxScanned === 8192 && m.limits.maxKeyCodeUnits === 16384 &&
+      Array.isArray(m.records) && m.records.length === expectedDigests.length &&
+      new Set(m.records.map((row: any) => row.keyDigest)).size === expectedDigests.length &&
+      sameDigests(m.records.map((row: any) => row.keyDigest), expectedDigests), 'complete bounded digest selection');
+  };
+  metadata(before); metadata(q);
+  requireCache(before.status === 'selected' && before.records.every((row: any) => row.status === 'selected' &&
+    isDeepStrictEqual(Object.keys(row).sort(), ['keyDigest', 'status'])), 'safe pre-snapshot selection');
+  requireCache(q.selectionStatus === 'selected' && ['observed', 'partial'].includes(q.status) &&
+    ['owner', 'path', 'population', 'scanned', 'scanComplete', 'undigestibleKeys', 'limits']
+      .every(key => isDeepStrictEqual(q[key], before[key])), 'selection identity continuity');
+  const gapStatuses = ['collected', 'not-in-snapshot', 'unobserved', 'evicted', 'entry-changed', 'value-changed',
+    'map-changed', 'unsafe-map', 'registry-unavailable', 'proxy-skipped', 'accessor-skipped', 'missing', 'nonobject', 'unavailable'];
+  const found: number[] = [], gaps: any[] = [];
+  for (const row of q.records) {
+    requireCache(isDeepStrictEqual(Object.keys(row).sort(), ['keyDigest', 'objects', 'status']) &&
+      (row.status === 'selected' || gapStatuses.includes(row.status)) && Array.isArray(row.objects) &&
+      isDeepStrictEqual(row.objects.map((object: any) => object.phase), ['entry', 'value']), 'exact entry/value phases');
+    for (const object of row.objects) {
+      if (object.status === 'found') {
+        requireCache(row.status === 'selected' && id(object.id) &&
+          isDeepStrictEqual(Object.keys(object).sort(), ['id', 'phase', 'status']), 'found identity and membership');
+        found.push(object.id);
+      } else {
+        requireCache(gapStatuses.includes(object.status) &&
+          (row.status === 'selected' || row.status === object.status) &&
+          isDeepStrictEqual(Object.keys(object).sort(), ['phase', 'status']), 'explicit identity gap');
+        gaps.push({ keyDigest: row.keyDigest, phase: object.phase, status: object.status });
+      }
+    }
+  }
+  requireCache((q.status === 'observed') === (gaps.length === 0), 'observed/partial correspondence');
+  const rootIds = r.heapOwnerBinding.roots.map((row: any) => row.id);
+  const owners = auditExactOwners(r, [...new Set(found)].filter(value => !rootIds.includes(value)),
+    ['@papercusp/operator-core.operatorCache'],
+    ['isolated-current-build-operator-api', 'isolated-serving-generation-operator-api']);
+  requireCache(sha(r.nativeDecoderPreflight?.sha256) && r.nativeDecoderPreflight.version === 'v8-heap-cli 0.1.0',
+    'decoder preflight');
+  requireCache(nonnegative(r.heapSnapshot.writeMs) && nonnegative(r.heapSnapshot.summaryMs) &&
+    r.heapSnapshotWriteMs === r.heapSnapshot.writeMs &&
+    r.heapSnapshot.durationMs >= r.heapSnapshot.writeMs + r.heapSnapshot.summaryMs, 'separate snapshot timing');
+  const nodes = new Map<number, any>(r.heapRetainers.requestedNodes.map((row: any) => [row.id, row.node]));
+  const relations = q.records.map((row: any) => {
+    const entry = row.objects[0], value = row.objects[1];
+    if (entry.status !== 'found' || value.status !== 'found') return { keyDigest: row.keyDigest, status: 'unobserved' };
+    const entryNode = nodes.get(entry.id), valueNode = nodes.get(value.id);
+    const direct = valueNode.retainers.some((parent: any) => parent.id === entry.id && parent.index === entryNode.index &&
+      parent.retainsIndex === valueNode.index && parent.edgeType === 'Property');
+    requireCache(direct || valueNode.retainersTruncated, 'entry-to-value incoming edge');
+    return { keyDigest: row.keyDigest, entryId: entry.id, valueId: value.id,
+      status: direct ? 'observed-direct-property' : 'unobserved-truncated-parents' };
+  }).sort((a: any, b: any) => a.keyDigest.localeCompare(b.keyDigest));
+  const uniqueValueIds = [...new Set<number>(q.records.flatMap((row: any) =>
+    row.objects.filter((object: any) => object.phase === 'value' && object.status === 'found')
+      .map((object: any) => object.id)))].sort((a, b) => a - b);
+  return { owners, relations, uniquePayloadNodes: uniqueValueIds.map(value =>
+    owners.verifiedNodes.find((node: any) => node.id === value)),
+    aliasGroups: uniqueValueIds.map(value => ({ valueId: value,
+      keyDigests: relations.filter((row: any) => row.valueId === value).map((row: any) => row.keyDigest) })),
+    gaps: gaps.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    definition: 'Distinct snapshot IDs only; per-node dominator sizes may overlap and are never summed.',
+    nativePhysicalOwnership: 'unknown', physicalSavings: 'unmeasured' };
+}
+
+function auditInboxCacheRetainers(report: any) {
+  check(report.schemaVersion === 2 && report.incomplete === false && report.runner?.status === 0 &&
+    report.runner.signal === null && !report.error && !report.verificationError &&
+    Array.isArray(report.cohorts) && report.cohorts.length === 4 &&
+    report.cohorts.map((c: any) => c.mode).join(',') === 'baseline,shared,shared,baseline', 'cache paired run');
+  check(new Set(report.cohorts.map((c: any) => c.pid)).size === 4 &&
+    isDeepStrictEqual(report.sources.before, report.sources.after) && Object.keys(report.sources.before).length > 0,
+  'cache process/source fence');
+  const expected = Array.from({ length: 256 }, (_, i) => ({ id: 'p011-' + (i + 1),
+    body: ('useful-context-' + (i + 1) + ' ').repeat(32768).slice(0, 32768) }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const hash = createHash('sha256');
+  for (const row of expected) hash.update(JSON.stringify([row.id, row.body]));
+  const contentSha256 = hash.digest('hex');
+  return report.cohorts.map((c: any, arm: number) => {
+    const count = c.mode === 'baseline' ? 8 : 1, final = c.samples.at(-1);
+    check(c.arm === arm && c.pid === c.identity.pid && /^\d+$/.test(c.identity.startTicks) &&
+      c.reaped === true && c.forcedCleanup === false && c.unreaped.length === 0 && c.pauses === 0 &&
+      c.samples.every((s: any) => s.os.startTicks === c.identity.startTicks) &&
+      final.phase === 'completion-idle' && final.cache.entries === count &&
+      final.cache.rows.length === count && final.cache.rows.every((rows: any) => rows === 256) &&
+      final.cache.keyDigests.length === count && c.content.length === count &&
+      c.content.every((row: any) => row.rows === 256 && row.stringCodeUnits === 8388608 &&
+        row.sha256 === contentSha256 && sha(row.keyDigest)) &&
+      isDeepStrictEqual(c.content.map((row: any) => row.keyDigest).sort(), [...final.cache.keyDigests].sort()),
+    'cache digest/content correspondence');
+    const evidence = { ...c.cacheHeap, schemaVersion: 1, mode: 'retainers', plane: report.plane,
+      pid: c.pid, buildSha: c.loadedHealth.sha, bundleHash: c.bundleSha256,
+      incomplete: report.incomplete, runner: report.runner, error: report.error, hostReaped: c.reaped,
+      samples: c.samples.map((s: any) => ({ pid: s.pid, processes: [s.os] })) };
+    return { arm, mode: c.mode, result: auditCacheRetainers(evidence, final.cache.keyDigests) };
+  });
+}
+
+function cacheHeapFixture(count = 2, shared = true): any {
+  const r = ownerFixture(), root = r.heapOwnerBinding.roots.find((row: any) => row.owner.endsWith('.operatorCache'));
+  r.heapOwnerBinding.roots = [root];
+  r.heapRetainers.requestedNodes = r.heapRetainers.requestedNodes.filter((row: any) => row.id === root.id);
+  r.heapSnapshot.census.nodeCount = 100;
+  const records = Array.from({ length: count }, (_, i) => ({ keyDigest: digest('key-' + i), status: 'selected',
+    objects: [{ phase: 'entry', status: 'found', id: 30 + i },
+      { phase: 'value', status: 'found', id: shared ? 80 : 80 + i }] }));
+  const meta = { owner: root.owner, path: 'cache.l1.map', status: 'selected', population: count,
+    scanned: count, scanComplete: true, undigestibleKeys: 0, limits: { maxScanned: 8192, maxKeyCodeUnits: 16384 },
+    records: records.map(({ objects, ...row }) => row) };
+  r.cacheBeforeSnapshot = structuredClone(meta);
+  r.heapOwnerBinding.cacheEntries = { ...meta, selectionStatus: 'selected', status: 'observed', records };
+  const node = (id: number, index: number, parents: any[]) => ({ id, status: 'found', node: {
+    id, index, selfSizeBytes: 8, retainedSizeBytes: 16, retainerCount: parents.length,
+    retainersTruncated: false, retainers: parents } });
+  records.forEach((row, i) => r.heapRetainers.requestedNodes.push(node(row.objects[0].id, 10 + i, [])));
+  for (const valueId of new Set(records.map(row => row.objects[1].id)))
+    r.heapRetainers.requestedNodes.push(node(valueId, 30 + valueId - 80,
+      records.filter(row => row.objects[1].id === valueId).map(row => ({ id: row.objects[0].id,
+        index: 10 + row.objects[0].id - 30, selfSizeBytes: 8, retainedSizeBytes: 16,
+        retainsIndex: 30 + valueId - 80, edgeType: 'Property' }))));
+  r.heapRetainers.limits.objectIds = r.heapRetainers.requestedNodes.map((row: any) => row.id);
+  r.nativeDecoderPreflight = { sha256: 'e'.repeat(64), version: 'v8-heap-cli 0.1.0' };
+  r.heapSnapshotWriteMs = r.heapSnapshot.writeMs = 5;
+  r.heapSnapshot.summaryMs = 10; r.heapSnapshot.durationMs = 15;
+  return r;
 }
 
 // A tracked, deterministic fixture independently constructed from the reader contract.
@@ -731,6 +876,95 @@ describe('P011 independent named HTTP query evidence', () => {
   it.each(corruptions)('rejects %s', (_name, corrupt) => {
     const r = savedRequestRun(); corrupt(r);
     expect(() => auditRequestQueries(r)).toThrow('P011 request query:');
+  });
+});
+
+describe('P011 independent cache retained-owner evidence', () => {
+  const expected = (r: any) => r.cacheBeforeSnapshot.records.map((row: any) => row.keyDigest);
+  it('deduplicates shared payload nodes while preserving both entry identities and relations', () => {
+    const r = cacheHeapFixture(), result = auditCacheRetainers(r, expected(r));
+    expect(result.relations.map((row: any) => row.status)).toEqual(['observed-direct-property', 'observed-direct-property']);
+    expect(result.uniquePayloadNodes).toHaveLength(1);
+    expect(result.aliasGroups[0].keyDigests).toHaveLength(2);
+    expect(result).not.toHaveProperty('totalRetainedBytes');
+    expect(result.physicalSavings).toBe('unmeasured');
+    r.heapRetainers.requestedNodes.reverse(); r.heapOwnerBinding.cacheEntries.records.reverse();
+    expect(auditCacheRetainers(r, expected(r))).toEqual(result);
+  });
+  it('preserves changed membership as two gaps rather than zero-byte retained objects', () => {
+    const r = cacheHeapFixture(), q = r.heapOwnerBinding.cacheEntries;
+    q.status = 'partial'; q.records[0].status = 'evicted';
+    q.records[0].objects = ['entry', 'value'].map(phase => ({ phase, status: 'evicted' }));
+    r.heapRetainers.requestedNodes = r.heapRetainers.requestedNodes.filter((row: any) => row.id !== 30);
+    r.heapRetainers.limits.objectIds = r.heapRetainers.requestedNodes.map((row: any) => row.id);
+    expect(auditCacheRetainers(r, expected(r)).gaps).toHaveLength(2);
+  });
+  it('keeps an incomplete incoming-edge census explicit', () => {
+    const r = cacheHeapFixture(), n = r.heapRetainers.requestedNodes.find((row: any) => row.id === 80).node;
+    n.retainers.pop(); n.retainersTruncated = true;
+    const result = auditCacheRetainers(r, expected(r));
+    expect(result.relations.some((row: any) => row.status === 'unobserved-truncated-parents')).toBe(true);
+    expect(result.uniquePayloadNodes[0]?.directParentsNotChecked).toBe(1);
+  });
+  const corruptions: Array<[string, (r: any) => void]> = [
+    ['digest omitted', r => { r.heapOwnerBinding.cacheEntries.records.pop(); }],
+    ['digest duplicated', r => { r.heapOwnerBinding.cacheEntries.records[1].keyDigest = r.heapOwnerBinding.cacheEntries.records[0].keyDigest; }],
+    ['foreign digest', r => { r.heapOwnerBinding.cacheEntries.records[0].keyDigest = 'f'.repeat(64); }],
+    ['wrong owner', r => { r.heapOwnerBinding.cacheEntries.owner = 'foreign'; }],
+    ['wrong path', r => { r.heapOwnerBinding.cacheEntries.path = 'cache.other'; }],
+    ['incomplete scan', r => { r.cacheBeforeSnapshot.scanComplete = false; }],
+    ['undigestible key', r => { r.cacheBeforeSnapshot.undigestibleKeys++; }],
+    ['scan limit', r => { r.cacheBeforeSnapshot.limits.maxScanned++; }],
+    ['pre-snapshot unsafe entry', r => { r.cacheBeforeSnapshot.records[0].status = 'accessor-skipped'; }],
+    ['population drift', r => { r.heapOwnerBinding.cacheEntries.population++; r.heapOwnerBinding.cacheEntries.scanned++; }],
+    ['missing value phase', r => { r.heapOwnerBinding.cacheEntries.records[0].objects.pop(); }],
+    ['reversed phases', r => { r.heapOwnerBinding.cacheEntries.records[0].objects.reverse(); }],
+    ['raw key leak', r => { r.heapOwnerBinding.cacheEntries.records[0].rawKey = 'private'; }],
+    ['remote handle leak', r => { r.heapOwnerBinding.cacheEntries.records[0].objects[0].objectId = 'handle'; }],
+    ['unsafe ID', r => { r.heapOwnerBinding.cacheEntries.records[0].objects[0].id = Number.MAX_SAFE_INTEGER + 1; }],
+    ['gap with retained ID', r => { r.heapOwnerBinding.cacheEntries.records[0].objects[0].status = 'collected'; }],
+    ['changed entry with stale IDs', r => { r.heapOwnerBinding.cacheEntries.records[0].status = 'entry-changed'; }],
+    ['false complete claim', r => { r.heapOwnerBinding.cacheEntries.status = 'partial'; }],
+    ['native node omitted', r => { r.heapRetainers.requestedNodes.pop(); }],
+    ['duplicate native ID', r => { r.heapRetainers.limits.objectIds.push(80); }],
+    ['foreign snapshot', r => { r.heapRetainers.native.inputSha256 = 'f'.repeat(64); }],
+    ['wrong adapter', r => { r.nativeAdapterPreflight.sha256 = 'f'.repeat(64); }],
+    ['decoder absent', r => { delete r.nativeDecoderPreflight; }],
+    ['combined timing substituted', r => { r.heapSnapshot.durationMs = 1; }],
+    ['entry edge omitted without truncation', r => { const n = r.heapRetainers.requestedNodes.find((row: any) => row.id === 80).node; n.retainers.pop(); n.retainerCount--; }],
+    ['constructor-only edge join', r => { r.heapRetainers.requestedNodes.find((row: any) => row.id === 80).node.retainers[0].id++; }],
+    ['weak entry edge', r => { r.heapRetainers.requestedNodes.find((row: any) => row.id === 80).node.retainers[0].edgeType = 'Weak'; }],
+  ];
+  it.each(corruptions)('rejects corrupted %s cache evidence', (_name, corrupt) => {
+    const r = cacheHeapFixture(); corrupt(r);
+    expect(() => auditCacheRetainers(r, expected(r))).toThrow(/P011 /);
+  });
+  it('ignores retained/native/reduction headlines and keeps distinct payloads distinct', () => {
+    const r = cacheHeapFixture(2, false), before = auditCacheRetainers(r, expected(r));
+    r.totalRetainedBytes = r.nativePhysicalSavings = 999999;
+    r.heapRetainers.groups = [{ retainedSizeBytes: 999999 }];
+    expect(auditCacheRetainers(r, expected(r))).toEqual(before);
+    expect(before.uniquePayloadNodes).toHaveLength(2);
+  });
+  it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_INPUT))('audits the specified saved inbox cache graphs', () => {
+    const input = process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_INPUT!;
+    const bytes = readFileSync(resolve(root, input)), result = auditInboxCacheRetainers(JSON.parse(bytes.toString()));
+    const destination = process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_REPORT;
+    if (!destination) throw Error('Canonical inbox cache oracle report required');
+    writeFileSync(resolve(root, destination), serializeIdentitySafeJson({ schemaVersion: 'p011-inbox-cache-heap-independent-v1',
+      proof: { path: input, bytes: bytes.length, sha256: digest(bytes), result },
+      independentOf: 'No producer or inspector import; raw digest/content/process/snapshot/native-node correspondence.',
+      limitations: ['Snapshots forced GC after resource windows; selected V8 nodes may have overlapping dominator subtrees.',
+        'Native physical ownership, worker clones, full executed graph, full P011 acceptance and shipment remain open.'] }));
+  });
+  afterAll(() => {
+    const input = process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_INPUT;
+    const destination = process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_REPORT;
+    if (!input || !destination) return;
+    const report = JSON.parse(readFileSync(resolve(root, destination)).toString());
+    expect(report.schemaVersion).toBe('p011-inbox-cache-heap-independent-v1');
+    expect(report.proof.path).toBe(input);
+    expect(report.proof.sha256).toBe(digest(readFileSync(resolve(root, input))));
   });
 });
 
