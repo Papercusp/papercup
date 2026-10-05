@@ -77,6 +77,8 @@ export interface InstalledTriggerPackReceipt {
   bindingCount: number;
   edgeCount: number;
   sourceKinds: string[];
+  /** Portable sources' datatypes, bound to installer-local sources at materialization. */
+  datatypes: string[];
   planTargets: Array<{ id: string; path: string; slug: string }>;
   /** Installation never crosses the autonomy-gated trigger arm boundary. */
   armed: false;
@@ -398,7 +400,9 @@ async function inspectTriggerPackForInstall(
     bindingCount: manifest.triggerPack.bindings.length,
     edgeCount: manifest.triggerPack.edges.length,
     sourceKinds: [...new Set(manifest.triggerPack.bindings.flatMap((binding) =>
-      binding.source.kind === 'external' ? [binding.source.sourceKind] : []))].sort(),
+      binding.source.kind === 'external' && binding.source.sourceKind ? [binding.source.sourceKind] : []))].sort(),
+    datatypes: [...new Set(manifest.triggerPack.bindings.flatMap((binding) =>
+      binding.source.kind === 'external' && binding.source.datatype ? [binding.source.datatype] : []))].sort(),
     planTargets,
     armed: false,
   };

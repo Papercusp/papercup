@@ -69,6 +69,15 @@ export interface CreateExternalTriggerBindingInput {
   operationInput?: Record<string, unknown>;
   /** Internal compatibility marker: the legacy plan binding this replacement preserves. */
   operationMigrationFromBindingId?: string | null;
+  /**
+   * Literal input overlaid on the redacted routing envelope when a PLAN target
+   * launches (P-012, D-013 §5) — the same overlay the operation path applies.
+   */
+  planInput?: Record<string, unknown>;
+  /** Portable binding (P-012): queue only canonical events of this datatype. */
+  datatypeId?: string | null;
+  /** The trigger-pack installation that owns this binding (P-012). */
+  packInstallationId?: string | null;
   eventPattern: string;
   eventFilter?: Record<string, unknown>;
   stormPolicy?: Record<string, unknown>;
@@ -1004,6 +1013,21 @@ export async function createExternalTriggerBinding(
   const eventFilter = JSON.stringify(input.eventFilter ?? {});
   const execution = parseAgenticPlanExecutionTarget(input.execution);
   if ((goalId || directGiven || operationGiven) && execution) throw new Error('external_trigger_non_plan_binding_execution_unsupported');
+  if (input.planInput !== undefined && (goalId || directGiven || operationGiven)) {
+    throw new Error('external_trigger_plan_input_requires_plan_target');
+  }
+  if (
+    input.planInput !== undefined &&
+    (input.planInput === null || typeof input.planInput !== 'object' || Array.isArray(input.planInput))
+  ) {
+    throw new Error('external_trigger_plan_input_invalid');
+  }
+  const datatypeId = input.datatypeId?.trim() || null;
+  if (datatypeId) {
+    const datatype = await getDatatype(sql, ws, datatypeId);
+    if (!datatype) throw new Error(`external_trigger_unknown_datatype:${datatypeId}`);
+  }
+  const packInstallationId = input.packInstallationId?.trim() || null;
   const action = JSON.stringify({
     type: operationGiven
       ? 'blueprint-operation'
@@ -1022,6 +1046,7 @@ export async function createExternalTriggerBinding(
             : {}),
         }
       : {}),
+    ...(planGiven && input.planInput && Object.keys(input.planInput).length > 0 ? { input: input.planInput } : {}),
     ...(execution ? { execution } : {}),
   });
   // A binding with no explicit storm policy is UNBOUNDED under the landed
@@ -1061,12 +1086,13 @@ export async function createExternalTriggerBinding(
     INSERT INTO harness_shared.trigger_bindings
       (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id,
        work_item_harness_slug, work_item_kind, event_pattern, event_filter,
-       action, armed, storm_policy, created_by)
+       action, armed, storm_policy, created_by, datatype_id, pack_installation_id)
     VALUES (
       ${ws}, ${sourceId}::uuid, ${planHarnessSlug}, ${planSlug}, ${goalId},
       ${workItemHarnessSlug}, ${workItemKind}, ${eventPattern},
       ${eventFilter}::text::jsonb, ${action}::text::jsonb, FALSE,
-      ${stormPolicyJson}::text::jsonb, ${input.createdBy?.trim() || null}
+      ${stormPolicyJson}::text::jsonb, ${input.createdBy?.trim() || null},
+      ${datatypeId}, ${packInstallationId}::uuid
     )
     RETURNING id::text,
               source_id::text AS "sourceId",

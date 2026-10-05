@@ -138,7 +138,14 @@ interface BindingRow {
   action: Record<string, unknown>;
   armed: boolean;
   stormPolicy: Record<string, unknown>;
+  /** Portable binding datatype (P-012, D-013 §2); NULL matches any datatype. */
+  datatypeId: string | null;
 }
+
+/** The internal source that stitches trigger-pack edges (P-012, D-013 §5). */
+export const TRIGGER_PACK_EDGE_SOURCE_KIND = 'trigger-pack-edge';
+export const TRIGGER_PACK_EDGE_EVENT = 'binding-run-completed';
+export const TRIGGER_RUN_COMPLETION_DATATYPE = 'trigger-run-completion';
 
 interface ClaimedTriggerRun {
   id: string;
@@ -547,7 +554,8 @@ async function loadBindingForUpdate(tx: Db, workspaceId: string, id: string): Pr
            event_filter AS "eventFilter",
            action,
            armed,
-           storm_policy AS "stormPolicy"
+           storm_policy AS "stormPolicy",
+           datatype_id AS "datatypeId"
       FROM harness_shared.trigger_bindings
      WHERE workspace_id = ${workspaceId} AND id = ${id}
        AND detached_at IS NULL
@@ -595,6 +603,9 @@ async function queueOneBinding(
     const binding = await loadBindingForUpdate(tx, event.workspaceId, bindingId);
     if (!binding?.armed) return null;
     if (!keyMatchesPattern(binding.eventPattern, event.key)) return null;
+    // A portable pack binding is bound to a datatype, not a provider event
+    // name: a source emitting several datatypes queues only the declared one.
+    if (binding.datatypeId && binding.datatypeId !== event.datatypeId) return null;
     if (!payloadMatchesFilter(binding.eventFilter, event.payload)) return null;
 
     if (!SUPPORTED_TRIGGER_ACTIONS.has(actionType(binding.action))) {
@@ -892,6 +903,83 @@ async function announceRunWork(sql: postgres.Sql, workspaceId: string, runId: nu
   }
 }
 
+/**
+ * Stitch trigger-pack edges (P-012, D-013 §5). When an upstream run succeeds
+ * and some binding on the workspace's internal `trigger-pack-edge` source
+ * filters on it, ingest one `ext:trigger-pack-edge:binding-run-completed`
+ * event through the ordinary ingestion seam. Downstream bindings therefore get
+ * the same outbox, storm cap, max-age and retry as any external event; there is
+ * no second dispatcher. Dedupe is per upstream run, and correlation is
+ * inherited, so a chain reads as one workflow. A failure is recorded on the
+ * upstream run's outcome rather than failing a run whose own target succeeded.
+ */
+async function emitTriggerPackEdge(
+  sql: postgres.Sql,
+  row: ClaimedTriggerRun,
+  details: { actionType: string; planRunId?: number | null; instancePlanSlug?: string | null },
+): Promise<void> {
+  const edgeSources = await sql<Array<{ sourceId: string }>>`
+    SELECT DISTINCT b.source_id::text AS "sourceId"
+      FROM harness_shared.trigger_bindings b
+      JOIN harness_shared.data_sources s
+        ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+     WHERE b.workspace_id = ${row.workspaceId}
+       AND s.kind = ${TRIGGER_PACK_EDGE_SOURCE_KIND}
+       AND b.detached_at IS NULL
+       AND b.event_filter ->> 'upstreamBindingId' = ${row.bindingId}`;
+  if (edgeSources.length === 0) return;
+  const upstreamPayload = record(row.args?.trigger?.payload);
+  const correlationId =
+    typeof upstreamPayload.correlationId === 'string' && upstreamPayload.correlationId
+      ? upstreamPayload.correlationId
+      : row.id;
+  const packInstallation = await sql<Array<{ id: string | null }>>`
+    SELECT pack_installation_id::text AS id FROM harness_shared.trigger_bindings
+     WHERE workspace_id = ${row.workspaceId} AND id = ${row.bindingId}`;
+  const payload: Record<string, unknown> = {
+    upstreamBindingId: row.bindingId,
+    upstreamTriggerRunId: row.id,
+    correlationId,
+    actionType: details.actionType,
+    planRunId: details.planRunId ?? null,
+    instancePlanSlug: details.instancePlanSlug ?? null,
+    completedAt: new Date().toISOString(),
+    ...(packInstallation[0]?.id ? { packInstallationId: packInstallation[0].id } : {}),
+  };
+  const errors: string[] = [];
+  const { ingestExternalTriggerEvent } = await import('./ingestion');
+  for (const { sourceId } of edgeSources) {
+    try {
+      const ingested = await ingestExternalTriggerEvent(sql, {
+        workspaceId: row.workspaceId,
+        sourceId,
+        source: TRIGGER_PACK_EDGE_SOURCE_KIND,
+        event: TRIGGER_PACK_EDGE_EVENT,
+        externalId: row.id,
+        datatypeId: TRIGGER_RUN_COMPLETION_DATATYPE,
+        adapterPayload: payload,
+        normalize: (value) => value as Record<string, unknown>,
+        dedupeKey: `${TRIGGER_PACK_EDGE_SOURCE_KIND}:${row.id}`,
+      });
+      if (!ingested.ok) {
+        errors.push(
+          ingested.validationErrors?.join('; ') ??
+            ingested.deliveries.filter((d) => d.outcome === 'failed').map((d) => d.error).join('; '),
+        );
+      }
+    } catch (cause) {
+      errors.push(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+  if (errors.length > 0) {
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET outcome = outcome || ${JSON.stringify({ triggerPackEdgeError: errors.join(' | ').slice(0, 500) })}::text::jsonb,
+             updated_at = now()
+       WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+  }
+}
+
 /** Claim and execute a bounded batch from the durable trigger_runs outbox. */
 export async function dispatchPendingTriggerRuns(
   sql: postgres.Sql,
@@ -952,6 +1040,7 @@ export async function dispatchPendingTriggerRuns(
            WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
         result.succeeded += 1;
         await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
+        await emitTriggerPackEdge(sql, row, { actionType: 'blueprint-operation' }).catch(() => undefined);
         continue;
       }
 
@@ -1047,7 +1136,10 @@ export async function dispatchPendingTriggerRuns(
         // `row.args` keeps the owner's private ingest and stays in trigger_runs
         // (local); only the routing envelope crosses (WI-2143575). The agent
         // pulls the payload back with `triggers:read-payload` by planRunId.
-        inputs: redactTriggerArgsForPlanInputs(row.args),
+        // The authored literal overlay (a pack's installer inputs, D-013 §5) is
+        // configuration, never provider payload — the same overlay the
+        // blueprint-operation path applies.
+        inputs: { ...redactTriggerArgsForPlanInputs(row.args), ...record(row.action.input) },
         ...(execution ? { execution } : {}),
       });
       if (launched.started === false) {
@@ -1121,6 +1213,11 @@ export async function dispatchPendingTriggerRuns(
          WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
       result.succeeded += 1;
       await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
+      await emitTriggerPackEdge(sql, row, {
+        actionType: 'launch-plan',
+        planRunId,
+        instancePlanSlug: launched.instanceSlug,
+      }).catch(() => undefined);
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : String(cause);
       const dispatchFailure = persistedDispatchFailure(cause);
