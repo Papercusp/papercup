@@ -32,9 +32,9 @@ import type { TriageDecision } from '../harness/improvements/triage';
 
 /** The workspace every drill artifact is planted under — never the live one. */
 export const SANDBOX_WORKSPACE_ID = 'red-queen-sandbox';
-/** The harness scope drill captures file under ('harness:<slug>'). */
+/** Issue scope for drill captures. The operator scope auto-homes to the workspace Pot. */
 export const SANDBOX_HARNESS_SLUG = 'red-queen-sandbox';
-export const SANDBOX_SCOPE = `harness:${SANDBOX_HARNESS_SLUG}`;
+export const SANDBOX_SCOPE = 'operator';
 
 /** Governor registry identity — one Red Queen per workspace (D-004). */
 export const RED_QUEEN_LOOP_ID = 'red-queen';

@@ -72,6 +72,7 @@ import type { CaptureImprovementResult } from './capture-core';
 import type { ProbeResult } from '../../service-health';
 import { _resetServiceHealthState } from '../../service-health';
 import { _resetHarnessAdminUrlCacheForTests } from '../../embedded-pg-discovery';
+import { stampDrillSignals } from '../../red-queen/drill-classes';
 
 function sig(p: Partial<WatchdogSignal> & { key: string }): WatchdogSignal {
   return {
@@ -1835,6 +1836,19 @@ describe('runWatchdogTick — captures through the shared core', () => {
     const signals = [sig({ key: 'hive-x', scope: 'harness:sheets' })];
     await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
     expect(calls[0]).toMatchObject({ scope: 'harness:sheets' });
+  });
+
+  it('captures a Red-Queen drill with the valid operator scope and drill origin intact', async () => {
+    const { calls, capture } = captureRecorder();
+    const signal = stampDrillSignals([sig({ key: 'drill-scope-regression' })])[0];
+    await runTick('ws', {}, {
+      readKeyDups: noKeyDups,
+      pruneTicks: noPrune,
+      collect: async () => [signal],
+      capture,
+      recordTick: noopRecord,
+    });
+    expect(calls[0]).toMatchObject({ scope: 'operator', origin: 'drill' });
   });
 
   it('passes a per-signal findingClass through to the capture (frontier P-044 taxonomy slug)', async () => {
