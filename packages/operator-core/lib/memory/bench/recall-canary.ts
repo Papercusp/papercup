@@ -464,7 +464,11 @@ export async function runRecallCanary(
           : `set v${set.version} decayed (${missing}/${set.pairs.length} targets gone); reseeded v${fresh.version}`,
       };
       const rowId = await (deps.record ?? recordRecallCanaryRun)(sql, input.workspaceId, metrics);
-      log(`set v${set.version} invalidated or decayed; reseeded v${fresh.version}`);
+      log(
+        scopeChanged > 0
+          ? `set v${set.version} invalidated after scope changes; reseeded v${fresh.version}`
+          : `set v${set.version} decayed; reseeded v${fresh.version}`,
+      );
       return { ran: true, status: 'decayed', metrics, rowId };
     }
 

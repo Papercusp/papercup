@@ -434,7 +434,8 @@ describe('runRecallCanary', () => {
     const { deps, recorded, notified } = stubDeps({
       loadSet: async () => frozenSet(pairs, 0.9),
       // One moved target is enough to make the set incomparable to its frozen baseline.
-      verifyTargets: async (_sql, ids) => new Map(ids.map((id) => [id, id === 'mem-3' ? 'pool-b' : 'pool-a'])),
+      verifyTargets: async (_sql, ids) =>
+        new Map(ids.map((id) => [id, id === 'mem-3' ? 'pool-b' : 'pool-a'])),
     });
     const out = await runRecallCanary(INPUT, deps);
     expect(out.ran && out.status).toBe('decayed');
