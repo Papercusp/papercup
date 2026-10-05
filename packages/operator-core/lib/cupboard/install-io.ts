@@ -12,6 +12,7 @@
  * manifest — base D-006 item 3), so one installer covers both.
  */
 import { spawn } from 'node:child_process';
+import type { Sql } from 'postgres';
 import { tmpdir } from 'node:os';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
@@ -169,6 +170,19 @@ export function buildInstallPluginDeps(): InstallPluginCoreDeps {
     tmpDir: tmpdir,
     grant: (args) => grantCapabilities({ ...args, grantedBy: 'user', reason: 'cupboard install-consent' }),
     invalidateHost: invalidatePluginHost,
+    // P-012 (D-013): a trigger pack installed into a harness materializes as its
+    // plans and DISARMED bindings in the active workspace.
+    materializeTriggerPack: async (args) => {
+      const [{ getOrgPg }, { activeWorkspaceId }, { materializeTriggerPack }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('./trigger-pack-materialize'),
+      ]);
+      return materializeTriggerPack(getOrgPg().sql as unknown as Sql, activeWorkspaceId(), {
+        ...args,
+        createdBy: 'cupboard-install',
+      });
+    },
     validateDependencies: async (deps) => {
       const { validateBlueprintDependencies, resolveEventProvider } = await import('@papercusp/blueprint-distribution');
       const { derivePackCatalog, depHostSetsFromCatalog } = await import('./pack-catalog');
@@ -253,6 +267,8 @@ export async function installPluginFromCupboard(input: {
    * `plugin_review_changed` if the cloned manifest no longer matches it.
    */
   expectedReview?: InstallPluginManifestReview;
+  /** Installer-local trigger-pack source mappings + inputs (P-012). */
+  triggerPackConfig?: InstallPluginCoreInput['triggerPackConfig'];
 }): Promise<InstallPluginFromCupboardResult> {
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
@@ -271,6 +287,7 @@ export async function installPluginFromCupboard(input: {
     harness: typeof input.harness === 'string' ? input.harness.trim() : undefined,
     acceptCapabilities: input.acceptCapabilities === true,
     ...(input.expectedReview ? { expectedReview: input.expectedReview } : {}),
+    ...(input.triggerPackConfig ? { triggerPackConfig: input.triggerPackConfig } : {}),
   };
 
   try {
