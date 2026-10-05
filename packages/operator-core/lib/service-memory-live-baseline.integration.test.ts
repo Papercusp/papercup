@@ -744,7 +744,8 @@ describe('actual current-build operator memory baseline', () => {
       const recorded: { stage: string; value: any }[] = [];
       f.reader.read = async (pid, ids) => {
         const value = await read(pid, ids);
-        if (ids.length && pid === 11) value.snapshot.results[0].status = 'error';
+        if (value.snapshot.status === 'observed' && ids.length && pid === 11)
+          value.snapshot.results[0].status = 'error';
         return value;
       };
       await expect(collectRequestWorkerWindow(f.targets, build,
