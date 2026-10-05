@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
-import { goalOwnerReportFixture } from '../packages/operator-core/test/fixtures/goal-owner-report.ts';
+import { goalOwnerReportFixture, goalReportBrowserFeedProbeScript } from '../packages/operator-core/test/fixtures/goal-owner-report.ts';
 import { getReport, publishReport } from '../packages/operator-core/lib/report-library.ts';
 import { makeGoalReportReferenceReads, persistGoalReportReference } from '../packages/operator-core/lib/goal-owner-report-reference.ts';
 
@@ -65,26 +65,17 @@ const captureBrowserFeed = async (phase: string, expectedMessageId: string, expe
   const directResponse = await fetch(`${origin}${request}`, {
     headers: { 'x-papercusp-workspace': workspaceId }, signal: AbortSignal.timeout(15_000),
   });
+  const directData = await directResponse.json() as any;
   save(`${phase}-http-sync-feed.json`, {
     status: directResponse.status, request, workspaceHeader: workspaceId,
-    data: await directResponse.json(),
+    data: directData,
   });
-  native('eval', `(()=>{window.__goalReportFeedProbe={done:false};
-    const internals=window.__TAURI_INTERNALS__, originalInvoke=internals?.invoke;
-    const ipcRequests=[];
-    // Record only the exact request's routing fields; never record host auth.
-    if(originalInvoke)internals.invoke=function(command,args,...rest){
-      const input=args?.input;
-      if(command==='endpoint_invoke' && args?.toolName==='sys:http' && input?.path===${JSON.stringify(request)})
-        ipcRequests.push({method:input.method,path:input.path,
-          workspaceHeader:new Headers(input.headers).get('x-papercusp-workspace')});
-      return originalInvoke.call(this,command,args,...rest);
-    };
-    (async()=>{try{const response=await fetch(${JSON.stringify(request)});
-      window.__goalReportFeedProbe={done:true,status:response.status,data:await response.json(),
-        browserWorkspace:window.__PAPERCUSP_WS__??null,url:location.href,request:${JSON.stringify(request)},ipcRequests};
-    }catch(error){window.__goalReportFeedProbe={done:true,error:String(error),url:location.href,ipcRequests}}
-    finally{if(originalInvoke)internals.invoke=originalInvoke}})();return true})()`);
+  assert.equal(directResponse.status, 200, 'Direct named-query read failed');
+  const directItem = directData.rows?.flatMap((group: any) => group.items ?? [])
+    .find((item: any) => item.id === `coord-message:${expectedMessageId}`);
+  assert.ok(directItem, 'Persisted report absent from the same named-query route; refusing visual verification');
+  assert.deepEqual(directItem.report, expectedReport, 'Direct named-query read changed the exact report pin');
+  native('eval', goalReportBrowserFeedProbeScript(request));
   const deadline = Date.now() + 30_000;
   let result: any;
   do {
@@ -96,9 +87,6 @@ const captureBrowserFeed = async (phase: string, expectedMessageId: string, expe
   assert.equal(result.done, true, 'Browser sync request did not settle');
   assert.equal(result.status, 200, 'Browser sync request failed');
   assert.equal(result.browserWorkspace, workspaceId, 'Browser workspace differs from the persisted fixture');
-  assert.ok(result.ipcRequests?.length, 'Exact browser sync request did not cross the desktop IPC boundary');
-  assert.ok(result.ipcRequests.every((request: any) => request.workspaceHeader === workspaceId),
-    'Desktop IPC transmitted a different workspace from the browser fixture');
   const item = result.data?.rows?.flatMap((group: any) => group.items ?? [])
     .find((item: any) => item.id === `coord-message:${expectedMessageId}`);
   assert.ok(item, 'Exact persisted report is absent from the actual browser sync feed');
@@ -106,6 +94,11 @@ const captureBrowserFeed = async (phase: string, expectedMessageId: string, expe
 };
 const sourcePaths = ['apps/operator/app/_components/chat/ReportBlockCard.tsx', 'libs/generic/chat-cards/src/index.tsx',
   'apps/operator/app/globals.css', 'packages/operator-core/lib/sync-resolver/index.ts',
+  'packages/operator-core/lib/agent-tools/plans/read-dispatch.ts',
+  'packages/operator-core/lib/agent-tools/plans/read-dispatch.test.ts',
+  'packages/operator-core/lib/agent-tools/plans/attention.cache.test.ts',
+  'packages/operator-core/lib/goal-report-browser-probe.test.ts',
+  'packages/operator-core/test/fixtures/goal-owner-report.ts',
   'scripts/tauri-surface-verify-goal-report.mts'];
 const sourceFingerprint = sourcePaths.map(path => ({ path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }));
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();

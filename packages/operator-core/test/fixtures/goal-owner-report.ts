@@ -1,5 +1,20 @@
 import type { GoalOwnerReportSnapshotV1 } from '@papercusp/chat-protocol';
 
+/** Run the real browser fetch without modifying Tauri's read-only internals.
+ * The exact returned pin is the workspace/routing control. IPC transmission is
+ * explicitly unknown: a failed assignment to invoke cannot measure it.
+ */
+export function goalReportBrowserFeedProbeScript(request: string): string {
+  return `(()=>{window.__goalReportFeedProbe={done:false};
+    const descriptor=Object.getOwnPropertyDescriptor(window.__TAURI_INTERNALS__??{},'invoke');
+    const ipcTransmission={status:'unknown',reason:'Tauri invoke is not an instrumented transport seam',
+      invokeWritable:descriptor?.writable??null,invokeConfigurable:descriptor?.configurable??null};
+    (async()=>{try{const response=await fetch(${JSON.stringify(request)});
+      window.__goalReportFeedProbe={done:true,status:response.status,data:await response.json(),
+        browserWorkspace:window.__PAPERCUSP_WS__??null,url:location.href,request:${JSON.stringify(request)},ipcTransmission};
+    }catch(error){window.__goalReportFeedProbe={done:true,error:String(error),url:location.href,ipcTransmission}}})();return true})()`;
+}
+
 /** Approved experiment: long report, three exact actions, receipts and unknowns. */
 export function goalOwnerReportFixture(workspaceId: string): GoalOwnerReportSnapshotV1 {
   const observedAt = '2026-10-03T10:00:00.000Z';
