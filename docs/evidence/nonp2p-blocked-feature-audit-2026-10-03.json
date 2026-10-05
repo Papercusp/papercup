@@ -147,7 +147,7 @@
    "id": "WI-10001169",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Exact September30 shipment receipt was recovered from session5c550459 part89: changed=true, newStatus=shipped, forcedPastStamped=false, revision52/currentPlanVersion53 matching current source hash. Its citationDeployment appendix reports contract/matrix target paths not deployed on29bf7350. NEW native01a101de read qualifies current R8 clause16 and deployed bindings17008/17009 (test runs20277739/20277740). The current staging evidence writer reports UNKNOWN/test-run-worktree-not-clean for both receipts, whereas the older release reader had called them current. Retain pending historical artifact/runtime reconciliation; neither a new clean-proof PASS nor a current live-gate condition is asserted.",
+   "reason": "Exact September30 shipment receipt was recovered from session5c550459 part89: changed=true, newStatus=shipped, forcedPastStamped=false, revision52/currentPlanVersion53 matching current source hash. Its citationDeployment appendix reports contract/matrix target paths not deployed on29bf7350. NEW native01a101de read qualifies current R8 clause16 and deployed bindings17008/17009 (test runs20277739/20277740). The current staging evidence writer reports UNKNOWN/test-run-worktree-not-clean for both receipts, whereas the older release reader had called them current. 2026-10-05 native01a10c90 recheck confirms source53/P009 done/plan shipped and active R8 revision16. Both exact durable test-run receipts are PASS but worktreeDirty=true in the canonical staging root. The stored deployment claim supplies a historical six-blob equality assertion at29bf735091; it is not a newly reproduced runtime measurement. The release reader still reports current, while the canonical writer maps dirty test-run provenance to UNKNOWN; the newer staging read is unavailable due stale_tool_contract. Retain pending historical artifact/runtime reconciliation; neither a new clean-proof PASS nor a current live-gate condition is asserted.",
    "source": {
     "plan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
     "item": "P-009",
@@ -169,6 +169,21 @@
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
+    "currentReview": {
+     "reviewedOn": "2026-10-05",
+     "nativeSession": "01a10c90-a577-76a2-bd98-1e5f1bf78dfb",
+     "sourcePlanVersion": 53,
+     "sourcePlanHash": "0e718ba5975c5b561b45675bd02f62ed2bb88d2048e444aa4c38a1924adbcd42",
+     "specId": "AUTO-BAR-R-8-P-009",
+     "specRevision": 16,
+     "specFingerprint": "c1e0654848474edfaa3730a6c5f16ccc03dee72477be64bf015cc1fafc6f9a72",
+     "bindingIds": [17008, 17009],
+     "testRunIds": [20277739, 20277740],
+     "testRunProvenance": "Both receipts pass in the canonical staging root with worktreeDirty=true; neither is a clean committed runtime proof.",
+     "historicalDeployment": "Stored assertion of six equal blobs at29bf735091518f662100b56b49821be8c83d9ee1, not remeasured in this review.",
+     "readerConflict": "Release read reports current; canonical spec-evidence-store.ts maps dirty test-run provenance to unknown/test-run-worktree-not-clean. New staging read refused stale_tool_contract.",
+     "canonicalGuard": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:977"
+    },
     "acceptanceWaived": false
    }
   },
