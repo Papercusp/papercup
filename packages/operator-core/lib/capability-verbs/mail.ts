@@ -2,8 +2,13 @@
  * Provider-neutral mail capability seam (D-019 Tier 1, plan item P-029).
  *
  * The verbs are `mail:*`, never `gmail:*` — the provider is a property of the
- * connected source, so an Outlook adapter later is a new branch here, not a
- * new verb for agents to learn and not a new line of prompt weight.
+ * connected source. Since P-007 (plan generalized-integrations-google-migration-
+ * cupboard-workflows-2026-10-05, D-014) every verb selects its source through
+ * `provider-dispatch.ts` and calls the registered provider that owns it, with
+ * the `mail.draft` / `mail.send` capabilities. The rails below run first, in the
+ * host, identically for every provider. Sources of the first-party `gmail`
+ * kind still reach the host's own Gmail functions until P-008 registers Gmail
+ * as a provider and deletes that branch.
  *
  * Threading, MIME encoding and header propagation live BELOW this seam, in the
  * adapter. That is deliberate: correct reply threading needs the thread id on
@@ -32,7 +37,16 @@ import {
   type DeliverabilityReport,
   type MailboxProbe,
 } from './deliverability';
-import { resolveCanonicalDocument, resolveOutboundContext, string, type CanonicalDocument } from './resolve';
+import {
+  invokeOutboundProvider,
+  OUTBOUND_CAPABILITIES,
+  resolveCapabilitySource,
+  resultString,
+  resultStrings,
+  type OutboundDispatchDeps,
+  type OutboundTarget,
+} from './provider-dispatch';
+import { CANONICAL_SOURCE_BY_DATATYPE, resolveCanonicalDocument, string, type CanonicalDocument } from './resolve';
 
 export interface MailReplyCoordinates {
   to: string;
@@ -95,7 +109,12 @@ export interface MailSendDraftResult {
   deliverability: DeliverabilityReport[];
 }
 
-export type MailDeps = {
+/**
+ * Injectable seams. `registry` / `hostFetchFor` / `hostFetchImpl` reach a
+ * registered provider; the Google-named ones serve the transitional first-party
+ * `gmail` kind only (D-014.5) and go when P-008 deletes that branch.
+ */
+export type MailDeps = OutboundDispatchDeps & {
   resolveAccessToken?: typeof resolveGoogleWorkspaceAccessToken;
   createDraft?: typeof createGoogleGmailDraft;
   updateDraft?: typeof updateGoogleGmailDraft;
@@ -162,6 +181,20 @@ async function readMailAttachments(
   return out;
 }
 
+/** Attachments as a provider receives them: base64 content, no host buffers. */
+function providerAttachments(attachments: readonly GoogleGmailAttachment[]) {
+  return attachments.map((entry) => ({
+    filename: entry.filename,
+    contentType: entry.contentType,
+    contentBase64: entry.content.toString('base64'),
+  }));
+}
+
+/** TRANSITIONAL (D-014.5): the first-party Gmail token, for `gmail`-kind sources only. */
+function gmailToken(target: OutboundTarget, deps: MailDeps): Promise<string> {
+  return (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(target.source, target.installSlug);
+}
+
 /**
  * D-020 rail 1: derive every reply coordinate from the STORED document.
  *
@@ -171,7 +204,13 @@ async function readMailAttachments(
  * than merely asserted.
  */
 export function resolveMailReplyCoordinates(doc: CanonicalDocument): MailReplyCoordinates {
-  if (doc.source !== 'gmail') throw new Error(`mail_reply_source_unsupported:${doc.source}`);
+  // A datatype check, never a provider one (D-014.3). Legacy rows predate the
+  // datatype stamp; their Vault category is then the only evidence.
+  const datatype =
+    doc.datatypeId ?? (doc.source === CANONICAL_SOURCE_BY_DATATYPE['email-message'] ? 'email-message' : null);
+  if (datatype !== 'email-message') {
+    throw new Error(`mail_reply_datatype_unsupported:${doc.datatypeId ?? doc.source}`);
+  }
   const payload = doc.payload;
   const direction = string(payload.direction);
   if (direction && direction !== 'inbound') {
@@ -215,7 +254,7 @@ export async function replyToCanonicalMail(
   const doc = await resolveCanonicalDocument(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
-    source: 'gmail',
+    source: CANONICAL_SOURCE_BY_DATATYPE['email-message'],
     externalId: params.messageId,
     sourceId: params.sourceId,
   });
@@ -229,13 +268,48 @@ export async function replyToCanonicalMail(
       sink: 'mail:reply',
     });
   }
-  const ctx = await resolveOutboundContext(sql, {
-    workspaceId: params.workspaceId,
-    userId: params.userId,
-    vaultSource: 'gmail',
-    sourceId: doc.sourceId,
-  });
-  const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
+  // The reply goes out through the source that holds the message, so it is
+  // sent AS the account the message was received on.
+  const capability = mode === 'send' ? OUTBOUND_CAPABILITIES.mailSend : OUTBOUND_CAPABILITIES.mailDraft;
+  const target = await resolveCapabilitySource(
+    sql,
+    {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      datatype: 'email-message',
+      capabilities: [capability],
+      sourceId: doc.sourceId,
+    },
+    deps,
+  );
+
+  if (target.provider.kind === 'registered') {
+    const result = await invokeOutboundProvider(
+      sql,
+      target,
+      capability,
+      {
+        operation: mode === 'send' ? 'message' : 'create',
+        to: [coordinates.to],
+        subject: coordinates.subject,
+        text,
+        threadId: coordinates.threadId,
+        inReplyTo: coordinates.inReplyTo,
+        references: coordinates.references,
+      },
+      deps,
+    );
+    return {
+      mode,
+      to: coordinates.to,
+      subject: coordinates.subject,
+      threadId: resultString(result, 'threadId', target, capability, false) || coordinates.threadId,
+      messageId: resultString(result, 'messageId', target, capability, mode === 'send'),
+      ...(mode === 'draft' ? { draftId: resultString(result, 'draftId', target, capability) } : {}),
+    };
+  }
+
+  const token = await gmailToken(target, deps);
   const transport = { fetch: deps.fetch, apiOrigin: deps.apiOrigin };
 
   if (mode === 'send') {
