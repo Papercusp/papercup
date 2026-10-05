@@ -77,18 +77,22 @@ describe('passing affected-task verdict identity', () => {
         mkdirSync(root);
         writeFileSync(join(root, 'subject.ts'), 'export const value = 1;\n');
       }
-      const fromClone = (root: string, commandOverrides = {}) => identity({
-        commandRoot: root,
-        command: {
-          cmd: join(root, 'node_modules/.bin/vitest'),
-          argv: ['run', join(root, 'subject.ts')],
-          cwd: root,
-          scriptText: 'vitest run',
-          relatedFilterDigest: 'complete-selection',
-          ...commandOverrides,
-        },
-        dependencyHash: hashDependencyFileSet({ root, files: ['subject.ts'] }).hash,
-      });
+      const fromClone = (root: string, commandOverrides = {}) => {
+        const proof = hashDependencyFileSet({ root, files: ['subject.ts'] });
+        if (!proof.ok) throw new Error(proof.reason);
+        return identity({
+          commandRoot: root,
+          command: {
+            cmd: join(root, 'node_modules/.bin/vitest'),
+            argv: ['run', join(root, 'subject.ts')],
+            cwd: root,
+            scriptText: 'vitest run',
+            relatedFilterDigest: 'complete-selection',
+            ...commandOverrides,
+          },
+          dependencyHash: proof.hash,
+        });
+      };
       const prior = fromClone(roots[0]);
       const verdict = (next: ReturnType<typeof identity>) => decidePassingTaskVerdict({
         enabled: true, cacheRead: { reason: 'cache-ready' },
