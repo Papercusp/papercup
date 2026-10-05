@@ -334,14 +334,15 @@ describe('evaluateLifecycleCandidates', () => {
     });
   });
 
-  it('gives unaccounted residue a discriminating exact-scope verification recipe', () => {
+  it('gives unaccounted residue a stable exact-scope verification recipe', () => {
     const candidate = evaluate({
       rows: [row({ taskId: 'unaccounted', state: 'unaccounted', scopeUnit: 'pc-unaccounted.scope' })],
       residue: ['unaccounted'],
     }).candidates[0];
     expect(candidate.scopeUnit).toBe('pc-unaccounted.scope');
     const summary = lifecycleCandidateSummary(candidate);
-    expect(summary).toContain('processes:list { scopeUnit:"pc-unaccounted.scope", live:true }');
+    expect(summary).toContain('payload.processLifecycleCandidate.scopeUnit');
+    expect(summary).toContain('processes:list { scopeUnit, live:true }');
     expect(summary).toContain('live.exactScopeUnitMatches');
     expect(summary).toContain('An empty result is not proof by itself');
     expect(summary).toContain('only live.exactScopeUnitMatches entries with kind "unaccounted"');
@@ -351,14 +352,45 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('if $$ is tiny or only a few PIDs are visible, discard every /proc absence');
     expect(summary).toContain('Read the control twice and confirm tasks[].ageSec advances by elapsed wall time');
     expect(summary).toContain('confined:false does not prove abandonment');
-    expect(summary).toContain('Timestamped cgroup CPU activity');
-
-    const escaped = lifecycleCandidateSummary({ ...candidate, scopeUnit: 'pc-"quoted.scope' });
-    expect(escaped).toContain('scopeUnit:"pc-\\"quoted.scope"');
+    expect(summary).toContain('payload.processLifecycleCandidate.metrics.cpuActivity');
+    expect(summary).not.toContain('pc-unaccounted.scope');
 
     const noScope = { ...candidate, scopeUnit: null };
     expect(lifecycleCandidateSummary(noScope)).toContain('unfiltered processes:list { live:true }');
     expect(lifecycleCandidateSummary(noScope)).toContain('complete live.unaccountedGroups');
+  });
+
+  it('keeps the claim subject summary stable across reconciliation refreshes', () => {
+    const candidate = evaluate({
+      rows: [row({ taskId: 'changing-candidate', state: 'unaccounted', scopeUnit: 'pc-changing.scope' })],
+      residue: ['changing-candidate'],
+    }).candidates[0]!;
+    const summary = lifecycleCandidateSummary(candidate);
+    const refreshed = {
+      ...candidate,
+      scopeUnit: 'pc-replaced.scope',
+      kinds: ['old-and-idle'] as typeof candidate.kinds,
+      reasons: ['the detector reason changed on a later pass'],
+      liveness: {
+        status: 'present' as const,
+        source: 'healthy-task-reconcile' as const,
+        observedAt: new Date(NOW + 300_000).toISOString(),
+      },
+      metrics: {
+        ...candidate.metrics,
+        cpuActivity: {
+          state: 'active' as const,
+          previous: { cpuUsec: 100, sampledAtMs: NOW },
+          current: { cpuUsec: 110, sampledAtMs: NOW + 300_000 },
+        },
+      },
+    };
+
+    expect(lifecycleCandidateSummary(refreshed)).toBe(summary);
+    expect(summary).toContain('payload.processLifecycleCandidate');
+    expect(summary).not.toContain(new Date(NOW).toISOString());
+    expect(summary).not.toContain('pc-changing.scope');
+    expect(summary).not.toContain('unaccounted-residue');
   });
 
   it('warns the judge that a task-scoped read cannot clear unaccounted residue', () => {

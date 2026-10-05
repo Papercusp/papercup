@@ -741,31 +741,18 @@ export function lifecycleJudgeBrief(items: readonly OpenLifecycleCandidateItem[]
 }
 
 export function lifecycleCandidateSummary(candidate: LifecycleCandidate): string {
-  const verification = candidate.kinds.includes('unaccounted-residue')
-    ? candidate.scopeUnit
-      ? `For unaccounted residue, use processes:list { scopeUnit:${JSON.stringify(candidate.scopeUnit)}, live:true } and inspect only live.exactScopeUnitMatches entries with kind "unaccounted". An empty result is not proof by itself; require healthy, complete reconciliation and a known-present same-kind unaccounted control from an unfiltered live census.`
-      : 'For unaccounted residue with no recorded scopeUnit, use an unfiltered processes:list { live:true } and inspect the complete live.unaccountedGroups inventory and listed PIDs. A taskId-filtered read cannot prove absence.'
-    : 'Re-verify with processes:list { taskId, live:true }.';
-  const cpuActivity = candidate.metrics.cpuActivity;
-  const livenessEvidence =
-    candidate.liveness.status === 'present'
-      ? 'Healthy host reconciliation observed this candidate scope as present at ' +
-        candidate.liveness.observedAt +
-        '. This is a positive baseline only; recheck current state with processes:list before deciding. '
-      : 'No namespace-safe presence sample is attached; keep liveness unknown until processes:list establishes it. ';
   const namespaceProbeCaveat =
     'capability:bash may use a separate PID namespace: missing /proc/<host-pid> means invisible, cgroup.procs containing only 0 means hidden presence (not PID 0), and pids.current counts kernel tasks including threads. When diagnosing a shell probe, report readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in the same call; if $$ is tiny or only a few PIDs are visible, discard every /proc absence. Loopback traffic is proxied, so HTTP 502 is not ECONNREFUSED and proves neither presence nor absence. Do not infer death from these shell readings. ';
-  const sampleLabel = (sample: { cpuUsec: number | null; sampledAtMs: number | null }) =>
-    `${sample.cpuUsec ?? 'unknown'} usec @ ${sample.sampledAtMs === null ? 'unknown' : new Date(sample.sampledAtMs).toISOString()}`;
-  const cpuEvidence =
-    `Timestamped cgroup CPU activity: ${cpuActivity.state}; ` +
-    `previous=${cpuActivity.previous ? sampleLabel(cpuActivity.previous) : 'unknown'}; ` +
-    `current=${sampleLabel(cpuActivity.current)}. `;
+  // A condition-upsert refreshes this summary on each healthy reconcile tick.
+  // Keep the claim subject stable: timestamped liveness, CPU samples, kinds,
+  // reasons, and scope metadata live in processLifecycleCandidate payload and
+  // can change while a judge holds the item.
   return (
-    livenessEvidence +
+    `Task ${candidate.taskId} is a process-lifecycle candidate. ` +
+    'Read payload.processLifecycleCandidate for the current detector snapshot. Its liveness and metrics are timestamped host-side observations; present is a positive baseline only, and unknown is not dead. Use processes:list for current evidence. ' +
     namespaceProbeCaveat +
-    `Task ${candidate.taskId} is a lifecycle candidate (${candidate.kinds.join(', ')}). ` +
-    `${candidate.reasons.join('; ')}. ${cpuEvidence}${verification} ` +
+    'For unaccounted residue, a taskId-filtered read cannot prove absence. Read payload.processLifecycleCandidate.scopeUnit and use processes:list { scopeUnit, live:true }; inspect only live.exactScopeUnitMatches entries with kind "unaccounted". An empty result is not proof by itself. If scopeUnit is missing, use an unfiltered processes:list { live:true } and inspect the complete live.unaccountedGroups inventory and listed PIDs. ' +
+    'Read cgroup CPU evidence from payload.processLifecycleCandidate.metrics.cpuActivity; active means usage_usec changed between its timestamps, idle means unchanged, and unknown means there is no valid comparison. ' +
     'Before recording gone, require a known-present same-kind unaccounted positive control from an unfiltered census. Read the control twice and confirm tasks[].ageSec advances by elapsed wall time; verify live.degraded, live.ownedTruncated, and live.foreignTruncated are false and the unaccounted group/PID counts match their complete lists. unaccounted with confined:false does not prove abandonment; require positive abandonment evidence before a kill. Keep with a reason and future recheck date, kill only by taskId, or record gone.'
   );
 }

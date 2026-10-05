@@ -115,6 +115,34 @@ describe('isolated answering identity on the maintained session port', () => {
       rmSync(artifactRoot, { recursive: true, force: true });
     }
   });
+
+  it.each([true, false])('renders and budgets the prepared identity disclosure (authorityCarried=%s)', async (authorityCarried) => {
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('exact evidence'),
+      target: authorityCarried ? target : { ...target, ownerId: 'su-answer-owner' },
+    });
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'consult-port-identity-'));
+    const createPrepared = vi.fn(async (input: any) => ({ ...input, status: 'prepared' }) as SessionPortRow);
+    try {
+      const prepared = await prepareInspectedSessionPort({
+        inspection, expectedSourceHash: inspection.source.sha256, tokenKey: 'server-only-key',
+        artifactRoot, findExisting: async () => null, createPrepared,
+      });
+      const persisted = createPrepared.mock.calls[0]![0];
+      const seed = readFileSync(persisted.artifactPath, 'utf8');
+      expect(inspection.disclosure.authorityCarried).toBe(authorityCarried);
+      expect(persisted.metadata.disclosure.authorityCarried).toBe(authorityCarried);
+      expect(seed).toContain(authorityCarried
+        ? 'This session continues the source coordination identity.'
+        : 'This is a fresh session identity.');
+      expect(seed.includes('This is a fresh session identity.')).toBe(!authorityCarried);
+      expect(inspection.fullPayloadEstimatedTokens).toBe(Buffer.byteLength(seed, 'utf8'));
+      expect(prepared.summary.budget.finalPayloadEstimatedTokens).toBe(Buffer.byteLength(seed, 'utf8'));
+      expect(verifySessionPortSeed(seed, prepared.summary.hashes.rendered)).toBe(true);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('session-port current-version test fixtures', () => {

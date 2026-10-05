@@ -401,6 +401,7 @@ export function inspectAcquiredSessionPort(input: {
     targetBackend: target.backend,
     fidelity: 'full',
     transcript: rendered.text,
+    authorityCarried: targetOwnerId === sourceRow.coordOwnerId,
     currentInstruction: currentInstruction.present ? currentInstruction.text : null,
   }).seed);
   const stats: PortableSessionPort['stats'] = {
@@ -573,6 +574,7 @@ export async function prepareInspectedSessionPort(input: {
       targetBackend: inspection.target.backend,
       fidelity,
       transcript,
+      authorityCarried: inspection.disclosure.authorityCarried,
       currentInstruction: inspection.internal.currentInstruction,
     }).seed,
   });
@@ -583,6 +585,7 @@ export async function prepareInspectedSessionPort(input: {
     targetBackend: inspection.target.backend,
     fidelity: fitted.fidelity,
     transcript: fitted.transcript,
+    authorityCarried: inspection.disclosure.authorityCarried,
     currentInstruction: inspection.internal.currentInstruction,
   });
   const finalPayloadEstimatedTokens = estimatePortableTokens(rendered.seed);
