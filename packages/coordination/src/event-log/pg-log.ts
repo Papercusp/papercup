@@ -642,7 +642,7 @@ export class PgCoordLog implements CoordEventLog {
       // even caller-provided NULs become the six printable characters
       // `\u0000` before the value crosses the driver boundary.
       const lockKey = JSON.stringify([workspaceId, surface, line.msg_id]);
-      return sql.begin(hooks?.transactionOptions ?? '', async (tx) => {
+      const append = async (tx: import('postgres').TransactionSql) => {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
         const existing = await tx<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
           SELECT id, body, ts, msg_id
@@ -677,7 +677,22 @@ export class PgCoordLog implements CoordEventLog {
           sequence: Number.isFinite(sequence) ? sequence : null,
           envelope: prepared,
         };
-      });
+      };
+      if (!hooks?.transactionOptions) return sql.begin(append);
+      // Repeatable-read snapshots must begin AFTER replay serialization. An
+      // advisory lock taken inside that transaction would freeze a waiter's
+      // snapshot before the winning insert and admit a duplicate on release.
+      const reserved = await sql.reserve();
+      try {
+        await reserved`SELECT pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+        return await reserved.begin(hooks.transactionOptions, append);
+      } finally {
+        try {
+          await reserved`SELECT pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
+        } finally {
+          reserved.release();
+        }
+      }
     }, this.opts.contentionRetry);
   }
 

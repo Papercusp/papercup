@@ -228,27 +228,65 @@ describe('MCP emit → notifications', () => {
 });
 
 describe('MCP session tool-contract revision notifications', () => {
-  it('notifies a connected session once when the same-process registry revision changes', async () => {
+  const knownGeneration = (revision: string) => ({
+    state: 'known' as const,
+    revision,
+    buildSha: 'build-sha',
+    appliedMigrationDigest: 'migration-sha',
+    toolRegistryRevision: 'tool-sha',
+  });
+
+  it('blocks missing and stale baselines before dispatch and waits for tools/list to advance them', async () => {
     __resetSessionSurfaces();
     const sessionId = 'mcp-contract-revision-session';
-    rememberSessionToolRegistryRevision(sessionId, 'registry-revision-1');
-
     const { sent, sendNotification } = recordingSendNotification();
-    let revision = 'registry-revision-1';
+    let generation = knownGeneration('generation-1');
+    let dispatchCount = 0;
     const call = __withMcpSessionSurfaceRecheckForTests(
-      async () => ({ isError: false }),
-      () => revision,
+      async () => { dispatchCount += 1; return { isError: false }; },
+      async () => generation,
     );
     const extra = { sessionId, sendNotification };
 
-    await call({}, extra);
-    expect(sent).toEqual([]);
-
-    revision = 'registry-revision-2';
-    await call({}, extra);
+    await expect(call({}, extra)).rejects.toThrow(/stale_tool_contract.*tools\/list/);
+    expect(dispatchCount).toBe(0);
     expect(sent).toEqual([{ method: 'notifications/tools/list_changed', params: {} }]);
 
-    await call({}, extra);
+    // This is the action the notified client performs: a real tools/list handler
+    // records the revision only after producing its response.
+    rememberSessionToolRegistryRevision(sessionId, 'generation-1');
+    expect(await call({}, extra)).toEqual({ isError: false });
+    expect(dispatchCount).toBe(1);
     expect(sent).toHaveLength(1);
+
+    generation = knownGeneration('generation-2');
+    await expect(call({}, extra)).rejects.toThrow(/stale_tool_contract.*tools\/list/);
+    expect(dispatchCount).toBe(1);
+    expect(sent).toHaveLength(2);
+
+    // list_changed is not a baseline update. Only the subsequent real list can
+    // unblock calls for generation 2.
+    await expect(call({}, extra)).rejects.toThrow(/stale_tool_contract.*tools\/list/);
+    expect(dispatchCount).toBe(1);
+    expect(sent).toHaveLength(3);
+    rememberSessionToolRegistryRevision(sessionId, 'generation-2');
+    expect(await call({}, extra)).toEqual({ isError: false });
+    expect(dispatchCount).toBe(2);
+  });
+
+  it('blocks unknown generations before dispatch', async () => {
+    __resetSessionSurfaces();
+    const { sent, sendNotification } = recordingSendNotification();
+    const sessionId = 'mcp-unknown-generation-session';
+    rememberSessionToolRegistryRevision(sessionId, 'generation-1');
+    let dispatchCount = 0;
+    const call = __withMcpSessionSurfaceRecheckForTests(
+      async () => { dispatchCount += 1; return { isError: false }; },
+      async () => ({ state: 'unknown', reason: 'applied-migrations-unknown' }),
+    );
+
+    await expect(call({}, { sessionId, sendNotification })).rejects.toThrow(/serving_generation_unknown/);
+    expect(dispatchCount).toBe(0);
+    expect(sent).toEqual([]);
   });
 });

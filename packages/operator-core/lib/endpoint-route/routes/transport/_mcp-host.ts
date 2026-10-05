@@ -68,6 +68,7 @@ import {
   type RequestOriginMetadata,
   type DeltaResponse,
 } from '@papercusp/agent-mcp';
+import { readServingGeneration, type ServingGeneration } from '../../../serving-generation';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import {
@@ -3188,43 +3189,57 @@ async function identityAdmittedListings(
 }
 
 /**
- * After a tools/call, re-announce the listing if either the governed identity
- * surface or the projected tool contract changed since this MCP session's last
- * tools/list. Awaited before the call returns so `list_changed` rides the still-
- * open request stream, as activateTools' does.
+ * A tools/call is admitted only against the exact serving generation the
+ * session last received from tools/list. A notification is a hint to list
+ * again; it never changes the session baseline. The post-call check catches a
+ * generation that moved during dispatch, while the pre-call check prevents a
+ * known-stale or unknown session from dispatching in the first place.
  */
 function withMcpSessionSurfaceRecheck<Req, Res>(
   handler: (req: Req, extra: unknown) => Promise<Res>,
-  readRegistryRevision: () => string = projectedToolRegistryRevision,
+  readGeneration: () => Promise<ServingGeneration> = readServingGeneration,
 ): (req: Req, extra: unknown) => Promise<Res> {
   return async (req, extra) => {
-    const result = await handler(req, extra);
     const sessionKey = mcpSessionKey(extra);
     const sendNotification = (
       extra as { sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void> } | undefined
     )?.sendNotification;
-    if (sessionKey && sendNotification) {
-      const currentRegistryRevision = readRegistryRevision();
-      const registryChanged = sessionToolRegistryRevisionChanged(sessionKey, currentRegistryRevision);
-      let listChangedSent = false;
-      const notifyListChanged = async () => {
-        if (listChangedSent) return;
-        await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
-        listChangedSent = true;
-      };
+    let listChangedSent = false;
+    const notifyListChanged = async () => {
+      if (!sessionKey || !sendNotification || listChangedSent) return;
+      await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
+      listChangedSent = true;
+    };
+
+    const before = await readGeneration();
+    if (before.state !== 'known') {
+      throw new Error(`serving_generation_unknown: ${before.reason}; tools/call is blocked before dispatch`);
+    }
+    if (!sessionKey || sessionToolRegistryRevisionChanged(sessionKey, before.revision)) {
       try {
-        if (registryChanged) await notifyListChanged();
+        await notifyListChanged();
       } catch (err) {
-        console.warn(`[mcp-host] tool registry revision recheck failed: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`[mcp-host] stale serving-generation notification failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      throw new Error(
+        `stale_tool_contract: this MCP session has no tools/list baseline for the current serving generation ` +
+          `${before.revision}; call tools/list before retrying tools/call`,
+      );
+    }
+
+    const result = await handler(req, extra);
+    if (sessionKey) {
+      const after = await readGeneration();
+      try {
+        if (after.state !== 'known' || after.revision !== before.revision) await notifyListChanged();
+      } catch (err) {
+        console.warn(`[mcp-host] serving-generation recheck failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       try {
         const { recheckListedIdentitySurface } = await import('../../../capability-envelope/identity-tool-surface');
         await recheckListedIdentitySurface(sessionKey, notifyListChanged);
       } catch (err) {
         console.warn(`[mcp-host] identity surface recheck failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      if (registryChanged && listChangedSent) {
-        rememberSessionToolRegistryRevision(sessionKey, currentRegistryRevision);
       }
     }
     return result;
@@ -3234,9 +3249,9 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
 /** The real call wrapper with a controllable revision source for focused tests. */
 export function __withMcpSessionSurfaceRecheckForTests<Req, Res>(
   handler: (req: Req, extra: unknown) => Promise<Res>,
-  readRegistryRevision: () => string,
+  readGeneration: () => Promise<ServingGeneration>,
 ): (req: Req, extra: unknown) => Promise<Res> {
-  return withMcpSessionSurfaceRecheck(handler, readRegistryRevision);
+  return withMcpSessionSurfaceRecheck(handler, readGeneration);
 }
 
 /**
@@ -3299,6 +3314,10 @@ export function registerMcpHost(server: McpServer): void {
     const listedRegistryRevision =
       filtered.map(listingRegistryRevision).find((revision) => revision !== 'unknown') ??
       projectedToolRegistryRevision();
+    const servingGeneration = await readServingGeneration({ toolRegistryRevision: listedRegistryRevision });
+    if (servingGeneration.state !== 'known') {
+      throw new Error(`serving_generation_unknown: ${servingGeneration.reason}; tools/list cannot establish a baseline`);
+    }
     // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
     // consumers (Ollama) can parse the surface. This is THE tools/list
     // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
@@ -3371,10 +3390,17 @@ export function registerMcpHost(server: McpServer): void {
             'output',
           );
         }
+        const existingMeta =
+          out._meta && typeof out._meta === 'object' && !Array.isArray(out._meta)
+            ? (out._meta as Record<string, unknown>)
+            : {};
+        out._meta = { ...existingMeta, 'papercusp/servingGeneration': servingGeneration.revision };
         return out;
       }),
     );
-    rememberSessionToolRegistryRevision(mcpSessionKey(extra), listedRegistryRevision);
+    // This handler is the sole baseline writer: a list_changed notification or
+    // observation from tools/call cannot prove that the client fetched this list.
+    rememberSessionToolRegistryRevision(mcpSessionKey(extra), servingGeneration.revision);
     return { tools };
   });
 

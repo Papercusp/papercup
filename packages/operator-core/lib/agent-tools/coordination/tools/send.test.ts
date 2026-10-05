@@ -43,6 +43,18 @@ const { getModeSubjectMock, readGoalOwnerReportTruthMock } = vi.hoisted(() => ({
   readGoalOwnerReportTruthMock: vi.fn(async (..._args: unknown[]): Promise<any> => null),
 }));
 
+const referenceMocks = vi.hoisted(() => ({ resolve: vi.fn(), reads: vi.fn(), persist: vi.fn() }));
+vi.mock('../../../goal-owner-report-reference', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../goal-owner-report-reference')>()),
+  resolveGoalReportReference: referenceMocks.resolve,
+  makeGoalReportReferenceReads: referenceMocks.reads,
+  persistGoalReportReference: referenceMocks.persist,
+}));
+vi.mock('../log', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../log')>()),
+  coordSql: vi.fn(() => ({})),
+}));
+
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
 // importOriginal. A bare factory replaces the whole module, so send.ts's
 // `ADMIN_COORD_UI_OWNER` import resolves to a vitest getter that THROWS on first access —
@@ -2982,7 +2994,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
 });
 
 describe('REPORT-REFERENCE-ADMISSION-P002: current typed truth', () => {
-  const fixture = () => goalOwnerReportFixture('ws1');
+  const fixture = () => ({ ...goalOwnerReportFixture('ws1'), observedAt: '2026-10-03T10:00:01.000Z' });
   const readsFor = (s: ReturnType<typeof fixture>): GoalReportReferenceReads => ({
     source: async (ref) => s.sources.find((source) => source.ref === ref) ?? null,
     cost: async () => s.cost,
@@ -3017,6 +3029,7 @@ describe('REPORT-REFERENCE-ADMISSION-P002: current typed truth', () => {
     ['source generation', (s) => { s.sources[0]!.revision = 'stale'; }, 'source-generation'],
     ['source availability', (s) => { s.sources[0]!.availability = 'unknown'; s.sources[0]!.unknownReason = 'unread'; }, 'current-goal-source'],
     ['source measurement', (s) => { s.sources[0]!.measuredAt = '2026-10-03T09:59:00.000Z'; }, 'source-generation'],
+    ['source observation', (s) => { s.sources[0]!.observedAt = '2026-10-03T10:00:00.500Z'; }, 'source-generation'],
     ['source read from future', (s) => { s.sources[0]!.observedAt = '2026-10-03T10:01:00.000Z'; }, 'source-time'],
     ['spend', (s) => { s.cost.spentCents = 0; }, 'current-measured-cost'],
     ['budget', (s) => { s.cost.budgetCents = 2000; }, 'current-measured-cost'],
@@ -3053,6 +3066,94 @@ describe('REPORT-REFERENCE-ADMISSION-P002: current typed truth', () => {
     const reads = readsFor(s);
     reads[field] = async () => { throw new Error('current source unreadable'); };
     await expect(validateGoalReportReferenceSnapshot(s, reads, now)).rejects.toThrow('current source unreadable');
+  });
+});
+
+describe('REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler', () => {
+  let snapshot: ReturnType<typeof goalOwnerReportFixture>;
+  let reads: GoalReportReferenceReads;
+  const args = () => ({ to: ['human'], expects: 'none', summary: 'Misleading title',
+    body: [{ text: 'Caller-supplied misleading short prose' }],
+    report: { plans: [], goalReport: { schemaVersion: 1, goalId: snapshot.goalId, reportId: 'report-pinned', bodySha256: 'a'.repeat(64) } },
+  });
+  beforeEach(() => {
+    snapshot = goalOwnerReportFixture('ws1');
+    snapshot.observedAt = new Date().toISOString();
+    snapshot.nextWake.expectedAt = new Date(Date.now() + 60_000).toISOString();
+    reads = {
+      source: async (ref) => snapshot.sources.find((s) => s.ref === ref) ?? null,
+      cost: async () => snapshot.cost,
+      ownerWalls: async () => snapshot.ownerWalls,
+      movement: async (ref) => snapshot.moved.find((m) => m.ref === ref) ?? null,
+      wake: async () => true,
+      killed: async () => true,
+    };
+    getModeSubjectMock.mockResolvedValue(snapshot.goalId);
+    referenceMocks.resolve.mockReset().mockResolvedValue({ title: 'Pinned GOAL', goalOwnerReport: snapshot });
+    referenceMocks.reads.mockReset().mockReturnValue(reads);
+    referenceMocks.persist.mockReset();
+  });
+  afterEach(() => { getModeSubjectMock.mockResolvedValue(null); });
+
+  it('persists one valid pinned reference using canonical prose and the transaction callback', async () => {
+    const result = await body(args());
+    expect(result.results[0]).toMatchObject({ ok: true, goalOwnerReport: { status: 'stamped', goalId: snapshot.goalId } });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const opts = sendM.mock.calls[0]![1];
+    expect(opts.summary).toBe('Pinned GOAL');
+    expect(opts.body).toBe(deriveGoalReportNotification(snapshot));
+    expect(opts.body).not.toContain('Caller-supplied');
+    expect(opts.extra?.report).toEqual(args().report);
+    expect(opts.persistEnvelope).toEqual(expect.any(Function));
+    const env = { msg_id: 'test', from: 'me', to: ['human'], ts: new Date().toISOString(), kind: 'message' as const };
+    await opts.persistEnvelope!(env);
+    expect(referenceMocks.persist).toHaveBeenCalledWith(expect.anything(), env, expect.objectContaining({
+      workspaceId: 'ws1', goalId: snapshot.goalId, ref: args().report.goalReport, viewer: { ownerId: 'me' },
+    }));
+  });
+
+  it.each([
+    ['source-read-failed', () => { reads.source = async () => { throw new Error('source read unavailable'); }; }, 'current-source-read'],
+    ['source-unresolved', () => { reads.source = async () => null; }, 'source-generation'],
+    ['cost-unknown', () => { reads.cost = async () => null; }, 'current-measured-cost'],
+    ['walls-omitted', () => { reads.ownerWalls = async () => []; }, 'complete-exact-owner-actions'],
+    ['receipt-changed', () => { reads.movement = async () => null; }, 'movement-receipts'],
+    ['wake-unregistered', () => { reads.wake = async () => false; }, 'next-wake-evidence'],
+  ] as const)('%s refuses with a labeled oracle before send/stamp', async (_name, breakRead, oracle) => {
+    breakRead();
+    const result = await body(args());
+    expect(result.results[0]).toMatchObject({ ok: false, error: 'goal-owner-report-untruthful', oracle: expect.stringContaining(oracle) });
+    expect(sendM).not.toHaveBeenCalled();
+    expect(referenceMocks.persist).not.toHaveBeenCalled();
+  });
+
+  it('refuses malformed references and non-owner audiences before any source read', async () => {
+    const invalid = args(); invalid.report.goalReport.bodySha256 = 'bad';
+    expect((await body(invalid)).results[0]).toMatchObject({ ok: false, error: 'report_invalid', oracle: 'goal-reference-shape' });
+    const peer = { ...args(), to: ['peer-1'] };
+    expect((await body(peer)).results[0]).toMatchObject({ ok: false, oracle: 'owner-recipient' });
+    expect(referenceMocks.resolve).not.toHaveBeenCalled();
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('preserves the current-subject oracle when preflight passes but the transaction refuses', async () => {
+    sendM.mockRejectedValueOnce(Object.assign(new Error('subject changed before commit'), {
+      code: 'goal-owner-report-untruthful', oracle: 'current-goal-subject',
+    }));
+    const result = await body(args());
+    expect(result.results[0]).toMatchObject({ ok: false, error: 'goal-owner-report-untruthful', oracle: 'current-goal-subject' });
+  });
+
+  it('INLINE-REPORT-COMPATIBILITY-P004: unreadable inline truth stays fail-open beside a valid reference', async () => {
+    readGoalOwnerReportTruthMock.mockResolvedValueOnce(null);
+    const inline = await body({ to: ['human'], expects: 'none', summary: 'Inline GOAL', body: [{
+      text: 'MOVED: none\nCOST: unknown\nOWNER-WALLED: none\nKILLED: none\nNEXT WAKE: registered loop',
+    }] });
+    expect(inline.results[0]).toMatchObject({ ok: true });
+    expect(sendM.mock.calls[0]![1].persistEnvelope).toBeUndefined();
+    expect(sendM.mock.calls[0]![1].extra?.goalOwnerReport).toMatchObject({ goalId: snapshot.goalId });
+    expect((await body(args())).results[0]).toMatchObject({ ok: true });
+    expect(sendM).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -250,6 +250,13 @@ vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
   // bootstrap on its fixture root instead of defaultRunGit's production sidecar.
   ensurePotGitRepo: (...args: unknown[]) => ensurePotGitRepoMock(...args),
 }));
+const listHiveMembersForLocalPotMock = vi.hoisted(() => vi.fn(async () => []));
+vi.mock('../../federated-pot-scope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../federated-pot-scope')>()),
+  // This orchestration suite has no peer-bootstrap fixture. Do not let a live
+  // membership roster drive real Git or sidecar work from the cold-bootstrap test.
+  listHiveMembersForLocalPot: (...args: unknown[]) => listHiveMembersForLocalPotMock(...args),
+}));
 const fetchRepoPushPermissionMock = vi.fn(async (_owner: string, _repo: string) => true);
 vi.mock('../github-repo-permissions', () => ({
   fetchRepoPushPermission: (owner: string, repo: string) => fetchRepoPushPermissionMock(owner, repo),
@@ -880,6 +887,7 @@ function definitelyDeadPid(): Promise<number> {
 beforeEach(() => {
   process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
   process.env.PAPERCUSP_POT_GIT_ROOT = isolatedPotGitRoot;
+  listHiveMembersForLocalPotMock.mockReset().mockResolvedValue([]);
   ensurePotGitRepoMock.mockReset().mockImplementation(async (potHomeSlug: string, repoKey: string) => {
     const root = process.env.PAPERCUSP_POT_GIT_ROOT;
     if (root !== isolatedPotGitRoot) throw new Error('test pot-git root was not isolated');
@@ -1289,14 +1297,20 @@ describe('P-004 dependency-generation prebuild handoff', () => {
 
   it('WI-10005972: cold bootstrap keeps store setup inside the isolated test fixture', async () => {
     registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runBootstrapLeg('papercup', ctx.workspaceId);
 
-    await runBootstrapLeg('papercup', ctx.workspaceId);
-
-    expect(ensurePotGitRepoMock).toHaveBeenCalledOnce();
-    const [potHomeSlug, repoKey] = ensurePotGitRepoMock.mock.calls[0] as [string, string];
-    expect(await ensurePotGitRepoMock.mock.results[0]?.value).toBe(
-      join(isolatedPotGitRoot, potHomeSlug, repoKey + '.git'),
-    );
+      expect(ensurePotGitRepoMock).toHaveBeenCalledOnce();
+      const [potHomeSlug, repoKey] = ensurePotGitRepoMock.mock.calls[0] as [string, string];
+      expect(await ensurePotGitRepoMock.mock.results[0]?.value).toBe(
+        join(isolatedPotGitRoot, potHomeSlug, repoKey + '.git'),
+      );
+      expect(listHiveMembersForLocalPotMock).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not queue a candidate after a conflict outcome', async () => {

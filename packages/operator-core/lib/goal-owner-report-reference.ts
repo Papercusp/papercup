@@ -51,6 +51,7 @@ export async function validateGoalReportReferenceSnapshot(s: Snapshot, reads: Go
     if (!atOrBefore(source.observedAt) || (source.measuredAt !== null && Date.parse(source.measuredAt) > Date.parse(source.observedAt))) refuse(`source-time:${source.ref}`);
     const current = await reads.source(source.ref);
     if (!current || current.revision !== source.revision || current.availability !== source.availability ||
+      (source.availability === 'value' && current.observedAt !== source.observedAt) ||
       current.measuredAt !== source.measuredAt || current.unknownReason !== source.unknownReason) refuse(`source-generation:${source.ref}`);
   }
   const cost = await reads.cost();
@@ -191,7 +192,7 @@ export async function resolveGoalReportReference(sql: Db, workspaceId: string, g
  */
 export async function persistGoalReportReference(sql: Sql, envelope: CoordEnvelope,
   context: { workspaceId: string; goalId: string; ref: GoalOwnerReportRefV1; viewer: ReportViewer },
-  hooks?: { phase?: (phase: 'before-notification' | 'before-stamp' | 'before-commit') => Promise<void> },
+  hooks?: { phase?: (phase: 'before-notification' | 'before-stamp' | 'before-commit', tx: TransactionSql) => Promise<void> },
 ): Promise<CoordEnvelope> {
   const log = new PgCoordLog({ getSql: () => sql, workspaceId: context.workspaceId, ensureSchema: async () => {} });
   const msgId = goalReportDeliveryId(context.workspaceId, context.ref);
@@ -208,14 +209,14 @@ export async function persistGoalReportReference(sql: Sql, envelope: CoordEnvelo
       const snapshot = report.goalOwnerReport!;
       await validateGoalReportReferenceSnapshot(snapshot,
         makeGoalReportReferenceReads(tx, context.workspaceId, context.goalId), Date.now());
-      await hooks?.phase?.('before-notification');
+      await hooks?.phase?.('before-notification', tx);
       const body = deriveGoalReportNotification(snapshot);
-      await hooks?.phase?.('before-stamp');
+      await hooks?.phase?.('before-stamp', tx);
       return { ...envelope, msg_id: msgId, body, summary: report.title,
         sections: [{ text: body }], report: { plans: [], goalReport: context.ref },
         [GOAL_OWNER_REPORT_FIELD]: stampGoalOwnerReport(context.goalId, parseGoalOwnerReport(body)) };
     },
-    afterAppend: async () => { await hooks?.phase?.('before-commit'); },
+    afterAppend: async (tx) => { await hooks?.phase?.('before-commit', tx); },
   });
   return result.envelope;
 }

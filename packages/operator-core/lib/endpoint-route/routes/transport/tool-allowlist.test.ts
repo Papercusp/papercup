@@ -16,6 +16,8 @@ import {
   getSessionSurface,
   activateSessionTools,
   applyCompactTier,
+  rememberSessionToolRegistryRevision,
+  sessionToolRegistryRevisionChanged,
   __resetSessionSurfaces,
 } from './tool-allowlist';
 
@@ -95,6 +97,27 @@ describe('filterListingsByAllowlist', () => {
     const frozen = Object.freeze([...SURFACE]);
     expect(() => filterListingsByAllowlist(frozen, parseToolsAllowlist('harness:list'))).not.toThrow();
     expect(() => filterListingsByAllowlist(frozen, null)).not.toThrow();
+  });
+});
+
+describe('session serving-generation baseline', () => {
+  beforeEach(() => __resetSessionSurfaces());
+
+  it('treats a missing baseline as stale and leaves it unseeded until tools/list records it', () => {
+    expect(sessionToolRegistryRevisionChanged('session-a', 'generation-1')).toBe(true);
+    expect(sessionToolRegistryRevisionChanged('session-a', 'generation-1')).toBe(true);
+
+    rememberSessionToolRegistryRevision('session-a', 'generation-1');
+    expect(sessionToolRegistryRevisionChanged('session-a', 'generation-1')).toBe(false);
+  });
+
+  it('keeps changed generations stale until a later tools/list records the new revision', () => {
+    rememberSessionToolRegistryRevision('session-a', 'generation-1');
+    expect(sessionToolRegistryRevisionChanged('session-a', 'generation-2')).toBe(true);
+    expect(sessionToolRegistryRevisionChanged('session-a', 'generation-2')).toBe(true);
+
+    rememberSessionToolRegistryRevision('session-a', 'generation-2');
+    expect(sessionToolRegistryRevisionChanged('session-a', 'generation-2')).toBe(false);
   });
 });
 

@@ -187,18 +187,16 @@ describe('report_library store (real PG)', () => {
 
   it('REPORT-REFERENCE-ATOMIC-P002: all validation reads share one repeatable-read transaction', async () => {
     const f = await deliveryFixture();
-    const log = new (await import('@papercusp/coordination/event-log')).PgCoordLog({
-      getSql: () => db.adminSql, workspaceId: f.workspaceId, ensureSchema: async () => {},
-    });
-    await log.appendLineIfAbsent('messages', f.envelope.from, f.envelope, {
-      transactionOptions: 'isolation level repeatable read',
-      prepare: async (tx) => {
+    await persistGoalReportReference(db.adminSql, f.envelope, f.context, {
+      phase: async (phase, tx) => {
+        if (phase !== 'before-notification') return;
+        const [isolation] = await tx`SHOW transaction_isolation`;
+        expect(isolation.transaction_isolation).toBe('repeatable read');
         const [first] = await tx`SELECT budget_cents FROM harness_shared.goals WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
         await db.adminSql`UPDATE harness_shared.goals SET budget_cents = 2000 WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
         const [second] = await tx`SELECT budget_cents FROM harness_shared.goals WHERE workspace_id = ${f.workspaceId} AND id = ${f.snapshot.goalId}`;
         expect(first.budget_cents).toBe(1000);
         expect(second.budget_cents).toBe(first.budget_cents);
-        return f.envelope;
       },
     });
   });

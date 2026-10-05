@@ -6,8 +6,8 @@
   "command": [
     "node --import tsx scripts/source-preview.mjs licenses"
   ],
-  "startedAt": "2026-10-03T13:44:45.290Z",
-  "finishedAt": "2026-10-03T13:45:45.967Z",
+  "startedAt": "2026-10-03T14:02:38.388Z",
+  "finishedAt": "2026-10-03T14:03:45.115Z",
   "exitCode": 0,
   "evidencePlane": "live",
   "summary": "49 public repositories; 0 license failures; population stable",
@@ -641,14 +641,14 @@
       "repo": "Papercusp/sidestage",
       "defaultBranch": "staging",
       "metadataSpdx": "NOASSERTION",
-      "head": "6392ba4128bbca18f57afb73ca0480c3523d0cf5",
+      "head": "f2b429fc8ece63a5117727a8044e46aa13cecae8",
       "licenses": [
         {
           "path": "LICENSE",
           "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
           "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
           "license": "ELv2",
-          "url": "https://github.com/Papercusp/sidestage/blob/6392ba4128bbca18f57afb73ca0480c3523d0cf5/LICENSE"
+          "url": "https://github.com/Papercusp/sidestage/blob/f2b429fc8ece63a5117727a8044e46aa13cecae8/LICENSE"
         }
       ],
       "errors": []
@@ -848,7 +848,7 @@
   ],
   "observedCliSource": {
     "path": "scripts/source-preview.mjs",
-    "sha256": "f99f74ff1e8998d0b52efd233bef87e0bfbe4b5ed8ab7f3788e6b22c6e63bb76",
+    "sha256": "ed3f5bcccca0198c2105587113e0ab18a0b4bc8db5f950db80ed17f142355d7f",
     "workingDirectory": ".",
     "scope": "Current local source; exact clean unit proof is recorded separately. The live API observations are timestamped above."
   },
@@ -1928,11 +1928,25 @@
         "defaultBranch": "main",
         "id": 1223568154
       }
-    ]
+    ],
+    "publicRepositoryCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+    "manifestRecheckedAt": "2026-10-03T14:08:30.018314+00:00"
   },
   "limitations": [
     "This proves the measured GitHub public licensing population and current published export roster during the stated observation window. It does not establish finished installer licensing, release source alignment, customer credentials, paid-operation enforcement, or shipment.",
     "The existing 2026-09-30 47-repository metadata artifact remains historical; it was not overwritten or reused as current proof.",
     "The census accepts exact reviewed license text; a new or changed license body refuses until reviewed."
-  ]
+  ],
+  "cleanUnitVerification": {
+    "status": "pending",
+    "previousSnapshot": "ada36a0b2830b437686b5d684adbedd1adbf6a84",
+    "failedTestRunId": 20701527,
+    "previousResult": {
+      "passed": 10,
+      "failed": 1,
+      "skipped": 0
+    },
+    "correction": "Unknown license text still refuses as unreviewed; known-policy violation labels now require a recognized license. Preserve the failed clean run and obtain a new exact committed 11-test proof.",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE=papercusp-workspace npm run lint:as-committed -- --ref=<exact-ref> test:file --any -- packages/operator-core/lib/source-preview-repository-licenses.test.ts"
+  }
 }

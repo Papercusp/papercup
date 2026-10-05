@@ -256,9 +256,10 @@ export function rememberSessionToolRegistryRevision(
 }
 
 /**
- * Compare the live projected contract with a session's last listed revision.
- * A first observation seeds the baseline; a changed revision remains pending
- * until the caller successfully emits list_changed and remembers it.
+ * Compare the live serving generation with a session's last real tools/list.
+ * An absent baseline is stale and remains absent; only tools/list may seed or
+ * advance it. Notifications tell the client to fetch that list but never count
+ * as proof that it did.
  */
 export function sessionToolRegistryRevisionChanged(
   sessionKey: string | null | undefined,
@@ -268,10 +269,7 @@ export function sessionToolRegistryRevisionChanged(
   if (!sessionKey || !isUsableToolRegistryRevision(revision)) return false;
   sweepSessionToolRegistryRevisions(nowMs);
   const previous = sessionToolRegistryRevisions.get(sessionKey);
-  if (!previous) {
-    sessionToolRegistryRevisions.set(sessionKey, { revision, touched: nowMs });
-    return false;
-  }
+  if (!previous) return true;
   previous.touched = nowMs;
   return previous.revision !== revision;
 }

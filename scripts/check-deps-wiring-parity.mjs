@@ -1219,7 +1219,8 @@ function main() {
     );
   }
 
-  if (staleBaseline.length > 0) {
+  // JSON mode already includes staleBaseline; prose after it corrupts the document.
+  if (!opts.json && staleBaseline.length > 0) {
     if (opts.includeObservers) {
       // ⚠ DO NOT report these as prunable. `--include-observers` widens the seam set,
       // which changes each finding's `missing` list — and the baseline key is built

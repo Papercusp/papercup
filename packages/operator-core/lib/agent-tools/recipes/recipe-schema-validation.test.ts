@@ -155,6 +155,70 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     });
   });
 
+  it('accepts an optional result field read in a typeof-guarded ternary branch', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const r = await tools.capability.read({ file_path: "ledger.jsonl", tail: 20, raw: true });\n' +
+        'const raw = typeof r?.body === "string" ? r.body : String(r?.body ?? "");\n' +
+        'return raw;',
+      [
+        tool('capability:read', {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+            tail: { type: 'integer' },
+            raw: { type: 'boolean' },
+          },
+          required: ['file_path', 'tail', 'raw'],
+          additionalProperties: false,
+        }, {
+          type: 'object',
+          properties: { body: { type: 'string' } },
+          required: [],
+        }),
+      ],
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      issues: [],
+      staticToolNames: ['capability:read'],
+    });
+  });
+
+  it('does not treat the wrong typeof ternary branch as proof an optional result field exists', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const r = await tools.capability.read({ file_path: "ledger.jsonl", tail: 20, raw: true });\n' +
+        'const raw = typeof r?.body !== "string" ? r.body : "";\n' +
+        'return raw;',
+      [
+        tool('capability:read', {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+            tail: { type: 'integer' },
+            raw: { type: 'boolean' },
+          },
+          required: ['file_path', 'tail', 'raw'],
+          additionalProperties: false,
+        }, {
+          type: 'object',
+          properties: { body: { type: 'string' } },
+          required: [],
+        }),
+      ],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'capability:read',
+        path: 'result.body',
+        kind: 'output-field',
+        message: expect.stringContaining('optional in the current output schema'),
+      }),
+    ]));
+  });
+
   it('checks result reads from identifiers destructured out of Promise.all', async () => {
     const result = await validateRecipeScriptAgainstCatalog(
       'const [trace] = await Promise.all([tools.release.trace({ path: "packages/example" })]);\nreturn trace.gate;',
