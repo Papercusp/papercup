@@ -267,15 +267,16 @@ export async function upsertPersonalDocuments(
     const metadata = JSON.stringify(doc.metadata ?? {});
     const rows = await sql<Array<{ id: string }>>`
       INSERT INTO harness_shared.documents
-        (workspace_id, user_id, source, source_id, provider_account_id, kind, external_id, occurred_at,
+        (workspace_id, user_id, source, source_id, provider_account_id, datatype_id, kind, external_id, occurred_at,
          participants, participant_ids, title, text, metadata, dedupe_key)
       VALUES
         (${workspaceId}, ${userId}, ${source}, ${sourceId}::uuid, ${providerAccountId},
-         ${doc.kind.trim()}, ${doc.externalId ?? null},
+         ${doc.datatypeId?.trim() || null}, ${doc.kind.trim()}, ${doc.externalId ?? null},
          ${occurredAt}, ${participants}, ${participantIds}, ${doc.title ?? ''}, ${doc.text ?? ''},
          ${metadata}::jsonb, ${dedupeKeyFor(doc)})
       ON CONFLICT (workspace_id, user_id, source, dedupe_key) DO UPDATE
         SET kind = EXCLUDED.kind,
+            datatype_id = COALESCE(EXCLUDED.datatype_id, documents.datatype_id),
             source_id = COALESCE(EXCLUDED.source_id, documents.source_id),
             provider_account_id = COALESCE(EXCLUDED.provider_account_id, documents.provider_account_id),
             external_id = EXCLUDED.external_id,

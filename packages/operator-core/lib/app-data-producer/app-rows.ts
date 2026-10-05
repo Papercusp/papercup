@@ -37,6 +37,12 @@ import type { ProducerApp } from './owner-mapping';
 export interface ProducerSourceRecord {
   source: string;
   kind: string;
+  /**
+   * Canonical datatype registry id — the ONLY routing key (D-010). Stamped at
+   * ingestion and stored as documents.datatype_id, so push and reconcile route
+   * identically and a non-Google provider's records reach the same app.
+   */
+  datatypeId?: string | null;
   /** Server-owned provider provenance, retained separately from payload metadata. */
   sourceId?: string | null;
   providerAccountId?: string | null;
@@ -47,14 +53,30 @@ export interface ProducerSourceRecord {
   metadata?: Record<string, unknown> | null;
 }
 
-/** Which app owns a given platform `source`. */
-const SOURCE_TO_APP: Record<string, ProducerApp> = {
-  gmail: 'email',
-  calendar: 'calendar',
+/** Which app consumes each canonical datatype (D-010). */
+const APP_BY_DATATYPE: Readonly<Record<string, ProducerApp>> = {
+  'email-message': 'email',
+  'calendar-event': 'calendar',
 };
 
-export function appForSource(source: string): ProducerApp | null {
-  return SOURCE_TO_APP[source.trim().toLowerCase()] ?? null;
+/** The canonical datatype each app consumes; reconcile/status select on it. */
+export const DATATYPE_FOR_APP: Readonly<Record<ProducerApp, string>> = {
+  email: 'email-message',
+  calendar: 'calendar-event',
+};
+
+export function appForDatatype(datatypeId: string | null | undefined): ProducerApp | null {
+  const id = datatypeId?.trim();
+  return id ? APP_BY_DATATYPE[id] ?? null : null;
+}
+
+/**
+ * Stable app-row id: `<sourceId>:<nativeId>` whenever a source id exists, so
+ * two sources reusing a native id stay distinct rows in the app (D-010).
+ */
+export function appRowId(nativeId: string, sourceId?: string | null): string {
+  const sid = sourceId?.trim();
+  return sid ? `${sid}:${nativeId}` : nativeId;
 }
 
 /** The app's sync `sourceRef`, matching each app's own default. */
@@ -84,13 +106,14 @@ function metadataOf(record: ProducerSourceRecord): Record<string, unknown> {
 export function appRowFromSourceRecord(
   record: ProducerSourceRecord,
 ): { app: ProducerApp; row: Record<string, unknown> } | null {
-  const app = appForSource(record.source);
+  const app = appForDatatype(record.datatypeId);
   if (!app) return null;
 
-  const id = record.externalId?.trim();
-  if (!id) {
-    throw new Error(`app_row_external_id_required:${record.source}:${record.kind}`);
+  const nativeId = record.externalId?.trim();
+  if (!nativeId) {
+    throw new Error(`app_row_external_id_required:${record.datatypeId}:${record.kind}`);
   }
+  const id = appRowId(nativeId, record.sourceId);
 
   const metadata = metadataOf(record);
   const occurredAt = isoTime(record.occurredAt);
@@ -99,7 +122,7 @@ export function appRowFromSourceRecord(
     // The app keys messages by `id` and upserts, so `id` is the idempotency
     // key. Everything else the provider normalized rides through untouched;
     // title/text only FILL IN when the payload lacks the field.
-    const row: Record<string, unknown> = { ...metadata, id };
+    const row: Record<string, unknown> = { ...metadata, id, nativeId };
     // Provider provenance is authoritative and arrives on the stored
     // documents columns as well as on live events. Preserve it in the
     // app row as an explicit mailbox object so the email app never has to infer
@@ -141,7 +164,9 @@ export function appRowFromSourceRecord(
   // schema defaults calendarId to 'primary' and its preprocess step already
   // accepts the string `organizer` and string attendees this payload carries,
   // so no reshaping is done here on purpose.
-  const row: Record<string, unknown> = { ...metadata, id };
+  const row: Record<string, unknown> = { ...metadata, id, nativeId };
+  const calendarSourceId = record.sourceId?.trim();
+  if (calendarSourceId && row.sourceId === undefined) row.sourceId = calendarSourceId;
   if (row.summary === undefined && record.title) row.summary = record.title;
   if (row.description === undefined && record.text) row.description = record.text;
   return { app, row };
