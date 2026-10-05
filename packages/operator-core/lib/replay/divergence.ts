@@ -7,9 +7,9 @@
  * differ, never which is better.
  */
 
-import { computeOwnSourceHash } from '../scout/src-hash';
+import { captureSourceHash } from '@papercusp/eval-battery';
 
-export const REPLAY_DIVERGENCE_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
+export const REPLAY_DIVERGENCE_SOURCE_HASH = captureSourceHash(import.meta.url);
 
 export interface DivergenceSignals {
   /** Jaccard similarity of the lowercase token sets (1 = same vocabulary). */

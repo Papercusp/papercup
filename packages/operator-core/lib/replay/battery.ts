@@ -22,6 +22,7 @@ import {
   BASELINE_ID,
   compareArms,
   runBattery,
+  captureSourceHash,
   EVAL_BATTERY_SOURCE_HASHES,
   rubricHash,
   type BatteryCell,
@@ -33,7 +34,6 @@ import {
   type Subject,
 } from '@papercusp/eval-battery';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
-import { computeOwnSourceHash } from '../scout/src-hash';
 import { divergenceSignals, REPLAY_DIVERGENCE_SOURCE_HASH, type DivergenceSignals } from './divergence';
 import { cutTranscript, intentFromTranscript, renderTurns, REPLAY_TRANSCRIPT_SOURCE_HASH } from './transcript';
 import {
@@ -46,8 +46,8 @@ import {
   type ReplayVariant,
 } from './types';
 
-/** Captured when this module loads, never from a later checkout HEAD. */
-export const REPLAY_BATTERY_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
+/** Original native load receipt; unsupported or unobserved loaders stay unknown. */
+export const REPLAY_BATTERY_SOURCE_HASH = captureSourceHash(import.meta.url);
 
 /** The zero-cost historical anchor: echoes the original continuation. */
 export const REPLAY_BASELINE_VARIANT: ReplayVariant = {

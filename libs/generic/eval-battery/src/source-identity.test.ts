@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EVAL_BATTERY_SOURCE_HASHES } from './battery';
-import { captureSourceHash } from './source-identity';
+import { captureSourceHash } from './index';
 
 describe('loaded evaluator source identity', () => {
   it('keeps an existing but unobserved file unknown rather than hashing disk', () => {

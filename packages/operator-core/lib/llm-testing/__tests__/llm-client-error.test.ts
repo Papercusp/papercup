@@ -116,6 +116,9 @@ describe('llmCall backend selection', () => {
     expect(res.inputTokens).toBe(10);
     expect(res.outputTokens).toBe(4);
     expect(res.costUsd).toBeGreaterThan(0);
+    // Vite worker evaluation supplies no native original-load receipt. The
+    // transport must retain unknown code identity even though source exists.
+    expect(res.execution).toMatchObject({ codeHash: null, loadedCode: { llmClient: null } });
 
     vi.unstubAllGlobals();
   });
@@ -178,7 +181,7 @@ describe('llmCall backend selection', () => {
       });
       expect(result.json).toEqual({ ok: true });
       expect(result.execution).toMatchObject({ model, codeHash: null,
-        loadedCode: { llmClient: expect.stringMatching(/^[a-f0-9]{16}$/) },
+        loadedCode: { llmClient: null },
         unresolved: expect.arrayContaining(['gateway-runtime']) });
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally {
@@ -310,7 +313,7 @@ describe('llmCall transport evidence (WI-10005738)', () => {
       expect(result.raw).toMatchObject({ transportDiagnostics: diagnostics, promptSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
       expect(result.text).toBe('ok');
       expect(result.execution).toMatchObject({ model: 'claude-sonnet-4-6', codeHash: null,
-        loadedCode: { llmClient: expect.stringMatching(/^[a-f0-9]{16}$/) },
+        loadedCode: { llmClient: null },
         unresolved: expect.arrayContaining(['agent-chat-runtime', 'transport-runtime']) });
     } finally { diagnostics.length = 0; events.length = 0; }
   });
@@ -345,6 +348,7 @@ describe('llmCall priority default (EI-315: llm-testing lane starvation)', () =>
     expect(result.json).toBeNull();
     expect(result.outputTokens).toBe(300);
     expect(result.stopReason).toBe('max_tokens');
+    expect(result.execution).toMatchObject({ codeHash: null, loadedCode: { llmClient: null } });
   });
 
   it('defaults the anthropic-direct path to the "llm-testing" priority label when the caller sets none', async () => {

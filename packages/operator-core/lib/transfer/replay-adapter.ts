@@ -18,9 +18,8 @@
  * THAT path ledgers the battery spend — the transfer loop ledgers only its
  * own distillation spend, so no battery dollar is ever double-counted.
  */
-import type { JudgeLlmCall } from '@papercusp/eval-battery';
+import { captureSourceHash, type JudgeLlmCall } from '@papercusp/eval-battery';
 import { createHash } from 'node:crypto';
-import { computeOwnSourceHash } from '../scout/src-hash';
 import { adaptTransferOutput } from '../experiment/lifecycle-adapter';
 import type { LearningEvidence } from '../experiment/types';
 import { transferLessonArtifactHash } from './store';
@@ -38,7 +37,7 @@ import {
 import { TRANSFER_LOOP_ID, type TransferLesson, type TransferReplayEvidence, type TransferReplayPort } from './types';
 
 export const WITH_LESSON_VARIANT_ID = 'with-lesson';
-const TRANSFER_ADAPTER_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
+const TRANSFER_ADAPTER_SOURCE_HASH = captureSourceHash(import.meta.url);
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** The cut point for a transfer case: the first ACTING turn (the student

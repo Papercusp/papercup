@@ -36,9 +36,9 @@ import {
 import { readCredentials } from '../credentials';
 import { loopbackFetch } from '../loopback-fetch';
 import { CODEX_LLM_DEFAULT_MODEL, codexWireModel, isCodexModel } from './codex-model-pricing';
-import { computeOwnSourceHash } from '../scout/src-hash';
+import { captureSourceHash } from '@papercusp/eval-battery';
 
-const LLM_CLIENT_SOURCE_HASH = computeOwnSourceHash(import.meta.url);
+const LLM_CLIENT_SOURCE_HASH = captureSourceHash(import.meta.url);
 
 /** Provider label for classifying a backend's error message (labeling only — rate detection is
     status/regex-based, so this never changes the class). */

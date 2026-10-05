@@ -160,9 +160,9 @@ describe('transferReplayPort', () => {
     expect(outcome.evaluation?.experiment.promptHash).toMatch(/^[a-f0-9]{64}$/);
     expect(outcome.evaluation?.experiment.modelHash).toBeNull();
     expect(outcome.evaluation?.loadedCode.evaluator).toMatchObject({
-      replayBattery: expect.stringMatching(/^[a-f0-9]{16}$/),
-      transcript: expect.stringMatching(/^[a-f0-9]{16}$/),
-      divergence: expect.stringMatching(/^[a-f0-9]{16}$/),
+      replayBattery: null,
+      transcript: null,
+      divergence: null,
       // Vite executes these through its worker evaluator, without a native
       // load receipt. Disk snapshots cannot fill their original-source pins.
       engine: null, judge: null, scoring: null, parser: null, ratePause: null,
@@ -293,8 +293,10 @@ describe('transferReplayPort', () => {
     expect(prompt.experiment.promptHash).not.toBe(first.experiment.promptHash);
     expect(task.experiment.taskHash).not.toBe(first.experiment.taskHash);
     expect(task.experiment.promptHash).not.toBe(first.experiment.promptHash);
-    expect(first.loadedCode.adapter).toMatch(/^[a-f0-9]{16}$/);
-    expect(first.loadedCode.battery).toMatch(/^[a-f0-9]{16}$/);
+    // The Vite worker never observed these modules through the native loader.
+    // Existing files and evaluation-time disk hashes cannot witness execution.
+    expect(first.loadedCode.adapter).toBeNull();
+    expect(first.loadedCode.battery).toBeNull();
     expect(first.experiment.codeHash).toBeNull();
     expect(first.reservation).toBeNull();
     expect(first.outcomes.every((cell) => cell.replayed && cell.status === 'scored')).toBe(true);
