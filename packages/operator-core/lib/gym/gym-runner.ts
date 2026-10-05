@@ -49,6 +49,7 @@ export interface GymOracleRun {
       reference: { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> };
       processes: Array<{ schemaVersion: string; scope: string; basis: string; status: string;
         entrypoint: string | null; pid: number; parentPid: number; exitCode: number;
+        isMainThread?: boolean; threadId?: number;
         sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }>;
         reasons: string[]; unresolved: string[] }>;
       unresolved: string[];
