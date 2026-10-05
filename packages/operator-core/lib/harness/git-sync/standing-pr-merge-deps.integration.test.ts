@@ -21,6 +21,8 @@ import {
   type RunSuite,
 } from './standing-pr-merge-deps';
 import { stepStandingPrMerge } from './standing-pr-merge';
+import { makeLiveStandingPrMerge } from './standing-pr-merge-live';
+import type { PotIntegrationModeRead } from './pot-integration-mode';
 
 const ENV = {
   ...process.env,
@@ -262,6 +264,110 @@ describe('stepStandingPrMerge over the real deps (D-008 end to end)', () => {
     const d = makeDeps(memStore());
     const out = await stepStandingPrMerge(input(head, 'f'.repeat(40)), d);
     expect(out).toMatchObject({ action: 'refused', reason: 'pr-head-not-promoted' });
+  });
+});
+
+/**
+ * P-021 end to end: the production entry the poll daemon calls
+ * (makeLiveStandingPrMerge) over REAL git — real promotedSha (the checkout's local
+ * main), real suite-command resolution (the checkout's package.json), real deps and
+ * a real worktree suite run. Only the DB-backed integration-mode read is injected.
+ */
+describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () => {
+  const REVIEW: PotIntegrationModeRead = { mode: 'review', source: 'set' };
+  const DIRECT: PotIntegrationModeRead = { mode: 'direct', source: 'set' };
+
+  function standingPr(head: string): Pr {
+    return { ref: { number: PR_NUMBER }, head_ref: STANDING_PR_BRANCH, base_ref: 'main', head_sha: head, review_decision: 'approved', checks_state: 'success' } as Pr;
+  }
+
+  /** The pot's green gate promoted `head`: the checkout's local main now points at it. */
+  function promoteInCheckout(head: string) {
+    git(deps_repo, 'fetch', '-q', 'origin', `refs/pull/${PR_NUMBER}/head`);
+    git(deps_repo, 'checkout', '-q', '--detach');
+    git(deps_repo, 'update-ref', 'refs/heads/main', head);
+    writeFileSync(join(deps_repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+  }
+
+  function live(integration: PotIntegrationModeRead) {
+    const store = memStore();
+    const tested: string[] = [];
+    const commands: string[] = [];
+    const entry = makeLiveStandingPrMerge({
+      store,
+      resolvers: {
+        repoDir: async () => deps_repo,
+        integration: async () => integration,
+        // The real resolver picked the command from package.json; the real worktree
+        // runner then runs a stand-in suite that passes only when the PR's file is present.
+        runSuite: (command) => {
+          commands.push(command);
+          const real = makeWorktreeSuiteRunner('test -f pr.txt && test -f a.txt');
+          return async (a) => (tested.push(a.sha), real(a));
+        },
+      },
+    });
+    return { entry, tested, commands };
+  }
+
+  const call = (head: string, autoMerge: boolean) => ({
+    workspaceId: 'ws',
+    installSlug: INSTALL,
+    remote: 'owner/repo',
+    pr: standingPr(head),
+    autoMerge,
+    authorRevoked: false,
+  });
+
+  it('auto-merge OFF: left for the owner; the target never advances and nothing is built or tested', async () => {
+    const head = makePrHead();
+    promoteInCheckout(head);
+    const before = git(bare, 'rev-parse', 'main');
+    const { entry, tested, commands } = live(REVIEW);
+    for (let i = 0; i < 2; i += 1) expect(await entry(call(head, false))).toEqual({ action: 'left-for-owner' });
+    expect(git(bare, 'rev-parse', 'main')).toBe(before);
+    expect(git(deps_repo, 'for-each-ref', 'refs/papercusp')).toBe('');
+    expect(tested).toEqual([]);
+    expect(commands).toEqual([]);
+  });
+
+  it('auto-merge ON but not a working-copy pot: left for the owner, target unchanged', async () => {
+    const head = makePrHead();
+    promoteInCheckout(head);
+    const before = git(bare, 'rev-parse', 'main');
+    const { entry, tested } = live(DIRECT);
+    expect(await entry(call(head, true))).toEqual({ action: 'left-for-owner' });
+    expect(git(bare, 'rev-parse', 'main')).toBe(before);
+    expect(tested).toEqual([]);
+  });
+
+  it('auto-merge ON in a working-copy pot: tests the exact merge result, then lands the target on exactly that sha', async () => {
+    const head = makePrHead();
+    promoteInCheckout(head);
+    const before = git(bare, 'rev-parse', 'main');
+    const { entry, tested, commands } = live(REVIEW);
+    const first = await entry(call(head, true));
+    expect(first).toMatchObject({ action: 'testing', reason: 'never-tested' });
+    const mergeSha = (first as { mergeSha: string }).mergeSha;
+    expect(git(bare, 'rev-parse', 'main')).toBe(before);
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, mergeSha));
+    const second = await entry(call(head, true));
+    expect(second).toMatchObject({ action: 'merged', mergeSha });
+    expect(commands[0]).toBe('npm ci && npm test');
+    expect(tested).toEqual([mergeSha]);
+    expect(git(bare, 'rev-parse', 'main')).toBe(mergeSha);
+    expect(git(bare, 'rev-list', '--parents', '-n1', mergeSha).split(' ').slice(1)).toEqual([before, head]);
+  });
+
+  it('auto-merge ON but the checkout main is not the PR head: refused, target unchanged', async () => {
+    const head = makePrHead();
+    const { entry, tested } = live(REVIEW);
+    // Local main still at base: the PR head was never promoted by the pot's green gate.
+    writeFileSync(join(deps_repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+    const before = git(bare, 'rev-parse', 'main');
+    expect(await entry(call(head, true))).toMatchObject({ action: 'refused', reason: 'pr-head-not-promoted' });
+    expect(git(bare, 'rev-parse', 'main')).toBe(before);
+    expect(tested).toEqual([]);
   });
 });
 
