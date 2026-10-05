@@ -293,6 +293,16 @@ describe('runPureLaneProofCapture', () => {
     expect((await run(harness())).evidence.proofs).toBeNull();
   });
 
+  it('does not qualify named rows from a timed-out slice', async () => {
+    const h = namedHarness();
+    h.deps.runSlice = async (s: Slice) => {
+      h.slices.push(s);
+      h.clock.now += 30_000;
+      return { code: 0, signal: null, timedOut: true, spawnError: null };
+    };
+    expect((await run(h)).evidence.proofs).toBeNull();
+  });
+
   it('emits one explicit skip with unknown proof evidence on a dirty tree', async () => {
     const h = harness({ git: (_root: string, args: string[]) => args[0] === 'rev-parse' ? SHA : ' M source.ts' });
     const result = await run(h);
