@@ -27,7 +27,8 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * Optional pgRequestIds bind the existing diagnostic WeakRefs to the SAME
  * preceding snapshot. Optional captureSnapshot runs the caller's snapshot
  * after a bounded selection of metadata and WeakRefs, without dereferencing
- * targets. The selection survives FIFO eviction without retaining results.
+ * targets. Missing phase registrations reject before capture; registrations
+ * do not prove target liveness. The selection survives FIFO eviction without retaining results.
  * The reader itself does not force GC or take a snapshot. A
  * dereference and remote handle temporarily keep a target alive; all handles
  * are released before return. Collected/evicted/unobserved objects stay gaps.
@@ -266,6 +267,14 @@ export type PgHeapObject = {
     status: string;
     id?: number;
 };
+/**
+ * Registration only; target liveness is not observed until after the snapshot.
+ */
+export type PgWeakPhasePresence = {
+    decodedResult: boolean;
+    resolvedRows: boolean;
+    responseValue: boolean;
+};
 export type PgHeapRecord = {
     pool: unknown;
     source: {
@@ -276,6 +285,7 @@ export type PgHeapRecord = {
     connectionId: unknown;
     queryId: unknown;
     requestId: string;
+    weakPhasePresence: PgWeakPhasePresence;
     objects: PgHeapObject[];
 };
 export type FunctionCallTrace = {

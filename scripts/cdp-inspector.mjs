@@ -120,7 +120,8 @@ export async function readProcessMemory(client, { expectedPid, hostFacts = false
  * Optional pgRequestIds bind the existing diagnostic WeakRefs to the SAME
  * preceding snapshot. Optional captureSnapshot runs the caller's snapshot
  * after a bounded selection of metadata and WeakRefs, without dereferencing
- * targets. The selection survives FIFO eviction without retaining results.
+ * targets. Missing phase registrations reject before capture; registrations
+ * do not prove target liveness. The selection survives FIFO eviction without retaining results.
  * The reader itself does not force GC or take a snapshot. A
  * dereference and remote handle temporarily keep a target alive; all handles
  * are released before return. Collected/evicted/unobserved objects stay gaps.
@@ -152,6 +153,11 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
           pgRequestIds.some(id => !selected.records.some(row => row.requestId === id)) ||
           new Set(selected.records.map(row => JSON.stringify(row))).size !== selected.records.length)
         throw new Error('Exact pre-snapshot PG weak selection incomplete or ambiguous');
+      if (selected.records.some(row => ['decodedResult', 'resolvedRows', 'responseValue']
+          .some(phase => row.weakPhasePresence?.[phase] !== true)))
+        throw Object.assign(new Error('Exact pre-snapshot PG weak phases unobserved'), {
+          diagnostic: { kind: 'pg-weak-phase-presence', registryBeforeSnapshot: selected },
+        });
       selection = { objectId: remote.objectId, metadata: selected };
       await captureSnapshot(selected);
     }
@@ -190,9 +196,11 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
 }
 
 /** @typedef {{ phase: string, status: string, id?: number }} PgHeapObject */
+/** Registration only; target liveness is not observed until after the snapshot.
+ * @typedef {{ decodedResult: boolean, resolvedRows: boolean, responseValue: boolean }} PgWeakPhasePresence */
 /** @typedef {{ pool: unknown, source: { processInstanceId: unknown, buildSha: unknown,
  *   poolInstanceId: unknown }, connectionId: unknown, queryId: unknown,
- *   requestId: string, objects: PgHeapObject[] }} PgHeapRecord */
+ *   requestId: string, weakPhasePresence: PgWeakPhasePresence, objects: PgHeapObject[] }} PgHeapRecord */
 /** Extend the existing singleton reader, using only its bounded weak registry. */
 function pgDiagnosticReader(expectedPid, requestIds, key, phase, select) {
   // One data-property-only reader supplies both metadata and exact targets.
@@ -236,19 +244,21 @@ function pgDiagnosticReader(expectedPid, requestIds, key, phase, select) {
               identity.queryId === key.queryId && requestId === key.requestId) matches.push(row);
         } else {
           matched++;
-          if (records.length < 32) records.push(identity);
+          const refs = data(row, 'objectRefs');
+          const weak = name => {
+            const ref = data(refs, name);
+            return ref && !types.isProxy(ref) && Object.getPrototypeOf(ref) === WeakRef.prototype &&
+              Reflect.ownKeys(ref).length === 0 ? ref : undefined;
+          };
+          const objectRefs = { decodedResult: weak('decodedResult'), resolvedRows: weak('resolvedRows'),
+            responseValue: weak('responseValue') };
+          const weakPhasePresence = { decodedResult: !!objectRefs.decodedResult,
+            resolvedRows: !!objectRefs.resolvedRows, responseValue: !!objectRefs.responseValue };
+          if (records.length < 32) records.push({ ...identity, weakPhasePresence });
           if (select && selectedRows.length < 32) {
             // Copy only identity primitives and the existing weak references.
             // Never copy the diagnostic row or dereference a result here.
-            const refs = data(row, 'objectRefs');
-            const weak = name => {
-              const ref = data(refs, name);
-              return ref && !types.isProxy(ref) && Object.getPrototypeOf(ref) === WeakRef.prototype &&
-                Reflect.ownKeys(ref).length === 0 ? ref : undefined;
-            };
-            selectedRows.push({ ...identity, objectRefs: {
-              decodedResult: weak('decodedResult'), resolvedRows: weak('resolvedRows'),
-              responseValue: weak('responseValue') } });
+            selectedRows.push({ ...identity, objectRefs });
           }
         }
       }

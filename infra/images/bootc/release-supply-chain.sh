@@ -45,6 +45,15 @@
 #                        which is indistinguishable from a clean image. 50 suits a full OS image;
 #                        lower it deliberately for a genuinely minimal target, never to get past
 #                        a refusal you have not explained.
+#   --source-commit SHA  the git commit the image was built from, recorded as the SLSA provenance
+#                        sourceCheckout. Required when this script runs outside a git checkout (the
+#                        bake runs it from its build-context snapshot, which is not one); otherwise
+#                        it is read from the checkout this script lives in. A run with no
+#                        resolvable commit refuses BEFORE signing (exit 2): the release trust gate
+#                        refuses any provenance whose sourceCheckout is not a commit id (WI-10006045).
+#   --allow-unpinned-source
+#                        record sourceCheckout "unpinned" instead of refusing (an unpinned local
+#                        test bake). The release trust gate still refuses such an image.
 #   --min-available-packages N
 #                        D-027 positive control (default 1000, env VENDOR_MIN_AVAILABLE_PACKAGES):
 #                        the in-image `dnf check-update` only counts as "the vendor ships nothing
@@ -59,6 +68,7 @@ set -uo pipefail
 
 IMAGE=""; KEY=""; PUBKEY=""; OUTDIR="./.supply-chain-out"
 INSECURE=0; FAIL_ON_VULNS=0; SKIP_SCAN=0; SKIP_SECRET_SCAN=0; MIN_PKGS=50
+SOURCE_COMMIT=""; ALLOW_UNPINNED_SOURCE=0
 MIN_AVAILABLE_PACKAGES="${VENDOR_MIN_AVAILABLE_PACKAGES:-1000}"
 
 while [ $# -gt 0 ]; do
@@ -73,7 +83,9 @@ while [ $# -gt 0 ]; do
     --skip-secret-scan) SKIP_SECRET_SCAN=1; shift;;
     --min-packages) MIN_PKGS="${2:-50}"; shift 2;;
     --min-available-packages) MIN_AVAILABLE_PACKAGES="${2:-1000}"; shift 2;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0;;
+    --source-commit) SOURCE_COMMIT="${2:-}"; shift 2;;
+    --allow-unpinned-source) ALLOW_UNPINNED_SOURCE=1; shift;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0;;
     *) echo "usage error: unknown argument $1" >&2; exit 2;;
   esac
 done
@@ -83,6 +95,27 @@ done
 [ -f "$KEY" ]   || { echo "usage error: key not found: $KEY" >&2; exit 2; }
 [ -n "$PUBKEY" ] || PUBKEY="${KEY%.key}.pub"
 [ -f "$PUBKEY" ] || { echo "usage error: public key not found: $PUBKEY (pass --pubkey)" >&2; exit 2; }
+
+# The commit the image was built from, for the SLSA provenance sourceCheckout. Resolved and
+# validated HERE, before anything is scanned or signed: the bake runs this script from its
+# build-context snapshot, which is not a git checkout, and a `git rev-parse` there used to fall
+# back to the literal "unknown" — which the release trust gate refuses, but only after the whole
+# bake (WI-10006045). An explicit --source-commit wins; otherwise the checkout this script lives in.
+if [ -z "$SOURCE_COMMIT" ]; then
+  SOURCE_COMMIT="$(GIT_OPTIONAL_LOCKS=0 git -C "$(dirname "$0")" rev-parse --verify HEAD 2>/dev/null || true)"
+  SOURCE_COMMIT_FROM="the checkout at $(dirname "$0")"
+else
+  SOURCE_COMMIT_FROM="--source-commit"
+fi
+if [[ "$SOURCE_COMMIT" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+  SRC_SHA="$SOURCE_COMMIT"
+elif [ "$ALLOW_UNPINNED_SOURCE" -eq 1 ]; then
+  SRC_SHA="unpinned"
+else
+  echo "setup error: no source commit for the provenance (from $SOURCE_COMMIT_FROM: '${SOURCE_COMMIT}'). Pass --source-commit <40-hex sha> (the bake passes its pinned build-context commit), or --allow-unpinned-source for an unpinned test bake the release gate will refuse." >&2
+  exit 2
+fi
+echo "SOURCE_COMMIT=$SRC_SHA"
 
 COSIGN_IMG="${COSIGN_IMAGE:-ghcr.io/sigstore/cosign/cosign:v2.4.1}"
 SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
@@ -194,7 +227,7 @@ step "3/6  SLSA v1 provenance predicate"
 # Recorded from the build environment. `sourceCheckout` is the checkout state at build time — it
 # is provenance about the BUILD, not an authorship claim; on this shared, sweep-committed tree a
 # commit's author and subject say nothing reliable about a change (see the repo guide).
-SRC_SHA="$(git -C "$(dirname "$0")" rev-parse HEAD 2>/dev/null || echo unknown)"
+# SRC_SHA was resolved and validated before signing (see the setup block above).
 BASE_IMG="$(sed -n 's/^ARG PAPERCUSP_BASE_IMAGE=//p' "$(dirname "$0")/workspace-host.Containerfile" 2>/dev/null | head -1)"
 [ -n "$BASE_IMG" ] || BASE_IMG="unknown"
 cat > "$OUTDIR/provenance.json" <<PRED

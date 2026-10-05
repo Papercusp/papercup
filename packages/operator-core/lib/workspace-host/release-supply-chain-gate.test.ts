@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -67,6 +67,12 @@ interface GateOptions {
   /** stdout of the in-image `dnf check-update` container (D-027 vendor check). */
   vendorCheckOutput?: string;
   vendorCheckExit?: number;
+  /**
+   * WI-10006045: run a COPY of the script from a directory that is not a git checkout, the way
+   * the bake runs it from its build-context snapshot.
+   */
+  outsideCheckout?: boolean;
+  extraArgs?: string[];
 }
 
 function runGate(matches: unknown[], opts: GateOptions = {}) {
@@ -165,10 +171,19 @@ function runGate(matches: unknown[], opts: GateOptions = {}) {
     { mode: 0o755 },
   );
 
+  let script = SCRIPT;
+  if (opts.outsideCheckout) {
+    const snapshot = join(dir, 'snapshot');
+    mkdirSync(snapshot);
+    script = join(snapshot, 'release-supply-chain.sh');
+    writeFileSync(script, readFileSync(SCRIPT, 'utf8'), { mode: 0o755 });
+  }
+
   const result = spawnSync(
     'bash',
     [
-      SCRIPT,
+      script,
+      ...(opts.extraArgs ?? []),
       '--image',
       'registry.example.com/papercusp/workspace-host:fixture',
       '--key',
@@ -227,6 +242,49 @@ describe('release supply-chain cosign container identity (WI-10005606)', () => {
       expect(call).toContain(expectedUser);
       expect(call).toContain('-e HOME=/tmp');
     }
+  });
+});
+
+describe('release supply-chain provenance source commit (WI-10006045)', () => {
+  const provenance = (out: string) =>
+    JSON.parse(readFileSync(join(out, 'provenance.json'), 'utf8')) as {
+      buildDefinition: { internalParameters: { sourceCheckout: string } };
+    };
+  const COMMIT = 'a'.repeat(40);
+
+  it('records the commit it is handed when it runs outside a git checkout', () => {
+    const result = runGate([], { outsideCheckout: true, extraArgs: ['--source-commit', COMMIT] });
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain(`SOURCE_COMMIT=${COMMIT}`);
+    expect(provenance(result.out).buildDefinition.internalParameters.sourceCheckout).toBe(COMMIT);
+  });
+
+  it('refuses before scanning or signing when it has no commit, instead of recording "unknown"', () => {
+    // Measured 2026-10-03: the bake ran this script from its snapshot, wrote sourceCheckout
+    // 'unknown', and the release trust gate refused the image only after the whole bake.
+    const result = runGate([], { outsideCheckout: true });
+    expect(result.status, result.output).toBe(2);
+    expect(result.output).toContain('no source commit for the provenance');
+    expect(result.podmanCalls).toEqual([]);
+    expect(existsSync(join(result.out, 'provenance.json'))).toBe(false);
+  });
+
+  it('refuses a malformed --source-commit the same way', () => {
+    const result = runGate([], { outsideCheckout: true, extraArgs: ['--source-commit', 'unknown'] });
+    expect(result.status, result.output).toBe(2);
+    expect(result.podmanCalls).toEqual([]);
+  });
+
+  it('records "unpinned" for an explicitly unpinned source', () => {
+    const result = runGate([], { outsideCheckout: true, extraArgs: ['--allow-unpinned-source'] });
+    expect(result.status, result.output).toBe(0);
+    expect(provenance(result.out).buildDefinition.internalParameters.sourceCheckout).toBe('unpinned');
+  });
+
+  it('reads the commit from the checkout it lives in when run in place', () => {
+    const result = runGate([]);
+    expect(result.status, result.output).toBe(0);
+    expect(provenance(result.out).buildDefinition.internalParameters.sourceCheckout).toMatch(/^[0-9a-f]{40}$/);
   });
 });
 

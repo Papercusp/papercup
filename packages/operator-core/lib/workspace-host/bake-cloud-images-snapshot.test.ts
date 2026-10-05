@@ -100,6 +100,8 @@ function runFixture(
   builtContainerfile: string | null;
   /** WI-10005946: "found|missing <path>" — the auditor the supply chain resolved (null: never ran). */
   supplyChainAuditor: string | null;
+  /** WI-10006045: the argv the bake handed the supply chain, one per line (null: never ran). */
+  supplyChainArgs: string[] | null;
   /** WI-10005766: the context directory the fixture baked from, and its HEAD in git mode. */
   context: string;
   contextCommit: string | null;
@@ -360,6 +362,7 @@ HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 ${SECRET_SCAN_AUDITOR_LINE}
 if [ -f "$AUDITOR" ]; then state=found; else state=missing; fi
 printf '%s %s\\n' "$state" "$AUDITOR" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER"
+printf '%s\\n' "$@" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER.args"
 `, { mode: 0o755 });
   chmodSync(join(ctx, 'release-supply-chain.sh'), 0o755);
   writeFileSync(liveContainerfile, 'FROM scratch\n# original fixture Containerfile\n');
@@ -467,6 +470,9 @@ printf '%s %s\\n' "$state" "$AUDITOR" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER"
       : [],
     builtContainerfile: existsSync(builtContainerfilePath) ? readFileSync(builtContainerfilePath, 'utf8') : null,
     supplyChainAuditor: existsSync(supplyChainMarker) ? readFileSync(supplyChainMarker, 'utf8').trim() : null,
+    supplyChainArgs: existsSync(`${supplyChainMarker}.args`)
+      ? readFileSync(`${supplyChainMarker}.args`, 'utf8').split(/\r?\n/).filter(Boolean)
+      : null,
     context: ctx,
     contextCommit,
     out,
@@ -1020,6 +1026,28 @@ describe('bake-cloud-images.sh build-context snapshot (WI-10005766)', () => {
     expect(manifest.buildContext?.commit).toBe(result.contextCommit);
     expect(manifest.buildContext?.pinned).toBe(true);
     expect(result.builtContainerfile).toBe('FROM scratch\n# original fixture Containerfile\n');
+  });
+
+  // WI-10006045: the supply chain runs from the snapshot, which is not a git checkout, so it
+  // cannot read the commit itself. Measured 2026-10-03: every pinned bake recorded provenance
+  // sourceCheckout 'unknown' and the release trust gate refused it after the whole bake.
+  it('hands the supply chain the pinned commit, since the snapshot it runs from is not a git checkout', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { git: 'clean' });
+    expect(result.status, result.output).toBe(0);
+    expect(result.contextCommit).toMatch(/^[0-9a-f]{40}$/);
+    const args = result.supplyChainArgs ?? [];
+    const at = args.indexOf('--source-commit');
+    expect(at, args.join(' ')).toBeGreaterThanOrEqual(0);
+    expect(args[at + 1]).toBe(result.contextCommit);
+    expect(args).not.toContain('--allow-unpinned-source');
+  });
+
+  it('marks an unpinned context as such to the supply chain instead of inventing a commit', () => {
+    const result = runFixture(SOURCE);
+    expect(result.status, result.output).toBe(0);
+    const args = result.supplyChainArgs ?? [];
+    expect(args, args.join(' ')).toContain('--allow-unpinned-source');
+    expect(args).not.toContain('--source-commit');
   });
 
   it('refuses a context with an uncommitted file before anything is built', () => {

@@ -606,6 +606,14 @@ else
   echo "### 3/4 supply chain (sign, attest, SBOM, scan, verify-back)"
   sc_args=(--image "$PINNED" --key "$KEY" --pubkey "$PUBKEY" --out "$OUT/supply-chain")
   [ "$INSECURE" -eq 1 ] && sc_args+=(--insecure-registry)
+  # The supply chain runs from the build-context SNAPSHOT ($HERE), which is not a git checkout,
+  # so it cannot read the commit itself; hand it the commit the snapshot was verified equal to.
+  # An unpinned context has no such commit and its provenance says so (WI-10006045).
+  if [ "$BUILD_CONTEXT_PINNED" -eq 1 ]; then
+    sc_args+=(--source-commit "$BUILD_CONTEXT_COMMIT")
+  else
+    sc_args+=(--allow-unpinned-source)
+  fi
   bash "$HERE/release-supply-chain.sh" "${sc_args[@]}"
   sc_rc=$?
   if [ "$sc_rc" -ne 0 ]; then
