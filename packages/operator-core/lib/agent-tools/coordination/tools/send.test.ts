@@ -3305,6 +3305,24 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
       missingFromBasedOn: ['plan:shipped-feature'],
     });
   });
+
+  it('does not persist an unread-artifact stamp for an issue id embedded in a prerequisite log filename', async () => {
+    mockResolvedTyped(basedOnM, [
+      { ref: 'work-item:EI-25161673334137018', via: 'work_items:get', readAt: '2026-10-05T19:57:57.764Z' },
+    ]);
+    await body({
+      to: ['bee-1'],
+      summary: 'Real-DB fixture prerequisites verified; isolated native7 starting.',
+      body: [{ text: 'Terminal /tmp/ei-251616-holder-fixture-green3.log exit0 proves the fixture controls. Native7 will verify the full acceptance.' }],
+      expects: 'none',
+    });
+
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('completionClaimMismatch');
+    expect(opts.extra?.basedOn).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ref: 'work-item:EI-25161673334137018' }),
+    ]));
+  });
 });
 
 /**
