@@ -130,6 +130,7 @@ import {
   requestedRoleModelFromBootstrap,
   requireOmpRoleMcpJsonPath,
   forkSeedPaths,
+  resolveDirectTrackedResumeSession,
   findUntrackedSession,
   findTrackedCodexHomeRollout,
   sessionOwnersRoot,
@@ -9115,6 +9116,66 @@ describe("findUntrackedSession (resume a non-psu session by searching the agent 
       '{"cwd":"/x"}\n',
     );
     expect(findTrackedCodexHomeRollout(UUID, { home })).toBeNull();
+  });
+});
+
+describe("direct numeric tracked-session recovery (EI-24966472541417677)", () => {
+  const source = {
+    id: 31413,
+    agent: "claude",
+    sessionId: "ef31338b-ef6d-4a88-be7c-5ed60166e718",
+    cwd: "/repo/source",
+    workspaceId: "source-workspace",
+    planSlug: "source-plan",
+    coordOwnerId: "su-original-source",
+  };
+  const recent = { ...source, id: 34304, coordOwnerId: "su-recent" };
+
+  it("keeps a recent tracked source without another server read", async () => {
+    const apiImpl = vi.fn();
+    expect(await resolveDirectTrackedResumeSession([source], "31413", { apiImpl })).toBe(source);
+    expect(apiImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude", "codex", "omp"])(
+    "recovers the exact older %s row instead of treating its adv id as an OMP thread",
+    async (agent) => {
+      const historical = { ...source, agent, ompThreadId: agent === "omp" ? "source-thread" : null };
+      const apiImpl = vi.fn(async () => ({ sessions: [recent, historical] }));
+      const recovered = await resolveDirectTrackedResumeSession([recent], "31413", { apiImpl });
+      expect(apiImpl).toHaveBeenCalledExactlyOnceWith("/api/adv/sessions/resumable?id=31413");
+      expect(recovered).toBe(historical);
+      expect(recovered).toMatchObject({
+        sessionId: source.sessionId,
+        coordOwnerId: source.coordOwnerId,
+        workspaceId: source.workspaceId,
+        planSlug: source.planSlug,
+      });
+    },
+  );
+
+  it.each([
+    { name: "missing", sessions: [] },
+    { name: "different", sessions: [recent] },
+  ])("does not bless a $name exact row", async ({ sessions }) => {
+    const apiImpl = vi.fn(async () => ({ sessions }));
+    expect(await resolveDirectTrackedResumeSession([], "31413", { apiImpl })).toBeNull();
+    expect(apiImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([source.sessionId, "native-omp-thread", "0", "-1", "12.5", "1e3", "9007199254740992"])(
+    "leaves native or invalid adv id %s to its existing guarded path",
+    async (id) => {
+      const apiImpl = vi.fn();
+      expect(await resolveDirectTrackedResumeSession([], id, { apiImpl })).toBeNull();
+      expect(apiImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("propagates an exact-read failure instead of falling through to a raw source", async () => {
+    const apiImpl = vi.fn(async () => { throw new Error("operator unavailable"); });
+    await expect(resolveDirectTrackedResumeSession([], "31413", { apiImpl }))
+      .rejects.toThrow("operator unavailable");
   });
 });
 
