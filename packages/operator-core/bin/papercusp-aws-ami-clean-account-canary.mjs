@@ -105,7 +105,13 @@ function sdkDeps(input, runId) {
     async describeImage(imageId) {
       try {
         const image = (await ec2.send(new DescribeImagesCommand({ ImageIds: [imageId] }))).Images?.[0];
-        return image ? { state: image.State ?? 'unknown', architecture: image.Architecture ?? 'unknown' } : null;
+        return image
+          ? {
+              state: image.State ?? 'unknown',
+              architecture: image.Architecture ?? 'unknown',
+              ...(image.RootDeviceName ? { rootDeviceName: image.RootDeviceName } : {}),
+            }
+          : null;
       } catch (error) {
         if (/InvalidAMIID/.test(errorName(error))) return null;
         throw error;
@@ -120,13 +126,17 @@ function sdkDeps(input, runId) {
         throw error;
       }
     },
-    async runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags }) {
+    async runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags, rootDeviceName, volumeInitializationRateMiBps }) {
       const out = await ec2.send(
         new RunInstancesCommand({
           ImageId: imageId,
           InstanceType: instanceType,
           MinCount: 1,
           MaxCount: 1,
+          // The root mapping inherits the AMI's snapshot; only the initialization rate is set.
+          ...(rootDeviceName && volumeInitializationRateMiBps
+            ? { BlockDeviceMappings: [{ DeviceName: rootDeviceName, Ebs: { VolumeInitializationRate: volumeInitializationRateMiBps } }] }
+            : {}),
           IamInstanceProfile: { Arn: instanceProfileArn },
           NetworkInterfaces: [{ DeviceIndex: 0, SubnetId: subnetId, AssociatePublicIpAddress: false, DeleteOnTermination: true }],
           MetadataOptions: { HttpTokens: 'required', HttpEndpoint: 'enabled' },

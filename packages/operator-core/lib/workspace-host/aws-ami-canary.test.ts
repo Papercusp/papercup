@@ -84,10 +84,12 @@ function fakeDeps(options: FakeOptions = {}) {
       clock += ms;
     },
     callerAccount: async () => options.account ?? ACCOUNT,
-    describeImage: async () => ({ state: 'available', architecture: 'x86_64' }),
+    describeImage: async () => ({ state: 'available', architecture: 'x86_64', rootDeviceName: '/dev/xvda' }),
     describeSubnet: async (subnetId) => ({ subnetId }),
     runInstance: async (input) => {
       calls.push(`run:${input.instanceType}`);
+      // WI-10006110: the AMI-restored root volume is initialized at a fixed rate, not lazily.
+      tagsSeen.push(`root-init:${input.rootDeviceName}@${input.volumeInitializationRateMiBps}`);
       tagsSeen.push(...input.tags.map((tag) => `${tag.Key}=${tag.Value}`));
       state = 'pending';
       return 'i-0abc';
@@ -215,6 +217,17 @@ describe('ssmScriptPlan', () => {
           JOURNAL_CAUSE,
           '[workspace-host-bootstrap] --- native addon inventory under /opt/papercusp/releases/x ---',
           'inventory-noise rocksdb-native.node',
+          '[workspace-host-bootstrap] --- start samples: first, then last (every 10s during systemctl restart) ---',
+          '=== start sample t+0s',
+          'diskstats 259 0 nvme0n1 1200 0 96000 30000',
+          '...',
+          '=== start sample t+120s',
+          '   2506 Dsl  folio_wait_bit_common      110 00:00:06 369168 node serve.mjs',
+          '[workspace-host-bootstrap] --- recent logs under /var/lib/papercusp ---',
+          '## /var/lib/papercusp/embedded-pg/postmaster.log',
+          'LOG:  database system is ready to accept connections',
+          '[workspace-host-bootstrap] --- SELinux denials this boot ---',
+          'audit: avc:  denied { open } selinux-noise',
           '[workspace-host-bootstrap] ERROR: workspace service failed to start',
           '',
         ].join('\n'),
@@ -224,7 +237,33 @@ describe('ssmScriptPlan', () => {
       expect(out.stdout).toContain('Active: failed (Result: exit-code)');
       expect(out.stdout).toContain(JOURNAL_CAUSE);
       expect(out.stdout).not.toContain('inventory-noise');
+      // The start sampler's readings and recent state logs are printed after the addon
+      // inventory, so they need their own extraction (WI-10006110).
+      expect(out.stdout).toContain('=== start sample t+0s');
+      expect(out.stdout).toContain('folio_wait_bit_common');
+      expect(out.stdout).toContain('database system is ready to accept connections');
+      expect(out.stdout).not.toContain('selinux-noise');
       expect(out.stdout).toContain('ERROR: workspace service failed to start');
+
+      // A sampler section larger than its budget keeps its LAST readings.
+      const manySamples = Array.from({ length: 400 }, (_, i) => `=== start sample t+${i * 10}s diskstats nvme0n1 ${i}`);
+      writeFileSync(
+        join(dir, 'out.log'),
+        [
+          '[workspace-host-bootstrap] --- systemctl status svc.service ---',
+          'Active: failed (Result: exit-code)',
+          '[workspace-host-bootstrap] --- native addon inventory under /opt/papercusp/releases/x ---',
+          '[workspace-host-bootstrap] --- start samples: first, then last (every 10s during systemctl restart) ---',
+          ...manySamples,
+          '[workspace-host-bootstrap] --- recent logs under /var/lib/papercusp ---',
+          '',
+        ].join('\n'),
+      );
+      const bounded = run();
+      expect(bounded.status).toBe(0);
+      expect(bounded.stdout).toContain(manySamples.at(-1));
+      expect(bounded.stdout).not.toContain(`${manySamples[0]}\n`);
+      expect(bounded.stdout.length).toBeLessThanOrEqual(DIAGNOSTICS_MAX_CHARS + 2_000);
 
       // No diagnostics section (the bootstrap died earlier): the raw tail is returned instead.
       writeFileSync(join(dir, 'out.log'), 'phase:install-runtime\nmanifest fetch failed\n');
@@ -267,6 +306,7 @@ describe('runAwsAmiCleanAccountCanary', () => {
     expect(proof.evidenceRef).toMatch(/^aws-ami-canary:i-0abc:[0-9a-f]{32}$/);
     expect(calls).toEqual(['run:t3.medium', 'terminate', 'census:run0001']);
     expect(tagsSeen).toContain(`${CANARY_RUN_TAG}=run0001`);
+    expect(tagsSeen).toContain('root-init:/dev/xvda@300');
   });
 
   it('never launches when the assumed identity is not the clean account', async () => {
