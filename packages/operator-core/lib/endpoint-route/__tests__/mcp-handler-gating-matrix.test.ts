@@ -72,6 +72,7 @@ const h = vi.hoisted(() => {
     fakeTx,
     fakeSql,
     nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
+    nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
@@ -347,12 +348,15 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   },
 }));
 vi.mock('../../adv-sessions', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
+  const actual = await importOriginal<typeof import('../../adv-sessions')>();
   return {
     ...actual,
     workspaceForCoordOwner: h.workspaceForCoordOwner,
     classifyOwnerNativeSession: async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
       h.nativeSessionCalls.push({ ownerId, sessionId });
+      if (h.nativeSessionRows) {
+        return actual.classifyOwnerNativeSessionRows(h.nativeSessionRows.get(ownerId) ?? [], sessionId);
+      }
       return {
         binding: h.nativeSessionBinding,
         boundSessionId: h.nativeSessionBinding === 'foreign' ? 'native-parent' : h.nativeSessionBinding === 'bound' ? sessionId : null,
@@ -1750,6 +1754,7 @@ beforeEach(() => {
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
   h.nativeSessionBinding = 'unbound';
+  h.nativeSessionRows = null;
   h.nativeSessionCalls.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
@@ -4885,5 +4890,65 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(res.isError).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx.uiClientId).toBe('transport-only-id');
+  });
+});
+
+describe('isolated consult native identity guard (get-feedback D-006)', () => {
+  it.each([
+    { sourceBackend: 'claude', targetBackend: 'claude', operation: 'fork' },
+    { sourceBackend: 'claude', targetBackend: 'codex', operation: 'convert' },
+    { sourceBackend: 'codex', targetBackend: 'claude', operation: 'convert' },
+  ])('$sourceBackend → $targetBackend $operation rejects source identity before dispatch while both owners remain usable', async ({ sourceBackend, targetBackend }) => {
+    const sourceOwner = 'su-consult-source';
+    const answeringOwner = 'su-consult-answerer';
+    const sourceNative = 'native-consult-source';
+    const answeringNative = 'native-consult-answerer';
+    // Use the production row classifier, not a preselected "foreign" verdict.
+    // The transport must bind each call to its owner's actual native row.
+    h.nativeSessionRows = new Map([
+      [sourceOwner, [{ id: 541, session_id: sourceNative, active: true }]],
+      [answeringOwner, [{ id: 542, session_id: answeringNative, active: true }]],
+    ]);
+    const caller = (owner: string, native: string, backend: string) => superuserExtra(
+      `&workspace=ws-test&client=${owner}${backend === 'claude' ? `&native_session=${native}` : ''}`,
+      backend === 'codex' ? { 'x-papercusp-native-session': native } : {},
+    );
+
+    // Independent source work is valid even during a consult window.
+    const sourceCall = await callTool('gatingtest:scoped', {}, caller(sourceOwner, sourceNative, sourceBackend));
+    expect(sourceCall.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 541 });
+
+    // A claim followed by a release could leave identical census endpoints.
+    // Neither nested call may reach even the existing dispatcher witness when
+    // the answerer's native session presents the source's coordination SID.
+    for (const action of ['claim', 'release']) {
+      const attempted = await callTool(
+        'tools:invoke',
+        { name: 'gatingtest:scoped', args: { action, id: 'WI-source-claim' } },
+        caller(sourceOwner, answeringNative, targetBackend),
+      );
+      expect(attempted.isError).toBe(true);
+      expect(textOf(attempted)).toBe('request_rejected: superuser_foreign_native_session');
+      expect(seen).toHaveLength(1);
+      expect(h.invocations.at(-1)).toMatchObject({
+        status: 'error',
+        errorCode: 'mcp_auth_failed',
+        errorMessage: 'superuser_foreign_native_session',
+        metadataJson: { mcpAuthFailure: { nativeSession: { candidateAdvSessionId: 541 } } },
+      });
+    }
+
+    const answerCall = await callTool('gatingtest:scoped', {}, caller(answeringOwner, answeringNative, targetBackend));
+    expect(answerCall.isError).toBeUndefined();
+    expect(seen).toHaveLength(2);
+    expect(seen[1].ctx).toMatchObject({ uiClientId: answeringOwner, advSessionId: 542 });
+    expect(h.nativeSessionCalls).toEqual([
+      { ownerId: sourceOwner, sessionId: sourceNative },
+      { ownerId: sourceOwner, sessionId: answeringNative },
+      { ownerId: sourceOwner, sessionId: answeringNative },
+      { ownerId: answeringOwner, sessionId: answeringNative },
+    ]);
   });
 });

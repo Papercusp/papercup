@@ -246,9 +246,9 @@ export interface ConsultDispatchResult {
    * its responder, so the answering session's first `consult:reply` has a
    * participant gate to pass.
    *
-   * A FORK is a genuinely new session, so this is a freshly pre-pinned id. A
-   * CONVERT continues the source's identity onto the other backend (the session
-   * port's authority-continuity invariant), so this is the source's own id.
+   * Both FORK and CONVERT use an independent, freshly pre-pinned answering id.
+   * CONVERT ports the source's evidence into that isolated session; it does
+   * not transfer the source's coordination identity or claims.
    * Either way the caller writes what it is TOLD, never what it assumed.
    */
   answeringOwnerId: string | null;
