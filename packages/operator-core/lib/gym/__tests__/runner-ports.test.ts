@@ -169,6 +169,7 @@ describe('createGymRunnerPorts', () => {
         execution: { cwd: clonePath, report,
           command: ['npm', 'run', 'test:file', '--', 'oracle.test.js', '--', '--reporter=json', expect.stringMatching(/^--outputFile=/)],
           unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+            'oracle-main-process-load-unmeasured',
             'oracle-config-original-load-unmeasured', 'oracle-config-snapshot-evidence-unavailable',
             'oracle-npm-manifest-evidence-unavailable', 'oracle-worker-source-evidence-unavailable'], workerSources: { report: null, modules: [] } },
       });
