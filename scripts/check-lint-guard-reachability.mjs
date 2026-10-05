@@ -1494,14 +1494,7 @@ function buildCorpora() {
  * file, and reading the whole file would silently over-credit unrelated guards.
  */
 export function parseRepoWideRegistrations(affectedTestsSource) {
-  const text = String(affectedTestsSource);
-  const start = text.indexOf('const REPO_WIDE_INVARIANT_GUARDS');
-  if (start < 0) return new Set();
-  const block = text.slice(start);
-  const end = block.indexOf('\n];');
-  return new Set(
-    [...block.slice(0, end < 0 ? undefined : end).matchAll(/script:\s*['"]([^'"]+)['"]/g)].map((m) => m[1]),
-  );
+  return new Set(parseRepoWideRegistrationPairs(affectedTestsSource).map(({ script }) => script));
 }
 
 /**
@@ -1512,17 +1505,50 @@ export function parseRepoWideRegistrations(affectedTestsSource) {
  * a prose mention of a script name would otherwise be parsed as a registration.
  */
 export function parseRepoWideRegistrationPairs(affectedTestsSource) {
-  const text = String(affectedTestsSource);
-  const start = text.indexOf('const REPO_WIDE_INVARIANT_GUARDS');
-  if (start < 0) return [];
-  const block = text.slice(start);
-  const end = block.indexOf('\n];');
-  const body = block.slice(0, end < 0 ? undefined : end).replace(/^\s*\/\/.*$/gm, '');
+  const source = ts.createSourceFile(
+    'affected-tests.mjs',
+    String(affectedTestsSource ?? ''),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const constants = new Map();
+  const pathImports = { named: new Set(), namespaces: new Set() };
+  let registrations = null;
+
+  // Resolve module-level static strings the same way the execution-evidence parser does.
+  // Runtime registrations may name a script through a constant instead of repeating a
+  // literal; source-text matching silently missed those live entries (EI-24958947185653426).
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      if (
+        declaration.name.text === 'REPO_WIDE_INVARIANT_GUARDS' &&
+        ts.isArrayLiteralExpression(declaration.initializer)
+      ) {
+        registrations = declaration.initializer;
+      }
+      const values = staticStringValues(declaration.initializer, constants, pathImports);
+      if (values.length) constants.set(declaration.name.text, values);
+    }
+  }
+  if (!registrations) return [];
+
   const pairs = [];
-  for (const chunk of body.split(/\n\s{2}\{/)) {
-    const ws = /workspace:\s*['"]([^'"]+)['"]/.exec(chunk);
-    const sc = /script:\s*['"]([^'"]+)['"]/.exec(chunk);
-    if (ws && sc) pairs.push({ workspace: ws[1], script: sc[1] });
+  for (const entry of registrations.elements) {
+    if (!ts.isObjectLiteralExpression(entry)) continue;
+    const properties = new Map();
+    for (const property of entry.properties) {
+      if (!ts.isPropertyAssignment(property)) continue;
+      const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
+        ? property.name.text
+        : null;
+      if (name === 'workspace' || name === 'script') properties.set(name, property.initializer);
+    }
+    const workspace = staticStringValues(properties.get('workspace'), constants, pathImports)[0];
+    const script = staticStringValues(properties.get('script'), constants, pathImports)[0];
+    if (workspace && script) pairs.push({ workspace, script });
   }
   return pairs;
 }

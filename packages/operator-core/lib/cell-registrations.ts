@@ -1933,6 +1933,41 @@ export const LSP_ADMISSION_CELL: CellSpec = {
   shape: '{ queued, inFlight, classes[{ classKey, queued, pendingPersistence, oldestWaitMs, desiredWindow, effectiveWindow, health, feedback }], settlementFailures, measured, sampledAtMs, generation }',
 };
 
+/** Reuse the daemon lens; readiness is not inferred from an empty queue or process health. */
+export const LSP_WARM_SERVERS_CELL: CellSpec = {
+  ...LSP_ADMISSION_CELL,
+  cell: 'lsp.warmServers',
+  registeredOn: '2026-10-05',
+  headline: 'runtime',
+  unknownHoist: 'runtimeUnknown',
+  provenance: {
+    obtainedBy: 'daemon health RPC → lspHealth() → lspClientInventory(), including the owning PID and measurement timestamp',
+    liveExercised: false,
+    evidence: 'state/lsp-admission.test.ts rejects stale/failed health readback independently of the admission queue.',
+  },
+  resolver: 'lsp:admission_snapshot → readLspDaemonHealth → lspClientInventory()',
+  assessment: {
+    path: 'runtimeAssessment',
+    codes: {
+      healthy: { meaning: 'The measured server processes are healthy; this does not certify any query intent.', safeAction: 'Read lsp.readiness before interpreting absence or completeness.' },
+      degraded: { meaning: 'At least one server process is degraded.', safeAction: 'Inspect its task identity and proof ledger.' },
+      unhealthy: { meaning: 'At least one server process is unhealthy.', safeAction: 'Inspect its actual failure before relying on answers.' },
+      unknown: { meaning: 'No enabled warm population could be established.', safeAction: 'Inspect runtimeUnknown and the enabled flag; do not infer zero servers.' },
+    },
+    evidence: ['runtimeMeasurement'],
+  },
+  changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'runtime' },
+  shape: '{ enabled, overall, pid, node, entry, sampledAtMs, servers[{ language, rootPath, taskId, pid, health, certifiedReadiness, unprovenReadiness, pendingProgress, progressGeneration }] }',
+};
+
+export const LSP_READINESS_CELL: CellSpec = {
+  ...LSP_WARM_SERVERS_CELL,
+  cell: 'lsp.readiness',
+  headline: 'readiness',
+  changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'readiness' },
+  shape: '[{ language, rootPath, taskId, certified, unproven, quiescent, pendingProgress, progressGeneration }]; process health never promotes an intent proof',
+};
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * goal-mode-drift-guards-2026-08-31 P-002 — IS THE STEWARD PLACING ANYTHING?
  *
@@ -2856,6 +2891,8 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GOVERNOR_RESOURCES_CELL,
   GOVERNOR_RECOVERY_CELL,
   LSP_ADMISSION_CELL,
+  LSP_WARM_SERVERS_CELL,
+  LSP_READINESS_CELL,
   CAPACITY_VERDICT_CELL,
   ROLE_LAUNCH_CELL,
   WORK_SCOPE_CELL,

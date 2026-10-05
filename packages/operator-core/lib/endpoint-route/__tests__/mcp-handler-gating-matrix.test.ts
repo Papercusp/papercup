@@ -4909,8 +4909,11 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
       [sourceOwner, [{ id: 541, session_id: sourceNative, active: true }]],
       [answeringOwner, [{ id: 542, session_id: answeringNative, active: true }]],
     ]);
+    // Match this PG-free suite's existing native-incarnation controls. A
+    // concrete workspace additionally requires a persisted kernel launch row,
+    // which this transport fixture does not provide or claim to verify.
     const caller = (owner: string, native: string, backend: string) => superuserExtra(
-      `&workspace=ws-test&client=${owner}${backend === 'claude' ? `&native_session=${native}` : ''}`,
+      `&client=${owner}${backend === 'claude' ? `&native_session=${native}` : ''}`,
       backend === 'codex' ? { 'x-papercusp-native-session': native } : {},
     );
 

@@ -79,7 +79,7 @@ export async function dispatchLspDaemonRequest(
   evidence.respondedAtMs = lspEvidenceNow();
   return { ...answer, daemonEvidence: evidence,
     ...(request.op === 'health' ? { daemonRuntime: { ...await lspHealth(), pid: process.pid,
-      node: process.version, entry: import.meta.url } } : {}) };
+      node: process.version, entry: import.meta.url, sampledAtMs: lspEvidenceNow() } } : {}) };
 }
 
 /** Start once per host; all cluster workers address the primary's pinned socket. */

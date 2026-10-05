@@ -26,7 +26,8 @@
  * loops, and dynamic `EXECUTE format(...)` across many files — grepping the SQL is
  * brittle. Mirroring the sibling stamp-coverage guard, this migrates an empty DB
  * 000-baseline → head through the REAL boot-path runner and introspects
- * `pg_trigger` joined on `proname='emit_change_notify'`, so a new mapped table that
+ * active `pg_trigger` producers (the generic notifier or the tested dependency
+ * notifier for work_item_deps), so a new mapped table that
  * forgets the trigger trips it automatically — no test edit needed.
  *
  * WHAT IT ASSERTS
@@ -35,7 +36,7 @@
  * can't drift from the source of truth:
  *
  *   Every `harness_shared.<table>` key in TABLE_TO_QUERY_NAMES MUST have the
- *   emit_change_notify trigger — UNLESS the table is in `COVERAGE_EXEMPT` with a
+ *   active recognized notification producer — UNLESS the table is in `COVERAGE_EXEMPT` with a
  *   documented reason.
  *
  * The core check is an EXACT set-equality (not a subset), which has teeth in three
@@ -212,7 +213,7 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
     expect((await notifyTriggerTables()).has('work_item_deps')).toBe(true);
   });
 
-  it('every TABLE_TO_QUERY_NAMES table has emit_change_notify, except the documented COVERAGE_EXEMPT set', async () => {
+  it('every TABLE_TO_QUERY_NAMES table has an active producer, except the documented COVERAGE_EXEMPT set', async () => {
     const withTrigger = await notifyTriggerTables();
 
     const missing = requiredTables.filter((t) => !withTrigger.has(t)).sort();

@@ -681,6 +681,21 @@ describe('parseRepoWideRegistrations', () => {
     expect(parseRepoWideRegistrations(src).has('lint:not-registered')).toBe(false);
   });
 
+  it('resolves a static constant used by a live repo-wide registration', () => {
+    const constantBacked = [
+      "const AUTHORED_DOC_GUARD_SCRIPT = 'gen:authored-docs:check';",
+      'const REPO_WIDE_INVARIANT_GUARDS = [',
+      "  { workspace: '@papercusp/operator-core', script: AUTHORED_DOC_GUARD_SCRIPT },",
+      '];',
+      "const unrelated = { script: 'lint:not-registered' };",
+    ].join('\n');
+
+    expect([...parseRepoWideRegistrations(constantBacked)]).toEqual(['gen:authored-docs:check']);
+    expect(parseRepoWideRegistrationPairs(constantBacked)).toEqual([
+      { workspace: '@papercusp/operator-core', script: 'gen:authored-docs:check' },
+    ]);
+  });
+
   it('returns an empty set when the block is absent, never a crash', () => {
     expect(parseRepoWideRegistrations('const x = 1;').size).toBe(0);
   });

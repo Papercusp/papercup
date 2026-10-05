@@ -30,7 +30,7 @@ export interface LspDaemonRequest {
 export interface LspDaemonAnswer extends CodeIntelAnswer {
   readonly daemonEvidence?: LspQueryEvidence;
   /** Complete existing health inventory at archive boundaries; never clipped into sites. */
-  readonly daemonRuntime?: Awaited<ReturnType<typeof lspHealth>> & { pid: number; node: string; entry: string };
+  readonly daemonRuntime?: Awaited<ReturnType<typeof lspHealth>> & { pid: number; node: string; entry: string; sampledAtMs: number };
 }
 
 /** Internal read/refresh operations used by the operator's locked rename writer. */

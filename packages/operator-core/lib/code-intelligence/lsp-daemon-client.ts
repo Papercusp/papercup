@@ -119,6 +119,15 @@ export function callLspDaemonRpc(socketPath: string, request: LspDaemonRequest, 
     timeoutMs, requestId);
 }
 
+/** Full daemon-owned inventory via the existing health operation, not local adapter state. */
+export async function readLspDaemonHealth(workspaceId: string): Promise<NonNullable<LspDaemonAnswer['daemonRuntime']>> {
+  await ensureLspDaemon();
+  const answer = await callLspDaemonRpc(resolveLspDaemonSocketPath(), { op: 'health', args: {}, workspaceId, archive: true }, 10_000);
+  if (!answer.daemonRuntime || !Number.isFinite(answer.daemonRuntime.sampledAtMs))
+    throw new Error('daemon health inventory unavailable; reload the owning runtime');
+  return answer.daemonRuntime;
+}
+
 /** The operator observes the daemon's live controller, never its own singleton. */
 export async function readLspDaemonAdmission(workspaceId: string): Promise<LspAdmissionSnapshot> {
   if (!workspaceId) throw new Error('LSP admission workspaceId is required');

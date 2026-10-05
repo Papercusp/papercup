@@ -33,7 +33,7 @@ vi.mock('../resource-governor/execution', async importOriginal => {
 });
 
 import { runLspDaemonServer } from './lsp-daemon-server';
-import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
+import { callLspDaemonRpc, readLspDaemonAdmission, readLspDaemonHealth } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { lspClientInventory, resolveServerBin, shutdownAllLspClients } from './lsp-adapter';
 import { corpusCase } from './acceptance-corpus';
@@ -102,6 +102,10 @@ describe('daemon admission against the pinned TypeScript server', () => {
     expect(inventory).toHaveLength(1);
     expect(inventory[0].taskId).toBeTruthy();
     expect(inventory[0].health).toBe('healthy');
+    const owningHealth = await readLspDaemonHealth(workspaceId);
+    expect(owningHealth).toMatchObject({ pid: process.pid, sampledAtMs: expect.any(Number),
+      servers: [{ taskId: inventory[0].taskId, pid: inventory[0].pid, certifiedReadiness: expect.any(Array),
+        unprovenReadiness: expect.any(Array), progressGeneration: expect.any(Number) }] });
     for (const [index, answer] of answers.entries()) {
       expect(answer.daemonEvidence!.requestId).toBe(`pinned/agent-${index}`);
       const wire = answer.daemonEvidence!.wire.filter(row => row.method === 'textDocument/definition');

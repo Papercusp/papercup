@@ -223,6 +223,8 @@ describe('P-007: the four verdict cells', () => {
       'governor.resources',
       'host.memoryPressure',
       'lsp.admission',
+      'lsp.readiness',
+      'lsp.warmServers',
       'memory.cgroupAttribution',
       // directive-visibility-and-ownership-2026-09-22 P-007: "what is owed on directive N,
       // and by whom". Nullable on purpose — an id that does not exist in this workspace has

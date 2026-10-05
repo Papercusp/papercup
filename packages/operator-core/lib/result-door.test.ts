@@ -495,7 +495,13 @@ describe('applyResultDoor', () => {
     expect(tieredBody._projection.omittedCount).toBeGreaterThan(0);
     const visibleRatings = tieredBody.rows?.[0]?.ratings ?? {};
     const missingRatings = criteria.filter((criterion) => !Object.prototype.hasOwnProperty.call(visibleRatings, criterion));
-    if (missingRatings.length > 0) expect(tieredBody._projection.omittedCount).toBeGreaterThan(0);
+    expect(missingRatings.length).toBeGreaterThan(0);
+    expect(visibleRatings._partial).toBe(true);
+    expect(tieredBody._projection.omitted).toContainEqual(expect.objectContaining({
+      path: `$.rows[0].ratings.${missingRatings[0]}`,
+      reason: 'remaining fields omitted to fit projection budget',
+    }));
+    expect(tieredBody._projection.omittedCount).toBeGreaterThanOrEqual(missingRatings.length);
 
     const doored = applyResultDoor(
       {

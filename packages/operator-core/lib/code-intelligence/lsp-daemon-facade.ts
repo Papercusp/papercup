@@ -323,16 +323,8 @@ export interface LspHealthReport {
   enabled: boolean;
   /** Worst health across live servers; 'unknown' when none are running. */
   overall: BackendHealth;
-  servers: Array<{
-    language: LspLanguage;
-    rootPath: string;
-    /** The ONLY safe kill handle. Never kill a language server by name. */
-    taskId: string;
-    health: BackendHealth;
-    coldStartMs: number;
-    openDocs: number;
-    pid: number | null;
-  }>;
+  /** Includes the adapter's per-intent proof ledger and actual progress state. */
+  servers: ReturnType<typeof lspClientInventory>;
   /** Which pinned servers are provisioned at all (P-007). */
   provisioned: Record<LspLanguage, boolean>;
 }
