@@ -297,6 +297,8 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       const sourceReportPath = `${reportPath}.sources.json`;
       const sourceReporter = join(clonePath, 'libs/test-config/src/executed-source-map-reporter.ts');
       const hasSourceReporter = existsSync(sourceReporter);
+      const configLoadCapture = join(clonePath, 'libs/test-config/src/executed-config-load-capture.ts');
+      const hasConfigLoadCapture = existsSync(configLoadCapture);
       const command = ['npm', 'run', 'test:file', '--', testPath, '--', '--reporter=json', `--outputFile=${reportPath}`];
       // Reuse framework collection-time fingerprints. A source map is diagnostic
       // even for a failing or dirty oracle; it must never create reusable passes.
@@ -308,6 +310,8 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           command[0], command.slice(1),
           { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
             env: { ...process.env, PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle',
+              ...(hasConfigLoadCapture ? { PC_EXECUTED_SOURCE_MAP_PRELOAD: '1',
+                NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(configLoadCapture).href}` } : {}),
               PC_EXECUTED_SOURCE_MAP_OUT: sourceReportPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' } },
         );
         exitCode = 0;
@@ -327,6 +331,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         let sourceReport: string | null = null;
         let modules: NonNullable<NonNullable<GymOracleRun['execution']>['workerSources']>['modules'] = [];
         let configEvidence: NonNullable<NonNullable<GymOracleRun['execution']>['configSources']>['evidence'] = null;
+        let configLoaded: NonNullable<NonNullable<GymOracleRun['execution']>['configSources']>['loaded'] = null;
         // Keep the raw report even if it is malformed; do not rebuild original
         // module hashes from a later checkout when the reporter is unavailable.
         try { sourceReport = readFileSync(sourceReportPath, 'utf8'); } catch { /* unknown */ }
@@ -334,6 +339,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           const parsed = sourceReport && JSON.parse(sourceReport);
           if (Array.isArray(parsed?.diagnostics)) modules = parsed.diagnostics;
           if (parsed?.configSources && typeof parsed.configSources === 'object') configEvidence = parsed.configSources;
+          if (parsed?.configLoadedSources && typeof parsed.configLoadedSources === 'object') configLoaded = parsed.configLoadedSources;
         } catch { /* retain malformed raw source report */ }
         const sourcePaths = new Set(modules.flatMap((module) =>
           Array.isArray(module?.sourceEvidence?.sources) ? module.sourceEvidence.sources
@@ -358,9 +364,9 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
               pinned: manifestPinned, before: manifestBefore, after: manifestAfter,
             } },
             workerSources: { report: sourceReport, modules, reference: { pinCommit, sources: referenceSources } },
-            configSources: { evidence: configEvidence, reference: { pinCommit, sources: configReferenceSources } },
+            configSources: { evidence: configEvidence, loaded: configLoaded, reference: { pinCommit, sources: configReferenceSources } },
             unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
-              'oracle-config-original-load-unmeasured',
+              ...(!configLoaded || configLoaded.status === 'unknown' ? ['oracle-config-original-load-unmeasured'] : []),
               ...(!configEvidence || configReferenceSources.length === 0 ? ['oracle-config-snapshot-evidence-unavailable'] : []),
               ...(configReferenceSources.some(source => source.sha256 === null) ? ['oracle-config-reference-unavailable'] : []),
               ...(manifestUnknown ? ['oracle-npm-manifest-evidence-unavailable'] :
