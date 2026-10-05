@@ -437,7 +437,224 @@ function listenerPorts(pid: number) {
     })))];
 }
 
+// Extend the existing counter selector: a scalar keeps its historical meaning;
+// an explicit bounded list selects several targets without changing the fleet.
+function parseCounterPids(raw: string | undefined, mainPid: number): number[] {
+  const parsed = raw?.trim().startsWith('[') ? JSON.parse(raw) : [Number(raw ?? mainPid)];
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 8 ||
+      parsed.some(pid => !Number.isSafeInteger(pid) || pid <= 0) || new Set(parsed).size !== parsed.length) {
+    throw Error('Counter selection requires one scalar PID or at most eight distinct integer PIDs');
+  }
+  return parsed;
+}
+
+function selectCounterTargets(main: ResourceRow, pids: number[], sample = processSample) {
+  const ancestry = new Map<number, ResourceRow>();
+  for (const pid of pids) {
+    const seen = new Set<number>();
+    let ancestor = pid;
+    while (ancestor !== main.pid) {
+      if (ancestor <= 1 || seen.size >= 16 || seen.has(ancestor)) throw Error('Initial counter-target ancestry cap or unrelated target');
+      seen.add(ancestor);
+      const row = ancestry.get(ancestor) ?? sample(ancestor);
+      ancestry.set(ancestor, row); ancestor = row.parentPid;
+    }
+  }
+  return pids.map(pid => counterTarget(main, [...ancestry.values()], pid));
+}
+
+type InspectorConnection = { client: ReturnType<typeof createCdpClient>; port: number };
+type InspectorLease = { target: ResourceRow; connection?: InspectorConnection; openedByProbe: boolean };
+type InspectorEffects = {
+  sample: typeof processSample;
+  attach: (pid: number) => Promise<InspectorConnection | undefined>;
+  open: (pid: number) => void;
+  wait: () => Promise<unknown>;
+  close: (connection: InspectorConnection) => Promise<unknown>;
+};
+const inspectorEffects: InspectorEffects = {
+  sample: processSample,
+  attach: async pid => {
+    for (const port of listenerPorts(pid).filter(value => value !== 3170)) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(500) });
+        if (!response.ok) continue;
+        const target = (await response.json()).find((row: any) => row.type === 'node' && row.webSocketDebuggerUrl);
+        if (!target) continue;
+        const client = createCdpClient(target.webSocketDebuggerUrl);
+        try { await client.connect(); await readProcessMemory(client, { expectedPid: pid }); }
+        catch (error) { client.close(); throw error; }
+        return { client, port };
+      } catch { /* A different PID-bound listener is not a Node inspector. */ }
+    }
+    return undefined;
+  },
+  open: pid => process.kill(pid, 'SIGUSR1'),
+  wait: () => wait(250),
+  close: connection => closeInspector(connection.client, connection.port),
+};
+
+function assertInspectorTarget(target: ResourceRow, current: ResourceRow) {
+  assertIdentity(target, current);
+  if (target.parentPid !== current.parentPid || target.command.sha256 !== current.command.sha256 ||
+      target.command.script !== current.command.script) throw Error('Inspector target entry or ancestry changed');
+}
+
+// Record ownership before acquisition can fail, so finally can recover a
+// partially opened set. Never close an inspector which existed before us.
+async function acquireTargetInspectors(targets: ResourceRow[], leases: InspectorLease[], effects = inspectorEffects) {
+  for (const target of targets) {
+    assertInspectorTarget(target, effects.sample(target.pid));
+    const lease: InspectorLease = { target, openedByProbe: false };
+    leases.push(lease);
+    lease.connection = await effects.attach(target.pid);
+    assertInspectorTarget(target, effects.sample(target.pid));
+    if (!lease.connection) {
+      effects.open(target.pid); lease.openedByProbe = true;
+      for (let attempt = 0; attempt < 20 && !lease.connection; attempt++) {
+        await effects.wait();
+        assertInspectorTarget(target, effects.sample(target.pid));
+        lease.connection = await effects.attach(target.pid);
+      }
+    }
+    if (!lease.connection) throw Error('PID-bound inspector unavailable for selected target ' + target.pid);
+    assertInspectorTarget(target, effects.sample(target.pid));
+  }
+}
+
+async function releaseTargetInspectors(leases: InspectorLease[], effects = inspectorEffects) {
+  const results: { pid: number; openedByProbe: boolean; result?: unknown; error?: string }[] = [];
+  for (const lease of [...leases].reverse()) {
+    const row: typeof results[number] = { pid: lease.target.pid, openedByProbe: lease.openedByProbe };
+    try {
+      assertInspectorTarget(lease.target, effects.sample(lease.target.pid));
+      // Retry discovery after a partial acquisition, without signalling again.
+      if (!lease.connection && lease.openedByProbe) lease.connection = await effects.attach(lease.target.pid);
+      assertInspectorTarget(lease.target, effects.sample(lease.target.pid));
+      if (lease.openedByProbe) {
+        if (!lease.connection) throw Error('Probe-opened inspector cleanup remains unobserved');
+        row.result = await effects.close(lease.connection);
+      } else row.result = { preservedPreexisting: true };
+      assertInspectorTarget(lease.target, effects.sample(lease.target.pid));
+    } catch (error) { row.error = String(error); }
+    finally {
+      try { lease.connection?.client.close(); }
+      catch (error) { row.error = (row.error ? row.error + '; ' : '') + 'Detach failed: ' + String(error); }
+      results.push(row);
+    }
+  }
+  return results;
+}
+
 describe('actual current-build operator memory baseline', () => {
+  describe('sampler target inspector lifecycle', () => {
+    const target = (pid: number): ResourceRow => ({ pid, parentPid: 1, startTicks: String(pid),
+      executable: '/node', executableSha256: 'a'.repeat(64),
+      command: { script: '/runtime/hono-host.mjs', sha256: 'x', esbuildService: false },
+      pssBytes: 1000, rssBytes: 2000, anonymousBytes: 800 });
+    const setup = () => {
+      const targets = [target(11), target(12)], leases: InspectorLease[] = [];
+      const signalled: number[] = [], closed: number[] = [], detached: number[] = [];
+      const connection = (pid: number) => ({ port: 9000 + pid,
+        client: { close: () => { detached.push(pid); } } as unknown as ReturnType<typeof createCdpClient> });
+      const effects: InspectorEffects = { sample: pid => ({ ...targets.find(row => row.pid === pid)! }),
+        attach: async pid => pid === 11 || signalled.includes(pid) ? connection(pid) : undefined,
+        open: pid => { signalled.push(pid); }, wait: async () => {},
+        close: async c => { closed.push(c.port - 9000); return { closed: true }; } };
+      return { targets, leases, effects, signalled, closed, detached };
+    };
+    it('keeps scalar selection and explicit list order without accepting ambiguous or duplicate targets', () => {
+      expect(parseCounterPids(undefined, 10)).toEqual([10]); expect(parseCounterPids('11', 10)).toEqual([11]);
+      expect(parseCounterPids('[12,11]', 10)).toEqual([12, 11]);
+      for (const raw of ['[]', '[11,11]', '["11"]', '[0]', '[1.5]', 'NaN', '[1,2,3,4,5,6,7,8,9]'])
+        expect(() => parseCounterPids(raw, 10)).toThrow();
+      const main = target(10), children = [target(11), target(12)].map(row => ({ ...row, parentPid: 10 }));
+      expect(selectCounterTargets(main, [12, 11], pid => children.find(row => row.pid === pid)!).map(row => row.pid)).toEqual([12, 11]);
+      expect(() => selectCounterTargets(main, [11], pid => ({ ...children[0], parentPid: pid }))).toThrow('ancestry');
+    });
+    it('preserves preexisting inspectors and closes only the target it signalled', async () => {
+      const f = setup(); await acquireTargetInspectors(f.targets, f.leases, f.effects);
+      expect(f.signalled).toEqual([12]);
+      expect((await releaseTargetInspectors(f.leases, f.effects)).every(row => !row.error)).toBe(true);
+      expect(f.closed).toEqual([12]); expect(f.detached).toEqual([12, 11]);
+    });
+    it('recovers a partial acquisition and releases the first target after a later attach error', async () => {
+      const f = setup(), attach = f.effects.attach;
+      f.effects.attach = async pid => {
+        if (pid === 12 && f.signalled.includes(pid)) throw Error('second target disconnected');
+        return attach(pid);
+      };
+      await expect(acquireTargetInspectors(f.targets, f.leases, f.effects)).rejects.toThrow('second target disconnected');
+      f.effects.attach = attach;
+      expect((await releaseTargetInspectors(f.leases, f.effects)).every(row => !row.error)).toBe(true);
+      expect(f.closed).toEqual([12]); expect(f.detached).toContain(11);
+    });
+    it('continues cleanup after one failure and never closes a reused PID', async () => {
+      const f = setup(); await acquireTargetInspectors(f.targets, f.leases, f.effects);
+      f.effects.sample = pid => ({ ...f.targets.find(row => row.pid === pid)!, startTicks: pid === 12 ? 'reused' : '11' });
+      const result = await releaseTargetInspectors(f.leases, f.effects);
+      expect(result[0].error).toContain('identity changed'); expect(result[1].error).toBeUndefined();
+      expect(f.closed).toEqual([]); expect(f.detached).toEqual([12, 11]);
+    });
+    it('reports an unobserved probe-opened endpoint while still detaching other targets', async () => {
+      const f = setup(); f.effects.attach = async pid => pid === 11 ? setup().effects.attach(pid) : undefined;
+      await expect(acquireTargetInspectors(f.targets, f.leases, f.effects)).rejects.toThrow('unavailable');
+      const result = await releaseTargetInspectors(f.leases, f.effects);
+      expect(result[0].error).toContain('unobserved'); expect(result[1].result).toEqual({ preservedPreexisting: true });
+    });
+    it('does not abandon earlier targets when closing or detaching a later target fails', async () => {
+      const f = setup(); await acquireTargetInspectors(f.targets, f.leases, f.effects);
+      f.effects.close = async () => { throw Error('close failed'); };
+      f.leases[1].connection!.client.close = () => { throw Error('detach failed'); };
+      const result = await releaseTargetInspectors(f.leases, f.effects);
+      expect(result[0].error).toContain('close failed'); expect(result[0].error).toContain('detach failed');
+      expect(result[1].error).toBeUndefined(); expect(f.detached).toContain(11);
+    });
+    it('opens and closes only its own inspector across two real isolated Node processes', async () => {
+      const children: ReturnType<typeof spawn>[] = [], leases: InspectorLease[] = [];
+      let failure: unknown;
+      try {
+        for (const preexisting of [true, false]) {
+          const child = spawn(process.execPath, [preexisting ? '--inspect=127.0.0.1:0' : '--inspect-port=127.0.0.1:0',
+            '-e', 'console.log("P011_INSPECTOR_READY");setInterval(()=>{},1000)'],
+          { stdio: ['ignore', 'pipe', 'pipe'] });
+          children.push(child);
+          let output = '';
+          for (const stream of [child.stdout!, child.stderr!]) stream.setEncoding('utf8').on('data', data => { output = (output + data).slice(-4000); });
+          const deadline = Date.now() + 10000;
+          while (!output.includes('P011_INSPECTOR_READY')) {
+            if (child.exitCode !== null || child.signalCode !== null || Date.now() > deadline)
+              throw Error('Private inspector readiness failed: ' + output);
+            await wait(25);
+          }
+        }
+        await acquireTargetInspectors(children.map(child => processSample(child.pid!)), leases);
+        expect(leases.map(lease => lease.openedByProbe)).toEqual([false, true]);
+        for (const lease of leases) expect((await readProcessMemory(lease.connection!.client,
+          { expectedPid: lease.target.pid })).pid).toBe(lease.target.pid);
+        const cleanup = await releaseTargetInspectors(leases);
+        expect(cleanup.every(row => !row.error)).toBe(true);
+        expect(cleanup.find(row => row.openedByProbe)?.result).toEqual({ closed: true });
+        const preexisting = await inspectorEffects.attach(children[0].pid!);
+        expect(preexisting).toBeDefined(); preexisting!.client.close();
+        expect(await inspectorEffects.attach(children[1].pid!)).toBeUndefined();
+      } catch (error) { failure = error; throw error; }
+      finally {
+        const cleanup = await releaseTargetInspectors(leases.filter(lease => lease.connection &&
+          children.some(child => child.pid === lease.target.pid && child.exitCode === null && child.signalCode === null)));
+        const cleanupErrors = cleanup.filter(row => row.error);
+        // Process teardown is unconditional, including partial inspector acquisition.
+        for (const child of children) {
+          if (child.exitCode !== null || child.signalCode !== null) continue;
+          const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+          child.kill('SIGTERM'); await Promise.race([exited, wait(2000)]);
+          if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+        }
+        for (const child of children) expect(existsSync('/proc/' + child.pid)).toBe(false);
+        if (cleanupErrors.length && !failure) throw Error('Private inspector cleanup failed: ' + JSON.stringify(cleanupErrors));
+      }
+    }, 30000);
+  });
   describe('multi-target request-resource window', () => {
     const build = 'abcdef1234';
     const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
@@ -1018,7 +1235,8 @@ describe('actual current-build operator memory baseline', () => {
 
   it.runIf(Boolean(process.env.PAPERCUSP_P011_LIVE_PID))('measures unforced live idle and ordinary HTTP windows on the named staging process', async () => {
     const pid = Number(process.env.PAPERCUSP_P011_LIVE_PID);
-    const counterPid = Number(process.env.PAPERCUSP_P011_COUNTER_PID ?? pid);
+    const counterPids = parseCounterPids(process.env.PAPERCUSP_P011_COUNTER_PID, pid);
+    const counterPid = counterPids[0];
     const base = process.env.PAPERCUSP_P011_LIVE_URL;
     const expectedBuild = process.env.PAPERCUSP_P011_LIVE_BUILD;
     const destination = process.env.PAPERCUSP_P011_REPORT;
@@ -1046,17 +1264,10 @@ describe('actual current-build operator memory baseline', () => {
     const before = processSample(pid);
     // Check only the selected target's ancestry before opening its inspector;
     // unrelated deep utility subtrees cannot turn valid selection into a cap.
-    const initialRows: ResourceRow[] = [];
-    let ancestor = counterPid;
-    while (ancestor !== pid) {
-      if (ancestor <= 1 || initialRows.length >= 16 || initialRows.some(row => row.pid === ancestor)) {
-        throw Error('Initial counter-target ancestry cap or unrelated target');
-      }
-      const row = processSample(ancestor); initialRows.push(row); ancestor = row.parentPid;
-    }
-    const counterBefore = counterTarget(before, initialRows, counterPid);
+    const counterTargets = selectCounterTargets(before, counterPids);
+    const counterBefore = counterTargets[0];
     const report: any = { schemaVersion: 1, plane: 'live-current-build-operator-api',
-      incomplete: true, pid, counterPid, buildSha: expectedBuild, startedAt: new Date().toISOString(),
+      incomplete: true, pid, counterPid, counterPids, buildSha: expectedBuild, startedAt: new Date().toISOString(),
       samples: [], windows: [], requests: [], operations: [], cleanup: {},
       metricDefinitions: { pssBytes: 'smaps_rollup Pss kernel kB times 1024',
         heapAndNative: 'V8/Node counters, overlapping with PSS; no additive native-residual estimate',
@@ -1066,15 +1277,14 @@ describe('actual current-build operator memory baseline', () => {
         observerMs: 'wall time for inspector counter read and proc descendant census' },
       limits: { windows: 3, idleMs: 2000, requestsPerWindow: 8, concurrency: 2, descendantsPerSample: 64 },
       pinnedOwners, pinnedLimits, operatorCacheEntries,
-      limitations: ['Counters cover one explicitly selected main/descendant PID; request assignment requires exact bounded diagnostic matches.',
+      limitations: ['Legacy samples cover the first explicitly selected PID; requestWorkerWindows bracket each selected request-only PID. Unsampled workers remain unknown.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
         'Sibling build identity is read from its PID-bound server capability when available; missing advertisements stay unknown.',
         'Current disk bundle hash is recorded separately from the health-reported loaded build.'] };
     const publish = () => writeFileSync(path, serializeIdentitySafeJson(report));
     let client: ReturnType<typeof createCdpClient> | undefined;
-    let port: number | undefined;
-    let opened = false;
+    const inspectorLeases: InspectorLease[] = [];
     let spawnerIpc: SpawnerIpcClient | undefined;
     let spawnerSocket: string | undefined;
     const health = async () => {
@@ -1084,24 +1294,8 @@ describe('actual current-build operator memory baseline', () => {
       expect(value.sha).toBe(expectedBuild);
       expect(value.bundleStale).toBeUndefined();
       assertIdentity(before, processSample(pid));
-      assertIdentity(counterBefore, processSample(counterPid));
+      for (const target of counterTargets) assertInspectorTarget(target, processSample(target.pid));
       return { sha: value.sha, version: value.version, at: new Date().toISOString() };
-    };
-    const attach = async () => {
-      for (const candidate of listenerPorts(counterPid).filter(value => value !== 3170)) {
-        try {
-          const response = await fetch(`http://127.0.0.1:${candidate}/json/list`, { signal: AbortSignal.timeout(500) });
-          if (!response.ok) continue;
-          const targets = await response.json();
-          const target = targets.find((row: any) => row.type === 'node' && row.webSocketDebuggerUrl);
-          if (!target) continue;
-          const connection = createCdpClient(target.webSocketDebuggerUrl);
-          try { await connection.connect(); await readProcessMemory(connection, { expectedPid: counterPid }); }
-          catch (error) { connection.close(); throw error; }
-          client = connection; port = candidate; return true;
-        } catch { /* An unrelated listener is not an inspector. */ }
-      }
-      return false;
     };
     publish();
     try {
@@ -1116,13 +1310,14 @@ describe('actual current-build operator memory baseline', () => {
       report.counterBundle = { path: counterEntry, argvEntry: counterEntry,
         diskSha256: hash(readFileSync(counterEntry)), loadedBuild: 'unknown',
         role: counterPid === pid ? 'named-main' : descendantEntryRole(before, counterBefore) };
-      report.inspectorWasOpen = await attach();
-      if (!client) {
-        process.kill(counterPid, 'SIGUSR1'); opened = true;
-        for (let attempt = 0; attempt < 20 && !client; attempt++) { await wait(250); await attach(); }
-      }
-      if (!client || !port) throw Error('PID-bound inspector unavailable');
-      report.inspector = { pid: counterPid, port, openedByProbe: opened };
+      await acquireTargetInspectors(counterTargets, inspectorLeases);
+      client = inspectorLeases[0].connection!.client;
+      report.inspectors = inspectorLeases.map(lease => ({ pid: lease.target.pid,
+        port: lease.connection!.port, openedByProbe: lease.openedByProbe }));
+      report.inspector = report.inspectors[0]; report.inspectorWasOpen = !inspectorLeases[0].openedByProbe;
+      report.targetBundles = counterTargets.map(target => ({ pid: target.pid, startTicks: target.startTicks,
+        executableSha256: target.executableSha256, path: target.command.script,
+        diskSha256: hash(readFileSync(target.command.script!)) }));
       if (descendantEntryRole(before, counterBefore) === 'maintained-spawner-descendant') {
         // Read only the loaded process's configured socket. Import the IPC
         // client into this observer, never build-info into the inspected target.
@@ -1194,6 +1389,22 @@ describe('actual current-build operator memory baseline', () => {
           return [row, ...nested];
         });
       };
+      const workerReader: WorkerWindowReader = {
+        census: () => {
+          remainingDescendants = 64; missedDescendants = [];
+          const main = processSample(pid); assertIdentity(before, main);
+          return { main, descendants: descendants(pid), notChecked: missedDescendants };
+        },
+        read: (pid, ids) => readRequestWorkerResources(inspectorLeases.find(lease => lease.target.pid === pid)!.connection!.client, pid, ids),
+      };
+      const targetRoles = await Promise.all(inspectorLeases.map(async lease => {
+        assertInspectorTarget(lease.target, processSample(lease.target.pid));
+        const counters = await readProcessMemory(lease.connection!.client, { expectedPid: lease.target.pid, hostFacts: true });
+        assertInspectorTarget(lease.target, processSample(lease.target.pid));
+        return assertCounterRole(before, lease.target, counters.hostFacts);
+      }));
+      const workerWindowEnabled = targetRoles.every(role => role.configuredSidecar === null && role.requestOnly);
+      if (counterTargets.length > 1 && !workerWindowEnabled) throw Error('Multiple counter targets require identified request-only workers');
       const sample = async (label: string) => {
         const started = performance.now();
         const memory = await readProcessMemory(client!, { expectedPid: counterPid, hostFacts: true, allocationDetails: true });
@@ -1224,24 +1435,32 @@ describe('actual current-build operator memory baseline', () => {
       for (let window = 0; window < 3; window++) {
         await sample(`idle-${window}-start`); await wait(2000); await sample(`idle-${window}-end`);
         const startedAt = new Date().toISOString();
-        for (let pair = 0; pair < 4; pair++) await Promise.all([0, 1].map(async index => {
-          const started = performance.now();
-          const response = await fetch(base + query, { headers: { 'x-papercusp-workspace': 'papercusp-workspace' },
-            signal: AbortSignal.timeout(15000) });
-          const bytes = Buffer.from(await response.arrayBuffer());
-          expect(response.status).toBe(200);
-          const body = JSON.parse(bytes.toString());
-          expect(Array.isArray(body.rows)).toBe(true); expect(body.rows.length).toBeLessThanOrEqual(32);
-          report.requests.push({ window, pair, index, status: response.status, rows: body.rows.length,
-            requestId: response.headers.get('x-papercusp-request-id'),
-            responseBytes: bytes.length, responseSha256: hash(bytes), elapsedMs: performance.now() - started });
-        }));
+        const workload = async () => {
+          for (let pair = 0; pair < 4; pair++) await Promise.all([0, 1].map(async index => {
+            const started = performance.now();
+            const response = await fetch(base + query, { headers: { 'x-papercusp-workspace': 'papercusp-workspace' },
+              signal: AbortSignal.timeout(15000) });
+            const bytes = Buffer.from(await response.arrayBuffer());
+            expect(response.status).toBe(200);
+            const body = JSON.parse(bytes.toString());
+            expect(Array.isArray(body.rows)).toBe(true); expect(body.rows.length).toBeLessThanOrEqual(32);
+            report.requests.push({ window, pair, index, status: response.status, rows: body.rows.length,
+              requestId: response.headers.get('x-papercusp-request-id'),
+              responseBytes: bytes.length, responseSha256: hash(bytes), elapsedMs: performance.now() - started });
+          }));
+          return report.requests.filter((row: any) => row.window === window).map((row: any) => row.requestId);
+        };
+        const workerWindow = workerWindowEnabled
+          ? await collectRequestWorkerWindow(counterTargets, expectedBuild!, workerReader, workload) : undefined;
+        if (!workerWindow) await workload();
+        else (report.requestWorkerWindows ??= []).push({ window, ...workerWindow });
         await sample(`ordinary-${window}-end`);
         const requestIds = report.requests.filter((row: any) => row.window === window).map((row: any) => row.requestId);
         const ordinary = report.samples.at(-1);
         const assignmentStarted = performance.now();
         let assignment;
-        if (ordinary.configuredHostRole.configuredSidecar !== null) {
+        if (workerWindow) assignment = workerWindow.assignment;
+        else if (ordinary.configuredHostRole.configuredSidecar !== null) {
           assignment = { status: 'unknown', reason: 'Selected counter target is a sidecar, not a request worker',
             requested: requestIds.length, assignments: [], unresolvedRequestIds: requestIds };
         } else {
@@ -1263,6 +1482,10 @@ describe('actual current-build operator memory baseline', () => {
       expect(report.bundle.diskSha256After).toBe(report.bundle.diskSha256);
       report.counterBundle.diskSha256After = hash(readFileSync(counterEntry));
       expect(report.counterBundle.diskSha256After).toBe(report.counterBundle.diskSha256);
+      for (const target of report.targetBundles) {
+        target.diskSha256After = hash(readFileSync(target.path));
+        expect(target.diskSha256After).toBe(target.diskSha256);
+      }
       if (spawnerIpc && spawnerSocket) {
         const capability = await spawnerIpc.call('spawn:cancel', {}, { timeoutMs: 5000 });
         report.counterBundle.loadedBuildAfter = spawnerLoadedIdentity(counterPid, capability);
@@ -1293,11 +1516,16 @@ describe('actual current-build operator memory baseline', () => {
     finally {
       spawnerIpc?.close();
       try {
-        if (client && opened && port) report.cleanup.inspector = await closeInspector(client, port);
-        else { client?.close(); report.cleanup.inspector = { preservedPreexisting: true }; }
+        report.cleanup.inspectors = await releaseTargetInspectors(inspectorLeases);
+        report.cleanup.inspector = report.cleanup.inspectors.find((row: any) => row.pid === counterPid)?.result;
+        const errors = report.cleanup.inspectors.filter((row: any) => row.error);
+        if (errors.length) throw Error(errors.map((row: any) => `${row.pid}: ${row.error}`).join('; '));
         assertIdentity(before, processSample(pid)); report.cleanup.processIdentityPreserved = true;
         assertIdentity(counterBefore, processSample(counterPid)); report.cleanup.counterIdentityPreserved = true;
-      } catch (error) { report.cleanup.error = String(error); report.incomplete = true; throw error; }
+      } catch (error) {
+        report.cleanup.error = String(error); report.incomplete = true;
+        throw Error((report.error ? 'Original sampler error: ' + report.error + '; ' : '') + 'Cleanup error: ' + String(error));
+      }
       finally { report.endedAt = new Date().toISOString(); publish(); }
     }
     expect(report.cleanup.processIdentityPreserved).toBe(true);
