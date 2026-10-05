@@ -311,6 +311,54 @@ describe('working-copy promotion with real git (P-020)', () => {
     expect(logs.some((l) => l.includes('the main repository receives it only through the standing PR'))).toBe(true);
   });
 
+  it('review mode: the PR carries the PROMOTED commit even when the checkout has moved past it (open and update)', async () => {
+    // git-sync keeps committing while the gate runs, so by promotion time the checkout's
+    // HEAD is routinely a newer, untested commit. Only the promoted sha may reach the PR.
+    writeFileSync(join(fx.checkout, 'feature.txt'), 'untested after promotion\n');
+    git(fx.checkout, 'commit', '-am', 'untested work committed after the gate cut its candidate');
+    const untestedSha = git(fx.checkout, 'rev-parse', 'HEAD');
+    expect(untestedSha).not.toBe(fx.promotedSha);
+
+    const first = fakePrHost(fx.checkout);
+    const firstRun = await realDeps(fx, { mode: { mode: 'review', source: 'set' }, prHost: first.deps });
+    await publishPromotion(
+      { repoPath: fx.checkout, workspaceId: 'ws-test', sha: fx.promotedSha, ref: 'main' },
+      firstRun.deps,
+    );
+    expect(first.opened).toHaveLength(1);
+    expect(branchSha(fx.fork, STANDING_PR_BRANCH)).toBe(fx.promotedSha);
+    expect(hasObject(fx.fork, untestedSha)).toBe(false);
+
+    // Update path: the gate promotes the next commit, while HEAD has again moved past it.
+    writeFileSync(join(fx.checkout, 'feature.txt'), 'second tested candidate\n');
+    git(fx.checkout, 'commit', '-am', 'second tested candidate');
+    const nextSha = git(fx.checkout, 'rev-parse', 'HEAD');
+    writeFileSync(join(fx.checkout, 'feature.txt'), 'untested again\n');
+    git(fx.checkout, 'commit', '-am', 'more untested work');
+    const untestedAgainSha = git(fx.checkout, 'rev-parse', 'HEAD');
+
+    const existing = {
+      ref: { remote: UPSTREAM_URL, number: 42 },
+      state: 'open',
+      title: 'standing',
+      body: null,
+      head_ref: STANDING_PR_BRANCH,
+      base_ref: 'main',
+      head_sha: fx.promotedSha,
+      url: 'https://github.com/acme/widgets/pull/42',
+    } as unknown as Pr;
+    const second = fakePrHost(fx.checkout, [existing]);
+    const secondRun = await realDeps(fx, { mode: { mode: 'review', source: 'set' }, prHost: second.deps });
+    await publishPromotion(
+      { repoPath: fx.checkout, workspaceId: 'ws-test', sha: nextSha, ref: 'main' },
+      secondRun.deps,
+    );
+    expect(second.opened).toHaveLength(0);
+    expect(branchSha(fx.fork, STANDING_PR_BRANCH)).toBe(nextSha);
+    expect(hasObject(fx.fork, untestedAgainSha)).toBe(false);
+    expect(branchSha(fx.upstream, 'main')).toBe(fx.baseSha);
+  });
+
   it('review mode: a second promotion moves the existing standing PR instead of opening another', async () => {
     const first = fakePrHost(fx.checkout);
     const firstRun = await realDeps(fx, { mode: { mode: 'review', source: 'set' }, prHost: first.deps });
