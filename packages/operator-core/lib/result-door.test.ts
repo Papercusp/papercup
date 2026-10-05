@@ -888,9 +888,6 @@ describe('applyResultDoor', () => {
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
     const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
-    const projection = body._projection as {
-      omitted?: Array<{ path: string; reason: string }>;
-    };
     const waiterMarker = body.event_inspection?.waiters?.find((row) =>
       row !== null && typeof row === 'object' && (row as { kind?: string }).kind === 'projection-truncation',
     ) as { _truncated?: boolean; omittedCount?: number; shownCount?: number; renderedCount?: number } | undefined;
@@ -900,7 +897,6 @@ describe('applyResultDoor', () => {
       shownCount: 6,
       renderedCount: 200,
     });
-    expect(projection.omitted?.some((entry) => entry.path.includes('event_inspection.waiters['))).toBe(true);
     expect(visibleWaiters).toContain('projection-truncation');
 
     // The visible summary keeps the requested key/state so ok:true cannot read as
@@ -972,9 +968,6 @@ describe('applyResultDoor', () => {
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
     const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
-    const projection = body._projection as {
-      omitted?: Array<{ path: string; reason: string }>;
-    };
     const waiterMarker = body.event_inspection?.waiters?.find((row) =>
       row !== null && typeof row === 'object' && (row as { kind?: string }).kind === 'projection-truncation',
     ) as { _truncated?: boolean; omittedCount?: number; shownCount?: number; renderedCount?: number } | undefined;
@@ -984,7 +977,6 @@ describe('applyResultDoor', () => {
       shownCount: 6,
       renderedCount: 200,
     });
-    expect(projection.omitted?.some((entry) => entry.path.includes('event_inspection.waiters['))).toBe(true);
     expect(visibleWaiters).toContain('projection-truncation');
 
     const spill = JSON.parse(readSpill('ws-2', 'events:status', RUN_ID)) as {

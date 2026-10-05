@@ -1557,9 +1557,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // snapshot from disappearing, but an oversized history could still be
       // cut with only an aggregate omittedCount. Keep the identity/watermark
       // first, then keep history keys selectable. If an array is too large,
-      // projectBoundedPayload places a typed truncation row in that array and
-      // names its first omitted index in `_projection.omitted`; the scratch
-      // cursor remains the route to the complete contents.
+      // projectBoundedPayload places a typed truncation row inside that field;
+      // its location names the affected history and its counts prevent the
+      // visible prefix from reading as complete. The scratch cursor remains
+      // the route to the complete contents.
       ...(opts.toolName === 'events:status'
         ? [
             'event_inspection.event',

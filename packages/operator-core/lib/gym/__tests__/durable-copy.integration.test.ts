@@ -10,7 +10,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
@@ -29,7 +30,8 @@ import {
 } from '../store';
 import { readDurableCycleHistory, readDurableVariants, durableFrontierView } from '../read-api';
 import type { GymScore } from '../judge';
-import { createGymStore } from '../ab-runner-real';
+import { buildAbDeps, createGymStore, type RealAbDepsConfig } from '../ab-runner-real';
+import { readTraceBundle } from '../collector';
 import { buildLoopDeps } from '../loop-deps';
 import type { AbDeps } from '../ab-runner';
 import { GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
@@ -259,6 +261,47 @@ describe('durable run-analytics copy (migration 650)', () => {
     expect(foreign.run_params).toBeNull();
     await src`DELETE FROM harness_gym.gym_runs WHERE run_id = ${runId}`;
     expect((await readEvidence())[0]).toEqual(retained);
+  });
+
+  it('resolves the real retained trace through its durable row after scratch and source cleanup', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'gym-durable-trace-'));
+    const scratchRoot = join(root, 'scratch');
+    try {
+      // This private-PG fixture exercises the real collector + store + copy.
+      // No operator, agent, judge or external model is invoked.
+      await src`CREATE SCHEMA IF NOT EXISTS harness_shared`;
+      await src`CREATE TABLE IF NOT EXISTS harness_shared.harness_run_output
+        (run_id TEXT, role TEXT, out_body TEXT, harness_slug TEXT, started_at TIMESTAMPTZ)`;
+      await src`INSERT INTO harness_shared.harness_run_output
+        VALUES ('retained-worker', 'worker', 'retained submission', 'trace-copy', now())`;
+      const deps = buildAbDeps({ gymSql: src, ports: {} as RealAbDepsConfig['ports'],
+        llmCall: async () => { throw new Error('judge must not run'); },
+        timeoutMs: 1, pollIntervalMs: 1, scratchRoot, traceRoot: join(root, 'retained'),
+        collectStrategy: 'work-item-output' });
+      const collected = await deps.collectAndDistill({
+        handle: { harnessSlug: 'trace-copy', clonePath: scratchRoot, workflowID: 'trace-copy',
+          outcome: 'passed', pipelineUsd: 0, deterministicSignals: { regressions: false } },
+        task: { taskId: 'trace-copy-task', pool: 'train', repoUrl: '', repoCommit: '',
+          spec: 's', intent: 'i', projectContext: 'c' }, maxChars: 60000 });
+      await deps.store.upsertVariant({ variantId: 'trace-copy', label: 'trace-copy', overlay: { promptOverrides: {} } });
+      await deps.store.upsertTask({ taskId: 'trace-copy-task', pool: 'train', repoUrl: '', repoCommit: '', spec: 's', intent: 'i', projectContext: 'c' });
+      await deps.store.startRun({ runId: 'retained-trace-run', variantId: 'trace-copy', taskId: 'trace-copy-task',
+        cycle: 35, repeat: 0, harnessSlug: 'trace-copy', workflowId: 'trace-copy' });
+      await deps.store.finishRun('retained-trace-run', { terminalState: 'passed',
+        deterministicSignals: collected.rawSignals, traceRef: collected.traceRef });
+      await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'trace-copy-ws', harnessSlug: 'trace-copy' });
+      await src`DELETE FROM harness_gym.gym_runs WHERE run_id = 'retained-trace-run'`;
+      rmSync(scratchRoot, { recursive: true, force: true });
+      const [row] = await dst<{ trace_ref: string }[]>`
+        SELECT run_evidence->>'trace_ref' AS trace_ref FROM harness_gym_durable.gym_runs
+         WHERE workspace_id = 'trace-copy-ws' AND harness_slug = 'trace-copy' AND run_id = 'retained-trace-run'`;
+      expect(row.trace_ref).toBe(collected.traceRef);
+      expect(JSON.parse(await readTraceBundle(row.trace_ref))).toMatchObject({
+        diff: 'retained submission', signals: { regressions: false },
+        roleTranscripts: [{ runId: 'retained-worker', role: 'worker', text: 'retained submission' }] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('preserves SQL NULL for a run that never recorded measurements', async () => {
