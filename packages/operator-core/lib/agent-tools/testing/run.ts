@@ -101,6 +101,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { currentRequestWorkspaceId } from '../../workspace-als';
 import { workspaceDir } from '../../workspace-registry';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
@@ -731,7 +732,12 @@ export function discoverKnownHiveCheckoutRoots(
   return [...roots];
 }
 
-export type TestFileRootSource = 'requested' | 'absolute-file-checkout' | 'hive-checkout' | 'canonical-repo';
+export type TestFileRootSource =
+  | 'requested'
+  | 'absolute-file-checkout'
+  | 'hive-checkout'
+  | 'canonical-repo'
+  | 'registered-harness';
 
 export interface SelectedTestFileRoot {
   root: string;
@@ -780,6 +786,50 @@ export function selectTestFileRoot(
   return selected ?? { root: preferredRoot, source: preferredSource };
 }
 
+export type RegisteredTestFileRootResult =
+  | { ok: true; selection: SelectedTestFileRoot }
+  | {
+      ok: false;
+      error: 'root_harness_invalid_slug' | 'root_harness_requires_concrete_workspace' | 'root_harness_not_registered';
+      rootHarnessSlug: string;
+      detail: string;
+    };
+
+/** Resolve an explicit testing:run checkout only through the caller-workspace registry. */
+export async function resolveRegisteredTestFileRoot(
+  rootHarnessSlug: string,
+  workspaceId: string | undefined,
+  loadRegistry: typeof loadHarnessRegistry = loadHarnessRegistry,
+): Promise<RegisteredTestFileRootResult> {
+  const slug = rootHarnessSlug.trim();
+  if (!slug) {
+    return {
+      ok: false,
+      error: 'root_harness_invalid_slug',
+      rootHarnessSlug,
+      detail: 'Pass a registered harness slug in `rootHarnessSlug`.',
+    };
+  }
+  if (!workspaceId || workspaceId === '*') {
+    return {
+      ok: false,
+      error: 'root_harness_requires_concrete_workspace',
+      rootHarnessSlug: slug,
+      detail: '`rootHarnessSlug` requires a concrete caller workspace so the registry lookup is bounded.',
+    };
+  }
+  const root = resolveHarnessContentPath(await loadRegistry(workspaceId), slug);
+  if (!root) {
+    return {
+      ok: false,
+      error: 'root_harness_not_registered',
+      rootHarnessSlug: slug,
+      detail: `Harness '${slug}' is not registered in the caller workspace '${workspaceId}'.`,
+    };
+  }
+  return { ok: true, selection: { root: resolve(root), source: 'registered-harness' } };
+}
+
 /**
  * Accept the two path vocabularies exposed by the release pipeline:
  * repo-root-relative paths (the router's native contract) and paths relative to exactly one
@@ -791,9 +841,12 @@ export function normalizeTestFilePaths(
   files: string[],
   root: string,
   workspaceDirs: string[] = declaredWorkspaceDirs(root),
+  options: { allowSiblingCheckoutFallback?: boolean } = {},
 ): TestFilePathResolution {
   const normalized: string[] = [];
-  const siblings = independentWorkspaceCheckoutRoots(root);
+  const siblings = options.allowSiblingCheckoutFallback === false
+    ? new Map<string, string>()
+    : independentWorkspaceCheckoutRoots(root);
   for (const file of files) {
     if (isAbsolute(file)) {
       normalized.push(file);
@@ -2948,6 +3001,8 @@ export async function runTestFilesCore(opts: {
   runId?: string;
   /** Recursive mixed-root groups defer detached recovery to their outer operation. */
   allowDetachedRecovery?: boolean;
+  /** Explicit registered roots keep relative paths inside that checkout. */
+  allowSiblingCheckoutFallback?: boolean;
   /** Optional handler-owned timing accumulator; omitted by internal callers. */
   phaseTimings?: TestingRunPhaseTimings;
 }): Promise<TestFilesCoreResult> {
@@ -2956,7 +3011,8 @@ export async function runTestFilesCore(opts: {
   // normalizeTestFilePaths; selecting from that result lets the router switch to
   // the sibling checkout's own Vitest config instead of trying to run the path from
   // the ambient Papercusp tree.
-  const requestedPaths = normalizeTestFilePaths(opts.files, opts.root);
+  const normalizationOptions = { allowSiblingCheckoutFallback: opts.allowSiblingCheckoutFallback };
+  const requestedPaths = normalizeTestFilePaths(opts.files, opts.root, undefined, normalizationOptions);
   const runId = opts.runId ?? randomUUID();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const recoveryTimeoutMs = opts.recoveryTimeoutMs ?? timeoutMs;
@@ -3054,7 +3110,12 @@ export async function runTestFilesCore(opts: {
         `session's harness/project is registered.`,
     };
   }
-  const pathResolution = normalizeTestFilePaths(requestedPaths.ok ? requestedPaths.files : opts.files, root);
+  const pathResolution = normalizeTestFilePaths(
+    requestedPaths.ok ? requestedPaths.files : opts.files,
+    root,
+    undefined,
+    normalizationOptions,
+  );
   if (!pathResolution.ok) {
     return {
       ok: false,
@@ -3500,6 +3561,15 @@ export default defineTool({
       .describe(
         'Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.',
       ),
+    rootHarnessSlug: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'Registered harness slug whose checkout supplies relative `files`. Requires a concrete caller workspace and exact `files`; it does not use discovered or canonical-root fallback. `harness` remains the test-ledger scope.',
+      ),
     changedPaths: z
       .array(z.string().min(1))
       .min(1)
@@ -3541,6 +3611,15 @@ export default defineTool({
   async handler(args, ctx) {
     const handlerStartedAt = performance.now();
     const phaseTimingsMs = createTestingRunPhaseTimings();
+    if (args.rootHarnessSlug !== undefined && !args.files) {
+      return {
+        data: {
+          ok: false,
+          error: 'root_harness_requires_files',
+          detail: '`rootHarnessSlug` selects the checkout for exact test `files`; it does not apply to changedPaths or evidence recovery.',
+        },
+      };
+    }
     if (args.recoverEvidence) {
       if (args.files || args.changedPaths || args.evidence || args.remeasureEvidence || args.work_item_id)
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
@@ -3663,7 +3742,27 @@ export default defineTool({
     // `resolveCapabilityBaseDir` is the same projectDir → PAPERCUSP_INTEGRATION_ROOT
     // → cwd resolver every capability tool (read/write/edit/bash/inspect) already
     // uses, so this tool now reads the same tree those tools write.
-    const rootSelection = selectTestFileRoot(files, resolveAgentWorkspaceRoot(ctx));
+    let rootSelection: SelectedTestFileRoot;
+    if (args.rootHarnessSlug !== undefined) {
+      let registeredRoot: RegisteredTestFileRootResult;
+      try {
+        registeredRoot = await resolveRegisteredTestFileRoot(args.rootHarnessSlug, ctx.workspaceId);
+      } catch (error) {
+        return {
+          data: {
+            ok: false,
+            error: 'root_harness_resolution_failed',
+            rootHarnessSlug: args.rootHarnessSlug,
+            message: String(error),
+          },
+        };
+      }
+      if (!registeredRoot.ok) return { data: registeredRoot };
+      rootSelection = registeredRoot.selection;
+    } else {
+      rootSelection = selectTestFileRoot(files, resolveAgentWorkspaceRoot(ctx));
+    }
+    const allowSiblingCheckoutFallback = rootSelection.source !== 'registered-harness';
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
     // suite slower than that had the call killed before the core's `error:'timeout'` branch could
@@ -3730,7 +3829,9 @@ export default defineTool({
     if (loopRefusal) return { data: { ...loopRefusal, runId, root: rootSelection.root } };
     let prepared: Awaited<ReturnType<typeof prepareTestEvidence>> | undefined;
     if (evidenceRequest) {
-      const selected = normalizeTestFilePaths(files, rootSelection.root);
+      const selected = normalizeTestFilePaths(files, rootSelection.root, undefined, {
+        allowSiblingCheckoutFallback,
+      });
       // EI-24100872054224181: refuse BEFORE registering pending rows. The core repeats
       // this preflight; a refusal there after preparation is retracted below.
       const mutationProbe = await mutationProbeRefusal(rootSelection.root, selected.ok ? selected.files : files);
@@ -3757,6 +3858,7 @@ export default defineTool({
       ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
+      allowSiblingCheckoutFallback,
       phaseTimings: phaseTimingsMs,
     });
     const ledgerReadbackStartedAt = performance.now();

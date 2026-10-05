@@ -26,7 +26,7 @@ import type { ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { REPO_ROOT } from '../../docs/_repo-paths';
 import runTool, {
@@ -56,6 +56,7 @@ import runTool, {
   settleConfinedTestOnHostShutdown,
   runWithTestProcessDeadline,
   resolveAdminTestRunsReporterPath,
+  resolveRegisteredTestFileRoot,
   selectTestFileRoot,
   shouldResolveHarnessTestRunIds,
   shouldIngestVitestLedgerInProcess,
@@ -276,6 +277,57 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
         canonicalRepoRoot: selectorCanonical,
       }),
     ).toEqual({ root: selectorPhantom, source: 'requested' });
+  });
+
+  it('uses only the caller-named registered checkout for an explicit rootHarnessSlug', async () => {
+    const registered = await makeScratchTestCheckout('papercusp-testing-run-selector-registered-');
+    let loadedWorkspace: string | undefined;
+    const result = await resolveRegisteredTestFileRoot('subject-tree', 'workspace-17', async (workspaceId) => {
+      loadedWorkspace = workspaceId;
+      return { projects: [{ slug: 'subject-tree', path: registered }] } as never;
+    });
+
+    expect(loadedWorkspace).toBe('workspace-17');
+    expect(result).toEqual({
+      ok: true,
+      selection: { root: registered, source: 'registered-harness' },
+    });
+  });
+
+  it('refuses an unregistered rootHarnessSlug without considering discovered or canonical roots', async () => {
+    const result = await resolveRegisteredTestFileRoot('missing-tree', 'workspace-17', async () => ({
+      projects: [{ slug: 'other-tree', path: selectorRequested }],
+    }) as never);
+
+    expect(result).toMatchObject({ ok: false, error: 'root_harness_not_registered' });
+  });
+
+  it('requires a concrete caller workspace before resolving rootHarnessSlug', async () => {
+    const loadRegistry = vi.fn(async () => ({ projects: [{ slug: 'subject-tree', path: selectorRequested }] }) as never);
+    const result = await resolveRegisteredTestFileRoot('subject-tree', '*', loadRegistry);
+
+    expect(result).toMatchObject({ ok: false, error: 'root_harness_requires_concrete_workspace' });
+    expect(loadRegistry).not.toHaveBeenCalled();
+  });
+
+  it('keeps relative paths inside an explicit registered root instead of expanding a sibling checkout', async () => {
+    const registered = await makeScratchTestCheckout('papercusp-testing-run-selector-explicit-root-');
+    const sibling = await makeScratchTestCheckout('papercusp-testing-run-selector-explicit-sibling-');
+    const siblingRelativePath = `${basename(sibling)}/packages/x/real.test.ts`;
+
+    expect(normalizeTestFilePaths([siblingRelativePath], registered)).toEqual({
+      ok: true,
+      files: [join(sibling, 'packages/x/real.test.ts')],
+    });
+    expect(normalizeTestFilePaths([siblingRelativePath], registered, undefined, {
+      allowSiblingCheckoutFallback: false,
+    })).toEqual({ ok: true, files: [siblingRelativePath] });
+  });
+
+  it('rejects rootHarnessSlug when the request does not select exact files', async () => {
+    const out = await body(call({ rootHarnessSlug: 'subject-tree', changedPaths: ['packages/x/source.ts'] }));
+
+    expect(out).toMatchObject({ ok: false, error: 'root_harness_requires_files' });
   });
 });
 

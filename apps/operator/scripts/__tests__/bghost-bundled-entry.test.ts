@@ -82,7 +82,7 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
   });
 
   it('fails closed when the bundled CLI-entry recurrence guard rejects the graph', () => {
-    const guard = 'if ! node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
+    const guard = 'if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
     expect(bundleHost).toContain(guard);
     const guardAt = bundleHost.indexOf(guard);
     const exitAt = bundleHost.indexOf('    exit 1\n  fi', guardAt);

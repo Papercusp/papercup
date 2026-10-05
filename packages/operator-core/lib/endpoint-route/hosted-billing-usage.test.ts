@@ -135,14 +135,23 @@ describe('GET /hosted/billing/usage', () => {
   });
 
   it('mounts the default durable store source and keeps an empty unmeasured population incomplete', async () => {
-    const sql = vi.fn(async () => []);
+    const sql = vi.fn(async (_query: TemplateStringsArray, ..._parameters: unknown[]) => []);
     const runService: HostedServiceContextRunner = fn => fn(sql as unknown as Sql);
     const built = await runtime(undefined, runService);
     const response = await built.app.request('/api/hosted/billing/usage', headers());
     expect(response.status).toBe(200);
     const body = await response.json(); expect(body.statement.lines).toEqual([]);
     expect(body.statement.settlementEligible).toBe(false); expect(body.statement.gaps).toContain('incomplete-source');
-    expect(sql).toHaveBeenCalledOnce();
+    // The default source reads collector bindings before reading durable usage.
+    // Assert both purposes and their tenant scope instead of an obsolete query count.
+    expect(sql.mock.calls.map(([query]) => query.join(' '))).toEqual(expect.arrayContaining([
+      expect.stringContaining("b.provider = 'openrouter'"),
+      expect.stringContaining('ORDER BY customer_workspace_id'),
+    ]));
+    for (const [_query, ...parameters] of sql.mock.calls) {
+      expect(parameters).toContain(CONTROL);
+      expect(parameters).toContain(ORG);
+    }
     expect(sql.mock.calls[0]).toEqual(expect.arrayContaining([CONTROL, ORG]));
   });
 });
