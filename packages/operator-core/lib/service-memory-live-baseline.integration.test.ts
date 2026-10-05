@@ -248,7 +248,8 @@ function requestWorkerSnapshot(requestIds: string[]) {
   const buildSha = typeof resolver === 'function' ? resolver() : null;
   if (!(registry?.pools instanceof Map) || typeof processInstanceId !== 'string' ||
       typeof buildSha !== 'string' || !/^[a-f0-9]{7,64}$/i.test(buildSha)) {
-    return { status: 'unknown' as const, pid: process.pid, reason: 'Loaded diagnostic identity, registry or build unavailable' };
+    return { status: 'unknown' as const, pid: process.pid, reason: 'Loaded diagnostic identity, registry or build unavailable',
+      processInstanceId: undefined, buildSha: undefined, results: undefined, pools: undefined };
   }
   if (registry.pools.size > 64) throw Error('Request-worker pool observation cap');
   const results: any[] = [];
@@ -429,9 +430,9 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
         ids.some(id => !/^[a-f0-9-]{36}$/i.test(id)) || ids.length <= prior.length ||
         prior.some(id => !ids.includes(id))) throw Error('Worker-window checkpoint request population');
     const checkpoint = { requestIds: [...ids], ...await sample(ids) };
-    auditRequestWorkerAssignments(ids, checkpoint.observations, expectedBuild);
     during.push(checkpoint);
     reader.record?.('during', structuredClone(during));
+    auditRequestWorkerAssignments(ids, checkpoint.observations, expectedBuild);
   });
   const knownIds = requestIds.filter((id): id is string => typeof id === 'string');
   if (during.length && (during.at(-1)!.requestIds.length !== knownIds.length ||
@@ -440,7 +441,6 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
   reader.record?.('requestIds', [...requestIds]);
   const after = await sample(knownIds);
   reader.record?.('after', structuredClone(after));
-  auditRequestWorkerAssignments(requestIds, after.observations, expectedBuild);
   const resources = after.observations.map((row, index) => {
     const prior = before.observations[index];
     if (prior.snapshot.processInstanceId !== row.snapshot.processInstanceId ||
@@ -454,6 +454,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
       countersBefore: prior.counters, countersAfter: row.counters };
   });
   reader.record?.('resources', structuredClone(resources));
+  auditRequestWorkerAssignments(requestIds, after.observations, expectedBuild);
   // Preserve exact metadata observed before a later bounded-ring overwrite.
   // Every raw checkpoint remains available to the independent reader; no rows
   // or WeakRefs cross this seam, and an unseen request remains unknown.
@@ -781,7 +782,7 @@ describe('actual current-build operator memory baseline', () => {
       const result = await collectRequestWorkerWindow(f.targets, build, f.reader, async observe => {
         await observe(ids); return f.workload();
       });
-      expect(result.after.observations.every(row => row.snapshot.results?.length === 0)).toBe(true);
+      expect(result.after.observations.every(row => row.snapshot.status === 'observed' && row.snapshot.results.length === 0)).toBe(true);
       expect(result.during).toHaveLength(1);
       expect(result.assignment.status).toBe('observed');
       expect(result.assignment.assignments.map(row => row.queryTuples.length)).toEqual([2, 2]);
