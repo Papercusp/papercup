@@ -6913,10 +6913,6 @@ impl App {
             })
     }
 
-    /// The one plain sentence the default chat shows for a failure (R-03):
-    /// what went wrong and the single next step. The raw text can carry
-    /// session ids, reconciliation states and operator addresses, so it stays
-    /// behind Ctrl-O.
     /// pui-chat-first-ux P-024: the line under the transcript while a turn
     /// runs, shaped like Claude Code's: a moving spinner, what the engine is
     /// doing, how long it has taken, roughly how much it has written, and how
@@ -6979,6 +6975,10 @@ impl App {
         format!("{frame} {phase}… ({detail} · {key} to interrupt)")
     }
 
+    /// The one plain sentence the default chat shows for a failure (R-03):
+    /// what went wrong and the single next step. The raw text can carry
+    /// session ids, reconciliation states and operator addresses, so it stays
+    /// behind Ctrl-O.
     pub fn chat_failure_sentence(&self) -> Option<String> {
         let raw = self.chat_raw_failure()?.to_ascii_lowercase();
         let engine = self.chat_engine_label();
