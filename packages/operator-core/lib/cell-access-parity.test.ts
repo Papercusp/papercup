@@ -659,7 +659,14 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // P-007, registered 2026-09-22) — directives are owner speech recorded per workspace and every
     // coord reader in the workspace already sees them through orders:list (that plan's D-004:
     // LABEL, never filter), so a harness-narrow cell would hide a status the list already shows.
-    ).toEqual({ workspace: 15, harness: 12 });
+    // workspace 15 → 16: `memory.cgroupAttribution` projects the existing host memory
+    // resolver's owner-attribution lens with workspace visibility. LEG E's generated case
+    // covers its oracle/get/list parity; this census also binds that new row's visibility.
+    ).toEqual({ workspace: 16, harness: 12 });
+    const attribution = BUILTIN_CELLS.find((spec) => spec.cell === 'memory.cgroupAttribution');
+    expect(attribution, 'the added cell must remain in the real parity walk').toBeDefined();
+    expect(attribution!.visibility).toEqual({ kind: 'workspace' });
+    expect(canReadCell(attribution!, stranger)).toBe(true);
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than
