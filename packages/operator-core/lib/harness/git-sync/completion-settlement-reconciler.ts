@@ -18,6 +18,7 @@ import {
 } from '../../agent-tools/work_items/completion-freshness';
 import { pgCompletionHistoryMemoStore } from './completion-history-memo-store';
 import { sendMessage } from '../../agent-tools/coordination/messages';
+import type postgres from 'postgres';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import {
@@ -1174,7 +1175,7 @@ async function reconcileProposedCompletionsCore(
          AND authority = 'proposed'
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'generation']}::text[] = ${String(parsed.data.generation)}
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'evidenceHash']}::text[] = ${parsed.data.evidenceHash}
-         AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY]}::text[] IS NOT DISTINCT FROM ${sql.json(evidence)}
+         AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY]}::text[] IS NOT DISTINCT FROM ${sql.json(evidence as postgres.JSONValue)}
        RETURNING feature_id, authority`;
       // EI-24710716781971154: RETURNING reflects the row AFTER migration 972/1207's
       // `downgrade_unproven_committed_close` trigger, which silently reverts an

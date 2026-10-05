@@ -151,6 +151,23 @@ describe('parseGoalOwnerReport', () => {
     expect(parseGoalOwnerReport('We moved the build and reduced cost.').attempted).toBe(false);
     expect(parseGoalOwnerReport('MOVED / COST / OWNER-WALLED / KILLED').attempted).toBe(false);
   });
+
+  it('WI-10005610 permits an immediate plain-prose correction without resetting the periodic report cadence', () => {
+    const body = [{
+      text: 'Correction to the 14:12 goal report: hud-orders fleet. Previously reported it was kept; ' +
+        'measured state is dissolved (hud-orders#D-004).',
+    }];
+    // A partial MOVED report would be refused by coord:send. Ordinary correction
+    // prose uses its existing kind:none path, without a goal-report stamp.
+    expect(parseGoalOwnerReport(body).attempted).toBe(false);
+    expect(diagnoseGoalOwnerReportEnvelope({ body }, GOAL)).toEqual({ kind: 'not-attempted' });
+    expect(envelopeHasCompleteGoalOwnerReport({ body }, GOAL)).toBe(false);
+    expect(parseGoalOwnerReport([{ text: `MOVED: ${body[0].text}` }])).toMatchObject({
+      attempted: true,
+      complete: false,
+      missing: ['cost', 'ownerWalled', 'killed', 'nextWake'],
+    });
+  });
 });
 
 describe('goal owner report evidence', () => {

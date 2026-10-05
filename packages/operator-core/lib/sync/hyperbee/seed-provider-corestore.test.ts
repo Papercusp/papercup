@@ -168,7 +168,7 @@ print(json.dumps({'verified':True,'negativeControls':5}))
     const minted = await mintFilteredSeedContentCore({ sourceStore: source, ownerKeyHex: own.keyHex,
       stagingStore: target, redactValues: [], uuidIdempotencyDropPlan: packet.plans[0], onProjection: vi.fn() });
     expect(minted.rowCount).toBe(1);
-    const output = target.get({ key: Buffer.from(minted.keyHex, 'hex'), valueEncoding: 'json' }); await output.ready();
+    const output = target.get({ key: Buffer.from(minted.keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore & { writable: boolean }; await output.ready();
     expect(output.writable).toBe(false);
     const block = await output.get(0) as { value: { rows: PeerLogOp[] } };
     expect(block.value.rows[0]).toMatchObject({ hbKey: 'keep', value: retained.value, author_pubkey: '', epoch: 0 });

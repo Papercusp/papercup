@@ -39,7 +39,10 @@ function decode(scope: TutorialScope, value: unknown, version: TutorialVersion):
     lessonId: z.literal(CLOUD_TUTORIAL_ID), version: z.literal(version),
     scope: z.object({ tenantId: z.literal(scope.tenantId), userId: z.literal(scope.userId), workspaceId: z.literal(scope.workspaceId) }).strict(),
     disposition: tutorialProgressUpdateSchema.shape.disposition, inspectedResult: receipt.optional(),
-    ...(version === 2 ? { inspectedRevision: receipt.optional(), inspectedPractice: receipt.optional() } : {}),
+    // Version 1 must not carry the version-2 receipts. A conditional spread here infers
+    // those keys as `unknown`; an optional never keeps the field typed and still rejects it.
+    inspectedRevision: version === 2 ? receipt.optional() : z.never().optional(),
+    inspectedPractice: version === 2 ? receipt.optional() : z.never().optional(),
   }).strict() }).strict();
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error('tutorial_progress_invalid');

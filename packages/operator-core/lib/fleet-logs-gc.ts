@@ -41,7 +41,7 @@
  * green-checkpoint.ts): a live, actively-written log's mtime keeps advancing,
  * so a genuinely in-use file is never caught by the age bound.
  */
-import { readdirSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent } from 'node:fs';
+import { readdirSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent, type Stats } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
@@ -400,7 +400,7 @@ export async function runPapercuspWorkdirGc(
   }
 
   const candidates: PapercuspWorkdirGcCandidate[] = [];
-  const identities = new Map<string, ReturnType<typeof lstatSync>>();
+  const identities = new Map<string, Stats>();
   let removed = 0;
   let bytesFreed = 0;
   let wouldRemove = 0;
@@ -615,7 +615,7 @@ function unlockOwnedBuildScratchWorktree(repoRoot: string, worktreePath: string,
   }
 }
 
-function sameDirectory(path: string, identity: ReturnType<typeof lstatSync>): boolean {
+function sameDirectory(path: string, identity: Stats): boolean {
   try {
     const current = lstatSync(path);
     return current.isDirectory() && current.dev === identity.dev && current.ino === identity.ino;
@@ -653,7 +653,7 @@ export async function runWindowsBuildScratchGc(
   const repoRoot = opts.repoRoot ??
     resolve(dirname(fileURLToPath(import.meta.url)), '../../../papercusp-desktop');
   const candidates: WindowsBuildScratchGcCandidate[] = [];
-  const identities = new Map<string, ReturnType<typeof lstatSync>>();
+  const identities = new Map<string, Stats>();
   let removed = 0;
   let bytesFreed = 0;
   let wouldRemove = 0;
@@ -663,7 +663,7 @@ export async function runWindowsBuildScratchGc(
     if (!entry.isDirectory() || !WINDOWS_BUILD_SCRATCH_NAME_RE.test(entry.name)) continue;
     const path = join(root, entry.name);
     const buildRoot = join(path, WINDOWS_BUILD_SCRATCH_WORKTREE_NAME);
-    let identity: ReturnType<typeof lstatSync>;
+    let identity: Stats;
     try {
       identity = lstatSync(path);
       identities.set(path, identity);
@@ -739,7 +739,7 @@ export async function runWindowsBuildScratchGc(
       continue;
     }
 
-    let buildRootStat: ReturnType<typeof lstatSync> | undefined;
+    let buildRootStat: Stats | undefined;
     try {
       buildRootStat = lstatSync(record.buildRoot);
       if (!buildRootStat.isDirectory()) {

@@ -1792,7 +1792,8 @@ describe('reconcileProposedCompletionsAtCommit — sibling checkouts', () => {
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
     (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
-    const lookup = vi.fn(async (root: string) => new Map([[path, resolved(blobs[roots.indexOf(root)]!)]]));
+    const lookup = vi.fn(async (root: string, _headSha: string, _paths: readonly string[]) =>
+      new Map([[path, resolved(blobs[roots.indexOf(root)]!)]]));
     const emit = settlementEmitMock();
 
     const first = await reconcileProposedCompletionsAtCommit(commits[0]!, {

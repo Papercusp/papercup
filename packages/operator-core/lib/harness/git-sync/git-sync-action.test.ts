@@ -250,7 +250,7 @@ vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
   // bootstrap on its fixture root instead of defaultRunGit's production sidecar.
   ensurePotGitRepo: (...args: unknown[]) => ensurePotGitRepoMock(...args),
 }));
-const listHiveMembersForLocalPotMock = vi.hoisted(() => vi.fn(async () => []));
+const listHiveMembersForLocalPotMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => []));
 vi.mock('../../federated-pot-scope', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../federated-pot-scope')>()),
   // This orchestration suite has no peer-bootstrap fixture. Do not let a live
