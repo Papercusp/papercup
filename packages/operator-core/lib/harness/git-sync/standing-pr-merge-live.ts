@@ -36,7 +36,9 @@ import {
   type StandingPrMergeMetaStore,
 } from './standing-pr-merge-deps';
 
-const execFileP = promisify(execFile);
+let execFilePMemo: typeof execFile.__promisify__ | null = null;
+const execFileP = ((...args: unknown[]) =>
+  Reflect.apply((execFilePMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 export interface LiveStandingPrMergeArgs {
   workspaceId: string;
