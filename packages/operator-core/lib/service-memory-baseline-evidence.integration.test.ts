@@ -118,6 +118,98 @@ function auditBaseline(r: any) {
     definition: 'Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled.' };
 }
 
+// Inspect raw expiry phases independently of the cache sampler and its headlines.
+function auditExpiryResources(r: any) {
+  const requireExpiry = (value: unknown, reason: string) => {
+    if (!value) throw Error('P011 expiry resources: ' + reason);
+  };
+  requireExpiry(r.schemaVersion === 'p011-expiry-unforced-resources-v1' &&
+    r.plane === 'isolated-current-source-cache' && r.incomplete === false && !r.error,
+    'complete private cache run');
+  requireExpiry(isDeepStrictEqual(r.workload, { expiredEntries: 438, rowsPerExpiredEntry: 948,
+    bodyCodeUnits: 256, usefulEntries: 604, usefulBodyCodeUnits: 256, reads: 32, idleMs: 200 }),
+    'equivalent workload');
+  requireExpiry(sha(r.testSource?.sha256) && r.testSource.afterSha256 === r.testSource.sha256,
+    'test source fence');
+  requireExpiry(r.cohorts?.length === 4 && isDeepStrictEqual(r.cohorts.map((a: any) => a.mode),
+    ['baseline', 'pruned', 'pruned', 'baseline']), 'order-reversed arm population');
+  const usefulHash = createHash('sha256');
+  for (let index = 0; index < 604; index++) usefulHash.update(JSON.stringify({ useful: index,
+    body: ('useful:' + index + ':').padEnd(256, 'u') }));
+  const expectedUseful = { entries: 604, sha256: usefulHash.digest('hex') };
+  const labels = ['empty', 'populated', 'idle-before-end', 'ordinary-end', 'idle-after-end'];
+  const seen = new Set<string>();
+  const arms = r.cohorts.map((arm: any) => {
+    const baseline = arm.mode === 'baseline', who = arm.processIdentity;
+    requireExpiry(Number.isInteger(who?.pid) && who.pid > 0 && /^\d+$/.test(who.startTicks) &&
+      sha(who.executableSha256) && typeof who.node === 'string' && who.node.startsWith('v25.'),
+      'executable process identity');
+    const key = identity(who);
+    requireExpiry(!seen.has(key), 'independent process population'); seen.add(key);
+    requireExpiry(who.executableSha256 === r.cohorts[0].processIdentity.executableSha256 &&
+      who.node === r.cohorts[0].processIdentity.node, 'matched executable');
+    const hashes = arm.sourceHashes;
+    requireExpiry(hashes && isDeepStrictEqual(Object.keys(hashes).sort(), ['cache', 'generationStore', 'l1']) &&
+      Object.values(hashes).every(sha) && isDeepStrictEqual(hashes, r.cohorts[0].sourceHashes) &&
+      isDeepStrictEqual(hashes, r.sourceHashesAfter), 'named source fence');
+    requireExpiry(arm.controlKind === (baseline ? 'current-with-pruning-removed' : 'current') &&
+      sha(arm.effectiveCacheHash) && (baseline ? arm.effectiveCacheHash !== hashes.cache :
+        arm.effectiveCacheHash === hashes.cache) && sha(arm.moduleSha256) && sha(arm.runtimeScriptSha256),
+      'single current-source intervention');
+    const matching = r.cohorts.filter((a: any) => a.mode === arm.mode);
+    requireExpiry(matching.every((a: any) => a.effectiveCacheHash === arm.effectiveCacheHash &&
+      a.moduleSha256 === arm.moduleSha256 && a.runtimeScriptSha256 === arm.runtimeScriptSha256),
+      'stable paired runtime code');
+    requireExpiry(arm.terminalExitCode === 0 && arm.signal === null && arm.reaped === true &&
+      arm.unforcedWindowGcCalls === 0 && arm.diagnosticGcCalls === 6 &&
+      isDeepStrictEqual(arm.profilerOperations, []), 'unforced window and terminal cleanup');
+    requireExpiry(arm.idleMs === 200 && arm.samples?.length === 5 &&
+      isDeepStrictEqual(arm.samples.map((s: any) => s.label), labels), 'phase population');
+    let previousMonotonic = -1, previousAt = -1, previousAllocated = 0;
+    for (const sample of [...arm.samples, arm.diagnostic?.sample, arm.cleanup?.sample]) {
+      requireExpiry(sample && identity(sample) === key && sample.node === who.node &&
+        positive(sample.monotonicMs) && sample.monotonicMs > previousMonotonic &&
+        positive(sample.at) && sample.at >= previousAt, 'ordered PID-bound samples');
+      requireExpiry(positive(sample.pssBytes) && positive(sample.memory?.rss) &&
+        sample.pssBytes <= sample.memory.rss && positive(sample.memory.heapUsed) &&
+        sample.memory.heapUsed <= sample.memory.heapTotal && nonnegative(sample.memory.external) &&
+        nonnegative(sample.memory.arrayBuffers) && sample.memory.arrayBuffers <= sample.memory.external &&
+        positive(sample.allocatedBytes) && sample.allocatedBytes >= previousAllocated &&
+        isDeepStrictEqual(sample.descendants, []), 'PSS and cumulative allocation');
+      previousMonotonic = sample.monotonicMs; previousAt = sample.at; previousAllocated = sample.allocatedBytes;
+    }
+    const [, populated, idle, ordinary, after] = arm.samples;
+    requireExpiry(idle.monotonicMs - populated.monotonicMs >= 200 &&
+      after.monotonicMs - ordinary.monotonicMs >= 200, 'matched idle intervals');
+    requireExpiry(arm.entriesBefore === 1042 && arm.entriesAfter === (baseline ? 1042 : 604) &&
+      arm.diagnostic.entries === arm.entriesAfter && arm.diagnostic.expiredReachable === (baseline ? 438 : 0),
+      'expired-root disposition');
+    requireExpiry(isDeepStrictEqual(arm.usefulBefore, expectedUseful) &&
+      isDeepStrictEqual(arm.usefulAfter, expectedUseful), 'every useful body preserved');
+    requireExpiry(arm.reads?.count === 32 && nonnegative(arm.reads.wallMs) && nonnegative(arm.reads.cpuMs) &&
+      arm.cleanup.entries === 0 && arm.cleanup.expiredReachable === 0 &&
+      isDeepStrictEqual(arm.cleanup.descendants, []) && arm.cleanup.finalStats?.builds === 1042 &&
+      arm.cleanup.finalStats.singleFlightJoins === 0, 'useful reads and root cleanup');
+    return { mode: arm.mode, identity: key,
+      idleBefore: { pssDeltaBytes: idle.pssBytes - populated.pssBytes,
+        allocatedBytes: idle.allocatedBytes - populated.allocatedBytes },
+      ordinary: { pssDeltaBytes: ordinary.pssBytes - idle.pssBytes,
+        allocatedBytes: ordinary.allocatedBytes - idle.allocatedBytes },
+      idleAfter: { pssDeltaBytes: after.pssBytes - ordinary.pssBytes,
+        allocatedBytes: after.allocatedBytes - ordinary.allocatedBytes },
+      diagnosticHeapUsedBytes: arm.diagnostic.sample.memory.heapUsed,
+      diagnosticPssBytes: arm.diagnostic.sample.pssBytes, expiredReachable: arm.diagnostic.expiredReachable };
+  });
+  const pairs = [[0, 1], [3, 2]].map(([baseline, candidate]) => ({ baselineArm: baseline, candidateArm: candidate,
+    ordinaryPssGrowthDifferenceBytes: arms[baseline].ordinary.pssDeltaBytes - arms[candidate].ordinary.pssDeltaBytes,
+    ordinaryAllocatedDifferenceBytes: arms[baseline].ordinary.allocatedBytes - arms[candidate].ordinary.allocatedBytes,
+    diagnosticHeapDifferenceBytes: arms[baseline].diagnosticHeapUsedBytes - arms[candidate].diagnosticHeapUsedBytes,
+    diagnosticPssDifferenceBytes: arms[baseline].diagnosticPssBytes - arms[candidate].diagnosticPssBytes }));
+  return { arms, pairs, usefulEntries: 604, usefulSha256: expectedUseful.sha256,
+    disposition: 'Expired roots reclaimed with complete useful content; unforced resource costs observed independently.',
+    nativePhysicalOwnership: 'unknown', productionSavings: 'unmeasured', fullExecutedOperatorGraph: 'unknown' };
+}
+
 // Check the persisted request relation against the raw terminal pool samples.
 // The emitter's projected counts, SQL family labels and timing are not identity.
 function auditRequestQueries(r: any) {
@@ -630,6 +722,102 @@ function fixture(sibling = false): any {
   }
   return r;
 }
+
+describe('P011 independent unforced expiry resource evidence', () => {
+  const fixture = () => {
+    const hashes = { cache: 'b'.repeat(64), l1: 'c'.repeat(64), generationStore: 'd'.repeat(64) };
+    const h = createHash('sha256');
+    for (let i = 0; i < 604; i++) h.update(JSON.stringify({ useful: i,
+      body: ('useful:' + i + ':').padEnd(256, 'u') }));
+    const useful = { entries: 604, sha256: h.digest('hex') };
+    return { schemaVersion: 'p011-expiry-unforced-resources-v1', plane: 'isolated-current-source-cache',
+      incomplete: false, workload: { expiredEntries: 438, rowsPerExpiredEntry: 948, bodyCodeUnits: 256,
+        usefulEntries: 604, usefulBodyCodeUnits: 256, reads: 32, idleMs: 200 },
+      testSource: { sha256: 'e'.repeat(64), afterSha256: 'e'.repeat(64) }, sourceHashesAfter: hashes,
+      cohorts: ['baseline', 'pruned', 'pruned', 'baseline'].map((mode, arm) => {
+        const baseline = mode === 'baseline', processIdentity = { pid: arm + 10, startTicks: String(arm + 100),
+          executableSha256: 'f'.repeat(64), node: 'v25.9.0' };
+        const sample = (label: string, index: number) => ({ label, ...processIdentity,
+          at: 1800000000000 + arm * 10000 + index * 250, monotonicMs: 1000 + arm * 10000 + index * 250,
+          memory: { rss: 16384, heapUsed: 6000, heapTotal: 12288, external: 100, arrayBuffers: 50 },
+          pssBytes: 8000, allocatedBytes: 10000 + index * 300, descendants: [] });
+        return { mode, processIdentity, sourceHashes: structuredClone(hashes),
+          effectiveCacheHash: baseline ? 'a'.repeat(64) : hashes.cache,
+          controlKind: baseline ? 'current-with-pruning-removed' : 'current',
+          moduleSha256: (baseline ? 'a' : 'b').repeat(64), runtimeScriptSha256: (baseline ? 'c' : 'd').repeat(64),
+          terminalExitCode: 0, signal: null, reaped: true, unforcedWindowGcCalls: 0,
+          diagnosticGcCalls: 6, profilerOperations: [], idleMs: 200, entriesBefore: 1042,
+          entriesAfter: baseline ? 1042 : 604, usefulBefore: structuredClone(useful), usefulAfter: structuredClone(useful),
+          reads: { count: 32, wallMs: 1, cpuMs: 1 },
+          samples: ['empty', 'populated', 'idle-before-end', 'ordinary-end', 'idle-after-end'].map(sample),
+          diagnostic: { sample: sample('diagnostic-after-collection', 5), entries: baseline ? 1042 : 604,
+            expiredReachable: baseline ? 438 : 0 },
+          cleanup: { sample: sample('cleared-after-collection', 6), entries: 0, expiredReachable: 0,
+            descendants: [], finalStats: { builds: 1042, singleFlightJoins: 0 } } };
+      }) };
+  };
+  it('keeps unfavorable PSS observations separate from verified useful-root reclamation', () => {
+    const r = fixture();
+    for (const arm of r.cohorts.filter(a => a.mode === 'pruned')) arm.diagnostic.sample.pssBytes = 9000;
+    const result = auditExpiryResources(r);
+    expect(result.pairs.every((p: any) => p.diagnosticPssDifferenceBytes === -1000)).toBe(true);
+    expect(result.usefulEntries).toBe(604);
+    expect(result.nativePhysicalOwnership).toBe('unknown');
+    expect(result.productionSavings).toBe('unmeasured');
+  });
+  const corruptions: Array<[string, (r: any) => void]> = [
+    ['live-plane promotion', r => { r.plane = 'live-current-build-operator-api'; }],
+    ['incomplete capture', r => { r.incomplete = true; }],
+    ['missing arm', r => { r.cohorts.pop(); }],
+    ['wrong order', r => { r.cohorts.reverse(); r.cohorts[1].mode = 'baseline'; }],
+    ['workload mismatch', r => { r.workload.reads++; }],
+    ['test drift', r => { r.testSource.afterSha256 = 'a'.repeat(64); }],
+    ['source drift', r => { r.sourceHashesAfter.cache = 'a'.repeat(64); }],
+    ['extra source label', r => { r.cohorts[0].sourceHashes.unknown = 'a'.repeat(64); }],
+    ['missing intervention', r => { r.cohorts[0].effectiveCacheHash = r.cohorts[0].sourceHashes.cache; }],
+    ['paired code drift', r => { r.cohorts[3].moduleSha256 = 'f'.repeat(64); }],
+    ['reused process', r => { r.cohorts[1].processIdentity = r.cohorts[0].processIdentity; }],
+    ['sample process reuse', r => { r.cohorts[0].samples[3].startTicks = '0'; }],
+    ['executable mismatch', r => { r.cohorts[1].processIdentity.executableSha256 = 'a'.repeat(64); }],
+    ['RSS alone', r => { delete r.cohorts[0].samples[3].pssBytes; }],
+    ['allocation omitted', r => { delete r.cohorts[0].samples[3].allocatedBytes; }],
+    ['allocation reset', r => { r.cohorts[0].samples[3].allocatedBytes = 1; }],
+    ['short idle', r => { r.cohorts[0].samples[2].monotonicMs--; }],
+    ['GC during window', r => { r.cohorts[0].unforcedWindowGcCalls++; }],
+    ['profiler during window', r => { r.cohorts[0].profilerOperations.push('HeapProfiler.enable'); }],
+    ['diagnostic before resources', r => { r.cohorts[0].diagnostic.sample.monotonicMs = 1; }],
+    ['expired root retained', r => { r.cohorts[1].diagnostic.expiredReachable++; }],
+    ['useful entry missing', r => { r.cohorts[1].usefulAfter.entries--; }],
+    ['both arms lose useful content', r => { for (const arm of r.cohorts) {
+      arm.usefulBefore.sha256 = arm.usefulAfter.sha256 = 'a'.repeat(64);
+    } }],
+    ['useful factory rebuilt', r => { r.cohorts[1].cleanup.finalStats.builds++; }],
+    ['unreaped process', r => { r.cohorts[0].reaped = false; }],
+    ['descendant omitted', r => { r.cohorts[0].samples[3].descendants.push({ pid: 99 }); }],
+    ['cleanup root remains', r => { r.cohorts[0].cleanup.expiredReachable++; }],
+  ];
+  it.each(corruptions)('rejects corrupted %s expiry evidence', (_name, corrupt) => {
+    const r = fixture(); corrupt(r);
+    expect(() => auditExpiryResources(r)).toThrow('P011 expiry resources:');
+  });
+  it('ignores fabricated native and reduction headlines', () => {
+    const r: any = fixture(), before = auditExpiryResources(r);
+    r.nativeBytes = r.productionSavingsBytes = r.pssSavingsBytes = 1e12;
+    expect(auditExpiryResources(r)).toEqual(before);
+  });
+  it.runIf(Boolean(process.env.PAPERCUSP_P011_EXPIRY_ORACLE_INPUT))(
+    'audits the specified saved unforced expiry resource windows', () => {
+      const input = process.env.PAPERCUSP_P011_EXPIRY_ORACLE_INPUT!, bytes = readFileSync(resolve(root, input));
+      const result = auditExpiryResources(JSON.parse(bytes.toString()));
+      const destination = process.env.PAPERCUSP_P011_EXPIRY_ORACLE_REPORT;
+      if (!destination) throw Error('Canonical expiry resource oracle report required');
+      writeFileSync(resolve(root, destination), serializeIdentitySafeJson({ schemaVersion: 'p011-expiry-resources-independent-v1',
+        proof: { path: input, bytes: bytes.length, sha256: digest(bytes), result },
+        independentOf: 'No sampler import or headline; raw PID/source/workload/counter phases and independently regenerated useful contents.',
+        limitations: ['Private cache evidence only; full P011, live operator, native physical ownership and shipment remain open.',
+          'Diagnostic GC and root observations occur after unforced resource phases; unfavorable PSS deltas are retained.'] }));
+    });
+});
 
 describe('independent P011 baseline raw evidence', () => {
   it.each([false, true])('derives bounded resources from raw rows (sibling=%s)', sibling => {
