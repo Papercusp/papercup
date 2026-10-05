@@ -519,7 +519,7 @@ function preparePairCache(state: any) {
 // cachedRead writes tool|args inside Cache's workspace + NUL envelope. Match
 // that exact namespace, never a substring inside private argument payloads.
 // The same closed selector runs in the real-cache guard and private inspector.
-function inboxPairEntries(state: any) {
+function inboxPairEntries(state: any, digestsOnly = false) {
   const map = state?.cache?.l1?.map;
   if (!(map instanceof Map)) throw Error('Private pair cache entry map missing');
   return [...map].filter(([key]) => {
@@ -527,7 +527,9 @@ function inboxPairEntries(state: any) {
     const nul = key.indexOf('\u0000');
     const pipe = nul > 0 ? key.indexOf('|', nul + 1) : -1;
     return pipe > nul + 1 && key.slice(nul + 1, pipe) === 'coord:inbox';
-  }).map(([, entry]) => entry);
+  }).map(([key, entry]) => digestsOnly ? {
+    keyDigest: process.getBuiltinModule('crypto').createHash('sha256').update(key).digest('hex'),
+  } : entry);
 }
 
 // queryObjects triggers GC and enumerates survivors. Its aggregate sizes are
@@ -1200,6 +1202,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     await cache.getOrSet('private', 'plans:get|{"arg":"coord:inbox:"}', async () => ['private decoy']);
     await cache.getOrSet('private', 'coord:inbox:direct', async () => ['different writer']);
     expect(inboxPairEntries({ cache }).map(entry => entry.value)).toEqual([useful]);
+    const selected = inboxPairEntries({ cache }, true);
+    expect(selected).toEqual([{ keyDigest: createHash('sha256')
+      .update('private\u0000coord:inbox|{"limit":1}').digest('hex') }]);
+    expect(JSON.stringify(selected)).not.toContain('private');
+    expect(inboxPairEntries({ cache })[0].value).toBe(useful);
     expect(() => inboxPairEntries({ cache: {} })).toThrow('entry map');
     cache.clearL1();
     expect(inboxPairEntries({ cache })).toEqual([]);
@@ -1249,6 +1256,18 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
 
   it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT))('compares order-reversed full inbox keys with observed HTTP overlap', async () => {
     const destination = evidenceDestination(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT)!;
+    const cacheRetainers = process.env.PAPERCUSP_P011_INBOX_HEAP_RETAINERS === '1';
+    const nativeAdapter = process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER ?? '';
+    const nativeDecoder = process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER ?? '';
+    if (cacheRetainers && (!nativeAdapter || !nativeDecoder))
+      throw Error('Inbox cache retainers require the maintained native adapter and decoder before building');
+    if (cacheRetainers) for (const [executable, version] of [
+      [nativeAdapter, 'papercusp-heap-retainers 0.1.0'], [nativeDecoder, 'v8-heap-cli 0.1.0'],
+    ]) {
+      const preflight = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 5000 });
+      expect(preflight.status, preflight.stderr).toBe(0);
+      expect(preflight.stdout.trim()).toBe(version);
+    }
     const directory = mkdtempSync(join(tmpdir(), 'papercusp-inbox-pair-'));
     const current = join(directory, 'current/hono-host.mjs');
     const baseline = join(directory, 'baseline/hono-host.mjs');
@@ -1261,6 +1280,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       'libs/generic/cache/src/cache.ts', 'libs/generic/cache/src/l1.ts',
       'scripts/cdp-inspector.mjs', 'apps/operator/bin/bundle-host.sh',
       'packages/operator-core/lib/service-memory-attribution.integration.test.ts',
+      ...(cacheRetainers ? ['scripts/analyze-heap-snapshots.mjs',
+        'scripts/heap-retainers-native/src/main.rs', 'scripts/heap-retainers-native/Cargo.lock'] : []),
     ];
     const sources = () => Object.fromEntries(sourcePaths.map(path =>
       [path, createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
@@ -1306,7 +1327,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       (async () => {
         if (!e.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-') || e.PAPERCUSP_BACKGROUND_WORKERS !== '0')
           throw Error('Private request-only operator-api profile required');
-        const { createCdpClient, readProcessMemory } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
+        const { createCdpClient, readProcessMemory, readPinnedHeapObjectIds } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
+        const cacheRetainers = e.TEST_CACHE_HEAP_RETAINERS === '1';
+        if (cacheRetainers) {
+          report.limitations.push('Cache snapshots force GC after every unforced resource window; exact V8 nodes do not establish native physical ownership or production savings.');
+          for (const [field, executable, version] of [
+            ['nativeAdapterPreflight', e.TEST_NATIVE_HEAP_ADAPTER, 'papercusp-heap-retainers 0.1.0'],
+            ['nativeDecoderPreflight', e.TEST_NATIVE_HEAP_DECODER, 'v8-heap-cli 0.1.0'],
+          ]) {
+            const receipt = require('node:child_process').spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 5000 });
+            if (receipt.status !== 0 || receipt.stdout.trim() !== version) throw Error('Inbox native executable preflight failed');
+            report[field] = { version, sha256: hash(fs.readFileSync(executable)) };
+          }
+        }
         const privateEndpoints = (${privateInboxEndpoints.toString()})(e.PAPERCUSP_WORKSPACE_ID,
           e.PAPERCUSP_BACKGROUND_WORKERS, e.HARNESS_ADMIN_DATABASE_URL, e.PAPERCUSP_OPERATOR_URL, e.PAPERCUSP_PG_PORT);
         const privateHome = fs.realpathSync(e.HOME);
@@ -1386,7 +1419,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               const memory = await readProcessMemory(client, { expectedPid: host.pid });
               const os = osMemory(host.pid); if (os.startTicks !== cohort.identity.startTicks) throw Error('PID identity changed');
               const children = descendants(host.pid); for (const row of children) seen.set(row.pid + ':' + row.startTicks, row);
-              const cache = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; const rows=(" + inboxPairEntries.toString() + ")(s); return {enabled:s.cacheLayerOn, entries:rows.length, rows:rows.map(entry=>entry.value.length)}; })()", { returnByValue: true })).result.value;
+              const cache = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; const select=(" + inboxPairEntries.toString() + "); const rows=select(s); return {enabled:s.cacheLayerOn, entries:rows.length, rows:rows.map(entry=>entry.value.length), " +
+                (cacheRetainers ? "keyDigests:select(s,true).map(row=>row.keyDigest)" : "") + "}; })()", { returnByValue: true })).result.value;
               cohort.samples.push({ phase, ...memory, os, descendants: children, cache, observerMs: performance.now() - started }); publish();
             };
             await sample('before');
@@ -1412,11 +1446,70 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               await sample('workload-' + window + '-end');
             }
             await wait(1000); await sample('completion-idle');
-            const content = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; return (" + inboxPairEntries.toString() + ")(s).map(entry=>{ const h=process.getBuiltinModule('crypto').createHash('sha256'); const rows=entry.value.slice().sort((a,b)=>a.msg_id.localeCompare(b.msg_id)); for(const row of rows) h.update(JSON.stringify([row.msg_id,row.body])); return {rows:rows.length,sha256:h.digest('hex'),stringCodeUnits:rows.reduce((n,row)=>n+row.body.length,0)}; }); })()", { returnByValue: true })).result.value;
+            const contentExpression = "(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; const select=(" + inboxPairEntries.toString() + "); const digests=" +
+              (cacheRetainers ? "select(s,true)" : "[]") + "; return select(s).map((entry,index)=>{ const h=process.getBuiltinModule('crypto').createHash('sha256'); const rows=entry.value.slice().sort((a,b)=>a.msg_id.localeCompare(b.msg_id)); for(const row of rows) h.update(JSON.stringify([row.msg_id,row.body])); return {rows:rows.length,sha256:h.digest('hex'),stringCodeUnits:rows.reduce((n,row)=>n+row.body.length,0),...digests[index]}; }); })()";
+            const content = (await client.evaluate(contentExpression, { returnByValue: true })).result.value;
             cohort.content = content;
             if (content.length !== (mode === 'baseline' ? 8 : 1) || content.some(row =>
                 row.rows !== cohort.fixture.rows || row.sha256 !== cohort.fixture.sha256 || row.stringCodeUnits !== cohort.fixture.stringCodeUnits))
               throw Error('Full raw cache content or sharing mismatch: ' + JSON.stringify(content));
+            if (cacheRetainers) {
+              const heap = { pid: host.pid, inspector: { pid: host.pid }, profilerOperations: [],
+                nativeAdapterPreflight: report.nativeAdapterPreflight, nativeDecoderPreflight: report.nativeDecoderPreflight };
+              cohort.cacheHeap = heap;
+              const keyDigests = content.map(row => row.keyDigest);
+              if (keyDigests.length !== (mode === 'baseline' ? 8 : 1) || new Set(keyDigests).size !== keyDigests.length ||
+                  keyDigests.some(digest => !/^[a-f0-9]{64}$/.test(digest)) ||
+                  JSON.stringify(keyDigests) !== JSON.stringify(cohort.samples.at(-1).cache.keyDigests))
+                throw Error('Exact inbox cache digest population changed before snapshot');
+              const snapshotPath = path.join(path.dirname(e.TEST_REPORT_PATH), 'inbox-arm-' + arm + '.heapsnapshot');
+              let profilerEnabled = false;
+              const started = Date.now();
+              try {
+                heap.heapOwnerBinding = await readPinnedHeapObjectIds(client, { expectedPid: host.pid,
+                  owners: ['@papercusp/operator-core.operatorCache'], cacheKeyDigests: keyDigests,
+                  captureSnapshot: async metadata => {
+                    heap.cacheBeforeSnapshot = metadata.cacheEntries; publish();
+                    await client.send('HeapProfiler.enable'); profilerEnabled = true;
+                    heap.profilerOperations.push('HeapProfiler.enable (object IDs)');
+                    const writeStarted = Date.now();
+                    heap.profilerOperations.push('v8.writeHeapSnapshot (forced GC/synchronous pause)');
+                    const captured = (await client.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
+                      JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
+                    if (captured !== snapshotPath) throw Error('Inbox snapshot destination mismatch');
+                    heap.heapSnapshotWriteMs = Date.now() - writeStarted; publish();
+                  } });
+                await client.send('HeapProfiler.disable'); profilerEnabled = false;
+                heap.profilerOperations.push('HeapProfiler.disable (object IDs)');
+                const objectIds = [...new Set([
+                  ...heap.heapOwnerBinding.roots.filter(row => row.status === 'found').map(row => row.id),
+                  ...heap.heapOwnerBinding.cacheEntries.records.flatMap(row =>
+                    row.objects.filter(object => object.status === 'found').map(object => object.id)),
+                ])];
+                if (!heap.heapOwnerBinding.roots.some(row => row.status === 'found') || !objectIds.length)
+                  throw Error('Inbox cache root snapshot identity unobserved');
+                publish();
+                const { summarizeHeapSnapshotStream, summarizeHeapRetainers } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
+                const summaryStarted = Date.now();
+                const summary = await summarizeHeapSnapshotStream(fs.createReadStream(snapshotPath));
+                heap.heapSnapshot = { ...summary, pid: host.pid, writeMs: heap.heapSnapshotWriteMs,
+                  summaryMs: Date.now() - summaryStarted, durationMs: Date.now() - started };
+                publish();
+                heap.heapRetainers = { ...(await summarizeHeapRetainers(fs.readFileSync(snapshotPath), {
+                  top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32, objectIds,
+                  nativeExecutable: e.TEST_NATIVE_HEAP_ADAPTER, decoderControl: e.TEST_NATIVE_HEAP_DECODER,
+                })), pid: host.pid };
+                heap.postSnapshotRowsPreserved = JSON.stringify((await client.evaluate(contentExpression,
+                  { returnByValue: true })).result.value) === JSON.stringify(content);
+                if (!heap.postSnapshotRowsPreserved) throw Error('Inbox useful cache content changed after snapshot');
+              } finally {
+                if (profilerEnabled) {
+                  await client.send('HeapProfiler.disable');
+                  heap.profilerOperations.push('HeapProfiler.disable (object IDs)');
+                }
+                fs.rmSync(snapshotPath, { force: true }); heap.snapshotRemoved = !fs.existsSync(snapshotPath); publish();
+              }
+            }
           } catch (err) { cohort.error = String(err); cohort.hostErrorTail = tail; throw err; }
           finally {
             client?.close();
@@ -1476,8 +1569,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       preflight.artifacts = copiedArtifacts;
       phase = 'runtime-cohorts';
       const result = runCohortWithLog([resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--', process.execPath, '-e', probe],
-        { cwd: root, timeout: 360000, env: { ...process.env, TEST_CURRENT_PATH: current, TEST_BASELINE_PATH: baseline,
+        { cwd: root, timeout: cacheRetainers ? 900000 : 360000, env: { ...process.env, TEST_CURRENT_PATH: current, TEST_BASELINE_PATH: baseline,
           TEST_REPORT_PATH: rawReport, TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX,
+          TEST_CACHE_HEAP_RETAINERS: cacheRetainers ? '1' : '0', TEST_NATIVE_HEAP_ADAPTER: nativeAdapter,
+          TEST_NATIVE_HEAP_DECODER: nativeDecoder, TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs'),
           TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_PRIVATE_PARENT: tmpdir(), TEST_EXPECTED_BUILD: servingPin?.health.sha ?? '' } },
         join(directory, 'runtime.log'));
       const report = readCohortReport(rawReport, result);
@@ -1528,7 +1623,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       writeFileSync(destination, serializeIdentitySafeJson(failure));
       throw error;
     } finally { rmSync(directory, { recursive: true, force: true }); }
-  }, 570000);
+  }, process.env.PAPERCUSP_P011_INBOX_HEAP_RETAINERS === '1' ? 1200000 : 570000);
 
   it.each(['linked', 'unobserved', 'unknown'] as const)('preserves completed query correlation %s across the inspector boundary', state => {
     const source = { processInstanceId: 'query-process', buildSha: 'abcdef123', poolInstanceId: 'query-pool' };
