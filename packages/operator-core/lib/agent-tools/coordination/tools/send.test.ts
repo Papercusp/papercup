@@ -273,6 +273,10 @@ it('opts out of the ambient workspace transaction because the handler never read
 let n = 0;
 beforeEach(() => {
   vi.clearAllMocks();
+  // Early refusals can leave once-results unconsumed. Reset these queues so
+  // a failed inline assertion cannot poison the next case's reference control.
+  getModeSubjectMock.mockReset().mockResolvedValue(null);
+  readGoalOwnerReportTruthMock.mockReset().mockResolvedValue(null);
   chunking.bypass = false;
   n = 0;
   // each send mints a fresh msg_id; echo the resolved `to` back on the envelope

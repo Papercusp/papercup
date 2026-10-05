@@ -7042,6 +7042,21 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(stateOpts().completionAuthority).toBe('proposed');
       expect(r.completionAuthority).toBe('proposed');
       expect(r.countsTowardBurnDown).toBe(false);
+      expect(r.authorityWarning).toContain(String(r.terminalCriteriaWarning));
+      expect(r.authorityWarning).toMatch(/forbidden-evidence-mode.*already-passing/i);
+      expect(r.authorityWarning).not.toMatch(/requires `verifiedHow`|with those fields filled/i);
+    });
+
+    it('preview explains the same terminal criterion without writing the close', async () => {
+      enforcement(true);
+      const r = await one({ ...downgradingClose, validateOnly: true });
+      expect(r.validationOnly).toBe(true);
+      expect(r.completionAuthority).toBe('proposed');
+      expect(r.countsTowardBurnDown).toBe(false);
+      expect(r.terminalCriteriaWarning).toMatch(/forbidden-evidence-mode.*already-passing/i);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
     });
 
     it('OFF: the SAME close lands `committed` — the switch actually switches something off', async () => {

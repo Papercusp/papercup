@@ -10,11 +10,16 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ owne
 // readNonAgentWorkCategory backs the D-035 agent-work door gate (work-nature/agent-work-door-gate);
 // null = the row IS agent work, so every existing case reaches its own write path unchanged.
 const readNonAgentWorkCategory = vi.hoisted(() => vi.fn(async () => null as { nature: string; audience: string | null } | null));
-vi.mock('../../work-items', () => ({ getWorkItem: vi.fn(), setWorkItemStateWithAliasInfo: vi.fn(), readNonAgentWorkCategory }));
+vi.mock('../../work-items', () => ({
+  getWorkItem: vi.fn(),
+  setWorkItemStateWithAliasInfo: vi.fn(),
+  commentWorkItem: vi.fn(),
+  readNonAgentWorkCategory,
+}));
 vi.mock('../../scheduler/plan-item-lane-guard', () => ({ resolvePlanItemStamp: vi.fn() }));
 vi.mock('./arm-reversible-work-item', () => ({ planWorkItemArm: vi.fn(async () => null), commitWorkItemArm: vi.fn() }));
 
-import { getWorkItem, setWorkItemStateWithAliasInfo, type WorkItem } from '../../work-items';
+import { commentWorkItem, getWorkItem, setWorkItemStateWithAliasInfo, type WorkItem } from '../../work-items';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { planWorkItemArm } from './arm-reversible-work-item';
@@ -706,18 +711,99 @@ describe('work_items:set_state — reason/note alias for completionRef (EI-19961
     expect(parse({ id: 'WI-1', state: 'done', reson: EVIDENCE, assumptions: 'none' }).success).toBe(false);
   });
 
-  // ── the silent-drop guard: refused exactly where the value cannot be stored ────
-  it('REFUSES the alias on a non-terminal write rather than accepting and dropping it', () => {
-    expect(parse({ id: 'WI-1', state: 'wip', reason: EVIDENCE }).success).toBe(false);
-    expect(messages({ id: 'WI-1', state: 'wip', reason: EVIDENCE })).toContain('work_items:comment');
-  });
-
-  it('names work_items:set_blocker when the refused non-terminal write is `blocked`', () => {
+  // ── blocked: still refused, because its reason must be a TYPED blocker ─────────
+  it('names work_items:set_blocker when a `blocked` write carries a reason', () => {
+    expect(parse({ id: 'WI-1', state: 'blocked', reason: EVIDENCE }).success).toBe(false);
     expect(messages({ id: 'WI-1', state: 'blocked', reason: EVIDENCE })).toContain('work_items:set_blocker');
+    expect(parse({ items: [{ id: 'WI-1', state: 'blocked', note: EVIDENCE }] }).success).toBe(false);
   });
 
-  it('REFUSES the alias on a non-terminal items[] arm', () => {
-    expect(parse({ items: [{ id: 'WI-1', state: 'wip', reason: EVIDENCE }] }).success).toBe(false);
+  it('does not blame `reason` when a progress write fails for an unrelated cause', () => {
+    // CALIBRATION for the narrowed refusal: an unknown key beside an accepted `reason`
+    // must not be reported as the old "reason is refused here" message.
+    expect(parse({ id: 'WI-1', state: 'wip', reason: EVIDENCE, reson: 'x' }).success).toBe(false);
+    expect(messages({ id: 'WI-1', state: 'wip', reason: EVIDENCE, reson: 'x' })).not.toContain('set_blocker');
+  });
+});
+
+/**
+ * EI-24917736184136483 — a `reason` / `note` on an open / wip / needs-human write is
+ * RECORDED as a comment on the item instead of being refused.
+ *
+ * Measured 2026-10-05 over harness_shared.tool_invocations (7d): ~110 of this verb's
+ * schema rejections were this shape (75 of them `state:"wip"` + `reason`, 39 agents).
+ * The old refusal existed because the state row has no reason column; the comment
+ * thread is where the value persists, so the write now lands it there.
+ *
+ * Asserted in both directions: the reason REACHES a comment, and it never reaches
+ * `completionRef` (which the writer ignores on a non-terminal branch — a silent drop).
+ */
+describe('work_items:set_state — non-terminal reason is recorded as a comment (EI-24917736184136483)', () => {
+  type Parsed = { success: boolean };
+  const parse = (args: unknown): Parsed =>
+    (tool.args as { safeParse: (v: unknown) => Parsed }).safeParse(args);
+  const commentM = vi.mocked(commentWorkItem);
+  const REASON = 'picked up after WI-2 landed; starting on the schema half';
+
+  beforeEach(() => {
+    setM.mockReset();
+    commentM.mockReset();
+    setM.mockImplementation(async (id, state) => noAlias(id, state));
+    commentM.mockResolvedValue({ id: 4242, thread_id: 't', author_id: 'me', body: '', created_ts: '' });
+  });
+
+  it('ACCEPTS `reason` / `note` on wip, open and needs-human (inline, ids[] and items[])', () => {
+    expect(parse({ id: 'WI-1', state: 'wip', reason: REASON }).success).toBe(true);
+    expect(parse({ id: 'WI-1', state: 'open', note: REASON }).success).toBe(true);
+    expect(parse({ id: 'WI-1', state: 'needs-human', reason: REASON }).success).toBe(true);
+    expect(parse({ ids: ['WI-1', 'WI-2'], state: 'in_progress', reason: REASON }).success).toBe(true);
+    expect(parse({ items: [{ id: 'WI-1', state: 'wip', reason: REASON }] }).success).toBe(true);
+  });
+
+  it('records the reason as a comment on the item and reports where it went', async () => {
+    const out = await body({ id: 'WI-1', state: 'wip', reason: REASON });
+    expect(commentM).toHaveBeenCalledTimes(1);
+    expect(commentM).toHaveBeenCalledWith('WI-1', expect.stringContaining(REASON), 'me', expect.any(Object));
+    expect(out.results[0]).toMatchObject({ ok: true, transitionNoteRecorded: { as: 'comment', postId: 4242 } });
+  });
+
+  it('never routes a non-terminal reason into completionRef', async () => {
+    await body({ id: 'WI-1', state: 'wip', reason: REASON });
+    expect(setM).toHaveBeenCalledWith('WI-1', 'wip', expect.objectContaining({ completionRef: undefined }));
+  });
+
+  it('records one comment per id in ids[] and per row in items[]', async () => {
+    await body({ ids: ['WI-1', 'WI-2'], state: 'wip', note: REASON });
+    await body({ items: [{ id: 'WI-3', state: 'open', reason: REASON }, { id: 'WI-4', state: 'wip' }] });
+    expect(commentM.mock.calls.map((c) => c[0])).toEqual(['WI-1', 'WI-2', 'WI-3']);
+  });
+
+  it('posts no comment when no reason was given', async () => {
+    await body({ id: 'WI-1', state: 'wip' });
+    expect(commentM).not.toHaveBeenCalled();
+  });
+
+  it('posts no comment when the state write did not land (no orphan comment)', async () => {
+    setM.mockResolvedValueOnce({ workItem: null, aliased: false, requestedState: 'wip', appliedState: 'wip' } as never);
+    const out = await body({ id: 'WI-404', state: 'wip', reason: REASON });
+    expect(commentM).not.toHaveBeenCalled();
+    expect(out.results[0].ok).toBe(false);
+  });
+
+  it('reports a failed comment loudly instead of dropping the reason', async () => {
+    commentM.mockRejectedValueOnce(new Error('thread store down'));
+    const out = await body({ id: 'WI-1', state: 'wip', reason: REASON });
+    expect(out.results[0].ok).toBe(true);
+    expect(out.results[0].transitionNoteWarning).toContain('NOT recorded');
+    expect(out.results[0].transitionNoteWarning).toContain(REASON);
+  });
+
+  it('still REFUSES reason + note carrying DIFFERENT values on a progress write', () => {
+    expect(parse({ id: 'WI-1', state: 'wip', reason: REASON, note: 'something else' }).success).toBe(false);
+  });
+
+  it('still REFUSES completionRef on a non-terminal write', () => {
+    expect(parse({ id: 'WI-1', state: 'wip', completionRef: REASON }).success).toBe(false);
   });
 
   // ── ambiguity is reported, never silently resolved (the _body-alias rule) ──────

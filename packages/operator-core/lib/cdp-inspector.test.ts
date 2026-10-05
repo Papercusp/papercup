@@ -376,6 +376,154 @@ describe('P011 exact request weak-target heap-ID reader', () => {
   }, 30_000);
 });
 
+describe('P011 digest-selected cache snapshot identities', () => {
+  const owner = '@papercusp/operator-core.operatorCache';
+  const key = 'private-workspace\u0000coord:inbox|private-arguments';
+  const digest = createHash('sha256').update(key).digest('hex');
+  const missingDigest = createHash('sha256').update('missing').digest('hex');
+
+  function fixture() {
+    const payload = [{ privateBody: 'private-result-content' }];
+    const entry: any = { value: payload };
+    const map = new Map<any, any>([[key, entry]]);
+    const state = { cache: { l1: { map } } };
+    const slots = new Map([[owner, { value: state }]]);
+    const context = { Symbol, Map, WeakRef, Object, Set, process: { pid: 7,
+      getBuiltinModule: (name: string) => name === 'util' ? { types } : { createHash } },
+      [Symbol.for('@papercusp/module-singleton.slots')]: slots };
+    const handles = new Map<string, object>();
+    const ids = new Map<object, string>([[state, '10'], [entry, '11'], [payload, '12']]);
+    const calls: string[] = [];
+    let nextHandle = 0;
+    const remote = (value: any, byValue?: boolean) => {
+      if (byValue || !value || typeof value !== 'object') return { result: { value } };
+      const objectId = 'handle-' + nextHandle++; handles.set(objectId, value); return { result: { objectId } };
+    };
+    const client = { async evaluate(expression: string, options?: any) {
+      calls.push('evaluate'); return remote(runInNewContext(expression, context), options?.returnByValue);
+    }, async send(method: string, params: any) {
+      calls.push(method);
+      if (method === 'Runtime.releaseObjectGroup') { handles.clear(); return {}; }
+      if (method === 'Runtime.callFunctionOn') return remote(runInNewContext(
+        '(' + params.functionDeclaration + ').call(target)', { ...context, target: handles.get(params.objectId) }), params.returnByValue);
+      if (method === 'HeapProfiler.getHeapObjectId') return { heapSnapshotObjectId: ids.get(handles.get(params.objectId)!) ?? '0' };
+      throw new Error('Unexpected method ' + method);
+    } };
+    return { client, entry, payload, map, state, slots, context, handles, ids, calls };
+  }
+
+  it('joins entry and payload IDs without exposing keys, values, or running application iterators', async () => {
+    const f = fixture();
+    Object.defineProperty(f.map, Symbol.iterator, { value() { throw new Error('application iterator'); } });
+    const r = await readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest, missingDigest] });
+    expect(r.cacheEntries?.records).toEqual([
+      { keyDigest: digest, status: 'selected', objects: [{ phase: 'entry', status: 'found', id: 11 }, { phase: 'value', status: 'found', id: 12 }] },
+      { keyDigest: missingDigest, status: 'missing', objects: [{ phase: 'entry', status: 'missing' }, { phase: 'value', status: 'missing' }] },
+    ]);
+    expect(r.cacheEntries?.scanComplete).toBe(true);
+    for (const secret of [key, 'private-arguments', 'private-result-content', 'handle-']) expect(JSON.stringify(r)).not.toContain(secret);
+    expect(f.handles.size).toBe(0);
+    expect(f.calls).not.toContain('HeapProfiler.takeHeapSnapshot');
+  });
+
+  it('does not strongly retain selected entries or values across the snapshot callback', async () => {
+    const f = fixture();
+    let captures = 0;
+    const r = await readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest],
+      captureSnapshot: async metadata => {
+        captures++; expect(metadata.cacheEntries.records).toEqual([{ keyDigest: digest, status: 'selected' }]);
+        const selection: any = [...f.handles.values()][0];
+        expect(selection.mapRef).toBeInstanceOf(WeakRef);
+        expect(selection.entries[0].entryRef).toBeInstanceOf(WeakRef);
+        expect(selection.entries[0].valueRef).toBeInstanceOf(WeakRef);
+        expect(Object.values(selection)).not.toContain(f.map);
+        expect(Object.values(selection.entries[0])).not.toContain(f.entry);
+        expect(Object.values(selection.entries[0])).not.toContain(f.payload);
+      } });
+    expect(captures).toBe(1); expect(r.cacheEntries?.records[0].objects[1].id).toBe(12); expect(f.handles.size).toBe(0);
+  });
+
+  it.each(['evicted', 'map-changed', 'entry-changed', 'value-changed'])('invalidates IDs after %s during capture', async status => {
+    const f = fixture();
+    const r = await readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest],
+      captureSnapshot: async () => {
+        if (status === 'evicted') f.map.delete(key);
+        else if (status === 'map-changed') f.state.cache.l1.map = new Map([[key, f.entry]]);
+        else if (status === 'entry-changed') f.map.set(key, { value: f.payload });
+        else f.entry.value = [...f.payload];
+      } });
+    expect(r.cacheEntries?.records[0]).toEqual({ keyDigest: digest, status,
+      objects: [{ phase: 'entry', status }, { phase: 'value', status }] });
+    expect(f.handles.size).toBe(0);
+  });
+
+  it('rechecks membership after the CDP ID await and discards a now-detached target', async () => {
+    const f = fixture(), send = f.client.send;
+    f.client.send = async (method, params) => {
+      const result = await send(method, params);
+      if (method === 'HeapProfiler.getHeapObjectId' && result.heapSnapshotObjectId === '12') f.map.delete(key);
+      return result;
+    };
+    const r = await readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest] });
+    expect(r.cacheEntries?.records[0].objects).toEqual([{ phase: 'entry', status: 'evicted' }, { phase: 'value', status: 'evicted' }]);
+    expect(f.handles.size).toBe(0);
+  });
+
+  it.each(['entry-getter', 'path-getter', 'entry-proxy', 'value-proxy', 'map-proxy', 'nonobject'])('refuses unsafe %s without invoking it', async mode => {
+    const f = fixture(); let effects = 0, snapshots = 0;
+    if (mode === 'entry-getter') Object.defineProperty(f.entry, 'value', { get() { effects++; return f.payload; } });
+    else if (mode === 'path-getter') Object.defineProperty(f.state, 'cache', { get() { effects++; return { l1: { map: f.map } }; } });
+    else if (mode === 'entry-proxy') f.map.set(key, new Proxy(f.entry, { getOwnPropertyDescriptor() { effects++; throw new Error('proxy'); } }));
+    else if (mode === 'value-proxy') f.entry.value = new Proxy(f.payload, { ownKeys() { effects++; throw new Error('proxy'); } });
+    else if (mode === 'map-proxy') f.state.cache.l1.map = new Proxy(f.map, { get() { effects++; throw new Error('proxy'); } });
+    else f.entry.value = 'private-primitive';
+    await expect(readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest],
+      captureSnapshot: async () => { snapshots++; } })).rejects.toThrow('pre-snapshot cache selection');
+    expect(effects).toBe(0); expect(snapshots).toBe(0); expect(f.handles.size).toBe(0);
+  });
+
+  it.each(['scan-limit', 'long-key', 'non-string-key'])('keeps a %s absence unobserved and rejects capture', async mode => {
+    const f = fixture();
+    if (mode === 'scan-limit') for (let i = 0; i < 8192; i++) f.map.set('other-' + i, { value: [] });
+    else f.map.set(mode === 'long-key' ? 'x'.repeat(16385) : {}, { value: [] });
+    const r = await readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest, missingDigest] });
+    expect(r.cacheEntries?.records.every(row => row.status === 'unobserved')).toBe(true);
+    await expect(readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest],
+      captureSnapshot: async () => { throw new Error('must not capture'); } })).rejects.toThrow('pre-snapshot cache selection');
+    expect(f.handles.size).toBe(0);
+  });
+
+  it('preserves shared payload IDs across distinct entries instead of inventing exclusive ownership', async () => {
+    const f = fixture(), otherKey = 'other-private-key', otherEntry = { value: f.payload };
+    f.map.set(otherKey, otherEntry); f.ids.set(otherEntry, '13');
+    const r = await readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner],
+      cacheKeyDigests: [digest, createHash('sha256').update(otherKey).digest('hex')] });
+    expect(r.cacheEntries?.records.map(row => row.objects[1].id)).toEqual([12, 12]);
+    expect(r.cacheEntries?.definition).toContain('shared IDs overlap');
+  });
+
+  it('releases the selection and target handles when snapshot or ID lookup fails', async () => {
+    for (const capture of [true, false]) {
+      const f = fixture(), send = f.client.send;
+      f.client.send = async (method, params) => {
+        if (!capture && method === 'HeapProfiler.getHeapObjectId') throw new Error('ID failure');
+        return send(method, params);
+      };
+      await expect(readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests: [digest],
+        ...(capture ? { captureSnapshot: async () => { throw new Error('snapshot failure'); } } : {}) })).rejects.toThrow('failure');
+      expect(f.handles.size).toBe(0); expect(f.calls.at(-1)).toBe('Runtime.releaseObjectGroup');
+    }
+  });
+
+  it('validates exact digests, bounds and owner before touching the inspector', async () => {
+    const f = fixture();
+    for (const cacheKeyDigests of [[], [digest, digest], ['invalid'], Array.from({ length: 33 }, (_, i) => createHash('sha256').update(String(i)).digest('hex'))])
+      await expect(readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: [owner], cacheKeyDigests })).rejects.toThrow();
+    await expect(readPinnedHeapObjectIds(f.client as any, { expectedPid: 7, owners: ['other'], cacheKeyDigests: [digest] })).rejects.toThrow('operator-cache owner');
+    expect(f.calls).toEqual([]);
+  });
+});
+
 describe('PID-bound host configuration facts', () => {
   it('opts into direct V8 allocation counters only after validating both the flag and target identity', async () => {
     const effects: string[] = [];

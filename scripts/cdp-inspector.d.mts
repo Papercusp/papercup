@@ -32,16 +32,22 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * The reader itself does not force GC or take a snapshot. A
  * dereference and remote handle temporarily keep a target alive; all handles
  * are released before return. Collected/evicted/unobserved objects stay gaps.
- * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[],
+ * Optional cacheKeyDigests select exact L1 entry/payload identities through the
+ * same data-property path as readPinnedState. Pre-snapshot selection retains
+ * only WeakRefs; post-snapshot membership changes invalidate both IDs. Raw keys
+ * and values never leave the target. Shared payload IDs must not be summed.
+ * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[], cacheKeyDigests?: string[],
  *   captureSnapshot?: (metadata: any) => Promise<void>}} options
  */
-export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners, pgRequestIds, captureSnapshot }: {
+export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners, pgRequestIds, cacheKeyDigests, captureSnapshot }: {
     expectedPid: number;
     owners: string[];
     pgRequestIds?: string[];
+    cacheKeyDigests?: string[];
     captureSnapshot?: (metadata: any) => Promise<void>;
 }): Promise<{
     definition: string;
+    cacheEntries?: any;
     queries?: {
         definition: string;
         selection?: string | undefined;

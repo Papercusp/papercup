@@ -15,7 +15,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getWorkItem, setWorkItemStateWithAliasInfo, type TerminalCompletionConflict } from '../../work-items';
+import {
+  commentWorkItem,
+  getWorkItem,
+  setWorkItemStateWithAliasInfo,
+  type TerminalCompletionConflict,
+} from '../../work-items';
 import { refuseNonAgentWorkAtDoor } from '../../work-nature/agent-work-door-gate';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 // From the LEAF module, not '../../work-items': unit tests here mock that module
@@ -43,6 +48,7 @@ import {
 } from './_completion-ref-alias';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import {
+  FEATURE_STATE_ALIASES,
   TERMINAL_INPUT_STATES,
   NON_TERMINAL_INPUT_STATES,
   isTerminalStateInput,
@@ -118,6 +124,43 @@ const asEnumValues = (v: readonly string[]) => v as unknown as [string, ...strin
  *  `DONE` keeps working — this gate adds structure, it does not narrow acceptance). */
 const foldStateCase = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : v);
 
+/**
+ * The accepted spellings that resolve to `blocked`. DERIVED from the same alias map the
+ * runtime writer folds through, so a future `blocked` alias lands in this arm on its own.
+ */
+const foldsToBlocked = (s: string): boolean => {
+  const lower = s.trim().toLowerCase();
+  return (FEATURE_STATE_ALIASES[lower] ?? lower) === 'blocked';
+};
+const BLOCKED_INPUT_STATES = NON_TERMINAL_INPUT_STATES.filter(foldsToBlocked);
+const PROGRESS_INPUT_STATES = NON_TERMINAL_INPUT_STATES.filter((s) => !foldsToBlocked(s));
+
+/**
+ * EI-24917736184136483: a `reason` / `note` on an open / wip / needs-human write is
+ * RECORDED as a comment on the item, not refused.
+ *
+ * Measured 2026-10-05 over harness_shared.tool_invocations (7d): ~110 of this verb's
+ * schema rejections were exactly this shape (75 of them `state:"wip"` with a `reason`,
+ * from 39 distinct agents). They were refused because the state row has no reason
+ * column, so accepting the value there would have discarded it. The value was never the
+ * problem, though: the caller is telling the item's readers why it moved. A work-item
+ * comment IS the durable home for that, so the write now lands it there and reports
+ * where it went (`transitionNoteRecorded`). Nothing is dropped and nothing is refused.
+ *
+ * `blocked` stays refused: a blocked item's reason must be a TYPED blocker
+ * (work_items:set_blocker) so the scheduler can act on it, and a free-text note would
+ * read as if it satisfied that requirement when it does not.
+ */
+const transitionNoteFields = {
+  reason: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe('why the item moved — recorded as a comment on the item (a non-terminal state has no reason field of its own)'),
+  note: z.string().min(1).max(2000).optional().describe('same as `reason` — pass only one'),
+};
+
 function nonTerminalAliasSchemaError(input: unknown): string | undefined {
   const root = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : undefined;
   const candidates = Array.isArray(root?.items) ? root.items : [input];
@@ -125,15 +168,14 @@ function nonTerminalAliasSchemaError(input: unknown): string | undefined {
     if (typeof candidate !== 'object' || candidate === null) continue;
     const row = candidate as Record<string, unknown>;
     const alias = suppliedAlias(row as CompletionRefAliasBearing);
-    if (!alias || (typeof row.state === 'string' && isTerminalStateInput(row.state))) continue;
-    const state = String(row.state ?? '');
-    const isBlocked = state.trim().toLowerCase() === 'blocked';
+    // Only `blocked` still refuses the field (see transitionNoteFields above); every other
+    // non-terminal state accepts it, so a failure there has some other cause and must not
+    // be misreported as this one.
+    if (!alias || typeof row.state !== 'string' || !foldsToBlocked(row.state)) continue;
     return (
-      `\`${alias.key}\` aliases \`completionRef\`, which only a TERMINAL state persists — a ` +
-      `"${state}" write stores no reason field, so accepting it here would silently discard it. ` +
-      (isBlocked
-        ? 'Record a blocked reason with work_items:set_blocker (typed external blocker), or work_items:link { rel:"blocks" } for a dependency on another work-item.'
-        : 'Record the reason with work_items:comment, or work_items:checkpoint for in-flight state.')
+      `\`${alias.key}\` is not accepted on a "${row.state}" write — a blocked item's reason must be a TYPED ` +
+      'blocker so the scheduler can act on it. Record it with work_items:set_blocker (external event, gate, ' +
+      'runtime or human capability), or work_items:link { rel:"blocks" } for a dependency on another work-item.'
     );
   }
   return undefined;
@@ -215,11 +257,16 @@ const terminalItem = itemBase.extend({
   }
 });
 
-const nonTerminalItem = itemBase.extend({
-  state: z.preprocess(foldStateCase, z.enum(asEnumValues(NON_TERMINAL_INPUT_STATES))),
+const progressItem = itemBase.extend({
+  state: z.preprocess(foldStateCase, z.enum(asEnumValues(PROGRESS_INPUT_STATES))),
+  ...transitionNoteFields,
+}).superRefine((it, ctx) => rejectCompletionRefAliasConflict(it, ctx));
+
+const blockedItem = itemBase.extend({
+  state: z.preprocess(foldStateCase, z.enum(asEnumValues(BLOCKED_INPUT_STATES))),
 });
 
-const itemSpec = z.union([terminalItem, nonTerminalItem], { error: aliasAwareUnionError });
+const itemSpec = z.union([terminalItem, progressItem, blockedItem], { error: aliasAwareUnionError });
 
 function addTerminalRequirements(
   it: CompletionRefAliasBearing & { assumptions?: unknown },
@@ -270,8 +317,7 @@ const terminalMany = z
   .strict()
   .superRefine((it, ctx) => addTerminalRequirements(it, ctx));
 
-const nonTerminalInlineShape = {
-  state: z.preprocess(foldStateCase, z.enum(asEnumValues(NON_TERMINAL_INPUT_STATES))),
+const nonTerminalInlineCommon = {
   harness: z.string().max(80).optional().describe('default harness for the inline id / ids'),
   decision: decisionSpec.optional().describe('P-114 risk/authority for the inline id / every id in `ids`'),
   force: z
@@ -280,9 +326,28 @@ const nonTerminalInlineShape = {
     .describe('required to reopen an already-terminally-completed item; only needed for a deliberate reopen'),
 };
 
-const nonTerminalSingle = z.object({ id: z.string().min(1), ...nonTerminalInlineShape }).strict();
-const nonTerminalMany = z
-  .object({ ids: z.array(z.string().min(1)).min(1).max(200), ...nonTerminalInlineShape })
+const progressInlineShape = {
+  state: z.preprocess(foldStateCase, z.enum(asEnumValues(PROGRESS_INPUT_STATES))),
+  ...nonTerminalInlineCommon,
+  ...transitionNoteFields,
+};
+
+const blockedInlineShape = {
+  state: z.preprocess(foldStateCase, z.enum(asEnumValues(BLOCKED_INPUT_STATES))),
+  ...nonTerminalInlineCommon,
+};
+
+const progressSingle = z
+  .object({ id: z.string().min(1), ...progressInlineShape })
+  .strict()
+  .superRefine((it, ctx) => rejectCompletionRefAliasConflict(it, ctx));
+const progressMany = z
+  .object({ ids: z.array(z.string().min(1)).min(1).max(200), ...progressInlineShape })
+  .strict()
+  .superRefine((it, ctx) => rejectCompletionRefAliasConflict(it, ctx));
+const blockedSingle = z.object({ id: z.string().min(1), ...blockedInlineShape }).strict();
+const blockedMany = z
+  .object({ ids: z.array(z.string().min(1)).min(1).max(200), ...blockedInlineShape })
   .strict();
 const itemsBatch = z
   .object({
@@ -292,24 +357,36 @@ const itemsBatch = z
   .strict();
 
 const setStateArgs = z.union(
-  [itemsBatch, terminalSingle, terminalMany, nonTerminalSingle, nonTerminalMany],
+  [itemsBatch, terminalSingle, terminalMany, progressSingle, progressMany, blockedSingle, blockedMany],
   { error: aliasAwareUnionError },
 );
 type SetStateArgs = z.infer<typeof setStateArgs>;
 
+/**
+ * Split a row's reason-shaped fields by what the STATE can persist. On a terminal write
+ * they are completion evidence (`completionRef`); on any other write they are a
+ * transition note recorded as a comment. Never both: routing a non-terminal `reason`
+ * into `completionRef` would hand the writer a value it ignores on that branch, i.e. the
+ * silent discard this split exists to prevent.
+ */
 function inlineTerminalEvidence(input: unknown): {
   completionRef: string | undefined;
   assumptions: AssumptionDeclaration | undefined;
+  transitionNote: string | undefined;
 } {
   const row = typeof input === 'object' && input !== null
     ? input as Record<string, unknown>
     : {};
   if (!('completionRef' in row || 'reason' in row || 'note' in row)) {
-    return { completionRef: undefined, assumptions: undefined };
+    return { completionRef: undefined, assumptions: undefined, transitionNote: undefined };
+  }
+  if (typeof row.state === 'string' && !isTerminalStateInput(row.state)) {
+    return { completionRef: undefined, assumptions: undefined, transitionNote: suppliedAlias(row as CompletionRefAliasBearing)?.value };
   }
   return {
     completionRef: resolveCompletionRefAlias(row as CompletionRefAliasBearing),
     assumptions: 'assumptions' in row ? row.assumptions as AssumptionDeclaration : undefined,
+    transitionNote: undefined,
   };
 }
 
@@ -361,6 +438,8 @@ export default defineTool({
             // P-008 (d): flattened exactly like `completionRef` above — the union's
             // terminal arm carries it, the non-terminal arm has no such field.
             assumptions: terminalEvidence.assumptions,
+            // EI-24917736184136483: a non-terminal row's reason, recorded as a comment.
+            transitionNote: terminalEvidence.transitionNote,
           };
         })
       : 'ids' in input
@@ -495,6 +574,29 @@ export default defineTool({
             },
           });
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
+        // EI-24917736184136483: record a non-terminal write's reason where it persists —
+        // the item's comment thread — AFTER the state write landed, so a refused write
+        // never leaves an orphan comment. A failed post does not undo the state write
+        // (it already happened); it is reported loudly so the caller can re-post.
+        let transitionNoteRecorded: { as: 'comment'; postId: number } | undefined;
+        let transitionNoteWarning: string | undefined;
+        if (workItem && it.transitionNote) {
+          const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined;
+          try {
+            const post = await commentWorkItem(
+              it.id,
+              `State → ${String(appliedState ?? it.state)}: ${it.transitionNote}`,
+              ident.ownerId,
+              { harness, ...(workspaceId ? { workspaceId } : {}), writerOwnerId: ident.ownerId },
+            );
+            if (post) transitionNoteRecorded = { as: 'comment', postId: post.id };
+            else transitionNoteWarning = `state written, but your reason was NOT recorded (the comment found no item) — re-post it with work_items:comment: ${it.transitionNote}`;
+          } catch (err) {
+            transitionNoteWarning =
+              `state written, but your reason was NOT recorded (${err instanceof Error ? err.message : String(err)}) — ` +
+              `re-post it with work_items:comment: ${it.transitionNote}`;
+          }
+        }
         // EI-19393623437103599 — the SAME cross-harness retarget warning work_items:complete
         // carries, wired here for the reason stated in fix #4 above: this verb is the other
         // way to make a row terminal, and a guard on only one close path is a guard with a
@@ -527,6 +629,8 @@ export default defineTool({
               // Ahead of the echoed `workItem` row for the same EI-15982 reason as the
               // warnings below: this is the field a caller must not lose to tail truncation.
               ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
+              ...(transitionNoteWarning ? { transitionNoteWarning } : {}),
+              ...(transitionNoteRecorded ? { transitionNoteRecorded } : {}),
               // WI-2142258 — same field name/shape work_items:complete already returns
               // (complete.ts), so a caller (or a doc) does not have to learn two spellings
               // of "your evidence didn't win" depending on which tool it called.

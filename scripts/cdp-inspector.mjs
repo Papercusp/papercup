@@ -125,24 +125,40 @@ export async function readProcessMemory(client, { expectedPid, hostFacts = false
  * The reader itself does not force GC or take a snapshot. A
  * dereference and remote handle temporarily keep a target alive; all handles
  * are released before return. Collected/evicted/unobserved objects stay gaps.
- * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[],
+ * Optional cacheKeyDigests select exact L1 entry/payload identities through the
+ * same data-property path as readPinnedState. Pre-snapshot selection retains
+ * only WeakRefs; post-snapshot membership changes invalidate both IDs. Raw keys
+ * and values never leave the target. Shared payload IDs must not be summed.
+ * @param {{expectedPid: number, owners: string[], pgRequestIds?: string[], cacheKeyDigests?: string[],
  *   captureSnapshot?: (metadata: any) => Promise<void>}} options
  */
-export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgRequestIds, captureSnapshot }) {
+export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgRequestIds, cacheKeyDigests, captureSnapshot }) {
   validatePinnedStateOptions({ expectedPid, owners });
   if (!owners) throw new TypeError('Exact heap owners required');
+  if (cacheKeyDigests !== undefined) {
+    validatePinnedStateOptions({ expectedPid, owners, operatorCacheEntries: true, cacheKeyDigests });
+    if (cacheKeyDigests.length > 32 || !owners.includes('@papercusp/operator-core.operatorCache'))
+      throw new TypeError('Exact bounded cache digests require the operator-cache owner');
+  }
   if (pgRequestIds !== undefined && (!Array.isArray(pgRequestIds) || pgRequestIds.length < 1 ||
       pgRequestIds.length > 32 || new Set(pgRequestIds).size !== pgRequestIds.length ||
       pgRequestIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id))))
     throw new TypeError('Exact bounded PG request UUIDs required');
-  if (captureSnapshot !== undefined && (typeof captureSnapshot !== 'function' || !pgRequestIds))
-    throw new TypeError('Snapshot callback requires exact PG requests');
+  if (captureSnapshot !== undefined && (typeof captureSnapshot !== 'function' || (!pgRequestIds && !cacheKeyDigests)))
+    throw new TypeError('Snapshot callback requires exact PG requests or cache digests');
   const objectGroup = 'p011-heap-roots-' + randomUUID();
   /** @type {{owner: string, status: string, id?: number}[]} */
   const roots = [];
   try {
+    const cacheSelection = cacheKeyDigests ? await selectCacheHeapEntries(client,
+      { expectedPid, cacheKeyDigests, objectGroup }) : undefined;
+    if (captureSnapshot && cacheSelection && (cacheSelection.metadata.status !== 'selected' ||
+        cacheSelection.metadata.records.some(row => row.status !== 'selected')))
+      throw Object.assign(new Error('Exact pre-snapshot cache selection incomplete or unsafe'), {
+        diagnostic: { kind: 'cache-entry-selection', cacheBeforeSnapshot: cacheSelection.metadata },
+      });
     let selection;
-    if (captureSnapshot) {
+    if (captureSnapshot && pgRequestIds) {
       const remote = (await client.evaluate(pgReaderExpression(expectedPid, pgRequestIds, null, null, true),
         { objectGroup })).result;
       if (!remote.objectId) throw new Error('PG weak selection unavailable');
@@ -159,8 +175,10 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
           diagnostic: { kind: 'pg-weak-phase-presence', registryBeforeSnapshot: selected },
         });
       selection = { objectId: remote.objectId, metadata: selected };
-      await captureSnapshot(selected);
     }
+    if (captureSnapshot) await captureSnapshot(selection
+      ? { ...selection.metadata, ...(cacheSelection ? { cacheEntries: cacheSelection.metadata } : {}) }
+      : { cacheEntries: cacheSelection.metadata });
     for (const owner of owners) {
       const remote = (await client.evaluate(`(() => {
         if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
@@ -190,9 +208,118 @@ export async function readPinnedHeapObjectIds(client, { expectedPid, owners, pgR
       roots.push({ owner, status: 'found', id });
     }
     const queries = pgRequestIds ? await readPgHeapObjectIds(client, { expectedPid, pgRequestIds, objectGroup, selection }) : undefined;
-    return { pid: expectedPid, roots, ...(queries ? { queries } : {}),
+    const cacheEntries = cacheSelection ? await readCacheHeapObjectIds(client,
+      { expectedPid, objectGroup, selection: cacheSelection }) : undefined;
+    return { pid: expectedPid, roots, ...(queries ? { queries } : {}), ...(cacheEntries ? { cacheEntries } : {}),
       definition: 'Numeric IDs bind existing singleton values to preceding snapshot nodes; no physical memory estimate.' };
   } finally { await client.send('Runtime.releaseObjectGroup', { objectGroup }); }
+}
+
+// Shared target-side selection/fence. Never calls cache.get(), getters, custom
+// iterators, or a proxy. The temporary selection holds no strong row/value refs.
+function cacheHeapReader(expectedPid, digests, digest, phase) {
+  if (process.pid !== expectedPid) throw new Error('Inspector PID mismatch');
+  const types = process.getBuiltinModule('util').types;
+  const data = (value, key) => {
+    if (!value || typeof value !== 'object') return { status: 'nonobject' };
+    if (types.isProxy(value)) return { status: 'proxy-skipped' };
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    return !field ? { status: 'missing' } : !('value' in field) ? { status: 'accessor-skipped' }
+      : { status: 'data', value: field.value };
+  };
+  const slots = data(globalThis, Symbol.for('@papercusp/module-singleton.slots'));
+  let found = slots;
+  if (slots.status === 'data' && slots.value && !types.isProxy(slots.value) && types.isMap(slots.value)) {
+    found = { status: 'data', value: Map.prototype.get.call(slots.value, '@papercusp/operator-core.operatorCache') };
+    for (const key of ['value', 'cache', 'l1', 'map']) {
+      if (found.status !== 'data') break;
+      found = data(found.value, key);
+    }
+  } else found = { status: slots.status === 'data' ? 'registry-unavailable' : slots.status };
+  const map = found.value;
+  const safeMap = found.status === 'data' && map && !types.isProxy(map) && types.isMap(map);
+  if (digest) {
+    const metadata = data(this, 'metadata').value;
+    const rows = data(this, 'entries').value;
+    const selected = rows?.find(row => row.keyDigest === digest);
+    if (!safeMap) return found.status === 'data' ? 'unsafe-map' : found.status;
+    if (!selected) return metadata?.records?.find(row => row.keyDigest === digest)?.status ?? 'unobserved';
+    if (map !== WeakRef.prototype.deref.call(this.mapRef)) return 'map-changed';
+    if (!Map.prototype.has.call(map, selected.key)) return 'evicted';
+    const entry = Map.prototype.get.call(map, selected.key);
+    if (entry !== WeakRef.prototype.deref.call(selected.entryRef)) return 'entry-changed';
+    const payload = data(entry, 'value');
+    if (payload.status !== 'data') return payload.status;
+    if (!payload.value || typeof payload.value !== 'object') return 'nonobject';
+    if (types.isProxy(payload.value)) return 'proxy-skipped';
+    if (payload.value !== WeakRef.prototype.deref.call(selected.valueRef)) return 'value-changed';
+    return phase === 'fence' ? 'selected' : phase === 'entry' ? entry : payload.value;
+  }
+  const metadata = { owner: '@papercusp/operator-core.operatorCache', path: 'cache.l1.map',
+    status: safeMap ? 'selected' : found.status === 'data' ? 'unsafe-map' : found.status,
+    population: safeMap ? Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call(map) : null,
+    scanned: 0, scanComplete: false, undigestibleKeys: 0,
+    limits: { maxScanned: 8192, maxKeyCodeUnits: 16384 }, records: [] };
+  const entries = [], seen = new Set();
+  if (safeMap) for (const [key, entry] of Map.prototype.entries.call(map)) {
+    if (metadata.scanned === metadata.limits.maxScanned) break;
+    metadata.scanned++;
+    if (typeof key !== 'string' || key.length > metadata.limits.maxKeyCodeUnits) { metadata.undigestibleKeys++; continue; }
+    const keyDigest = process.getBuiltinModule('crypto').createHash('sha256').update(key).digest('hex');
+    if (!digests.includes(keyDigest)) continue;
+    const payload = data(entry, 'value');
+    const status = seen.has(keyDigest) ? 'ambiguous' : payload.status !== 'data' ? payload.status
+      : !payload.value || typeof payload.value !== 'object' ? 'nonobject'
+      : types.isProxy(payload.value) ? 'proxy-skipped' : 'selected';
+    if (seen.has(keyDigest)) metadata.records.find(row => row.keyDigest === keyDigest).status = 'ambiguous';
+    else {
+      metadata.records.push({ keyDigest, status });
+      if (status === 'selected') entries.push({ key, keyDigest, entryRef: new WeakRef(entry), valueRef: new WeakRef(payload.value) });
+    }
+    seen.add(keyDigest);
+  }
+  metadata.scanComplete = safeMap && metadata.scanned === metadata.population;
+  if (safeMap && (!metadata.scanComplete || metadata.undigestibleKeys)) metadata.status = 'incomplete';
+  for (const keyDigest of digests) if (!seen.has(keyDigest)) metadata.records.push({ keyDigest,
+    status: metadata.status === 'selected' ? 'missing' : 'unobserved' });
+  // A partial scan cannot establish digest uniqueness, even for an observed hit.
+  if (metadata.status === 'incomplete') for (const row of metadata.records) if (row.status === 'selected') row.status = 'unobserved';
+  return { metadata, entries, ...(safeMap ? { mapRef: new WeakRef(map) } : {}) };
+}
+
+async function selectCacheHeapEntries(client, { expectedPid, cacheKeyDigests, objectGroup }) {
+  const remote = (await client.evaluate('(' + cacheHeapReader.toString() + ')(' +
+    [expectedPid, cacheKeyDigests, null, null].map(value => JSON.stringify(value)).join(',') + ')', { objectGroup })).result;
+  if (!remote.objectId) throw new Error('Cache weak selection unavailable');
+  const metadata = (await client.send('Runtime.callFunctionOn', { objectId: remote.objectId,
+    functionDeclaration: 'function () { return this.metadata; }', returnByValue: true })).result.value;
+  return { objectId: remote.objectId, metadata };
+}
+
+async function readCacheHeapObjectIds(client, { expectedPid, objectGroup, selection }) {
+  const records = [];
+  const read = (digest, phase, returnByValue) => client.send('Runtime.callFunctionOn', {
+    objectId: selection.objectId, functionDeclaration: 'function () { return (' + cacheHeapReader.toString() +
+      ').call(this, ' + expectedPid + ', null, ' + JSON.stringify(digest) + ', ' + JSON.stringify(phase) + '); }',
+    returnByValue, objectGroup });
+  for (const row of selection.metadata.records) {
+    const objects = [];
+    if (row.status === 'selected') for (const phase of ['entry', 'value']) {
+      const remote = (await read(row.keyDigest, phase, false)).result;
+      if (!remote.objectId) { objects.push({ phase, status: remote.value ?? 'unavailable' }); continue; }
+      const { heapSnapshotObjectId } = await client.send('HeapProfiler.getHeapObjectId', { objectId: remote.objectId });
+      if (heapSnapshotObjectId === '0') { objects.push({ phase, status: 'not-in-snapshot' }); continue; }
+      const id = Number(heapSnapshotObjectId);
+      if (!/^[1-9]\d*$/.test(heapSnapshotObjectId) || !Number.isSafeInteger(id)) throw new TypeError('Invalid heap object ID');
+      objects.push({ phase, status: 'found', id });
+    }
+    const fence = row.status === 'selected' ? (await read(row.keyDigest, 'fence', true)).result.value : row.status;
+    records.push({ keyDigest: row.keyDigest, status: fence, objects: fence === 'selected' ? objects
+      : ['entry', 'value'].map(phase => ({ phase, status: fence })) });
+  }
+  return { ...selection.metadata, selectionStatus: selection.metadata.status,
+    status: records.every(row => row.status === 'selected' && row.objects.every(object => object.status === 'found')) ? 'observed' : 'partial', records,
+    definition: 'Exact L1 entry/payload snapshot IDs with post-read membership fence; shared IDs overlap, not physical/native bytes.' };
 }
 
 /** @typedef {{ phase: string, status: string, id?: number }} PgHeapObject */
