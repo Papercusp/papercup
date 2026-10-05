@@ -64,6 +64,7 @@ function auditRequestWorkerWindows(r: any) {
   };
   const pin = (row: any) => [identity(row), row.parentPid, row.command?.sha256, row.command?.script];
   const lifetimes = new Map<number, any>();
+  const loadedIdentities = new Map<number, any>();
   const previousCounters = new Map<number, number>();
   let lastEnd = time(r.startedAt);
   return r.requestWorkerWindows.map((w: any, index: number) => {
@@ -119,7 +120,8 @@ function auditRequestWorkerWindows(r: any) {
         const counters = observation.counters, snapshot = observation.snapshot;
         requireWorker(counters?.pid === id && nonnegative(counters.heap?.total_allocated_bytes) &&
           counters.heap.total_allocated_bytes >= (previousCounters.get(id) ?? 0) &&
-          positive(counters.memory?.heapUsed) && counters.memory.heapUsed <= counters.memory.heapTotal &&
+          positive(counters.memory?.heapUsed) && positive(counters.memory.heapTotal) &&
+          counters.memory.heapUsed <= counters.memory.heapTotal &&
           nonnegative(counters.memory.external) && nonnegative(counters.memory.arrayBuffers) &&
           counters.memory.arrayBuffers <= counters.memory.external, 'PID-bound cumulative allocation');
         previousCounters.set(id, counters.heap.total_allocated_bytes);
@@ -128,6 +130,10 @@ function auditRequestWorkerWindows(r: any) {
           uuid(snapshot.processInstanceId) && !instances.has(snapshot.processInstanceId) &&
           Array.isArray(snapshot.results) && snapshot.results.length <= 64, 'loaded process/build identity');
         instances.add(snapshot.processInstanceId);
+        const loaded = { processInstanceId: snapshot.processInstanceId, role: observation.role };
+        requireWorker(!loadedIdentities.has(id) || isDeepStrictEqual(loadedIdentities.get(id), loaded),
+          'cross-window loaded process and role fence');
+        loadedIdentities.set(id, loaded);
         if (phase === 'before') requireWorker(snapshot.results.length === 0, 'empty pre-request selection');
       }
     }
@@ -259,7 +265,9 @@ function auditBaseline(r: any) {
     check((r.requestWorkerWindows ? typeof f.cluster.isPrimary === 'boolean' &&
       typeof f.cluster.isWorker === 'boolean' && f.cluster.isPrimary !== f.cluster.isWorker :
       f.cluster.isPrimary === true && f.cluster.isWorker === false) &&
-      f.backgroundWorkersOverride === 'disabled' && f.sidecarFlags.spawner === spawner &&
+      (r.requestWorkerWindows ? f.backgroundWorkersOverride === 'disabled' ||
+        (f.backgroundWorkersOverride === 'unset' && f.stagingPort === true) :
+        f.backgroundWorkersOverride === 'disabled') && f.sidecarFlags.spawner === spawner &&
       ['substrate', 'gateway', 'embed', 'resourceHealth'].every(key => f.sidecarFlags[key] === false), 'raw runtime role');
     data.push({ label: s.label, pssBytes: s.counterOs.pssBytes, allocatedBytes: s.heap.total_allocated_bytes,
       observedPssBytes: rows.reduce((sum, x) => sum + x.pssBytes, 0),
@@ -991,6 +999,20 @@ describe('P011 independent selected-worker resource windows', () => {
     }
     expect(auditBaseline(r).target).toBe('selected-request-worker');
   });
+  it('accepts raw cluster-worker and staging-default request roles', () => {
+    const r = workerFixture();
+    for (const s of r.samples) {
+      s.hostFacts.cluster = { isPrimary: false, isWorker: true };
+      s.hostFacts.backgroundWorkersOverride = 'unset'; s.hostFacts.stagingPort = true;
+    }
+    for (const w of r.requestWorkerWindows) {
+      for (const sample of [w.before, w.after]) for (const o of sample.observations) {
+        o.counters.hostFacts.cluster = { isPrimary: false, isWorker: true };
+        o.counters.hostFacts.backgroundWorkersOverride = 'unset'; o.role.clusterRole = 'worker';
+      }
+    }
+    expect(auditBaseline(r).requestWorkerWindows![0].resources[0].role.clusterRole).toBe('worker');
+  });
   const corruptions: [string, (r: any, w: any) => void][] = [
     ['duplicate selection', r => { r.counterPids = [7, 7]; }],
     ['missing windows', r => { delete r.requestWorkerWindows; }],
@@ -1022,6 +1044,15 @@ describe('P011 independent selected-worker resource windows', () => {
     ['query failed', (_r, w) => { w.after.observations[0].snapshot.results[0].status = 'error'; }],
     ['query duplicate', (_r, w) => { w.after.observations[0].snapshot.results.push(w.after.observations[0].snapshot.results[0]); }],
     ['query ring cap', (_r, w) => { w.after.observations[0].snapshot.results = Array(65).fill(w.after.observations[0].snapshot.results[0]); }],
+    ['invalid pool instance', (_r, w) => { w.after.observations[0].snapshot.results[0].source.poolInstanceId = 'a'.repeat(36); }],
+    ['negative connection', (_r, w) => { w.after.observations[0].snapshot.results[0].connectionId = -1; }],
+    ['foreign operation', (_r, w) => { w.after.observations[0].snapshot.results[0].correlation.operation = 'other'; }],
+    ['cross-worker request', (_r, w) => {
+      w.after.observations[1].snapshot.results[0].correlation.requestId = w.after.observations[0].snapshot.results[0].correlation.requestId;
+    }],
+    ['cross-window process', r => {
+      r.requestWorkerWindows[1].before.observations[0].snapshot.processInstanceId = uuid(99);
+    }],
     ['query missing from assignment', (_r, w) => { w.assignment.assignments[0].queryTuples.pop(); }],
     ['extra assignment', r => { r.requestWorkerAssignments.push(r.requestWorkerAssignments[0]); }],
     ['forged resource saving', (_r, w) => { w.resources[0].pssChangeBytes = -99; }],
@@ -1169,21 +1200,26 @@ describe('independent P011 baseline raw evidence', () => {
     for (const s of r.samples) { s.inventory.observedPssBytes = 1; s.configuredHostRole = { allocationOwner: 'proven' }; }
     expect(auditBaseline(r)).toEqual(before);
   });
-  it.runIf(Boolean(process.env.PAPERCUSP_P011_BASELINE_ORACLE_INPUTS))('audits fresh frozen main and sibling reports', () => {
+  it.runIf(Boolean(process.env.PAPERCUSP_P011_BASELINE_ORACLE_INPUTS))('audits frozen scalar or selected-worker reports', () => {
     const paths: string[] = JSON.parse(process.env.PAPERCUSP_P011_BASELINE_ORACLE_INPUTS!);
-    expect(paths).toHaveLength(2);
+    expect(paths.length).toBeGreaterThan(0); expect(paths.length).toBeLessThanOrEqual(8);
+    expect(new Set(paths).size).toBe(paths.length);
     const proofs = paths.map(path => {
       const bytes = readFileSync(resolve(root, path));
       return { path, sha256: digest(bytes), bytes: bytes.length, result: auditBaseline(JSON.parse(bytes.toString())) };
     });
-    expect(proofs.map(x => x.result.target)).toEqual(['main', 'maintained-spawner']);
-    expect(proofs[0].result.mainIdentity).toBe(proofs[1].result.mainIdentity);
-    expect(proofs[0].result.buildSha).toBe(proofs[1].result.buildSha);
+    const workers = proofs.some(x => x.result.requestWorkerWindows !== undefined);
+    if (!workers) expect(proofs.map(x => x.result.target)).toEqual(['main', 'maintained-spawner']);
+    for (const proof of proofs) {
+      expect(proof.result.mainIdentity).toBe(proofs[0].result.mainIdentity);
+      expect(proof.result.buildSha).toBe(proofs[0].result.buildSha);
+    }
     const destination = process.env.PAPERCUSP_P011_BASELINE_ORACLE_REPORT;
     if (!destination) throw Error('Canonical oracle report required');
     writeFileSync(resolve(root, destination), serializeIdentitySafeJson({ schemaVersion: 'p011-baseline-independent-v1',
       proofs, independentOf: 'No emitter import or headline totals; raw OS/V8 rows, HTTP records and identity fences.',
-      physicalSavings: 'unmeasured', allocationOwner: 'unknown', requestAssignment: 'unknown' }));
+      physicalSavings: 'unmeasured', allocationOwner: 'unknown',
+      requestAssignment: workers ? 'bounded selected-worker observations' : 'unknown' }));
   });
 });
 
