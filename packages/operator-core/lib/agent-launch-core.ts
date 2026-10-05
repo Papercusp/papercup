@@ -17,7 +17,9 @@
  */
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
-import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
+import { getAdvSession, mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
+import { getSessionPort } from './session-port/store';
+import type { SessionBackend, SessionPortContractSummary } from './session-port/types';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import { fetchSelfWake } from './agent-tools/coordination/presence-selfwake';
 import {
@@ -32,6 +34,7 @@ import {
 } from './agent-config-constants';
 import { resolveCodexModel, resolveCodexModelSelection } from './model-context-budget.mjs';
 import { isSuAgent, SU_AGENTS } from './su-agents';
+import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
 export type CodexModelSource = 'explicit' | 'inherited' | 'configured-default';
 
@@ -1433,12 +1436,14 @@ export async function injectKickoffAfterResume(
     pollMs = 2_000,
     findHost = findLiveHost,
     inject = injectIntoHost,
+    tagTurn = tagTurnForInjection,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   }: {
     timeoutMs?: number;
     pollMs?: number;
     findHost?: typeof findLiveHost;
     inject?: typeof injectIntoHost;
+    tagTurn?: typeof tagTurnForInjection;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<{ delivered: boolean; waitedMs: number; error?: string }> {
@@ -1452,7 +1457,8 @@ export async function injectKickoffAfterResume(
       // read as the culprit during WI-2140968 triage. Addressing it removes the
       // trap AND the latent hole: without `ownerId` the host's misdelivery
       // guard abstains, so a stale/mis-resolved socket accepts the turn.
-      const ok = await inject(host.sock, { mode: 'turn', data: kickoff, ownerId });
+      const taggedKickoff = (await tagTurn({ sid: ownerId, origin: 'wake-pump', text: kickoff })).taggedText;
+      const ok = await inject(host.sock, { mode: 'turn', data: taggedKickoff, ownerId });
       return ok
         ? { delivered: true, waitedMs: Date.now() - started }
         : {
@@ -2277,16 +2283,23 @@ export async function verifyResumeStarted(
   ownerId: string,
   {
     expectedSessionId,
+    expectedPort,
     timeoutMs = 30_000,
     pollMs = 1_000,
     findHost = findLiveHost,
+    readAdvSession = getAdvSession,
+    readPort = getSessionPort,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   }: {
     /** Exact native transcript UUID the new backend process must carry. */
     expectedSessionId?: string | null;
+    /** Explicit conversion only: attest the prepared target rather than the source UUID. */
+    expectedPort?: { sourceAdvSessionId: number; targetBackend: SessionBackend };
     timeoutMs?: number;
     pollMs?: number;
     findHost?: typeof findLiveHost;
+    readAdvSession?: typeof getAdvSession;
+    readPort?: typeof getSessionPort;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<{
@@ -2297,26 +2310,85 @@ export async function verifyResumeStarted(
   mismatch: boolean;
 }> {
   const begun = Date.now();
+  let portExpected: string | null = null;
+  let portActual: string | null = null;
   for (;;) {
     const host = findHost(ownerId);
     if (host) {
       const expected = expectedSessionId?.trim() || null;
       const actual = nativeSessionIdFromHost(host);
-      const mismatch = expected != null && actual !== expected;
-      return {
-        started: !mismatch,
+      if (!expectedPort) {
+        const mismatch = expected != null && actual !== expected;
+        return {
+          started: !mismatch,
+          waitedMs: Date.now() - begun,
+          expectedSessionId: expected,
+          actualSessionId: actual,
+          mismatch,
+        };
+      }
+      // A conversion deliberately creates a new native session. Owner liveness
+      // alone cannot distinguish it from a substituted or unrelated target.
+      // Missing receipts (or an unreadable probe) remain unknown; only a
+      // contradictory binding is an observed mismatch.
+      portActual = actual;
+      let verdict: boolean | null = null;
+      try {
+        const source = await readAdvSession(expectedPort.sourceAdvSessionId);
+        const targetId = Number(host.advSessionId);
+        const target = Number.isSafeInteger(targetId) && targetId > 0
+          ? await readAdvSession(targetId) : null;
+        if (source && target) {
+          const native = target.agent === 'omp' ? target.ompThreadId ?? target.sessionId : target.sessionId;
+          portExpected = native?.trim() || null;
+          const port = target.portId ? await readPort(target.portId, source.workspaceId) : null;
+          if (host.ownerId !== ownerId || source.coordOwnerId !== ownerId || target.coordOwnerId !== ownerId ||
+              target.workspaceId !== source.workspaceId || target.agent !== expectedPort.targetBackend ||
+              target.portSourceAdvSessionId !== expectedPort.sourceAdvSessionId) {
+            verdict = false;
+          } else if (port) {
+            const summary = port.metadata.summary as SessionPortContractSummary | undefined;
+            const proof = port.metadata.persistenceProof as { persisted?: unknown; nativeRef?: unknown; renderedHash?: unknown } | undefined;
+            if (port.sourceAdvSessionId !== expectedPort.sourceAdvSessionId || port.targetAdvSessionId !== target.id ||
+                port.sourceBackend !== source.agent || port.targetBackend !== expectedPort.targetBackend ||
+                port.metadata.sourceCoordOwnerId !== ownerId || port.metadata.targetCoordOwnerId !== ownerId ||
+                (summary && (summary.source.advSessionId !== source.id || summary.source.backend !== source.agent ||
+                  summary.source.workspaceId !== source.workspaceId || (expected != null && summary.source.nativeSessionId !== expected) ||
+                  summary.target.backend !== expectedPort.targetBackend ||
+                  (summary.target.ownerId != null && summary.target.ownerId !== ownerId) ||
+                  summary.hashes.rendered !== port.renderedHash)) ||
+                (portExpected != null && port.metadata.targetNativeSessionId !== portExpected) ||
+                (proof?.renderedHash != null && proof.renderedHash !== port.renderedHash) ||
+                (portExpected != null && typeof proof?.nativeRef === 'string' && !proof.nativeRef.endsWith(`${portExpected}.jsonl`)) ||
+                port.status === 'failed' || port.status === 'expired') {
+              verdict = false;
+            } else if (port.status === 'delivered' && target.portStatus === 'delivered' && summary &&
+                       port.metadata.bootstrapReceiptCommitted === true &&
+                       port.metadata.bootstrapReceiptTargetAdvSessionId === target.id &&
+                       typeof port.metadata.bootstrapRequestHash === 'string' && port.metadata.bootstrapRequestHash.length > 0 &&
+                       proof?.persisted === true && typeof proof.nativeRef === 'string' && proof.nativeRef.length > 0 &&
+                       proof.renderedHash === port.renderedHash && portExpected != null) {
+              verdict = actual === portExpected;
+            }
+          }
+        }
+      } catch {
+        // Instrument failure is not evidence that the launched session failed.
+      }
+      if (verdict != null) return {
+        started: verdict,
         waitedMs: Date.now() - begun,
-        expectedSessionId: expected,
+        expectedSessionId: portExpected,
         actualSessionId: actual,
-        mismatch,
+        mismatch: !verdict,
       };
     }
     if (Date.now() - begun + pollMs > timeoutMs) {
       return {
         started: null,
         waitedMs: Date.now() - begun,
-        expectedSessionId: expectedSessionId?.trim() || null,
-        actualSessionId: null,
+        expectedSessionId: expectedPort ? portExpected : expectedSessionId?.trim() || null,
+        actualSessionId: expectedPort ? portActual : null,
         mismatch: false,
       };
     }
@@ -2328,7 +2400,8 @@ export async function verifyResumeStarted(
  * Extract the native transcript UUID from a live backend argv.
  *
  * Codex spells this `codex … resume <uuid>`; Claude/OMP use `--resume <uuid>`,
- * `--resume=<uuid>`, or `--resume-session=<uuid>`. Unknown/missing argv is null,
+ * `--resume=<uuid>`, or `--resume-session=<uuid>`. A prepared Claude conversion
+ * forces its new UUID with `--session-id`. Unknown/missing argv is null,
  * never treated as an implicit match.
  */
 export function nativeSessionIdFromHost(
@@ -2337,10 +2410,10 @@ export function nativeSessionIdFromHost(
   const args = Array.isArray(host?.args) ? host.args.filter((v): v is string => typeof v === 'string') : [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    for (const flag of ['--resume=', '--resume-session=']) {
+    for (const flag of ['--resume=', '--resume-session=', '--session-id=']) {
       if (arg.startsWith(flag) && arg.length > flag.length) return arg.slice(flag.length);
     }
-    if ((arg === '--resume' || arg === '--resume-session') && args[i + 1]) return args[i + 1];
+    if ((arg === '--resume' || arg === '--resume-session' || arg === '--session-id') && args[i + 1]) return args[i + 1];
     if (arg === 'resume' && args[i + 1] && !args[i + 1].startsWith('--')) return args[i + 1];
   }
   return null;

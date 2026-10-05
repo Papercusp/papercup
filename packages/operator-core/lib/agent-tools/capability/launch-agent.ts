@@ -899,6 +899,7 @@ export default defineTool({
     let resumeId: string | null = null;
     let resumeOwnerId: string | null = null;
     let resumeAgent: string | null = null;
+    let resumeSourceAdvSessionId: number | null = null;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
@@ -919,6 +920,7 @@ export default defineTool({
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
+      resumeSourceAdvSessionId = target.advSessionId;
       resumeModel = target.model;
       resumeAccount = target.account;
       // A legacy Codex launch may have recorded a model without the newer
@@ -1674,6 +1676,7 @@ export default defineTool({
               // reader selects the latest turn_context model:effort, falling
               // back to recorded launch metadata only if no transcript exists.
               agent: resumeAgent,
+              targetAgent: args.agent ?? null,
               model: args.model ?? (resumeAgent === 'codex' ? null : resumeModel),
               modelSource: args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
               headless: !!args.headless,
@@ -2079,6 +2082,9 @@ export default defineTool({
       const childExit = headlessResult?.status === 'ok' ? headlessResult.childExit : undefined;
       const verifyPromise = verifyResumeStarted(resumeOwnerId, {
         expectedSessionId: resumeSessionId,
+        ...(args.agent && args.agent !== resumeAgent && resumeSourceAdvSessionId != null ? {
+          expectedPort: { sourceAdvSessionId: resumeSourceAdvSessionId, targetBackend: args.agent },
+        } : {}),
         timeoutMs: RESUME_VERIFY_TIMEOUT_MS,
       });
       const observation = childExit

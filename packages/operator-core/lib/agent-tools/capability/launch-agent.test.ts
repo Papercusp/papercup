@@ -1889,6 +1889,26 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
   });
 
+  it.each(['codex', 'omp'])('forwards an explicit %s→Claude conversion and its exact prepared-port verification source', async (sourceBackend) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: sourceBackend });
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, agent: 'claude',
+      model: 'sonnet:high', brief: 'continue under the same source owner' }, ctx);
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--agent=claude');
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(verifyResumeStartedMock).toHaveBeenCalledWith('su-a1a71', expect.objectContaining({
+      expectedSessionId: 'sid-dead', expectedPort: { sourceAdvSessionId: 11, targetBackend: 'claude' },
+    }));
+  });
+
+  it('keeps an explicit same-backend resume on the ordinary UUID verifier', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, agent: 'claude', brief: 'resume the same transcript' }, ctx);
+    const options = verifyResumeStartedMock.mock.calls.at(-1)?.[1];
+    expect(options).toMatchObject({ expectedSessionId: 'sid-dead' });
+    expect(options).not.toHaveProperty('expectedPort');
+  });
+
   it('resumes a tracked Codex row without native session_id by adv-session selector', async () => {
     const trackedCodex = {
       ...dead,

@@ -36,6 +36,8 @@ import {
   type FleetMemberDefaults,
 } from './agent-launch-core';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
+import type { AdvSessionRow } from './adv-sessions';
+import type { SessionPortRow } from './session-port/store';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
 
@@ -1212,6 +1214,13 @@ describe('probeFreshLaunchSessions', () => {
 describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a resumed session)', () => {
   it('injects the kickoff as a turn once the pty host appears', async () => {
     const inject = vi.fn().mockResolvedValue(true);
+    const tagTurn = vi.fn(async (input: { sid: string; origin: string; text: string }) => ({
+      taggedText: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧\n${input.text}`,
+      envelope: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧`,
+      nonce: '0123456789abcdef',
+      origin: 'wake-pump',
+      ledgerWritten: true,
+    }));
     const findHost = vi
       .fn()
       .mockReturnValueOnce(null)
@@ -1221,6 +1230,7 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
     const r = await injectKickoffAfterResume(OWNER, 'pick up where you left off', {
       findHost,
       inject,
+      tagTurn,
       sleep,
       pollMs: 10,
       timeoutMs: 1000,
@@ -1234,8 +1244,13 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
     // field here is what keeps this path from regressing back to unaddressed.
     expect(inject).toHaveBeenCalledWith(`/run/psu-pty/${OWNER}.sock`, {
       mode: 'turn',
-      data: 'pick up where you left off',
+      data: '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧\npick up where you left off',
       ownerId: OWNER,
+    });
+    expect(tagTurn).toHaveBeenCalledWith({
+      sid: OWNER,
+      origin: 'wake-pump',
+      text: 'pick up where you left off',
     });
     expect(sleep).toHaveBeenCalledTimes(1);
   });
@@ -1256,9 +1271,17 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
   });
 
   it('reports a failed socket write instead of claiming delivery', async () => {
+    const tagTurn = vi.fn(async (input: { sid: string; origin: string; text: string }) => ({
+      taggedText: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧\n${input.text}`,
+      envelope: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧`,
+      nonce: '0123456789abcdef',
+      origin: 'wake-pump',
+      ledgerWritten: true,
+    }));
     const r = await injectKickoffAfterResume(OWNER, 'hi', {
       findHost: () => ({ ownerId: OWNER, pid: 7, sock: '/run/x.sock' }) as never,
       inject: vi.fn().mockResolvedValue(false),
+      tagTurn,
       sleep: vi.fn().mockResolvedValue(undefined),
       pollMs: 10,
       timeoutMs: 1000,
@@ -1322,11 +1345,107 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
   });
 });
 
+describe('verifyResumeStarted prepared cross-backend continuation', () => {
+  function fixture(sourceBackend: 'codex' | 'omp' = 'codex') {
+    const source = { id: 11, workspaceId: 'ws-test', coordOwnerId: OWNER, agent: sourceBackend,
+      sessionId: 'source-native' } as AdvSessionRow;
+    const target = { id: 12, workspaceId: 'ws-test', coordOwnerId: OWNER, agent: 'claude',
+      sessionId: 'target-native', portId: 'port-1', portSourceAdvSessionId: 11,
+      portStatus: 'delivered' } as AdvSessionRow;
+    const port = { id: 'port-1', workspaceId: 'ws-test', sourceAdvSessionId: 11, targetAdvSessionId: 12,
+      sourceBackend, targetBackend: 'claude', status: 'delivered', renderedHash: 'rendered-hash',
+      metadata: {
+        sourceCoordOwnerId: OWNER, targetCoordOwnerId: OWNER, targetNativeSessionId: 'target-native',
+        bootstrapRequestHash: 'bootstrap-hash', bootstrapReceiptCommitted: true,
+        bootstrapReceiptTargetAdvSessionId: 12,
+        summary: { source: { advSessionId: 11, nativeSessionId: 'source-native', backend: sourceBackend,
+          workspaceId: 'ws-test' }, target: { backend: 'claude' }, hashes: { rendered: 'rendered-hash' } },
+        persistenceProof: { persisted: true, nativeRef: '/native/target-native.jsonl', renderedHash: 'rendered-hash' },
+      } } as unknown as SessionPortRow;
+    const host = { ownerId: OWNER, advSessionId: '12', command: 'claude', args: ['--session-id', 'target-native'] };
+    const readAdvSession = vi.fn(async (id: number) => id === 11 ? source : id === 12 ? target : null);
+    const readPort = vi.fn(async (_id: string, _workspace: string) => port);
+    const options = { expectedSessionId: 'source-native',
+      expectedPort: { sourceAdvSessionId: 11, targetBackend: 'claude' as const },
+      findHost: () => host as never, readAdvSession, readPort, timeoutMs: 0 };
+    return { source, target, port, host, options };
+  }
+
+  it.each(['codex', 'omp'] as const)('accepts %s→Claude only after exact source/target and persistence receipts', async (backend) => {
+    const { options } = fixture(backend);
+    const result = await verifyResumeStarted(OWNER, options);
+    expect(result).toMatchObject({ started: true, mismatch: false,
+      expectedSessionId: 'target-native', actualSessionId: 'target-native' });
+    expect(options.readPort).toHaveBeenCalledWith('port-1', 'ws-test');
+  });
+
+  it.each([
+    ['source owner', (f: ReturnType<typeof fixture>) => { f.source.coordOwnerId = 'su-other'; }],
+    ['target owner', (f: ReturnType<typeof fixture>) => { f.target.coordOwnerId = 'su-other'; }],
+    ['host owner', (f: ReturnType<typeof fixture>) => { f.host.ownerId = 'su-other'; }],
+    ['target workspace', (f: ReturnType<typeof fixture>) => { f.target.workspaceId = 'other'; }],
+    ['target backend', (f: ReturnType<typeof fixture>) => { f.target.agent = 'codex'; }],
+    ['target lineage', (f: ReturnType<typeof fixture>) => { f.target.portSourceAdvSessionId = 99; }],
+    ['port source', (f: ReturnType<typeof fixture>) => { f.port.sourceAdvSessionId = 99; }],
+    ['port target', (f: ReturnType<typeof fixture>) => { f.port.targetAdvSessionId = 99; }],
+    ['prepared owner', (f: ReturnType<typeof fixture>) => { f.port.metadata.targetCoordOwnerId = 'su-other'; }],
+    ['prepared native', (f: ReturnType<typeof fixture>) => { f.port.metadata.targetNativeSessionId = 'other-native'; }],
+    ['source native', (f: ReturnType<typeof fixture>) => { f.options.expectedSessionId = 'other-source'; }],
+    ['payload hash', (f: ReturnType<typeof fixture>) => {
+      (f.port.metadata.persistenceProof as Record<string, unknown>).renderedHash = 'wrong-hash';
+    }],
+    ['native proof', (f: ReturnType<typeof fixture>) => {
+      (f.port.metadata.persistenceProof as Record<string, unknown>).nativeRef = '/native/other-native.jsonl';
+    }],
+    ['host native', (f: ReturnType<typeof fixture>) => { f.host.args = ['--session-id', 'other-native']; }],
+    ['terminal port', (f: ReturnType<typeof fixture>) => { f.port.status = 'failed'; }],
+  ])('refuses a substituted %s', async (_label, change) => {
+    const f = fixture();
+    change(f);
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({ started: false, mismatch: true });
+  });
+
+  it.each([
+    ['pending delivery', (f: ReturnType<typeof fixture>) => { f.port.status = 'pending'; f.target.portStatus = 'pending'; }],
+    ['bootstrap receipt', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.bootstrapReceiptCommitted; }],
+    ['bootstrap target', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.bootstrapReceiptTargetAdvSessionId; }],
+    ['bootstrap hash', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.bootstrapRequestHash; }],
+    ['source summary', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.summary; }],
+    ['persistence proof', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.persistenceProof; }],
+    ['port row', (f: ReturnType<typeof fixture>) => { f.options.readPort.mockResolvedValue(null as never); }],
+    ['probe unavailable', (f: ReturnType<typeof fixture>) => { f.options.readPort.mockRejectedValue(new Error('probe unavailable')); }],
+  ])('keeps missing %s unconfirmed without rolling back a healthy process', async (_label, change) => {
+    const f = fixture();
+    change(f);
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({ started: null, mismatch: false });
+  });
+
+  it('waits for pending native persistence to become delivered', async () => {
+    const f = fixture();
+    f.port.status = 'pending';
+    f.target.portStatus = 'pending';
+    const sleep = vi.fn(async () => { f.port.status = 'delivered'; f.target.portStatus = 'delivered'; });
+    const result = await verifyResumeStarted(OWNER, { ...f.options, sleep, timeoutMs: 1000, pollMs: 1 });
+    expect(result.started).toBe(true);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not use a port receipt to override an ordinary same-backend UUID mismatch', async () => {
+    const f = fixture();
+    const { expectedPort: _port, ...ordinary } = f.options;
+    expect(await verifyResumeStarted(OWNER, ordinary)).toMatchObject({ started: false,
+      expectedSessionId: 'source-native', actualSessionId: 'target-native', mismatch: true });
+    expect(f.options.readPort).not.toHaveBeenCalled();
+  });
+});
+
 describe('nativeSessionIdFromHost', () => {
   it('reads Codex positional resume and Claude/OMP resume flags', () => {
     expect(nativeSessionIdFromHost({ command: 'codex', args: ['-m', 'gpt-5.6-sol', 'resume', 'codex-uuid'] })).toBe('codex-uuid');
     expect(nativeSessionIdFromHost({ command: 'claude', args: ['--resume', 'claude-uuid'] })).toBe('claude-uuid');
     expect(nativeSessionIdFromHost({ command: 'omp', args: ['--resume-session=omp-uuid'] })).toBe('omp-uuid');
+    expect(nativeSessionIdFromHost({ command: 'claude', args: ['--session-id', 'new-claude-uuid'] })).toBe('new-claude-uuid');
+    expect(nativeSessionIdFromHost({ command: 'claude', args: ['--session-id=new-claude-uuid'] })).toBe('new-claude-uuid');
   });
 
   it('returns null when the host does not attest a native resume id', () => {
