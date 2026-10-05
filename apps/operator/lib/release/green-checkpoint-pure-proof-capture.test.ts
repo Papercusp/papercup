@@ -212,6 +212,35 @@ describe('runPostVerdictPureProofCapture', () => {
     expect(parsed).toEqual(expected);
   });
 
+  it('carries the real wrapper result through finalization into a create-only named proof archive', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pure-capture-wrapper-'));
+    try {
+      const r = namedResult();
+      const clock = vi.fn().mockReturnValueOnce(70).mockReturnValueOnce(90);
+      let file: string | null = null;
+      const releaseAndExit = vi.fn();
+      const finalize = createNormalCheckpointFinalizer({
+        claimTerminal: () => true, now: clock, emitResult: async () => {},
+        captureProofs: () => runPostVerdictPureProofCapture(cfg, 'run-1', () => {}, () => {},
+          vi.fn(async () => r) as never),
+        archiveCapture: async (_result, capture, boundaries) => {
+          file = archivePureProofCapture(dir, { version: 1, runId: 'run-1', gateFireId: 'fire-1',
+            pid: 123, processStartedAtMs: 1, judgedSha: r.sha, ...boundaries,
+            verdictRecordedAtMs: 80, promotion: null, capture: capture as PureProofCaptureArchive['capture'],
+            archivedAtMs: 210 }, () => {});
+        }, releaseAndExit,
+      });
+      await finalize({ green: false, candidate: r.sha } as Parameters<typeof finalize>[0]);
+      expect(file).not.toBeNull();
+      const archived = parsePureProofCaptureArchive(JSON.parse(readFileSync(file!, 'utf8')))!;
+      const { lines: _lines, ...expected } = r;
+      expect(archived.capture).toEqual(expected);
+      expect(archived.resolvedAtMs).toBe(70);
+      expect(archived.terminalEmissionCompletedAtMs).toBe(90);
+      expect(releaseAndExit).toHaveBeenCalledExactlyOnceWith(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it.each(['aggregate-only', 'foreign process group', 'dirty proof', 'partial population'])(
     'returns unknown for %s instead of archiving a qualified population', async (condition) => {
       const r = namedResult();
