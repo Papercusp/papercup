@@ -421,6 +421,16 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     };
   }
 
+  /**
+   * True when THIS process holds an engine for the session (an executor was
+   * attached at launch or by a resume). A descriptor-only host rebuilt from the
+   * durable row is false: on a clustered operator that is the signal to route
+   * the request to the worker that does hold it (WI-10003879).
+   */
+  hasRuntime(): boolean {
+    return Boolean(this.executeCommand) && !this.disposed;
+  }
+
   get subscriberCount(): number {
     return this.channel.subscriberCount;
   }
