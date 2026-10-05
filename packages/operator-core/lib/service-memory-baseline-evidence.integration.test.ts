@@ -986,6 +986,18 @@ describe('P011 independent cache retained-owner evidence', () => {
     expect(auditCacheRetainers(r, expected(r))).toEqual(before);
     expect(before.uniquePayloadNodes).toHaveLength(2);
   });
+  it('rejects the preserved incomplete inbox cohort with live membership but missing snapshot IDs', () => {
+    const path = 'docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r1-2026-10-05.json';
+    const bytes = readFileSync(resolve(root, path));
+    expect(digest(bytes)).toBe('0b1f180bb4239f3dab4826c12f3675211cb3c1a2f7b0ff246841b38d97484ab6');
+    const r = JSON.parse(bytes.toString()), binding = r.cohorts[2].cacheHeap.heapOwnerBinding;
+    expect(r.cohorts).toHaveLength(3);
+    expect(binding.roots[0].status).toBe('not-in-snapshot');
+    expect(binding.cacheEntries.records[0].status).toBe('selected');
+    expect(binding.cacheEntries.records[0].objects.map((object: any) => object.status))
+      .toEqual(['not-in-snapshot', 'not-in-snapshot']);
+    expect(() => auditInboxCacheRetainers(r)).toThrow('cache paired run');
+  });
   it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_INPUT))('audits the specified saved inbox cache graphs', () => {
     const input = process.env.PAPERCUSP_P011_INBOX_HEAP_ORACLE_INPUT!;
     const bytes = readFileSync(resolve(root, input)), result = auditInboxCacheRetainers(JSON.parse(bytes.toString()));
