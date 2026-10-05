@@ -79,6 +79,8 @@ function runFixture(
      * prebuild skipped); 'fail' is the measured stream9 rocksdb-native GLIBCXX_3.4.30 failure.
      */
     addonProbe?: 'ok' | 'fail' | 'empty' | 'silent' | 'podman-error';
+    /** WI-10005960. What the storage-hygiene stub's `precheck` answers (default 'ok'). */
+    hygienePrecheck?: 'ok' | 'fail';
     /**
      * WI-10005946. Where the secret scan's release auditor is. 'env' (default): a fixture file
      * named by PAPERCUSP_RELEASE_AUDITOR. 'source-tree': git mode only, the repo's own
@@ -106,6 +108,8 @@ function runFixture(
   context: string;
   contextCommit: string | null;
   out: string;
+  /** WI-10005960: each storage-hygiene call as "<args> build-started=0|1", in order. */
+  hygieneCalls: string[];
 } {
   const dir = mkdtempSync(join(tmpdir(), 'ei-223550-bake-'));
   // WI-10005766: in git mode the context is a subdirectory of a repo, so the bake's committed-tree
@@ -142,6 +146,19 @@ function runFixture(
   copyFileSync(HEALTH, health);
   chmodSync(source, 0o755);
   chmodSync(health, 0o755);
+  // WI-10005960: the real helper drives rootful podman storage; the bake's wiring is what this
+  // suite pins (bake-storage-hygiene.test.ts pins the helper), so a recording stub stands in.
+  const hygieneStub = join(dir, 'bake-storage-hygiene-stub');
+  const hygieneCallsPath = join(dir, 'hygiene-calls');
+  writeFileSync(hygieneStub, `#!/usr/bin/env bash
+started=0; [ -e "$BAKE_TEST_BUILD_MARKER" ] && started=1
+printf '%s build-started=%s\\n' "$*" "$started" >> "$BAKE_TEST_HYGIENE_CALLS"
+if [ "$1" = precheck ] && [ "$BAKE_TEST_HYGIENE_PRECHECK" = fail ]; then
+  echo 'BAKE_RESULT=FAILED storage-headroom 3GiB free for fixture, need >= 64GiB'
+  exit 1
+fi
+exit 0
+`, { mode: 0o755 });
   writeFileSync(key, 'temporary private key\n');
   writeFileSync(pubkey, 'temporary public key\n');
 
@@ -444,6 +461,9 @@ printf '%s\\n' "$@" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER.args"
         UDISKS2_INHIBIT_BIN: join(bin, 'udisks2-inhibit'),
         PAPERCUSP_UDISKS2_INHIBIT_LOCK: inhibitLock,
         P307_BUILD_HEALTH_DISABLE: '1',
+        BAKE_STORAGE_HYGIENE: hygieneStub,
+        BAKE_TEST_HYGIENE_CALLS: hygieneCallsPath,
+        BAKE_TEST_HYGIENE_PRECHECK: options.hygienePrecheck ?? 'ok',
         TMPDIR: dir,
       },
       encoding: 'utf8',
@@ -476,6 +496,9 @@ printf '%s\\n' "$@" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER.args"
     context: ctx,
     contextCommit,
     out,
+    hygieneCalls: existsSync(hygieneCallsPath)
+      ? readFileSync(hygieneCallsPath, 'utf8').split(/\r?\n/).filter(Boolean)
+      : [],
   };
 }
 
@@ -1145,5 +1168,33 @@ describe('p306 rootful Podman storage preflight (EI-22772454141611988)', () => {
       expect(buildCall).not.toContain('--root ');
       expect(buildCall).not.toContain('--runroot ');
     }
+  });
+});
+
+describe('bake-cloud-images.sh bounds its rootful podman storage (WI-10005960)', () => {
+  it('prunes and prechecks headroom before building, and prunes again before PASS', () => {
+    const result = runFixture(SOURCE);
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain('BAKE_RESULT=PASS');
+    expect(result.hygieneCalls).toEqual([
+      expect.stringMatching(/^prune --repo localhost\/test\/workspace-host --keep-tag \S+ build-started=0$/),
+      expect.stringMatching(/^precheck \S+\/out build-started=0$/),
+      expect.stringMatching(/^prune --repo localhost\/test\/workspace-host --keep-tag \S+ build-started=1$/),
+    ]);
+  });
+
+  it('refuses a bake the disk cannot hold before anything is built', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { hygienePrecheck: 'fail' });
+    expect(result.status, result.output).toBe(1);
+    expect(result.output).toContain('BAKE_RESULT=FAILED storage-headroom');
+    expect(result.output).not.toContain('BAKE_RESULT=PASS');
+    expect(result.podmanCalls.some((call) => call.startsWith('build '))).toBe(false);
+    expect(result.hygieneCalls).toHaveLength(2);
+  });
+
+  it('keeps a reused local source image in the same repo through the pre-build prune', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, { ref: 'localhost/test/workspace-host:previous-good' });
+    expect(result.status, result.output).toBe(0);
+    expect(result.hygieneCalls[0]).toMatch(/ --keep-tag \S+ --keep-tag previous-good build-started=0$/);
   });
 });
