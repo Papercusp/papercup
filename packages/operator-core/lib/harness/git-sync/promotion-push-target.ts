@@ -203,7 +203,7 @@ export async function publishPromotion(
       `(${target.remoteName} ${remoteRef}) — the main repository receives it only through the standing PR`,
   );
 
-  const standingPr = await refreshStandingPr(input, target, remoteRef, deps);
+  const standingPr = await refreshStandingPr(input, target, remoteRef, deps, 'promotion');
   if (standingPr.ok) {
     const pr = 'prUrl' in standingPr && standingPr.prUrl ? ` ${standingPr.prUrl}` : '';
     deps.log(`standing-pr: ${standingPr.decision.action}${pr}`);
@@ -218,6 +218,7 @@ async function refreshStandingPr(
   target: Extract<PromotionPushTarget, { kind: 'fork' }>,
   remoteRef: string,
   deps: PublishPromotionDeps,
+  trigger: 'promotion' | 'on-demand',
 ): Promise<StandingPrRefresh> {
   const upstream = target.upstreamRemote;
   if (!upstream) {
@@ -245,7 +246,7 @@ async function refreshStandingPr(
         upstreamOwner,
         baseBranch: remoteRef.replace(/^refs\/heads\//, ''),
         promotedSha: input.sha,
-        trigger: 'promotion',
+        trigger,
         potName: target.potHomeSlug,
       },
       prDeps,
@@ -253,6 +254,58 @@ async function refreshStandingPr(
   } catch (e) {
     return { ok: false, stage: 'setup', error: errText(e) };
   }
+}
+
+export type SendStandingPrNowOutcome =
+  /** Direct mode, no fork, or an unreadable mode: there is no standing PR to send. */
+  | { kind: 'not-review'; message: string }
+  /** Review mode, but the working copy holds no gate-promoted commit yet. */
+  | { kind: 'nothing-green'; message: string }
+  | { kind: 'sent'; potHomeSlug: string; sha: string; standingPr: StandingPrRefresh };
+
+export interface SendStandingPrNowDeps extends PublishPromotionDeps {
+  /** The sha the working copy's `remoteRef` holds; null when the ref does not exist. */
+  readForkHead: (repoPath: string, remoteRef: string) => Promise<string | null>;
+}
+
+/**
+ * On-demand "send what's green now" (P-020): open or update the standing PR from the
+ * working copy's main without waiting for the next promotion. It never pushes code: the
+ * working copy's main holds only commits the pot's green gate already promoted (D-007),
+ * so this can only send tested work.
+ */
+export async function sendStandingPrNow(
+  input: ResolvePromotionPushTargetInput & { ref: string },
+  deps: SendStandingPrNowDeps,
+): Promise<SendStandingPrNowOutcome> {
+  const target = await resolvePromotionPushTarget(input, deps);
+  if (target.kind === 'origin') {
+    return { kind: 'not-review', message: 'this pot commits straight to the main repository; there is no standing PR' };
+  }
+  if (target.kind !== 'fork') return { kind: 'not-review', message: target.message };
+  const remoteRef = input.ref.startsWith('refs/') ? input.ref : `refs/heads/${input.ref}`;
+  await deps.ensureRemote(input.repoPath, target.url);
+  const sha = await deps.readForkHead(input.repoPath, remoteRef);
+  if (!sha) {
+    return { kind: 'nothing-green', message: `the working copy has no ${remoteRef} yet: nothing has passed the gate` };
+  }
+  const standingPr = await refreshStandingPr({ ...input, sha }, target, remoteRef, deps, 'on-demand');
+  return { kind: 'sent', potHomeSlug: target.potHomeSlug, sha, standingPr };
+}
+
+/** The real seams for {@link sendStandingPrNow}. */
+export async function createDefaultSendStandingPrNowDeps(log: (line: string) => void): Promise<SendStandingPrNowDeps> {
+  const base = await createDefaultPublishPromotionDeps(log);
+  return {
+    ...base,
+    readForkHead: async (repoPath, remoteRef) => {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const { stdout } = await promisify(execFile)('git', ['-C', repoPath, 'ls-remote', POT_FORK_REMOTE_NAME, remoteRef]);
+      const sha = stdout.trim().split(/\s+/)[0];
+      return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    },
+  };
 }
 
 /** The real seams for {@link publishPromotion}; `log` is the green-checkpoint logger. */
