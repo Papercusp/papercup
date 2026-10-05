@@ -182,6 +182,50 @@ describe('selectReusablePasses with a schema drift judge', () => {
     expect(select(proof(), [GEN], () => { throw new Error('x'); }).summary).toMatchObject({ reused: 0, inputChanged: 1 });
   });
 
+  it('reduces invalidated proofs on the same complete cohort while still rejecting changed-table users', () => {
+    // This is a relative-yield detector, not the plan's historical 1,300/990 replay.
+    const candidates = ['pkg/foo.test.ts', 'pkg/bar.test.ts', 'pkg/baz.test.ts', 'pkg/dynamic.test.ts'];
+    const modules: Record<string, string> = {
+      [GEN]: GEN_A + table('bazInHarnessShared', 'baz'),
+      [REL]: REL_A,
+      [CONN]: 'const fullSchema = { ...generatedSchema };',
+      [candidates[0]!]: 'db.query.fooInHarnessShared.findMany();',
+      [candidates[1]!]: 'db.query.barInHarnessShared.findMany();',
+      [candidates[2]!]: 'db.query.bazInHarnessShared.findMany();',
+      [candidates[3]!]: "import { generated } from '@papercusp/db-org'; Object.keys(generated);",
+    };
+    const proofs = new Map(candidates.map((file) => [file, proof({ executedModules: [file, GEN, REL, CONN] })]));
+    const judge = createSchemaDriftJudge({
+      judgedSha: 'new',
+      readAtSha: (_sha: string, rel: string) => ({ [GEN]: GEN_A, [REL]: REL_A } as Record<string, string>)[rel] ?? '',
+      readJudged: (rel: string) => {
+        if (!(rel in modules)) throw new Error(`missing ${rel}`);
+        return modules[rel]!;
+      },
+      constructionSmoke: () => true,
+    });
+    const replay = (schemaDriftJudge: typeof judge | null) => selectReusablePasses({
+      candidates,
+      proofs,
+      judgedSha: 'new',
+      changedBetween: () => new Set([GEN]),
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+      auditRate: 0,
+      schemaDriftJudge,
+    });
+    const before = replay(null);
+    const after = replay(judge);
+    expect(before.summary).toMatchObject({ candidates: 4, reused: 0, inputChanged: 4 });
+    expect(after.summary).toMatchObject({ candidates: 4, reused: 2, inputChanged: 2, schemaNarrowed: 2 });
+    expect(after.summary.inputChanged).toBeLessThan(before.summary.inputChanged);
+    expect(after.skip).toEqual([candidates[1], candidates[0]]);
+    expect(after.skip).not.toContain(candidates[2]);
+    expect(after.skip).not.toContain(candidates[3]);
+  });
+
   it('never narrows other executed drift, nor a schema file the test READ through fs', () => {
     expect(select(proof(), [GEN, CONN], () => true).summary).toMatchObject({ reused: 0, inputChanged: 1 });
     expect(select(proof({ readPaths: [GEN] }), [GEN], () => true).summary).toMatchObject({ reused: 0, inputChanged: 1 });

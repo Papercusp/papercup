@@ -211,6 +211,8 @@ interface ManifestShape {
   dependencies?: import('@papercusp/plugin-sdk').ManifestDependencies;
   /** Pure-data trigger-pack declaration (external-triggers P-012). */
   triggerPack?: import('@papercusp/plugin-sdk').PluginTriggerPack;
+  /** Integration provider descriptor (generalized-integrations D-006 / P-001). */
+  provider?: import('@papercusp/plugin-sdk').ProviderDescriptor;
 }
 
 async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
@@ -240,6 +242,11 @@ async function readManifest(dir: string): Promise<ManifestShape | { __error: str
     const triggerPackIssues = validateTriggerPackDeclaration(parsed);
     if (triggerPackIssues.length > 0) {
       return { __error: `manifest invalid: ${triggerPackIssues.join('; ')}` };
+    }
+    const { validateProviderDeclaration } = await import('@papercusp/plugin-sdk');
+    const providerIssues = validateProviderDeclaration(parsed);
+    if (providerIssues.length > 0) {
+      return { __error: `manifest invalid: ${providerIssues.join('; ')}` };
     }
     if (parsed.triggerPack) {
       for (const target of parsed.triggerPack.targets) {
