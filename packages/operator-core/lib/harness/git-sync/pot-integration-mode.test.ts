@@ -19,6 +19,7 @@ vi.mock('../../hive-settings-store', () => store);
 import {
   POT_INTEGRATION_SETTING_KEY,
   POT_FORK_REMOTE_NAME,
+  SYNC_BACK_UPSTREAM_BRANCH,
   coercePotIntegrationMode,
   readPotIntegrationMode,
   resolveIntegrationPushRemote,
@@ -154,7 +155,28 @@ describe('applyIntegrationPushTarget (the git-sync tick rewrite)', () => {
     const cfg = baseCfg();
     expect(await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', ensure)).toBeNull();
     expect(ensure).toHaveBeenCalledWith('/repo', FORK);
-    expect(cfg).toEqual({ push: true, remote: POT_FORK_REMOTE_NAME, pushSubmoduleOrigins: false });
+    // P-016: the fork path also arms sync-back FROM the main repository's remote
+    // (captured before the remote is rewritten), never from the fork itself.
+    expect(cfg).toEqual({
+      push: true,
+      remote: POT_FORK_REMOTE_NAME,
+      pushSubmoduleOrigins: false,
+      syncBack: { upstreamRemote: 'origin', upstreamBranch: SYNC_BACK_UPSTREAM_BRANCH },
+    });
+    expect(cfg.syncBack?.upstreamRemote).not.toBe(POT_FORK_REMOTE_NAME);
+  });
+
+  it('only the fork path arms sync-back — commit-only and direct decisions never do', async () => {
+    const ensure = vi.fn();
+    for (const decision of [
+      undefined,
+      resolveIntegrationPushRemote({ read: { mode: 'direct', source: 'absent' } }),
+      resolveIntegrationPushRemote({ read: { mode: 'review', source: 'set' } }),
+    ]) {
+      const cfg = baseCfg();
+      await applyIntegrationPushTarget('p', cfg, decision, '/repo', ensure);
+      expect(cfg.syncBack).toBeUndefined();
+    }
   });
 
   it('a commit-only decision pushes nowhere and never touches the remote', async () => {

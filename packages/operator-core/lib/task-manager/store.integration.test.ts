@@ -13,6 +13,9 @@
  * needs a REAL Postgres round-trip to reproduce, hence this integration test.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type postgres from 'postgres';
 import {
   createFreshPgDb,
@@ -790,14 +793,20 @@ describe('clearVanishedUnaccounted (EI-18824358724907941)', () => {
 });
 
 describe('gcTerminalTasks retention', () => {
-  async function insertTerminal(taskId: string, endedHoursAgo: number, detail: Record<string, unknown>) {
+  async function insertTerminal(
+    taskId: string,
+    endedHoursAgo: number,
+    detail: Record<string, unknown>,
+    options: { taskClass?: string; logPath?: string | null } = {},
+  ) {
     await db.sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
-        launched_by, confined, state, ended_at, detail
+        launched_by, confined, state, ended_at, log_path, detail
       ) VALUES (
-        ${taskId}, ${WS}, ${taskId}, 'deploy', ${taskId}, '[]'::jsonb, 'test', false, 'exited',
-        now() - make_interval(hours => ${endedHoursAgo}::int), ${db.sql.json(detail as postgres.JSONValue)}
+        ${taskId}, ${WS}, ${taskId}, ${options.taskClass ?? 'deploy'}, ${taskId}, '[]'::jsonb, 'test', false, 'exited',
+        now() - make_interval(hours => ${endedHoursAgo}::int), ${options.logPath ?? null},
+        ${db.sql.json(detail as postgres.JSONValue)}
       )
     `;
   }
@@ -811,6 +820,77 @@ describe('gcTerminalTasks retention', () => {
     await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(1);
     const rows = await db.sql`SELECT task_id FROM harness_shared.task_ledger ORDER BY task_id`;
     expect(rows.map((row) => row.task_id)).toEqual(['old-release', 'young-plain']);
+  });
+
+  it('keeps terminal logs reattachable until expiry, then retires only deleted-row logs', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'task-ledger-retention-'));
+    const scratchDir = join(stateDir, 'scratch');
+    mkdirSync(scratchDir, { recursive: true });
+    const expiredLog = join(scratchDir, 'bash-expired.log');
+    const recentLog = join(scratchDir, 'bash-recent.log');
+    const releaseLog = join(scratchDir, 'bash-release.log');
+    const activeLog = join(scratchDir, 'bash-active.log');
+    for (const [path, content] of [
+      [expiredLog, 'expired output\n'],
+      [recentLog, 'late reattachment output\n'],
+      [releaseLog, 'release receipt output\n'],
+      [activeLog, 'active output\n'],
+    ]) {
+      writeFileSync(path, content, 'utf8');
+    }
+
+    try {
+      await insertTerminal(
+        'expired-bash-task',
+        200,
+        { bashJobId: 'bash-expired' },
+        { taskClass: 'bash-job', logPath: expiredLog },
+      );
+      await insertTerminal(
+        'recent-bash-task',
+        1,
+        { bashJobId: 'bash-recent' },
+        { taskClass: 'bash-job', logPath: recentLog },
+      );
+      await insertTerminal(
+        'release-bash-task',
+        200,
+        { bashJobId: 'bash-release', release: { operationId: 'release-1', receipts: [] } },
+        { taskClass: 'bash-job', logPath: releaseLog },
+      );
+      await db.sql`
+        INSERT INTO harness_shared.task_ledger (
+          task_id, workspace_id, root_task_id, class, title, argv,
+          launched_by, confined, state, log_path, detail
+        ) VALUES (
+          'active-bash-task', ${WS}, 'active-bash-task', 'bash-job', 'active-bash-task',
+          '[]'::jsonb, 'test', false, 'running', ${activeLog},
+          ${db.sql.json({ bashJobId: 'bash-active' } as postgres.JSONValue)}
+        )
+      `;
+
+      // bash_output's worker-loss recovery resolves this durable task identity
+      // and reads its ledger-owned path while the row is within retention.
+      const attachable = await store.getTaskByBashJobId('bash-recent', { workspaceId: WS });
+      expect(attachable).toMatchObject({ taskId: 'recent-bash-task', logPath: recentLog, state: 'exited' });
+      expect(readFileSync(attachable!.logPath!, 'utf8')).toBe('late reattachment output\n');
+
+      await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(1);
+
+      expect(await store.getTask('expired-bash-task')).toBeNull();
+      expect(existsSync(expiredLog)).toBe(false);
+      expect(await store.getTaskByBashJobId('bash-recent', { workspaceId: WS })).toMatchObject({
+        taskId: 'recent-bash-task',
+        logPath: recentLog,
+      });
+      expect(existsSync(recentLog)).toBe(true);
+      expect(await store.getTask('release-bash-task')).toMatchObject({ logPath: releaseLog });
+      expect(existsSync(releaseLog)).toBe(true);
+      expect(await store.getTask('active-bash-task')).toMatchObject({ logPath: activeLog, state: 'running' });
+      expect(existsSync(activeLog)).toBe(true);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });
 

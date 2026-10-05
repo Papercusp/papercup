@@ -2706,6 +2706,7 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
       expect(stageRecords.map((record) => record.outcome)).toEqual([
         "timeout_retry",
         "slow_response",
+        "success",
       ]);
       for (const record of stageRecords) {
         expect(record.traceId).toBe(upstreamTraceIds[0]);
@@ -2732,6 +2733,407 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
       }
     } finally {
       fs.rmSync(logFile, { force: true });
+      if (previous === undefined)
+        delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
+  });
+
+  it("records one successful initialize with bounded timings and pseudonymous native-session attribution", async () => {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const crypto = await import("node:crypto");
+    const logFile = path.join(
+      os.tmpdir(),
+      "mcp-proxy-initialize-success-" + Date.now() + ".jsonl",
+    );
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    const nativeSessionId = "0123abcd-1234-5678-9abc-def012345678";
+    const requestSecret = "initialize-request-secret";
+    const responseSecret = "initialize-response-secret";
+    const requestBody =
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"' +
+      requestSecret +
+      '"}}}';
+    const responseBody =
+      '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"' +
+      responseSecret +
+      '"}}}';
+    let upstreamTraceId = "";
+    try {
+      const upstream = track(
+        http.createServer((req, res) => {
+          upstreamTraceId = String(req.headers[MCP_PROXY_TRACE_HEADER] ?? "");
+          res.writeHead(200, {
+            "content-type": "application/json",
+            "x-upstream-fixture": "preserved",
+          });
+          res.end(responseBody);
+        }),
+      );
+      await listen(upstream);
+      const proxyPort = await freePort();
+      const proxy = track(
+        createMcpProxy({
+          listenPort: proxyPort,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          log: () => {},
+        }),
+      );
+      await listen(proxy, proxyPort);
+
+      const response = await request(
+        proxyPort,
+        requestBody,
+        "/api/mcp?native_session=query-native-session-secret",
+        {
+          "content-type": "application/json",
+          "x-papercusp-native-session": nativeSessionId,
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toBe(responseBody);
+      expect(response.headers["content-type"]).toBe("application/json");
+      expect(response.headers["x-upstream-fixture"]).toBe("preserved");
+      expect(upstreamTraceId).toMatch(/^[0-9a-f-]+$/);
+      await waitFor(
+        () =>
+          fs.existsSync(logFile) &&
+          fs.readFileSync(logFile, "utf8").trim().length > 0,
+      );
+
+      const records = fs
+        .readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const successes = records.filter(
+        (record) =>
+          record.kind === "initialize_stage" && record.outcome === "success",
+      );
+      expect(successes).toHaveLength(1);
+      const success = successes[0]!;
+      expect(success.traceId).toBe(upstreamTraceId);
+      expect(success.pid).toBe(process.pid);
+      expect(success.listenPort).toBe(proxyPort);
+      expect(success.target).toBe("127.0.0.1:" + port(upstream));
+      expect(success).not.toHaveProperty("path");
+      expect(success.stages).toEqual({
+        bodyReadMs: expect.any(Number),
+        admissionWaitMs: expect.any(Number),
+        upstreamMs: expect.any(Number),
+        totalMs: expect.any(Number),
+      });
+      for (const stageMs of Object.values(
+        success.stages as Record<string, number>,
+      )) {
+        expect(stageMs).toBeGreaterThanOrEqual(0);
+        expect(stageMs).toBeLessThanOrEqual(600_000);
+      }
+      expect(success.nativeSession).toEqual({
+        pseudonym: crypto
+          .createHash("sha256")
+          .update(nativeSessionId)
+          .digest("hex")
+          .slice(0, 24),
+        source: "header:x-papercusp-native-session",
+        trust: "unverified-client-assertion",
+      });
+      const serialized = JSON.stringify(success);
+      for (const secret of [
+        nativeSessionId,
+        requestSecret,
+        responseSecret,
+        "query-native-session-secret",
+      ])
+        expect(serialized).not.toContain(secret);
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (previous === undefined)
+        delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
+  });
+
+  it("records exact tools/list counts and only a sanitized, capped name sample for JSON and SSE", async () => {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const logFile = path.join(
+      os.tmpdir(),
+      "mcp-proxy-tools-list-success-" + Date.now() + ".jsonl",
+    );
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    const smallTools = [
+      { name: " git\nstatus ", description: "description-secret" },
+      {
+        name: "tool-two",
+        inputSchema: { type: "object", properties: { secret: { type: "string" } } },
+      },
+    ];
+    const smallJson = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: smallTools },
+    });
+    const smallSse = "event: message\ndata: " + smallJson + "\n\n";
+    const manyTools = Array.from({ length: 70 }, (_unused, index) => ({
+      name:
+        index === 0
+          ? " first\nname "
+          : index === 1
+            ? "long-" + "x".repeat(200)
+            : "tool-" + index,
+      description: "description-secret-" + index,
+      inputSchema: { type: "object", properties: { secret: { type: "string" } } },
+    }));
+    const largeJson = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: manyTools },
+    });
+    const fixtures = [
+      {
+        type: "text/event-stream",
+        body: smallSse,
+      },
+      { type: "application/json", body: largeJson },
+    ];
+    const traceIds: string[] = [];
+    try {
+      const upstream = track(
+        http.createServer((_req, res) => {
+          const fixture = fixtures.shift();
+          if (!fixture) {
+            res.writeHead(500);
+            res.end("unexpected request");
+            return;
+          }
+          traceIds.push(String(_req.headers[MCP_PROXY_TRACE_HEADER] ?? ""));
+          res.writeHead(200, {
+            "content-type": fixture.type,
+            "x-upstream-fixture": "preserved",
+          });
+          res.end(fixture.body);
+        }),
+      );
+      await listen(upstream);
+      const proxyPort = await freePort();
+      const proxy = track(
+        createMcpProxy({
+          listenPort: proxyPort,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          log: () => {},
+        }),
+      );
+      await listen(proxy, proxyPort);
+
+      const smallResponse = await request(
+        proxyPort,
+        '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        "/api/mcp?tracking=query-secret",
+      );
+      const largeResponse = await request(
+        proxyPort,
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+        "/api/mcp?tracking=query-secret",
+        { "x-papercusp-native-session": "tools-list-native-session-secret" },
+      );
+      expect(smallResponse.body).toBe(smallSse);
+      expect(smallResponse.status).toBe(200);
+      expect(smallResponse.headers["content-type"]).toBe("text/event-stream");
+      expect(smallResponse.headers["x-upstream-fixture"]).toBe("preserved");
+      expect(largeResponse.status).toBe(200);
+      expect(largeResponse.headers["content-type"]).toBe("application/json");
+      expect(largeResponse.headers["x-upstream-fixture"]).toBe("preserved");
+      await waitFor(
+        () =>
+          fs.existsSync(logFile) &&
+          fs.readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean)
+            .length >= 2,
+      );
+
+      const records = fs
+        .readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const successes = records.filter(
+        (record) =>
+          record.kind === "tools_list_stage" && record.outcome === "success",
+      );
+      expect(successes).toHaveLength(2);
+      expect(successes[0]!.traceId).toBe(traceIds[0]);
+      expect(successes[0]!.toolCount).toBe(2);
+      expect(successes[0]!.toolNames).toEqual(["gitstatus", "tool-two"]);
+      expect(successes[0]!.nativeSession).toEqual({
+        pseudonym: null,
+        source: "absent",
+        trust: "unavailable",
+      });
+      expect(successes[1]!.traceId).toBe(traceIds[1]);
+      expect(successes[1]!.toolCount).toBe(70);
+      const sampledNames = successes[1]!.toolNames as string[];
+      expect(sampledNames).toHaveLength(64);
+      expect(sampledNames[0]).toBe("firstname");
+      expect(sampledNames[1]).toHaveLength(128);
+      expect(sampledNames[63]).toBe("tool-63");
+      expect(sampledNames.every((name) => name.length <= 128)).toBe(true);
+      expect(
+        (successes[1]!.nativeSession as { trust: string }).trust,
+      ).toBe("unverified-client-assertion");
+      const serialized = JSON.stringify(successes);
+      for (const secret of [
+        "tools-list-native-session-secret",
+        "query-secret",
+        "description-secret",
+        "inputSchema",
+        "properties",
+      ])
+        expect(serialized).not.toContain(secret);
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (previous === undefined)
+        delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
+  });
+
+  it("forwards streamed initialize bytes unchanged when the observer or telemetry logger fails", async () => {
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG =
+      "/dev/null/mcp-proxy-telemetry.jsonl";
+    const prefix = '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":';
+    const suffix = '{"name":"streamed"}}}';
+    const fullBody = prefix + suffix;
+    const malformed = '{"jsonrpc":"2.0","id":1,"result":';
+    let releaseUpstream: () => void = () => {};
+    const upstreamGate = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    let upstreamEnded = false;
+    let calls = 0;
+    try {
+      const upstream = track(
+        http.createServer((_req, res) => {
+          calls++;
+          res.writeHead(200, {
+            "content-type": "application/json",
+            "content-length": String(
+              calls === 1 ? fullBody.length : malformed.length,
+            ),
+            "x-upstream-fixture": "preserved",
+          });
+          if (calls === 1) {
+            res.write(prefix);
+            void upstreamGate.then(() => {
+              upstreamEnded = true;
+              res.end(suffix);
+            });
+          } else {
+            res.end(malformed);
+          }
+        }),
+      );
+      await listen(upstream);
+      const proxyPort = await freePort();
+      const proxy = track(
+        createMcpProxy({
+          listenPort: proxyPort,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          log: () => {},
+        }),
+      );
+      await listen(proxy, proxyPort);
+
+      let signalFirstChunk: () => void = () => {};
+      const firstChunk = new Promise<void>((resolve) => {
+        signalFirstChunk = resolve;
+      });
+      let resolveResponse: (value: {
+        status: number;
+        body: string;
+        headers: http.IncomingHttpHeaders;
+      }) => void = () => {};
+      let rejectResponse: (error: Error) => void = () => {};
+      const streamedResponse = new Promise<{
+        status: number;
+        body: string;
+        headers: http.IncomingHttpHeaders;
+      }>((resolve, reject) => {
+        resolveResponse = resolve;
+        rejectResponse = reject;
+      });
+      const client = http.request(
+        {
+          host: "127.0.0.1",
+          port: proxyPort,
+          method: "POST",
+          path: "/api/mcp",
+          headers: { "content-type": "application/json" },
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk) => {
+            if (body.length === 0) signalFirstChunk();
+            body += String(chunk);
+          });
+          res.on("end", () =>
+            resolveResponse({
+              status: res.statusCode ?? 0,
+              body,
+              headers: res.headers,
+            }),
+          );
+        },
+      );
+      client.on("error", rejectResponse);
+      client.end('{"jsonrpc":"2.0","id":1,"method":"initialize"}');
+      let firstChunkTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          firstChunk,
+          new Promise<never>((_resolve, reject) => {
+            firstChunkTimer = setTimeout(
+              () => reject(new Error("proxy buffered the upstream stream")),
+              1_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (firstChunkTimer) clearTimeout(firstChunkTimer);
+      }
+      expect(upstreamEnded).toBe(false);
+      releaseUpstream();
+      const streamed = await streamedResponse;
+      expect(streamed.status).toBe(200);
+      expect(streamed.body).toBe(fullBody);
+      expect(streamed.headers["content-type"]).toBe("application/json");
+      expect(streamed.headers["x-upstream-fixture"]).toBe("preserved");
+
+      const observerFailureResponse = await request(
+        proxyPort,
+        '{"jsonrpc":"2.0","id":2,"method":"initialize"}',
+      );
+      expect(calls).toBe(2);
+      expect(observerFailureResponse.status).toBe(200);
+      expect(observerFailureResponse.body).toBe(malformed);
+      expect(observerFailureResponse.headers["x-upstream-fixture"]).toBe(
+        "preserved",
+      );
+    } finally {
+      releaseUpstream();
       if (previous === undefined)
         delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
       else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;

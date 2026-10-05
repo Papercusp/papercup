@@ -42,7 +42,9 @@
  * proxy is a pure per-request passthrough — no session state to lose across a restart.
  */
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
+import { parser as createStreamJsonParser } from "stream-json";
 import { normalizeMcpName } from "@papercusp/tooldef";
 import {
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
@@ -258,6 +260,358 @@ function recordProxyFailure(rec: Record<string, unknown>): void {
   } catch {
     /* telemetry must never break the proxy */
   }
+}
+
+const MAX_MCP_PROXY_SUCCESS_TOOL_NAMES = 64;
+const MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS = 128;
+const MAX_MCP_PROXY_SUCCESS_STAGE_MS = 10 * 60 * 1000;
+
+type NativeSessionAttribution = {
+  pseudonym: string | null;
+  source: string;
+  trust: string;
+};
+
+function nativeSessionAttribution(
+  headers: http.IncomingHttpHeaders,
+): NativeSessionAttribution {
+  const carrier = headers["x-papercusp-native-session"];
+  if (typeof carrier !== "string") {
+    return {
+      pseudonym: null,
+      source: carrier === undefined ? "absent" : "header:x-papercusp-native-session",
+      trust: carrier === undefined ? "unavailable" : "unusable",
+    };
+  }
+  const nativeSessionId = carrier.trim();
+  if (
+    nativeSessionId.length === 0 ||
+    nativeSessionId.length > MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS ||
+    !/^[A-Za-z0-9._:-]+$/.test(nativeSessionId)
+  ) {
+    return {
+      pseudonym: null,
+      source: "header:x-papercusp-native-session",
+      trust: "unusable",
+    };
+  }
+  return {
+    pseudonym: createHash("sha256")
+      .update(nativeSessionId)
+      .digest("hex")
+      .slice(0, 24),
+    source: "header:x-papercusp-native-session",
+    trust: "unverified-client-assertion",
+  };
+}
+
+function boundedMcpProxyStageMs(value: number): number {
+  return Number.isFinite(value)
+    ? Math.min(MAX_MCP_PROXY_SUCCESS_STAGE_MS, Math.max(0, Math.floor(value)))
+    : 0;
+}
+
+type McpResponseTelemetrySummary = {
+  resultSeen: boolean;
+  errorSeen: boolean;
+  toolsArraySeen: boolean;
+  toolCount: number;
+  toolNames: string[];
+};
+
+type McpResponseTelemetryObserver = {
+  write(chunk: Buffer): void;
+  finish(): Promise<McpResponseTelemetrySummary | null>;
+};
+
+/**
+ * Observe only the small result fields needed for MCP success telemetry. The SAX
+ * parser never assembles descriptions, schemas, or the response body, and the
+ * streamable-HTTP bytes continue through the original pipe untouched.
+ */
+function createMcpResponseTelemetryObserver(
+  contentType: string | string[] | undefined,
+): McpResponseTelemetryObserver {
+  type Frame = {
+    kind: "object" | "array";
+    role: "batch" | "response" | "result" | "tools" | "tool" | "other";
+    pendingKey?: string;
+    nameSeen: boolean;
+  };
+  type NameCapture = { value: string; chars: number };
+
+  const isEventStream = /text\/event-stream/i.test(
+    Array.isArray(contentType) ? contentType.join(",") : (contentType ?? ""),
+  );
+  const parser = createStreamJsonParser.asStream({
+    jsonStreaming: true,
+    packKeys: false,
+    packStrings: false,
+    packNumbers: false,
+  });
+  const decoder = isEventStream ? new StringDecoder("utf8") : null;
+  const frames: Frame[] = [];
+  const toolNames: string[] = [];
+  let resultSeen = false;
+  let errorSeen = false;
+  let toolsArraySeen = false;
+  let toolCount = 0;
+  let failed = false;
+  let finished = false;
+  let settled = false;
+  let inKey = false;
+  let keyBuffer = "";
+  let keyOverflow = false;
+  let activeName: NameCapture | null = null;
+  let sseMode: "prefix" | "data" | "other" = "prefix";
+  let ssePrefix = "";
+  let sseSkipOptionalSpace = false;
+  let sseEventHasData = false;
+  let ssePendingData = "";
+  let resolveCompletion: (
+    summary: McpResponseTelemetrySummary | null,
+  ) => void = () => {};
+  const completion = new Promise<McpResponseTelemetrySummary | null>(
+    (resolve) => {
+      resolveCompletion = resolve;
+    },
+  );
+
+  const settle = (summary: McpResponseTelemetrySummary | null): void => {
+    if (settled) return;
+    settled = true;
+    resolveCompletion(summary);
+  };
+  const fail = (): void => {
+    failed = true;
+    settle(null);
+  };
+  const appendNameChunk = (chunk: string): void => {
+    if (!activeName || activeName.chars >= MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS)
+      return;
+    const printable = chunk.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+    for (const character of printable) {
+      if (activeName.chars >= MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS) break;
+      activeName.value += character;
+      activeName.chars++;
+    }
+  };
+  const valueStarts = new Set([
+    "startObject",
+    "startArray",
+    "startString",
+    "startNumber",
+    "stringValue",
+    "numberValue",
+    "trueValue",
+    "falseValue",
+    "nullValue",
+  ]);
+  const beginValue = (tokenName: string): void => {
+    const parent = frames[frames.length - 1];
+    const key = parent?.kind === "object" ? parent.pendingKey : undefined;
+    if (parent?.kind === "object" && parent.role === "response") {
+      if (key === "result") resultSeen = true;
+      if (key === "error") errorSeen = true;
+    }
+    if (parent?.kind === "array" && parent.role === "tools" && valueStarts.has(tokenName)) {
+      if (toolCount < Number.MAX_SAFE_INTEGER) toolCount++;
+      else failed = true;
+    }
+    if (parent?.kind === "object" && parent.role === "tool" && key === "name") {
+      if (
+        tokenName === "startString" &&
+        !parent.nameSeen &&
+        toolNames.length < MAX_MCP_PROXY_SUCCESS_TOOL_NAMES
+      ) {
+        activeName = { value: "", chars: 0 };
+      }
+      parent.nameSeen = true;
+    }
+    if (parent?.kind === "object") parent.pendingKey = undefined;
+  };
+  const childRole = (
+    kind: "object" | "array",
+    parent: Frame | undefined,
+    key: string | undefined,
+  ): Frame["role"] => {
+    if (!parent) return kind === "array" ? "batch" : "response";
+    if (parent.kind === "array" && parent.role === "batch" && kind === "object")
+      return "response";
+    if (parent.kind === "object" && parent.role === "response" && key === "result" && kind === "object")
+      return "result";
+    if (parent.kind === "object" && parent.role === "result" && key === "tools" && kind === "array") {
+      toolsArraySeen = true;
+      return "tools";
+    }
+    if (parent.kind === "array" && parent.role === "tools" && kind === "object")
+      return "tool";
+    return "other";
+  };
+  parser.on("data", (token: { name: string; value?: unknown }) => {
+    if (failed) return;
+    try {
+      if (token.name === "startKey") {
+        inKey = true;
+        keyBuffer = "";
+        keyOverflow = false;
+        return;
+      }
+      if (token.name === "endKey") {
+        const frame = frames[frames.length - 1];
+        if (frame?.kind === "object")
+          frame.pendingKey = keyOverflow ? "" : keyBuffer;
+        inKey = false;
+        keyBuffer = "";
+        keyOverflow = false;
+        return;
+      }
+      if (token.name === "stringChunk") {
+        const chunk = typeof token.value === "string" ? token.value : "";
+        if (inKey) {
+          if (keyBuffer.length < 16) {
+            const remaining = 16 - keyBuffer.length;
+            keyBuffer += chunk.slice(0, remaining);
+            if (chunk.length > remaining) keyOverflow = true;
+          } else {
+            keyOverflow = true;
+          }
+        } else {
+          appendNameChunk(chunk);
+        }
+        return;
+      }
+      if (token.name === "endString") {
+        if (activeName) {
+          const sanitized = activeName.value.trim();
+          if (
+            sanitized.length > 0 &&
+            toolNames.length < MAX_MCP_PROXY_SUCCESS_TOOL_NAMES
+          )
+            toolNames.push(sanitized);
+          activeName = null;
+        }
+        return;
+      }
+      if (token.name === "startObject" || token.name === "startArray") {
+        const kind = token.name === "startObject" ? "object" : "array";
+        const parent = frames[frames.length - 1];
+        const key = parent?.kind === "object" ? parent.pendingKey : undefined;
+        const role = childRole(kind, parent, key);
+        beginValue(token.name);
+        frames.push({ kind, role, nameSeen: false });
+        return;
+      }
+      if (token.name === "endObject" || token.name === "endArray") {
+        frames.pop();
+        return;
+      }
+      if (
+        token.name === "startString" ||
+        token.name === "startNumber" ||
+        token.name === "stringValue" ||
+        token.name === "numberValue" ||
+        token.name === "trueValue" ||
+        token.name === "falseValue" ||
+        token.name === "nullValue"
+      ) {
+        beginValue(token.name);
+      }
+    } catch {
+      fail();
+    }
+  });
+  parser.on("error", fail);
+  parser.on("end", () => {
+    if (failed) {
+      settle(null);
+      return;
+    }
+    settle({
+      resultSeen,
+      errorSeen,
+      toolsArraySeen,
+      toolCount,
+      toolNames,
+    });
+  });
+
+  const flushSseData = (): void => {
+    if (ssePendingData.length === 0) return;
+    parser.write(ssePendingData);
+    ssePendingData = "";
+  };
+  const appendSseData = (value: string): void => {
+    ssePendingData += value;
+    if (ssePendingData.length >= 1024) flushSseData();
+  };
+  const feedEventStreamText = (text: string): void => {
+    for (const character of text) {
+      if (character === "\r") continue;
+      if (character === "\n") {
+        if (sseMode === "prefix" && ssePrefix.length === 0 && sseEventHasData) {
+          appendSseData("\n");
+          flushSseData();
+          sseEventHasData = false;
+        }
+        sseMode = "prefix";
+        ssePrefix = "";
+        sseSkipOptionalSpace = false;
+        continue;
+      }
+      if (sseMode === "prefix") {
+        ssePrefix += character;
+        if ("data:".startsWith(ssePrefix)) {
+          if (ssePrefix === "data:") {
+            sseMode = "data";
+            if (sseEventHasData) appendSseData("\n");
+            sseEventHasData = true;
+            sseSkipOptionalSpace = true;
+            ssePrefix = "";
+          }
+        } else {
+          sseMode = "other";
+          ssePrefix = "";
+        }
+        continue;
+      }
+      if (sseMode === "data") {
+        if (sseSkipOptionalSpace) {
+          sseSkipOptionalSpace = false;
+          if (character === " ") continue;
+        }
+        appendSseData(character);
+      }
+    }
+  };
+
+  return {
+    write(chunk: Buffer): void {
+      if (failed || finished) return;
+      try {
+        if (decoder) feedEventStreamText(decoder.write(chunk));
+        else parser.write(chunk);
+      } catch {
+        fail();
+      }
+    },
+    finish(): Promise<McpResponseTelemetrySummary | null> {
+      if (!finished) {
+        finished = true;
+        try {
+          if (decoder) {
+            feedEventStreamText(decoder.end());
+            if (sseEventHasData) appendSseData("\n");
+            flushSseData();
+          }
+          parser.end();
+        } catch {
+          fail();
+        }
+      }
+      return completion;
+    },
+  };
 }
 
 export interface McpProxyOptions {
@@ -4244,29 +4598,37 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
           };
           const isInitialize = fwd.rpcMethods.includes("initialize");
+          const isToolsList = fwd.rpcMethods.includes("tools/list");
           const recordInitializeStage = (
-            outcome: "slow_response" | "timeout_retry" | "timeout_exhausted",
+            outcome:
+              | "success"
+              | "slow_response"
+              | "timeout_retry"
+              | "timeout_exhausted",
             upstreamMs: number,
+            nativeSession?: NativeSessionAttribution,
           ): void => {
-            const totalMs = Date.now() - receivedAt;
+            const totalMs = boundedMcpProxyStageMs(Date.now() - receivedAt);
             if (
               !isInitialize ||
               (outcome === "slow_response" && totalMs < initializeSlowMs)
             )
               return;
             // Privacy boundary: request-specific fields are limited to the proxy-owned trace id,
-            // a finite outcome enum, and stage durations. Never add methods, tool names, args,
-            // headers, URLs, bodies, or error text to this record.
+            // a finite outcome enum, bounded stage durations, and pseudonymous native-session
+            // attribution with an explicit trust label. Never add raw headers, URLs, bodies,
+            // tool names, or error text to this record.
             record({
               kind: "initialize_stage",
               traceId,
               outcome,
               stages: {
-                bodyReadMs: Math.max(0, bodyReadyAt - receivedAt),
-                admissionWaitMs: Math.max(0, admittedAt - bodyReadyAt),
-                upstreamMs: Math.max(0, upstreamMs),
-                totalMs: Math.max(0, totalMs),
+                bodyReadMs: boundedMcpProxyStageMs(bodyReadyAt - receivedAt),
+                admissionWaitMs: boundedMcpProxyStageMs(admittedAt - bodyReadyAt),
+                upstreamMs: boundedMcpProxyStageMs(upstreamMs),
+                totalMs,
               },
+              ...(nativeSession ? { nativeSession } : {}),
             });
           };
           // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
@@ -4440,6 +4802,95 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 await new Promise((r) => setTimeout(r, waitMs));
                 continue;
               }
+              if (
+                status >= 200 &&
+                status < 300 &&
+                (isInitialize || isToolsList)
+              ) {
+                try {
+                  const observer = createMcpResponseTelemetryObserver(
+                    ures.headers["content-type"],
+                  );
+                  let responseFinished = false;
+                  let observationFinished = false;
+                  let observation: McpResponseTelemetrySummary | null = null;
+                  let telemetryRecorded = false;
+                  const recordSuccessfulObservation = (): void => {
+                    if (
+                      telemetryRecorded ||
+                      !responseFinished ||
+                      !observationFinished ||
+                      !observation ||
+                      !observation.resultSeen ||
+                      observation.errorSeen
+                    )
+                      return;
+                    const recordInitializeSuccess = isInitialize;
+                    const recordToolsListSuccess =
+                      isToolsList && observation.toolsArraySeen;
+                    if (!recordInitializeSuccess && !recordToolsListSuccess)
+                      return;
+                    telemetryRecorded = true;
+                    const nativeSession = nativeSessionAttribution(req.headers);
+                    const stages = {
+                      bodyReadMs: boundedMcpProxyStageMs(
+                        bodyReadyAt - receivedAt,
+                      ),
+                      admissionWaitMs: boundedMcpProxyStageMs(
+                        admittedAt - bodyReadyAt,
+                      ),
+                      upstreamMs: boundedMcpProxyStageMs(upstreamMs),
+                      totalMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                    };
+                    const toolCount = observation.toolCount;
+                    const toolNames = observation.toolNames;
+                    setImmediate(() => {
+                      if (recordInitializeSuccess)
+                        recordInitializeStage(
+                          "success",
+                          upstreamMs,
+                          nativeSession,
+                        );
+                      if (recordToolsListSuccess)
+                        record({
+                          kind: "tools_list_stage",
+                          traceId,
+                          outcome: "success",
+                          toolCount,
+                          toolNames,
+                          stages,
+                          nativeSession,
+                        });
+                    });
+                  };
+                  ures.on("data", (chunk: Buffer) => observer.write(chunk));
+                  ures.once("end", () => {
+                    void observer
+                      .finish()
+                      .then((summary) => {
+                        observation = summary;
+                        observationFinished = true;
+                        recordSuccessfulObservation();
+                      })
+                      .catch(() => {
+                        observation = null;
+                        observationFinished = true;
+                        recordSuccessfulObservation();
+                      });
+                  });
+                  ures.once("error", () => {
+                    observation = null;
+                    observationFinished = true;
+                    recordSuccessfulObservation();
+                  });
+                  res.once("finish", () => {
+                    responseFinished = true;
+                    recordSuccessfulObservation();
+                  });
+                } catch {
+                  // Telemetry setup is best-effort; the original response pipe owns delivery.
+                }
+              }
               res.writeHead(status, ures.headers);
               // WI-35737: an MCP response is an SSE stream that stays open long after headers
               // arrive (and long after this function returns and releases its in-flight slot).
@@ -4459,7 +4910,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 record({
                   kind: "recovered",
                   method: req.method,
-                  path: req.url,
+                  ...(!(isInitialize || isToolsList) ? { path: req.url } : {}),
                   status,
                   attempts,
                   postConnectRetries,

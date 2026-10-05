@@ -16,6 +16,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import { lstat, unlink } from 'node:fs/promises';
 import { activeWorkspaceId } from '../workspace-registry';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
@@ -1750,8 +1751,42 @@ export async function gcTerminalTasks(
        AND ended_at IS NOT NULL
        AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
        AND NOT (detail ? 'release')
-    RETURNING task_id
+    RETURNING task_id, log_path
   `;
+
+  // The task ledger is the ownership receipt for its spill log. Keep the file
+  // available while a terminal row is retained so capability:bash_output can
+  // reattach by task id after its worker-local registry is gone. Only paths
+  // returned by the completed DELETE are eligible here; after deleting the
+  // rows, preserve any path that another surviving row still references.
+  const logPaths = [...new Set(
+    rows
+      .map((row: { log_path?: unknown }) => (typeof row.log_path === 'string' ? row.log_path : null))
+      .filter((path: string | null): path is string => Boolean(path?.trim())),
+  )];
+  if (logPaths.length > 0) {
+    const remaining = await sql`
+      SELECT DISTINCT log_path
+        FROM harness_shared.task_ledger
+       WHERE log_path = ANY(${sql.array(logPaths)})
+    `;
+    const stillReferenced = new Set(remaining.map((row: { log_path: string }) => row.log_path));
+    await Promise.all(
+      logPaths
+        .filter((logPath) => !stillReferenced.has(logPath))
+        .map(async (logPath) => {
+          try {
+            const stat = await lstat(logPath);
+            // `unlink` removes a symlink itself without following it. Never
+            // recurse into a directory if a malformed ledger row names one.
+            if (stat.isFile() || stat.isSymbolicLink()) await unlink(logPath);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+          }
+        }),
+    );
+  }
   return rows.length;
 }
 
