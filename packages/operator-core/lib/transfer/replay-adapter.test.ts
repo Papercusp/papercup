@@ -163,12 +163,12 @@ describe('transferReplayPort', () => {
       replayBattery: expect.stringMatching(/^[a-f0-9]{16}$/),
       transcript: expect.stringMatching(/^[a-f0-9]{16}$/),
       divergence: expect.stringMatching(/^[a-f0-9]{16}$/),
-      engine: expect.stringMatching(/^[a-f0-9]{64}$/),
-      judge: expect.stringMatching(/^[a-f0-9]{64}$/),
-      scoring: expect.stringMatching(/^[a-f0-9]{64}$/),
-      parser: expect.stringMatching(/^[a-f0-9]{64}$/),
-      ratePause: expect.stringMatching(/^[a-f0-9]{64}$/),
+      // Vite executes these through its worker evaluator, without a native
+      // load receipt. Disk snapshots cannot fill their original-source pins.
+      engine: null, judge: null, scoring: null, parser: null, ratePause: null,
+      sourceIdentity: null,
     });
+    expect(outcome.evaluation?.experiment.codeHash).toBeNull();
   });
 
   it('pins the source before awaiting and retains immutable request and response artifacts', async () => {

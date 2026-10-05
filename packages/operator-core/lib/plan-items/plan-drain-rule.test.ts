@@ -2,9 +2,10 @@
  * plan-drain-rule.test.ts — P-004 of
  * deterministic-plan-state-derivation-2026-08-31.
  *
- * Pins both rules to the REAL dispatch path: `plans:set-status` and
+ * Pins the rules to the REAL dispatch path: `plans:set-status` and
  * `plans:add-item` return BULK envelopes, the engine FANS them into one event
- * per item, and the carrier is never matched. A rule reading `data.results[]`
+ * per item, and the carrier is never matched. Initial lifecycle writes through
+ * `plans:new` and `plans:set-frontmatter` are reconciled after success. A rule reading `data.results[]`
  * therefore has a `when` that is always false and silently never fires.
  *
  * FALSIFIABILITY. Every "fires" assertion is paired with a control event
@@ -23,6 +24,7 @@ import type { ToolInvocationEvent } from '../events/types';
 const RULE_ID = 'plan-drain:terminality-changed';
 const ADD_RULE_ID = 'plan-drain:item-added';
 const CREATE_RULE_ID = 'plan-drain:plan-created';
+const FRONTMATTER_RULE_ID = 'plan-drain:legacy-plan-converted';
 const CONTENT_RULE_IDS = {
   'plans:set-content': 'plan-drain:content-rewritten',
   'plans:edit': 'plan-drain:content-edited',
@@ -94,6 +96,15 @@ function newPlanEvent(status: string | undefined, ok = true): ToolInvocationEven
     tool: 'plans:new',
     args: { slug: 'p-created', ...(status ? { status } : {}) },
     result: { ok, data: { ok, slug: 'p-created' } },
+    ctx,
+  };
+}
+
+function setFrontmatterEvent(status: string | undefined, ok = true): ToolInvocationEvent {
+  return {
+    tool: 'plans:set-frontmatter',
+    args: { slug: 'p-legacy', ...(status ? { status } : {}) },
+    result: { ok, data: { ok, slug: 'p-legacy' } },
     ctx,
   };
 }
@@ -193,6 +204,16 @@ describe('planWhoseDrainStateMayHaveChanged — relevant lifecycle writes', () =
     expect(planWhoseDrainStateMayHaveChanged(newPlanEvent('ready', false))).toBeNull();
   });
 
+  it('matches successful legacy conversions with a non-draft initial status', () => {
+    expect(planWhoseDrainStateMayHaveChanged(setFrontmatterEvent('ready'))).toEqual({
+      planSlug: 'p-legacy',
+      harnessSlug: 'papercusp',
+    });
+    expect(planWhoseDrainStateMayHaveChanged(setFrontmatterEvent(undefined))).toBeNull();
+    expect(planWhoseDrainStateMayHaveChanged(setFrontmatterEvent('draft'))).toBeNull();
+    expect(planWhoseDrainStateMayHaveChanged(setFrontmatterEvent('ready', false))).toBeNull();
+  });
+
   it('carries no harness when the ctx has none, rather than guessing one', () => {
     // EI-8970: re-reading under the operator-home harness would resolve a
     // DIFFERENT plan row for a plan that lives elsewhere. Absent is honest.
@@ -221,6 +242,10 @@ describe('the rule on the real dispatch path', () => {
 
   it('registers the creation-time drain reaction on plans:new', () => {
     expect(reactionRulesFor('plans:new').map((r) => r.id)).toContain(CREATE_RULE_ID);
+  });
+
+  it('registers the conversion-time drain reaction on plans:set-frontmatter', () => {
+    expect(reactionRulesFor('plans:set-frontmatter').map((r) => r.id)).toContain(FRONTMATTER_RULE_ID);
   });
 
   it('matches the FANNED per-item events and NOT the bulk carrier', () => {
@@ -293,5 +318,13 @@ describe('the rule on the real dispatch path', () => {
     expect(action!.fire).toBe(PLAN_DRAIN_TRANSITION_ACTION);
     expect(action!.args.plans).toEqual([{ planSlug: 'p-created', harnessSlug: 'papercusp' }]);
     expect(matchReactions(newPlanEvent('draft')).find((a) => a.ruleId === CREATE_RULE_ID)).toBeUndefined();
+  });
+
+  it('fires lifecycle reconciliation for a successful ready legacy-plan conversion', () => {
+    const action = matchReactions(setFrontmatterEvent('ready')).find((a) => a.ruleId === FRONTMATTER_RULE_ID);
+    expect(action).toBeDefined();
+    expect(action!.fire).toBe(PLAN_DRAIN_TRANSITION_ACTION);
+    expect(action!.args.plans).toEqual([{ planSlug: 'p-legacy', harnessSlug: 'papercusp' }]);
+    expect(matchReactions(setFrontmatterEvent('draft')).find((a) => a.ruleId === FRONTMATTER_RULE_ID)).toBeUndefined();
   });
 });
