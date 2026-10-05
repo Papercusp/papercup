@@ -24,10 +24,30 @@ mkdirSync(out, { recursive: true });
 const save = (name: string, value: unknown) => writeFileSync(join(out, name), JSON.stringify(value, null, 2));
 const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools';
 const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 });
+// Preserve the subject and the actual route on failure. A missing card alone
+// cannot distinguish a missing feed item from navigation or hydration failure.
+const captureUi = (name: string) => {
+  save(`${name}.json`, JSON.parse(native('eval', `JSON.stringify({
+    url: location.href,
+    routerLocation: window.__TSR_ROUTER__?.state?.location,
+    selectedRows: Array.from(document.querySelectorAll('.op-inbox__row.is-selected')).map(n => n.textContent),
+    reportCards: document.querySelectorAll('[data-component="report-block"]').length,
+    body: document.body.innerText,
+    alerts: Array.from(document.querySelectorAll('[role="alert"]')).map(n => n.textContent)
+  })`)));
+  native('screenshot', '--output', join(out, `${name}.png`));
+};
 const poll = (expression: string, require: string) => {
-  const result = execFileSync(process.env.VERIFY_TAURI_POLL!, ['--require', require, '--eval', expression],
-    { encoding: 'utf8', timeout: 90_000, env: { ...process.env, VERIFY_TAURI_DOM_TIMEOUT: '60' } });
-  writeFileSync(join(out, `check-${observations.length}.json`), result);
+  try {
+    const result = execFileSync(process.env.VERIFY_TAURI_POLL!, ['--require', require, '--eval', expression],
+      { encoding: 'utf8', timeout: 90_000, env: { ...process.env, VERIFY_TAURI_DOM_TIMEOUT: '60' } });
+    writeFileSync(join(out, `check-${observations.length}.json`), result);
+  } catch (error) {
+    try { captureUi(`failed-subject-${observations.length}`); } catch (captureError) {
+      save('capture-error.json', { error: String(captureError) });
+    }
+    throw error;
+  }
 };
 const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
 const observations: unknown[] = [];
@@ -97,7 +117,11 @@ try {
     '-video_size', '1280x800', '-i', process.env.VERIFY_TAURI_DISPLAY!, '-c:v', 'libx264', '-preset', 'ultrafast', recordingRef],
     { stdio: ['ignore', 'ignore', 'pipe'] });
   recording.stderr!.on('data', chunk => process.stderr.write(chunk));
-  native('navigate', `/inbox?opci=all&opcis=${encodeURIComponent(`coord-message:${envelope.msg_id}`)}`, '--json');
+  const attentionResponse = await fetch(`${origin}/api/admin/plans/attention`);
+  save('attention-preflight.json', { status: attentionResponse.status, data: await attentionResponse.json() });
+  save('navigation.json', JSON.parse(native('navigate',
+    `/inbox?opci=all&opcis=${encodeURIComponent(`coord-message:${envelope.msg_id}`)}`, '--json')));
+  captureUi('after-navigation');
   const card = '[data-component="report-block"]';
   poll(`Array.from(document.querySelectorAll('${card} button')).some(b=>b.textContent==='Expand full report')`, card);
   native('screenshot', '--output', join(out, 'notification.png'));
