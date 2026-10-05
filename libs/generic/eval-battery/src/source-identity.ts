@@ -1,17 +1,16 @@
 import { fileURLToPath } from 'node:url';
+import { readPinnedModuleState } from '@papercusp/module-singleton';
 
 // Reuse the existing Node load observer. It records source before evaluation;
 // reading a file during evaluation can already see self-restored/replaced bytes.
-const LOADS = Symbol.for('@papercusp/test-config.original-config-loads');
 
 /** Read one originally loaded module's receipt, without a disk fallback.
  * Missing/unsupported/conflicting loads stay unknown. This is a per-module
  * diagnostic, not proof of the complete evaluator/transport runtime closure. */
 export function captureSourceHash(moduleUrl: string): string | null {
   try {
-    const state = (globalThis as typeof globalThis & {
-      [LOADS]?: { sources?: unknown; reasons?: unknown };
-    })[LOADS];
+    const state = readPinnedModuleState<{ capture: { sources?: unknown; reasons?: unknown } | null }>(
+      '@papercusp/test-config.original-config-loads')?.capture;
     if (!(state?.sources instanceof Map) || !(state.reasons instanceof Set) ||
         state.reasons.has('config-node-load-capture-failed') ||
         state.reasons.has('config-node-load-hook-unavailable')) return null;

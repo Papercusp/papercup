@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { runInNewContext } from 'node:vm';
 
 // The fixtures are PRINTED by the real writer-side formatters, not hand-copied, so a format
 // change in scripts/lib/test-pass-reuse.mjs breaks this test instead of silently blinding the
@@ -7,6 +10,7 @@ import {
   formatReuseAlarmLine,
   formatTestReuseLine,
   formatTestReuseTotalLine,
+  selectReusablePasses,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
 import {
   formatExecutedMapAlarmLines,
@@ -307,6 +311,40 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
     })))!;
     expect(archived.auditRuns[0]!.workspaces[0]!.runtime).toEqual(runtime);
     expect(archived.auditedFiles).toEqual([]);
+  });
+
+  it('the actual affected-tests arming path emits selector runtime without sampled files', async () => {
+    const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('async function armTestPassReuse(');
+    const end = source.indexOf('\n// AFFECTED_RETRY_FAILED=1', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const lines: string[] = [];
+    // Exercise the real orchestration and selector, with only external IO replaced.
+    const arm = runInNewContext(`${source.slice(start, end)}\narmTestPassReuse`, {
+      ROOT: '/repo', RUN_LOG_ROOT: '/logs', LANE_SCRIPTS: [], join, relative,
+      process: { env: { GREEN_CHECKPOINT: '1', PAPERCUSP_TEST_RUN_GROUP: 'initial-group' } },
+      outSync: (line: string) => lines.push(line), scriptRunsZeroFilesAsPass: () => true,
+      testReuseEnabled: () => true,
+      execFileSync: (command: string, args: string[]) => command === 'node' ? 'v25 linux x64'
+        : args[0] === 'rev-parse' ? invocation().judgedSha : '',
+      reuseRunnerIdentity: () => invocation().runnerIdentity,
+      connectExecutedMapPg: async () => ({ end: async () => undefined }),
+      gitChangedBetween: () => () => [], gitInertGlobalChange: () => () => false,
+      gitSchemaDriftJudge: () => null, testConfigMainProcessFiles: () => new Set(),
+      testReuseMaxAgeMs: () => 1000, testReuseAuditRate: () => 0.05,
+      loadReuseProofs: async () => ({ proofs: new Map(), rows: 0 }),
+      setTimeout: () => ({ unref: () => undefined }),
+      reuseCandidates: () => ['lib/uncaptured.test.ts'], laneOfTaskScript: () => null,
+      selectReusablePasses, formatTestReuseLine, formatTestReuseTotalLine,
+    }) as (tasks: unknown[]) => Promise<void>;
+    await arm([{ ws: { name: '@papercusp/operator-core', dir: '', scripts: { test: 'vitest --passWithNoTests' } },
+      script: 'test' }]);
+    const parsed = parseTestPassReuse(lines.join('\n'));
+    expect(parsed[0]!.total?.audited).toBe(0);
+    expect(parsed[0]!.workspaces[0]!.runtime).toEqual({ version: 1, judgedSha: invocation().judgedSha,
+      runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint',
+      runGroupId: 'initial-group', dirty: false });
   });
 
   it.each(['%', 'not-json', encodeURIComponent(JSON.stringify({ version: 2 }))])(

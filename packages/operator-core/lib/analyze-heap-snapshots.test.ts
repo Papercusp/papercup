@@ -5,9 +5,40 @@ import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { summarizeHeapSnapshot, summarizeHeapSnapshotStream, summarizeHeapRetainers, checkNativeHeapDecode } from '../../../scripts/analyze-heap-snapshots.mjs';
 import { createCdpClient, readPinnedHeapObjectIds } from '../../../scripts/cdp-inspector.mjs';
+
+// The focused router provides a parent admission; CI's unit lane does not.
+// Exercise the real governor with its existing memory store in both routes,
+// while keeping the actual native child and byte transport under test.
+vi.mock('../../../scripts/lib/governed-test-process.mjs', async (original) => {
+  const bridge = await original<typeof import('../../../scripts/lib/governed-test-process.mjs')>();
+  const api = await import('./resource-governor/execution');
+  const { Governor } = await import('./resource-governor/admission');
+  const { WorkItemAdmissionQueueDriver } = await import('./resource-governor/queue');
+  const { MemoryAdmissionQueueStore } = await import('./resource-governor/memory-admission-queue-store');
+  return {
+    ...bridge,
+    executeGovernedByteProcess: (executable: string, args: string[], input: Uint8Array, options: Parameters<typeof bridge.executeGovernedByteProcess>[3]) => {
+      const driver = new WorkItemAdmissionQueueDriver(new MemoryAdmissionQueueStore(), { namespace: options.namespace! });
+      return bridge.executeGovernedByteProcess(executable, args, input, {
+        ...options,
+        env: { ...process.env, PAPERCUSP_ADMISSION_CONTEXT: '' },
+        executionApi: {
+          ...api,
+          runGovernedOperation: (operation: Parameters<typeof api.runGovernedOperation>[0], run: Parameters<typeof api.runGovernedOperation>[1]) =>
+            api.withGovernedExecution(
+              { ...operation, idempotencyKey: operation.idempotencyKey ?? crypto.randomUUID() },
+              operation,
+              { driver, governor: new Governor(driver) },
+              run,
+            ),
+        },
+      });
+    },
+  };
+});
 
 describe('private V8 heap snapshot census', () => {
   const repository = fileURLToPath(new URL('../../../', import.meta.url));

@@ -254,6 +254,7 @@ describe('no-hand-rolled-module-pin — the tree', () => {
     for (const migrated of [
       // WI-10006112 — original config capture must report duplicated module records.
       'libs/test-config/src/executed-config-load-capture.ts',
+      'libs/generic/eval-battery/src/source-identity.ts',
       // EI-19463700807328229 — the first subject
       'libs/generic/scheduled-registry/src/index.ts',
       // WI-307194 — a later sync bus-tap regression caught by the tree guard
