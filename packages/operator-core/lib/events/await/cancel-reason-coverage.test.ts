@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { presentOnDisk } from '../../../../../scripts/lib/tracked-files.mjs';
 
 const TABLE = ['harness_shared', 'event_awaits'].join('.');
 
@@ -76,11 +77,12 @@ function sourceFiles(root: string): string[] {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
-  return listed
+  const candidates = listed
     .split('\0')
     .filter(Boolean)
     .filter((p) => !/\.(test|spec)\.m?ts$/.test(p))
     .filter((p) => !/(^|\/)(test|__tests__|dist|dist-host|node_modules)\//.test(p));
+  return presentOnDisk(candidates, root);
 }
 
 const stmt = (set: string, alias = '') => `await sql\`\n  UPDATE ${TABLE}${alias}\n     SET ${set}\n   WHERE id = \${id}\n\`;`;
