@@ -33,7 +33,10 @@ vi.mock('../workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => WS };
 });
 
-const WS = 'trigger-pack-materialize-e2e';
+const BASE_WS = 'trigger-pack-materialize-e2e';
+// Plan slugs are a workspace-level identity, so each test installs into a fresh workspace.
+let WS = BASE_WS;
+let workspaceSeq = 0;
 const HARNESS = 'pack-home';
 const PLUGIN = '@pack-publisher/portable-mail-workflow';
 const REPLY_SLUG = 'pack-reply-2026-10-05';
@@ -136,7 +139,7 @@ export async function writePackDir(dir: string, manifest: Record<string, unknown
 export async function seedPackWorkspace(sql: Sql, ws: string, harness: string): Promise<void> {
   await sql`
     INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
-    VALUES (${ws}, ${harness}, ${Buffer.from([3])}, ${'kc-' + ws}, 0)
+    VALUES (${ws}, ${harness}, ${Buffer.from(`pk:${ws}:${harness}`)}, ${'kc-' + ws}, 0)
     ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING`;
   await sql`
     INSERT INTO harness_shared.harness_registry (workspace_id, payload)
@@ -154,8 +157,6 @@ let org: OrgTestDb;
 let sql: Sql;
 let scratch: string;
 let packDir: string;
-let harness = HARNESS;
-let harnessSeq = 0;
 
 function installDeps(dir: string): InstallPluginCoreDeps {
   return {
@@ -176,7 +177,6 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   h.sql = sql;
-  await seedPackWorkspace(sql, WS, HARNESS);
 }, 120_000);
 
 afterAll(async () => {
@@ -185,13 +185,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_pack_installations WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
-  // Seeded plans carry RESTRICT-referenced BAR clauses, so each test installs
-  // into a fresh harness instead of deleting plans.
-  harness = `${HARNESS}-${++harnessSeq}`;
+  // Seeded plans carry RESTRICT-referenced BAR clauses and a workspace-scoped
+  // acceptance identity, so each test gets a fresh workspace instead of deletes.
+  WS = `${BASE_WS}-${++workspaceSeq}`;
+  await seedPackWorkspace(sql, WS, HARNESS);
   scratch = await fs.mkdtemp(join(tmpdir(), 'trigger-pack-materialize-'));
   await fs.mkdir(join(scratch, 'tmp'), { recursive: true });
   packDir = join(scratch, 'pack');
@@ -203,12 +200,12 @@ describe('trigger-pack materialization (R-8)', () => {
     const outlook = await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
 
     const result = await installPluginFromCupboardCore(
-      { githubUrl: GITHUB, harness, triggerPackConfig: { inputs: { tone: 'warm' } } },
+      { githubUrl: GITHUB, harness: HARNESS, triggerPackConfig: { inputs: { tone: 'warm' } } },
       installDeps(packDir),
     );
     const installation = result.triggerPackInstallation!;
     expect(installation).toMatchObject({
-      harnessSlug: harness,
+      harnessSlug: HARNESS,
       pluginName: PLUGIN,
       status: 'configured',
       unmet: [],
@@ -226,7 +223,7 @@ describe('trigger-pack materialization (R-8)', () => {
     // The plans exist in the INSTALLER's harness.
     const plans = await sql<Array<{ slug: string }>>`
       SELECT plan_slug AS slug FROM harness_shared.harness_plans
-       WHERE workspace_id = ${WS} AND harness_slug = ${harness} ORDER BY plan_slug`;
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} ORDER BY plan_slug`;
     expect(plans.map((plan) => plan.slug)).toEqual(expect.arrayContaining([FOLLOW_SLUG, REPLY_SLUG]));
 
     const rows = await sql<
@@ -302,7 +299,7 @@ describe('trigger-pack materialization (R-8)', () => {
     const first = await materializeTriggerPack(
       sql,
       WS,
-      { manifest: portablePackManifest() as never, pluginDir: packDir, harnessSlug: harness, inputs: { tone: 'warm' } },
+      { manifest: portablePackManifest() as never, pluginDir: packDir, harnessSlug: HARNESS, inputs: { tone: 'warm' } },
       { registry: fakeRegistry },
     );
     expect(first.status).toBe('needs-configuration');
@@ -323,7 +320,7 @@ describe('trigger-pack materialization (R-8)', () => {
       {
         manifest: portablePackManifest() as never,
         pluginDir: packDir,
-        harnessSlug: harness,
+        harnessSlug: HARNESS,
         inputs: { tone: 'warm' },
         sourceMappings: { 'inbound-mail': gmail.id },
       },
@@ -344,7 +341,7 @@ describe('trigger-pack materialization (R-8)', () => {
       {
         manifest: portablePackManifest() as never,
         pluginDir: packDir,
-        harnessSlug: harness,
+        harnessSlug: HARNESS,
         inputs: { tone: 'warm' },
         sourceMappings: { 'inbound-mail': gmail.id },
       },
@@ -362,7 +359,7 @@ describe('trigger-pack materialization (R-8)', () => {
       {
         manifest: portablePackManifest() as never,
         pluginDir: packDir,
-        harnessSlug: harness,
+        harnessSlug: HARNESS,
         inputs: { tone: 'formal' },
         sourceMappings: { 'inbound-mail': gmail.id },
       },
@@ -385,7 +382,7 @@ describe('trigger-pack materialization (R-8)', () => {
     const installation = await materializeTriggerPack(
       sql,
       WS,
-      { manifest: portablePackManifest() as never, pluginDir: packDir, harnessSlug: harness, inputs: {} },
+      { manifest: portablePackManifest() as never, pluginDir: packDir, harnessSlug: HARNESS, inputs: {} },
       { registry: fakeRegistry },
     );
     expect(installation.status).toBe('needs-configuration');
@@ -398,7 +395,7 @@ describe('trigger-pack materialization (R-8)', () => {
     await writePackDir(bare, portablePackManifest(), false);
 
     const refusal = await installPluginFromCupboardCore(
-      { githubUrl: GITHUB, harness, triggerPackConfig: { inputs: { tone: 'warm' } } },
+      { githubUrl: GITHUB, harness: HARNESS, triggerPackConfig: { inputs: { tone: 'warm' } } },
       installDeps(bare),
     ).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(InstallPluginError);
@@ -407,7 +404,7 @@ describe('trigger-pack materialization (R-8)', () => {
     const [counts] = await sql<Array<{ installations: number; plans: number; bindings: number }>>`
       SELECT (SELECT count(*)::int FROM harness_shared.trigger_pack_installations WHERE workspace_id = ${WS}) AS installations,
              (SELECT count(*)::int FROM harness_shared.harness_plans
-               WHERE workspace_id = ${WS} AND harness_slug = ${harness}) AS plans,
+               WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}) AS plans,
              (SELECT count(*)::int FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}) AS bindings`;
     expect(counts).toEqual({ installations: 0, plans: 0, bindings: 0 });
     await expect(fs.stat(join(scratch, 'global-plugins', PLUGIN))).rejects.toThrow();
@@ -435,7 +432,7 @@ describe('trigger-pack materialization (R-8)', () => {
       },
     };
     await expect(
-      materializeTriggerPack(sql, WS, { manifest: recipe as never, pluginDir: packDir, harnessSlug: harness }, { registry: fakeRegistry }),
+      materializeTriggerPack(sql, WS, { manifest: recipe as never, pluginDir: packDir, harnessSlug: HARNESS }, { registry: fakeRegistry }),
     ).rejects.toMatchObject({ code: 'trigger_pack_unsupported_target:recipe' });
 
     const planCompleted = {
@@ -450,21 +447,46 @@ describe('trigger-pack materialization (R-8)', () => {
       },
     };
     await expect(
-      materializeTriggerPack(sql, WS, { manifest: planCompleted as never, pluginDir: packDir, harnessSlug: harness }, { registry: fakeRegistry }),
+      materializeTriggerPack(sql, WS, { manifest: planCompleted as never, pluginDir: packDir, harnessSlug: HARNESS }, { registry: fakeRegistry }),
     ).rejects.toMatchObject({ code: 'trigger_pack_unsupported_edge:plan-completed' });
 
     await sql`
       INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, title, status, content)
-      VALUES (${WS}, ${harness}, ${REPLY_SLUG}, 'Owner plan', 'draft', 'owner-authored')`;
+      VALUES (${WS}, ${HARNESS}, ${REPLY_SLUG}, 'Owner plan', 'draft', 'owner-authored')`;
     await expect(
-      materializeTriggerPack(sql, WS, { manifest: base as never, pluginDir: packDir, harnessSlug: harness }, { registry: fakeRegistry }),
+      materializeTriggerPack(sql, WS, { manifest: base as never, pluginDir: packDir, harnessSlug: HARNESS }, { registry: fakeRegistry }),
     ).rejects.toMatchObject({ code: 'trigger_pack_plan_slug_conflict' });
     const [owner] = await sql<Array<{ content: string }>>`
       SELECT content FROM harness_shared.harness_plans
-       WHERE workspace_id = ${WS} AND harness_slug = ${harness} AND plan_slug = ${REPLY_SLUG}`;
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${REPLY_SLUG}`;
     expect(owner!.content).toBe('owner-authored');
     const [installations] = await sql<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM harness_shared.trigger_pack_installations WHERE workspace_id = ${WS}`;
     expect(installations!.n).toBe(0);
+  });
+
+  it('refuses a second harness in the same workspace, because plan slugs are workspace-scoped', async () => {
+    await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
+    const first = await materializeTriggerPack(
+      sql,
+      WS,
+      { manifest: portablePackManifest() as never, pluginDir: packDir, harnessSlug: HARNESS, inputs: { tone: 'warm' } },
+      { registry: fakeRegistry },
+    );
+    expect(first.status).toBe('configured');
+
+    await expect(
+      materializeTriggerPack(
+        sql,
+        WS,
+        { manifest: portablePackManifest() as never, pluginDir: packDir, harnessSlug: `${HARNESS}-other`, inputs: { tone: 'warm' } },
+        { registry: fakeRegistry },
+      ),
+    ).rejects.toMatchObject({ code: 'trigger_pack_plan_slug_conflict' });
+    const [counts] = await sql<Array<{ installations: number; plans: number }>>`
+      SELECT (SELECT count(*)::int FROM harness_shared.trigger_pack_installations WHERE workspace_id = ${WS}) AS installations,
+             (SELECT count(*)::int FROM harness_shared.harness_plans
+               WHERE workspace_id = ${WS} AND harness_slug = ${`${HARNESS}-other`}) AS plans`;
+    expect(counts).toEqual({ installations: 1, plans: 0 });
   });
 });

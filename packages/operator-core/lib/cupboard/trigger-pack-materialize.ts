@@ -349,17 +349,18 @@ async function preflight(
       );
     }
     if (!ownedSlugs.has(planSlug)) {
-      const clash = await sql<Array<{ exists: boolean }>>`
-        SELECT EXISTS (
-          SELECT 1 FROM harness_shared.harness_plans
-           WHERE workspace_id = ${workspaceId}
-             AND harness_slug = ${input.harnessSlug}
-             AND plan_slug = ${planSlug}
-        ) AS exists`;
-      if (clash[0]?.exists) {
+      // A plan slug is a WORKSPACE-level identity for acceptance gating (the
+      // acceptance-rubric uniqueness index in migration 1004 is keyed by workspace
+      // and subjectPlan, not harness), so a same-slug plan in ANY harness is a clash.
+      const clash = await sql<Array<{ harnessSlug: string }>>`
+        SELECT harness_slug AS "harnessSlug" FROM harness_shared.harness_plans
+         WHERE workspace_id = ${workspaceId}
+           AND plan_slug = ${planSlug}
+         LIMIT 1`;
+      if (clash[0]) {
         refuse(
           'trigger_pack_plan_slug_conflict',
-          `plan "${planSlug}" already exists in ${input.harnessSlug} and is not owned by this pack installation`,
+          `plan "${planSlug}" already exists in harness ${clash[0].harnessSlug} of this workspace and is not owned by this pack installation`,
         );
       }
     }
