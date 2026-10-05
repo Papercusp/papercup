@@ -542,6 +542,8 @@ function auditInboxCacheRetainers(report: any) {
         row.sha256 === contentSha256 && sha(row.keyDigest)) &&
       isDeepStrictEqual(c.content.map((row: any) => row.keyDigest).sort(), [...final.cache.keyDigests].sort()),
     'cache digest/content correspondence');
+    check(positive(c.cacheHeap?.snapshotStartedAt) && c.samples.every((s: any) =>
+      positive(s.at) && c.cacheHeap.snapshotStartedAt >= s.at), 'snapshot follows resource windows');
     const evidence = { ...c.cacheHeap, schemaVersion: 1, mode: 'retainers', plane: report.plane,
       pid: c.pid, buildSha: c.loadedHealth.sha, bundleHash: c.bundleSha256,
       incomplete: report.incomplete, runner: report.runner, error: report.error, hostReaped: c.reaped,
@@ -881,6 +883,44 @@ describe('P011 independent named HTTP query evidence', () => {
 
 describe('P011 independent cache retained-owner evidence', () => {
   const expected = (r: any) => r.cacheBeforeSnapshot.records.map((row: any) => row.keyDigest);
+  function pairFixture(): any {
+    const rows = Array.from({ length: 256 }, (_, i) => ({ id: 'p011-' + (i + 1),
+      body: ('useful-context-' + (i + 1) + ' ').repeat(32768).slice(0, 32768) }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const hash = createHash('sha256');
+    for (const row of rows) hash.update(JSON.stringify([row.id, row.body]));
+    const contentHash = hash.digest('hex');
+    return { schemaVersion: 2, plane: 'isolated-current-build-operator-api', incomplete: false,
+      runner: { status: 0, signal: null }, sources: { before: { source: 'a'.repeat(64) }, after: { source: 'a'.repeat(64) } },
+      cohorts: ['baseline', 'shared', 'shared', 'baseline'].map((mode, arm) => {
+        const count = mode === 'baseline' ? 8 : 1, heap = cacheHeapFixture(count, false), pid = 7 + arm;
+        heap.pid = heap.inspector.pid = heap.heapOwnerBinding.pid = heap.heapSnapshot.pid = heap.heapRetainers.pid = pid;
+        const digests = expected(heap), os = { ...heap.samples[0].processes[0], pid };
+        return { arm, mode, pid, identity: { pid, startTicks: os.startTicks }, reaped: true, forcedCleanup: false,
+          unreaped: [], pauses: 0, bundleSha256: 'b'.repeat(64), loadedHealth: { sha: '12345678' },
+          samples: [1, 2].map(at => ({ at, pid, os: structuredClone(os), phase: at === 2 ? 'completion-idle' : 'before',
+            cache: { entries: count, rows: Array(count).fill(256), keyDigests: digests } })),
+          content: digests.map(keyDigest => ({ keyDigest, rows: 256, stringCodeUnits: 8388608, sha256: contentHash })),
+          cacheHeap: { ...heap, snapshotStartedAt: 3 } };
+      }) };
+  }
+  it('joins each order-reversed host to its own digest, content and captured graph', () => {
+    const r = pairFixture(), result = auditInboxCacheRetainers(r);
+    expect(result.map((row: any) => row.result.uniquePayloadNodes.length)).toEqual([8, 1, 1, 8]);
+    r.cohorts[0].content.reverse();
+    expect(auditInboxCacheRetainers(r)).toEqual(result);
+  });
+  it.each(['foreign-host', 'source-drift', 'before-windows', 'content-drift', 'digest-drift', 'forced-cleanup'])(
+    'rejects %s paired cache graph evidence', defect => {
+      const r = pairFixture(), c = r.cohorts[0];
+      if (defect === 'foreign-host') c.cacheHeap.heapSnapshot.pid++;
+      if (defect === 'source-drift') r.sources.after.source = 'f'.repeat(64);
+      if (defect === 'before-windows') c.cacheHeap.snapshotStartedAt = 1;
+      if (defect === 'content-drift') c.content[0].sha256 = 'f'.repeat(64);
+      if (defect === 'digest-drift') c.samples.at(-1).cache.keyDigests = ['f'.repeat(64)];
+      if (defect === 'forced-cleanup') c.forcedCleanup = true;
+      expect(() => auditInboxCacheRetainers(r)).toThrow(/P011 /);
+    });
   it('deduplicates shared payload nodes while preserving both entry identities and relations', () => {
     const r = cacheHeapFixture(), result = auditCacheRetainers(r, expected(r));
     expect(result.relations.map((row: any) => row.status)).toEqual(['observed-direct-property', 'observed-direct-property']);
