@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 
 const root = resolve(__dirname, '../../..');
@@ -350,7 +350,8 @@ function auditRequestRetainers(r: any) {
       m.poolSummaries.every((p: any) => natural(p.retained) && p.retained <= 32 &&
         natural(p.totalRecorded) && p.totalRecorded >= p.retained), 'raw FIFO counters');
     requireHeap(m.records.every((row: any) => row.weakPhasePresence === undefined ||
-      (isDeepStrictEqual(Object.keys(row.weakPhasePresence).sort(), [...phases].sort()) &&
+      (row.weakPhasePresence && typeof row.weakPhasePresence === 'object' &&
+        isDeepStrictEqual(Object.keys(row.weakPhasePresence).sort(), [...phases].sort()) &&
         phases.every(phase => typeof row.weakPhasePresence[phase] === 'boolean'))), 'weak phase registration metadata');
   }
   metadata(before);
@@ -549,12 +550,13 @@ describe('P011 independent request heap evidence', () => {
     expect(result.weakObjectGaps).toHaveLength(48);
     expect(result.weakObjectGaps.every((gap: any) => gap.status === 'collected')).toBe(true);
   });
-  it.each(['missing', 'false', 'nonboolean', 'extra', 'selected-drift', 'identity-extra'] as const)(
+  it.each(['missing', 'false', 'nonboolean', 'null', 'extra', 'selected-drift', 'identity-extra'] as const)(
     'rejects %s registration or identity evidence', defect => {
       const r = registeredFixture(), before = r.heapQueryRegistryBeforeSnapshot.records[0];
       if (defect === 'missing') delete before.weakPhasePresence;
       if (defect === 'false') before.weakPhasePresence.resolvedRows = false;
       if (defect === 'nonboolean') before.weakPhasePresence.resolvedRows = 'true';
+      if (defect === 'null') before.weakPhasePresence = null;
       if (defect === 'extra') before.weakPhasePresence.unmeasured = true;
       if (defect === 'selected-drift') delete r.heapOwnerBinding.queries.records[0].weakPhasePresence;
       if (defect === 'identity-extra') before.unmeasuredIdentity = 'unknown';
@@ -575,13 +577,23 @@ describe('P011 independent request heap evidence', () => {
           'Worker-clone/native physical ownership, full executed graph, full P011 acceptance and shipment remain open.'],
       }));
     });
+  afterAll(() => {
+    const input = process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_INPUT;
+    const destination = process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_REPORT;
+    if (!input || !destination) return;
+    // Check the artifact after EVERY writer has run, not just after its own write.
+    const artifact = JSON.parse(readFileSync(resolve(root, destination)).toString());
+    expect(artifact.proof.path).toBe(input);
+    expect(artifact.proof.sha256).toBe(digest(readFileSync(resolve(root, input))));
+  });
   it('audits preserved raw weak selection with explicit unobserved response links', () => {
     const result = auditRequestRetainers(saved());
     expect(result.requests.requestCount).toBe(24);
     expect(result.requests.queryCount).toBeGreaterThanOrEqual(24);
     expect(result.owners.owners).toHaveLength(9);
     expect(result.weakObjectGaps.filter((x: any) => x.status === 'unobserved')).toHaveLength(32);
-    const destination = process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_REPORT;
+    const destination = !process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_INPUT &&
+      process.env.PAPERCUSP_P011_REQUEST_HEAP_ORACLE_REPORT;
     if (destination) {
       const bytes = readFileSync(resolve(root, path));
       writeFileSync(resolve(root, destination), serializeIdentitySafeJson({
