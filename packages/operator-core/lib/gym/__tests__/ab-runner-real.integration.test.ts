@@ -117,7 +117,7 @@ describe('runAbEvaluation over the real gym store (live PG)', () => {
   it('keeps unknown parameters absent for callers that did not provide them', async () => {
     const store = createGymStore(sql);
     await store.startRun({ runId: 'unknown-params', variantId: 'baseline', taskId: 'task-a',
-      cycle: 0, repeat: 0, harnessSlug: 'controlled', workflowId: 'controlled' });
+      cycle: 1, repeat: 0, harnessSlug: 'controlled', workflowId: 'controlled' });
     const rows = await sql`SELECT * FROM harness_gym.gym_runs_params WHERE run_id = 'unknown-params'`;
     expect(rows).toEqual([]);
   });

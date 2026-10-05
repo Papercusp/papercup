@@ -62,6 +62,15 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
 
+  it('does not treat a deployed-model prerequisite in a linked decision as a release-plane gate', () => {
+    const parsed = plan(
+      ['- **P-001** \x60todo\x60 Restore the catalog-selected model weights and verify the model is served.'],
+      "### D-001 — Preserve the deployed-model prerequisite\nDate: 2026-10-05\nThe plan must preserve the deployed-model prerequisite and existing model-file check.\nRelated: P-001",
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
   it.each(['deployment ownership', 'deployment configuration', 'deployment topology', 'deployment source'])(
     'allows a source prerequisite that inventories %s',
     (metadata) => {

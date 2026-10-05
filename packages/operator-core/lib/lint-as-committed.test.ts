@@ -45,6 +45,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
+import { computeWorkspaceRootFrom } from '@papercusp/test-config/admin-test-runs-reporter';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
@@ -793,6 +794,11 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       // exact bytes the release gate itself would see. That equality is the whole
       // point of this tool.
       expect(extracted).toBe(committed);
+      // WI-10006131: real reporters must see the superproject, rather than treating
+      // a materialised submodule's standalone .git directory as the run root.
+      expect(lstatSync(join(workRoot, subRoot, '.git')).isFile()).toBe(true);
+      expect(computeWorkspaceRootFrom(dirname(join(workRoot, subFile)))).toBe(workRoot);
+      expect(computeWorkspaceRootFrom(join(workRoot, 'libs/test-config/src'))).toBe(workRoot);
       // Populating a standalone clone is not enough: the parent repository must mark
       // the submodule active or recursive Git scanners silently omit its real files.
       const tracked = execFileSync('git', ['ls-files', '-z', '--recurse-submodules', '--', subFile], {

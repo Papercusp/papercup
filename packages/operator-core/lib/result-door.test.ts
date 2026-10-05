@@ -836,11 +836,12 @@ describe('applyResultDoor', () => {
     expect(controlBody.changeInCandidate).toBeUndefined();
   });
 
-  it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
+  it('preserves exact event identity and state while naming overflowed default history', () => {
+    const event = 'harness:papercusp:wi-40086-qualified-current-tip';
     const original = JSON.stringify({
       ok: true,
       event_inspection: {
-        event: 'harness:papercusp:wi-40086-qualified-current-tip',
+        event,
         current_generation: 17,
         current_state: 'declared',
         declarations: [{ generation: 17, state: 'declared', note: 'qualification gate' }],
@@ -868,11 +869,105 @@ describe('applyResultDoor', () => {
       { toolName: 'events:status', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
-      event_inspection?: { current_generation?: number; current_state?: string };
+      ok?: boolean;
+      event_inspection?: {
+        event?: string;
+        current_generation?: number;
+        current_state?: string;
+        waiters?: unknown[];
+      };
     };
 
     expect(body._projection.truncated).toBe(true);
-    expect(body.event_inspection).toMatchObject({ current_generation: 17, current_state: 'declared' });
+    expect(body.ok).toBe(true);
+    expect(body.event_inspection).toMatchObject({
+      event,
+      current_generation: 17,
+      current_state: 'declared',
+    });
+    expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+    expect(body._projection.next).toContain('capability:read');
+    expect(JSON.stringify(body._projection)).toContain('waiters');
+
+    // The visible summary keeps the requested key/state so ok:true cannot read as
+    // absence; the named cursor still recovers every row that the bounded body cut.
+    const spill = JSON.parse(readSpill('ws-1', 'events:status', RUN_ID)) as {
+      event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };
+    };
+    expect(spill.event_inspection).toMatchObject({
+      event,
+      current_generation: 17,
+      current_state: 'declared',
+    });
+    expect(spill.event_inspection.waiters).toHaveLength(200);
+  });
+
+  it('preserves exact event identity through an explicit projection before history overflow', () => {
+    const event = 'harness:papercusp:explicit-event-projection';
+    const original = JSON.stringify({
+      ok: true,
+      event_inspection: {
+        event,
+        current_generation: 23,
+        current_state: 'fired',
+        waiters: Array.from({ length: 200 }, (_, i) => ({
+          await_id: i + 1,
+          subscriber_id: `su-explicit-${i}`,
+          state: 'registered',
+          note: 'y'.repeat(320),
+        })),
+      },
+    });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const parsed = parseProjection({ pick: [
+      'ok',
+      'event_inspection.event',
+      'event_inspection.current_generation',
+      'event_inspection.current_state',
+      'event_inspection.waiters',
+    ] });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const projected = applyResultProjection(
+      { content: [{ type: 'text' as const, text: original }] },
+      parsed.spec,
+      { toolName: 'events:status', effect: 'read' },
+    );
+    const doored = applyResultDoor(projected, {
+      toolName: 'events:status',
+      workspaceId: 'ws-2',
+      runId: RUN_ID,
+    });
+    const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      ok?: boolean;
+      event_inspection?: {
+        event?: string;
+        current_generation?: number;
+        current_state?: string;
+        waiters?: unknown[];
+      };
+    };
+
+    expect(body._projection.truncated).toBe(true);
+    expect(body.ok).toBe(true);
+    expect(body.event_inspection).toMatchObject({
+      event,
+      current_generation: 23,
+      current_state: 'fired',
+    });
+    expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+    expect(body._projection.next).toContain('capability:read');
+    expect(JSON.stringify(body._projection)).toContain('waiters');
+
+    const spill = JSON.parse(readSpill('ws-2', 'events:status', RUN_ID)) as {
+      event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };
+    };
+    expect(spill.event_inspection).toMatchObject({
+      event,
+      current_generation: 23,
+      current_state: 'fired',
+    });
+    expect(spill.event_inspection.waiters).toHaveLength(200);
   });
 
   it('finds and structurally projects JSON accompanied by advisory prose', () => {

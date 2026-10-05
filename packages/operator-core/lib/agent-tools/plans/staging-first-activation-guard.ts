@@ -39,7 +39,7 @@ export interface StagingFirstBlockerProblem {
 // actual main/deployed-host prerequisite elsewhere in the same text must still
 // be recognized.
 const DEPLOYED_ENV_RE =
-  /(?:\bmain\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|\bgreen[- ]checkpoint\b|\b(?:deploy(?:ed|ing)?|deployment(?!(?:\s+|-)\b(?:ownership|configuration|topology|source|model)\b))\b)/i;
+  /(?:\bmain\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|\bgreen[- ]checkpoint\b|\b(?:deploy(?:ed|ing)?(?!(?:\s+|-)\bmodel\b)|deployment(?!(?:\s+|-)\b(?:ownership|configuration|topology|source|model)\b))\b)/i;
 const STRONG_GATE_RE =
   /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b.{0,40}\b(?:on|until|before|by)\b|\bprerequisite\b|\bonly\s+after\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
 // A bare `until` is ordinary ordering prose. It is a strong gate only when

@@ -39,6 +39,8 @@ const MIGRATION_650 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql
 const MIGRATION_1012 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1012-gym-durable-active-task-generation.sql');
 const RUN_EVIDENCE_MIGRATION = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1358-gym-durable-run-evidence.sql');
 
+const decode = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value;
+
 let src: postgres.Sql;
 let dst: postgres.Sql;
 let containerUri: string;
@@ -223,7 +225,6 @@ describe('durable run-analytics copy (migration 650)', () => {
     await insertRunParams(src, runId, { harnessCommit: 'declared-harness', substrateCommit: 'declared-substrate',
       mutableRoles: ['worker'], judgeModel: 'recorded-model', judgeTemp: 0,
       weights: { d1: 0.5, d2: 0.25, d3: 0.25 }, rubricHash: RH });
-    const decode = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value;
     const [originalRun] = await src`SELECT row_to_json(r) AS evidence FROM harness_gym.gym_runs r WHERE run_id = ${runId}`;
     const [originalParams] = await src`SELECT row_to_json(p) AS params FROM harness_gym.gym_runs_params p WHERE run_id = ${runId}`;
     expect(decode(originalRun.evidence).deterministic_signals).toEqual(signals);
