@@ -31,6 +31,8 @@ import {
 import { setPotLearningScope } from '../learning/pot-gate/store';
 import { runGovernedSpendAttempt } from './registrants';
 import { llmCall } from '../llm-testing/llm-client';
+import { buildLoopDeps } from '../gym/loop-deps';
+import type { AbDeps } from '../gym/ab-runner';
 
 const failureUsage = vi.hoisted(() => ({ costUsd: 0 as number | undefined }));
 vi.mock('../agent-chat-stream', async importOriginal => ({
@@ -548,11 +550,27 @@ describe('governed attempt persisted settlement receipts', () => {
     const loopId = `gym:unknown-usage-${randomUUID()}`;
     const runRef = `incomplete-pipeline:${randomUUID()}`;
     await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const native = buildLoopDeps({ gymSql: sql, ports: {} as never,
+      judgeCall: async () => { throw new Error('must not judge incomplete pipeline usage'); },
+      proposerCall: async () => { throw new Error('must not propose'); },
+      proposerModel: 'controlled', tasks: [{ taskId: 'native-task', pool: 'train', repoUrl: 'r',
+        repoCommit: 'c', spec: 's', intent: 'i', projectContext: 'p' }],
+      baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+      harnessCommit: 'controlled', workspaceId: WS, scratchRoot: '/unused-native-fixture',
+      timeoutMs: 100, pollIntervalMs: 1, maxDistillChars: 100,
+      abDeps: {
+        store: { upsertVariant: async () => {}, upsertTask: async () => {} },
+        runPipeline: async () => ({ harnessSlug: 'native-fixture', clonePath: '/unused-native-fixture',
+          workflowID: 'native-workflow', outcome: 'completed', pipelineUsd: costUsd,
+          pipelineSpend: { knownUsd: costUsd, providerUsd: costUsd, estimatedUsd: 0,
+            complete: false, measured: false, coverageBasis: 'retained-run-output-and-usage-samples',
+            missingRunIds: ['validator'], samples: [] } }),
+      } as AbDeps,
+    });
     const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
       requestedUsd: 1, runRef, accumulate: false, run: async () => {
-        throw Object.assign(new Error('Gym pipeline usage evidence is incomplete'), {
-          costUsd, costUsdMeasurementMissing: true,
-        });
+        const value = await native.evaluate('baseline', { promptOverrides: {} });
+        return { value, costUsd: value.costUsd };
       },
     }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
     if (out.ok || out.reason !== 'failed' || !out.reservationId) throw new Error('expected a reserved failed attempt');
@@ -564,6 +582,13 @@ describe('governed attempt persisted settlement receipts', () => {
     expect((await getLearningSpendPositions(sql, { workspaceId: WS, loopId })).spend)
       .toMatchObject({ requestedUsd: 1, reservedUsd: 1, usedUsd: 0, unsettledUsd: 1 });
     expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      expect(await sumOpenReservedUsd(fresh, { workspaceId: WS, loopId })).toBe(1);
+      expect(await listLearningSpendReservations(fresh, { workspaceId: WS, loopId })).toMatchObject([
+        { id: out.reservationId, status: 'open', settledAt: null },
+      ]);
+    } finally { await fresh.end({ timeout: 5 }); }
   });
 
   it('leaves actual LLM failures with absent usage OPEN rather than declaring zero spend', async () => {
