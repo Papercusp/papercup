@@ -38,6 +38,7 @@ import {
   type ProviderSyncRequest,
 } from '@papercusp/plugin-sdk';
 import type { StartDaemonOptions } from '@papercusp/plugin-loader/daemon';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { HostFetchError } from './host-fetch';
 
 export type DaemonProviderErrorCode =
@@ -107,6 +108,44 @@ export function hostNodeRuntimeDir(): string {
   return path.dirname(path.dirname(process.execPath));
 }
 
+/**
+ * Resolve a manifest daemon command for the sandbox. The sandbox PATH is
+ * `/usr/bin:/bin`, so a bare `node` would miss a node installed elsewhere
+ * (nvm, a desktop-bundled runtime); it becomes this host's own node, whose
+ * prefix is the default runtime bind. Other commands pass through unchanged.
+ */
+export function resolveProviderCommand(cmd: string[]): string[] {
+  return cmd[0] === 'node' ? [process.execPath, ...cmd.slice(1)] : cmd;
+}
+
+const runtimeState = pinModuleState('@papercusp/operator-core.integrations.daemon-provider', () => ({
+  runtimes: new Map<string, DaemonProviderRuntime>(),
+}));
+
+/** Running daemon providers in this process, keyed by owning plugin name. */
+export function daemonProviderRuntimes(): ReadonlyMap<string, DaemonProviderRuntime> {
+  return runtimeState.runtimes;
+}
+
+/** Track a started daemon provider so unload can stop it. */
+export function trackDaemonProvider(pluginName: string, runtime: DaemonProviderRuntime): void {
+  runtimeState.runtimes.set(pluginName, runtime);
+}
+
+/**
+ * Stop and forget the plugin's daemon provider, if one is running. The entry
+ * leaves the map before the shutdown is awaited, so a caller that does not
+ * await still sees a consistent map; shutdown errors are swallowed because
+ * the process is being discarded either way.
+ */
+export async function stopDaemonProvider(pluginName: string): Promise<boolean> {
+  const runtime = runtimeState.runtimes.get(pluginName);
+  if (!runtime) return false;
+  runtimeState.runtimes.delete(pluginName);
+  await runtime.shutdown().catch(() => {});
+  return true;
+}
+
 export async function startDaemonProvider(opts: StartDaemonProviderOptions): Promise<DaemonProviderRuntime> {
   const daemonModule = await import('@papercusp/plugin-loader/daemon');
   const { JsonRpcHandlerError } = daemonModule;
@@ -147,7 +186,7 @@ export async function startDaemonProvider(opts: StartDaemonProviderOptions): Pro
   const start = opts.startDaemon ?? (daemonModule.startDaemonPlugin as (o: StartDaemonOptions) => Promise<ProviderDaemonHandle>);
   const handle = await start({
     pluginName: opts.pluginName,
-    cmd: opts.cmd,
+    cmd: resolveProviderCommand(opts.cmd),
     cwd: opts.pluginDir,
     sandbox: 'provider',
     runtimeDirs: opts.runtimeDirs ?? [hostNodeRuntimeDir()],
