@@ -33,6 +33,9 @@ export interface ProducerWriteScope {
  * Domain acceptance remains in source; it is never relabelled contract acceptance.
  */
 export async function recordProducerObservation(sql: Sql, scope: ProducerWriteScope): Promise<void> {
+  // Capture before SELECT yields: producer-owned evidence may be reused or
+  // changed while the database read is in flight.
+  scope = structuredClone(scope);
   const ids = [...new Set(scope.sourceIds ?? (scope.sourceId == null ? [] : [scope.sourceId]))];
   if (!ids.length) return;
   if (scope.evaluation !== undefined && ids.length !== 1) throw new Error('producer evaluation requires one source identity');
