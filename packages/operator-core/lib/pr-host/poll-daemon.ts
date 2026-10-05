@@ -67,6 +67,7 @@ import { parseRemote } from './github';
 import { decideAutoReview, type AutoReviewSettings } from './auto-review-decision-types';
 import { tryAutoApprove, type AutoApproveContext } from './auto-approve';
 import { tryAutoMerge, type AutoMergeContext } from './auto-merge';
+import { isStandingPr, type StandingPrMergeOutcome } from '../harness/git-sync/standing-pr-merge';
 import { decideRetry, DEFAULT_RETRY_POLICY, type RetryDecision } from './retry-policy-types';
 import {
   summarizeCheckRuns,
@@ -188,6 +189,18 @@ export interface PollDaemonDeps {
     pr: Pr;
     mergeCommitSha: string;
   }) => Promise<void>;
+  /**
+   * The standing PR's exact-merge gate (plan pot-review-integration-mode-2026-10-05,
+   * P-021 / P-024, D-008): one step of build-merge-result → test that sha → advance the
+   * base to exactly that sha. The standing PR is NEVER merged through `tryAutoMerge`;
+   * without this dep it is simply not merged.
+   */
+  standingPrMerge?: (args: {
+    workspaceId: string;
+    installSlug: string;
+    remote: string;
+    pr: Pr;
+  }) => Promise<StandingPrMergeOutcome>;
   now?: () => number;
   random?: () => number;
 }
@@ -255,6 +268,7 @@ interface ResolvedDeps {
     pr: Pr;
     mergeCommitSha: string;
   }) => Promise<void>;
+  standingPrMerge: PollDaemonDeps['standingPrMerge'];
   now: () => number;
   random: () => number;
 }
@@ -269,6 +283,7 @@ function resolveDeps(deps: PollDaemonDeps): ResolvedDeps {
     readReport: deps.readReport ?? defaultReadReport,
     isAuthorRevoked: deps.isAuthorRevoked ?? defaultIsAuthorRevoked,
     stampMerge: deps.stampMerge ?? defaultStampMerge,
+    standingPrMerge: deps.standingPrMerge,
     now: deps.now ?? Date.now,
     random: deps.random ?? Math.random,
   };
@@ -438,6 +453,26 @@ export async function pollHarnessPrs(args: PollHarnessArgs, deps: PollDaemonDeps
       decision.kind === 'approve_and_merge' &&
       (approveRes.action === 'approved' || approveRes.action === 'skipped_already_approved')
     ) {
+      if (isStandingPr(enriched)) {
+        // D-008: the standing PR lands only by advancing the base to an exact merge sha
+        // the pot suite passed on — never through tryAutoMerge (GitHub would build its
+        // own, untested merge). No gate wired → not merged at all.
+        if (!d.standingPrMerge) continue;
+        const out = await d.standingPrMerge({
+          workspaceId,
+          installSlug,
+          remote,
+          pr: { ...enriched, review_decision: 'approved' },
+        });
+        if (out.action === 'merged') {
+          counts.merged.push(enriched.ref.number);
+          await d.stampMerge({ workspaceId, installSlug, remote, pr: enriched, mergeCommitSha: out.mergeSha });
+        } else if (out.action === 'testing' || out.action === 'waiting' || out.action === 'retest') {
+          // Re-check next poll even when the PR itself did not change.
+          deferred.add(enriched.ref.number);
+        }
+        continue;
+      }
       // The in-memory PR still carries its pre-approve review_decision; reflect the
       // approval we just posted so tryAutoMerge's "approved" gate sees the truth.
       const mergeRes = await tryAutoMerge(host, { ...enriched, review_decision: 'approved' }, mergeCtx);

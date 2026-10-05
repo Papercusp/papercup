@@ -16,6 +16,7 @@ import { STANDING_PR_BRANCH } from './decide-standing-pr';
 import {
   createDefaultStandingPrMergeDeps,
   isStandingPrMergeRunActive,
+  makeWorktreeSuiteRunner,
   STANDING_PR_MERGE_TESTS_META_KEY,
   type RunSuite,
 } from './standing-pr-merge-deps';
@@ -261,5 +262,30 @@ describe('stepStandingPrMerge over the real deps (D-008 end to end)', () => {
     const d = makeDeps(memStore());
     const out = await stepStandingPrMerge(input(head, 'f'.repeat(40)), d);
     expect(out).toMatchObject({ action: 'refused', reason: 'pr-head-not-promoted' });
+  });
+});
+
+describe('makeWorktreeSuiteRunner (real git)', () => {
+  it('runs the command in a checkout of exactly the given sha: exit 0 = pass, non-zero = fail', async () => {
+    const head = makePrHead('only-in-pr.txt');
+    const tip = git(bare, 'rev-parse', 'main');
+    const d = makeDeps(memStore());
+    const merge = await d.buildMergeResult(head, tip);
+    const run = makeWorktreeSuiteRunner('test -f only-in-pr.txt && test -f a.txt');
+    expect(await run({ repoDir: deps_repo, sha: merge! })).toBe(true);
+    // The upstream tip lacks the PR's file, so the same suite fails there.
+    expect(await run({ repoDir: deps_repo, sha: tip })).toBe(false);
+  });
+
+  it('removes its worktree afterwards, pass or fail', async () => {
+    const tip = git(bare, 'rev-parse', 'main');
+    await makeWorktreeSuiteRunner('exit 3')({ repoDir: deps_repo, sha: tip });
+    await makeWorktreeSuiteRunner('true')({ repoDir: deps_repo, sha: tip });
+    expect(git(deps_repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
+  });
+
+  it('a suite that cannot finish (timeout) throws instead of reporting a fail', async () => {
+    const tip = git(bare, 'rev-parse', 'main');
+    await expect(makeWorktreeSuiteRunner('sleep 5', { timeoutMs: 200 })({ repoDir: deps_repo, sha: tip })).rejects.toThrow();
   });
 });
