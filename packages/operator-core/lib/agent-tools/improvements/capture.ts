@@ -56,6 +56,8 @@ import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from '../work_items/drain-flow';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { detectAbsencePremises } from '../../premises-claim-port';
+import { BUG_REPRODUCTION_KINDS, stampFiledBugReproduction } from '../../attention/bug-reproduction';
+import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -733,6 +735,17 @@ export default defineTool({
           .describe(
             'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Put legacy direct-evidence flags inside this object — toolFailure.reproduced, toolFailure.clearServerMismatch, or toolFailure.hardInternal — and do not pass them at the top level. For a caller-class refusal, those booleans alone stay in probation: pass toolFailure.directEvidence { kind, expected, actual } only when you can state the inspectable contract mismatch that makes it a tool defect.',
           ),
+        reproduction: z
+          .object({
+            ref: z.string().min(1).max(2000),
+            buildSha: z.string().min(7).max(40),
+            kind: z.enum(BUG_REPRODUCTION_KINDS).optional(),
+          })
+          .strict()
+          .optional()
+          .describe(
+            'A bug you ENCOUNTERED (D-024): ref = test_runs:<id> / tool_invocations:<id> (checked) or the log line, buildSha = the build it failed on. Verified, it skips bulk-review reproduction.',
+          ),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
         // envelope from silently stripping a scorecard while keeping observation.* as
@@ -970,6 +983,7 @@ export default defineTool({
       experimentGap: z.unknown().optional(),
       lensAttribution: z.unknown().optional(),
       groundingGap: z.unknown().optional(),
+      reproduction: z.unknown().optional(),
       agentReview: z.unknown().optional(),
       agentReviewFailure: z.unknown().optional(),
       notified: z.unknown().optional(),
@@ -1281,6 +1295,26 @@ export default defineTool({
             : {}),
         }
       : undefined;
+    // P-013 / D-024: an ENCOUNTERED bug carries its encounter as the reproduction
+    // receipt. The verdict is computed here (ledger refs resolved), never trusted from
+    // the caller; a caller-classified tool failure without direct evidence keeps its
+    // probation path, so its receipt is stored as evidence but cannot skip review.
+    const reproductionStamp =
+      args.reproduction && !args.checkDuplicatesOnly
+        ? await stampFiledBugReproduction(
+            args.reproduction,
+            {
+              filedBy: id.ownerId,
+              ineligibleReason:
+                normalizedToolFailure && normalizedToolFailure.class === 'caller' && !normalizedToolFailure.direct
+                  ? 'caller-classified tool failure without direct evidence keeps its probation path (D-024 §4)'
+                  : null,
+            },
+            defaultReproductionLedgerDeps(),
+          )
+        : null;
+    if (reproductionStamp && !reproductionStamp.ok) throw new ObservationEvidenceError(reproductionStamp.error);
+    const storedReproduction = reproductionStamp?.ok ? reproductionStamp.stored : undefined;
     try {
       const persist = () =>
         captureImprovement({
@@ -1302,8 +1336,9 @@ export default defineTool({
           lane: effectiveLane,
           watchdogKey: captureWatchdogKey,
           payloadExtra:
-            observation || hasIdeation || toolFailureProbation || runtimeProvenance || targetRuntimeSha
+            observation || hasIdeation || toolFailureProbation || runtimeProvenance || targetRuntimeSha || storedReproduction
               ? {
+                  ...(storedReproduction ? { reproduction: storedReproduction } : {}),
                   ...(observation ? { observation } : {}),
                   ...(hasIdeation ? { ideation } : {}),
                   ...(toolFailureProbation ? { toolFailureProbation } : {}),
@@ -1623,6 +1658,14 @@ export default defineTool({
             type: 'text' as const,
             text: JSON.stringify({
               ...publicResult,
+              ...(storedReproduction
+                ? {
+                    reproduction: {
+                      status: storedReproduction.verification.status,
+                      detail: storedReproduction.verification.detail,
+                    },
+                  }
+                : {}),
               ...(!silenceUnkeyedObservationDisposition && priorArt ? { priorArt } : {}),
               ...(!silenceUnkeyedObservationDisposition && experimentGap ? { experimentGap } : {}),
               ...(!silenceUnkeyedObservationDisposition && lensAttribution ? { lensAttribution } : {}),
