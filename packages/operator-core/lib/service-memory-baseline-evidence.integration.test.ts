@@ -17,6 +17,170 @@ const sha = (x: unknown) => typeof x === 'string' && /^[a-f0-9]{64}$/.test(x);
 const time = (x: string | number) => typeof x === 'number' ? x : Date.parse(x);
 const identity = (x: any) => [x.pid, x.startTicks, x.executableSha256].join(':');
 
+// Reconstruct the selected-worker proof from persisted rows, independently of
+// the collector. A terminal diagnostic ring is deliberately not a query census.
+function auditRequestWorkerWindows(r: any) {
+  const requireWorker = (value: unknown, reason: string) => {
+    if (!value) throw Error('P011 worker windows: ' + reason);
+  };
+  const pid = (x: unknown) => Number.isSafeInteger(x) && (x as number) > 0;
+  const uuid = (x: unknown) => typeof x === 'string' &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(x);
+  const selected: number[] = r.counterPids;
+  requireWorker(Array.isArray(selected) && selected.length > 0 && selected.length <= 8 &&
+    selected.every(pid) && new Set(selected).size === selected.length && selected[0] === r.counterPid,
+    'bounded distinct selection');
+  requireWorker(Array.isArray(r.requestWorkerWindows) && r.requestWorkerWindows.length === r.windows.length &&
+    r.requestWorkerWindows.length > 0 && r.requestWorkerWindows.length <= 3 &&
+    r.requestWorkerAssignments?.length === r.requestWorkerWindows.length &&
+    r.requestWorkerWindows.every((w: any, i: number) => w.window === r.windows[i].window),
+    'exact window population');
+  const bundles = new Map<number, any>((r.targetBundles ?? []).map((x: any) => [x.pid, x]));
+  const inspectors = new Map<number, any>((r.inspectors ?? []).map((x: any) => [x.pid, x]));
+  const cleanup = new Map<number, any>((r.cleanup?.inspectors ?? []).map((x: any) => [x.pid, x]));
+  requireWorker([bundles, inspectors, cleanup].every(m => m.size === selected.length &&
+    selected.every(id => m.has(id))) && r.targetBundles.length === selected.length &&
+    r.inspectors.length === selected.length && r.cleanup.inspectors.length === selected.length,
+    'complete per-target artifact and inspector coverage');
+  for (const id of selected) {
+    const b = bundles.get(id), i = inspectors.get(id), c = cleanup.get(id);
+    requireWorker(sha(b.diskSha256) && b.diskSha256After === b.diskSha256 &&
+      typeof i.openedByProbe === 'boolean' && c.openedByProbe === i.openedByProbe && !c.error &&
+      (i.openedByProbe ? c.result?.closed === true : c.result?.preservedPreexisting === true),
+      'per-target artifact and cleanup fence');
+  }
+  const roleFromRaw = (facts: any) => {
+    requireWorker(typeof facts?.cluster?.isPrimary === 'boolean' &&
+      typeof facts.cluster.isWorker === 'boolean' && facts.cluster.isPrimary !== facts.cluster.isWorker &&
+      ['unset', 'enabled', 'disabled'].includes(facts.backgroundWorkersOverride) &&
+      typeof facts.stagingPort === 'boolean' &&
+      ['substrate', 'spawner', 'gateway', 'embed', 'resourceHealth'].every(k =>
+        facts.sidecarFlags?.[k] === false), 'raw request-only host facts');
+    const requestOnly = facts.backgroundWorkersOverride === 'disabled' ||
+      (facts.backgroundWorkersOverride === 'unset' && facts.stagingPort);
+    requireWorker(requestOnly, 'raw request-only configuration');
+    return { clusterRole: facts.cluster.isWorker ? 'worker' : 'primary', requestOnly: true,
+      configuredSidecar: null, requestAssignment: 'unknown', allocationOwner: 'unknown' };
+  };
+  const pin = (row: any) => [identity(row), row.parentPid, row.command?.sha256, row.command?.script];
+  const lifetimes = new Map<number, any>();
+  const previousCounters = new Map<number, number>();
+  let lastEnd = time(r.startedAt);
+  return r.requestWorkerWindows.map((w: any, index: number) => {
+    const outer = r.windows[index], requests = r.requests.filter((q: any) => q.window === w.window);
+    const census = r.samples[index * 3 + 1];
+    const censusRows = new Map<number, any>([census.os, ...census.descendants].map((x: any) => [x.pid, x]));
+    const requestIds = requests.map((q: any) => q.requestId);
+    requireWorker(requests.length === r.limits.requestsPerWindow && requests.every((q: any) => q.status === 200) &&
+      requestIds.every((id: unknown) => id === null || uuid(id)) &&
+      new Set(requestIds.filter(uuid)).size === requestIds.filter(uuid).length, 'exact server HTTP identities');
+    requireWorker(positive(w.before?.startedAt) && w.before.startedAt >= time(outer.startedAt) &&
+      w.before.startedAt >= lastEnd && w.before.endedAt >= w.before.startedAt &&
+      w.after?.startedAt >= w.before.endedAt && w.after.endedAt >= w.after.startedAt &&
+      w.after.endedAt <= time(outer.endedAt), 'ordered unforced window brackets');
+    lastEnd = w.after.endedAt;
+    const gaps: any[] = [];
+    for (const phase of ['before', 'after']) {
+      const sample = w[phase], coverage = sample.coverage;
+      requireWorker(Array.isArray(sample.observations) && sample.observations.length === selected.length &&
+        isDeepStrictEqual(sample.observations.map((x: any) => x.after?.pid), selected), 'selected observation population');
+      requireWorker(isDeepStrictEqual(coverage?.selectedPids, selected) &&
+        Array.isArray(coverage.unsampledPids) && coverage.unsampledPids.every((id: unknown) => pid(id) &&
+          !selected.includes(id as number)) && new Set(coverage.unsampledPids).size === coverage.unsampledPids.length,
+        'explicit unsampled coverage');
+      for (const name of ['notCheckedBefore', 'notCheckedAfter']) {
+        requireWorker(Array.isArray(coverage[name]) && coverage[name].every((x: any) => pid(x.pid) &&
+          Number.isSafeInteger(x.parentPid) && x.parentPid >= 0 && typeof x.reason === 'string' && x.reason.length > 0),
+          'explicit census residue');
+      }
+      gaps.push({ phase, unsampledPids: coverage.unsampledPids,
+        notCheckedBefore: coverage.notCheckedBefore, notCheckedAfter: coverage.notCheckedAfter });
+      const instances = new Set<string>();
+      for (const observation of sample.observations) {
+        const id = observation.after.pid, bundle = bundles.get(id);
+        for (const os of [observation.before, observation.after]) {
+          requireWorker(pid(os.pid) && /^\d+$/.test(os.startTicks) && sha(os.executableSha256) &&
+            sha(os.command?.sha256) && os.command.script === r.bundle.argvEntry &&
+            positive(os.pssBytes) && positive(os.rssBytes) && os.pssBytes <= os.rssBytes &&
+            nonnegative(os.anonymousBytes) && Number.isSafeInteger(os.parentPid) && os.parentPid >= 0,
+            'raw OS lifetime and PSS');
+          requireWorker(os.startTicks === bundle.startTicks && os.executableSha256 === bundle.executableSha256 &&
+            os.command.script === bundle.path && isDeepStrictEqual(pin(os), pin(observation.before)) &&
+            (!lifetimes.has(id) || isDeepStrictEqual(pin(os), lifetimes.get(id))), 'stable selected lifetime/entry');
+          requireWorker(censusRows.has(id) && isDeepStrictEqual(pin(os), pin(censusRows.get(id))) &&
+            os.executableSha256 === census.os.executableSha256, 'selected census correspondence');
+          const seen = new Set<number>(); let ancestor = os;
+          while (ancestor.pid !== r.pid) {
+            requireWorker(!seen.has(ancestor.pid) && censusRows.has(ancestor.parentPid), 'selected ancestry');
+            seen.add(ancestor.pid); ancestor = censusRows.get(ancestor.parentPid);
+          }
+        }
+        lifetimes.set(id, pin(observation.after));
+        const counters = observation.counters, snapshot = observation.snapshot;
+        requireWorker(counters?.pid === id && nonnegative(counters.heap?.total_allocated_bytes) &&
+          counters.heap.total_allocated_bytes >= (previousCounters.get(id) ?? 0) &&
+          positive(counters.memory?.heapUsed) && counters.memory.heapUsed <= counters.memory.heapTotal &&
+          nonnegative(counters.memory.external) && nonnegative(counters.memory.arrayBuffers) &&
+          counters.memory.arrayBuffers <= counters.memory.external, 'PID-bound cumulative allocation');
+        previousCounters.set(id, counters.heap.total_allocated_bytes);
+        requireWorker(isDeepStrictEqual(roleFromRaw(counters.hostFacts), observation.role), 'raw role correspondence');
+        requireWorker(snapshot?.status === 'observed' && snapshot.pid === id && snapshot.buildSha === r.buildSha &&
+          uuid(snapshot.processInstanceId) && !instances.has(snapshot.processInstanceId) &&
+          Array.isArray(snapshot.results) && snapshot.results.length <= 64, 'loaded process/build identity');
+        instances.add(snapshot.processInstanceId);
+        if (phase === 'before') requireWorker(snapshot.results.length === 0, 'empty pre-request selection');
+      }
+    }
+    requireWorker(Array.isArray(w.resources) && w.resources.length === selected.length &&
+      isDeepStrictEqual(w.resources.map((x: any) => x.pid), selected), 'resource population');
+    const assignments = new Map<string, any>(), tuples = new Set<string>();
+    const resources = w.after.observations.map((after: any, i: number) => {
+      const before = w.before.observations[i], raw = w.resources[i];
+      requireWorker(before.snapshot.processInstanceId === after.snapshot.processInstanceId &&
+        isDeepStrictEqual(before.role, after.role), 'stable process instance and role');
+      const derived = { pid: after.after.pid, startTicks: after.after.startTicks,
+        executableSha256: after.after.executableSha256, processInstanceId: after.snapshot.processInstanceId,
+        buildSha: r.buildSha, role: after.role, pssBytesBefore: before.after.pssBytes,
+        pssBytesAfter: after.after.pssBytes, pssChangeBytes: after.after.pssBytes - before.after.pssBytes,
+        allocatedBytes: after.counters.heap.total_allocated_bytes - before.counters.heap.total_allocated_bytes,
+        countersBefore: before.counters, countersAfter: after.counters };
+      requireWorker(isDeepStrictEqual(raw, derived) && nonnegative(derived.allocatedBytes), 'raw resource delta correspondence');
+      for (const q of after.snapshot.results) {
+        requireWorker(requestIds.includes(q.correlation?.requestId) && uuid(q.correlation.requestId) &&
+          q.correlation.operation === 'workItems.byHarness' && q.status === 'ok' &&
+          q.source?.processInstanceId === after.snapshot.processInstanceId &&
+          q.correlation.processInstanceId === after.snapshot.processInstanceId &&
+          q.source.buildSha === r.buildSha && q.correlation.buildSha === r.buildSha && uuid(q.source.poolInstanceId) &&
+          typeof q.pool === 'string' && q.pool.length > 0 && Number.isSafeInteger(q.connectionId) &&
+          q.connectionId >= 0 && Number.isSafeInteger(q.queryId) && q.queryId >= 0, 'exact query identity');
+        const tuple = JSON.stringify([q.correlation.requestId, q.pool, q.source.processInstanceId,
+          q.source.buildSha, q.source.poolInstanceId, q.connectionId, q.queryId]);
+        requireWorker(!tuples.has(tuple), 'duplicate query tuple'); tuples.add(tuple);
+        const prior = assignments.get(q.correlation.requestId);
+        requireWorker(!prior || prior.pid === after.after.pid, 'cross-worker HTTP assignment');
+        const value = prior ?? { requestId: q.correlation.requestId, pid: after.after.pid,
+          startTicks: after.after.startTicks, processInstanceId: after.snapshot.processInstanceId, queryTuples: [] };
+        value.queryTuples.push(tuple); assignments.set(q.correlation.requestId, value);
+      }
+      return derived;
+    });
+    const missingHttp = requestIds.some((id: unknown) => id === null);
+    const unresolvedRequestIds = missingHttp ? requestIds : requestIds.filter((id: string) => !assignments.has(id));
+    const assignment = { status: missingHttp ? 'unknown' : unresolvedRequestIds.length ? 'partial' : 'observed',
+      requested: requestIds.length,
+      assignments: missingHttp ? [] : requestIds.flatMap((id: string) => assignments.has(id) ? [assignments.get(id)] : []),
+      unresolvedRequestIds };
+    const projectedAssignment = (a: any) => ({ status: a?.status, requested: a?.requested,
+      assignments: a?.assignments, unresolvedRequestIds: a?.unresolvedRequestIds });
+    requireWorker(isDeepStrictEqual(projectedAssignment(w.assignment), assignment) &&
+      isDeepStrictEqual(projectedAssignment(r.requestWorkerAssignments?.[index]), assignment) &&
+      r.requestWorkerAssignments[index].window === w.window, 'conserved one-to-many request tuples');
+    return { window: w.window, resources, assignment, coverage: gaps,
+      servingWorkerPopulation: 'unknown', queryPopulation: 'bounded terminal ring; eviction remains unknown',
+      unsampledAncestorLifetimes: 'unknown', allocationOwner: 'unknown', physicalSavings: 'unmeasured' };
+  });
+}
+
 function auditBaseline(r: any) {
   check(r.schemaVersion === 1 && r.plane === 'live-current-build-operator-api' &&
     r.incomplete === false && !r.error, 'complete current-build run');
@@ -30,9 +194,12 @@ function auditBaseline(r: any) {
   check(r.bundle.argvEntry.endsWith('/hono-host.mjs') && r.bundle.path === r.bundle.argvEntry,
     'main exact entry');
   const sibling = r.counterPid !== r.pid;
-  const entry = sibling ? join(dirname(r.bundle.argvEntry), 'spawner-sidecar.mjs') : r.bundle.argvEntry;
+  const spawner = sibling && r.counterBundle.argvEntry === join(dirname(r.bundle.argvEntry), 'spawner-sidecar.mjs');
+  const entry = spawner ? join(dirname(r.bundle.argvEntry), 'spawner-sidecar.mjs') : r.bundle.argvEntry;
   check(r.counterBundle.argvEntry === entry && r.counterBundle.path === entry, 'counter exact entry');
-  if (sibling) {
+  check(!sibling || spawner || Array.isArray(r.requestWorkerWindows), 'request-worker evidence required');
+  check(r.counterPids === undefined || spawner || Array.isArray(r.requestWorkerWindows), 'selected worker windows required');
+  if (spawner) {
     const a = r.counterBundle.loadedBuild, b = r.counterBundle.loadedBuildAfter;
     check(a?.status === 'known' && b?.status === 'known' && a.pid === r.counterPid && b.pid === r.counterPid &&
       typeof a.buildInfo?.sha === 'string' && /^[a-f0-9]{7,40}$/.test(a.buildInfo.sha) &&
@@ -89,8 +256,10 @@ function auditBaseline(r: any) {
     check(s.heapSpaces.length > 0 && s.heapSpaces.every((x: any) => typeof x.space_name === 'string' &&
       nonnegative(x.space_used_size)) && nonnegative(s.heapCode.code_and_metadata_size), 'V8 component measurement');
     const f = s.hostFacts;
-    check(f.cluster.isPrimary === true && f.cluster.isWorker === false &&
-      f.backgroundWorkersOverride === 'disabled' && f.sidecarFlags.spawner === sibling &&
+    check((r.requestWorkerWindows ? typeof f.cluster.isPrimary === 'boolean' &&
+      typeof f.cluster.isWorker === 'boolean' && f.cluster.isPrimary !== f.cluster.isWorker :
+      f.cluster.isPrimary === true && f.cluster.isWorker === false) &&
+      f.backgroundWorkersOverride === 'disabled' && f.sidecarFlags.spawner === spawner &&
       ['substrate', 'gateway', 'embed', 'resourceHealth'].every(key => f.sidecarFlags[key] === false), 'raw runtime role');
     data.push({ label: s.label, pssBytes: s.counterOs.pssBytes, allocatedBytes: s.heap.total_allocated_bytes,
       observedPssBytes: rows.reduce((sum, x) => sum + x.pssBytes, 0),
@@ -108,13 +277,15 @@ function auditBaseline(r: any) {
         q.rows >= 0 && q.rows <= 32 && positive(q.responseBytes) && sha(q.responseSha256) &&
         nonnegative(q.elapsedMs)), 'ordinary request coverage');
   }
-  return { target: sibling ? 'maintained-spawner' : 'main', mainIdentity, counterIdentity, buildSha: r.buildSha,
+  const requestWorkerWindows = r.requestWorkerWindows === undefined ? undefined : auditRequestWorkerWindows(r);
+  return { target: spawner ? 'maintained-spawner' : sibling ? 'selected-request-worker' : 'main', mainIdentity, counterIdentity, buildSha: r.buildSha,
     samples: data, windows: Array.from({ length: 3 }, (_, w) => ({ window: w,
       idlePssDeltaBytes: data[w * 3 + 1].pssBytes - data[w * 3].pssBytes,
       ordinaryPssDeltaBytes: data[w * 3 + 2].pssBytes - data[w * 3 + 1].pssBytes,
       idleAllocatedBytes: data[w * 3 + 1].allocatedBytes - data[w * 3].allocatedBytes,
       ordinaryAllocatedBytes: data[w * 3 + 2].allocatedBytes - data[w * 3 + 1].allocatedBytes })),
-    allocationOwner: 'unknown', requestAssignment: 'unknown', physicalSavings: 'unmeasured',
+    ...(requestWorkerWindows ? { requestWorkerWindows } : {}),
+    allocationOwner: 'unknown', requestAssignment: requestWorkerWindows ? 'bounded selected-worker observations' : 'unknown', physicalSavings: 'unmeasured',
     definition: 'Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled.' };
 }
 
@@ -722,6 +893,147 @@ function fixture(sibling = false): any {
   }
   return r;
 }
+
+describe('P011 independent selected-worker resource windows', () => {
+  const uuid = (n: number) => '00000000-0000-4000-8000-' + n.toString(16).padStart(12, '0');
+  // Construct the raw report independently; no collector or inspector import.
+  function workerFixture(): any {
+    const r = fixture(), main = structuredClone(r.samples[0].os);
+    const child = { ...structuredClone(main), pid: 8, parentPid: 7, startTicks: '11' };
+    r.counterPids = [7, 8];
+    for (const s of r.samples) s.descendants = [structuredClone(child)];
+    r.targetBundles = [main, child].map(os => ({ pid: os.pid, startTicks: os.startTicks,
+      executableSha256: os.executableSha256, path: os.command.script,
+      diskSha256: 'e'.repeat(64), diskSha256After: 'e'.repeat(64) }));
+    r.inspectors = [{ pid: 7, openedByProbe: true }, { pid: 8, openedByProbe: false }];
+    r.cleanup.inspectors = [{ pid: 8, openedByProbe: false, result: { preservedPreexisting: true } },
+      { pid: 7, openedByProbe: true, result: { closed: true } }];
+    r.requestWorkerWindows = []; r.requestWorkerAssignments = [];
+    for (let window = 0; window < 3; window++) {
+      const requests = r.requests.filter((q: any) => q.window === window);
+      requests.forEach((q: any, i: number) => { q.requestId = uuid(100 + window * 8 + i); });
+      const observations = (after: boolean) => [main, child].map((os, i) => {
+        const processInstanceId = uuid(i + 1), poolInstanceId = uuid(i + 10);
+        const facts = { cluster: { isPrimary: true, isWorker: false }, stagingPort: true,
+          backgroundWorkersOverride: 'disabled', sidecarFlags: { spawner: false, substrate: false,
+            gateway: false, embed: false, resourceHealth: false } };
+        const results = after ? requests.flatMap((q: any, n: number) => n % 2 === i ?
+          Array.from({ length: n === 0 ? 2 : 1 }, (_, j) => ({ pool: j ? 'secondary' : 'main',
+            source: { processInstanceId, poolInstanceId, buildSha: r.buildSha },
+            correlation: { processInstanceId, buildSha: r.buildSha, requestId: q.requestId,
+              operation: 'workItems.byHarness' }, status: 'ok', connectionId: 1, queryId: n * 2 + j })) : []) : [];
+        return { before: { ...structuredClone(os), pssBytes: after ? 80 : 100 },
+          after: { ...structuredClone(os), pssBytes: after ? 80 : 100 },
+          counters: { pid: os.pid, heap: { total_allocated_bytes: 1000 + window * 1000 + (after ? 200 : 0) },
+            memory: { heapUsed: 50, heapTotal: 100, external: 10, arrayBuffers: 2 }, hostFacts: facts },
+          role: { clusterRole: 'primary', requestOnly: true, configuredSidecar: null,
+            requestAssignment: 'unknown', allocationOwner: 'unknown' },
+          snapshot: { status: 'observed', pid: os.pid, buildSha: r.buildSha, processInstanceId, results } };
+      });
+      const coverage = { selectedPids: [7, 8], unsampledPids: [9], notCheckedBefore: [],
+        notCheckedAfter: [{ pid: 10, parentPid: 7, reason: 'census cap' }], population: 'bounded' };
+      const before = { startedAt: 2200 + window * 3000, endedAt: 2210 + window * 3000,
+        observations: observations(false), coverage: structuredClone(coverage) };
+      const after = { startedAt: 2300 + window * 3000, endedAt: 2310 + window * 3000,
+        observations: observations(true), coverage: structuredClone(coverage) };
+      const resources = after.observations.map((row: any, i: number) => ({ pid: row.after.pid,
+        startTicks: row.after.startTicks, executableSha256: row.after.executableSha256,
+        processInstanceId: row.snapshot.processInstanceId, buildSha: r.buildSha, role: row.role,
+        pssBytesBefore: 100, pssBytesAfter: 80, pssChangeBytes: -20, allocatedBytes: 200,
+        countersBefore: before.observations[i].counters, countersAfter: row.counters }));
+      const assignments = requests.map((q: any) => {
+        const row = after.observations.find((o: any) => o.snapshot.results.some((v: any) =>
+          v.correlation.requestId === q.requestId))!;
+        return { requestId: q.requestId, pid: row.after.pid, startTicks: row.after.startTicks,
+          processInstanceId: row.snapshot.processInstanceId,
+          queryTuples: row.snapshot.results.filter((v: any) => v.correlation.requestId === q.requestId).map((v: any) =>
+            JSON.stringify([q.requestId, v.pool, v.source.processInstanceId, v.source.buildSha,
+              v.source.poolInstanceId, v.connectionId, v.queryId])) };
+      });
+      const assignment = { status: 'observed', requested: 8, assignments, unresolvedRequestIds: [] };
+      r.requestWorkerWindows.push({ window, before, after, resources, assignment });
+      r.requestWorkerAssignments.push({ window, ...structuredClone(assignment) });
+    }
+    return r;
+  }
+  it('accepts one-to-many exact tuples, negative PSS changes and explicit unknown coverage', () => {
+    const r = workerFixture(), frozen = structuredClone(r), result = auditBaseline(r);
+    expect(r).toEqual(frozen);
+    const w = result.requestWorkerWindows![0];
+    expect(w.assignment.assignments[0].queryTuples).toHaveLength(2);
+    expect(w.resources.map((x: any) => [x.pssChangeBytes, x.allocatedBytes])).toEqual([[-20, 200], [-20, 200]]);
+    expect(w.coverage[0].unsampledPids).toEqual([9]);
+    expect(w.coverage[1].notCheckedAfter).toHaveLength(1);
+    expect(w.servingWorkerPopulation).toBe('unknown');
+    expect(w.physicalSavings).toBe('unmeasured');
+  });
+  it('preserves evicted-ring requests as partial and missing HTTP identities as unknown', () => {
+    const r = workerFixture(), w = r.requestWorkerWindows[0], id = r.requests[0].requestId;
+    w.after.observations[0].snapshot.results = w.after.observations[0].snapshot.results.filter((q: any) =>
+      q.correlation.requestId !== id);
+    for (const a of [w.assignment, r.requestWorkerAssignments[0]]) {
+      a.status = 'partial'; a.assignments = a.assignments.filter((q: any) => q.requestId !== id);
+      a.unresolvedRequestIds = [id];
+    }
+    expect(auditBaseline(r).requestWorkerWindows![0].assignment.unresolvedRequestIds).toEqual([id]);
+    r.requests[0].requestId = null;
+    for (const a of [w.assignment, r.requestWorkerAssignments[0]]) {
+      a.status = 'unknown'; a.assignments = []; a.unresolvedRequestIds = r.requests.slice(0, 8).map((q: any) => q.requestId);
+    }
+    expect(auditBaseline(r).requestWorkerWindows![0].assignment.status).toBe('unknown');
+  });
+  it('accepts exact same-entry descendant counters without applying a sidecar role', () => {
+    const r = workerFixture(); r.counterPids = [8, 7]; r.counterPid = 8;
+    for (const s of r.samples) { s.pid = 8; s.counterOs = structuredClone(s.descendants[0]); }
+    for (const w of r.requestWorkerWindows) {
+      w.resources.reverse();
+      for (const phase of [w.before, w.after]) { phase.observations.reverse(); phase.coverage.selectedPids = [8, 7]; }
+    }
+    expect(auditBaseline(r).target).toBe('selected-request-worker');
+  });
+  const corruptions: [string, (r: any, w: any) => void][] = [
+    ['duplicate selection', r => { r.counterPids = [7, 7]; }],
+    ['missing windows', r => { delete r.requestWorkerWindows; }],
+    ['missing window', r => { r.requestWorkerWindows.pop(); }],
+    ['duplicated window', r => { r.requestWorkerWindows[1].window = 0; }],
+    ['missing inspector', r => { r.inspectors.pop(); }],
+    ['artifact drift', r => { r.targetBundles[1].diskSha256After = 'a'.repeat(64); }],
+    ['cleanup failure', r => { r.cleanup.inspectors[0].result.preservedPreexisting = false; }],
+    ['duplicate HTTP identity', r => { r.requests[1].requestId = r.requests[0].requestId; }],
+    ['invalid HTTP identity', r => { r.requests[0].requestId = 'a'.repeat(36); }],
+    ['missing selected observation', (_r, w) => { w.after.observations.pop(); }],
+    ['selected PID reuse', (_r, w) => { w.after.observations[0].after.startTicks = '99'; }],
+    ['entry drift', (_r, w) => { w.after.observations[0].before.command.script = '/other/hono-host.mjs'; }],
+    ['foreign ancestry', (_r, w) => { w.after.observations[1].after.parentPid = 99; }],
+    ['OS executable drift', (_r, w) => { w.after.observations[0].after.executableSha256 = 'f'.repeat(64); }],
+    ['RSS substituted', (_r, w) => { w.after.observations[0].after.pssBytes = 201; }],
+    ['counter PID mismatch', (_r, w) => { w.after.observations[0].counters.pid = 8; }],
+    ['allocation regression', (_r, w) => { w.after.observations[0].counters.heap.total_allocated_bytes = 1; }],
+    ['nonfinite allocation', (_r, w) => { w.after.observations[0].counters.heap.total_allocated_bytes = Infinity; }],
+    ['background role', (_r, w) => { w.after.observations[0].counters.hostFacts.backgroundWorkersOverride = 'enabled'; }],
+    ['sidecar role', (_r, w) => { w.after.observations[0].counters.hostFacts.sidecarFlags.spawner = true; }],
+    ['forged role', (_r, w) => { w.after.observations[0].role.clusterRole = 'worker'; }],
+    ['inspector snapshot PID mismatch', (_r, w) => { w.after.observations[0].snapshot.pid = 8; }],
+    ['loaded build drift', (_r, w) => { w.after.observations[0].snapshot.buildSha = 'ffffffff'; }],
+    ['process instance drift', (_r, w) => { w.after.observations[0].snapshot.processInstanceId = uuid(99); }],
+    ['pre-request query', (_r, w) => { w.before.observations[0].snapshot.results = w.after.observations[0].snapshot.results; }],
+    ['query build drift', (_r, w) => { w.after.observations[0].snapshot.results[0].source.buildSha = 'ffffffff'; }],
+    ['query process drift', (_r, w) => { w.after.observations[0].snapshot.results[0].correlation.processInstanceId = uuid(99); }],
+    ['query failed', (_r, w) => { w.after.observations[0].snapshot.results[0].status = 'error'; }],
+    ['query duplicate', (_r, w) => { w.after.observations[0].snapshot.results.push(w.after.observations[0].snapshot.results[0]); }],
+    ['query ring cap', (_r, w) => { w.after.observations[0].snapshot.results = Array(65).fill(w.after.observations[0].snapshot.results[0]); }],
+    ['query missing from assignment', (_r, w) => { w.assignment.assignments[0].queryTuples.pop(); }],
+    ['extra assignment', r => { r.requestWorkerAssignments.push(r.requestWorkerAssignments[0]); }],
+    ['forged resource saving', (_r, w) => { w.resources[0].pssChangeBytes = -99; }],
+    ['missing unknown coverage', (_r, w) => { delete w.after.coverage.notCheckedAfter; }],
+    ['selected as unsampled', (_r, w) => { w.after.coverage.unsampledPids.push(7); }],
+    ['unordered brackets', (_r, w) => { w.after.startedAt = w.before.startedAt - 1; }],
+  ];
+  it.each(corruptions)('rejects saved worker-window corruption: %s', (_name, corrupt) => {
+    const r = workerFixture(); corrupt(r, r.requestWorkerWindows[0]);
+    expect(() => auditBaseline(r)).toThrow(/P011 (worker windows|baseline):/);
+  });
+});
 
 describe('P011 independent unforced expiry resource evidence', () => {
   const fixture = () => {
