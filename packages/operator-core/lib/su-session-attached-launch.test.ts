@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
   ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
-  resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(),
+  resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(), owner: vi.fn(), recordOwner: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
@@ -19,7 +19,8 @@ vi.mock('./adv-sessions', async (orig) => ({
 vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: vi.fn() }));
 vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host, rehydrateRegisteredSuSessionHost: mocks.rehydrate }));
 vi.mock('./su-session-resume', () => ({ prepareStructuredSuResume: mocks.resume }));
-vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist }));
+vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist,
+  readSuSessionHostOwner: mocks.owner, recordSuSessionHostOwner: mocks.recordOwner }));
 vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine }));
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
@@ -48,6 +49,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.chat.mockResolvedValue({ ok: true, data: { archived_at: null, su_runtime_class: 'su-session' } });
   mocks.read.mockResolvedValue(null);
+  mocks.owner.mockResolvedValue(null);
+  mocks.recordOwner.mockResolvedValue(true);
   mocks.resume.mockRejectedValue(new Error('Reconnect requires a saved native session'));
   mocks.bind.mockResolvedValue({ status: 'bound' });
   mocks.bootstrap.mockImplementation(async () => Response.json(boot));
