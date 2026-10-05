@@ -180,6 +180,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       const cycle = evalSeq++;
       const variant = { variantId, label: variantId, overlay };
       await ab.store.upsertVariant(variant);
+      const runIds: string[] = [];
 
       const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
@@ -259,6 +260,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
               rubricHash: rubricHash(rubric),
             },
           });
+          runIds.push(evaluationRunId);
           const { distilledTrace, traceRef, rawSignals } = await ab.collectAndDistill({
             handle,
             task: { ...task, pool: task.pool },
@@ -377,7 +379,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       .slice(0, worstK)
       .map((r) => ({ taskId: r.taskId, composite: r.composite, rationale: r.rationale, distilledTrace: r.distilled }));
 
-      return { evalResult, worstTraces, costUsd: totalCost };
+      return { evalResult, worstTraces, costUsd: totalCost, runIds };
     } catch (error) {
       // Keep all pipeline/judge charges from completed work visible when a later
       // task or persistence step aborts the evaluation.

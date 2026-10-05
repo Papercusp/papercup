@@ -72,8 +72,18 @@ export interface CandidateVersionVerdict {
     rubricHash: string;
     taskHash: string;
     codeHash: string;
+    /** Present only when the actual evaluated inputs were retained. */
+    evaluationHash?: string;
   };
   gateResults: readonly GateResult[];
+  /** Inputs used by this domain verdict; reported cost is not governor settlement. */
+  evaluation?: {
+    candidate: Pick<EvaluateResult, 'evalResult' | 'costUsd' | 'runIds'>;
+    parent: Pick<EvaluateResult, 'evalResult' | 'costUsd' | 'runIds'>;
+    champion: Pick<EvaluateResult, 'evalResult' | 'costUsd' | 'runIds'>;
+    thresholds: AcceptThresholds;
+    baselineMeanCost: number;
+  };
   verdict: 'accept' | 'reject' | 'inconclusive';
   recordedAt: number;
 }
@@ -130,6 +140,7 @@ export function createCandidateVersionVerdict(input: {
   gateResults: readonly GateResult[];
   recordedAt: number;
   provenance?: LoopConfig['provenance'];
+  evaluation?: CandidateVersionVerdict['evaluation'];
 }): CandidateVersionVerdict {
   // Hash and retain one detached snapshot. A later edit to the caller's overlay
   // or gate evidence must not rewrite the evaluated candidate or rollback target.
@@ -149,8 +160,10 @@ export function createCandidateVersionVerdict(input: {
       rubricHash: input.provenance?.rubricHash ?? 'unresolved',
       taskHash: input.provenance?.taskHash ?? 'unresolved',
       codeHash: input.provenance?.codeHash ?? 'unresolved',
+      ...(input.evaluation === undefined ? {} : { evaluationHash: sha256(input.evaluation) }),
     },
     gateResults: input.gateResults,
+    ...(input.evaluation === undefined ? {} : { evaluation: input.evaluation }),
     verdict: candidateVerdictFromGates(input.gateResults),
     recordedAt: input.recordedAt,
   };
@@ -194,6 +207,8 @@ export interface EvaluateResult {
   evalResult: VariantEval;
   worstTraces: WorstTrace[];
   costUsd: number;
+  /** Exact source run IDs recorded by the evaluator; absent when not supplied. */
+  runIds?: readonly string[];
 }
 
 export interface LoopDeps {
@@ -267,14 +282,17 @@ export interface LoopResult {
   skipReasons: string[];
 }
 
-interface Tracked {
-  evalResult: VariantEval;
+interface Tracked extends EvaluateResult {
   overlay: VariantOverlay;
-  worstTraces: WorstTrace[];
 }
 
 export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): Promise<LoopResult> {
   const variants = new Map<string, Tracked>();
+  // Keep the scored inputs and native run joins; raw/distilled traces stay in
+  // their existing artifacts rather than being duplicated in the verdict row.
+  const evaluationEvidence = ({ evalResult, costUsd, runIds }: EvaluateResult) => ({
+    evalResult, costUsd, ...(runIds === undefined ? {} : { runIds }),
+  });
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   // RB-006: a rate-limited turn pauses+resumes (near reset) rather than aborting the loop.
@@ -298,9 +316,8 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
   const base = await runWithRatePause(() => deps.evaluate(deps.baseline.variantId, deps.baseline.overlay), { now, sleep });
   let spentUsd = base.costUsd;
   variants.set(deps.baseline.variantId, {
-    evalResult: base.evalResult,
+    ...base,
     overlay: deps.baseline.overlay,
-    worstTraces: base.worstTraces,
   });
   // Seed the archive with the baseline (its niche is the origin point of the search).
   await recordArchive({
@@ -369,7 +386,7 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
       skipped++;
       continue;
     }
-    variants.set(candidateId, { evalResult: evalRes.evalResult, overlay: proposal.overlay, worstTraces: evalRes.worstTraces });
+    variants.set(candidateId, { ...evalRes, overlay: proposal.overlay });
     // P-010: offer the evaluated candidate to the QD archive (insert-if-better per niche).
     await recordArchive({
       variantId: candidateId,
@@ -411,6 +428,13 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
           gateResults: verdict.results,
           recordedAt: now(),
           provenance: config.provenance,
+          evaluation: {
+            candidate: evaluationEvidence(evalRes),
+            parent: evaluationEvidence(parent),
+            champion: evaluationEvidence(champion),
+            thresholds: config.thresholds,
+            baselineMeanCost: config.baselineMeanCost,
+          },
         }),
       });
     }

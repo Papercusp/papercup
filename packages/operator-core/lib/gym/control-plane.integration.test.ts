@@ -16,6 +16,8 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { createCandidateVersionVerdict } from './loop';
+import { decideAccept, type VariantEval } from './gate-engine';
+import { unmeasuredEvidence } from './gates';
 import { readProducerObservations } from '../experiment/producer-lifecycle-store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -173,16 +175,31 @@ describe('recordProposal (PG)', () => {
   it('persists the detached candidate and rollback receipt through the native proposal writer', async () => {
     const variant = { promptOverrides: { [AGENT_ROLE]: 'evaluated prompt' } };
     const parent = { promptOverrides: { [AGENT_ROLE]: 'rollback prompt' } };
+    const measured = (variantId: string, trainAgg: number) => ({
+      evalResult: { variantId, trainAgg, trainVector: [trainAgg], devAnchorAgg: trainAgg,
+        realAnchorAgg: 0, realAnchorEvidence: unmeasuredEvidence(['real-task']), meanCost: 1,
+        regressionEvidence: unmeasuredEvidence(['task']), probeEvidence: unmeasuredEvidence(['probe']) } satisfies VariantEval,
+      costUsd: 2, runIds: [`fixture-run:${variantId}`],
+    });
+    const evaluation = { candidate: measured('v1', 8), parent: measured('baseline', 7),
+      champion: measured('incumbent', 7), thresholds: { epsilon: 0.2, delta: 0.3, costCeiling: 2 }, baselineMeanCost: 1 };
+    const gates = decideAccept(evaluation.candidate.evalResult, evaluation.parent.evalResult,
+      evaluation.champion.evalResult, evaluation.baselineMeanCost, evaluation.thresholds);
     const candidateVersion = createCandidateVersionVerdict({
       candidateId: 'v1', parentId: 'baseline', variant, parent, recordedAt: 1,
-      gateResults: [{ gate: 'no-new-regressions', pass: false, status: 'not-measured', detail: 'unmeasured' }],
+      gateResults: gates.results, evaluation,
     });
     const expected = JSON.parse(JSON.stringify(candidateVersion));
     variant.promptOverrides[AGENT_ROLE] = 'later candidate edit';
     parent.promptOverrides[AGENT_ROLE] = 'later rollback edit';
+    evaluation.candidate.evalResult.trainVector[0] = -100;
+    evaluation.champion.runIds.push('later-run');
     const id = await propose({ proposedMd: 'evaluated prompt', candidateVersion });
     const row = (await rootSql`SELECT candidate_verdict FROM harness_shared.gym_proposals WHERE id=${id}`)[0]!;
     expect(row.candidate_verdict).toEqual(expected);
+    const saved = row.candidate_verdict.evaluation;
+    expect(decideAccept(saved.candidate.evalResult, saved.parent.evalResult, saved.champion.evalResult,
+      saved.baselineMeanCost, saved.thresholds).results).toEqual(row.candidate_verdict.gateResults);
     const receipts = await readProducerObservations(rootSql, { producer: 'gym', workspaceId: WS });
     expect(receipts).toHaveLength(1);
     expect(receipts[0]).toMatchObject({ sourceCurrent: true, promotionAllowed: false, contract: null,
