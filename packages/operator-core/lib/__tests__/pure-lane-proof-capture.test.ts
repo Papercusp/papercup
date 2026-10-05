@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parsePureProofCaptureResult, readPureProofCaptureResult } from '../release/test-pass-reuse-report';
 
 import {
   PURE_PROOF_CAPTURE_BUDGET_MS_DEFAULT,
@@ -249,7 +250,7 @@ describe('runPureLaneProofCapture', () => {
       results: [{ outcome: 'written', rows: h.slices.at(-1)!.args.length - 2,
         retired: 0, skipped: 0, dirty: false, sha: SHA }] });
     Object.assign(h.deps, { loadCapturedProofRows: async ({ files }: { files: string[] }) => {
-      const rows = files.map((file, i) => ({ file, testRunId: String(100 + i), recordedAtMs: h.clock.now,
+      const rows = files.map((file, i) => ({ file, testRunId: String(100 * h.slices.length + i), recordedAtMs: h.clock.now,
         runnerIdentity: RUNNER, runContext: 'green-checkpoint', runGroupId: 'run-1:pure-proof-capture', source: 'local' }));
       mutate?.(rows);
       return rows;
@@ -268,6 +269,9 @@ describe('runPureLaneProofCapture', () => {
     expect(JSON.parse(records[0].slice('PURE_PROOF_CAPTURE_RESULT '.length))).toMatchObject({
       sha: SHA, rows: 3, evidence: r.evidence,
     });
+    const parsed = readPureProofCaptureResult(h.logs.join('\n'))!;
+    expect(parsed).toMatchObject({ sha: SHA, rows: 3, evidence: r.evidence });
+    expect(parsePureProofCaptureResult(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
     expect(h.removed).toEqual(['/tmp/capture-test']);
   });
 
@@ -307,6 +311,8 @@ describe('runPureLaneProofCapture', () => {
     const h = harness({ git: (_root: string, args: string[]) => args[0] === 'rev-parse' ? SHA : ' M source.ts' });
     const result = await run(h);
     expect(result.evidence).toMatchObject({ clean: null, proofs: null });
+    expect(readPureProofCaptureResult(h.logs.join('\n'))).toMatchObject({ state: 'skipped',
+      reason: 'dirty-checkout(1)', evidence: { clean: null, proofs: null } });
     expect(h.logs.filter((line) => line.startsWith('PURE_PROOF_CAPTURE_RESULT '))).toHaveLength(1);
     expect(h.slices).toHaveLength(0);
   });
