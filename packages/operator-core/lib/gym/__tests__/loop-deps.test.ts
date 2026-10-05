@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Sql } from 'postgres';
 import { buildLoopDeps, type LoopTask } from '../loop-deps';
-import { composite, GYM_JUDGE_RUBRIC_V1 } from '../judge-scoring';
+import { composite, GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
 import type { AbDeps } from '../ab-runner';
 import type { JudgeLlmCall } from '../judge';
 import type { GymLlmCall } from '../task-generator';
@@ -122,6 +122,25 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
 }
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
+  it('records declared run parameters before judging, including when the judge fails', async () => {
+    const ab = fakeAbDeps(ALL_MEASURED);
+    const started: unknown[] = [];
+    ab.store.startRun = async (run) => { started.push(run); };
+    const task = { ...TASKS[0], repoCommit: 'declared-task-commit' };
+    const rubric = { ...GYM_JUDGE_RUBRIC_V1, version: 'fixture-rubric' };
+    const { deps } = makeDeps({ runId: 'params-loop', abDeps: ab, tasks: [task], rubric,
+      harnessCommit: 'declared-harness-commit', judgeCall: async () => {
+        expect(started).toEqual([expect.objectContaining({
+          runId: 'params-loop::baseline::t-train-lo::c0::r0',
+          params: { harnessCommit: 'declared-harness-commit', substrateCommit: 'declared-task-commit',
+            judgeModel: rubric.model, judgeTemp: rubric.temperature, weights: rubric.weights, rubricHash: rubricHash(rubric) },
+        })]);
+        throw new Error('controlled judge failure');
+      } });
+    await expect(deps.evaluate('baseline', { promptOverrides: {} })).rejects.toThrow('controlled judge failure');
+    expect(started).toHaveLength(1);
+  });
+
   it('keeps independent baseline evaluations distinct through start, finish and score persistence', async () => {
     const evaluateBaseline = async (runId: string) => {
       const ab = fakeAbDeps(ALL_MEASURED);
