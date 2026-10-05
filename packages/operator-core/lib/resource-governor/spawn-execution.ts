@@ -18,6 +18,7 @@ export interface GovernedProcessSpawnInput {
 export type GovernedSpawnResult = SpawnConsoleResult & {
   /** Durable context for nested work started by the spawned process. */
   admissionContext?: AdmissionContext;
+  goalAdmissionDegraded?: string[];
 };
 
 /**
@@ -74,18 +75,37 @@ export async function spawnGovernedAgentProcess(
   input: GovernedProcessSpawnInput,
   spawnProcess: (context: AdmissionContext) => Promise<SpawnConsoleResult>,
 ): Promise<GovernedSpawnResult> {
-  const execution = await beginGovernedExecution(
+  const register = (goalId: string | null) => beginGovernedExecution(
     {
       idempotencyKey: input.idempotencyKey,
       admissionClass: 'agent',
       demand: input.demand ?? { cpuWeight: 1 },
       payloadRef: input.payloadRef,
       parent: input.parent,
-      metadata: input.metadata,
+      metadata: goalId ? { ...input.metadata, goalId, goalReservation: true } : input.metadata,
     },
     { owner: input.owner },
     governedExecutionRuntime(input.workspaceId, 'agent-process'),
   );
+
+  // Both fleet launch and ad-hoc launch enter here. A tool-level preflight is
+  // useful for a batch, but cannot reserve against another concurrent tool.
+  const launchedBy = input.metadata?.launchedBy;
+  const admitted = typeof launchedBy === 'string' && launchedBy
+    ? await (await import('../goal-launch-settings')).registerGoalLaunch({
+        workspaceId: input.workspaceId, launcherOwnerId: launchedBy,
+        targetOwnerId: typeof input.metadata?.targetOwnerId === 'string' ? input.metadata.targetOwnerId : null,
+        fleetSlug: typeof input.metadata?.fleetSlug === 'string' ? input.metadata.fleetSlug : null,
+        excludeOwnerIds: typeof input.metadata?.replacesOwnerId === 'string' ? [input.metadata.replacesOwnerId] : [],
+      }, register)
+    : { value: await register(null), resolution: null, degradedReason: null };
+  if (admitted.resolution?.refusal) {
+    return { status: 'error', error: admitted.resolution.refusal.message, code: 409 };
+  }
+  const execution = admitted.value!;
+  const goalAdmissionDegraded = [
+    ...(admitted.resolution?.degradedReasons ?? []), ...(admitted.degradedReason ? [admitted.degradedReason] : []),
+  ];
 
   let result: SpawnConsoleResult;
   try {
@@ -101,5 +121,6 @@ export async function spawnGovernedAgentProcess(
 
   const exit = result.childExit ?? (result.child ? observeVisibleChild(result.child) : null);
   if (exit) settleOnExit(execution, exit);
-  return { ...result, admissionContext: execution.context };
+  return { ...result, admissionContext: execution.context,
+    ...(goalAdmissionDegraded.length ? { goalAdmissionDegraded } : {}) };
 }

@@ -33,13 +33,16 @@ beforeAll(async () => {
       owner_id text PRIMARY KEY, fleet_slug text, heartbeat_at timestamptz NOT NULL,
       host text, pid integer, source text
     );
+    CREATE TABLE harness_shared.work_items (
+      feature_id text PRIMARY KEY, workspace_id text NOT NULL, payload jsonb NOT NULL
+    );
   `);
 });
 afterAll(async () => { await db?.cleanup(); });
 
 beforeEach(async () => {
   oracle.seen = [];
-  await db.sql.unsafe('TRUNCATE harness_shared.coord_presence, harness_shared.session_briefs');
+  await db.sql.unsafe('TRUNCATE harness_shared.coord_presence, harness_shared.session_briefs, harness_shared.work_items');
   const rows = [
     { owner: 'live', fleet: FLEET },
     { owner: 'recorded', fleet: FLEET },
@@ -70,7 +73,7 @@ describe('goalHeadcount same-query population in real Postgres', () => {
     let censusQueries = 0;
     const sql = new Proxy(db.sql, {
       apply(target, thisArg, args) {
-        if (String(args[0]?.[0]).includes('count(*)::int AS total')) censusQueries += 1;
+        if ((args[0] as TemplateStringsArray).join('').includes('count(*)::int AS total')) censusQueries += 1;
         return Reflect.apply(target, thisArg, args);
       },
     });
