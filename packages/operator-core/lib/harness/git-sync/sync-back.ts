@@ -164,6 +164,79 @@ export interface SyncBackConflictFilingDeps {
   create(input: { title: string; summary: string }): Promise<string>;
 }
 
+/**
+ * The watchdog key a pot's sync-back conflict is filed under. The dedupe lookup and the
+ * create MUST use this one function: if they ever diverge, the lookup never finds the
+ * item it filed and a stuck merge re-files a fresh work-item on every tick.
+ */
+export function syncBackConflictWatchdogKey(slug: string, titlePrefix: string): string {
+  return `git-sync:sync-back-conflict:${slug}:${titlePrefix}`;
+}
+
+const TERMINAL_STATES = new Set(['done', 'dropped', 'resolved', 'closed']);
+/** Cap on conflicted paths attached to the filed item (the summary still lists them all). */
+export const SYNC_BACK_CONFLICT_PATHS_CAP = 20;
+
+export interface SyncBackConflictCaptureInput {
+  title: string;
+  kind: 'bug';
+  severity: 'major';
+  body: string;
+  watchdogKey: string;
+  workspaceId: string;
+  scope: string;
+  sourceRole: 'system';
+  filedByRole: 'git-sync';
+  createdBy: 'system:git-sync';
+  paths: string[];
+}
+
+/** The two persistence seams the real filing uses; injectable so the wiring is testable. */
+export interface SyncBackConflictFilingSinks {
+  findIssuesByWatchdogKeys(keys: string[]): Promise<ReadonlyArray<{ id: unknown; state?: unknown }>>;
+  captureImprovement(input: SyncBackConflictCaptureInput): Promise<{ issue?: { id?: unknown } | null }>;
+}
+
+const defaultFilingSinks: SyncBackConflictFilingSinks = {
+  findIssuesByWatchdogKeys: async (keys) => (await import('../../issues-engineer')).findIssuesByWatchdogKeys(keys),
+  captureImprovement: async (input) => (await import('../improvements/capture-core')).captureImprovement(input),
+};
+
+/**
+ * The production {@link SyncBackConflictFilingDeps} for one pot: an OPEN item under the
+ * pot's sync-back watchdog key is the dedupe hit; otherwise a `major` bug is filed in the
+ * pot (`harness:<slug>`) under that same key, carrying the conflicted paths.
+ */
+export function makeSyncBackConflictFilingDeps(
+  input: { slug: string; workspaceId: string; cfg: SyncBackConfig; conflictedFiles: readonly string[] },
+  sinks: SyncBackConflictFilingSinks = defaultFilingSinks,
+): SyncBackConflictFilingDeps {
+  const { slug, workspaceId, cfg, conflictedFiles } = input;
+  return {
+    findOpenByTitlePrefix: async (prefix) => {
+      const found = await sinks.findIssuesByWatchdogKeys([syncBackConflictWatchdogKey(slug, prefix)]);
+      const open = found.find((i) => !TERMINAL_STATES.has(String(i.state)));
+      return open ? String(open.id) : null;
+    },
+    create: async ({ title, summary }) => {
+      const res = await sinks.captureImprovement({
+        title,
+        kind: 'bug',
+        severity: 'major',
+        body: summary,
+        watchdogKey: syncBackConflictWatchdogKey(slug, syncBackConflictTitlePrefix(cfg.upstreamRemote, cfg.upstreamBranch)),
+        workspaceId,
+        scope: `harness:${slug}`,
+        sourceRole: 'system',
+        filedByRole: 'git-sync',
+        createdBy: 'system:git-sync',
+        paths: conflictedFiles.slice(0, SYNC_BACK_CONFLICT_PATHS_CAP),
+      });
+      return String(res.issue?.id ?? '');
+    },
+  };
+}
+
 export type SyncBackConflictFiling =
   | { action: 'none' }
   | { action: 'exists'; id: string }

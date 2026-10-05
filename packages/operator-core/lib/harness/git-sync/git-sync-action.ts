@@ -74,7 +74,7 @@ import {
   resolveIntegrationPushRemote,
   type IntegrationPushDecision,
 } from './pot-integration-mode';
-import { fileSyncBackConflict, syncBackConflictTitlePrefix } from './sync-back';
+import { fileSyncBackConflict, makeSyncBackConflictFilingDeps } from './sync-back';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import {
@@ -3671,33 +3671,16 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     if (cfg.syncBack && outcome.syncBack?.status === 'conflict') {
       const syncBackCfg = cfg.syncBack;
       try {
-        const keyFor = (prefix: string) => `git-sync:sync-back-conflict:${slug}:${prefix}`;
-        const filing = await fileSyncBackConflict(outcome.syncBack, syncBackCfg, {
-          findOpenByTitlePrefix: async (prefix) => {
-            const { findIssuesByWatchdogKeys } = await import('../../issues-engineer');
-            const open = (await findIssuesByWatchdogKeys([keyFor(prefix)])).find(
-              (i) => !['done', 'dropped', 'resolved', 'closed'].includes(String(i.state)),
-            );
-            return open ? String(open.id) : null;
-          },
-          create: async ({ title, summary }) => {
-            const { captureImprovement } = await import('../improvements/capture-core');
-            const res = await captureImprovement({
-              title,
-              kind: 'bug',
-              severity: 'major',
-              body: summary,
-              watchdogKey: keyFor(syncBackConflictTitlePrefix(syncBackCfg.upstreamRemote, syncBackCfg.upstreamBranch)),
-              workspaceId,
-              scope: `harness:${slug}`,
-              sourceRole: 'system',
-              filedByRole: 'git-sync',
-              createdBy: 'system:git-sync',
-              paths: outcome.syncBack?.status === 'conflict' ? outcome.syncBack.conflictedFiles.slice(0, 20) : [],
-            });
-            return String(res.issue?.id ?? '');
-          },
-        });
+        const filing = await fileSyncBackConflict(
+          outcome.syncBack,
+          syncBackCfg,
+          makeSyncBackConflictFilingDeps({
+            slug,
+            workspaceId,
+            cfg: syncBackCfg,
+            conflictedFiles: outcome.syncBack.conflictedFiles,
+          }),
+        );
         if (filing.action !== 'none') console.log(`[git-sync] ${slug}: sync-back conflict work-item ${filing.action}: ${filing.id}`);
       } catch (err) {
         console.warn(`[git-sync] ${slug}: could not file the sync-back conflict work-item: ${err instanceof Error ? err.message : String(err)}`);
