@@ -1283,8 +1283,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       ...(cacheRetainers ? ['scripts/analyze-heap-snapshots.mjs',
         'scripts/heap-retainers-native/src/main.rs', 'scripts/heap-retainers-native/Cargo.lock'] : []),
     ];
-    const sources = () => Object.fromEntries(sourcePaths.map(path =>
-      [path, createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
+    const sources = () => ({ ...Object.fromEntries(sourcePaths.map(path =>
+      [path, createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')])),
+      ...(cacheRetainers ? {
+        nativeAdapterExecutable: createHash('sha256').update(readFileSync(nativeAdapter)).digest('hex'),
+        nativeDecoderExecutable: createHash('sha256').update(readFileSync(nativeDecoder)).digest('hex'),
+      } : {}) });
     const beforeSources = sources();
     const probe = String.raw`
       const fs = require('node:fs'), path = require('node:path');
@@ -1500,6 +1504,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32, objectIds,
                   nativeExecutable: e.TEST_NATIVE_HEAP_ADAPTER, decoderControl: e.TEST_NATIVE_HEAP_DECODER,
                 })), pid: host.pid };
+                if (heap.heapRetainers.requestedNodes.length !== objectIds.length ||
+                    heap.heapRetainers.requestedNodes.some(row => row.status !== 'found' || row.node?.id !== row.id) ||
+                    new Set(heap.heapRetainers.requestedNodes.map(row => row.id)).size !== objectIds.length ||
+                    heap.heapRetainers.requestedNodes.some(row => !objectIds.includes(row.id)))
+                  throw Error('Exact cache IDs missing from captured native graph');
                 heap.postSnapshotRowsPreserved = JSON.stringify((await client.evaluate(contentExpression,
                   { returnByValue: true })).result.value) === JSON.stringify(content);
                 if (!heap.postSnapshotRowsPreserved) throw Error('Inbox useful cache content changed after snapshot');
