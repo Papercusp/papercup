@@ -101,7 +101,7 @@ function fakeAttemptDeps(
   return { deps, settlements, logs };
 }
 
-describe('runGovernedSpendAttempt — every attempt settles exactly once', () => {
+describe('runGovernedSpendAttempt — complete usage settles, incomplete usage remains open', () => {
   const attempt = <T,>(run: GovernedSpendAttemptInput<T>['run']): GovernedSpendAttemptInput<T> => ({
     workspaceId: 'w',
     loopId: 'frontier:x',
@@ -163,7 +163,7 @@ describe('runGovernedSpendAttempt — every attempt settles exactly once', () =>
     const { deps, settlements } = fakeAttemptDeps();
     await runGovernedSpendAttempt(
       attempt(async () => {
-        throw new Error('transcript unreadable');
+        throw Object.assign(new Error('transcript unreadable before dispatch'), { costUsd: 0 });
       }),
       deps,
     );
@@ -197,6 +197,16 @@ describe('runGovernedSpendAttempt — every attempt settles exactly once', () =>
     const out = await runGovernedSpendAttempt(attempt(async () => ({ costUsd, value: 'result' })), deps);
     expect(out).toMatchObject({ ok: true, value: 'result', costUsd: 0, costUsdMeasurementMissing: true,
       reservationId: 'res-1', settlement: null });
+    expect(settlements).toEqual([]);
+  });
+
+  it.each([undefined, NaN, Infinity, -1])('does not invent zero spend from a failed call with cost %s', async costUsd => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const out = await runGovernedSpendAttempt(attempt(async () => {
+      throw Object.assign(new Error('unpriced inference failed'), { costUsd });
+    }), deps);
+    expect(out).toMatchObject({ ok: false, reason: 'failed', error: 'unpriced inference failed',
+      costUsd: 0, costUsdMeasurementMissing: true, settlement: null });
     expect(settlements).toEqual([]);
   });
 

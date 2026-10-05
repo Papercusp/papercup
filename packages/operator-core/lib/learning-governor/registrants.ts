@@ -124,9 +124,11 @@ export async function learningGovernorPreflight(
 
 /** What the wrapped work reports back. `cancelled` closes the attempt without charging it as work done. */
 export interface SpendAttemptReport<T> {
-  /** What the attempt actually cost. Partial work reports its partial cost. */
+  /** Reported cost, or the known subtotal when usage evidence is incomplete. */
   costUsd: number;
   value: T;
+  /** The subtotal cannot establish total spend; retain the reservation for reconciliation. */
+  costUsdMeasurementMissing?: boolean;
   /** The attempt stopped deliberately (a gate closed, nothing left to do) rather than completing. */
   cancelled?: boolean;
 }
@@ -147,10 +149,10 @@ export interface GovernedSpendAttemptInput<T> {
    * The work. `grant.reservedUsd` is what the governor set aside — bound the
    * work to it. `grant.clamped` says the grant was smaller than the request.
    *
-   * If this throws, the attempt settles as `failed`. Attach a `costUsd`
-   * property to the thrown error to declare money that was burned before the
-   * failure — that is the proposer-call case P-005 names, where tokens are
-   * spent and then the parse blows up.
+   * If this throws, attach a finite nonnegative `costUsd` (including an
+   * explicit zero) to establish the charge. Missing/invalid cost, or
+   * `costUsdMeasurementMissing:true`, leaves the reservation OPEN. A known
+   * subtotal is retained without settling it as the full charge.
    */
   run: (grant: { reservedUsd: number; clamped: boolean }) => Promise<SpendAttemptReport<T>>;
 }
@@ -158,23 +160,26 @@ export interface GovernedSpendAttemptInput<T> {
 export type GovernedSpendAttemptOutcome<T> =
   | { ok: true; value: T; costUsd: number; reservationId: string; clamped: boolean; cancelled: boolean;
       /** Actual store response, including refusals. Null means the outcome could not be confirmed. */
-      settlement: SettleLearningSpendResult | null; settlementError?: string }
+      settlement: SettleLearningSpendResult | null; settlementError?: string; costUsdMeasurementMissing?: true }
   /** The governor refused BEFORE the work ran — nothing was spent. */
   | { ok: false; reason: 'refused'; refusal: Extract<ReserveLearningSpendResult, { ok: false }>['reason']; headroomUsd: number | null }
   /** The governor is dark (kill-switch) — the work did not run. */
   | { ok: false; reason: 'governor-dark' }
-  /** The work threw. The attempt is settled 'failed' with whatever it burned. */
+  /** The work threw. Complete usage settles 'failed'; incomplete usage remains OPEN. */
   | { ok: false; reason: 'failed'; error: string; costUsd: number; reservationId: string | null;
-      settlement: SettleLearningSpendResult | null; settlementError?: string };
+      settlement: SettleLearningSpendResult | null; settlementError?: string; costUsdMeasurementMissing?: true };
 
-function burnedCostOf(e: unknown): number {
-  const c = (e as { costUsd?: unknown } | null)?.costUsd;
-  return typeof c === 'number' && Number.isFinite(c) && c > 0 ? c : 0;
+function costEvidenceOf(value: unknown): { costUsd: number; missing: boolean } {
+  const report = value as { costUsd?: unknown; costUsdMeasurementMissing?: unknown } | null;
+  const c = report?.costUsd;
+  const valid = typeof c === 'number' && Number.isFinite(c) && c >= 0;
+  return { costUsd: valid ? c : 0, missing: !valid || report?.costUsdMeasurementMissing === true };
 }
 
 /**
- * Run one spending call inside a governor reservation, and settle it EXACTLY
- * once on every path — success, partial, cancellation, or throw.
+ * Run one spending call inside a governor reservation. Complete usage settles
+ * exactly once — success, partial, cancellation, or throw. Incomplete usage
+ * leaves the reservation OPEN rather than declaring a subtotal to be the total.
  *
  * This is the answer to the shape the mirrors below still have: they ledger
  * only `if (costUsd > 0)`, so a proposer call that burned tokens and then threw
@@ -239,26 +244,35 @@ export async function runGovernedSpendAttempt<T>(
     }
   };
   let report: SpendAttemptReport<T>;
+  const incompleteUsage = () => {
+    settlementError = 'usage measurement incomplete; reservation remains open';
+    d.log(`reservation ${reservationId}: ${settlementError}`);
+  };
   try {
     report = await input.run({ reservedUsd: reserved.reservation.reservedUsd, clamped: reserved.clamped });
   } catch (e) {
-    const burned = burnedCostOf(e);
+    const { costUsd: burned, missing } = costEvidenceOf(e);
     const error = e instanceof Error ? e.message : String(e);
-    await settle('failed', burned, `attempt failed: ${error}`);
+    if (missing) incompleteUsage();
+    else await settle('failed', burned, `attempt failed: ${error}`);
     return { ok: false, reason: 'failed', error, costUsd: burned, reservationId,
-      settlement, ...(settlementError === undefined ? {} : { settlementError }) };
+      settlement, ...(settlementError === undefined ? {} : { settlementError }),
+      ...(missing ? { costUsdMeasurementMissing: true } : {}) };
   }
+  const { costUsd, missing } = costEvidenceOf(report);
   const cancelled = report.cancelled === true;
-  await settle(cancelled ? 'cancelled' : 'used', report.costUsd);
+  if (missing) incompleteUsage();
+  else await settle(cancelled ? 'cancelled' : 'used', costUsd);
   return {
     ok: true,
     value: report.value,
-    costUsd: report.costUsd,
+    costUsd,
     reservationId,
     clamped: reserved.clamped,
     cancelled,
     settlement,
     ...(settlementError === undefined ? {} : { settlementError }),
+    ...(missing ? { costUsdMeasurementMissing: true } : {}),
   };
 }
 
