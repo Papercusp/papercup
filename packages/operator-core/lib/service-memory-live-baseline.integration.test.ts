@@ -252,9 +252,15 @@ function requestWorkerSnapshot(requestIds: string[]) {
   }
   if (registry.pools.size > 64) throw Error('Request-worker pool observation cap');
   const results: any[] = [];
+  const pools: { pool: string; capacity: number; retained: number; totalRecorded: number; dropped: number }[] = [];
   for (const [pool, state] of registry.pools) {
     const rows = state.pgResults ?? [];
     if (!Array.isArray(rows) || rows.length > 32) throw Error('Request-worker diagnostic ring cap');
+    const totalRecorded = state.totalPgResults ?? 0;
+    if (!Number.isSafeInteger(totalRecorded) || totalRecorded < rows.length)
+      throw Error('Request-worker diagnostic ring accounting');
+    pools.push({ pool, capacity: 32, retained: rows.length, totalRecorded,
+      dropped: totalRecorded - rows.length });
     for (const row of rows) {
       if (row.correlationState !== 'linked' || row.correlation?.operation !== 'workItems.byHarness' ||
           !requestIds.includes(row.correlation.requestId)) continue;
@@ -267,7 +273,8 @@ function requestWorkerSnapshot(requestIds: string[]) {
       if (results.length > 64) throw Error('Request-worker selected relation cap');
     }
   }
-  return { status: 'observed' as const, pid: process.pid, processInstanceId, buildSha, results };
+  return { status: 'observed' as const, pid: process.pid, processInstanceId, buildSha, results,
+    ...({ pools } as { pools?: typeof pools }) };
 }
 
 // The inspector PID and OS lifetime fence join the writer's pinned process UUID
@@ -347,7 +354,7 @@ async function readRequestWorkerResources(client: Pick<ReturnType<typeof createC
 // ownership stays with the caller; this collector never opens a profiler,
 // forces GC, changes a worker count, or infers an unsampled worker's resources.
 async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild: string,
-  reader: WorkerWindowReader, workload: () => Promise<(string | null)[]>) {
+  reader: WorkerWindowReader, workload: (observe: (ids: string[]) => Promise<void>) => Promise<(string | null)[]>) {
   if (!targets.length || targets.length > 8 || new Set(targets.map(row => row.pid)).size !== targets.length ||
       targets.some(row => !Number.isSafeInteger(row.pid) || row.pid <= 0) ||
       !/^[a-f0-9]{7,64}$/i.test(expectedBuild)) throw Error('Worker-window target selection');
@@ -377,6 +384,7 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
   };
   // Reject a foreign/reused selection before reading any target or workload.
   for (const target of targets) stablePath(initial, target);
+  const lastAllocations = new Map<number, number>();
   const sample = async (requestIds: string[]) => {
     const startedAt = Date.now();
     const before = savedCensus();
@@ -390,7 +398,9 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
           !/^[a-f0-9-]{36}$/i.test(value.snapshot.processInstanceId) ||
           role.configuredSidecar !== null || !role.requestOnly) throw Error('Worker-window loaded target identity or role');
       if (!Number.isFinite(value.counters.heap?.total_allocated_bytes) ||
-          value.counters.heap.total_allocated_bytes < 0) throw Error('Worker-window cumulative allocation unavailable');
+          value.counters.heap.total_allocated_bytes < (lastAllocations.get(target.pid) ?? 0))
+        throw Error('Worker-window cumulative allocation unavailable or regressed');
+      lastAllocations.set(target.pid, value.counters.heap.total_allocated_bytes);
       readings.push({ ...value, role, before: stablePath(before, target) });
     }
     const after = savedCensus();
@@ -412,10 +422,25 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
   };
   const before = await sample([]);
   reader.record?.('before', structuredClone(before));
-  const requestIds = await workload();
+  const during: (Awaited<ReturnType<typeof sample>> & { requestIds: string[] })[] = [];
+  const requestIds = await workload(async ids => {
+    const prior = during.at(-1)?.requestIds ?? [];
+    if (!ids.length || ids.length > 32 || during.length >= 32 || new Set(ids).size !== ids.length ||
+        ids.some(id => !/^[a-f0-9-]{36}$/i.test(id)) || ids.length <= prior.length ||
+        prior.some(id => !ids.includes(id))) throw Error('Worker-window checkpoint request population');
+    const checkpoint = { requestIds: [...ids], ...await sample(ids) };
+    auditRequestWorkerAssignments(ids, checkpoint.observations, expectedBuild);
+    during.push(checkpoint);
+    reader.record?.('during', structuredClone(during));
+  });
+  const knownIds = requestIds.filter((id): id is string => typeof id === 'string');
+  if (during.length && (during.at(-1)!.requestIds.length !== knownIds.length ||
+      knownIds.some(id => !during.at(-1)!.requestIds.includes(id))))
+    throw Error('Worker-window final checkpoint population');
   reader.record?.('requestIds', [...requestIds]);
-  const after = await sample(requestIds.filter((id): id is string => typeof id === 'string'));
+  const after = await sample(knownIds);
   reader.record?.('after', structuredClone(after));
+  auditRequestWorkerAssignments(requestIds, after.observations, expectedBuild);
   const resources = after.observations.map((row, index) => {
     const prior = before.observations[index];
     if (prior.snapshot.processInstanceId !== row.snapshot.processInstanceId ||
@@ -429,10 +454,33 @@ async function collectRequestWorkerWindow(targets: ResourceRow[], expectedBuild:
       countersBefore: prior.counters, countersAfter: row.counters };
   });
   reader.record?.('resources', structuredClone(resources));
-  const assignment = auditRequestWorkerAssignments(requestIds, after.observations, expectedBuild);
+  // Preserve exact metadata observed before a later bounded-ring overwrite.
+  // Every raw checkpoint remains available to the independent reader; no rows
+  // or WeakRefs cross this seam, and an unseen request remains unknown.
+  const merged = after.observations.map((row, index) => {
+    if (row.snapshot.status !== 'observed') return row;
+    const queries = new Map<string, any>();
+    for (const point of [...during, after]) {
+      const observation = point.observations[index];
+      if (observation.snapshot.status !== 'observed' ||
+          observation.snapshot.processInstanceId !== row.snapshot.processInstanceId ||
+          JSON.stringify(observation.role) !== JSON.stringify(row.role))
+        throw Error('Worker-window checkpoint loaded identity changed');
+      for (const q of observation.snapshot.results) {
+        const key = JSON.stringify([q.correlation.requestId, q.pool, q.source.processInstanceId,
+          q.source.buildSha, q.source.poolInstanceId, q.connectionId, q.queryId]);
+        if (queries.has(key) && JSON.stringify(queries.get(key)) !== JSON.stringify(q))
+          throw Error('Worker-window checkpoint query tuple changed');
+        queries.set(key, q);
+      }
+    }
+    if (queries.size > 64) throw Error('Worker-window checkpoint relation cap');
+    return { ...row, snapshot: { ...row.snapshot, results: [...queries.values()] } };
+  });
+  const assignment = auditRequestWorkerAssignments(requestIds, merged, expectedBuild);
   reader.record?.('assignment', structuredClone(assignment));
-  return { before, after, resources, assignment,
-    definition: 'Unforced serial per-worker PSS and cumulative V8 allocation bracketing one exact request window; no native ownership, intervention saving, or complete worker census' };
+  return { before, ...(during.length ? { during } : {}), after, resources, assignment,
+    definition: 'Unforced serial per-worker PSS and cumulative V8 allocation bracketing one exact request window, including observer work; no native ownership, intervention saving, or complete worker/query census' };
 }
 
 function listenerPorts(pid: number) {
@@ -720,6 +768,38 @@ describe('actual current-build operator memory baseline', () => {
       expect(result.after.coverage.notCheckedAfter).toEqual([{ pid: 99, parentPid: 10, reason: 'cap' }]);
       expect(result.after.census.after.notChecked).toEqual(result.after.coverage.notCheckedAfter);
     });
+    it('preserves observed response-checkpoint tuples after terminal ring turnover', async () => {
+      const f = setup(), read = f.reader.read;
+      let selectedReads = 0;
+      f.reader.read = async (pid, requested) => {
+        const value = await read(pid, requested);
+        if (requested.length && selectedReads++ >= 2) value.snapshot.results = [];
+        return value;
+      };
+      const recorded: string[] = [];
+      f.reader.record = stage => { recorded.push(stage); };
+      const result = await collectRequestWorkerWindow(f.targets, build, f.reader, async observe => {
+        await observe(ids); return f.workload();
+      });
+      expect(result.after.observations.every(row => row.snapshot.results?.length === 0)).toBe(true);
+      expect(result.during).toHaveLength(1);
+      expect(result.assignment.status).toBe('observed');
+      expect(result.assignment.assignments.map(row => row.queryTuples.length)).toEqual([2, 2]);
+      expect(recorded).toEqual(['before', 'during', 'requestIds', 'after', 'resources', 'assignment']);
+    });
+    it.each(['duplicate', 'missing final', 'changed tuple'])('rejects response-checkpoint %s', async kind => {
+      const f = setup(), read = f.reader.read;
+      let selectedReads = 0;
+      if (kind === 'changed tuple') f.reader.read = async (pid, requested) => {
+        const value = await read(pid, requested);
+        if (requested.length && selectedReads++ >= 2) value.snapshot.results[0].metadataDrift = true;
+        return value;
+      };
+      await expect(collectRequestWorkerWindow(f.targets, build, f.reader, async observe => {
+        await observe(kind === 'duplicate' ? [ids[0], ids[0]] : kind === 'missing final' ? [ids[0]] : ids);
+        return f.workload();
+      })).rejects.toThrow();
+    });
     it('persists census ancestry independently of later changes to reader-owned rows', async () => {
       const f = setup();
       const wrapper = { ...f.main, pid: 20, parentPid: f.main.pid, startTicks: '20',
@@ -1002,6 +1082,17 @@ describe('actual current-build operator memory baseline', () => {
         expect(JSON.stringify(snapshot)).not.toContain('spawned_agents');
         expect(requestWorkerSnapshot([other]).status).toBe('observed');
         expect((requestWorkerSnapshot([other]) as any).results).toEqual([]);
+        // Exercise the real FIFO writer, rather than attributing a saved
+        // missing request to eviction from a plausible traffic story.
+        for (let queryId = 3; queryId <= 34; queryId++) recordPgResult(pool, {
+          connectionId: 1, queryId, backendPid: null, query: 'select 1', rowCount: 0,
+          wireBytes: 0, status: 'ok',
+        }, { ...identity, poolInstanceId: poolId });
+        const turned = requestWorkerSnapshot([request]);
+        if (turned.status !== 'observed') throw Error('Actual writer identity unavailable');
+        expect(turned.results.filter(row => row.pool === pool)).toEqual([]);
+        expect(turned.pools!.find(row => row.pool === pool)).toEqual({ pool, capacity: 32,
+          retained: 32, totalRecorded: 34, dropped: 2 });
       } finally {
         state.get('@papercusp/db-org.acquire-registry').value.pools.delete(pool);
         setBuildStampResolver(previousResolver);
@@ -1489,8 +1580,9 @@ describe('actual current-build operator memory baseline', () => {
       for (let window = 0; window < 3; window++) {
         await sample(`idle-${window}-start`); await wait(2000); await sample(`idle-${window}-end`);
         const startedAt = new Date().toISOString();
-        const workload = async () => {
-          for (let pair = 0; pair < 4; pair++) await Promise.all([0, 1].map(async index => {
+        const workload = async (observe?: (ids: string[]) => Promise<void>) => {
+          for (let pair = 0; pair < 4; pair++) {
+            await Promise.all([0, 1].map(async index => {
             const started = performance.now();
             const response = await fetch(base + query, { headers: { 'x-papercusp-workspace': 'papercusp-workspace' },
               signal: AbortSignal.timeout(15000) });
@@ -1501,7 +1593,10 @@ describe('actual current-build operator memory baseline', () => {
             report.requests.push({ window, pair, index, status: response.status, rows: body.rows.length,
               requestId: response.headers.get('x-papercusp-request-id'),
               responseBytes: bytes.length, responseSha256: hash(bytes), elapsedMs: performance.now() - started });
-          }));
+            }));
+            if (observe) await observe(report.requests.filter((row: any) => row.window === window)
+              .map((row: any) => row.requestId).filter((id: unknown): id is string => typeof id === 'string'));
+          }
           return report.requests.filter((row: any) => row.window === window).map((row: any) => row.requestId);
         };
         const workerWindow = workerWindowEnabled
