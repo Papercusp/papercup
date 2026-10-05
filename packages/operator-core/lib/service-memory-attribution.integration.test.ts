@@ -27,6 +27,16 @@ function evidenceDestination(destination: string | undefined) {
   return path;
 }
 
+// Reuse the focused runner's actual deadline resolver. Admit the whole test
+// budget BEFORE allocating a bundle or private database, not after a partial
+// comparison has already consumed the first arms.
+async function assertCohortRunnerBudget(requiredMs: number, env: NodeJS.ProcessEnv = process.env) {
+  const { testFileRunTimeoutMs } = await import(pathToFileURL(join(root, 'scripts/test-files.mjs')).href);
+  const availableMs = testFileRunTimeoutMs(env, 1);
+  if (availableMs < requiredMs) throw Error('Private cohort needs PAPERCUSP_TEST_FILE_TIMEOUT_MS >= ' + requiredMs +
+    '; focused runner budget is ' + availableMs + '. Refusing before bundle/database launch.');
+}
+
 // Preserve the writer's bounded attribution tuple when available. A SQL family
 // only names the first relation; it cannot substitute for operation context.
 // This function is serialized into the inspector expression, so keep it closed.
@@ -1259,6 +1269,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     const cacheRetainers = process.env.PAPERCUSP_P011_INBOX_HEAP_RETAINERS === '1';
     const traceOnly = process.env.PAPERCUSP_P011_INBOX_ID_LIFETIME_TRACE === '1';
     if (traceOnly && !cacheRetainers) throw Error('Inspector lifetime trace requires the file-snapshot route');
+    await assertCohortRunnerBudget(cacheRetainers && !traceOnly ? 1200000 : 570000);
     const nativeAdapter = process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER ?? '';
     const nativeDecoder = process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER ?? '';
     if (cacheRetainers && (!nativeAdapter || !nativeDecoder))
@@ -1281,6 +1292,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       'packages/operator-core/lib/cache/instance.ts',
       'libs/generic/cache/src/cache.ts', 'libs/generic/cache/src/l1.ts',
       'scripts/cdp-inspector.mjs', 'apps/operator/bin/bundle-host.sh',
+      'scripts/test-files.mjs',
       'packages/operator-core/lib/service-memory-attribution.integration.test.ts',
       ...(traceOnly ? ['packages/operator-core/lib/event-loop-cpu-recorder.ts',
         'packages/operator-core/lib/event-loop-lag-monitor.ts'] : []),
@@ -1662,6 +1674,23 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       throw error;
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, process.env.PAPERCUSP_P011_INBOX_HEAP_RETAINERS === '1' ? 1200000 : 570000);
+
+  it.each([
+    ['default budget', {}],
+    ['short budget', { PAPERCUSP_TEST_FILE_TIMEOUT_MS: '600000' }],
+    ['child-only budget', { PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000' }],
+  ] as const)('rejects %s before a long retainer cohort can launch', async (_name, env) => {
+    await expect(assertCohortRunnerBudget(1200000, env)).rejects.toThrow('Refusing before bundle/database launch');
+  });
+
+  it('admits the declared whole retainer budget and the ordinary short cohort', async () => {
+    await expect(assertCohortRunnerBudget(1200000, { PAPERCUSP_TEST_FILE_TIMEOUT_MS: '1200000' })).resolves.toBeUndefined();
+    await expect(assertCohortRunnerBudget(570000, {})).resolves.toBeUndefined();
+  });
+
+  it('preserves the runner validation instead of turning malformed budgets into admission', async () => {
+    await expect(assertCohortRunnerBudget(1200000, { PAPERCUSP_TEST_FILE_TIMEOUT_MS: 'not-a-duration' })).rejects.toThrow('positive integer');
+  });
 
   it.each(['linked', 'unobserved', 'unknown'] as const)('preserves completed query correlation %s across the inspector boundary', state => {
     const source = { processInstanceId: 'query-process', buildSha: 'abcdef123', poolInstanceId: 'query-pool' };
