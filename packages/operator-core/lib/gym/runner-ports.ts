@@ -18,7 +18,7 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rm as rmCb, unlinkSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rm as rmCb, rmSync, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -312,6 +312,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
           { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
             env: { ...process.env, PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle',
               ...(hasConfigLoadCapture ? { PC_EXECUTED_SOURCE_MAP_PRELOAD: '1',
+                PC_EXECUTED_SOURCE_MAP_ROOT: clonePath,
                 NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(configLoadCapture).href}` } : {}),
               PC_EXECUTED_SOURCE_MAP_OUT: sourceReportPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' } },
         );
@@ -365,6 +366,23 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         }
         const manifestAfter = fileHash('package.json');
         const manifestUnknown = [manifestPinned, manifestBefore, manifestAfter].some((hash) => hash === null);
+        let commandProcessReport: string | null = null;
+        let commandProcesses: NonNullable<NonNullable<GymOracleRun['execution']>['commandProcessSources']>['processes'] = [];
+        const commandProcessUnresolved = ['node-process-descendant-population-unmeasured',
+          'node-preload-self-unmeasured', 'node-external-native-runtime-unmeasured'];
+        try {
+          const raw = readdirSync(`${sourceReportPath}.processes`).sort().map(file =>
+            readFileSync(join(`${sourceReportPath}.processes`, file), 'utf8'));
+          commandProcessReport = raw.join('\n');
+          commandProcesses = raw.map(text => JSON.parse(text));
+          if (commandProcesses.length === 0) commandProcessUnresolved.push('oracle-command-process-load-unmeasured');
+        } catch { commandProcessUnresolved.push('oracle-command-process-load-unmeasured'); }
+        const commandProcessReferenceSources: Array<{ path: string; sha256: string | null }> = [];
+        const commandPaths = new Set(commandProcesses.flatMap(process => Array.isArray(process?.sources) ?
+          process.sources.filter(source => typeof source?.path === 'string').map(source => source.path) : []));
+        for (const path of [...commandPaths].sort()) {
+          commandProcessReferenceSources.push({ path, sha256: await referenceHash(path) });
+        }
         return pinCommit ? { results, testPath, pinCommit,
           sourceHashes: { pinned, before, after: fileHash(testPath) },
           implementation: implPath ? { path: implPath, before: implementationBefore, after: fileHash(implPath) } : null,
@@ -375,6 +393,8 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
             workerSources: { report: sourceReport, modules, reference: { pinCommit, sources: referenceSources } },
             configSources: { evidence: configEvidence, loaded: configLoaded, reference: { pinCommit, sources: configReferenceSources } },
             mainProcessSources: { evidence: mainProcessEvidence, reference: { pinCommit, sources: mainProcessReferenceSources } },
+            commandProcessSources: { report: commandProcessReport, processes: commandProcesses,
+              reference: { pinCommit, sources: commandProcessReferenceSources }, unresolved: commandProcessUnresolved },
             unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
               ...(!mainProcessEvidence || mainProcessEvidence.status === 'unknown' ? ['oracle-main-process-load-unmeasured'] : []),
               ...(mainProcessReferenceSources.some(source => source.sha256 === null) ? ['oracle-main-process-reference-unavailable'] : []),
@@ -391,6 +411,7 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       } finally {
         try { unlinkSync(reportPath); } catch { /* best effort */ }
         try { unlinkSync(sourceReportPath); } catch { /* best effort */ }
+        try { rmSync(`${sourceReportPath}.processes`, { recursive: true, force: true }); } catch { /* best effort */ }
       }
     },
 

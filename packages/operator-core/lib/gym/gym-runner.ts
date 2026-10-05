@@ -42,6 +42,17 @@ export interface GymOracleRun {
         sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }>;
         reasons: string[] } | null;
     };
+    /** Exit observations from the npm command and inherited Node descendants.
+     * The process population, preloads and external/native runtime remain open. */
+    commandProcessSources?: {
+      report: string | null;
+      reference: { pinCommit: string; sources: Array<{ path: string; sha256: string | null }> };
+      processes: Array<{ schemaVersion: string; scope: string; basis: string; status: string;
+        entrypoint: string | null; pid: number; parentPid: number; exitCode: number;
+        sources: Array<{ path: string; sha256: string | null; currentSha256: string | null }>;
+        reasons: string[]; unresolved: string[] }>;
+      unresolved: string[];
+    };
     /** Config dependency disk snapshots begin at reporter initialization, after
      * config loading. Matching pins do not establish original loaded bytes. */
     configSources?: {
