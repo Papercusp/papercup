@@ -57,6 +57,51 @@ const sourcePaths = ['apps/operator/app/_components/chat/ReportBlockCard.tsx', '
 const sourceFingerprint = sourcePaths.map(path => ({ path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }));
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 let recording: ReturnType<typeof spawn> | undefined;
+let recordingExit: Promise<number | null> | undefined;
+const stopRecording = async () => {
+  if (!recording) return;
+  const child = recording;
+  recording = undefined;
+  child.kill('SIGINT');
+  const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
+  try { await recordingExit; } finally { clearTimeout(timeout); }
+};
+// A textContent match proves the body was loaded, not that clipped lines were
+// visible. Scroll the real pre and record every line while it is in view.
+const captureVisibleBody = async (selector: string, expectedBody: string, phase: string) => {
+  const lines = expectedBody.split('\n');
+  const required = lines.flatMap((line, index) => line.length ? [index] : []);
+  const covered = new Set<number>();
+  const pages: unknown[] = [];
+  native('eval', `(()=>{const p=document.querySelector(${JSON.stringify(selector)});p.scrollTop=0;p.scrollIntoView({block:'start'});return true})()`);
+  for (let page = 0; page < 100; page++) {
+    await new Promise(resolve => setTimeout(resolve, 400));
+    const measured = JSON.parse(native('eval', `JSON.stringify((()=>{
+      const p=document.querySelector(${JSON.stringify(selector)}), node=p.firstChild;
+      if(!node || node.nodeType!==Node.TEXT_NODE)throw Error('Canonical body is not a single text node');
+      const box=p.getBoundingClientRect(), top=Math.max(0,box.top+p.clientTop), bottom=Math.min(innerHeight,box.top+p.clientTop+p.clientHeight);
+      let offset=0;const visible=[];
+      for(const [index,line] of ${JSON.stringify(lines)}.entries()){
+        if(line.length){const r=document.createRange();r.setStart(node,offset);r.setEnd(node,offset+line.length);
+          const rects=Array.from(r.getClientRects());
+          if(rects.length && rects.every(b=>b.top>=top && b.bottom<=bottom && b.left>=0 && b.right<=innerWidth &&
+            document.elementsFromPoint((b.left+b.right)/2,(b.top+b.bottom)/2).some(e=>e===p || p.contains(e))))visible.push(index);
+        }offset+=line.length+1;
+      }
+      return {visible,scrollTop:p.scrollTop,clientHeight:p.clientHeight,scrollHeight:p.scrollHeight,viewport:{width:innerWidth,height:innerHeight},box:{top:box.top,bottom:box.bottom},atEnd:p.scrollTop+p.clientHeight>=p.scrollHeight-1};
+    })())`));
+    assert.ok(measured.clientHeight > 0, 'Expanded body has no visible viewport');
+    for (const line of measured.visible) covered.add(line);
+    const screenshot = join(out, `${phase}-page-${page}.png`);
+    native('screenshot', '--output', screenshot);
+    pages.push({ ...measured, screenshot });
+    if (measured.atEnd) break;
+    native('eval', `(()=>{const p=document.querySelector(${JSON.stringify(selector)});p.scrollTop+=p.clientHeight*0.65;return p.scrollTop})()`);
+  }
+  const missing = required.filter(line => !covered.has(line));
+  save(`${phase}-visual-coverage.json`, { lines, required, covered: [...covered], missing, pages });
+  assert.deepEqual(missing, [], 'Every canonical report line must be visibly observed while scrolling');
+};
 try {
   // SQL here is test setup only, in the disposable fully migrated database.
   // The report and notification themselves use the actual production writers.
@@ -113,9 +158,13 @@ try {
     shaSource: health.buildSha || health.sha ? 'isolated host health' : 'measured source HEAD', pid, origin,
     frozenSpa: process.env.VERIFY_TAURI_SPA_DIST, launchProvenance: process.env.VERIFY_TAURI_LAUNCH_PROVENANCE };
   const recordingRef = join(out, 'journey.mp4');
+  const displayDimensions = /dimensions:\s+(\d+x\d+)/.exec(execFileSync('xdpyinfo',
+    ['-display', process.env.VERIFY_TAURI_DISPLAY!], { encoding: 'utf8' }))?.[1];
+  assert.ok(displayDimensions, 'Cannot measure the full recording display');
   recording = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'x11grab', '-framerate', '3',
-    '-video_size', '1280x800', '-i', process.env.VERIFY_TAURI_DISPLAY!, '-c:v', 'libx264', '-preset', 'ultrafast', recordingRef],
+    '-video_size', displayDimensions, '-i', process.env.VERIFY_TAURI_DISPLAY!, '-c:v', 'libx264', '-preset', 'ultrafast', recordingRef],
     { stdio: ['ignore', 'ignore', 'pipe'] });
+  recordingExit = new Promise((resolve, reject) => { recording!.once('error', reject); recording!.once('exit', resolve); });
   recording.stderr!.on('data', chunk => process.stderr.write(chunk));
   const attentionResponse = await fetch(`${origin}/api/admin/plans/attention`);
   save('attention-preflight.json', { status: attentionResponse.status, data: await attentionResponse.json() });
@@ -153,6 +202,7 @@ try {
   const observe = (name: string) => observations.push({ name, reportId: report.reportId, bodySha256: reference.bodySha256, workspaceId, goalId,
     runtimeIdentity, sourceFingerprint, observedAt: new Date().toISOString(), recordingRef, exactExpectedBody: expectedBody,
     visibleOwnerActions: snapshot.ownerWalls.map(w => w.exactAction), observedFieldCoverage: fields, explicitUnknownLabels: unknowns, result: 'pass' });
+  await captureVisibleBody(bodySelector, expectedBody, 'original');
   observe('REPORT-PINNED-DETAIL-P003 original exact notification expansion');
   native('screenshot', '--output', join(out, 'expanded.png'));
   save('captured-card.json', JSON.parse(native('eval', `JSON.stringify({body:document.querySelector(${JSON.stringify(bodySelector)})?.textContent,
@@ -168,18 +218,22 @@ try {
   native('navigate', `/inbox?opci=all&opcis=${encodeURIComponent(`coord-message:${envelope.msg_id}`)}&goalReport=${encodeURIComponent(report.reportId)}`, '--json');
   poll(`document.querySelector(${JSON.stringify(bodySelector)})?.textContent===${JSON.stringify(expectedBody)} &&
     !document.querySelector(${JSON.stringify(bodySelector)})?.textContent.includes('SUCCESSOR ONLY')`, bodySelector);
+  await captureVisibleBody(bodySelector, expectedBody, 'after-successor');
   observe('REPORT-PINNED-DETAIL-P003 successor/latest-lineage control');
   native('screenshot', '--output', join(out, 'pinned-after-successor.png'));
   save('successor-control.json', { successorId: successor.reportId, successorBodySha256: successor.bodySha256, pinnedOriginal: original });
-  save('manifest.json', { criterion: 'R-4', observations, coverage: { population: fields, checked: fields, notChecked: [], notApplicable: [], residue: [] }, result: 'pass' });
+  await stopRecording();
+  const recordingProbe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height,nb_read_frames:format=duration', '-of', 'json', recordingRef], { encoding: 'utf8' }));
+  save('recording-probe.json', recordingProbe);
+  assert.ok(Number(recordingProbe.streams[0]?.nb_read_frames) > 0 && Number(recordingProbe.format?.duration) > 0, 'Recording has no decoded video frames');
+  assert.equal(`${recordingProbe.streams[0].width}x${recordingProbe.streams[0].height}`, displayDimensions);
+  save('manifest.json', { criterion: 'R-4', observations, recordingProbe, coverage: { population: fields, checked: fields, notChecked: [], notApplicable: [], residue: [] }, result: 'pass' });
   console.log(`GOAL_REPORT_TAURI_PASS output=${out}`);
 } catch (error) {
   save('manifest.json', { criterion: 'R-4', observations, result: 'fail', error: String(error), sourceFingerprint });
   throw error;
 } finally {
-  if (recording) {
-    recording.kill('SIGINT');
-    await new Promise<void>(resolve => { recording!.once('exit', () => resolve()); setTimeout(() => { recording!.kill('SIGKILL'); resolve(); }, 10_000).unref(); });
-  }
+  await stopRecording();
   await sql.end();
 }
