@@ -24,6 +24,7 @@ import {
   codexStartupAction,
   codexTaskCompleted,
   isCodexPromptReady,
+  taskAnsweredAfterPrompt,
 } from './p005-codex-readiness.js';
 import {
   chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
@@ -295,7 +296,11 @@ async function task(label: string, prompt: string, maxMs = 240_000, expected?: R
   const r = await settle(label, maxMs, { approve: true });
   const finalScreen = screen();
   frame(label);
-  const completed = cliName !== 'codex' || !expected || codexTaskCompleted(finalScreen, prompt, expected);
+  // Every CLI is checked: before P-022 only Codex was, so a Claude/pui task logged
+  // taskCompleted:true even when nothing answered (pui's resume recall did).
+  const completed = !expected || (cliName === 'codex'
+    ? codexTaskCompleted(finalScreen, prompt, expected)
+    : taskAnsweredAfterPrompt(finalScreen, prompt, expected));
   log.push({ label, prompt, ...omitFilm(r), exited, ...(expected ? { taskCompleted: completed } : {}) });
   if (exited) throw new Error(`${cliName} exited during ${label}; see ${label}.txt`);
   if (cliName === 'codex' && expected && !completed) {
