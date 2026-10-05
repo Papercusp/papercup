@@ -3161,8 +3161,10 @@ async function oracleEndedHeadcountRows(rows: HeadcountPresenceRow[]): Promise<H
  *
  * A session counts when its heartbeat is fresh, OR when it was launched inside
  * the boot grace and has not yet registered presence. The second leg is what
- * makes a burst of concurrent launches converge instead of every one of them
- * reading zero.
+ * covers bootstrap delay. Concurrent admission additionally reserves the existing
+ * governor receipt under a goal-scoped registration lock (registerGoalLaunch).
+ * Those reservations include fleet attribution before presence exists and stop
+ * counting on cancellation, lease expiry, boot-grace expiry, or newer presence.
  *
  * ⚠ A FRESH HEARTBEAT IS NOT LIVENESS (WI-10005672). Heartbeat freshness is
  * process KEEPALIVE; the one agent-liveness verdict is the shared oracle's
