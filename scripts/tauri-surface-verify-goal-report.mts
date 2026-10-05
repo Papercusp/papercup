@@ -11,7 +11,7 @@ import { hostname } from 'node:os';
 import postgres from 'postgres';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
-import { goalOwnerReportFixture, goalReportBrowserFeedProbeScript } from '../packages/operator-core/test/fixtures/goal-owner-report.ts';
+import { goalOwnerReportFixture, goalReportBrowserFeedProbeScript, seedGoalReportFixturePresence } from '../packages/operator-core/test/fixtures/goal-owner-report.ts';
 import { getReport, publishReport } from '../packages/operator-core/lib/report-library.ts';
 import { makeGoalReportReferenceReads, persistGoalReportReference } from '../packages/operator-core/lib/goal-owner-report-reference.ts';
 
@@ -166,10 +166,7 @@ try {
     VALUES (${workspaceId},${ownerId},'goal','goal',${goalId},'isolated-test-fixture')`;
   // The canonical wake read requires a living elected holder, not just a mode
   // row. Bind the fixture to THIS assertion process and its current activity.
-  await sql`INSERT INTO harness_shared.coord_presence
-    (workspace_id,owner_id,owner_label,source,host,pid,heartbeat_at,last_active_at)
-    VALUES (${workspaceId},${ownerId},'Isolated native report assertion','isolated-native-assertion',
-      ${hostname()},${process.pid},${at}::timestamptz,${at}::timestamptz)`;
+  await seedGoalReportFixturePresence(sql, workspaceId, ownerId, at);
   const [wake] = await sql`INSERT INTO harness_shared.event_awaits
     (workspace_id,subscriber_id,event_key,timeout_behavior,expires_ts)
     VALUES (${workspaceId},${ownerId},'fixture:report-progress','wake',${due}::timestamptz) RETURNING id`;

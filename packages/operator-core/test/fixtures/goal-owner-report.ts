@@ -1,4 +1,17 @@
 import type { GoalOwnerReportSnapshotV1 } from '@papercusp/chat-protocol';
+import type { Sql } from 'postgres';
+import { hostname } from 'node:os';
+
+/** Match the production holder oracle with the actual living fixture process.
+ * A goal mode and registered await alone do not establish holder liveness.
+ * Callers supply only a disposable test database.
+ */
+export async function seedGoalReportFixturePresence(sql: Sql, workspaceId: string, ownerId: string, at: string): Promise<void> {
+  await sql`INSERT INTO harness_shared.coord_presence
+    (workspace_id,owner_id,owner_label,source,host,pid,heartbeat_at,last_active_at)
+    VALUES (${workspaceId},${ownerId},'Isolated report assertion','isolated-report-assertion',
+      ${hostname()},${process.pid},${at}::timestamptz,${at}::timestamptz)`;
+}
 
 /** Run the real browser fetch without modifying Tauri's read-only internals.
  * The exact returned pin is the workspace/routing control. IPC transmission is
