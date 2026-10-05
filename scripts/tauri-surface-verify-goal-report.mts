@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
 import postgres from 'postgres';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
@@ -163,6 +164,12 @@ try {
         spentCentsBreakdown: { measured: true, lineageScope: 'partial; legacy unpriced' } })}::text::jsonb,${at}::timestamptz)`;
   await sql`INSERT INTO harness_shared.agent_modes (workspace_id,owner_id,axis_key,mode,subject,set_by)
     VALUES (${workspaceId},${ownerId},'goal','goal',${goalId},'isolated-test-fixture')`;
+  // The canonical wake read requires a living elected holder, not just a mode
+  // row. Bind the fixture to THIS assertion process and its current activity.
+  await sql`INSERT INTO harness_shared.coord_presence
+    (workspace_id,owner_id,owner_label,source,host,pid,heartbeat_at,last_active_at)
+    VALUES (${workspaceId},${ownerId},'Isolated native report assertion','isolated-native-assertion',
+      ${hostname()},${process.pid},${at}::timestamptz,${at}::timestamptz)`;
   const [wake] = await sql`INSERT INTO harness_shared.event_awaits
     (workspace_id,subscriber_id,event_key,timeout_behavior,expires_ts)
     VALUES (${workspaceId},${ownerId},'fixture:report-progress','wake',${due}::timestamptz) RETURNING id`;
@@ -188,6 +195,10 @@ try {
   snapshot.killed = [{ ref: 'WI-killed', disposition: 'stopped: duplicate surface', evidenceRefs: ['decision:stop-3'], at }];
   snapshot.nextWake = { kind: 'event', ref: 'fixture:report-progress', expectedAt: due, evidenceRef: `await:${wake!.id}` };
   snapshot.observedAt = new Date().toISOString();
+  const wakeEvidenceValid = await reads.wake(snapshot.nextWake);
+  save('fixture-wake-preflight.json', { ownerId, assertionPid: process.pid, host: hostname(),
+    nextWake: snapshot.nextWake, wakeEvidenceValid });
+  assert.ok(wakeEvidenceValid, 'Isolated fixture lacks live-holder next-wake evidence; refusing publication');
   const report = await publishReport(sql, { workspaceId, title: 'Canonical GOAL Tauri fixture', goalOwnerReport: snapshot,
     visibility: 'workspace' }, { authorOwnerId: ownerId });
   const reference = { schemaVersion: 1 as const, goalId, reportId: report.reportId, bodySha256: report.bodySha256 };
