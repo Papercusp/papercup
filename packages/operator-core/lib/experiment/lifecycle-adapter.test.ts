@@ -37,7 +37,72 @@ const baseInput = (verdict: ProducerLifecycleInput['verdict'] = 'accept'): Produ
   outcomes: [{ status: 'matured', measuredAt: '2026-09-05T00:01:00.000Z', value: 1, artifactRefs: ['legacy:objective-1'] }],
 });
 
+const adapters = { scout: adaptScoutOutput, gym: adaptGymOutput, calibration: adaptCalibrationOutput,
+  transfer: adaptTransferOutput, regret: adaptRegretOutput, 'red-queen': adaptRedQueenOutput };
+
+function boundContract(producer: typeof LEARNING_PRODUCERS[number]) {
+  const input = baseInput();
+  const sourceRef = `${producer}:${input.candidate.id}`;
+  input.evidence = input.evidence.map((e) => ({ ...e, artifactRefs: [...e.artifactRefs, sourceRef] }));
+  return structuredClone(adapters[producer](input).contract);
+}
+
 describe('P-011 common candidate/evidence/decision lifecycle', () => {
+  it.each(LEARNING_PRODUCERS)('detaches and freezes the evaluated %s contract without freezing its caller', (producer) => {
+    const input = baseInput();
+    const result = adapters[producer](input);
+    const captured = JSON.stringify(result.contract);
+    expect(Reflect.set(input.candidate, 'version', 'rewritten')).toBe(true);
+    expect(Reflect.set(input.candidate.actor, 'id', 'other-actor')).toBe(true);
+    expect(Reflect.set(input.experiment, 'codeHash', 'other-code')).toBe(true);
+    expect(Reflect.set(input.evidence[0]!, 'status', 'fail')).toBe(true);
+    expect(Reflect.set(input.spend, 'unsettledUsd', 2)).toBe(true);
+    expect(Reflect.set(input.authority, 'id', 'other-authority')).toBe(true);
+    expect(Reflect.set(input.outcomes![0]!, 'value', -1)).toBe(true);
+    expect(JSON.stringify(result.contract)).toBe(captured);
+    expect(result.validation).toEqual({ ok: true, errors: [] });
+    expect(Object.isFrozen(result.contract)).toBe(true);
+    expect(Object.isFrozen(result.contract.evidence[0]!.artifactRefs)).toBe(true);
+    expect(Reflect.set(result.contract.spend, 'unsettledUsd', 2)).toBe(false);
+  });
+
+  it.each(LEARNING_PRODUCERS)('keeps %s observation evidence and promotion consistent after caller mutation', (producer) => {
+    const contract = boundContract(producer);
+    const evaluation = { experiment: { codeHash: null }, runs: [{ id: 'actual-run', score: 0.8 }] };
+    const result = adapters[producer]({ stage: 'observation', workspaceId: 'ws-1',
+      sourceRef: `${producer}:${contract.candidate.id}`, source: { status: 'passed' },
+      recordedAt: '2026-10-05T00:00:00Z', evaluation, contract });
+    const captured = JSON.stringify(result);
+    expect(result.promotionAllowed).toBe(true);
+    evaluation.runs[0]!.score = -1;
+    evaluation.experiment.codeHash = null;
+    expect(Reflect.set(contract.spend, 'unsettledUsd', 2)).toBe(true);
+    expect(Reflect.set(contract.evidence[0]!, 'status', 'fail')).toBe(true);
+    expect(JSON.stringify(result)).toBe(captured);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.evaluation)).toBe(true);
+    expect(Object.isFrozen(result.decisions![0]!.contract.spend)).toBe(true);
+    expect(Reflect.set(result.contract!.evidence[0]!, 'status', 'fail')).toBe(false);
+  });
+
+  it.each(LEARNING_PRODUCERS)('detaches inherited %s evaluation and decision history from a mutable prior receipt', (producer) => {
+    const contract = boundContract(producer);
+    const prior = structuredClone(adapters[producer]({ stage: 'observation', workspaceId: 'ws-1',
+      sourceRef: `${producer}:${contract.candidate.id}`, source: { status: 'passed' },
+      recordedAt: '2026-10-05T00:00:00Z', contract, evaluation: { runs: ['actual-run'], codeHash: null } }));
+    const result = adapters[producer]({ stage: 'observation', workspaceId: 'ws-1',
+      sourceRef: prior.sourceRef, source: { status: 'error', learning_lifecycle: prior },
+      recordedAt: '2026-10-05T00:01:00Z' });
+    const captured = JSON.stringify(result);
+    expect(Reflect.set(prior.evaluation as object, 'runs', ['unrelated-run'])).toBe(true);
+    expect(Reflect.set(prior.decisions![0]!.contract.spend, 'usedUsd', 999)).toBe(true);
+    expect(JSON.stringify(result)).toBe(captured);
+    expect(result).toMatchObject({ contract: null, promotionAllowed: false, evaluationCurrent: false });
+    expect(Object.isFrozen(result.decisions)).toBe(true);
+    expect(Object.isFrozen(result.decisions![0]!.contract)).toBe(true);
+    expect(Reflect.set(result.decisions![0]!.contract.spend, 'usedUsd', 999)).toBe(false);
+  });
+
   it('preserves discovery output without inventing promotion evidence for any producer', () => {
     const adapters = [adaptScoutOutput, adaptGymOutput, adaptCalibrationOutput, adaptTransferOutput, adaptRegretOutput, adaptRedQueenOutput];
     for (const [index, adapt] of adapters.entries()) {
