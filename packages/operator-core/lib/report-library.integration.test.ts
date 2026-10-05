@@ -79,10 +79,12 @@ describe('report_library store (real PG)', () => {
   let oracleConnection: ReservedSql;
 
   beforeAll(async () => {
-    db = await createOrgTestDb();
+    // One dedicated oracle connection plus two delivery/control connections:
+    // the repeatable-read test updates outside its open delivery transaction.
+    db = await createOrgTestDb({ adminPoolMax: 3 });
     // Production oracle reads use a separate connection from the delivery
     // transaction. Reserve one here so concurrent delivery transactions cannot
-    // occupy the entire two-connection fixture pool while awaiting the oracle.
+    // occupy the delivery pool while awaiting the oracle.
     oracleConnection = await db.adminSql.reserve();
     oracleDb.sql = oracleConnection as unknown as Sql;
     // Bind this coverage to the production migration, not just the baseline.
