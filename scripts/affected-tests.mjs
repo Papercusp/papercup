@@ -2114,6 +2114,28 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "package.json",
   },
   {
+    // EI-24958945974387688 — this guard scans canonical JS/TS injection sources
+    // across the tree. Keep its trigger population aligned with the scanner's
+    // generated, vendored, retired, dependency, and test exclusions.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-unenrolled-injector",
+    appliesTo: (f) =>
+      (/\.[cm]?[jt]sx?$/.test(f) &&
+        !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f) &&
+        !f.startsWith("_retired/") &&
+        !f.includes("/_retired/") &&
+        !f.includes("/node_modules/") &&
+        !f.includes("/dist/") &&
+        !f.includes("/build/") &&
+        !f.includes("/coverage/") &&
+        !f.includes("/target/") &&
+        !f.includes("/env-sidecars/")) ||
+      f === "scripts/check-no-unenrolled-injector.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json",
+  },
+  {
     // WI-10005282 — `lint:no-eager-execfile-promisify` (EI-10161) scans the whole tracked
     // tree, but its only blocking runner was a GitHub Actions job that runs on `main` pushes
     // and has failed on every run for days, so nobody acted on it. 14 new offenders landed
@@ -5905,6 +5927,8 @@ async function armTestPassReuse(taskList) {
           summary,
           ` rows=${rows} narrowed=${Array.isArray(t.relatedFiles)} ` +
             `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs} auditRate=${auditRate}${laneNote}`,
+          { version: 1, judgedSha, runnerIdentity, runContext,
+            runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null, dirty: false },
         ),
       );
     }
