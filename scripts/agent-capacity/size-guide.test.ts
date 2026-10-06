@@ -12,6 +12,11 @@ import {
   SIZE_GUIDE_PATH,
   sizeRows,
 } from './size-guide';
+import {
+  HOSTED_GCP_MAX_EXPECTED_AGENTS,
+  HOSTED_GCP_OWN_VM_SIZES,
+  hostedGcpSizeForAgents,
+} from '../../packages/operator-core/lib/auth/hosted/hosted-vm-size';
 
 const scenario = (id: string) => {
   const s = SCENARIOS.find((x) => x.id === id);
@@ -54,6 +59,28 @@ describe('size guide derives from the cost model', () => {
     for (let i = 1; i < costs.length; i += 1) expect(costs[i]).toBeGreaterThanOrEqual(costs[i - 1] ?? 0);
   });
 
+  // WI-10006498: the product sizes a hosted GCP workspace from HOSTED_GCP_OWN_VM_SIZES. That table
+  // is a copy, so it is pinned here. Only x86 shapes count: the hosted image is amd64.
+  const x86Mixed = () => sizeRows().filter((r) => r.workload === 'mixed' && r.machineType.startsWith('e2-'));
+
+  it('each hosted VM size row is a measured x86 shape at its derived own-VM limit', () => {
+    const rows = new Map(x86Mixed().map((r) => [r.machineType, r]));
+    for (const row of HOSTED_GCP_OWN_VM_SIZES) {
+      expect(rows.get(row.size)?.ownVmAgents, row.size).toBe(row.maxAgents);
+    }
+  });
+
+  it('every hosted VM size pick is the cheapest single x86 VM for that agent count', () => {
+    for (let n = 1; n <= HOSTED_GCP_MAX_EXPECTED_AGENTS; n += 1) {
+      const pick = cheapestOwnVm(n, 'mixed', x86Mixed());
+      expect(pick.hosts, `n=${n}`).toBe(1);
+      expect(hostedGcpSizeForAgents(n), `n=${n}`).toBe(pick.machineType);
+    }
+    // Past the largest row no single measured x86 VM holds the workspace, so the product refuses it.
+    expect(cheapestOwnVm(HOSTED_GCP_MAX_EXPECTED_AGENTS + 1, 'mixed', x86Mixed()).hosts).toBeGreaterThan(1);
+    expect(hostedGcpSizeForAgents(HOSTED_GCP_MAX_EXPECTED_AGENTS + 1)).toBeNull();
+  });
+
   it('the P-532 Server costs less than the in-process one', () => {
     const [inProcess, sidecar] = serverRows();
     expect(sidecar?.ramGiB).toBeLessThan(inProcess?.ramGiB ?? 0);
@@ -79,7 +106,11 @@ describe('hosted default', () => {
 
   it('refuses source text that no longer has the defaults block (control)', () => {
     const real = readFileSync(HOSTED_DEFAULTS_PATH, 'utf8');
-    expect(() => readHostedDefault(real.replace('GCP_FIRST_WORKSPACE_DEFAULTS', 'RENAMED_DEFAULTS'))).toThrow(/could not read the hosted default/);
+    // replaceAll, not replace: the name also appears in comments above the declaration (WI-10006498),
+    // and renaming only the FIRST mention left the block intact, so the control passed vacuously.
+    const renamed = real.replaceAll('GCP_FIRST_WORKSPACE_DEFAULTS', 'RENAMED_DEFAULTS');
+    expect(renamed).not.toContain('export const GCP_FIRST_WORKSPACE_DEFAULTS');
+    expect(() => readHostedDefault(renamed)).toThrow(/could not read the hosted default/);
   });
 
   it('renders "Not measured" for an unmeasured default instead of an agent count (control)', () => {
