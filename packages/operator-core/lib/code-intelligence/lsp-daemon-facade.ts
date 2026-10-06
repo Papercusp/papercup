@@ -193,6 +193,7 @@ export async function lspDaemonFacade(
   op: LspFacadeOp,
   args: LspFacadeArgs = {},
   delivery: 'context' | 'archive' = 'context',
+  internal: Pick<import('./lsp-adapter').LspQuery, 'semanticCompletion' | 'signal'> = {},
 ): Promise<CodeIntelAnswer> {
   const started = Date.now();
   const rootPath = args.rootPath ?? process.cwd();
@@ -296,7 +297,7 @@ export async function lspDaemonFacade(
     );
   }
 
-  const query = { file: args.file, line1: args.line1, character: args.character, rootPath };
+  const query = { file: args.file, line1: args.line1, character: args.character, rootPath, ...internal };
 
   if (op === 'refactor_preview') {
     if (!args.newName) {

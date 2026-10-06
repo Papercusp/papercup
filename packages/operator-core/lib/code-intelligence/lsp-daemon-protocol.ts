@@ -12,6 +12,7 @@ import {
 import type { LspFacadeArgs, LspFacadeOp } from './lsp-facade.ts';
 import type { CodeIntelAnswer } from './contracts.ts';
 import type { LspQueryEvidence } from './lsp-query-evidence.ts';
+import type { SemanticCompletionContext } from './lsp-semantic-completion';
 import type { lspHealth } from './lsp-daemon-facade.ts';
 
 export interface LspDaemonRequest {
@@ -25,6 +26,8 @@ export interface LspDaemonRequest {
   deadlineAtMs?: number;
   /** Internal benchmark/archive delivery, never a public tool argument. */
   archive?: boolean;
+  /** Internal replay declaration; excluded from the public facade/tool args. */
+  semanticCompletion?: SemanticCompletionContext;
 }
 
 export interface LspDaemonAnswer extends CodeIntelAnswer {

@@ -16,7 +16,7 @@ import {
   type ExecFileLikeError,
 } from './git-via-sidecar';
 
-const opts = { timeoutMs: 1234, subsystem: 'test-subsystem', cwd: '/tmp', maxBuffer: 99 };
+const opts = { timeoutMs: 1234, rpcTimeoutMs: 5678, subsystem: 'test-subsystem', cwd: '/tmp', maxBuffer: 99 };
 
 describe('execFileViaSidecar', () => {
   let warn: ReturnType<typeof vi.spyOn>;
@@ -37,7 +37,11 @@ describe('execFileViaSidecar', () => {
       local,
     });
     expect(res).toEqual({ stdout: 'out', stderr: 'err' });
-    expect(viaSidecar).toHaveBeenCalledWith('systemctl', ['--user', 'show'], { timeoutMs: 1234, cwd: '/tmp' });
+    expect(viaSidecar).toHaveBeenCalledWith('systemctl', ['--user', 'show'], {
+      timeoutMs: 1234,
+      rpcTimeoutMs: 5678,
+      cwd: '/tmp',
+    });
     expect(local).not.toHaveBeenCalled();
   });
 

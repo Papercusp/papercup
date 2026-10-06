@@ -55,15 +55,20 @@
  * Running that build command under the install mutex makes it wait for the
  * verified install boundary instead of repeatedly reading the transition.
  */
-import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
   realpathSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -562,14 +567,14 @@ export async function verifyDepsExtracted({
   env = process.env,
   deps = {},
 } = {}) {
-  const spawn =
+  const runRepair =
     runNpm ??
-    ((args) =>
-      spawnSync("npm", args, {
-        cwd: repoRoot,
-        stdio: "inherit",
-        env,
-      }).status ?? 1);
+    ((args, options = {}) =>
+      runNpmWithHeartbeat({
+        phase: "repair",
+        args,
+        ...options,
+      }));
 
   const { workspaceDirs, repairWorkspaceArgs } = verificationScopeForNpmArgs({
     repoRoot,
@@ -687,12 +692,14 @@ export async function verifyDepsExtracted({
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
   );
-  const repairStatus =
-    spawn(repairArgs, {
+  const repairStatus = await runRepair(
+    repairArgs,
+    {
       cwd: repoRoot,
       stdio: "inherit",
       env,
-    }) ?? 1;
+    },
+  ) ?? 1;
   if (repairStatus !== 0) {
     console.error(
       `NPM_INSTALL_SAFE_FATAL: repair npm exited ${repairStatus}; dependency integrity is unverified.`,
@@ -731,6 +738,588 @@ export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {
  */
 export function withPackageCacheReadLease(fn, opts = {}) {
   return withFsMutexRead(PACKAGE_CACHE_MUTEX_NAME, fn, opts);
+}
+
+const NPM_HEARTBEAT_INTERVAL_MS = 30_000;
+const INSTALL_VALUE_FLAGS = new Set([
+  "-w",
+  "--workspace",
+  "--prefix",
+  "--cache",
+  "--registry",
+  "--tag",
+  "--access",
+  "--save-prefix",
+  "--install-strategy",
+  "--include",
+  "--omit",
+  "--platform",
+  "--arch",
+  "--cpu",
+  "--os",
+  "--libc",
+  "--userconfig",
+  "--globalconfig",
+  "--loglevel",
+  "--fetch-retries",
+  "--fetch-retry-factor",
+  "--fetch-retry-mintimeout",
+  "--fetch-retry-maxtimeout",
+  "--fetch-timeout",
+  "--maxsockets",
+  "--script-shell",
+  "--lockfile-version",
+  "--node-options",
+  "--proxy",
+  "--https-proxy",
+  "--save-type",
+  "--audit-level",
+]);
+const INSTALL_BOOLEAN_FLAGS = new Set([
+  "--save",
+  "--no-save",
+  "--save-dev",
+  "-D",
+  "--save-optional",
+  "-O",
+  "--save-prod",
+  "-P",
+  "--save-peer",
+  "--save-exact",
+  "-E",
+  "--save-bundle",
+  "-B",
+  "--package-lock",
+  "--package-lock-only",
+  "--ignore-scripts",
+  "--foreground-scripts",
+  "--audit",
+  "--no-audit",
+  "--fund",
+  "--no-fund",
+  "--dry-run",
+  "--force",
+  "-f",
+  "--legacy-peer-deps",
+  "--strict-peer-deps",
+  "--prefer-dedupe",
+  "--workspaces",
+  "--no-workspaces",
+  "--include-workspace-root",
+  "--install-links",
+  "--no-install-links",
+  "--offline",
+  "--prefer-offline",
+  "--prefer-online",
+  "--global",
+  "-g",
+  "--global-style",
+  "--no-bin-links",
+  "--bin-links",
+  "--optional",
+  "--no-optional",
+  "--production",
+  "--json",
+  "--silent",
+  "--quiet",
+  "--verbose",
+  "--timing",
+]);
+
+/** Read the npm process RSS on Linux; other platforms report an unknown value. */
+export function readChildRssBytes(pid, platform = process.platform) {
+  if (platform !== "linux" || !Number.isSafeInteger(pid)) return null;
+  try {
+    const status = readFileSync("/proc/" + pid + "/status", "utf8");
+    const match = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+    return match ? Number(match[1]) * 1024 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Spawn npm asynchronously so long resolve/reify/repair phases stay observable. */
+export function runNpmWithHeartbeat({
+  phase,
+  args,
+  cwd = DEFAULT_REPO_ROOT,
+  env = process.env,
+  spawnCommand = spawn,
+  heartbeatIntervalMs = NPM_HEARTBEAT_INTERVAL_MS,
+  readRssBytes = readChildRssBytes,
+  log = (line) => console.error(line),
+  now = Date.now,
+} = {}) {
+  return new Promise((resolveResult, rejectResult) => {
+    const startedAt = now();
+    const child = spawnCommand("npm", args, {
+      cwd,
+      stdio: "inherit",
+      env,
+    });
+    let settled = false;
+    let timer;
+    const finish = () => {
+      if (timer) clearInterval(timer);
+    };
+    const heartbeat = () => {
+      let rssBytes = null;
+      try {
+        rssBytes = readRssBytes(child.pid);
+      } catch {
+        rssBytes = null;
+      }
+      const rssMb =
+        rssBytes == null ? "unknown" : (rssBytes / (1024 * 1024)).toFixed(1);
+      log(
+        "NPM_INSTALL_SAFE phase=" + phase +
+          " heartbeat elapsedMs=" + Math.max(0, now() - startedAt) +
+          " childPid=" + (child.pid ?? "unknown") +
+          " childRssMb=" + rssMb,
+      );
+    };
+    log(
+      "NPM_INSTALL_SAFE phase=" + phase +
+        " started childPid=" + (child.pid ?? "unknown") +
+        " args=npm " + args.join(" ") +
+        " (cwd=" + cwd + ")",
+    );
+    if (heartbeatIntervalMs > 0) {
+      timer = setInterval(heartbeat, heartbeatIntervalMs);
+      timer.unref?.();
+    }
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      rejectResult(error);
+    });
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      log(
+        "NPM_INSTALL_SAFE phase=" + phase +
+          " finished elapsedMs=" + Math.max(0, now() - startedAt) +
+          " exitCode=" + (code ?? "unknown") +
+          " signal=" + (signal ?? "none"),
+      );
+      resolveResult(code ?? 1);
+    });
+  });
+}
+
+function splitInstallPackageSpecs(npmArgs) {
+  if (!Array.isArray(npmArgs) || npmArgs[0] !== "install") return null;
+  const reifyArgs = [npmArgs[0]];
+  const packageSpecs = [];
+  for (let index = 1; index < npmArgs.length; index += 1) {
+    const arg = npmArgs[index];
+    if (arg === "--" || arg === "-") return null;
+    if (!arg.startsWith("-")) {
+      packageSpecs.push(arg);
+      continue;
+    }
+    reifyArgs.push(arg);
+    if (arg.includes("=")) continue;
+    if (INSTALL_VALUE_FLAGS.has(arg)) {
+      const value = npmArgs[index + 1];
+      if (typeof value !== "string" || value.startsWith("-")) return null;
+      reifyArgs.push(value);
+      index += 1;
+      continue;
+    }
+    if (
+      !INSTALL_BOOLEAN_FLAGS.has(arg) &&
+      typeof npmArgs[index + 1] === "string" &&
+      !npmArgs[index + 1].startsWith("-")
+    )
+      return null;
+  }
+  return { reifyArgs, packageSpecs };
+}
+
+function npmBooleanArg(npmArgs, option) {
+  let value;
+  const negative = "--no-" + option.slice(2);
+  for (const arg of npmArgs) {
+    if (arg === option) value = true;
+    else if (arg === negative) value = false;
+    else if (arg.startsWith(option + "=")) {
+      const rawValue = arg.slice(option.length + 1).toLowerCase();
+      value = !["false", "0", "no"].includes(rawValue);
+    }
+  }
+  return value;
+}
+
+function npmConfigValue(env, name) {
+  return env["npm_config_" + name] ?? env["NPM_CONFIG_" + name.toUpperCase()];
+}
+
+function isFalseConfig(value) {
+  return typeof value === "string" &&
+    ["false", "0", "no"].includes(value.toLowerCase());
+}
+
+function isLocalOrRemotePackageSpec(spec) {
+  const unsupportedTarget =
+    /^(?:file:|git(?:\+|:)|github:|gitlab:|bitbucket:|https?:|ssh:|\.{1,2}[\\/]|[A-Za-z]:[\\/]|[\\/]{1,2})/i;
+  const separator = spec.startsWith("@")
+    ? spec.indexOf("@", spec.indexOf("/") + 1)
+    : spec.indexOf("@");
+  const target = separator < 0 ? spec : spec.slice(separator + 1);
+  const githubShortcut = /^[^/@\s]+\/[^/\s]+(?:#.*)?$/;
+  return unsupportedTarget.test(target) || githubShortcut.test(target);
+}
+
+function manifestOnlyInstallPlan(npmArgs, env) {
+  if (!Array.isArray(npmArgs) || npmArgs[0] !== "install")
+    return { eligible: false };
+  const split = splitInstallPackageSpecs(npmArgs);
+  if (!split)
+    return {
+      eligible: false,
+      reason: "npm options cannot be separated from package targets safely",
+    };
+  if (split.packageSpecs.some(isLocalOrRemotePackageSpec))
+    return {
+      eligible: false,
+      reason: "a command-line package target is local or remote",
+    };
+  const redirectedOrNoSave =
+    npmArgs.some((arg) =>
+      ["--global", "-g", "--dry-run", "--no-package-lock", "--no-save"].includes(arg) ||
+      arg === "--package-lock=false" ||
+      arg === "--save=false" ||
+      arg === "--prefix" ||
+      arg.startsWith("--prefix="),
+    ) ||
+    isFalseConfig(npmConfigValue(env, "package_lock")) ||
+    isFalseConfig(npmConfigValue(env, "save")) ||
+    ["true", "1", "yes"].includes(
+      String(npmConfigValue(env, "global") ?? "").toLowerCase(),
+    ) ||
+    Boolean(npmConfigValue(env, "prefix"));
+  if (redirectedOrNoSave)
+    return {
+      eligible: false,
+      reason: "the invocation disables or redirects manifest or lockfile writes",
+    };
+  const packageLockOnly =
+    npmBooleanArg(npmArgs, "--package-lock-only") === true ||
+    ["true", "1", "yes"].includes(
+      String(npmConfigValue(env, "package_lock_only") ?? "").toLowerCase(),
+    );
+  return {
+    eligible: true,
+    packageLockOnly,
+    reifyArgs: split.reifyArgs,
+    resolverArgs: [
+      ...npmArgs,
+      "--package-lock-only=true",
+      "--ignore-scripts=true",
+    ],
+  };
+}
+
+function toRepoRelativePath(repoRoot, absolutePath) {
+  return relative(repoRoot, absolutePath).split(sep).join("/");
+}
+
+function manifestOnlyResolutionLayout(repoRoot) {
+  const workspaceDirs = resolveWorkspaceDirs(repoRoot);
+  const workspaceManifestPaths = workspaceDirs.map((dir) => dir + "/package.json");
+  const outputPaths = [
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    ...workspaceManifestPaths,
+  ];
+  const inputPaths = new Set([...outputPaths, ".npmrc"]);
+  const pending = ["package.json", ...workspaceManifestPaths];
+  const inspected = new Set();
+  while (pending.length > 0) {
+    const manifestPath = pending.shift();
+    if (inspected.has(manifestPath)) continue;
+    inspected.add(manifestPath);
+    const absolutePath = join(repoRoot, manifestPath);
+    if (!existsSync(absolutePath)) continue;
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(absolutePath, "utf8"));
+    } catch {
+      return { supported: false, reason: "cannot parse " + manifestPath };
+    }
+    for (const section of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
+      for (const spec of Object.values(manifest?.[section] ?? {})) {
+        if (typeof spec !== "string") continue;
+        if (/^(?:git\+|github:|gitlab:|bitbucket:)/i.test(spec))
+          return {
+            supported: false,
+            reason: "git dependency in " + manifestPath,
+          };
+        if (!spec.startsWith("file:")) continue;
+        const targetPath = resolve(
+          dirname(absolutePath),
+          spec.slice("file:".length),
+        );
+        if (!isStrictlyWithin(repoRoot, targetPath))
+          return {
+            supported: false,
+            reason: "file dependency leaves the repository in " + manifestPath,
+          };
+        const targetManifest = join(targetPath, "package.json");
+        if (!existsSync(targetManifest))
+          return {
+            supported: false,
+            reason: "file dependency has no package manifest in " + manifestPath,
+          };
+        const targetRelative = toRepoRelativePath(repoRoot, targetManifest);
+        if (!inputPaths.has(targetRelative)) {
+          inputPaths.add(targetRelative);
+          pending.push(targetRelative);
+        }
+      }
+    }
+  }
+  return {
+    supported: true,
+    inputPaths: [...inputPaths].sort(),
+    outputPaths: [...new Set(outputPaths)].sort(),
+  };
+}
+
+function fileBytesEqual(left, right) {
+  if (left === null || right === null) return left === right;
+  return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
+}
+
+function createManifestOnlyTree(repoRoot, inputPaths) {
+  const scratchRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-resolve-"));
+  const snapshot = new Map();
+  try {
+    for (const path of inputPaths) {
+      const absolutePath = join(repoRoot, path);
+      const contents = existsSync(absolutePath) ? readFileSync(absolutePath) : null;
+      snapshot.set(path, contents);
+      if (contents === null) continue;
+      const destination = join(scratchRoot, path);
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, contents);
+    }
+    return { scratchRoot, snapshot };
+  } catch (error) {
+    rmSync(scratchRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function resolvedManifestFiles(scratchRoot, outputPaths) {
+  return new Map(
+    outputPaths.map((path) => {
+      const absolutePath = join(scratchRoot, path);
+      return [
+        path,
+        existsSync(absolutePath) ? readFileSync(absolutePath) : null,
+      ];
+    }),
+  );
+}
+
+/** Apply resolver output only while the source snapshot is current. */
+export function applyResolvedManifestFiles({
+  repoRoot,
+  snapshot,
+  files,
+  outputPaths,
+}) {
+  for (const [path, expected] of snapshot) {
+    const absolutePath = join(repoRoot, path);
+    const actual = existsSync(absolutePath) ? readFileSync(absolutePath) : null;
+    if (!fileBytesEqual(actual, expected))
+      return { applied: false, reason: "source-changed", path };
+  }
+  for (const path of outputPaths) {
+    const next = files.get(path);
+    if (next === null && snapshot.get(path) !== null)
+      return { applied: false, reason: "resolver-removed-source-file", path };
+  }
+  for (const path of outputPaths) {
+    const next = files.get(path);
+    const before = snapshot.get(path);
+    if (next === null || fileBytesEqual(before, next)) continue;
+    const absolutePath = join(repoRoot, path);
+    mkdirSync(dirname(absolutePath), { recursive: true });
+    const temporaryPath = join(
+      dirname(absolutePath),
+      "." + basename(absolutePath) + ".install-safe-" +
+        process.pid + "-" + randomUUID(),
+    );
+    try {
+      writeFileSync(temporaryPath, next);
+      renameSync(temporaryPath, absolutePath);
+    } finally {
+      rmSync(temporaryPath, { force: true });
+    }
+  }
+  return { applied: true };
+}
+
+async function runManifestOnlyInstall({
+  repoRoot,
+  lockName,
+  npmArgs,
+  npmEnv,
+  plan,
+}) {
+  const resolverLockName = lockName + "-resolver";
+  return withFsMutex(
+    resolverLockName,
+    async () => {
+      let input;
+      const layout = await withFsMutexRead(lockName, async () => {
+        const value = manifestOnlyResolutionLayout(repoRoot);
+        if (!value.supported) return value;
+        input = createManifestOnlyTree(repoRoot, value.inputPaths);
+        return value;
+      });
+      if (!layout.supported)
+        return { supported: false, reason: layout.reason };
+      try {
+        const cacheStatus = await verifyNpmCacheExclusive({
+          verify: () => verifyNpmCache({ repoRoot, npmArgs, env: npmEnv }),
+        });
+        if (cacheStatus !== 0) {
+          console.error(
+            "NPM_INSTALL_SAFE_FATAL: npm cache verify exited " +
+              cacheStatus + "; cache integrity is unverified.",
+          );
+          return { supported: true, status: cacheStatus };
+        }
+        // Do not hold the repo mutex here, including a shared reader: git-sync needs
+        // the exclusive repo writer and would otherwise queue for the full npm resolve.
+        const resolveStatus = await withPackageCacheReadLease(() =>
+          runNpmWithHeartbeat({
+            phase: "resolve",
+            args: plan.resolverArgs,
+            cwd: input.scratchRoot,
+            env: npmEnv,
+          }),
+        );
+        if (resolveStatus !== 0)
+          return { supported: true, status: resolveStatus };
+        const files = resolvedManifestFiles(input.scratchRoot, layout.outputPaths);
+        const status = await withFsMutex(
+          lockName,
+          async () => {
+            const applied = applyResolvedManifestFiles({
+              repoRoot,
+              snapshot: input.snapshot,
+              files,
+              outputPaths: layout.outputPaths,
+            });
+            if (!applied.applied) {
+              console.error(
+                "NPM_INSTALL_SAFE_RESOLUTION_STALE: " + applied.reason +
+                  " at " + (applied.path ?? "unknown") +
+                  "; no reify ran. Retry the install against the current manifests.",
+              );
+              return 1;
+            }
+            if (plan.packageLockOnly) {
+              const before = input.snapshot.get("package-lock.json");
+              if (
+                before !== null &&
+                workspaceSelectorsForNpmArgs(npmArgs).length > 0
+              ) {
+                const restore = restoreScopedFlagOnlyLockfileRewrite({
+                  repoRoot,
+                  beforeText: before.toString("utf8"),
+                });
+                if (restore.restored)
+                  console.log(
+                    "NPM_INSTALL_SAFE kept the pre-install package-lock.json: " +
+                      "this workspace-scoped command rewrote only npm dependency-type flags (" +
+                      restore.reason + ", " + restore.entries.length +
+                      " entries); a scoped install is not authoritative for them (WI-10003114)",
+                  );
+              }
+              return 0;
+            }
+            return withPackageCacheReadLease(async () => {
+              console.log(
+                "NPM_INSTALL_SAFE reifying resolved lockfile: npm " +
+                  plan.reifyArgs.join(" ") + " (root=" + repoRoot +
+                  ", lock=" + lockName + ")",
+              );
+              const lockfileBeforeScopedCommand =
+                workspaceSelectorsForNpmArgs(npmArgs).length > 0
+                  ? readLockfileText(repoRoot)
+                  : undefined;
+              const status = await runNpmWithHeartbeat({
+                phase: "reify",
+                args: plan.reifyArgs,
+                cwd: repoRoot,
+                env: npmEnv,
+              });
+              if (status !== 0) return status;
+              const verdict =
+                npmEnv.PAPERCUSP_SKIP_DEP_VERIFY === "1"
+                  ? 0
+                  : await verifyDepsExtracted({
+                      repoRoot,
+                      npmArgs,
+                      env: npmEnv,
+                    });
+              if (lockfileBeforeScopedCommand !== undefined) {
+                const restore = restoreScopedFlagOnlyLockfileRewrite({
+                  repoRoot,
+                  beforeText: lockfileBeforeScopedCommand,
+                });
+                if (restore.restored)
+                  console.log(
+                    "NPM_INSTALL_SAFE kept the pre-install package-lock.json: " +
+                      "this workspace-scoped command rewrote only npm dependency-type flags (" +
+                      restore.reason + ", " + restore.entries.length +
+                      " entries); a scoped install is not authoritative for them (WI-10003114)",
+                  );
+              }
+              return verdict;
+            });
+          },
+          {
+            ...installLockWaitReporter({
+              lock: "writer",
+              describe: (owner, elapsedMs) =>
+                "NPM_INSTALL_SAFE waiting to reify behind another agent's install (" +
+                Math.round(elapsedMs / 1000) + "s so far) — holder: " + owner,
+              log: (line) => console.log(line),
+              budgetMs: resolveFsMutexTimeoutMs(),
+            }),
+            waitingNoticeIntervalMs: 30_000,
+          },
+        );
+        return { supported: true, status };
+      } finally {
+        rmSync(input.scratchRoot, { recursive: true, force: true });
+      }
+    },
+    {
+      onWaiting: ({ owner, elapsedMs }) =>
+        console.error(
+          "NPM_INSTALL_SAFE waiting to serialize dependency resolution (" +
+            Math.round(elapsedMs / 1000) + "s so far) — holder: " +
+            String(owner).trim(),
+        ),
+      waitingNoticeIntervalMs: 30_000,
+    },
+  );
 }
 
 /**
@@ -972,6 +1561,30 @@ export async function main(argv = process.argv.slice(2)) {
     PAPERCUSP_INSTALL_SAFE_ACTIVE: "1",
   };
   const lockName = repoLockName(repoRoot);
+  const installPlan = manifestOnlyInstallPlan(npmArgs, npmEnv);
+
+  if (installPlan.eligible) {
+    const result = await runManifestOnlyInstall({
+      repoRoot,
+      lockName,
+      npmArgs,
+      npmEnv,
+      plan: installPlan,
+    });
+    if (result.supported) {
+      if (result.status !== 0) return result.status;
+      return publishDependencyGeneration({ repoRoot });
+    }
+    console.error(
+      "NPM_INSTALL_SAFE_RESOLUTION_FALLBACK: " + result.reason +
+        "; running the original npm command under the repo writer.",
+    );
+  } else if (installPlan.reason) {
+    console.error(
+      "NPM_INSTALL_SAFE_RESOLUTION_FALLBACK: " + installPlan.reason +
+        "; running the original npm command under the repo writer.",
+    );
+  }
 
   // Lock order: repo writer → EXCLUSIVE cache (verify only, released) → shared cache
   // READ lease (reify). Verify must never overlap another checkout's reify — see
@@ -1002,13 +1615,12 @@ export async function main(argv = process.argv.slice(2)) {
           // Tell the root `preinstall` guard that THIS install is the sanctioned one — it holds the
           // writer lock, so it cannot tear a green-checkpoint dependency copy. Without the marker the
           // guard cannot distinguish us from the bare `npm install` it exists to refuse.
-          const result = spawnSync("npm", npmArgs, {
+          const status = await runNpmWithHeartbeat({
+            phase: "install",
+            args: npmArgs,
             cwd: repoRoot,
-            stdio: "inherit",
             env: npmEnv,
           });
-          if (result.error) throw result.error;
-          const status = result.status ?? 1;
           // A FAILED npm run reports its own error — never mask it with a dep verdict.
           if (status !== 0) return status;
           const verdict =

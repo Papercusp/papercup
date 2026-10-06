@@ -208,6 +208,59 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     await expect(stopSpawnerSidecar()).resolves.toBeUndefined();
   });
 
+  it('coalesces a caller that joins after child creation and rejects both on startup error', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const first = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-error.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const second = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-error.sock');
+    let secondSettled = false;
+    void second.then(
+      () => {
+        secondSettled = true;
+      },
+      () => {
+        secondSettled = true;
+      },
+    );
+
+    const error = new Error('sidecar failed before ready');
+    const matchingRejection = expect(first).rejects.toBe(error);
+    child.emit('error', error);
+
+    await matchingRejection;
+    await Promise.resolve();
+    expect(secondSettled).toBe(true);
+  });
+
+  it('rejects every coalesced startup caller when the ready handshake times out', async () => {
+    const child = makeChild();
+    child.kill.mockImplementation(() => {
+      child.killed = true;
+      return true;
+    });
+    spawnMock.mockReturnValueOnce(child);
+    const first = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-timeout.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const second = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-timeout.sock');
+    const firstRejection = expect(first).rejects.toThrow('Spawner sidecar startup timeout');
+    let secondSettled = false;
+    void second.then(
+      () => {
+        secondSettled = true;
+      },
+      () => {
+        secondSettled = true;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await firstRejection;
+    await Promise.resolve();
+    expect(secondSettled).toBe(true);
+  });
+
   // EI-19479764372783341. Landing unconfined is a legitimate degrade (a box with
   // no systemd user scopes still gets a sidecar), but it silently restores the
   // original hazard — the child shares bg-host's cgroup and dies with it — so it

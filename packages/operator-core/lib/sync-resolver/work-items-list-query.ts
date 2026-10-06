@@ -29,6 +29,7 @@ import { deriveWorkItemPresentationStage, readImplementationReadiness } from '..
 import type { WorkItemPresentation } from '../work-item-presentation-contract';
 import { activeWorkItemDependencyRefsSql } from '../dbos/work-item-deps-store';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../work-item-blocking';
+import { withNamedQueryDiagnosticLeg } from '../agent-tools/db-diagnostic-correlation-wiring';
 
 export const WORK_ITEMS_CURSOR_PAGE_LIMIT = 500;
 export const WORK_ITEMS_FAIR_STATE_LIMIT = 200;
@@ -569,7 +570,7 @@ export async function readWorkItemPresentations(
   selected: readonly { id: string; harnessSlug: string }[],
 ): Promise<Map<string, WorkItemPresentation>> {
   if (selected.length === 0) return new Map();
-  const rows = await sql<{
+  const rows = await withNamedQueryDiagnosticLeg('work-items-presentation', () => sql<{
     id: string; harnessSlug: string; kind: string; status: string;
     title: string; summary: string | null; payload: unknown;
     assignee: string | null; terminalOwner: string | null;
@@ -597,7 +598,7 @@ export async function readWorkItemPresentations(
       FROM harness_shared.work_items wi
       JOIN unnest(${selected.map(r => r.id)}::text[], ${selected.map(r => r.harnessSlug)}::text[])
         AS requested(id, harness) ON wi.feature_id = requested.id AND wi.harness_slug = requested.harness
-     WHERE wi.workspace_id = ${workspaceId} AND wi.item_kind = ANY(ARRAY['bug','change','task']::text[])`;
+     WHERE wi.workspace_id = ${workspaceId} AND wi.item_kind = ANY(ARRAY['bug','change','task']::text[])`);
   return new Map(rows.map((row): [string, WorkItemPresentation] => {
     const decision = deriveWorkItemPresentationStage(row);
     const readiness = readImplementationReadiness(row.payload);
@@ -622,12 +623,14 @@ export async function readWorkItemsPageFromStore(
 ): Promise<BoundedListPage<WorkItemsListRow>> {
   const args = predicate.args;
   if (args.fairStates.length > 0) {
-    const rows = await sql<WorkItemsDbRow[]>`${workItemsFairStatesSql(sql, workspaceId, args)}`;
+    const rows = await withNamedQueryDiagnosticLeg('work-items-page', () =>
+      sql<WorkItemsDbRow[]>`${workItemsFairStatesSql(sql, workspaceId, args)}`);
     const presentations = await readWorkItemPresentations(sql, workspaceId, rows);
     return { rows: rows.map(row => ({ ...mapWorkItemsRow(row), presentation: presentations.get(`${row.harnessSlug}#${row.id}`) })), nextCursor: null, hasMore: false };
   }
 
-  const rows = await sql<WorkItemsDbRow[]>`${workItemsPageSql(sql, workspaceId, args, options.includeDetails)}`;
+  const rows = await withNamedQueryDiagnosticLeg('work-items-page', () =>
+    sql<WorkItemsDbRow[]>`${workItemsPageSql(sql, workspaceId, args, options.includeDetails)}`);
   const hasMore = rows.length > args.limit;
   const pageRows = hasMore ? rows.slice(0, args.limit) : rows;
   const presentations = await readWorkItemPresentations(sql, workspaceId, pageRows);

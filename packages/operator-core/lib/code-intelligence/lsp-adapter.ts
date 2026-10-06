@@ -46,6 +46,8 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn.ts';
 import { killScopeUnit, killTask } from '../task-manager/control.ts';
 import { recordLspWireRequest } from './lsp-query-evidence.ts';
+import { requestSemanticCompletion, semanticCompletionPlugins, snapshotSemanticCompletionRequest,
+  type SemanticCompletionContext, type SemanticCompletionPluginDeclaration } from './lsp-semantic-completion';
 import {
   initializeCapabilityObservations, lspCapabilityStore, lspServerIdentity,
   requireLspCapability, requestWithLspCapability, type LspCapabilityKey,
@@ -327,6 +329,7 @@ export function resolveServerBin(language: LspLanguage): string | null {
 
 interface LspClient {
   connection: MessageConnection;
+  semanticPlugin?: SemanticCompletionPluginDeclaration;
   /** Identity of the installed binary + initialize version, never a project-specific cache. */
   capabilityServerIdentity?: string;
   child: ChildProcess;
@@ -741,7 +744,8 @@ export function typescriptInitializationOptions(
   tsserverPath: string,
   maxTsServerMemoryMb?: number | null,
   rootPath?: string,
-): { tsserver: { path: string }; maxTsServerMemory?: number } {
+  semanticPlugin?: SemanticCompletionPluginDeclaration,
+): { tsserver: { path: string }; maxTsServerMemory?: number; plugins?: { name: string; location: string }[] } {
   const setting = process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB?.trim();
   const override = setting ? Number(setting) : undefined;
   const memoryMb = maxTsServerMemoryMb === undefined
@@ -753,6 +757,7 @@ export function typescriptInitializationOptions(
   return {
     tsserver: { path: tsserverPath },
     ...(memoryMb ? { maxTsServerMemory: memoryMb } : {}),
+    ...(semanticPlugin ? { plugins: semanticCompletionPlugins(semanticPlugin) } : {}),
   };
 }
 
@@ -1234,10 +1239,10 @@ export function languageForFile(path: string): LspLanguage | null {
   return null;
 }
 
-async function startClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
+async function startClient(language: LspLanguage, rootPath: string, semanticPlugin?: SemanticCompletionPluginDeclaration): Promise<LspClient> {
   // Fail a source/config census before creating a managed child.
   const initializationOptions = language === 'typescript'
-    ? typescriptInitializationOptions(resolveTsserverPath(), undefined, rootPath)
+    ? typescriptInitializationOptions(resolveTsserverPath(), undefined, rootPath, semanticPlugin)
     : { cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } };
   const bin = resolveServerBin(language);
   if (!bin) {
@@ -1293,6 +1298,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
 
   const client: LspClient = {
     connection,
+    semanticPlugin,
     child,
     taskId: spawned.taskId,
     scopeUnit: spawned.scopeUnit,
@@ -1488,10 +1494,15 @@ function capabilityRequest(client: LspClient, intent: LspReadinessIntent, method
       () => client.connection.sendRequest(method, params)));
 }
 
-async function getClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
+async function getClient(language: LspLanguage, rootPath: string, semanticPlugin?: SemanticCompletionPluginDeclaration): Promise<LspClient> {
+  const matched = (client: LspClient) => {
+    if (semanticPlugin && JSON.stringify(client.semanticPlugin) !== JSON.stringify(semanticPlugin))
+      throw new Error('semantic completion refused: client-plugin-mismatch');
+    return client;
+  };
   const key = clientKey(language, rootPath);
   const existing = state.clients.get(key);
-  if (existing && existing.health !== 'unhealthy') return existing;
+  if (existing && existing.health !== 'unhealthy') return matched(existing);
 
   // Defensive: a process that pinned an OLDER shape of this state (before
   // `starting` existed) keeps that object until it restarts.
@@ -1500,9 +1511,9 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
   // The whole point — see AdapterState.starting. A concurrent caller joins the
   // start already in flight instead of racing a second server into existence.
   const inFlight = state.starting.get(key);
-  if (inFlight) return inFlight;
+  if (inFlight) return inFlight.then(matched);
 
-  const pending = startClient(language, rootPath).finally(() => {
+  const pending = startClient(language, rootPath, semanticPlugin).finally(() => {
     state.starting.delete(key);
   });
   state.starting.set(key, pending);
@@ -1514,8 +1525,9 @@ async function getLeasedClient(
   language: LspLanguage,
   rootPath: string,
   file: string,
+  semanticPlugin?: SemanticCompletionPluginDeclaration,
 ): Promise<{ client: LspClient; release: () => void }> {
-  const client = await getClient(language, rootPath);
+  const client = await getClient(language, rootPath, semanticPlugin);
   const release = await acquireLspProjectLease(client, file);
   return { client, release };
 }
@@ -1945,6 +1957,9 @@ export interface LspQuery {
   character: number;
   /** Repo root (the LSP project root). */
   rootPath: string;
+  /** Internal independently declared graph; never a public LSP tool argument. */
+  semanticCompletion?: SemanticCompletionContext;
+  signal?: AbortSignal;
 }
 
 const METHOD_BY_INTENT: Partial<Record<CodeIntelIntent, string>> = {
@@ -1995,10 +2010,35 @@ export async function lspQuery(
 
   let releaseProjectLease: (() => void) | null = null;
   try {
-    const leased = await getLeasedClient(language, project.root, query.file);
+    const semantic = query.semanticCompletion;
+    if (semantic && (language !== 'typescript' || intent !== 'references'))
+      return fail('semantic completion refused: unsupported-intent');
+    const semanticRequest = semantic ? snapshotSemanticCompletionRequest({ file: query.file,
+      line: query.line1, offset: query.character + 1, population: semantic.population }) : undefined;
+    if (semantic) semanticCompletionPlugins(semantic.plugin);
+    if (query.signal?.aborted) return fail('semantic completion refused: outer-cancelled');
+    const leased = await getLeasedClient(language, project.root, query.file, semantic?.plugin);
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+
+    if (semanticRequest) {
+      await requireClientCapability(client, 'references');
+      const result = await requestSemanticCompletion(semanticRequest,
+        { get isCancellationRequested() { return query.signal?.aborted === true; } },
+        (command, args) => recordLspWireRequest({ method: 'workspace/executeCommand',
+          taskId: client.taskId, pid: client.child.pid ?? null }, () => client.connection.sendRequest('workspace/executeCommand', {
+          command: 'typescript.tsserverRequest', arguments: [command, args, { executionTarget: 0 }],
+        })));
+      semanticCompletionPlugins(semantic!.plugin);
+      if (evictIfLanguageServiceDead(client, state.clients)) return fail('semantic completion refused: server-died');
+      const sites = result.refs.map(ref => ({ path: ref.file.startsWith(query.rootPath + '/')
+        ? ref.file.slice(query.rootPath.length + 1) : ref.file, line1: ref.start.line, kind: null }));
+      return { backend: 'lsp-adapter', intent, query: `${query.file}:${query.line1}:${query.character}`, sites,
+        truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+        freshness: { health: 'healthy', indexedAt: new Date(client.startedAt).toISOString(),
+          staleVsDisk: null, indexedCommit: null }, latencyMs: Date.now() - started, error: null };
+    }
 
     // Never answer from a half-loaded project — that returns a plausible WRONG
     // location, not an error (measured: ~4.7s window on this repo).

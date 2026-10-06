@@ -12,6 +12,8 @@ tags: ["plugins", "providers", "trigger-packs", "cupboard", "integrations"]
 status: active
 documents:
   - "packages/plugin-sdk/src/provider.ts"
+  - "packages/plugin-sdk/package.json"
+  - "packages/plugin-sdk/src/clean-install-types.test.ts"
   - "packages/operator-core/test/fixtures/outlook-graph-provider/papercusp.json"
   - "packages/operator-core/test/fixtures/outlook-graph-provider/daemon.mjs"
   - "packages/operator-core/lib/integrations/independent-author-journey.integration.test.ts"
@@ -57,7 +59,7 @@ outlook-graph-provider/
   tsconfig.json       # type-checks daemon.mjs (checkJs)
 ```
 
-Depend only on `@papercusp/plugin-sdk` for the contract types, the service's own published types (the example uses `@microsoft/microsoft-graph-types`), and Node builtins. The journey suite copies the package out of the tree, type-checks it there against only those dependencies, and proves the check can fail on a planted drift. Your package should pass the same check on its own.
+Depend only on the SDK's provider contract, the service's own published types (the example uses `@microsoft/microsoft-graph-types`), and Node builtins. Import the contract from `@papercusp/plugin-sdk/provider`. That entry has no imports of its own, so it type-checks with nothing else installed; `packages/plugin-sdk/src/clean-install-types.test.ts` proves this in a directory holding only the SDK. The main entry `@papercusp/plugin-sdk` also carries the UI and tool-definition types. It needs `@types/react` (an optional peer) and compiles the private `@papercusp/tooldef` sources into your program, so a provider package should not import it. The example's `daemon.mjs` still imports the main entry, which type-checks only because the journey suite links a Papercusp checkout. The journey suite copies the package out of the tree, type-checks it there, and proves the check can fail on a planted drift. Your package should pass the same check on its own.
 
 ## 2. Write the manifest
 
@@ -138,9 +140,12 @@ When you declare a write capability such as `mail.draft`, `invoke` receives `{ s
 ## 4. Type-check it the way the journey does
 
 ```bash
-npm install --save-dev @papercusp/plugin-sdk @microsoft/microsoft-graph-types @types/node typescript
+npm install --save-dev /path/to/papercusp/packages/plugin-sdk
+npm install --save-dev @microsoft/microsoft-graph-types @types/node typescript
 npx tsc --noEmit -p tsconfig.json
 ```
+
+`@papercusp/plugin-sdk` is not published to npm yet: it and its `@papercusp/tooldef` dependency are private workspace packages (tracked as WI-10006701). Until it is, install it from a Papercusp checkout by path, as the first line does. npm links the checkout's `packages/plugin-sdk` and fetches nothing from the registry.
 
 With `// @ts-check` and JSDoc `@typedef` imports at the top of `daemon.mjs` (see the example), a JavaScript daemon gets the same checking as TypeScript. The suite runs exactly this check in a fresh directory outside the tree.
 

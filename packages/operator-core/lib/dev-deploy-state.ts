@@ -292,6 +292,10 @@ function commitRefArgs(ref: string): string[] {
 
 const DEV_DEPLOY_BATCH_TIMEOUT_MS = 60_000;
 export const DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS = 2_000;
+// The process RPC gets five seconds beyond the child deadline to report its
+// killed/exit result. The generic child+35s RPC default could outlive the
+// 35s pipeline-position read budget after sidecar startup and connect delays.
+export const DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS = 7_000;
 
 export interface DevDeployGitBatchDeps {
   sidecarEnabled?: () => boolean;
@@ -336,6 +340,7 @@ export async function runDevDeployGitBatch(
       cwd: process.cwd(),
       env: process.env,
       timeoutMs: DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS,
+      rpcTimeoutMs: DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS,
     });
   } catch (error) {
     recordFallback('dev-deploy', error);

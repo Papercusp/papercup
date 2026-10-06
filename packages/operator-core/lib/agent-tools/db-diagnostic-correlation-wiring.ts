@@ -11,6 +11,7 @@ import {
   pgDiagnosticIdentity,
   recordPgDiagnosticResponse,
   setPgDiagnosticContextResolver,
+  type PgDiagnosticQueryLeg,
   type PgResultDiagnosticCorrelation,
 } from '@papercusp/db-org/acquire-registry';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -38,6 +39,13 @@ export function withNamedQueryDiagnosticContext<T>(operation: string | null, fn:
   }), () => fn(requestId));
 }
 
+/** Add a source-owned leg label to one query while preserving the request identity. */
+export function withNamedQueryDiagnosticLeg<T>(queryLeg: PgDiagnosticQueryLeg, fn: () => T): T {
+  const request = REQUEST_CONTEXT.getStore();
+  if (!request) return fn();
+  return REQUEST_CONTEXT.run(Object.freeze({ ...request, queryLeg }), fn);
+}
+
 /** Record the exact main-process objects, never a serializer-worker clone. */
 export function recordNamedQueryResponse(
   phase: 'resolvedRows' | 'responseValue', value: unknown,
@@ -51,7 +59,12 @@ export function installDbDiagnosticCorrelationWiring(): void {
     const stage = currentStageDiagnosticContext();
     const request = REQUEST_CONTEXT.getStore();
     if (!stage) return request ?? null;
-    return request ? { ...stage, requestId: request.requestId, operation: request.operation } : stage;
+    return request ? {
+      ...stage,
+      requestId: request.requestId,
+      operation: request.operation,
+      ...(request.queryLeg ? { queryLeg: request.queryLeg } : {}),
+    } : stage;
   });
 }
 

@@ -529,6 +529,7 @@ export async function runCommandViaSpawnerSidecar(
   opts: {
     cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; idleTimeoutMs?: number;
     signal?: AbortSignal; onProgress?: () => void;
+    rpcTimeoutMs?: number;
   },
 ): Promise<GitRunResult> {
   const aborted = (): GitRunResult => ({ code: -1, stdout: '', stderr: `${command} aborted before sidecar process start` });
@@ -582,7 +583,7 @@ export async function runCommandViaSpawnerSidecar(
         ...(fence ? { fence } : {}),
       },
       {
-        timeoutMs: opts.timeoutMs + 35_000,
+        timeoutMs: opts.rpcTimeoutMs ?? (opts.timeoutMs + 35_000),
         onOutputActivity: opts.onProgress,
         onRequestId: (id, connectionId) => {
           requestId = id;
@@ -669,6 +670,8 @@ export interface ExecFileLikeError extends Error {
 export interface ExecFileViaSidecarOptions {
   /** Kill timeout in ms — the same meaning as execFile's `timeout`. */
   timeoutMs: number;
+  /** Optional cap for the sidecar RPC itself; defaults to child timeout + 35s. */
+  rpcTimeoutMs?: number;
   /**
    * {@link noteSidecarFallback} label. One per call site, so the fallback census names
    * WHICH caller is paying the local fork cost rather than an anonymous total.
@@ -732,6 +735,7 @@ export async function execFileViaSidecar(
     try {
       res = await (deps.viaSidecar ?? runCommandViaSpawnerSidecar)(command, args, {
         timeoutMs: opts.timeoutMs,
+        ...(opts.rpcTimeoutMs !== undefined ? { rpcTimeoutMs: opts.rpcTimeoutMs } : {}),
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         ...(opts.env !== undefined ? { env: opts.env } : {}),
       });

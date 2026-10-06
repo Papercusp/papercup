@@ -58,10 +58,12 @@ export async function dispatchLspDaemonRequest(
 ): Promise<LspDaemonAnswer> {
   const context = resolveLspDaemonDispatchContext(request, signal);
   const evidence = request.archive === true ? newLspQueryEvidence(requestId) : undefined;
-  const task = () => withLspQueryEvidence(evidence, () => lspDaemonFacade(request.op, request.args, evidence ? 'archive' : 'context'));
+  const task = (taskSignal: AbortSignal) => withLspQueryEvidence(evidence, () =>
+    lspDaemonFacade(request.op, request.args, evidence ? 'archive' : 'context',
+      { semanticCompletion: request.semanticCompletion, signal: taskSignal }));
   // The local facade owns the original exact refusals and the flag check. An
   // incomplete request never reaches admission or an adapter child.
-  const answer = !context ? await task() : await runLspAdmission({
+  const answer = !context ? await task(signal) : await runLspAdmission({
     workspaceId: request.workspaceId ?? activeWorkspaceId(),
     requestId,
     language: context.language,

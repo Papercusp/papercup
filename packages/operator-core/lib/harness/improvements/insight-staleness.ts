@@ -406,15 +406,33 @@ const MAX_IGNORE_PROBES = 200;
  * other than 0 is treated as NOT ignored, so the collector degrades to the
  * previous tracked-or-on-disk behaviour rather than suppressing a real signal.
  */
-async function listIgnoredPaths(root: string, candidates: readonly string[]): Promise<Set<string>> {
+type SidecarExecFile = typeof import('../../fleet/git-via-sidecar').execFileViaSidecar;
+
+/** Which candidates match a gitignore rule, keeping the submodule-safe one-path invocation. */
+export async function listIgnoredPaths(
+  root: string,
+  candidates: readonly string[],
+  runExecFile?: SidecarExecFile,
+): Promise<Set<string>> {
   const ignored = new Set<string>();
   if (candidates.length === 0) return ignored;
   try {
-    const { execFile } = await import('node:child_process');
-    const isIgnored = (p: string) =>
-      new Promise<boolean>((resolve) => {
-        execFile('git', ['-C', root, 'check-ignore', '-q', '--', p], (err) => resolve(!err));
-      });
+    const execFileViaSidecar =
+      runExecFile ?? (await import('../../fleet/git-via-sidecar')).execFileViaSidecar;
+    const isIgnored = async (p: string): Promise<boolean> => {
+      try {
+        await execFileViaSidecar('git', ['-C', root, 'check-ignore', '-q', '--', p], {
+          subsystem: 'insight-staleness',
+          timeoutMs: 2_000,
+          rpcTimeoutMs: 7_000,
+        });
+        return true;
+      } catch {
+        // Exit 1 means not ignored; submodule pathspec errors and transport
+        // failures also preserve the existing fail-open behavior.
+        return false;
+      }
+    };
     for (const p of candidates.slice(0, MAX_IGNORE_PROBES)) {
       if (await isIgnored(p)) ignored.add(p);
     }

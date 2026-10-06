@@ -1655,6 +1655,16 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['events:emit', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
+  // EI-25227543877278075: the bulk resolver manifest/act/report paths resolve
+  // live options through the full action-bearing plans:attention feed. Its
+  // cold-build deadline is 45s, so ptool's ordinary 30s deadline can abandon
+  // a still-valid call before the server returns. Keep every consumer of that
+  // shared live-action read beyond the MCP transport cap on direct and deferred
+  // calls, preserving the typed result (and avoiding an unknown mutation result
+  // for bulk-run-act).
+  ['inbox:bulk-run-manifest', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['inbox:bulk-run-act', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['inbox:bulk-run-report', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['plans:new', PTOOL_PLANS_NEW_TIMEOUT_MS],
   // EI-23098800759403082: preserve the legacy-host compatibility path's typed
   // queued receipt beyond the tool's 600s budget + MCP settlement buffer.

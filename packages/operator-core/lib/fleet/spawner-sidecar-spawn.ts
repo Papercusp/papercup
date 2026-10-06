@@ -180,6 +180,10 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
   // remaining call-site calls are harmless no-ops.
   registerSpawnerSidecarShutdownHooks();
 
+  // Join the shared startup promise before checking for its child: the child is
+  // assigned before its ready handshake, while spawnInFlight remains pending.
+  if (spawnInFlight) return spawnInFlight;
+
   if (sidecarProcess) {
     // Already running
     if (sidecarReady) return;
@@ -199,8 +203,6 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
   // lives INSIDE the guarded promise, not before it. (Caught by
   // spawner-sidecar-cgroup-confinement.test.ts's "exactly ONE sidecar" guard when
   // this was first written the other way round.)
-  if (spawnInFlight) return spawnInFlight;
-
   spawnInFlight = (async () => {
     // ── CROSS-PROCESS ADOPTION (plan spawner-sidecar-cluster-fanout-2026-08-12) ──
     //
@@ -486,6 +488,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     });
 
     child.on('error', (err) => {
+      clearTimeout(timeout);
       sidecarProcess = null;
       sidecarScopeUnit = null;
       sidecarReady = false;

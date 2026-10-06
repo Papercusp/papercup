@@ -18,6 +18,11 @@
       "types": "./src/iframe.ts",
       "import": "./src/iframe.ts",
       "default": "./src/iframe.ts"
+    },
+    "./provider": {
+      "types": "./src/provider.ts",
+      "import": "./src/provider.ts",
+      "default": "./src/provider.ts"
     }
   },
   "dependencies": {
@@ -25,5 +30,13 @@
   },
   "devDependencies": {
     "@papercusp/test-config": "*"
+  },
+  "peerDependencies": {
+    "@types/react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "@types/react": {
+      "optional": true
+    }
   }
 }

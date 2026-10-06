@@ -179,11 +179,14 @@ const __cache = pinModuleState<{
   state: HostState | null;
   rootAtCache: string | null;
   watcher: { dispose: () => void } | null;
+  /** Settles when the current discovery has registered its integration providers (WI-10006703). */
+  providersRegistered?: Promise<void> | null;
 }>('@papercusp/operator-core.pluginHostRuntime', () => ({
   promise: null,
   state: null,
   rootAtCache: null,
   watcher: null,
+  providersRegistered: null,
 }));
 
 function discoverHarnessSlugs(): string[] {

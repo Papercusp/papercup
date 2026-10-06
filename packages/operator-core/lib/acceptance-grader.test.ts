@@ -156,6 +156,124 @@ describe('advanceUndispatchableGradingCascade (EI-23939542953304626)', () => {
       ],
     });
   });
+
+  // WI-10006700 — MEASURED 2026-10-06 on consult conv-muwrapka (plan
+  // open-source-release-2026-09-29): grader 1's dispatch failed, the advance
+  // dispatched grader 2 (failed), cascade-core's skipUndispatched walked into
+  // the min-answers refill (su-5f9596a9, cursor 2, also failed) and recorded
+  // `underFilled: refill-spent` — then returned exhausted with
+  // exhaustedAfterDispatch at cursor 2. The loop read `!advanced` as a race, so
+  // the row sat `awaiting_responder` for the full 4h TTL and the fresh-judge
+  // fallback never fired.
+  const walkedSlot = {
+    cascadeCursor: 2,
+    state: 'awaiting_responder',
+    expiresAt: '2026-10-06T18:10:00.000Z',
+  };
+
+  it('WI-10006700: terminates at the slot an exhausting advance walked to, not as a race', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: false,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: true,
+      terminalSlot: walkedSlot,
+    });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders: graders.slice(0, 2),
+      initialQueued: 0,
+      nowIso: () => '2026-10-06T14:10:00.000Z',
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'exhausted', woke: 0 });
+    expect(advance).toHaveBeenCalledTimes(1);
+    // digest:null — the walk already recorded the full digest (incl. the refill
+    // pick's failure); the terminal write must not overwrite it with this
+    // loop's shorter local copy.
+    expect(markExhausted).toHaveBeenCalledWith({
+      cursor: 2,
+      digest: null,
+      at: '2026-10-06T14:10:00.000Z',
+      expectedState: 'awaiting_responder',
+      expectedExpiresAt: '2026-10-06T18:10:00.000Z',
+    });
+  });
+
+  it('WI-10006700: an advance that exhausted at its own cursor terminates there', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: false,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: true,
+      terminalSlot: null,
+    });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders,
+      initialQueued: 0,
+      nowIso: () => '2026-10-06T14:10:00.000Z',
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'exhausted', woke: 0 });
+    expect(markExhausted).toHaveBeenCalledWith({
+      cursor: 0,
+      digest: null,
+      at: '2026-10-06T14:10:00.000Z',
+    });
+  });
+
+  it('WI-10006700: a lost terminal CAS after an exhausting walk stays conservative (raced)', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: false,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: true,
+      terminalSlot: walkedSlot,
+    });
+    const markExhausted = vi.fn(async () => false);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders: graders.slice(0, 2),
+      initialQueued: 0,
+      advance,
+      markExhausted,
+    });
+
+    // Never report exhausted without a CAS-confirmed terminal write: a concurrent
+    // reply/expiry owns the row, and a fresh judge must not launch over it.
+    expect(result).toEqual({ status: 'raced', woke: 0 });
+  });
+
+  it('WI-10006700: a genuine race from the advance never reaches the terminal write', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: true,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: false,
+    });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders,
+      initialQueued: 0,
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'raced', woke: 0 });
+    expect(markExhausted).not.toHaveBeenCalled();
+  });
 });
 
 describe('WI-10002156: a reaped session must not be selectable as a grader', () => {

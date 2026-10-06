@@ -1,7 +1,9 @@
 /** Candidate tsserver plugin for WI-41095. Production readiness does not use it.
  * The population must be declared independently before the request, including
  * libraries/config files; a loaded-project census is never the declaration. */
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 export const SEMANTIC_COMPLETION_COMMAND = 'papercusp/semanticReferences';
 export const SEMANTIC_COMPLETION_SCHEMA = 'papercusp-semantic-completion-v1';
@@ -17,6 +19,32 @@ export interface SemanticCompletionRequest {
   line: number;
   offset: number;
   population: SemanticProjectPopulation[];
+}
+/** Internal, independently declared package; never inferred from a loaded plugin. */
+export interface SemanticCompletionPluginDeclaration {
+  name: string;
+  location: string;
+  files: Readonly<Record<string, string>>;
+}
+export interface SemanticCompletionContext {
+  population: SemanticProjectPopulation[];
+  plugin: SemanticCompletionPluginDeclaration;
+}
+/** Reuse the maintained wrapper's plugin/probe-path initialization contract. */
+export function semanticCompletionPlugins(plugin: SemanticCompletionPluginDeclaration): { name: string; location: string }[] {
+  if (!plugin || !/^(?:@[a-z0-9_-]+\/)?[a-z0-9_-]+$/.test(plugin.name) || !isAbsolute(plugin.location))
+    refuse('invalid-plugin-declaration');
+  const packageRoot = join(plugin.location, 'node_modules', plugin.name);
+  const manifest = join(packageRoot, 'package.json');
+  const metadata = JSON.parse(readFileSync(manifest, 'utf8')) as { name?: string; main?: string };
+  if (metadata.name !== plugin.name || typeof metadata.main !== 'string') refuse('invalid-plugin-package');
+  const entry = resolve(packageRoot, metadata.main);
+  if (!entry.startsWith(packageRoot + '/') || !entry.endsWith('.cjs')) refuse('invalid-plugin-entry');
+  for (const file of [manifest, entry]) {
+    if (!plugin.files?.[file] || createHash('sha256').update(readFileSync(file)).digest('hex') !== plugin.files[file])
+      refuse('plugin-byte-mismatch');
+  }
+  return [{ name: plugin.name, location: plugin.location }];
 }
 export interface NativeReference {
   file: string;
@@ -69,6 +97,16 @@ function exactPopulation(population: SemanticProjectPopulation[], canonical: (fi
     if (!files.includes(anchorFile)) refuse('undeclared-anchor');
     return { projectName, anchorFile, files };
   }).sort((a, b) => a.projectName.localeCompare(b.projectName));
+}
+
+/** Freeze caller-owned arrays before the RPC; a later mutation cannot author its proof. */
+export function snapshotSemanticCompletionRequest(request: SemanticCompletionRequest): SemanticCompletionRequest {
+  if (!request || typeof request.file !== 'string' || !isAbsolute(request.file) ||
+      !Number.isSafeInteger(request.line) || request.line < 1 ||
+      !Number.isSafeInteger(request.offset) || request.offset < 1) refuse('invalid-query');
+  const population = exactPopulation(request.population, file => file);
+  if (!population.some(project => project.files.includes(request.file))) refuse('undeclared-query-file');
+  return { ...request, population };
 }
 
 function observedPopulation(session: NativeSemanticSession, declared: SemanticProjectPopulation[]): SemanticProjectPopulation[] {
@@ -136,15 +174,22 @@ export async function requestSemanticCompletion(
   send: (command: string, args: SemanticCompletionRequest) => Promise<unknown>,
 ): Promise<SemanticCompletionBody> {
   if (token.isCancellationRequested) refuse('outer-cancelled');
-  const raw = await send(SEMANTIC_COMPLETION_COMMAND, request) as
+  const frozen = snapshotSemanticCompletionRequest(request);
+  const declared = exactPopulation(frozen.population, file => file);
+  const raw = await send(SEMANTIC_COMPLETION_COMMAND, frozen) as
     { type?: string; success?: boolean; body?: SemanticCompletionBody & { canceled?: boolean } } | undefined;
   if (token.isCancellationRequested) refuse('outer-cancelled');
   if (raw?.type !== 'response' || raw.success !== true || raw.body?.canceled ||
       raw.body?.schemaVersion !== SEMANTIC_COMPLETION_SCHEMA ||
       raw.body.typescriptVersion !== SEMANTIC_COMPLETION_TYPESCRIPT_VERSION || !Array.isArray(raw.body.refs)) refuse('incomplete-native-response');
-  const declared = exactPopulation(request.population, file => file);
   const observed = exactPopulation(raw.body.population, file => file);
   if (JSON.stringify(declared) !== JSON.stringify(observed)) refuse('response-population-mismatch');
+  const files = new Set(declared.flatMap(project => project.files));
+  const position = (value: NativeReference['start']) => value && Number.isSafeInteger(value.line) && value.line > 0 &&
+    Number.isSafeInteger(value.offset) && value.offset > 0;
+  if (raw.body.refs.some(ref => !ref || !files.has(ref.file) || !position(ref.start) || !position(ref.end) ||
+      ref.end.line < ref.start.line || (ref.end.line === ref.start.line && ref.end.offset < ref.start.offset)))
+    refuse('invalid-native-reference');
   return raw.body;
 }
 

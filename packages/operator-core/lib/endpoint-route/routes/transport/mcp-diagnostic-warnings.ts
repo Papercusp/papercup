@@ -99,6 +99,8 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   // tools:find and testing:runs use populated top-level arrays without the legacy `{ ok: true, ... }` shape.
   if (Array.isArray(body.hits) && body.hits.length > 0) return true;
   if (Array.isArray(body.runs) && body.runs.length > 0) return true;
+  // dev:pg_query returns populated query results as top-level `rows`, without `ok` or `results`.
+  if (Array.isArray(body.rows) && body.rows.length > 0) return true;
   // activity:tool-log returns a nonempty row/call count instead of a result array.
   // Keep zero counts empty so a genuinely empty log still receives the warning.
   if (
@@ -120,11 +122,11 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
 
   let sawResultField = false;
   let hasPopulatedField = false;
-  // Some successful tools return a single domain object instead of a generic results/items
-  // envelope (for example loop:status -> `loop`, scheduler:get_next -> `workItem`, and
-  // events:status -> `event_inspection`).
+  // Some successful tools return a single domain object or collection instead of a generic
+  // results/items envelope (for example improvements:capture -> `issue`, locks:acquire -> `held`,
+  // loop:status -> `loop`, scheduler:get_next -> `workItem`, and events:status -> `event_inspection`).
   // Keep these explicit so control metadata alone does not suppress warnings for true empties.
-  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'scorecard', 'loop', 'workItem', 'event_inspection']) {
+  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'agents', 'issue', 'held', 'scorecard', 'loop', 'workItem', 'event_inspection']) {
     if (!(key in body)) continue;
     sawResultField = true;
     const value = body[key];

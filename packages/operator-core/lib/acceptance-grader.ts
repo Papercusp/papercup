@@ -1815,6 +1815,15 @@ type GradingDispatchFailureEvent = {
  * write may report `exhausted`; a race is conservatively treated as an existing
  * live cascade so a fresh judge cannot be launched over another dispatcher.
  *
+ * WI-10006700: an `advance` can itself EXHAUST the menu. cascade-core walks
+ * every later undispatchable slot (skipUndispatched) and the one bounded
+ * min-answers refill round, then records the final digest at the LAST slot it
+ * reached and leaves the terminal state to the trigger. That is a finished
+ * walk, not a race: the terminal CAS must target the slot the walk reached
+ * (`terminalSlot`), not the cursor this loop last read. Collapsing it into
+ * `raced` left a fully-failed menu `awaiting_responder` until the 4h expiry,
+ * so the lineage-safe fresh-judge fallback never fired.
+ *
  * @internal Exported for the regression test that guards the orchestration.
  */
 export async function advanceUndispatchableGradingCascade(input: {
@@ -1830,10 +1839,22 @@ export async function advanceUndispatchableGradingCascade(input: {
     raced: boolean;
     nextOwnerId: string | null;
     queued: number;
+    /** The advance exhausted the menu (after any walk/refill) and recorded the
+     *  final digest itself; the caller owns only the terminal state write. */
+    exhausted?: boolean;
+    /** Where that walk ended — cascade-core's `exhaustedAfterDispatch`. Absent
+     *  when the advance exhausted at the cursor it was handed. */
+    terminalSlot?: { cascadeCursor: number; state: string; expiresAt: string } | null;
   }>;
   markExhausted: (input: {
     cursor: number;
-    digest: GradingDispatchFailureEvent[];
+    /** `null` = the advance already recorded the final digest; keep it. */
+    digest: GradingDispatchFailureEvent[] | null;
+    /** Stamp for `updated_at` when `digest` is null. */
+    at?: string;
+    /** Guard the slot snapshot the walk reported (expiry-core does the same). */
+    expectedState?: string;
+    expectedExpiresAt?: string;
   }) => Promise<boolean>;
 }): Promise<{ status: 'active' | 'exhausted' | 'raced'; woke: number }> {
   if (input.initialQueued > 0) return { status: 'active', woke: input.initialQueued };
@@ -1859,7 +1880,18 @@ export async function advanceUndispatchableGradingCascade(input: {
     }
 
     const step = await input.advance({ cursor, digest: [...digest], event });
-    if (step.raced || !step.advanced || !step.nextOwnerId) return { status: 'raced', woke: 0 };
+    if (step.raced) return { status: 'raced', woke: 0 };
+    if (step.exhausted && !step.advanced) {
+      const slot = step.terminalSlot ?? null;
+      const exhausted = await input.markExhausted({
+        cursor: slot?.cascadeCursor ?? cursor,
+        digest: null,
+        at: event.at,
+        ...(slot ? { expectedState: slot.state, expectedExpiresAt: slot.expiresAt } : {}),
+      });
+      return exhausted ? { status: 'exhausted', woke: 0 } : { status: 'raced', woke: 0 };
+    }
+    if (!step.advanced || !step.nextOwnerId) return { status: 'raced', woke: 0 };
     if (step.queued > 0) return { status: 'active', woke: step.queued };
 
     digest.push(event);
@@ -2084,19 +2116,27 @@ async function prodOpenGradingCascade(
         advanced: advanced.advanced,
         raced: advanced.raced,
         nextOwnerId: advanced.next?.ownerId ?? null,
-        queued: nextDispatch?.queued ?? advanced.woke,
+        // A walk that exhausted reports the slot it reached; a walked dispatch's
+        // queue count belongs to a slot that then failed, so it is never live.
+        queued: advanced.exhausted ? 0 : nextDispatch?.queued ?? advanced.woke,
+        exhausted: advanced.exhausted,
+        terminalSlot: advanced.exhaustedAfterDispatch ?? null,
       };
     },
-    markExhausted: async ({ cursor, digest }) => {
+    markExhausted: async ({ cursor, digest, at, expectedState, expectedExpiresAt }) => {
+      const stamp = at ?? digest?.[digest.length - 1]?.at ?? new Date().toISOString();
       const wrote = (await sql`
         UPDATE harness_shared.consult_state
            SET state = 'no_qualified_responder',
                responder_id = NULL,
                expires_at = NULL,
-               cascade_digest = ${sql.json(digest as never)},
-               updated_at = ${digest[digest.length - 1]!.at}::timestamptz
+               cascade_digest = COALESCE(${digest ? JSON.stringify(digest) : null}::jsonb, cascade_digest),
+               updated_at = ${stamp}::timestamptz
          WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${conversationId}
-           AND cascade_cursor = ${cursor} AND state = 'awaiting_responder' AND closed_at IS NULL
+           AND cascade_cursor = ${cursor} AND closed_at IS NULL
+           AND state = ${expectedState ?? 'awaiting_responder'}
+           AND (${expectedExpiresAt === undefined}::boolean
+                OR expires_at IS NOT DISTINCT FROM ${expectedExpiresAt ?? null}::timestamptz)
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;
       return wrote.length > 0;
@@ -2215,6 +2255,12 @@ export async function advanceGradingCascadeOnCard(input: {
     // selected menu is complete and its minimum was met, or it stays `active`
     // until the four-hour expiry even though grading has finished.
     if (result.exhausted && !result.raced && !result.underFilled) {
+      // WI-10006700: when the card's advance dispatched the next grader and
+      // that dispatch walked (skipUndispatched) to the end of the menu, the
+      // row now sits at the LATER slot with that failed grader as responder.
+      // Guard the slot the walk reported, exactly as the expiry sweep does;
+      // guarding the original slot would no-op and strand the row `active`.
+      const walked = result.exhaustedAfterDispatch ?? null;
       const closed = (await sql`
         UPDATE harness_shared.consult_state
            SET state = 'closed_answered',
@@ -2229,9 +2275,12 @@ export async function advanceGradingCascadeOnCard(input: {
                )
          WHERE workspace_id = ${input.workspaceId}
            AND conversation_id = ${row.conversation_id}
-           AND responder_id = ${input.graderOwnerId}
-           AND cascade_cursor = ${row.cascade_cursor}
+           AND (${walked !== null}::boolean OR responder_id = ${input.graderOwnerId})
+           AND cascade_cursor = ${walked?.cascadeCursor ?? row.cascade_cursor}
            AND state IN ('awaiting_responder', 'active')
+           AND (${walked === null}::boolean OR state = ${walked?.state ?? null}::text)
+           AND (${walked === null}::boolean
+                OR expires_at IS NOT DISTINCT FROM ${walked?.expiresAt ?? null}::timestamptz)
            AND closed_at IS NULL
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;

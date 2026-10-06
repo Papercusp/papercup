@@ -5,7 +5,9 @@ import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, 
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { SEMANTIC_COMPLETION_TYPESCRIPT_VERSION, type SemanticProjectPopulation } from './lsp-semantic-completion';
+import { SEMANTIC_COMPLETION_TYPESCRIPT_VERSION, semanticCompletionPlugins,
+  type SemanticProjectPopulation, type SemanticCompletionContext,
+  type SemanticCompletionPluginDeclaration } from './lsp-semantic-completion';
 import type { readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { classifyReplayAnswer, evaluateReplayLadder, runReplay, scoreReplay, REPLAY_CLASSES,
@@ -46,6 +48,7 @@ export interface DaemonReplayConfig {
   readonly sourceSnapshot?: ReplayOracleInput['sourceSnapshot'];
   /** Independently captured compiler graph; never authored by native projectInfo. */
   readonly semanticGraph?: ReplaySemanticGraph;
+  readonly semanticCompletionPlugin?: SemanticCompletionPluginDeclaration;
   /** Predeclared runtime population and command-line-anchored recorder launches.
    * Kept separate from the independently authored source oracle. */
   readonly runtimeWitness?: ReplayRuntimeWitness;
@@ -169,6 +172,20 @@ export function assertReplaySemanticGraph(config: DaemonReplayConfig): ReplaySem
   }
   return graph;
 }
+/** Bind the independent source graph to the predeclared maintained plugin package. */
+export function replaySemanticCompletionContext(config: DaemonReplayConfig): SemanticCompletionContext {
+  const graph = assertReplaySemanticGraph(config);
+  const plugin = config.semanticCompletionPlugin;
+  if (!plugin) throw new Error('replay-semantic-plugin-unmeasured');
+  semanticCompletionPlugins(plugin);
+  for (const [file, hash] of Object.entries(plugin.files)) {
+    if (config.files[file] !== hash || config.runtimeWitness?.files[file] !== hash)
+      throw new Error(`replay-semantic-plugin-unfrozen:${file}`);
+  }
+  return { population: graph.projects.map(project => ({ projectName: project.projectName,
+    anchorFile: project.anchorFile, files: [...project.files] })),
+    plugin: { ...plugin, files: { ...plugin.files } } };
+}
 /** Reuse Node's load/compile boundaries with the maintained plain-Node bundle
  * route. The recorder runs from literal argv bytes, never a later self-disk read. */
 export function replayRuntimeLaunch(entry: string, directory: string, runId: string, args: readonly string[] = []) {
@@ -259,7 +276,7 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
           const bytes = readFileSync(candidatePath);
           if (replayHash(bytes) !== row.sha256) throw new Error('replay-oracle-candidate-hash-mismatch');
           const config = JSON.parse(bytes.toString('utf8')) as DaemonReplayConfig;
-          if (['runId', 'rootPath', 'socketPath', 'workspaceId', 'levels', 'requestTimeoutMs', 'sourceSnapshot'].some(key =>
+          if (['runId', 'rootPath', 'socketPath', 'workspaceId', 'levels', 'requestTimeoutMs', 'sourceSnapshot', 'semanticCompletionPlugin'].some(key =>
             JSON.stringify(config[key as keyof DaemonReplayConfig]) !== JSON.stringify(input[key as keyof ReplayOracleInput])) ||
             JSON.stringify(config.corpus.definition.cursor) !== JSON.stringify(input.definition) ||
             JSON.stringify(config.corpus['hot-references'].cursor) !== JSON.stringify(input.references) ||
@@ -375,6 +392,7 @@ export interface ReplayOracleInput {
   /** Additional runtime binaries and loaded daemon/config source whose drift invalidates qualification. */
   readonly runtimeFiles: readonly string[];
   readonly evidenceRef: string;
+  readonly semanticCompletionPlugin?: SemanticCompletionPluginDeclaration;
   /** Independent source/dependency copy; this does not establish loaded-runtime identity. */
   readonly sourceSnapshot?: { readonly manifestPath: string; readonly sha256: string };
 }
@@ -703,6 +721,7 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
   const config: DaemonReplayConfig = { schemaVersion: 'lsp-daemon-replay-config-v1', runId: input.runId,
     rootPath: input.rootPath, socketPath: input.socketPath, workspaceId: input.workspaceId, levels: input.levels,
     requestTimeoutMs: input.requestTimeoutMs, files, semanticGraph,
+    ...(input.semanticCompletionPlugin ? { semanticCompletionPlugin: input.semanticCompletionPlugin } : {}),
     oracleProvenance: { method: 'static TypeScript symbol-binding census over the frozen compiler source population; no daemon answers',
       evidenceRef: input.evidenceRef, compilerVersion: ts.version },
     corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) },
@@ -1223,7 +1242,8 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
   // Small source-authored protocol controls retain their existing route. The
   // independent repository-copy acceptance route requires loaded oracle proof.
   if (config.sourceSnapshot) assertReplayOracleRuntimeQualified(config);
-  if (config.sourceSnapshot) assertReplaySemanticGraph(config);
+  const semanticCompletion = config.sourceSnapshot || config.semanticCompletionPlugin
+    ? replaySemanticCompletionContext(config) : undefined;
   // Compiler-only freezing must not initialize daemon/task-store dependencies.
   const { callLspDaemonRpc, readLspDaemonAdmission } = await import('./lsp-daemon-client');
   const { lspEvidenceNow } = await import('./lsp-query-evidence');
@@ -1240,6 +1260,7 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
     args: { ...config.corpus[queryClass].cursor,
       file: resolve(config.rootPath, config.corpus[queryClass].cursor.file), rootPath: config.rootPath }, actorId, archive: true,
     deadlineAtMs: Date.now() + config.requestTimeoutMs,
+    ...(queryClass === 'hot-references' && semanticCompletion ? { semanticCompletion } : {}),
   }, config.requestTimeoutMs + 5_000, id);
   const boundary = async (label: string) => {
     const health = await callLspDaemonRpc(config.socketPath, { op: 'health', args: {}, archive: true,

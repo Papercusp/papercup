@@ -2034,9 +2034,16 @@ beforeEach(async () => {
         console.info('PUI_CONFIG_REPAIR_DIAGNOSTIC', args[0]);
       } else error(...args);
     });
+  }
+  // The host-load advisories below (D-024 degradations, launch-stage timing)
+  // apply to EVERY run: the scripted-engine cases launch through the same
+  // in-process operator. When this filter was real-engine only, a stall line
+  // failed a passing scripted case (AUTO-BAR-R-04-P-010, WI-10006559). The
+  // engine- and fresh-DB-specific allowances stay real-engine only.
+  {
     const warn = console.warn.bind(console);
     vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
-      if (args[0] === '[mcp-initialize-stage]') {
+      if (scriptedEngine.real && args[0] === '[mcp-initialize-stage]') {
         // Optional memory enrichment has a bounded production fallback in a
         // fresh test DB. Retain that diagnostic and prove the actual MCP
         // connection works; any other warning remains a test failure.
@@ -2044,13 +2051,13 @@ beforeEach(async () => {
         expect(['base', 'enriched', 'timeout']).toContain(detail.outcome);
         initializeWarnings.push(detail);
         console.info('PUI_MCP_INITIALIZE_DIAGNOSTIC', JSON.stringify(detail));
-      } else if (args.length === 1 && args[0] === '[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010).') {
+      } else if (scriptedEngine.real && args.length === 1 && args[0] === '[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010).') {
         // A fresh isolated DB can take the documented optional-enrichment
         // fallback. Preserve the exact diagnostic; hard memory/SU errors and
         // every other warning still fail this test (EI-22628413686876169).
         optionalMemoryWarnings.push(String(args[0]));
         console.info('PUI_OPTIONAL_MEMORY_DIAGNOSTIC', args[0]);
-      } else if (args.length === 1 && args[0] === '[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback') {
+      } else if (scriptedEngine.real && args.length === 1 && args[0] === '[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback') {
         // detectIntentPivot deliberately returns the lexical method within
         // this budget. Its unit suite exercises that fallback. Retain this
         // exact advisory diagnostic in native acceptance; unexpected warnings
@@ -4266,7 +4273,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     // returns, so that pass never lands in a later case (measured: it failed
     // PUI-APPROVAL-DENY when it did).
     const jobsBefore = maintenance.jobs.length;
-    const warn = console.warn.bind(console);
+    // The file-wide beforeEach already spies console.warn, and vi.spyOn returns
+    // that same spy. Chain to its filter, never to the spy itself: once this
+    // implementation replaces the filter, the spy would call itself forever.
+    const filtered = vi.isMockFunction(console.warn) ? console.warn.getMockImplementation() : undefined;
+    const warn = filtered ?? console.warn.bind(console);
     const archiveWarn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
       if (args.length === 1 && typeof args[0] === 'string'
         && /^\[session-archive\] adv \d+ not resolvable \(agent=omp, owner=[^,]+, native=null, omp=null\) — left for the disk-side reconciler$/.test(args[0])) {

@@ -13,6 +13,7 @@ import {
 import {
   installDbDiagnosticCorrelationWiring,
   withNamedQueryDiagnosticContext,
+  withNamedQueryDiagnosticLeg,
   recordNamedQueryResponse,
 } from './db-diagnostic-correlation-wiring';
 
@@ -105,6 +106,52 @@ describe('db diagnostic correlation wiring', () => {
       },
     });
     expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
+  it('distinguishes same-table work-item query legs and preserves the failed leg without SQL text', async () => {
+    installDbDiagnosticCorrelationWiring();
+    const hooks = createPgDiagnosticHooks('org-app');
+    let requestId = '';
+    await expect(withNamedQueryDiagnosticContext('workItems.byHarness', async (id) => {
+      requestId = id;
+      await withNamedQueryDiagnosticLeg('work-items-page', async () => {
+        hooks.onresult({
+          connectionId: 1, queryId: 1, backendPid: null,
+          query: "select * from harness_shared.work_items where note = 'never-retain-page-sql'",
+          rowCount: 1, wireBytes: 10, elapsedMs: 21, status: 'ok',
+          context: hooks.onquerycontext(),
+        });
+      });
+      await withNamedQueryDiagnosticLeg('work-items-presentation', async () => {
+        hooks.onresult({
+          connectionId: 1, queryId: 2, backendPid: null,
+          query: "select * from harness_shared.work_items where note = 'never-retain-presentation-sql'",
+          rowCount: 0, wireBytes: 0, elapsedMs: 6000, status: 'error', errorCode: '57014',
+          context: hooks.onquerycontext(),
+        });
+        throw new Error('presentation query failed');
+      });
+    })).rejects.toThrow('presentation query failed');
+
+    const rows = pgResultDiagnosticSnapshot('org-app').results;
+    expect(rows).toHaveLength(2);
+    expect(rows.map(row => row.queryFamily)).toEqual([
+      'select:harness_shared.work_items',
+      'select:harness_shared.work_items',
+    ]);
+    expect(rows.map(row => ({
+      queryLeg: row.correlation?.queryLeg,
+      requestId: row.correlation?.requestId,
+      operation: row.correlation?.operation,
+      status: row.status,
+      errorCode: row.errorCode,
+      elapsedMs: row.elapsedMs,
+    }))).toEqual([
+      { queryLeg: 'work-items-page', requestId, operation: 'workItems.byHarness', status: 'ok', errorCode: null, elapsedMs: 21 },
+      { queryLeg: 'work-items-presentation', requestId, operation: 'workItems.byHarness', status: 'error', errorCode: '57014', elapsedMs: 6000 },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('never-retain-');
+    expect(hooks.onquerycontext()).toEqual({ state: 'unobserved' });
   });
 
   it('keeps attempt identity while no hop is active, rather than inventing a stage', () => {

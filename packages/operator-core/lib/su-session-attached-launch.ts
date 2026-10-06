@@ -178,6 +178,8 @@ export interface AttachedSuLaunchInput {
 export const LAUNCH_STALL_REPORT_MS = 15_000;
 /** A finished step at least this slow is reported with its duration. */
 export const SLOW_LAUNCH_STAGE_MS = 5_000;
+/** A stall report running at least this late says the event loop was delayed. */
+export const LATE_STALL_REPORT_MS = 1_000;
 
 export interface LaunchStageTracer {
   /** Enter the next named step, reporting the previous one if it was slow. */
@@ -217,7 +219,14 @@ export function launchStageTracer(
   let stage = 'read-chat';
   let stageAt = startedAt;
   const stall = setTimeout(() => {
-    log(`[su-launch] ${key} not finished after ${now() - startedAt}ms; stalled in stage=${stage} for ${now() - stageAt}ms`, 'warn');
+    const at = now();
+    // A report that runs late measures time in which this process ran no
+    // timers at all (synchronous work, GC, or the process not being
+    // scheduled), which a slow asynchronous wait cannot cause. Naming it tells
+    // the two apart from the line alone (WI-10006559: a 15s report ran at 24s).
+    const late = at - startedAt - LAUNCH_STALL_REPORT_MS;
+    log(`[su-launch] ${key} not finished after ${at - startedAt}ms; stalled in stage=${stage} for ${at - stageAt}ms`
+      + (late >= LATE_STALL_REPORT_MS ? `; this report ran ${late}ms late (event loop delayed)` : ''), 'warn');
   }, LAUNCH_STALL_REPORT_MS);
   stall.unref?.();
   const close = (next: string | null) => {
