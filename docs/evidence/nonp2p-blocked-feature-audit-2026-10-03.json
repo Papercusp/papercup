@@ -2246,9 +2246,150 @@
       "ref": "papercusp#WI-10004537",
       "observedState": "open",
       "authority": null,
-      "reason": "No completion evidence in the bounded current read; the P-003 prerequisite remains unresolved."
+      "reason": "No completion evidence in the bounded current read; the P-003 prerequisite remains unresolved.",
+      "evidenceQualification": {
+       "status": "historical-prefix-qualified-current-source-and-R1-outcomes-unsettled",
+       "sourceRef": "thread-post:1158745",
+       "recordedAt": "2026-10-06T04:10:39.268Z",
+       "requirement": "R-1 — Independent balanced relevance",
+       "checkpointContentHash": "415be90f1fb3",
+       "availableCheckpointChars": 32000,
+       "savedCheckRowsRead": 9,
+       "verification": {
+        "path": "cache:validation/mdenseon-independent-WI10004537-20261001/fire296-prefix-and-detector/verification.json",
+        "bytes": 5320,
+        "sha256": "af76969e1902d00401efe83c3e380225e85c56a8c7558f502f5c2cc35b127805",
+        "referencedArtifactHashesMatch": true,
+        "scope": "Four directly referenced artifacts, including prefix assessment and stored five-row framework ledger; no completed auditor or suite replay."
+       },
+       "prefixAssessment": {
+        "path": "cache:validation/mdenseon-independent-WI10004537-20261001/failed-memory-prefix-audit-fire296-v2.json",
+        "sha256": "d30835cb73caa1f05bea65c3b9a81b92cee3d23524e36473c3ac60770159c052",
+        "authorSelections": 406,
+        "judgeSelections": 202,
+        "pendingJudgeCalls": 318,
+        "firstPendingJudge": "memory-judge-1-448-q1280",
+        "completeCohort": false,
+        "labelsAccepted": false,
+        "consensusAccepted": false,
+        "countMeaning": "Stored auditor writer counts selected author calls, completed judge selections and pending judge names; these are historical prefix counts, not accepted independent labels."
+       },
+       "sourceBindings": [
+        {
+         "path": "libs/papercusp-shared/src/agent/chat-stream.ts",
+         "declaredSha256": "c97c09da7ddd72f25d1132ead367a1d8dd1c40b3b77fe63b09264f6acb0c5aba",
+         "observedSha256": "09c327507bf524bb758e01cc68c706b69fdedb938176776ce05d76730a4850cd",
+         "matches": false
+        },
+        {
+         "path": "libs/papercusp-shared/src/agent/chat-stream-transport.test.ts",
+         "declaredSha256": "04a74d9b64910dcbab41cf9b50548824efe2fcb0da4ea10d66855d605ae4d83c",
+         "observedSha256": "f5ebfebcfd20cc7c429b08900e657574ebf6ae5814e86776133b938025734cfe",
+         "matches": false
+        },
+        {
+         "path": "packages/operator-core/lib/memory/bench/judged.ts",
+         "declaredSha256": "0514cbe7f9241e705575bd0d990c9e15b8554669beaf6e10a459157e9ea9bb61",
+         "observedSha256": "421191c575bc6ef0381e6180d1ceb9cc9a48c46f659827776a29c2929e7c8167",
+         "matches": false
+        },
+        {
+         "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+         "declaredSha256": "3366cd874f896d3b6355074ae6485e7dd5dcd4d7ba16c6eddaf8e61e9dca0bde",
+         "observedSha256": "05aa51cc023ec30aa09bf33888e0cc4291fb68982267aa62560737ced5f0aac5",
+         "matches": false
+        }
+       ],
+       "sourceInspection": "Exact-call judge ancestry/full-contract checks, two recovery regressions and bounded parsed-body/caller-abort diagnostics remain visible. Source inspection does not establish current behavioral verification or a regression.",
+       "sourceRequalificationRequired": true,
+       "requiredOutcome": "Complete independently blinded labels, source-separated calibration/test, agreement/ambiguity and paired class/source decision margins resolved at 0.03 MRR or explicit source exhaustion; current immutable missing-only admission must precede any fresh provider collection.",
+       "acceptanceWaived": false,
+       "generationPerformed": false,
+       "scope": "Dated prerequisite qualification only. Historical fields, retained population and original40/200/109-root unknowns remain unchanged; consumer WI-10004538 remains blocked."
+      }
      }
     ],
+    "productionPathEvidenceQualification": {
+     "status": "inspected-neutral-route-is-partial-complete-R3-outcome-unqualified",
+     "sourceRef": "thread-post:1158779",
+     "recordedAt": "2026-10-06T04:26:18.540Z",
+     "requirement": "R-3 — Complete realistic hybrid",
+     "sourcePlanVersion": 10,
+     "sourcePlanHash": "b130f9a608024c6471b634f997edcfe16fb0636ffa09751e299fe19cfd05044f",
+     "consumerRead": {
+      "state": "blocked",
+      "assignee": null,
+      "checkpointStatus": "absent",
+      "typedNextActionStatus": "missing",
+      "boundEvidenceWindow": "No rows returned by this consumer's complete resume read; this does not establish global artifact absence."
+     },
+     "inspectedRoute": {
+      "runner": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts:runCandidateHybrid",
+      "adapter": "canonicalCandidateBackend",
+      "route": "canonical-lexical-hybrid",
+      "implementedSeams": [
+       "CanonicalVectorStore.search with supplied vectors and fixed bench scope",
+       "CanonicalVectorStore.lexicalSearch",
+       "LexicalLegBackend and HybridBackend floored-union fusion",
+       "model-owned schema and accepted embedding-profile setup"
+      ],
+      "explicitLimitations": "Runner route guard treats entity/decay complete retrieval as a separate measurement. Its report states that the neutral adapter excludes extraction, entity graph and decay. Fixed bench scope and a production-scope rejection guard do not establish the complete promised filter/entity/decay outcome.",
+      "scope": "The inspected runner and its protocol test only; no claim that another implementation or artifact is absent."
+     },
+     "retainedProtocol": {
+      "path": "docs/evidence/mdenseon-measurement-protocol-2026-10-01.json",
+      "bytes": 16234,
+      "sha256": "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a",
+      "receiptReportedLedger": [
+       20364580,
+       20356843
+      ],
+      "receiptScope": "Protocol guards only: the integration source uses actual HTTP/client and migrated owned PostgreSQL18 with synthetic embeddings and protocolOnly:true. The receipt explicitly leaves P-004 full hybrid integration open. Historical ledger rows were not rerun or adopted as current R3 acceptance.",
+      "currentSourceBinding": "Five of its six declared source fingerprints differ from measured current files; the manifest fixture matches. Current files match HEAD at measurement. A fingerprint change establishes neither regression nor a current passing result."
+     },
+     "sourceBindings": [
+      {
+       "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+       "declaredSha256": "b68a280d28ff1f646c83a6c866cfc09f134b7ff74c0870ec675e02b6a0271de3",
+       "observedSha256": "fe09ea857d8e7e27ff4e81e4e119ac93493ed62e566402d45cdfa65a35dfc52b",
+       "matches": false
+      },
+      {
+       "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+       "declaredSha256": "4b534bd2a0693e6bbb6e01c4c090948ac01cec2bf253ec8edc907b3551776157",
+       "observedSha256": "86288f53331a6bfec3d0d9ad41b4cc93ffe23d519348f4d66df9e382a3b5f3b4",
+       "matches": false
+      },
+      {
+       "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+       "declaredSha256": "9655ea0171dcd55178846d474c569852a8fb70cf21f75c33bc3defdc0b9f7cfc",
+       "observedSha256": "f80e39208facc1a757656bc866679f9651c9fbfadaa130f839cf452b55298028",
+       "matches": false
+      },
+      {
+       "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.test.ts",
+       "declaredSha256": "e633764c812e89aed4213556336edced367ac980ac002bfa3192c8bbbab0081d",
+       "observedSha256": "dbbec0e73e0e25a3b9d63b409d0144ef8c69bcb5d00df2d4110fe16d988b3085",
+       "matches": false
+      },
+      {
+       "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.integration.test.ts",
+       "declaredSha256": "40462eaa109adba1342060d88ec5f013afaac9a33e92d610e06585ab2ba6a4ba",
+       "observedSha256": "5c6fc4f9c88e8b8d5c7744710dbc27e91f834420c06ffe23372daff0752905e4",
+       "matches": false
+      },
+      {
+       "path": "packages/operator-core/lib/memory/bench/fixtures/measurement-manifest.ts",
+       "declaredSha256": "369117bf9cee900bee25b415ae2f229bf3a10fe930a943bee8c20c4cdf4e8e6e",
+       "observedSha256": "369117bf9cee900bee25b415ae2f229bf3a10fe930a943bee8c20c4cdf4e8e6e",
+       "matches": true
+      }
+     ],
+     "requiredOutcome": "Actual complete canonical/memory lexical+semantic/filter/entity/decay searches over the same larger independently labelled snapshots in owned model-separated schemas, with scope/vector-space controls, precision and negative admissions/rejections, and paired class/source uncertainty. Preserve unresolved P-003 R1 independent-label/source-power admission and P-002 canonical settlement before scoring.",
+     "acceptanceWaived": false,
+     "generationPerformed": false,
+     "scope": "Dated source/receipt qualification only. Existing prerequisites and historical fields remain intact; WI-10004538 remains blocked and original40/200/complete109-root unknowns are unchanged."
+    },
     "verification": "Canonical incoming links require both prerequisites to be settled. Read exact source R-2 and corroborated the two completion-content mismatches against native git object identities; no current reference replay or acceptance grade was performed.",
     "acceptanceWaived": false,
     "scope": "Dated qualification of this retained consumer only; frozen historical fields and original40/200/complete109-root unknowns remain unchanged."
@@ -2340,6 +2481,72 @@
      "summary": "plan lane mdenseon-adoption-measurements-2026-10-01#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
+   "downstreamAnswerEvidenceQualification": {
+    "status": "inspected-retrieval-judge-is-partial-generated-answer-R7-outcome-unqualified",
+    "sourceRef": "thread-post:1158808",
+    "recordedAt": "2026-10-06T04:42:10.587Z",
+    "requirement": "R-7 — Downstream usefulness",
+    "sourcePlanVersion": 10,
+    "sourcePlanHash": "b130f9a608024c6471b634f997edcfe16fb0636ffa09751e299fe19cfd05044f",
+    "currentAuthority": [
+     {
+      "ref": "mdenseon-adoption-measurements-2026-10-01#AUTO-BAR-R-7-P-008@2",
+      "contentHash": "f15c8f6db2bf0ac366b4f891dc4e859352a7a4366342720f16187bd1a52c823b",
+      "acceptanceRef": "acceptance-mdenseon-adoption-measurements-2026-10-01@1:R-7",
+      "qualification": "Current active clause; complete raw authority record resolved."
+     },
+     {
+      "ref": "mdenseon-adoption-measurements-2026-10-01#MDENSE-blinded-answer-score@1",
+      "contentHash": "831064cac7d0b2819476107c5bbf283d29c05f6bc999697d09c18857b45b605c",
+      "qualification": "Current active clause requires candidate identity hidden from the frozen judge; complete raw authority record resolved."
+     }
+    ],
+    "consumerRead": {
+     "state": "blocked",
+     "assignee": null,
+     "checkpointStatus": "absent",
+     "typedNextActionStatus": "missing",
+     "threadPosts": 0,
+     "boundEvidence": {
+      "tool": "plans:get-spec-evidence",
+      "workItemIds": ["WI-10004542"],
+      "limit": 100,
+      "rowsReturned": 0,
+      "truncatedByLimit": false,
+      "scope": "Only this consumer's plan-bound evidence records; no global artifact-absence claim."
+     }
+    },
+    "inspectedRoute": {
+     "entry": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+     "runner": "packages/operator-core/lib/memory/bench/judged.ts",
+     "writer": "judgeOne searches limit 1, renders the top memory hit, synthesizes a non-LLM retrieval RunSummary and passes it to judgeRun.",
+     "rubricAxis": "usefulness",
+     "frozenContract": "Judge model, rubric/caller instructions/shared scaffold and deterministic query sample are pinned or content-derived in the inspected source.",
+     "agreementAndCost": "The runner records usefulness, search latency and judge cost; its first-backend double-score probe reuses the injected transport at temperature 0.4. These are retrieval-judge measures, not paired generated-answer outcomes.",
+     "absentAnswerBoundary": "Hard-negative queries are explicitly excluded from this judged sample; deterministic retrieval false-positive scoring does not measure unsupported generated answers.",
+     "requiredOutcomeStillUnqualified": "Fixed answer model, context budget and prompts across arms; separately transported identity-blind frozen judging of real question/context/answer/citation records; absent-answer outcomes; per-query paired effects, agreement, cost, uncertainty and exact input/recipe provenance."
+    },
+    "inspectedSourcePins": [
+     { "path": "packages/operator-core/lib/memory/bench/judged.ts", "sha256": "421191c575bc6ef0381e6180d1ceb9cc9a48c46f659827776a29c2929e7c8167", "headMatches": true },
+     { "path": "packages/operator-core/lib/memory/bench/judged.test.ts", "sha256": "05aa51cc023ec30aa09bf33888e0cc4291fb68982267aa62560737ced5f0aac5", "headMatches": true },
+     { "path": "packages/operator-core/lib/memory/bench/judged-cli.ts", "sha256": "d79392ef141785ec92c6647fdda39b44ecb82fd7d572c220b0674b9b82b132c0", "headMatches": true },
+     { "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.integration.test.ts", "sha256": "5c6fc4f9c88e8b8d5c7744710dbc27e91f834420c06ffe23372daff0752905e4", "headMatches": true },
+     { "path": "libs/testing-shell/src/llm/judge.ts", "sha256": "0d76b5c5edd8907bb1bfb0a4882cf00b301b80297c93001897183404495895d6", "headMatches": true, "headScope": "testing-shell submodule" },
+     { "path": "libs/testing-shell/src/llm/rubric-version.ts", "sha256": "9b4b695db58942d797b3606467f98f8090259da44fac0e4dec484d72143a4d2d", "headMatches": true, "headScope": "testing-shell submodule" }
+    ],
+    "existingDetectorQualification": {
+     "judgedTests": "Inspected contract tests cover content-derived rubric identity, prompt-visible constants and fake-transport orchestration/double-score output. They do not establish actual generated-answer accuracy, citations or unsupported-answer behavior.",
+     "integrationTests": "The inspected candidate hybrid integration suite declares synthetic vectors and excludes real-weight P-002 through P-008 acceptance. Its migrated SQL/HTTP guards do not supply R7 answer records.",
+     "protocol": { "path": "docs/evidence/mdenseon-measurement-protocol-2026-10-01.json", "sha256": "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a", "qualification": "Lists six answer populations and the fixed/blind gate; its harness proof is synthetic/protocol-only, not paired answer outcomes." },
+     "reuse": "Extend the maintained testing-shell judgeRun and content-derived rubric/identity seams when implementing the downstream answer comparison.",
+     "behavioralVerificationPerformed": false,
+     "sourceInspectionIsAcceptance": false
+    },
+    "prerequisites": ["WI-10004537 R1 independent relevance qualification remains open", "WI-10004538 complete production R3 qualification remains open"],
+    "acceptanceWaived": false,
+    "generationPerformed": false,
+    "scope": "Dated retained-evidence qualification only. Historical fields, all retained rows and original40/200/109-root unknowns are preserved; no consumer claim, settlement, acceptance or closure."
+   },
    "claimHold": false
   },
   {

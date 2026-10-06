@@ -43,7 +43,12 @@ import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
-import { detectUnsafeDeletions, normalizeModulePath, RESOLVABLE_EXTS } from './deletion-import-guard';
+import {
+  detectStagedDeletionsStillImported,
+  detectUnsafeDeletions,
+  normalizeModulePath,
+  RESOLVABLE_EXTS,
+} from './deletion-import-guard';
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { runSyncBack, type SyncBackConfig, type SyncBackResult } from './sync-back';
 import { detectQuarantineImporters } from './quarantine-import-guard';
@@ -128,9 +133,9 @@ const gitSubcommand = (args: string[]): string => {
   return index >= 0 ? args[index] : '';
 };
 
-/** These read-only commands need no optional Git locks while offloaded. */
+/** These read-only commands must not refresh the shared index while offloaded. */
 const GIT_SIDECAR_READ_ONLY_COMMANDS = new Set([
-  'rev-parse', 'cat-file', 'ls-files', 'ls-tree', 'merge-base', 'rev-list',
+  'rev-parse', 'status', 'cat-file', 'ls-files', 'ls-tree', 'merge-base', 'rev-list',
   'for-each-ref',
 ]);
 
@@ -216,6 +221,9 @@ const runGitLocalBounded = (
         LANG: 'C',
         PAPERCUSP_GIT_SYNC_PUSH: '1',
         GIT_TERMINAL_PROMPT: '0',
+        ...(GIT_SIDECAR_READ_ONLY_COMMANDS.has(gitSubcommand(args))
+          ? { GIT_OPTIONAL_LOCKS: '0' }
+          : {}),
       },
     });
     const out = collectChildOutput(child);
@@ -370,7 +378,7 @@ const runGitBoundedUnchecked = async (
     try {
       options.onProgress?.();
       const result = await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs,
-        options.signal && readOnly ? { ...env, GIT_OPTIONAL_LOCKS: '0' } : env, {
+        readOnly ? { ...env, GIT_OPTIONAL_LOCKS: '0' } : env, {
         idleTimeoutMs: network ? timeoutMs : undefined,
         signal: options.signal,
         onProgress: options.onProgress,
@@ -1279,25 +1287,37 @@ export function migrationDependencyFenceSkips(
   refusedMigrations: readonly Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>[],
   dirtySuperprojectPaths: readonly string[],
   roster: readonly AttributionRosterEntry[],
+  /** Superproject root, so absolute presence `current_files` normalize like every other caller's. */
+  superRoot?: string,
 ): GitSyncSkippedPath[] {
   if (refusedMigrations.length === 0 || dirtySuperprojectPaths.length === 0) return [];
 
   const attributionsByScope = new Map<string, Map<string, FileAttribution>>();
-  const attributionFor = (scope: string, path: string): FileAttribution | undefined => {
+  const mapFor = (scope: string): Map<string, FileAttribution> => {
     let map = attributionsByScope.get(scope);
     if (!map) {
-      map = attributionMapForRepo([...roster], scope);
+      map = attributionMapForRepo([...roster], scope, superRoot);
       attributionsByScope.set(scope, map);
     }
-    return map.get(path);
+    return map;
   };
+  // EI-25203408414398603: the edit ledger records a NESTED repo's edit relative to THAT repo
+  // with repo=NULL (edit-attribution.ts — locks:acquire never learns the true repo root), so a
+  // child migration's roster entry reads 'libs/db/sql/NNNN-x.sql', never
+  // '<scope>/libs/db/sql/NNNN-x.sql'. Matching only the scope-qualified form left every child
+  // migration unattributed, and an unattributed migration holds EVERY dirty superproject path —
+  // one stray migration froze the whole superproject. Prefer the scope-qualified match, then
+  // accept the nested-relative shape the ledger actually writes.
+  const migrationAttribution = (migration: { scope: string; path: string }): FileAttribution | undefined =>
+    mapFor(migration.scope).get(migration.path) ??
+    (migration.scope && migration.scope !== 'superproject' ? mapFor('').get(migration.path) : undefined);
 
   const blockedWorkItems = new Set<string>();
   const blockedAgents = new Set<string>();
   const agentsWithoutWorkItem = new Set<string>();
   let unknownMigration = roster.length === 0;
   for (const migration of refusedMigrations) {
-    const attribution = attributionFor(migration.scope, migration.path);
+    const attribution = migrationAttribution(migration);
     if (!attribution) {
       unknownMigration = true;
       continue;
@@ -1308,7 +1328,7 @@ export function migrationDependencyFenceSkips(
     for (const id of workItems) blockedWorkItems.add(id);
   }
 
-  const rootAttributions = attributionFor('', '') ? attributionsByScope.get('')! : attributionMapForRepo([...roster], '');
+  const rootAttributions = mapFor('');
   const migrationLocations = refusedMigrations
     .map((migration) => migration.scope + '/' + migration.path)
     .slice(0, 3)
@@ -3868,31 +3888,94 @@ export async function guardStagedIndexBeforeCommit(opts: {
   }
 
   const held = [...new Set([...lateLocked, ...drifted])];
-  if (held.length === 0) return { ok: true, lateLockedHoldings: [], drifted: [], unstaged: [] };
-  const packageClosure = await expandCargoPackageLiveLockExclusions(staged, held, opts.readText);
-  const atomicHeld = [...new Set([...held, ...packageClosure.paths])];
-  // Same conservative importer rule as the pre-stage live-lock exclusion: the HEAD copy of a
-  // held module may lack the symbols a staged importer now uses, so hold every dirty importer.
-  const importerOffenders = await detectQuarantineImporters({
-    readText: opts.readText,
-    dirtyFiles: staged,
-    alreadyQuarantined: atomicHeld,
-    exclusionLabel: 'post-stage late-lock/drift hold',
+  let unstagedPaths: string[] = [];
+  if (held.length > 0) {
+    const packageClosure = await expandCargoPackageLiveLockExclusions(staged, held, opts.readText);
+    const atomicHeld = [...new Set([...held, ...packageClosure.paths])];
+    // Same conservative importer rule as the pre-stage live-lock exclusion: the HEAD copy of a
+    // held module may lack the symbols a staged importer now uses, so hold every dirty importer.
+    const importerOffenders = await detectQuarantineImporters({
+      readText: opts.readText,
+      dirtyFiles: staged,
+      alreadyQuarantined: atomicHeld,
+      exclusionLabel: 'post-stage late-lock/drift hold',
+      log,
+    });
+    const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
+    const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, [...atomicHeld, ...importers], log);
+    if (!unstage.ok) return { ok: false, error: `post-stage guard ${unstage.error}` };
+    log(
+      `[git-sync] ${scope}: post-stage guard held back ${unstage.paths.length} staged path(s) from this commit — ` +
+        `late-locked [${[...lateLocked].join(', ')}], drifted after staging [${[...drifted].join(', ')}]` +
+        (packageClosure.paths.length > 0
+          ? `, same Cargo package [${packageClosure.paths.join(', ')}]`
+          : '') +
+        (importers.length > 0 ? `, dirty importers [${[...new Set(importers)].join(', ')}]` : '') +
+        ' — they stay dirty for the next tick',
+    );
+    unstagedPaths = unstage.paths;
+  }
+  // WI-10006352: LAST, once nothing else will change the index — a staged deletion the
+  // commit's own tree still imports. The first round reuses the listing read above unless
+  // the hold just changed the index.
+  const deletionHold = await holdStagedDeletionsStillImported({
+    runGit,
+    repoPath,
+    scope,
     log,
+    firstListing: unstagedPaths.length === 0 ? deletedRes.stdout.split('\0').filter(Boolean) : undefined,
   });
-  const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
-  const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, [...atomicHeld, ...importers], log);
-  if (!unstage.ok) return { ok: false, error: `post-stage guard ${unstage.error}` };
-  log(
-    `[git-sync] ${scope}: post-stage guard held back ${unstage.paths.length} staged path(s) from this commit — ` +
-      `late-locked [${[...lateLocked].join(', ')}], drifted after staging [${[...drifted].join(', ')}]` +
-      (packageClosure.paths.length > 0
-        ? `, same Cargo package [${packageClosure.paths.join(', ')}]`
-        : '') +
-      (importers.length > 0 ? `, dirty importers [${[...new Set(importers)].join(', ')}]` : '') +
-      ' — they stay dirty for the next tick',
-  );
-  return { ok: true, lateLockedHoldings, drifted: [...drifted], unstaged: unstage.paths };
+  if (!deletionHold.ok) return deletionHold;
+  return {
+    ok: true,
+    lateLockedHoldings,
+    drifted: [...drifted],
+    unstaged: [...new Set([...unstagedPaths, ...deletionHold.unstaged])],
+  };
+}
+
+/**
+ * WI-10006352: unstage every staged module deletion that the index (the tree `git commit`
+ * records) still imports, to a fixed point — a held deletion returns its HEAD text to the
+ * index, which may import another staged deletion. Each round unstages at least one path or
+ * stops, so it terminates. The working tree is untouched: the file stays deleted and the next
+ * tick retries the deletion once its importer has landed. Fails closed like the rest of the
+ * post-stage guard when the index cannot be read.
+ */
+export async function holdStagedDeletionsStillImported(opts: {
+  runGit: RunGit;
+  repoPath: string;
+  scope: string;
+  log: (message: string) => void;
+  firstListing?: readonly string[];
+}): Promise<{ ok: true; unstaged: string[] } | { ok: false; error: string }> {
+  const { runGit, repoPath, scope, log } = opts;
+  const unstaged: string[] = [];
+  let listing = opts.firstListing;
+  for (;;) {
+    const scan = await detectStagedDeletionsStillImported({ runGit, repoPath, stagedDeletions: listing, log });
+    listing = undefined;
+    if (!scan.ok) return { ok: false, error: `post-stage guard ${scan.error}` };
+    if (scan.holds.length === 0) break;
+    const unstage = await unstagePreStagedProtectedPaths(
+      runGit,
+      repoPath,
+      scan.holds.map((hold) => hold.path),
+      log,
+    );
+    if (!unstage.ok) return { ok: false, error: `post-stage guard ${unstage.error}` };
+    log(
+      `[git-sync] ${scope}: post-stage guard held back ${unstage.paths.length} staged deletion(s) the commit ` +
+        `would still import — ` +
+        scan.holds
+          .map((hold) => `${hold.path} (${hold.scanError ? `index scan failed: ${hold.scanError}` : `imported by ${hold.importedBy.join(', ')}`})`)
+          .join('; ') +
+        ' — they stay deleted in the working tree for the next tick',
+    );
+    if (unstage.paths.length === 0) break;
+    unstaged.push(...unstage.paths);
+  }
+  return { ok: true, unstaged };
 }
 
 /** The CI-skip suffix git-sync's message carries (e.g. ` [skip ci]`), so every per-agent
@@ -4414,7 +4497,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         }
       }
       migrationDependencyFenceSkippedPaths.push(
-        ...migrationDependencyFenceSkips(migrationFenceRefusals, dirtySuperprojectPaths, migrationFenceRoster),
+        ...migrationDependencyFenceSkips(migrationFenceRefusals, dirtySuperprojectPaths, migrationFenceRoster, repoPath),
       );
       skippedPaths.push(...migrationDependencyFenceSkippedPaths);
       if (migrationDependencyFenceSkippedPaths.length > 0) {

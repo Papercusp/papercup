@@ -346,7 +346,7 @@ describe('GitHub issues registers as a provider through the plugin host (R-14)',
       { source: sourceId, capability: 'ticket.read', args: { externalId: `${OWNER}/${REPO}#3` } },
       { fetch: recordedHostFetch },
     )) as { ticket: Record<string, unknown> };
-    expect(read.ticket).toMatchObject({ externalId: 'acme/orchid#3', title: 'Gazebo docs are stale', state: 'open' });
+    expect(read.ticket).toMatchObject({ externalId: 'acme/orchid#3', title: 'Gazebo docs are stale', state: 'open', statusCategory: 'todo' });
     expect(gh.calls).toEqual([`${API}/issues/3`]);
     // A pull request is not a ticket.
     await expect(provider.adapter!.invoke(
@@ -401,7 +401,7 @@ describe('GitHub issues syncs through the shared connector driver (R-14)', () =>
     expect(ticket1.feature_id).toBe(dataSourceRecordId(WS, sourceId, 'ticket', 'acme/orchid#1'));
     expect(ticket1.payload).toMatchObject({
       provider: 'github', container: 'acme/orchid', number: 1, state: 'closed', stateReason: 'completed',
-      author: 'alice-gh', assignees: ['bob-gh'], labels: ['bug', 'p1'], closedAt: '2026-10-01T09:00:00.000Z',
+      statusCategory: 'done', author: 'alice-gh', assignees: ['bob-gh'], labels: ['bug', 'p1'], closedAt: '2026-10-01T09:00:00.000Z',
       dataSourceId: sourceId,
     });
     const closed = stored.find((r) => r.payload.externalId === '501')!;

@@ -72,7 +72,7 @@ vi.mock("./dht-universe-probe", () => ({
 }));
 
 import { probeAll, probeMcpHandshake } from "../../service-health";
-import { mockResolvedTyped } from "../../testing/typed-mock";
+import { mockResolvedOnceTyped, mockResolvedTyped } from "../../testing/typed-mock";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
@@ -284,9 +284,9 @@ describe("WI-10005995: isolated-DHT alarm in dev:service_health", () => {
   const isolated = { mode: "isolated" as const, source: "env" as const, bootstrap: "172.31.44.1:49838" };
 
   it("surfaces the probe block and names an isolated host as the root cause when nothing else is wrong", async () => {
-    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    mockResolvedTyped(probeM, [{ name: "operator", up: true, status: 200, latencyMs: 1 }]);
     supervisionM.mockReturnValueOnce([]);
-    dhtM.mockResolvedValueOnce({
+    mockResolvedOnceTyped(dhtM, {
       rigLockHeld: false,
       hosts: [{ unit: BG, mainPid: 42, running: isolated, configured: isolated, warning: WARNING }],
       warnings: [{ unit: BG, warning: WARNING }],
@@ -298,9 +298,9 @@ describe("WI-10005995: isolated-DHT alarm in dev:service_health", () => {
   });
 
   it("a drill holding the rig lock produces no root cause, while the block still reports the universe", async () => {
-    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    mockResolvedTyped(probeM, [{ name: "operator", up: true, status: 200, latencyMs: 1 }]);
     supervisionM.mockReturnValueOnce([]);
-    dhtM.mockResolvedValueOnce({
+    mockResolvedOnceTyped(dhtM, {
       rigLockHeld: true,
       hosts: [{ unit: BG, mainPid: 42, running: isolated, configured: isolated }],
       warnings: [],
@@ -312,7 +312,7 @@ describe("WI-10005995: isolated-DHT alarm in dev:service_health", () => {
   });
 
   it("no verdict (systemd unreadable) adds no key and no root cause", async () => {
-    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    mockResolvedTyped(probeM, [{ name: "operator", up: true, status: 200, latencyMs: 1 }]);
     supervisionM.mockReturnValueOnce([]);
     const b = body((await tool.handler({} as never, {} as never)) as Out);
     expect(b).not.toHaveProperty("dhtUniverse");
@@ -320,7 +320,7 @@ describe("WI-10005995: isolated-DHT alarm in dev:service_health", () => {
   });
 
   it("a probe that throws does not take the rest of the snapshot down", async () => {
-    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    mockResolvedTyped(probeM, [{ name: "operator", up: true, status: 200, latencyMs: 1 }]);
     dhtM.mockRejectedValueOnce(new Error("systemd bus gone"));
     const b = body((await tool.handler({} as never, {} as never)) as Out);
     expect(b.ok).toBe(true);
@@ -339,12 +339,20 @@ describe("WI-10005995: isolated-DHT alarm in dev:service_health", () => {
   });
 
   it("passes the probed watchdog liveness through to a bg-host verb (it used to be dropped -> always 'unknown')", async () => {
-    probeM.mockResolvedValue([{ name: "bg-host-ticker", up: false, status: null, latencyMs: 2, note: "frozen" }] as never);
-    unitM.mockResolvedValueOnce({
-      states: [{ unit: `${BG_HOST_WATCHDOG_UNIT}.service`, known: true, loadState: "loaded", activeState: "active" }],
+    mockResolvedTyped(probeM, [{ name: "bg-host-ticker", up: false, status: null, latencyMs: 2, note: "frozen" }]);
+    mockResolvedOnceTyped(unitM, {
+      states: [{
+        unit: `${BG_HOST_WATCHDOG_UNIT}.service`,
+        scope: "user",
+        known: true,
+        loadState: "loaded",
+        activeState: "active",
+        active: true,
+        failed: false,
+      }],
       unitsUnknown: [],
       scopesUnavailable: [],
-    } as never);
+    });
     const b = body((await tool.handler({} as never, {} as never)) as Out);
     expect(b.nextVerb).toMatch(/is RUNNING and OWNS this restart/);
     expect(b.nextVerb).not.toMatch(/could NOT determine/);

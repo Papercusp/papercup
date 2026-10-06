@@ -12,6 +12,10 @@ import type { HostedEntitlementSet } from '../../hosted-entitlement-schema';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { addMicrosDecimals, splitMicrosDecimal } from '../../../cupboard/money-journal';
+import { readMoneyJournalEntries } from '../../../cupboard/money-journal-store';
+import { pgPaymentReceiptStore, type StoredPaymentReceipt } from '../../../cupboard/payment-receipt-store';
+import type { JournalEntry } from '../../../cupboard/money-journal';
+import type { HostedBillingCustomer } from './billing-store';
 import { evaluateHostedBudget, settleHostedReservation, type HostedBudgetDecision, type HostedBudgetPolicy } from './budget-policy';
 import { HOSTED_COST_SOURCE_RANK, type HostedCostSource } from './usage-statement';
 import { evaluateHostedPrepaidFunding, type HostedPrepaidAllocation, type HostedPrepaidFundingInput } from './budget-funding';
@@ -198,6 +202,60 @@ export async function readLockedHostedPrepaidAllocations(sql: Sql, pool: HostedP
       budgetKey: r.budget_key as string, micros: value.micros,
       ...(value.exact.includes('.') ? { microsExact: value.exact } : {}) });
   }));
+}
+
+export interface HostedStripeFundingPopulation {
+  readonly allocations: readonly HostedPrepaidAllocation[];
+  readonly entries: readonly JournalEntry[];
+  readonly receipts: readonly StoredPaymentReceipt[];
+  readonly customers: readonly HostedBillingCustomer[];
+}
+
+/** Local population for collectHostedStripeFunding, through the SAME reservation
+ * transaction. Locks the global account before any population read and keeps
+ * journal, receipt and customer writers out through transaction completion,
+ * including insertions into empty populations. No provider call or paid grant.
+ *
+ * The existing importer assigns one configured workspace to its Stripe account.
+ * Older journal/receipt rows carry no account provenance, so a different source
+ * workspace cannot be silently excluded or assigned to this account. Refuse it
+ * until authenticated account ownership can be established. The workspace here
+ * comes from trusted server configuration, never a customer-selected workspace.
+ * Cash backing, provider obligations, policy and entitlements remain separate.
+ */
+export async function readLockedHostedStripeFundingPopulation(sql: Sql, input: {
+  readonly pool: HostedPrepaidPool; readonly journalWorkspaceId: string;
+}): Promise<HostedStripeFundingPopulation> {
+  input = structuredClone(input);
+  if (!identifier(input.journalWorkspaceId)) throw new Error('invalid funding journal workspace');
+  // A repeatable-read snapshot taken before these locks could omit a writer
+  // that committed while we waited. Locks alone cannot refresh that snapshot.
+  const [isolation] = await sql<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+  if (isolation?.transaction_isolation !== 'read committed') throw new Error('funding population requires read committed');
+  const [started] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  const allocations = await readLockedHostedPrepaidAllocations(sql, input.pool);
+  await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population()`;
+  const workspaces = await sql<{ workspace_id: string }[]>`
+    SELECT workspace_id FROM harness_shared.money_journal_entries
+    UNION SELECT workspace_id FROM harness_shared.money_journal_lines
+    UNION SELECT workspace_id FROM harness_shared.payment_receipts`;
+  if (workspaces.some(w => w.workspace_id !== input.journalWorkspaceId)) {
+    throw new Error('unmapped funding journal workspace');
+  }
+  const customers = await sql<{ organization_id: string; stripe_customer_id: string; livemode: boolean }[]>`
+    SELECT organization_id::text AS organization_id, stripe_customer_id, livemode
+    FROM papercusp_auth.hosted_billing_customers ORDER BY stripe_customer_id COLLATE "C"`;
+  const entries = await readMoneyJournalEntries(input.journalWorkspaceId, { sql });
+  const receipts = await pgPaymentReceiptStore(sql).list(input.journalWorkspaceId);
+  const [finished] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  // Passing a pool's autocommit Sql instead of the reservation transaction
+  // releases each lock at statement end. Never return that unlocked census.
+  if (!started?.transaction_id || finished?.transaction_id !== started.transaction_id) {
+    throw new Error('funding population requires one transaction');
+  }
+  return Object.freeze({ allocations, entries: Object.freeze(entries), receipts: Object.freeze([...receipts]),
+    customers: Object.freeze(customers.map(c => Object.freeze({ organizationId: c.organization_id,
+      stripeCustomerId: c.stripe_customer_id, livemode: c.livemode }))) });
 }
 
 /** Keep other organizations' unrelated payments out of the customer projection,

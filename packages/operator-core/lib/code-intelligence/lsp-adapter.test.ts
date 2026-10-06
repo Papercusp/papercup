@@ -672,6 +672,58 @@ describe('workspace_symbols search scope', () => {
     expect(scope.error).toMatch(/'file'/);
   });
 
+  // P-002 (gitnexus-deterministic-integration-2026-10-05, D-010): an agent
+  // replacing `grep -rn "export function X" <dir>` knows a DIRECTORY, and a
+  // directory used to die with a raw EISDIR from being opened as a document.
+  it('resolves a TypeScript DIRECTORY anchor to its project and an openable non-test source', async () => {
+    const pkg = join(dir, 'packages', 'operator-core');
+    await mkdir(join(pkg, 'lib', 'memory'), { recursive: true });
+    await writeFile(join(pkg, 'tsconfig.json'), '{"compilerOptions":{}}\n');
+    await writeFile(join(pkg, 'lib', 'memory', 'a.test.ts'), 'export const t = 1;\n');
+    await writeFile(join(pkg, 'lib', 'memory', 'types.d.ts'), 'export type T = 1;\n');
+    await writeFile(join(pkg, 'lib', 'memory', 'store.ts'), 'export function store() {}\n');
+
+    const scope = resolveSymbolSearchScope('typescript', join(pkg, 'lib', 'memory'), dir);
+    expect(scope.error).toBeNull();
+    expect(scope.root).toBe(pkg);
+    // A real source, never the directory (EISDIR), a declaration file, or a
+    // test file that a tsconfig may exclude into an inferred project.
+    expect(scope.anchor).toBe(join(pkg, 'lib', 'memory', 'store.ts'));
+  });
+
+  it('refuses a directory anchor that spans NESTED tsconfig projects, naming them', async () => {
+    for (const lib of ['alpha', 'beta']) {
+      await mkdir(join(dir, 'libs', 'generic', lib, 'src'), { recursive: true });
+      await writeFile(join(dir, 'libs', 'generic', lib, 'tsconfig.json'), '{}\n');
+      await writeFile(join(dir, 'libs', 'generic', lib, 'src', 'index.ts'), 'export const x = 1;\n');
+    }
+    const scope = resolveSymbolSearchScope('typescript', join(dir, 'libs', 'generic'), dir);
+    // Answering for one project would read as ABSENCE for symbols in the other.
+    expect(scope.error).toMatch(/2 nested tsconfig project/);
+    expect(scope.error).toContain(join(dir, 'libs', 'generic', 'alpha'));
+    expect(scope.anchor).toBeNull();
+  });
+
+  it('refuses a directory anchor that holds no TypeScript source to open', async () => {
+    const pkg = join(dir, 'packages', 'docs-only');
+    await mkdir(join(pkg, 'notes'), { recursive: true });
+    await writeFile(join(pkg, 'tsconfig.json'), '{}\n');
+    await writeFile(join(pkg, 'notes', 'README.md'), '# x\n');
+    const scope = resolveSymbolSearchScope('typescript', join(pkg, 'notes'), dir);
+    expect(scope.error).toMatch(/no TypeScript source/);
+    expect(scope.error).toMatch(/'file'/);
+  });
+
+  it('roots a rust DIRECTORY anchor at the crate holding it, opening nothing', async () => {
+    const crate = join(dir, 'apps', 'tui');
+    await mkdir(join(crate, 'src'), { recursive: true });
+    await writeFile(join(crate, 'Cargo.toml'), '[package]\nname = "tui"\n');
+    const scope = resolveSymbolSearchScope('rust', join(crate, 'src'), dir);
+    expect(scope.error).toBeNull();
+    expect(scope.root).toBe(crate);
+    expect(scope.anchor).toBeNull();
+  });
+
   /**
    * The tests above drive the two helpers directly, which cannot see whether
    * `lspWorkspaceSymbols` still CALLS them — delete either call site and every

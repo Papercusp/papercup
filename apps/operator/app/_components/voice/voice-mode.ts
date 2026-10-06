@@ -39,6 +39,11 @@ import {
 } from './ptt-capture';
 import { f32ToWav } from './f32-to-wav';
 import { transcribeChunk } from '@papercusp/operator-core/lib/voice-engines/whisper';
+import {
+  isFullAgentEngineUnavailable,
+  isWakeEngineUnavailable,
+  releaseUnavailableMessage,
+} from '@papercusp/operator-core/lib/voice-release-availability';
 import { startEnergyVadCapture } from './energy-vad-capture';
 import { PlayoutLedger, type CaptureWindow } from './capture-window';
 import {
@@ -1076,6 +1081,10 @@ async function startWakeWordGateInner(prefs: any): Promise<boolean> {
     );
     return false;
   }
+  if (isWakeEngineUnavailable(engine)) {
+    void emitVoiceToast('error', releaseUnavailableMessage(engine));
+    return false;
+  }
   try {
     if (engine === 'porcupine') {
       const bootR = await fetch('/api/agent-mcp/operator-picovoice-bootstrap').catch(() => null);
@@ -1192,9 +1201,11 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     const prefs = loadVoicePrefsClient();
     // Preserve legacy preferences, but never silently route a selected
     // unsupported full-agent provider through local microphone capture.
-    if (prefs.fullAgentEngine === 'gemini-live') {
+    // Release scope (voice-final-public-release-2026-10-01#D-005) covers every
+    // engine in the shared release list, Gemini included.
+    if (isFullAgentEngineUnavailable(prefs.fullAgentEngine)) {
       setVoiceMode('off');
-      void emitVoiceToast('error', 'Gemini Live is not supported in this release. Choose another full-agent engine or Off in /settings/voice.');
+      void emitVoiceToast('error', releaseUnavailableMessage(String(prefs.fullAgentEngine)));
       return true; // Handled: suppress the caller's local-STT fallback.
     }
     // Pull idle-timeout pref so both EL and Realtime paths can use it.
@@ -1730,6 +1741,12 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
   // up Whisper once for the command utterance, then return to gating.
   const engine = prefs.wakeWordEngine ?? 'off';
   if (engine === 'off') return false;
+  if (isWakeEngineUnavailable(engine)) {
+    // Visible refusal; the caller keeps its non-gated path, as it already does
+    // when a Picovoice key is missing.
+    void emitVoiceToast('error', releaseUnavailableMessage(engine));
+    return false;
+  }
 
   if (engine === 'porcupine') {
     // Porcupine needs a Picovoice access key.

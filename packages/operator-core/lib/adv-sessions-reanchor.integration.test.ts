@@ -59,7 +59,7 @@ async function seedAdv(opts: {
   startedAgoSec?: number;
   ended?: boolean;
 }): Promise<number> {
-  const rows = await admin<{ id: number }[]>`
+  const rows = await admin<{ id: string | number }[]>`
     INSERT INTO harness_shared.adv_sessions
       (workspace_id, agent, mode, coord_owner_id, session_id, started_at, ended_at)
     VALUES (
@@ -70,7 +70,9 @@ async function seedAdv(opts: {
     RETURNING id
   `;
   // postgres returns bigint columns as strings; callers require numeric ids.
-  return Number(rows[0].id);
+  const id = Number(rows[0].id);
+  expect(Number.isSafeInteger(id) && id > 0, 'seedAdv must return a positive numeric incarnation id').toBe(true);
+  return id;
 }
 
 beforeAll(async () => {
@@ -215,12 +217,12 @@ describe('grant-bearing role receipt and activation (canonical PostgreSQL client
     expect(await adoptStartingTerminalLaunch({
       id, sessionId: FRESH_ID, role: 'worker', feature: 'WI-1', mode: 'console',
     })).toBe(true);
-    const rows = await admin<{ id: number; coord_owner_id: string; session_id: string; role: string; feature: string }[]>`
+    const rows = await admin<{ id: string | number; coord_owner_id: string; session_id: string; role: string; feature: string }[]>`
       SELECT id, coord_owner_id, session_id, role, feature
         FROM harness_shared.adv_sessions WHERE coord_owner_id = ${OWNER}
     `;
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id, coord_owner_id: OWNER, session_id: FRESH_ID, role: 'worker', feature: 'WI-1' });
+    expect({ ...rows[0], id: Number(rows[0].id) }).toMatchObject({ id, coord_owner_id: OWNER, session_id: FRESH_ID, role: 'worker', feature: 'WI-1' });
     expect(await adoptStartingTerminalLaunch({ id, sessionId: DEAD_ID, role: 'reviewer' })).toBe(false);
     const [unchanged] = await admin<{ session_id: string; role: string }[]>`
       SELECT session_id, role FROM harness_shared.adv_sessions WHERE id = ${id}
@@ -329,15 +331,15 @@ describe('successor lifecycle compare-and-swap (EI-22446987530949437, real PG)',
     const predecessorId = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID, ended: true });
     await admin`UPDATE harness_shared.adv_sessions SET ended_by = 'reconciler' WHERE id = ${predecessorId}`;
     const successorId = await seedAdv({ coordOwnerId: OWNER, sessionId: FRESH_ID, startedAgoSec: 0 });
-    const before = await admin<{ id: number; ended_at: Date | null; ended_by: string | null; started_at: Date }[]>`
+    const before = await admin<{ id: string | number; ended_at: Date | null; ended_by: string | null; started_at: Date }[]>`
       SELECT id, ended_at, ended_by, started_at FROM harness_shared.adv_sessions ORDER BY id
     `;
     expect(await reactivateAdvSessionByOwner(OWNER)).toBe(false);
-    const after = await admin<{ id: number; ended_at: Date | null; ended_by: string | null; started_at: Date }[]>`
+    const after = await admin<{ id: string | number; ended_at: Date | null; ended_by: string | null; started_at: Date }[]>`
       SELECT id, ended_at, ended_by, started_at FROM harness_shared.adv_sessions ORDER BY id
     `;
     expect(after).toEqual(before);
-    expect(after.find((row) => row.id === successorId)?.ended_at).toBeNull();
+    expect(after.find((row) => Number(row.id) === successorId)?.ended_at).toBeNull();
   });
 
   it('still reactivates the sole terminal owner row when no successor is active', async () => {

@@ -122,11 +122,18 @@ export function resolveScenarioSourceFile(
   if (!existsSync(scenariosRoot)) return undefined;
   const files = listScenarioSources(scenariosRoot);
   const targetDir = join(scenariosRoot, target);
-  for (const pool of [files.filter((f) => f.startsWith(`${targetDir}/`)), files]) {
+  const pools = [
+    { files: files.filter((f) => f.startsWith(`${targetDir}/`)), allowRolePrefix: true },
+    // The whole-tree fallback ignores a bare role prefix (`` `su-${n}` ``): outside the
+    // scenario's own target dir it names any id of that role, so a fixture id builder in
+    // a helper file captured su-S37 and misattributed its llm rows (gitnexus P-015).
+    { files, allowRolePrefix: false },
+  ];
+  for (const pool of pools) {
     let best: { file: string; score: number } | null = null;
     let tie = false;
-    for (const file of pool) {
-      const score = idMatchScore(readFileSync(file, 'utf8'), scenarioId);
+    for (const file of pool.files) {
+      const score = idMatchScore(readFileSync(file, 'utf8'), scenarioId, pool.allowRolePrefix);
       if (score === 0) continue;
       if (!best || score > best.score) { best = { file, score }; tie = false; }
       else if (score === best.score) tie = true;
@@ -146,13 +153,18 @@ function listScenarioSources(dir: string): string[] {
   return out;
 }
 
-/** Infinity for an exact quoted id; else the length of the longest `` `prefix${ `` it extends. */
-function idMatchScore(source: string, id: string): number {
+/**
+ * Infinity for an exact quoted id; else the length of the longest `` `prefix${ `` it extends.
+ * A role-only prefix (one segment, e.g. `su-`, `sn-`) counts only when `allowRolePrefix`.
+ */
+function idMatchScore(source: string, id: string, allowRolePrefix: boolean): number {
   for (const q of ["'", '"', '`']) if (source.includes(`${q}${id}${q}`)) return Number.POSITIVE_INFINITY;
   let best = 0;
   for (const m of source.matchAll(/`([A-Za-z0-9_-]+)\$\{/g)) {
     const prefix = m[1]!;
-    if (prefix.includes('-') && id.startsWith(prefix) && id.length > prefix.length) best = Math.max(best, prefix.length);
+    if (!prefix.includes('-') || !id.startsWith(prefix) || id.length <= prefix.length) continue;
+    if (!allowRolePrefix && prefix.split('-').filter(Boolean).length < 2) continue;
+    best = Math.max(best, prefix.length);
   }
   return best;
 }

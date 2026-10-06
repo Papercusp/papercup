@@ -35,6 +35,8 @@ const DAY_MS = 86_400_000;
 const DEFAULT_ACTIVITY_LAG_GRACE_MS = 5 * 60_000;
 /** Give the scheduler one short tick window to produce the first fire after an explicit resume. */
 export const DEFAULT_RESUME_FIRE_GRACE_MS = 5 * 60_000;
+/** Let overdue routines catch up briefly after the bg-host starts, before paging on a missing fire. */
+export const DEFAULT_BG_HOST_START_FIRE_GRACE_MS = 15 * 60_000;
 
 /** A routine row, narrowed to what the classifier reads. */
 export interface LearningRoutineRow {
@@ -160,6 +162,11 @@ export function computeLearningLoopHealth(
   routines: readonly LearningRoutineRow[],
   opts: {
     nowMs: number;
+    /**
+     * Optional bg-host process start timestamp. Only the escalation sweep supplies this;
+     * pull-only health reads omit it and keep reporting overdue loops immediately.
+     */
+    processStartedAtMs?: number;
     staleAfterDays?: number;
     singletonHostSlug?: string;
     alwaysOn?: ReadonlySet<string>;
@@ -205,6 +212,10 @@ export function computeLearningLoopHealth(
     const nextMs = row?.nextFireAt ? Date.parse(row.nextFireAt) : NaN;
     const resumedAtMs = row?.lastPauseResumedAtMs;
     const sinceResumeMs = typeof resumedAtMs === 'number' ? opts.nowMs - resumedAtMs : NaN;
+    const processStartedAtMs = opts.processStartedAtMs ?? NaN;
+    const sinceProcessStartMs = opts.nowMs - processStartedAtMs;
+    const noFireSinceProcessStart =
+      Number.isNaN(firedMs) || (Number.isFinite(processStartedAtMs) && firedMs < processStartedAtMs);
     const awaitingPostResumeFire =
       active &&
       typeof resumedAtMs === 'number' &&
@@ -213,6 +224,14 @@ export function computeLearningLoopHealth(
       sinceResumeMs <= DEFAULT_RESUME_FIRE_GRACE_MS &&
       (Number.isNaN(firedMs) || firedMs < resumedAtMs) &&
       (Number.isNaN(nextMs) || nextMs <= opts.nowMs);
+    const awaitingPostProcessStartFire =
+      active &&
+      Number.isFinite(processStartedAtMs) &&
+      sinceProcessStartMs >= 0 &&
+      sinceProcessStartMs <= DEFAULT_BG_HOST_START_FIRE_GRACE_MS &&
+      noFireSinceProcessStart &&
+      Number.isFinite(nextMs) &&
+      nextMs <= opts.nowMs;
     const daysSinceFire = Number.isNaN(firedMs) ? null : Math.floor((opts.nowMs - firedMs) / DAY_MS);
     const activity = opts.activityByBlueprintId?.[loop.blueprintId] ?? null;
     const activityLastAt = activity?.lastActivityAt ?? null;
@@ -222,7 +241,7 @@ export function computeLearningLoopHealth(
     let status: LearningLoopStatus;
     if (!row) status = 'absent';
     else if (!active) status = alwaysOn ? 'should-be-on-but-dark' : 'dark-by-design';
-    else if (awaitingPostResumeFire) status = 'pending';
+    else if (awaitingPostResumeFire || awaitingPostProcessStartFire) status = 'pending';
     else if (Number.isNaN(firedMs)) {
       // Active but NEVER fired: `pending` if its first fire is still ahead (just
       // activated — e.g. prompt-ablation right after the frontier arming), `stale`
@@ -238,13 +257,19 @@ export function computeLearningLoopHealth(
     } else if (opts.nowMs - firedMs > staleMs) status = 'stale';
     else status = 'firing';
 
-    if (active && !awaitingPostResumeFire && activity && activity.mode === 'since-fire') {
+    if (
+      active &&
+      !awaitingPostResumeFire &&
+      !awaitingPostProcessStartFire &&
+      activity &&
+      activity.mode === 'since-fire'
+    ) {
       // Judge only the LAST fire: did it produce activity by the time it should have?
       // A never-fired loop is left to the routine verdict above (pending / stale).
       const grace = activity.graceMs ?? DEFAULT_ACTIVITY_LAG_GRACE_MS;
       const unproven = !Number.isNaN(firedMs) && (Number.isNaN(activityMs) || activityMs < firedMs);
       if (unproven && opts.nowMs - firedMs > grace) status = 'stale';
-    } else if (active && !awaitingPostResumeFire && activity) {
+    } else if (active && !awaitingPostResumeFire && !awaitingPostProcessStartFire && activity) {
       const activityGraceMs = opts.activityLagGraceMs ?? DEFAULT_ACTIVITY_LAG_GRACE_MS;
       const fireAgeMs = opts.nowMs - firedMs;
       const activityIsStale = Number.isNaN(activityMs) || opts.nowMs - activityMs > staleMs;

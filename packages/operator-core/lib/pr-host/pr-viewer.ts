@@ -118,8 +118,11 @@ export async function livePrViewerDeps(slug: string): Promise<PrViewerDeps> {
       const authorRevoked = await isPrAuthorRevoked({ workspaceId, harnessSlug: slug, githubUserId: pr.author.github_user_id });
       if (authorRevoked) throw new Error('Contribution admission denied: the PR author is revoked.');
       if (isStandingPr(pr)) {
+        // Reached only via actOnPr after its permissions.review check, so this is a
+        // reviewer's decision to merge: it is the approval (WI-10006351).
         const { makeLiveStandingPrMerge } = await import('../harness/git-sync/standing-pr-merge-live');
-        return makeLiveStandingPrMerge({ store })({ workspaceId, installSlug: slug, remote, pr, autoMerge: true, authorRevoked });
+        return makeLiveStandingPrMerge({ store })({ workspaceId, installSlug: slug, remote, pr, autoMerge: true, authorRevoked,
+          viewerApproved: true });
       }
       const { tryAutoMerge } = await import('./auto-merge');
       return tryAutoMerge(host, pr, { harnessSlug: slug, reviewerGithubId: settings.viewer?.github_user_id ?? 0,

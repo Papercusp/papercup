@@ -641,6 +641,78 @@ describe('the one visible number (P-003 verification)', () => {
 
 describe('governed attempt persisted settlement receipts', () => {
   it.each([
+    { label: 'incomplete score', missing: true, cost: 0.3, calls: 1, status: 'open' },
+    { label: 'unreported score', missing: true, cost: 0.3, calls: 1, status: 'open' },
+    { label: 'incomplete repaired score', missing: true, cost: 0.5, calls: 2, status: 'open' },
+    { label: 'contract failure', missing: false, cost: 0.5, calls: 2, status: 'failed' },
+    { label: 'paid repair failure', missing: false, cost: 0.37, calls: 2, status: 'failed' },
+    { label: 'unknown repair failure', missing: true, cost: 0.3, calls: 2, status: 'open' },
+    { label: 'complete score', missing: false, cost: 0.3, calls: 1, status: 'settled' },
+  ])('native judge $label preserves the same SQL reservation and mirror accounting', async fixture => {
+    const loopId = `gym:judge-receipt-${randomUUID()}`;
+    const runRef = `native-judge:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    let judgeCalls = 0;
+    let pipelines = 0;
+    let scores = 0;
+    const unexpected = async () => { throw new Error('judge fixture must not propose'); };
+    const native = buildLoopDeps({ gymSql: sql, ports: {} as never,
+      proposerCall: unexpected, proposerModel: 'controlled',
+      judgeCall: async () => {
+        const call = ++judgeCalls;
+        if (call === 2 && fixture.label.endsWith('repair failure')) {
+          throw Object.assign(new Error('repair transport failed'),
+            fixture.label === 'paid repair failure' ? { costUsd: 0.07 } : {});
+        }
+        const malformed = fixture.label === 'contract failure' || (call === 1 && fixture.calls === 2);
+        return { text: malformed ? 'malformed' : '{"d1":5,"d2":5,"d3":5,"rationale":"r"}',
+          costUsd: 0.2, inputTokens: 10, outputTokens: 5,
+          ...(fixture.label.startsWith('incomplete') && call === 1 ? { costUsdMeasurementMissing: true } : {}),
+          ...(fixture.label === 'unreported score' ? { unreportedFrames: 2 } : {}) };
+      },
+      tasks: [{ taskId: 'native-task', pool: 'train', repoUrl: 'r', repoCommit: 'c', spec: 's',
+        intent: 'i', projectContext: 'p' }],
+      baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+      harnessCommit: 'controlled', workspaceId: WS, scratchRoot: '/unused-native-judge-fixture',
+      timeoutMs: 100, pollIntervalMs: 1, maxDistillChars: 100,
+      abDeps: {
+        store: { upsertVariant: async () => {}, upsertTask: async () => {}, startRun: async () => {},
+          finishRun: async () => {}, recordScore: async () => { scores++; }, comparison: async () => [] },
+        runPipeline: async () => { pipelines++; return { harnessSlug: 'controlled', clonePath: '/unused',
+          workflowID: 'controlled', outcome: 'completed', pipelineUsd: 0.1 }; },
+        collectAndDistill: async () => ({ distilledTrace: 'controlled', traceRef: 'controlled', rawSignals: {} }),
+        llmCall: unexpected, newRunId: () => 'unused', now: () => 0,
+      },
+    });
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+      requestedUsd: 1, runRef, accumulate: false, run: async grant => {
+        const current = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+        expect(current).toMatchObject([{ id: grant.reservationId, status: 'open', reservedUsd: 1 }]);
+        const value = await native.evaluate('baseline', { promptOverrides: {} });
+        return { value, costUsd: value.costUsd };
+      } }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    if ((!out.ok && out.reason !== 'failed') || !out.reservationId) throw new Error('expected admitted native judge');
+    expect(out.costUsd).toBeCloseTo(fixture.cost, 6);
+    expect(judgeCalls).toBe(fixture.calls);
+    expect(pipelines).toBe(1);
+    expect(scores).toBe(fixture.status === 'settled' ? 1 : 0);
+    if (fixture.missing) expect(out).toMatchObject({ ok: false, costUsdMeasurementMissing: true, settlement: null });
+    else expect(out.settlement).toMatchObject({ ok: true, reservation: { id: out.reservationId, status: fixture.status } });
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: out.reservationId, requestedUsd: 1, reservedUsd: 1,
+        runRef, status: fixture.status });
+      expect(rows[0].usedUsd).toBeCloseTo(fixture.missing ? 0 : fixture.cost, 6);
+      expect(rows[0].settledAt === null).toBe(fixture.missing);
+      expect(await listLearningSpendEvents(fresh, { workspaceId: WS, loopId })).toHaveLength(fixture.missing ? 0 : 1);
+      expect(await sumOpenReservedUsd(fresh, { workspaceId: WS, loopId })).toBe(fixture.missing ? 1 : 0);
+      expect((await getLearningLoop(fresh, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+    } finally { await fresh.end({ timeout: 5 }); }
+  });
+
+  it.each([
     ['unknown', {}, true, 0],
     ['positive', { costUsd: 0.23 }, false, 0.23],
     ['incomplete subtotal', { costUsd: 0.23, costUsdMeasurementMissing: true }, true, 0.23],

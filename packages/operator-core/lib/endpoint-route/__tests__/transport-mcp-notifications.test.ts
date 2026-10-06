@@ -14,7 +14,7 @@
  *   - Uint8Array data is base64-enveloped, not numeric-keyed.
  *   - progressToken passes through.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   __buildMcpToolContext_forTests,
@@ -22,6 +22,7 @@ import {
   type BuiltSpawnContext,
 } from '../routes/transport/_mcp-host';
 import { MCP_SERVER_CAPABILITIES } from '../routes/transport/mcp-contract';
+import { buildMcpSessionSurfaceTraceEvent } from '../../mcp-request-trace';
 import {
   getSessionSurface,
   rememberSessionToolRegistryRevision,
@@ -272,6 +273,70 @@ describe('MCP session tool-contract revision notifications', () => {
     rememberSessionToolRegistryRevision(sessionId, 'generation-2');
     expect(await call({}, extra)).toEqual({ isError: false });
     expect(dispatchCount).toBe(2);
+  });
+
+  it('traces the transport/native session split when a reconnect has no tools/list baseline', async () => {
+    __resetSessionSurfaces();
+    const nativeSessionId = 'native-codex-session-123';
+    const headers = (sessionId: string) => ({
+      'mcp-session-id': sessionId,
+      'x-papercusp-native-session': nativeSessionId,
+    });
+    const listedExtra = {
+      sessionId: 'mcp-transport-a',
+      requestInfo: { headers: headers('mcp-transport-a') },
+    };
+    rememberSessionToolRegistryRevision('mcp-transport-a', 'generation-1');
+    const listedEvent = buildMcpSessionSurfaceTraceEvent({
+      traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+      toolName: 'tools/list',
+      stage: 'tools_list_completed',
+      elapsedMs: 1,
+      extra: listedExtra,
+      sessionKey: 'mcp-transport-a',
+      sessionBaseline: 'recorded',
+      servingGeneration: 'generation-1',
+      outcome: 'success',
+    });
+    const { sendNotification } = recordingSendNotification();
+    const rejectedExtra = {
+      sessionId: 'mcp-transport-b',
+      requestInfo: { headers: headers('mcp-transport-b') },
+      sendNotification,
+    };
+    let dispatchCount = 0;
+    const call = __withMcpSessionSurfaceRecheckForTests(
+      async () => { dispatchCount += 1; return { isError: false }; },
+      async () => knownGeneration('generation-1'),
+    );
+    const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    try {
+      await expect(call({ params: { name: 'coord:orient' } }, rejectedExtra))
+        .rejects.toThrow(/stale_tool_contract.*tools\/list/);
+      expect(dispatchCount).toBe(0);
+
+      const line = trace.mock.calls
+        .map(([value]) => String(value))
+        .find((value) => value.startsWith('[mcp-request-trace] ') && value.includes('stale_contract_rejected'));
+      expect(line).toBeDefined();
+      const event = JSON.parse(line!.slice('[mcp-request-trace] '.length));
+      expect(event).toMatchObject({
+        toolName: 'coord:orient',
+        stage: 'stale_contract_rejected',
+        phase: 'pre_dispatch',
+        outcome: 'rejected',
+        sessionBaseline: 'missing',
+        servingGeneration: 'generation-1',
+        nativeSessionCarrier: 'header',
+      });
+      expect(event.mcpSessionKeyFingerprint).not.toBe(listedEvent.mcpSessionKeyFingerprint);
+      expect(event.wireMcpSessionIdFingerprint).not.toBe(listedEvent.wireMcpSessionIdFingerprint);
+      expect(event.nativeSessionClaimFingerprint).toBe(listedEvent.nativeSessionClaimFingerprint);
+      expect(line).not.toContain(nativeSessionId);
+    } finally {
+      trace.mockRestore();
+    }
   });
 
   it('blocks unknown generations before dispatch', async () => {

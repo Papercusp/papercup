@@ -3,7 +3,7 @@
 // tasks and writes the rendered frames + timings to --out. The PUI leg of the
 // same five tasks is recorded by agent-chat-pty.integration.test.ts
 // ("P-005: the five side-by-side review tasks work in a fresh launch directory").
-//   npx tsx packages/operator-core/lib/pui-e2e/p005-side-by-side.mts --cli claude|codex|pui --out DIR [--pui-bin PATH] [--operator URL] [--battery p005|parity]
+//   npx tsx packages/operator-core/lib/pui-e2e/p005-side-by-side.mts --cli claude|codex|pui --out DIR [--pui-bin PATH] [--pui-args "ARGS"] [--operator URL] [--battery p005|parity]
 // --battery parity (P-022) records one probe per behaviour in the parity
 // checklist instead: time to a usable prompt, "hi" frames at +150ms/+1s/+3s,
 // streaming, a tool call, an approval, interrupt, the / menu, /model, ?,
@@ -39,6 +39,24 @@ const arg = (name: string, fallback?: string) => {
 };
 /** A bare `--<name>` switch (no value). */
 const flag = (name: string) => process.argv.includes(`--${name}`);
+/** Extra pui launch arguments from `--pui-args "<a> <b>"`, split on whitespace. */
+const puiArgs = () => (arg('pui-args') ?? '').split(/\s+/).filter(Boolean);
+/**
+ * `--probes 10,11,12` runs only the parity probes whose label starts with one
+ * of those numbers (the resume leg is probe 26). Omitted runs them all.
+ */
+const probeFilter = (arg('probes') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const probeSelected = (label: string) => probeFilter.length === 0 || probeFilter.some((p) => label.startsWith(`${p}-`) || label === p);
+/**
+ * `--pui-backend claude|codex|omp` picks pui's engine the way a user does: the
+ * `/backend` command's picker (app.rs open_backend_picker), whose rows are
+ * Claude, Codex, OMP in that order.
+ */
+const PUI_BACKENDS = ['claude', 'codex', 'omp'] as const;
+const puiBackend = arg('pui-backend');
+if (puiBackend !== undefined && !PUI_BACKENDS.includes(puiBackend as (typeof PUI_BACKENDS)[number])) {
+  throw new Error(`--pui-backend must be one of ${PUI_BACKENDS.join('|')}`);
+}
 const cliName =arg('cli') as 'claude' | 'codex' | 'pui';
 const out = path.resolve(arg('out')!);
 const cols = 120;
@@ -139,12 +157,17 @@ const CLIS: Record<string, Cli> = {
   // so it runs `pui --solo` (the same chat that is bare `pui`'s main pane,
   // P-030) full screen. `--pui-workbench` runs bare `pui` instead, to record
   // frames of the chat workbench with its side panes.
+  // `--pui-args "--model opus:high --account auto"` launches pui on a chosen
+  // engine and route (P-025/P-032: the 2026-10-05 leg ran on an account at its
+  // weekly limit and so could not measure any model-backed row).
   pui: {
-    launch: [arg('pui-bin', 'pui')!, ...(flag('pui-workbench') ? [] : ['--solo'])],
-    resume: [arg('pui-bin', 'pui')!, ...(flag('pui-workbench') ? [] : ['--solo'])],
+    launch: [arg('pui-bin', 'pui')!, ...(flag('pui-workbench') ? [] : ['--solo']), ...puiArgs()],
+    resume: [arg('pui-bin', 'pui')!, ...(flag('pui-workbench') ? [] : ['--solo']), ...puiArgs()],
     exit: '/exit',
-    busy: /Running — Enter queues|Starting|Connecting|esc to interrupt/i,
-    approve: { when: /Approve.*Decline|1 Approve|\[1\] Approve/i, key: '1' },
+    // An open approval card ("Card — answer above") is a turn still running.
+    busy: /Running — Enter queues|Starting|Connecting|esc to interrupt|Card — answer above/i,
+    // The card draws `› 1. Approve` on its own row (P-025 frames, 2026-10-06).
+    approve: { when: /Approve.*Decline|1\.? Approve|\[1\] Approve/i, key: '1' },
     startup: [],
     afterResume: ['/resume'],
     env: { PUI_OPERATOR: arg('operator', 'http://127.0.0.1:3170')! },
@@ -526,6 +549,7 @@ async function relaunch(label: string) {
 }
 
 async function probe(label: string, fn: () => Promise<Record<string, unknown>>) {
+  if (!probeSelected(label)) return;
   if (exited) await relaunch(label);
   const t0 = Date.now();
   try {
@@ -534,6 +558,27 @@ async function probe(label: string, fn: () => Promise<Record<string, unknown>>) 
     if (String(error).includes('not a stock install')) throw error;
     frame(`${label}.ERROR`);
     log.push({ label, error: String(error), probeMs: Date.now() - t0, exited });
+  }
+}
+
+/** `/backend` opens the backend picker (chat-first Esc stays in the box); choose `backend`. */
+async function pickPuiBackend(backend: string) {
+  await enter('/backend');
+  await sleep(1200);
+  frame('00-backend-picker');
+  const opened = /Backend — Enter select/.test(screen());
+  await keys('\x1b[B'.repeat(PUI_BACKENDS.indexOf(backend as (typeof PUI_BACKENDS)[number])), 800);
+  await keys('\r', 1200);
+  frame('00-backend-picked');
+  // D-027: chat-first confirms the pick with a toast; the footer names the engine.
+  const picked = screen();
+  const note = picked.match(/(?:starts an? |New conversation on |already runs on )(Claude|Codex|OMP)/)?.[1]
+    ?? picked.match(/\b(Claude|Codex|OMP) · \//)?.[1] ?? null;
+  if (cli.refocus && !cli.refocus.unless.test(screen())) await keys(cli.refocus.key, 800);
+  frame('00-backend-ready');
+  log.push({ label: '00-backend', backend, pickerOpened: opened, note });
+  if (!opened || note?.toLowerCase() !== backend) {
+    throw new Error(`pui backend pick did not land on ${backend} (pickerOpened=${opened}, note=${note}); see 00-backend-*.txt`);
   }
 }
 
@@ -546,6 +591,7 @@ async function runParity() {
   start(cli.launch);
   log.push({ label: '00-ready', ...(await waitReady('00', 120_000)) });
   frame('00-ready');
+  if (cliName === 'pui' && puiBackend) await pickPuiBackend(puiBackend);
 
   await probe('10-hi', async () => {
     const t0 = await enter('hi');
@@ -713,6 +759,7 @@ async function runParity() {
     while (!exited && Date.now() - t < 15_000) await sleep(250);
   }
   try { pty.kill(); } catch { /* gone */ }
+  if (!probeSelected('26-resume')) return;
 
   start(cli.resume);
   log.push({ label: '26-resume-ready', ...(await waitReady('26-resume', 120_000)) });

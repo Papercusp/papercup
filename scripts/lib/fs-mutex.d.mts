@@ -72,7 +72,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number }} [opts]
+ * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
@@ -85,6 +85,9 @@ export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
         elapsedMs: number;
     }) => void;
     waitingNoticeIntervalMs?: number;
+    onAcquired?: (info: {
+        waitedMs: number;
+    }) => void;
 }): Promise<T>;
 /**
  * EI-19304880034803985 — a NON-blocking, synchronous peek at whether `name`'s

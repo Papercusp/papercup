@@ -160,6 +160,37 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
   });
 
+  it.each([
+    [
+      'context_mismatch',
+      'rejected',
+      'Patch verification could not find the expected workspace-map heading and path lines in apps/operator/prompts/pot-instances/papercup-pot.su.md; no files were changed.',
+    ],
+    [
+      'verification_failed',
+      '',
+      'A three-file resource-governor repair patch was rejected before writing because I matched a long project-doc-parts disposition line with abbreviated text. Corrected patch will anchor on the unique array terminator and use short exact hunks.',
+    ],
+    [
+      'verification-failed',
+      'patch-context-mismatch',
+      'A one-file patch was rejected because one expected source line did not match exactly. The patch applied nothing. Re-read the exact line context and reformulate the single-file patch.',
+    ],
+  ])('classifies a rejected patch hunk as caller (%s)', (errorCode, status, message) => {
+    expect(classifyToolError(errorCode, status, message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'apply_patch',
+      errorCode,
+      status,
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it('keeps an unrelated verification failure structural', () => {
+    expect(classifyToolError('verification-failed', 'error', 'tool failed while verifying its result')).toBe('structural');
+  });
+
   it('classifies kernel identity outside-ceiling refusals as caller without broadening authorization_denied', () => {
     const sessionsRefusal = 'Kernel preflight denied tool "sessions:ingest-gate-event": Identity capability (unresolved): outside-ceiling (sessions:ingest-gate-event)';
     const journalRefusal = 'Kernel preflight denied tool "journal:record-turn": Identity capability (unresolved): outside-ceiling (journal:record-turn)';

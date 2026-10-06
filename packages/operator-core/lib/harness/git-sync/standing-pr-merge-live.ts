@@ -13,12 +13,13 @@
  *     repository the standing PR targets; the fork is the separate `pot-fork` remote.
  *   - promotedSha: the checkout's local `main`, which the green gate fast-forwards
  *     only on green. Unreadable → null → the gate refuses `nothing-promoted`.
- *   - suite command: the repo's own package.json — `test:affected` when present,
- *     else `test`. No suite → outcome `error` (never merge untested code).
+ *   - suite command: the pot's own suite, `resolvePotSuiteCommand` (owner override →
+ *     blueprint releaseGate.greenCmd → testCommand) — the same rule the gate, pot
+ *     creation and the integration-mode question use (P-015; WI-10006355). No suite →
+ *     outcome `error` (never merge untested code). The merge worktree's dependency
+ *     install is decided by `makeWorktreeSuiteRunner`.
  */
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Pr } from '../../pr-host/types';
 import { projectDirForSlug } from '../../operator-notes';
@@ -49,24 +50,18 @@ export interface LiveStandingPrMergeArgs {
   autoMerge: boolean;
   /** contribution-admission verdict for the PR author. */
   authorRevoked: boolean;
+  /** A reviewer chose Merge in the PR viewer; see `StandingPrMergeInput.viewerApproved`. */
+  viewerApproved?: boolean;
 }
 
 export interface LiveStandingPrMergeResolvers {
   repoDir(installSlug: string, workspaceId: string): Promise<string | null>;
   integration(workspaceId: string, installSlug: string): Promise<PotIntegrationModeRead>;
   promotedSha(repoDir: string): Promise<string | null>;
-  suiteCommand(repoDir: string): Promise<string | null>;
+  /** The pot's suite command, or null when it has none. */
+  suiteCommand(installSlug: string, workspaceId: string): Promise<string | null>;
   runSuite(command: string): RunSuite;
   buildDeps(args: { repoDir: string; installSlug: string; prNumber: number; runSuite: RunSuite }): StandingPrMergeDeps;
-}
-
-/** Pick the suite command from the repo's package.json scripts; null when it has none. */
-export function suiteCommandFromScripts(scripts: unknown): string | null {
-  if (!scripts || typeof scripts !== 'object') return null;
-  const s = scripts as Record<string, unknown>;
-  if (typeof s['test:affected'] === 'string') return 'npm ci && npm run test:affected';
-  if (typeof s.test === 'string') return 'npm ci && npm test';
-  return null;
 }
 
 export function makeLiveStandingPrMerge(opts: {
@@ -87,14 +82,8 @@ export function makeLiveStandingPrMerge(opts: {
         return null;
       }
     },
-    async suiteCommand(repoDir) {
-      try {
-        const pkg = JSON.parse(await readFile(join(repoDir, 'package.json'), 'utf8')) as { scripts?: unknown };
-        return suiteCommandFromScripts(pkg.scripts);
-      } catch {
-        return null;
-      }
-    },
+    suiteCommand: async (slug, ws) =>
+      (await import('../routines/hive-release-env')).resolvePotSuiteCommand(slug, ws),
     runSuite: (command) => makeWorktreeSuiteRunner(command),
     buildDeps: ({ repoDir, installSlug, prNumber, runSuite }) =>
       createDefaultStandingPrMergeDeps({ repoDir, installSlug, prNumber, store: opts.store, runSuite, onError: opts.onError }),
@@ -113,7 +102,7 @@ export function makeLiveStandingPrMerge(opts: {
 
       const repoDir = await r.repoDir(args.installSlug, args.workspaceId);
       if (!repoDir) return { action: 'error', detail: `No checkout is registered for ${args.installSlug}.` };
-      const command = await r.suiteCommand(repoDir);
+      const command = await r.suiteCommand(args.installSlug, args.workspaceId);
       if (!command) {
         return { action: 'error', detail: `${args.installSlug} has no test suite to run on the merge result; not merging.` };
       }
@@ -124,7 +113,13 @@ export function makeLiveStandingPrMerge(opts: {
         runSuite: r.runSuite(command),
       });
       return await stepStandingPrMerge(
-        { pr: args.pr, policy, promotedSha: await r.promotedSha(repoDir), authorRevoked: args.authorRevoked },
+        {
+          pr: args.pr,
+          policy,
+          promotedSha: await r.promotedSha(repoDir),
+          authorRevoked: args.authorRevoked,
+          viewerApproved: args.viewerApproved === true,
+        },
         deps,
       );
     } catch (err) {

@@ -19,7 +19,18 @@ let sql: NonNullable<HoldCensusOptions['sql']>;
 const WS = 'ws-hold-census';
 const MAPPED = 'hc-mapped';
 const UNMAPPED = 'hc-unmapped';
-const ask = { status: 'active', kind: 'human', capability: 'product-decision', defaultIfUnanswered: 'ship it' };
+// A complete answerable ask (D-029): every field hasActiveStrictHumanAsk requires, on one blocker.
+const ask = {
+  status: 'active',
+  kind: 'human',
+  capability: 'product-decision',
+  ref: 'hc-decision',
+  summary: 'Ship the change or hold it?',
+  createdBy: 'su-test',
+  createdAt: '2026-10-06T00:00:00.000Z',
+  nextVerb: 'work_items:set_blocker { op: "clear" }',
+  defaultIfUnanswered: 'ship it',
+};
 
 async function seed(
   harness: string,

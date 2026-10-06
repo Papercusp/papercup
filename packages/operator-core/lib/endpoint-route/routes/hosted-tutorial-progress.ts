@@ -6,6 +6,7 @@ import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, wo
 import { readTutorialProgress, updateTutorialProgress, tutorialProgressUpdateSchema, TutorialProgressConflict } from '../../onboarding/cloud-tutorial-progress';
 import { sameTutorialScope } from '../../onboarding/cloud-tutorial-lesson';
 import { authorizeTutorialHelp, tutorialHelpRequestSchema, type TutorialHelpRequest } from '../../onboarding/cloud-tutorial-help';
+import { isTtsEngineUnavailable } from '../../voice-release-availability';
 export const HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH = '/hosted/browser/onboarding/tutorial-progress' as const;
 export const HOSTED_BROWSER_TUTORIAL_HELP_PATH = '/hosted/browser/onboarding/tutorial-help' as const;
 export const HOSTED_BROWSER_TUTORIAL_SPEECH_PATH = '/hosted/browser/onboarding/tutorial-speech' as const;
@@ -36,6 +37,9 @@ async function answerLesson(input: TutorialHelpRequest, signal: AbortSignal, wor
   return value.assembled.trim().slice(0, 2000);
 }
 async function speakLesson(text: string, engine: string, voiceId: string | undefined) {
+  // Release scope (voice-final-public-release-2026-10-01#D-005): this route calls
+  // synthesize() directly, so it must refuse release-unavailable engines itself.
+  if (isTtsEngineUnavailable(engine)) throw new Error('tutorial_speech_unavailable');
   const [{ synthesize }, { loadVoicePrefs }] = await Promise.all([
     import('./agent-mcp/tts-synth'), import('../../voice-prefs'),
   ]);

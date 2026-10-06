@@ -81,6 +81,10 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     source: 'packages/operator-core/lib/release/admission-jobs.worker.ts',
     output: 'admission-jobs.worker.mjs',
   },
+  {
+    source: 'packages/operator-core/lib/memory/bench/precision-bench-worker.ts',
+    output: 'precision-bench-worker.mjs',
+  },
 ];
 
 /**
@@ -229,7 +233,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const common = readFileSync(recipe, 'utf8');
     const copied = [...common.matchAll(/\$repo_root\/([^"\s}]+\.script\.mjs)/g)]
       .map(match => join(REPO_ROOT, match[1]!));
-    const bundled = [...common.matchAll(/"\$repo_root\/([^"]+\.worker\.ts)"/g)]
+    const bundled = [...common.matchAll(/"\$repo_root\/([^"]+(?:\.worker|precision-bench-worker)\.ts)"/g)]
       .map(match => join(REPO_ROOT, match[1]!));
     expect(copied.length).toBeGreaterThan(0);
     expect(bundled.length).toBeGreaterThan(0);

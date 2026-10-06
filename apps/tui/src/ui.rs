@@ -3146,7 +3146,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             && (!inline || app.chat_focus.is_some() || !app.chat_composing);
         let inline_turn = inline && matches!(m.role.as_str(), "user" | "assistant");
         if inline_turn {
-            push_inline_turn(&mut lines, m, focused, inner_w);
+            push_inline_turn(&mut lines, m, focused, inner_w, app.chat_tools_expanded);
         }
         let header = if focused {
             format!("▸ {header}")
@@ -3173,11 +3173,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 Theme::dim(),
             )));
         }
-        if !inline_turn && m.role == "assistant" && !m.reasoning.trim().is_empty() {
-            lines.push(Line::from(Span::styled("  reasoning", Theme::dim())));
-            for line in wrap_text(m.reasoning.trim(), inner_w.saturating_sub(2)) {
-                lines.push(Line::from(Span::styled(format!("  {line}"), Theme::dim())));
-            }
+        if !inline_turn && m.role == "assistant" {
+            lines.extend(reasoning_lines(
+                &m.reasoning,
+                m.streaming,
+                app.chat_tools_expanded,
+                inner_w,
+            ));
         }
         let body = if m.streaming {
             let p = crate::chat_tags::live_preview(&m.content);
@@ -3369,6 +3371,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 &crate::models::ChatMessage::user(echo),
                 false,
                 inner_w,
+                false,
             );
         } else {
             lines.push(Line::from(Span::styled("  you", Theme::selected())));
@@ -3382,16 +3385,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // Inline there is no title bar to say a turn is running, so the bottom row
     // of the transcript area says it, the way Claude Code's spinner line sits
     // directly above its prompt. Esc stops the turn only from the composer.
-    let (transcript_area, running_row) = if inline && app.chat_streaming && transcript_area.height > 1
-    {
-        let split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(transcript_area);
-        (split[0], Some(split[1]))
-    } else {
-        (transcript_area, None)
-    };
+    let (transcript_area, running_row) =
+        if inline && app.chat_streaming && transcript_area.height > 1 {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(transcript_area);
+            (split[0], Some(split[1]))
+        } else {
+            (transcript_area, None)
+        };
     let total = lines.len() as u16;
     let visible = if inline {
         transcript_area.height
@@ -3915,6 +3918,7 @@ fn push_inline_turn(
     m: &crate::models::ChatMessage,
     focused: bool,
     inner_w: usize,
+    expanded: bool,
 ) {
     let assistant = m.role == "assistant";
     let (marker, marker_style) = match (focused, assistant) {
@@ -3923,10 +3927,13 @@ fn push_inline_turn(
         (false, false) => ("❯ ", Theme::dim()),
     };
     let text_w = inner_w.saturating_sub(2).max(1);
-    if assistant && !m.reasoning.trim().is_empty() {
-        for line in wrap_text(m.reasoning.trim(), text_w) {
-            lines.push(Line::from(Span::styled(format!("  {line}"), Theme::dim())));
-        }
+    if assistant {
+        lines.extend(reasoning_lines(
+            &m.reasoning,
+            m.streaming,
+            expanded,
+            inner_w,
+        ));
     }
     let body: Vec<Line<'static>> = if assistant {
         let text = if m.streaming {
@@ -3947,7 +3954,10 @@ fn push_inline_turn(
             crate::markdown::render(&text, text_w, m.streaming)
         }
     } else {
-        wrap_text(&m.content, text_w).into_iter().map(Line::from).collect()
+        wrap_text(&m.content, text_w)
+            .into_iter()
+            .map(Line::from)
+            .collect()
     };
     for (i, mut line) in body.into_iter().enumerate() {
         let gutter = if i == 0 {
@@ -6674,8 +6684,8 @@ pub(crate) fn elide_left(s: &str, n: usize) -> String {
 /// arguments that would be pure noise: absent, `null`, or an empty object. A
 /// no-argument tool then gets a clean one-line card instead of an empty bracket
 /// pair dressed up as information.
-/// Collapsed tool output shows this many lines; Ctrl+R shows up to the cap.
-const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
+/// Collapsed tool output is one summary line; a diff previews this many lines;
+/// Ctrl+R shows either up to the cap.
 const TOOL_DIFF_PREVIEW_LINES: usize = 8;
 const TOOL_EXPANDED_LINE_CAP: usize = 400;
 
@@ -6706,9 +6716,21 @@ pub(crate) fn tool_result_text(result: &serde_json::Value) -> Option<String> {
         }
     }
     let text = match result {
-        Value::Object(o) => ["content", "text", "output", "stdout", "result"]
-            .iter()
-            .find_map(|k| o.get(*k).and_then(parts))?,
+        // P-025: Codex reports a command's output as `aggregatedOutput` and an
+        // MCP result as `result: { content: [{ type: 'text', text }] }`.
+        Value::Object(o) => [
+            "content",
+            "text",
+            "output",
+            "stdout",
+            "aggregatedOutput",
+            "result",
+        ]
+        .iter()
+        .find_map(|k| {
+            let v = o.get(*k)?;
+            parts(v).or_else(|| v.get("content").and_then(parts))
+        })?,
         other => parts(other)?,
     };
     let text = crate::glyph::terminal_safe_text(&text);
@@ -6735,8 +6757,24 @@ pub(crate) fn tool_detail_lines(
         };
         out.push(Line::from(Span::styled(trunc(&note, width), Theme::dim())));
     };
-    if let Some(card) = crate::change_card::card_for_tool(tc, 0, 0) {
-        let all: Vec<&DiffLine> = card.hunks.iter().flat_map(|h| h.lines.iter()).collect();
+    let summary_line = |summary: &str| {
+        Line::from(Span::styled(
+            trunc(&format!("    ⎿ {summary}"), width),
+            Theme::dim(),
+        ))
+    };
+    let card = crate::change_card::card_for_tool(tc, 0, 0);
+    let codex_patch = codex_patch_lines(tc);
+    let diff: Option<Vec<&DiffLine>> = card
+        .as_ref()
+        .map(|card| card.hunks.iter().flat_map(|h| h.lines.iter()).collect())
+        .or_else(|| codex_patch.as_ref().map(|lines| lines.iter().collect()));
+    if let Some(all) = diff {
+        // P-025: once the edit has run, one line says what it did (Claude's
+        // `⎿ Added 2 lines, removed 2 lines`, Codex's `(+2 -2)`), above the diff.
+        if tc.outcome != crate::models::ToolOutcome::Pending {
+            out.push(summary_line(&change_summary(&all)));
+        }
         let limit = if expanded {
             TOOL_EXPANDED_LINE_CAP
         } else {
@@ -6776,16 +6814,18 @@ pub(crate) fn tool_detail_lines(
         return out;
     };
     let body_w = width.saturating_sub(6).max(1);
-    let rows: Vec<String> = if expanded {
-        text.lines().flat_map(|l| wrap_text(l, body_w)).collect()
-    } else {
-        text.lines().map(str::to_owned).collect()
-    };
-    let limit = if expanded {
-        TOOL_EXPANDED_LINE_CAP
-    } else {
-        TOOL_OUTPUT_PREVIEW_LINES
-    };
+    if !expanded {
+        // P-025: a finished call collapses to ONE line, the way Claude Code
+        // prints `⎿ Read 40 lines`; Ctrl+R shows the output itself.
+        let more = text.lines().filter(|l| !l.trim().is_empty()).count() > 1;
+        let hint = if more { "  (Ctrl+R to expand)" } else { "" };
+        let room = body_w.saturating_sub(hint.chars().count()).max(8);
+        let summary = crate::tool_display::result_summary(&tc.name, tc.input.as_ref(), &text, room);
+        out.push(summary_line(&format!("{summary}{hint}")));
+        return out;
+    }
+    let rows: Vec<String> = text.lines().flat_map(|l| wrap_text(l, body_w)).collect();
+    let limit = TOOL_EXPANDED_LINE_CAP;
     for (i, row) in rows.iter().take(limit).enumerate() {
         let lead = if i == 0 { "    ⎿ " } else { "      " };
         out.push(Line::from(Span::styled(
@@ -6798,6 +6838,122 @@ pub(crate) fn tool_detail_lines(
         more(hidden, &mut out);
     }
     out
+}
+
+/// `Added 2 lines, removed 2 lines`: what a file change did, in one line (P-025).
+fn change_summary(lines: &[&crate::change_card::DiffLine]) -> String {
+    use crate::change_card::DiffLine;
+    let added = lines
+        .iter()
+        .filter(|l| matches!(l, DiffLine::Added(_)))
+        .count();
+    let removed = lines
+        .iter()
+        .filter(|l| matches!(l, DiffLine::Removed(_)))
+        .count();
+    let n = |count: usize| {
+        if count == 1 {
+            "1 line".to_string()
+        } else {
+            format!("{count} lines")
+        }
+    };
+    match (added, removed) {
+        (0, 0) => "No changes".to_string(),
+        (a, 0) => format!("Added {}", n(a)),
+        (0, r) => format!("Removed {}", n(r)),
+        (a, r) => format!("Added {}, removed {}", n(a), n(r)),
+    }
+}
+
+/// A Codex `fileChange` item's diffs as diff lines (P-025). An update carries a
+/// unified diff; an added or deleted file carries its whole content.
+fn codex_patch_lines(
+    tc: &crate::models::ChatToolCall,
+) -> Option<Vec<crate::change_card::DiffLine>> {
+    use crate::change_card::DiffLine;
+    let item = tc.result.as_ref().or(tc.input.as_ref())?;
+    if item.get("type")?.as_str()? != "fileChange" {
+        return None;
+    }
+    let mut out = Vec::new();
+    for change in item.get("changes")?.as_array()? {
+        let diff = change
+            .get("diff")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let kind = change
+            .pointer("/kind/type")
+            .and_then(serde_json::Value::as_str);
+        for line in diff.lines() {
+            out.push(match kind {
+                Some("add") => DiffLine::Added(line.to_string()),
+                Some("delete") => DiffLine::Removed(line.to_string()),
+                _ => {
+                    if ["+++", "---", "@@", "diff ", "index "]
+                        .iter()
+                        .any(|header| line.starts_with(header))
+                    {
+                        continue;
+                    }
+                    match line.chars().next() {
+                        Some('+') => DiffLine::Added(line[1..].to_string()),
+                        Some('-') => DiffLine::Removed(line[1..].to_string()),
+                        Some(' ') => DiffLine::Context(line[1..].to_string()),
+                        _ => DiffLine::Context(line.to_string()),
+                    }
+                }
+            });
+        }
+    }
+    Some(out)
+}
+
+/// pui-chat-first-ux P-025: reasoning is ONE dim line, the way Codex shows its
+/// reasoning summary and Claude Code its collapsed thinking: the newest heading
+/// while the reply streams, the first once it is done. Ctrl+R (the same toggle
+/// that expands tool output) shows the whole text.
+fn reasoning_lines(
+    reasoning: &str,
+    streaming: bool,
+    expanded: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let text = reasoning.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if expanded {
+        let mut out = vec![Line::from(Span::styled("  ∴ reasoning", Theme::dim()))];
+        for line in wrap_text(text, width.saturating_sub(4).max(1)) {
+            out.push(Line::from(Span::styled(
+                format!("    {line}"),
+                Theme::dim(),
+            )));
+        }
+        return out;
+    }
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let headings: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.len() > 4 && l.starts_with("**") && l.ends_with("**"))
+        .collect();
+    let pool = if headings.is_empty() {
+        &lines
+    } else {
+        &headings
+    };
+    let picked = if streaming { pool.last() } else { pool.first() };
+    let line = picked.map(|l| l.trim_matches('*').trim()).unwrap_or("");
+    vec![Line::from(Span::styled(
+        trunc(&format!("  ∴ {line}"), width),
+        Theme::dim(),
+    ))]
 }
 
 /// What a parked tool call wants to do, in words: the semantic card title or
@@ -8106,7 +8262,10 @@ mod tests {
         // still confirm a drag-copy; before this, "Copied N characters" was set
         // and never drawn.
         let mut app = App::new();
-        assert!(!app.notify_enabled, "fixture: notifications muted by default");
+        assert!(
+            !app.notify_enabled,
+            "fixture: notifications muted by default"
+        );
         app.chat_toast("info", "Copied 18 characters".to_string());
         assert!(render(&app, 90, 12).contains("Copied 18 characters"));
         // A notification replacing it is muted again.
@@ -8203,7 +8362,10 @@ mod tests {
         // press Esc first; out of it, it names the keys that work now.
         app.chat_composing = true;
         let composing = render(&app, 120, 24);
-        assert!(composing.contains("Esc, then l: choose session"), "{composing}");
+        assert!(
+            composing.contains("Esc, then l: choose session"),
+            "{composing}"
+        );
         assert!(!composing.contains("i type · v speak"), "{composing}");
         app.chat_composing = false;
         let normal = render(&app, 120, 24);
@@ -10116,13 +10278,19 @@ mod tests {
         let (rows, cursor) = render_rows(&app, 120, 24);
         let text = rows.join("\n");
         for border in ['│', '┌', '┐', '└', '┘'] {
-            assert!(!text.contains(border), "chat-first draws `{border}`:\n{text}");
+            assert!(
+                !text.contains(border),
+                "chat-first draws `{border}`:\n{text}"
+            );
         }
         let reply = rows
             .iter()
             .find(|r| r.contains("what are we working on"))
             .unwrap_or_else(|| panic!("{text}"));
-        assert!(reply.starts_with("● Hi — what are we working on?"), "{text}");
+        assert!(
+            reply.starts_with("● Hi — what are we working on?"),
+            "{text}"
+        );
         let draft = rows
             .iter()
             .position(|r| r.starts_with("> hey"))
@@ -10165,7 +10333,8 @@ mod tests {
         let text = rows.join("\n");
         assert!(rows.iter().any(|r| r.starts_with("❯ hello")), "{text}");
         assert!(
-            rows.iter().any(|r| r.starts_with("● Hi — what are we working on?")),
+            rows.iter()
+                .any(|r| r.starts_with("● Hi — what are we working on?")),
             "{text}"
         );
         for header in ["you", "agent", "▸ agent"] {
@@ -10174,7 +10343,10 @@ mod tests {
                 "a `{header}` header row:\n{text}"
             );
         }
-        assert!(rows.iter().any(|r| r.starts_with("✻ Worked for 4s")), "{text}");
+        assert!(
+            rows.iter().any(|r| r.starts_with("✻ Worked for 4s")),
+            "{text}"
+        );
         assert!(!text.contains("change card"), "{text}");
 
         // Control: the workbench still prints headers and the card affordance.
@@ -10193,7 +10365,8 @@ mod tests {
         let mut app = chat_first_bound_app();
         let start = std::time::Instant::now();
         app.chat_streaming = true;
-        app.chat_messages.push(crate::models::ChatMessage::streaming_assistant());
+        app.chat_messages
+            .push(crate::models::ChatMessage::streaming_assistant());
         app.time_chat_turn(start);
         assert_eq!(app.chat_turn_started, Some(start));
         let last = app.chat_messages.len() - 1;
@@ -10208,7 +10381,8 @@ mod tests {
         );
         // A turn that ends on the owner's own line (a failed send) records
         // nothing on anyone's reply.
-        app.chat_messages.push(crate::models::ChatMessage::user("again"));
+        app.chat_messages
+            .push(crate::models::ChatMessage::user("again"));
         app.chat_streaming = true;
         app.time_chat_turn(start);
         app.chat_streaming = false;
@@ -10249,10 +10423,16 @@ mod tests {
             .push(crate::models::ChatMessage::streaming_assistant());
         let at = |secs| start + std::time::Duration::from_secs(secs);
         let first = app.chat_working_line(at(3));
-        assert!(first.contains("Thinking… (3s · Esc to interrupt)"), "{first}");
+        assert!(
+            first.contains("Thinking… (3s · Esc to interrupt)"),
+            "{first}"
+        );
         app.chat_messages.last_mut().unwrap().content = "x".repeat(4_400);
         let later = app.chat_working_line(at(75));
-        assert!(later.contains("Working… (1m 15s · ↓ ~1.1k tokens · Esc to interrupt)"), "{later}");
+        assert!(
+            later.contains("Working… (1m 15s · ↓ ~1.1k tokens · Esc to interrupt)"),
+            "{later}"
+        );
         // The spinner frame advances with time, so consecutive ticks differ.
         let frame = |line: String| line.chars().next().unwrap();
         assert_ne!(
@@ -10260,7 +10440,10 @@ mod tests {
             frame(app.chat_working_line(start + std::time::Duration::from_millis(500)))
         );
         // Each idle tick repaints while the turn runs.
-        assert_eq!(app.update(crate::event::Event::Tick), crate::app::Action::Render);
+        assert_eq!(
+            app.update(crate::event::Event::Tick),
+            crate::app::Action::Render
+        );
     }
 
     /// P-024 / P-023: a message sent while the engine launches says so, and
@@ -10284,7 +10467,9 @@ mod tests {
             approvals: None,
         });
         let at = |secs| start + std::time::Duration::from_secs(secs);
-        assert!(app.chat_working_line(at(2)).contains("Starting Claude… (2s"));
+        assert!(app
+            .chat_working_line(at(2))
+            .contains("Starting Claude… (2s"));
         let slow = app.chat_working_line(at(6));
         assert!(
             slow.contains("Still starting Claude; your message will send when it is ready… (6s"),
@@ -10954,16 +11139,16 @@ mod tests {
         let mut tc = ChatToolCall::plain("Bash".into());
         tc.outcome = ToolOutcome::Ok;
         tc.result = Some(serde_json::json!("r1\nr2\nr3\nr4\nr5"));
-        let collapsed = text(tool_detail_lines(&tc, 80, false));
+        // P-025: a finished call collapses to ONE line: the first output line
+        // and how many more there are.
+        let collapsed = tool_detail_lines(&tc, 80, false);
+        assert_eq!(collapsed.len(), 1, "{}", text(collapsed.clone()));
+        let collapsed = text(collapsed);
         assert!(
-            collapsed.contains("⎿ r1") && collapsed.contains("r3"),
+            collapsed.contains("⎿ r1 … +4 lines  (Ctrl+R to expand)"),
             "{collapsed}"
         );
-        assert!(!collapsed.contains("r4"), "{collapsed}");
-        assert!(
-            collapsed.contains("+2 lines (Ctrl+R to expand)"),
-            "{collapsed}"
-        );
+        assert!(!collapsed.contains("r2"), "{collapsed}");
         let expanded = text(tool_detail_lines(&tc, 80, true));
         assert!(
             expanded.contains("r5") && !expanded.contains("Ctrl+R"),
@@ -10980,15 +11165,15 @@ mod tests {
         tc.result = Some(serde_json::json!(
             "     1\tconst test = 1;\n\u{1b}[32mok\u{1b}[0m"
         ));
-        let read = text(tool_detail_lines(&tc, 80, false));
-        assert!(
-            read.contains("⎿      1  const test = 1;") && read.contains("      ok"),
-            "{read}"
-        );
-        assert!(
-            !read.chars().any(|c| c.is_control() && c != '\n'),
-            "{read:?}"
-        );
+        for expanded in [false, true] {
+            let read = text(tool_detail_lines(&tc, 80, expanded));
+            assert!(read.contains("const test = 1;"), "{read}");
+            assert_eq!(read.contains("ok"), expanded, "{read}");
+            assert!(
+                !read.chars().any(|c| c.is_control() && c != '\n'),
+                "{read:?}"
+            );
+        }
         let mut tabbed = ChatToolCall::plain("Edit".into());
         tabbed.input = Some(serde_json::json!({
             "file_path": "a.go", "old_string": "\treturn 1", "new_string": "\treturn 2"
@@ -11008,6 +11193,147 @@ mod tests {
             diff.contains("- let a = 1;") && diff.contains("+ let a = 2;"),
             "{diff}"
         );
+    }
+
+    /// pui-chat-first-ux P-025: every engine's finished call collapses to one
+    /// `⎿` line, an edit says what it changed above its diff, and Codex items
+    /// (`commandExecution`, `fileChange`, `mcpToolCall`) render like Claude's.
+    #[test]
+    fn p025_finished_tool_calls_collapse_to_one_result_line_for_every_engine() {
+        use crate::models::{ChatToolCall, ToolOutcome};
+        use serde_json::json;
+        let text = |lines: Vec<Line<'static>>| {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let done = |name: &str, input: serde_json::Value, result: serde_json::Value| {
+            let mut tc = ChatToolCall::plain(name.into());
+            tc.input = Some(input);
+            tc.result = Some(result);
+            tc.outcome = ToolOutcome::Ok;
+            tc
+        };
+
+        // Claude Read: the line count, not the file's first line.
+        let read = done(
+            "Read",
+            json!({ "file_path": "/w/calc.js" }),
+            json!("     1\tconst a = 1;\n     2\tconst b = 2;\n     3\tmodule.exports = { a, b };"),
+        );
+        assert_eq!(
+            text(tool_detail_lines(&read, 80, false)),
+            ["    ⎿ Read 3 lines  (Ctrl+R to expand)"]
+        );
+
+        // OMP read: the same row and result line.
+        let omp = done(
+            "read",
+            json!({ "path": "/w/calc.js" }),
+            json!({ "content": [{ "type": "text", "text": "1\tconst a = 1;\n2\tconst b = 2;" }] }),
+        );
+        assert_eq!(
+            text(tool_detail_lines(&omp, 80, false)),
+            ["    ⎿ Read 2 lines  (Ctrl+R to expand)"]
+        );
+
+        // Codex command: the whole item comes back; its output is `aggregatedOutput`.
+        let item = json!({
+            "type": "commandExecution", "id": "c1", "command": "/bin/bash -lc 'rg --files'",
+            "aggregatedOutput": "calc.js\ncalc.test.js\n", "exitCode": 0, "status": "completed"
+        });
+        let command = done("commandExecution", item.clone(), item);
+        assert_eq!(
+            text(tool_detail_lines(&command, 80, false)),
+            ["    ⎿ calc.js … +1 line  (Ctrl+R to expand)"]
+        );
+        let expanded = text(tool_detail_lines(&command, 80, true)).join("\n");
+        assert!(expanded.contains("calc.test.js"), "{expanded}");
+
+        // Codex MCP: the result's text parts sit under `result.content`.
+        let mcp = json!({
+            "type": "mcpToolCall", "id": "m1", "server": "papercusp-su", "tool": "plans_get",
+            "arguments": { "slug": "p" }, "status": "completed",
+            "result": { "content": [{ "type": "text", "text": "plan p: 3 items" }] }
+        });
+        let mcp = done("plans_get", mcp.clone(), mcp);
+        assert_eq!(
+            text(tool_detail_lines(&mcp, 80, false)),
+            ["    ⎿ plan p: 3 items"]
+        );
+
+        // Claude edit: once it has run, the change in one line above the diff.
+        let mut edit = ChatToolCall::plain("Edit".into());
+        edit.input = Some(json!({
+            "file_path": "calc.js", "old_string": "a + b", "new_string": "a - b"
+        }));
+        let pending = text(tool_detail_lines(&edit, 80, false));
+        assert!(!pending.iter().any(|l| l.contains("⎿")), "{pending:?}");
+        edit.outcome = ToolOutcome::Ok;
+        let ended = text(tool_detail_lines(&edit, 80, false));
+        assert_eq!(ended[0], "    ⎿ Added 1 line, removed 1 line", "{ended:?}");
+        assert!(ended.iter().any(|l| l.contains("+ a - b")), "{ended:?}");
+
+        // Codex edit: a `fileChange` item carries a unified diff per file.
+        let patch = json!({
+            "type": "fileChange", "id": "f1", "status": "completed",
+            "changes": [{
+                "path": "/w/calc.js", "kind": { "type": "update", "move_path": null },
+                "diff": "@@ -1,2 +1,2 @@\n-const a = 1;\n+const a = 2;\n keep\n+added\n"
+            }]
+        });
+        let patch = done("fileChange", patch.clone(), patch);
+        let lines = text(tool_detail_lines(&patch, 80, false));
+        assert_eq!(lines[0], "    ⎿ Added 2 lines, removed 1 line", "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("- const a = 1;"))
+                && lines.iter().any(|l| l.contains("+ const a = 2;"))
+                && !lines.iter().any(|l| l.contains("@@")),
+            "{lines:?}"
+        );
+    }
+
+    /// P-025: reasoning is one dim line (newest heading while streaming, the
+    /// first once done) and the full text only when expanded.
+    #[test]
+    fn p025_reasoning_is_one_dim_line_until_expanded() {
+        let text = |lines: Vec<Line<'static>>| {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let codex = "**Reading calc.js**\n\nI will open the file.\n\n**Planning the fix**\n\nSwap the sign.";
+        assert_eq!(
+            text(reasoning_lines(codex, true, false, 80)),
+            ["  ∴ Planning the fix"]
+        );
+        assert_eq!(
+            text(reasoning_lines(codex, false, false, 80)),
+            ["  ∴ Reading calc.js"]
+        );
+        // Claude thinking has no headings: its first line, cut to the width.
+        let claude = "The user wants the sum fixed. I should read calc.js first and then edit it.\nSecond thought.";
+        let one = text(reasoning_lines(claude, false, false, 40));
+        assert_eq!(one.len(), 1, "{one:?}");
+        assert!(
+            one[0].starts_with("  ∴ The user wants") && one[0].chars().count() <= 40,
+            "{one:?}"
+        );
+        let full = text(reasoning_lines(claude, false, true, 80)).join("\n");
+        assert!(full.contains("Second thought."), "{full}");
+        assert!(reasoning_lines("  \n ", true, false, 80).is_empty());
     }
 
     #[test]

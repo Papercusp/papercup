@@ -75,6 +75,8 @@ import {
 import {
   EXECUTED_MAP_RESULT_ENV,
   EXECUTED_MAP_WORKSPACE_ENV,
+  EXECUTED_MAP_OUT_ENV,
+  EXECUTED_MAP_NO_PERSIST_ENV,
   clearExecutedMapResult,
   executedMapResultPath,
   formatExecutedMapAlarmLines,
@@ -6599,14 +6601,24 @@ function runCapturedTask(
   // phase-C report reads exactly one invocation per task. An inherited value is stripped.
   const recordsExecutedMap =
     executedMapRecordingEnabled() &&
-    (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script));
+    (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script) ||
+      spawnTask.script === "test:integration");
   const executedMapResultFile =
     recordsExecutedMap && extraArgs.length === 0 && scriptOverride == null
       ? executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, `${context.t.ws.name}::${context.t.script}`)
       : null;
+  // Integration runs need execution diagnostics, including failures and source gaps, rather
+  // than reusable unit-pass rows. Keep each workspace/attempt's OUT separate from its result
+  // channel; retries retain diagnostics without replacing the initial invocation's verdict.
+  const integrationSourceMapOut = recordsExecutedMap && spawnTask.script === "test:integration"
+    ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.${createHash("sha256")
+      .update(JSON.stringify([taskKey(spawnTask), journalLabel, extraArgs])).digest("hex").slice(0, 16)}.sources.json`
+    : null;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
     [EXECUTED_MAP_RESULT_ENV]: _inheritedExecutedMapResult,
+    [EXECUTED_MAP_WORKSPACE_ENV]: _inheritedExecutedMapWorkspace,
+    [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut,
     ...parentEnv
   } = process.env;
   const childEnv = {
@@ -6615,13 +6627,16 @@ function runCapturedTask(
     ...(relatedFilterList ? { [RELATED_FILTER_LIST_ENV]: relatedFilterList.path } : {}),
     ...(reuseSkipList ? { [TEST_REUSE_SKIP_LIST_ENV]: reuseSkipList.path } : {}),
     // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): arm the executed-source-map
-    // reporter on every unit vitest task (the `test` script and the lane split), naming the
-    // workspace whose map it records. The reporter itself rails the recording to a CLEAN,
-    // isolated, passing run — so on the shared dirty checkout this stamps and records nothing,
-    // and only the gate's checkpoint checkout actually writes rows. Integration/el-suite/guard
-    // tasks are not narrowable and get no stamp.
+    // reporter on unit tasks and integration tasks, naming the workspace it observes. Unit
+    // proof persistence keeps the reporter's clean/passing guards. Integration OUT is local
+    // diagnostic evidence only: it never enables selection narrowing or pass-proof persistence.
+    // El-suite/guard tasks remain unarmed, including when the caller was itself armed.
     ...(recordsExecutedMap ? { [EXECUTED_MAP_WORKSPACE_ENV]: spawnTask.ws.name } : {}),
     ...(executedMapResultFile ? { [EXECUTED_MAP_RESULT_ENV]: executedMapResultFile } : {}),
+    ...(recordsExecutedMap && inheritedExecutedMapOut
+      ? { [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut } : {}),
+    ...(integrationSourceMapOut
+      ? { [EXECUTED_MAP_OUT_ENV]: integrationSourceMapOut, [EXECUTED_MAP_NO_PERSIST_ENV]: "1" } : {}),
     // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution for every task
     // this runner spawns, so a `test:affected` run contributes surface→test evidence the way
     // `testing:run` and the admin-UI runner already do. Inert unless a seam is exercised — the
@@ -6861,6 +6876,10 @@ function runCapturedTask(
   // Retain the declared task key as the per-entry identity while also recording
   // the command shape that actually ran.
   const processIdentity = `${taskKey(context.t)}=>${taskKey(spawnTask)}:${journalLabel}`;
+  if (integrationSourceMapOut) {
+    outSync(`EXECUTED_SOURCE_MAP_OUT task=${JSON.stringify(taskKey(spawnTask))} ` +
+      `path=${JSON.stringify(integrationSourceMapOut)} noPersist=true`);
+  }
   // WI-10003603: registered only once the task really spawns (a cache hit returned above), so the
   // phase-C report never reads a result for a run that did not happen.
   if (executedMapResultFile) {

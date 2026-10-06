@@ -97,6 +97,31 @@ describe('WI-10005994: the stdout result marker survives the shared 2>&1 pipe', 
     );
   });
 
+  it('WI-10006005: bounds 500 failure and flake paths while leaving them recoverable from the run log', () => {
+    const result: CheckpointResult = {
+      ...base(),
+      failingTests: Array.from(
+        { length: 500 },
+        (_, i) => 'packages/operator-core/lib/test-fixtures/failures/failure-' + i + '.test.ts',
+      ),
+      flakeSuspects: Array.from(
+        { length: 500 },
+        (_, i) => 'packages/operator-core/lib/test-fixtures/flakes/flake-' + i + '.test.ts',
+      ),
+    };
+    const line = checkpointResultMarkerLine(result);
+    expect(Buffer.byteLength(line + '\n')).toBeLessThanOrEqual(CHECKPOINT_RESULT_MARKER_ATOMIC_BYTES);
+
+    const marker = parseMarker(line);
+    expect(marker).not.toHaveProperty('failingTests');
+    expect(marker).not.toHaveProperty('flakeSuspects');
+    expect((marker.markerCompacted as { omitted: string[] }).omitted).toEqual(
+      expect.arrayContaining(['failingTests', 'flakeSuspects']),
+    );
+    expect(result.failingTests).toHaveLength(500);
+    expect(result.flakeSuspects).toHaveLength(500);
+  });
+
   it('leaves an ordinary marker byte-identical to the uncompacted result', () => {
     const result = { ...base(), summary: 'short summary' };
     expect(checkpointResultMarkerLine(result)).toBe(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(result)}`);

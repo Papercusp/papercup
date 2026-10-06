@@ -89,6 +89,7 @@ import {
   isDispatchValidationFailure,
 } from '@papercusp/tooldef-mcp';
 import {
+  buildMcpSessionSurfaceTraceEvent,
   logMcpRequestTrace,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
@@ -181,7 +182,7 @@ import {
   getSessionSurface,
   activateSessionTools,
   rememberSessionToolRegistryRevision,
-  sessionToolRegistryRevisionChanged,
+  sessionToolRegistryRevisionState,
 } from './tool-allowlist';
 import { validIdempotencyKey, lookupStoredMcpResult, storeMcpResult, type StoredMcpResult } from './_mcp-result-replay';
 import {
@@ -3219,6 +3220,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
   readGeneration: () => Promise<ServingGeneration> = readServingGeneration,
 ): (req: Req, extra: unknown) => Promise<Res> {
   return async (req, extra) => {
+    const checkStartedAt = Date.now();
     const sessionKey = mcpSessionKey(extra);
     const sendNotification = (
       extra as { sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void> } | undefined
@@ -3247,7 +3249,8 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     if (before.state !== 'known') {
       throw new Error(`serving_generation_unknown: ${before.reason}; tools/call is blocked before dispatch`);
     }
-    const staleBaseline = sessionKey !== null && sessionToolRegistryRevisionChanged(sessionKey, before.revision);
+    const baselineState = sessionToolRegistryRevisionState(sessionKey, before.revision);
+    const staleBaseline = baselineState.status === 'missing' || baselineState.status === 'stale';
     const staleDeclaration = declaredGeneration !== null && declaredGeneration !== before.revision;
     if (staleBaseline || staleDeclaration) {
       try {
@@ -3255,6 +3258,23 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       } catch (err) {
         console.warn(`[mcp-host] stale serving-generation notification failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+      const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
+      logMcpRequestTrace(buildMcpSessionSurfaceTraceEvent({
+        traceId: mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID(),
+        toolName: typeof requestedName === 'string' ? requestedName : 'tools/call',
+        stage: 'stale_contract_rejected',
+        elapsedMs: Math.max(0, Date.now() - checkStartedAt),
+        extra,
+        sessionKey,
+        sessionBaseline: baselineState.status,
+        servingGeneration: before.revision,
+        ...(baselineState.status === 'current' || baselineState.status === 'stale'
+          ? { previousGeneration: baselineState.revision }
+          : {}),
+        ...(declaredGeneration !== null ? { declaredGeneration } : {}),
+        phase: 'pre_dispatch',
+        outcome: 'rejected',
+      }));
       throw new Error(
         staleBaseline
           ? `stale_tool_contract: this MCP session has no tools/list baseline for the current serving generation ` +
@@ -3331,6 +3351,7 @@ export function mcpHostServerOptions() {
 /** Register the complete operator protocol on a transport-independent SDK server. */
 export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) => {
+    const listStartedAt = Date.now();
     // Shared visibility walk — see resolveVisibleToolListings above
     // (strict-mode + manifest + allowlist semantics documented there).
     const vis = await resolveVisibleToolListings(extra);
@@ -3437,7 +3458,19 @@ export function registerMcpHost(server: McpServer): void {
     );
     // This handler is the sole baseline writer: a list_changed notification or
     // observation from tools/call cannot prove that the client fetched this list.
-    rememberSessionToolRegistryRevision(mcpSessionKey(extra), servingGeneration.revision);
+    const sessionKey = mcpSessionKey(extra);
+    rememberSessionToolRegistryRevision(sessionKey, servingGeneration.revision);
+    logMcpRequestTrace(buildMcpSessionSurfaceTraceEvent({
+      traceId: mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID(),
+      toolName: 'tools/list',
+      stage: 'tools_list_completed',
+      elapsedMs: Math.max(0, Date.now() - listStartedAt),
+      extra,
+      sessionKey,
+      sessionBaseline: sessionKey ? 'recorded' : 'unavailable',
+      servingGeneration: servingGeneration.revision,
+      outcome: 'success',
+    }));
     return { tools };
   });
 

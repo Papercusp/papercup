@@ -255,6 +255,26 @@ export function rememberSessionToolRegistryRevision(
   sessionToolRegistryRevisions.set(sessionKey, { revision, touched: nowMs });
 }
 
+export type SessionToolRegistryRevisionState =
+  | { status: 'unavailable' | 'missing' }
+  | { status: 'current' | 'stale'; revision: string };
+
+/** Inspect a session's real tools/list baseline without seeding or advancing it. */
+export function sessionToolRegistryRevisionState(
+  sessionKey: string | null | undefined,
+  revision: string,
+  nowMs: number = Date.now(),
+): SessionToolRegistryRevisionState {
+  if (!sessionKey || !isUsableToolRegistryRevision(revision)) return { status: 'unavailable' };
+  sweepSessionToolRegistryRevisions(nowMs);
+  const previous = sessionToolRegistryRevisions.get(sessionKey);
+  if (!previous) return { status: 'missing' };
+  previous.touched = nowMs;
+  return previous.revision === revision
+    ? { status: 'current', revision: previous.revision }
+    : { status: 'stale', revision: previous.revision };
+}
+
 /**
  * Compare the live serving generation with a session's last real tools/list.
  * An absent baseline is stale and remains absent; only tools/list may seed or
@@ -266,12 +286,8 @@ export function sessionToolRegistryRevisionChanged(
   revision: string,
   nowMs: number = Date.now(),
 ): boolean {
-  if (!sessionKey || !isUsableToolRegistryRevision(revision)) return false;
-  sweepSessionToolRegistryRevisions(nowMs);
-  const previous = sessionToolRegistryRevisions.get(sessionKey);
-  if (!previous) return true;
-  previous.touched = nowMs;
-  return previous.revision !== revision;
+  const state = sessionToolRegistryRevisionState(sessionKey, revision, nowMs);
+  return state.status === 'missing' || state.status === 'stale';
 }
 
 /**

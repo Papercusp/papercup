@@ -286,20 +286,22 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
     git(deps_repo, 'fetch', '-q', 'origin', `refs/pull/${PR_NUMBER}/head`);
     git(deps_repo, 'checkout', '-q', '--detach');
     git(deps_repo, 'update-ref', 'refs/heads/main', head);
-    writeFileSync(join(deps_repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
   }
 
   function live(integration: PotIntegrationModeRead) {
     const store = memStore();
     const tested: string[] = [];
     const commands: string[] = [];
+    const suiteAsked: string[] = [];
     const entry = makeLiveStandingPrMerge({
       store,
       resolvers: {
         repoDir: async () => deps_repo,
         integration: async () => integration,
-        // The real resolver picked the command from package.json; the real worktree
-        // runner then runs a stand-in suite that passes only when the PR's file is present.
+        // The pot's own suite (resolvePotSuiteCommand in production), asked per install.
+        suiteCommand: async (slug) => (suiteAsked.push(slug), 'npm test'),
+        // The real worktree runner then runs a stand-in suite that passes only when the
+        // PR's file is present.
         runSuite: (command) => {
           commands.push(command);
           const real = makeWorktreeSuiteRunner('test -f pr.txt && test -f a.txt');
@@ -307,7 +309,7 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
         },
       },
     });
-    return { entry, tested, commands };
+    return { entry, tested, commands, suiteAsked };
   }
 
   const call = (head: string, autoMerge: boolean) => ({
@@ -345,7 +347,7 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
     const head = makePrHead();
     promoteInCheckout(head);
     const before = git(bare, 'rev-parse', 'main');
-    const { entry, tested, commands } = live(REVIEW);
+    const { entry, tested, commands, suiteAsked } = live(REVIEW);
     const first = await entry(call(head, true));
     expect(first).toMatchObject({ action: 'testing', reason: 'never-tested' });
     const mergeSha = (first as { mergeSha: string }).mergeSha;
@@ -353,7 +355,9 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
     await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, mergeSha));
     const second = await entry(call(head, true));
     expect(second).toMatchObject({ action: 'merged', mergeSha });
-    expect(commands[0]).toBe('npm ci && npm test');
+    // The pot's suite, asked by install slug; the install step is the runner's, not part of it.
+    expect(suiteAsked[0]).toBe(INSTALL);
+    expect(commands[0]).toBe('npm test');
     expect(tested).toEqual([mergeSha]);
     expect(git(bare, 'rev-parse', 'main')).toBe(mergeSha);
     expect(git(bare, 'rev-list', '--parents', '-n1', mergeSha).split(' ').slice(1)).toEqual([before, head]);
@@ -363,7 +367,6 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
     const head = makePrHead();
     const { entry, tested } = live(REVIEW);
     // Local main still at base: the PR head was never promoted by the pot's green gate.
-    writeFileSync(join(deps_repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
     const before = git(bare, 'rev-parse', 'main');
     expect(await entry(call(head, true))).toMatchObject({ action: 'refused', reason: 'pr-head-not-promoted' });
     expect(git(bare, 'rev-parse', 'main')).toBe(before);
@@ -388,6 +391,18 @@ describe('makeWorktreeSuiteRunner (real git)', () => {
     await makeWorktreeSuiteRunner('exit 3')({ repoDir: deps_repo, sha: tip });
     await makeWorktreeSuiteRunner('true')({ repoDir: deps_repo, sha: tip });
     expect(git(deps_repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
+  });
+
+  it('decides the dependency install from the merge worktree, not the checkout (WI-10006355)', async () => {
+    // The commit under test is a node package with no dependencies and no lockfile:
+    // nothing to install, so the suite runs as given and passes.
+    const head = makePrHead('package.json', JSON.stringify({ scripts: { test: 'true' } }));
+    // The checkout's working tree carries an invalid lockfile the commit does not.
+    // Were the install decided here, `npm ci` would run against it and fail the suite.
+    writeFileSync(join(deps_repo, 'package.json'), '{"devDependencies":{"x":"1"}}');
+    writeFileSync(join(deps_repo, 'package-lock.json'), 'not json');
+    git(deps_repo, 'fetch', '-q', 'origin', `refs/pull/${PR_NUMBER}/head`);
+    expect(await makeWorktreeSuiteRunner('test -f package.json && test ! -f package-lock.json')({ repoDir: deps_repo, sha: head })).toBe(true);
   });
 
   it('a suite that cannot finish (timeout) throws instead of reporting a fail', async () => {

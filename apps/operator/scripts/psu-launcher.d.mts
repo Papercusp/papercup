@@ -3545,12 +3545,15 @@ export function codexActiveWriterMessage(session: any, holder: any): string;
  * MUST run in that same cwd). agent is claude here because tracked forks need a
  * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
  */
-export function forkBootstrapBody(session: any, account?: null, launchMode?: null, ownerId?: null): {
+export function forkBootstrapBody(session: any, account?: null, launchMode?: null, ownerId?: null, launchArgs?: null): {
     mode_owner_directed?: boolean | undefined;
     mode_instructions?: any;
     mode_subject?: any;
     mode?: any;
     account?: undefined;
+    headless?: boolean | undefined;
+    launched_by?: any;
+    launch_argv?: string[] | undefined;
     owner_id?: undefined;
     agent: string;
     workspace: any;

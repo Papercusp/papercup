@@ -21,6 +21,7 @@
  * cheap bookkeeping, not a budgeted frontier loop.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { FLAGS } from '@papercusp/flags';
@@ -62,7 +63,40 @@ import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type PriorRun, type Recall
 import { fileRecallDropEi, resolveRecallDropEi } from './precision-alert-ei';
 import { tsxBin } from '../../harness-paths';
 
-const PRECISION_BENCH_WORKER_PATH = fileURLToPath(new URL('./precision-bench-worker.ts', import.meta.url));
+export interface PrecisionBenchWorkerTarget {
+  path: string;
+  runtime: 'node' | 'tsx';
+}
+
+/**
+ * Bundlers relocate this module into a single host entry, so its source-relative
+ * `.ts` worker URL points beside the bundle where no source file exists. Every
+ * host bundle stages a plain-Node sibling instead; source-mode development keeps
+ * using the TypeScript entry through tsx.
+ */
+export function resolvePrecisionBenchWorkerTarget(
+  moduleUrl: string = import.meta.url,
+  fileExists: (path: string) => boolean = existsSync,
+): PrecisionBenchWorkerTarget {
+  const bundledPath = fileURLToPath(new URL('./precision-bench-worker.mjs', moduleUrl));
+  if (fileExists(bundledPath)) return { path: bundledPath, runtime: 'node' };
+  return {
+    path: fileURLToPath(new URL('./precision-bench-worker.ts', moduleUrl)),
+    runtime: 'tsx',
+  };
+}
+
+export function precisionBenchWorkerInvocation(
+  target: PrecisionBenchWorkerTarget,
+  nodeExecutable = process.execPath,
+  tsxExecutable = tsxBin(),
+): { command: string; args: string[] } {
+  return target.runtime === 'node'
+    ? { command: nodeExecutable, args: [target.path] }
+    : { command: nodeExecutable, args: [tsxExecutable, target.path] };
+}
+
+const PRECISION_BENCH_WORKER = resolvePrecisionBenchWorkerTarget();
 export const PRECISION_BENCH_RESULT_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_RESULT:';
 /** Parent → worker: `1` when the workspace's Jev switch is effectively On (P-008). */
 export const PRECISION_BENCH_JEV_GATE_ENV = 'PAPERCUSP_PRECISION_BENCH_JEV_GATE';
@@ -154,7 +188,8 @@ export async function runBenchInWorker(opts: {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
   let child: ChildProcess;
   try {
-    child = spawnProcess(process.execPath, [tsxBin(), PRECISION_BENCH_WORKER_PATH], {
+    const worker = precisionBenchWorkerInvocation(PRECISION_BENCH_WORKER);
+    child = spawnProcess(worker.command, worker.args, {
       cwd: process.cwd(),
       // Set explicitly either way, so an inherited value can never gate a floor-only run.
       env: { ...process.env, [PRECISION_BENCH_JEV_GATE_ENV]: opts.jevGate ? '1' : '0' },

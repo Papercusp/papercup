@@ -1,10 +1,70 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildMcpSessionSurfaceTraceEvent,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
   MCP_REQUEST_TRACE_HEADER,
 } from './mcp-request-trace';
+
+describe('buildMcpSessionSurfaceTraceEvent', () => {
+  it('distinguishes a new MCP transport session while retaining the native-session correlation', () => {
+    const nativeSessionId = 'native-codex-session-123';
+    const listed = buildMcpSessionSurfaceTraceEvent({
+      traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+      toolName: 'tools/list',
+      stage: 'tools_list_completed',
+      elapsedMs: 2,
+      extra: {
+        sessionId: 'mcp-transport-a',
+        requestInfo: { headers: {
+          'mcp-session-id': 'mcp-transport-a',
+          'x-papercusp-native-session': nativeSessionId,
+        } },
+      },
+      sessionKey: 'mcp-transport-a',
+      sessionBaseline: 'recorded',
+      servingGeneration: 'generation-1',
+      outcome: 'success',
+    });
+    const rejected = buildMcpSessionSurfaceTraceEvent({
+      traceId: '31abefb3-1770-443d-9a6f-37526761d3b0',
+      toolName: 'coord:orient',
+      stage: 'stale_contract_rejected',
+      elapsedMs: 0,
+      extra: {
+        sessionId: 'mcp-transport-b',
+        requestInfo: { headers: {
+          'mcp-session-id': 'mcp-transport-b',
+          'x-papercusp-native-session': nativeSessionId,
+        } },
+      },
+      sessionKey: 'mcp-transport-b',
+      sessionBaseline: 'missing',
+      servingGeneration: 'generation-1',
+      phase: 'pre_dispatch',
+      outcome: 'rejected',
+    });
+
+    expect(listed).toMatchObject({
+      stage: 'tools_list_completed',
+      sessionBaseline: 'recorded',
+      nativeSessionCarrier: 'header',
+      servingGeneration: 'generation-1',
+    });
+    expect(rejected).toMatchObject({
+      stage: 'stale_contract_rejected',
+      phase: 'pre_dispatch',
+      outcome: 'rejected',
+      sessionBaseline: 'missing',
+      servingGeneration: 'generation-1',
+    });
+    expect(rejected.mcpSessionKeyFingerprint).not.toBe(listed.mcpSessionKeyFingerprint);
+    expect(rejected.wireMcpSessionIdFingerprint).not.toBe(listed.wireMcpSessionIdFingerprint);
+    expect(rejected.nativeSessionClaimFingerprint).toBe(listed.nativeSessionClaimFingerprint);
+    expect(JSON.stringify({ listed, rejected })).not.toContain(nativeSessionId);
+  });
+});
 
 describe('mcpTraceIdFromExtra', () => {
   it('accepts only a bounded UUID trace header', () => {

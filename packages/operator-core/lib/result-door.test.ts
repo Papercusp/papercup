@@ -2148,6 +2148,20 @@ describe('applyResultDoor', () => {
       expect(readSpill('ws-1', 'coord:orient', RUN_ID)).toContain('small already-projected result');
     });
 
+    it('shows a schema-compatible dispatch path for framework-reserved payloadTier', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'small partial list result' }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete.note).toContain("Re-call work_items:list with payloadTier:'full'");
+      expect(envelope.incomplete.note).toContain(
+        "tools:invoke { name:'work_items:list', args:{ …original args, payloadTier:'full' } }",
+      );
+    });
+
     it('an UNtruncated small result keeps the identity fast-path (no note, no copy)', () => {
       const result = { content: [{ type: 'text' as const, text: 'small result' }] };
       expect(applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
@@ -2200,6 +2214,22 @@ describe('applyResultDoor', () => {
         content: Array<{ type: string; text: string }>;
       };
       expect(spill.content[0].text).toBe(text);
+    });
+
+    it('gives capability:read a schema-compatible recovery path for truncated evidence', () => {
+      const text = JSON.stringify({
+        evidence: 'evidence prefix…[TRUNCATED +17 chars — re-read with payloadTier:full]',
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'capability:read', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete.note).toContain('`byte_offset` + `byte_limit`');
+      expect(envelope.incomplete.note).toContain('(without `evidence_class`)');
+      expect(envelope.incomplete.note).toContain('per-field limit');
+      expect(envelope.incomplete.note).not.toContain('wider per-field limit');
     });
 
     it('does not treat an escaped partial-marker example inside a JSON string as a real marker', () => {

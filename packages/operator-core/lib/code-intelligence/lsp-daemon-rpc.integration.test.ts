@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connect, type Server } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,6 +22,35 @@ afterEach(async () => {
 });
 
 describe('LSP daemon process boundary', () => {
+  it('passes a real RPC drain to the daemon shutdown owner and aborts its outstanding work', async () => {
+    process.env[LSP_DAEMON_SOCKET_ENV] = path;
+    let requestSignal: AbortSignal | undefined;
+    let rpcClosed: Promise<void> | undefined;
+    const shutdown = vi.fn((closeRpc: () => Promise<void>) => { rpcClosed = closeRpc(); });
+    const prior = new Set(process.listeners('SIGTERM'));
+    server = runLspDaemonServer(async (_request, _id, signal) => {
+      requestSignal = signal;
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+      throw new Error('request abandoned at shutdown');
+    }, undefined, shutdown);
+    await once(server, 'listening');
+    const socket = connect(path);
+    await once(socket, 'connect');
+    socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 'shutdown', method: 'lsp:query', params: { op: 'references', args: { rootPath: '/fixture' }, actorId: 'shutdown' } })}\n`);
+    await vi.waitFor(() => expect(requestSignal).toBeDefined());
+    const handlers = process.listeners('SIGTERM').filter(handler => !prior.has(handler));
+    expect(handlers).toHaveLength(1);
+    const clientClosed = once(socket, 'close');
+    handlers[0]('SIGTERM');
+    expect(shutdown).toHaveBeenCalledTimes(1);
+    await rpcClosed;
+    await clientClosed;
+    expect(requestSignal?.aborted).toBe(true);
+    expect(server.listening).toBe(false);
+    expect(process.listeners('SIGTERM')).not.toContain(handlers[0]);
+    server = undefined;
+  });
+
   it('routes rename planning, diagnostic reads and resync to the daemon', async () => {
     process.env[LSP_DAEMON_SOCKET_ENV] = path;
     const methods: string[] = [];

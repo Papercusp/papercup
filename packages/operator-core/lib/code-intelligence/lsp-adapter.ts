@@ -27,7 +27,7 @@
  *     whole design is built to prevent.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -764,6 +764,127 @@ export function resolveProjectRoot(
   };
 }
 
+/** Directories a directory-anchor walk never descends: generated, vendored or VCS. */
+const ANCHOR_WALK_SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', 'target', '.git', '.next', '.turbo']);
+/** TypeScript sources a directory anchor may open; declaration files never create a project. */
+const TS_ANCHOR_SOURCE = /\.(?:ts|tsx|mts|cts)$/;
+/** Hard bound on a directory-anchor walk, so a wide directory refuses instead of stalling. */
+const ANCHOR_WALK_MAX_ENTRIES = 50_000;
+
+function isDirectoryPath(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The nearest directory at-or-above `dir` holding `marker`, inside `fallbackRoot`. */
+function nearestAncestorWith(dir: string, marker: string, fallbackRoot: string): string | null {
+  let cur = dir;
+  while (cur.startsWith(fallbackRoot)) {
+    if (existsSync(join(cur, marker))) return cur;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+/**
+ * P-002 (gitnexus-deterministic-integration-2026-10-05, D-010): a DIRECTORY
+ * anchor for `workspace_symbols`.
+ *
+ * An agent replacing `grep -rn "export function X" packages/operator-core/lib`
+ * knows the directory it searched, not a file inside it, and a directory used
+ * to fail with a raw `EISDIR` from opening it as a document. This turns the
+ * directory into the anchor the TypeScript branch needs: the project is the
+ * nearest tsconfig.json at-or-above the directory, and the document opened to
+ * create it is the first non-declaration source found by a sorted, bounded walk.
+ *
+ * ⚠ It refuses when the directory contains a NESTED tsconfig.json. A symbol
+ * search covers ONE project, so a directory spanning several (`libs/generic`
+ * holds dozens) would answer for the outer one and read as absence for every
+ * symbol defined in the others — the false-empty this module exists to
+ * prevent. The refusal names the nested projects so the caller can anchor each.
+ */
+export function resolveDirectoryAnchor(
+  dir: string,
+  rootPath: string,
+): { project: string | null; document: string | null; error: string | null } {
+  const project = nearestAncestorWith(dir, 'tsconfig.json', rootPath);
+  const nested: string[] = [];
+  let best: { path: string; rank: number; depth: number } | null = null;
+  let visited = 0;
+  const walk = (cur: string, depth = 0): boolean => {
+    let entries: Dirent[];
+    try {
+      // withFileTypes: one readdir per directory, no stat per entry.
+      entries = readdirSync(cur, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    } catch {
+      return true;
+    }
+    for (const entry of entries) {
+      const name = entry.name;
+      visited += 1;
+      if (visited > ANCHOR_WALK_MAX_ENTRIES) return false;
+      if (ANCHOR_WALK_SKIP.has(name)) continue;
+      const full = join(cur, name);
+      if (entry.isDirectory()) {
+        if (!walk(full, depth + 1)) return false;
+        continue;
+      }
+      if (name === 'tsconfig.json' && cur !== dir) {
+        nested.push(cur);
+        continue;
+      }
+      if (TS_ANCHOR_SOURCE.test(name) && !/\.d\.[cm]?ts$/.test(name)) {
+        // Rank: a test file or an .mts/.cts module (often excluded from the
+        // tsconfig, landing in an inferred project navto never searches) loses
+        // to a plain source; then the SHALLOWEST wins, so a sorted walk cannot
+        // pick `__fixtures__/x.mts` over `lib/index.ts`.
+        const rank = (/\.(?:test|spec)\.[cm]?tsx?$/.test(name) ? 2 : 0) + (/\.[cm]ts$/.test(name) ? 1 : 0);
+        if (best === null || rank < best.rank || (rank === best.rank && depth < best.depth)) {
+          best = { path: full, rank, depth };
+        }
+      }
+    }
+    return true;
+  };
+  const complete = walk(dir);
+  if (!complete) {
+    return {
+      project,
+      document: null,
+      error:
+        `directory anchor ${dir} holds more than ${ANCHOR_WALK_MAX_ENTRIES} entries, so it cannot be ` +
+        `verified to be ONE tsconfig project. Pass a 'file' anchor inside the project you mean.`,
+    };
+  }
+  if (nested.length > 0) {
+    return {
+      project,
+      document: null,
+      error:
+        `directory anchor ${dir} spans ${nested.length} nested tsconfig project(s) ` +
+        `(${nested.slice(0, 5).join(', ')}${nested.length > 5 ? ', …' : ''}), and a symbol search covers ONE ` +
+        `project — answering for the outer one would read as absence for symbols in the others. Anchor each ` +
+        `project separately, or use gitnexus/rg for a repository-wide question.`,
+    };
+  }
+  const chosen = (best as { path: string } | null)?.path ?? null;
+  if (!project || !chosen) {
+    return {
+      project,
+      document: null,
+      error: !project
+        ? `no tsconfig.json at or above directory anchor ${dir}, so there is no project to search. Pass a 'file' inside a directory covered by a tsconfig.json.`
+        : `directory anchor ${dir} contains no TypeScript source to open, so tsserver cannot create its project. Pass a 'file' anchor instead.`,
+    };
+  }
+  return { project, document: chosen, error: null };
+}
+
 /**
  * The project a `workspace_symbols` search will ACTUALLY cover — or a refusal.
  *
@@ -796,6 +917,28 @@ export function resolveSymbolSearchScope(
   anchor: string | undefined,
   rootPath: string,
 ): { root: string; anchor: string | null; error: string | null } {
+  // A DIRECTORY anchor (P-002): resolve it to a project + an openable document
+  // before either language branch, which both assume a file they can open.
+  if (anchor && isDirectoryPath(anchor)) {
+    if (language === 'rust') {
+      const crate = nearestAncestorWith(anchor, 'Cargo.toml', rootPath);
+      if (!crate) {
+        return {
+          root: rootPath,
+          anchor: null,
+          error:
+            `no Cargo.toml at or above directory anchor ${anchor}, so rust-analyzer would have no crate ` +
+            `graph and would answer EMPTY. Pass 'file' (an .rs file in the crate you mean) or 'rootPath'.`,
+        };
+      }
+      return { root: crate, anchor: null, error: null };
+    }
+    const resolved = resolveDirectoryAnchor(anchor, rootPath);
+    if (resolved.error || !resolved.project || !resolved.document) {
+      return { root: rootPath, anchor: null, error: resolved.error ?? `directory anchor ${anchor} did not resolve to a project` };
+    }
+    return { root: resolved.project, anchor: resolved.document, error: null };
+  }
   if (language === 'rust') {
     // An anchor names its own crate; otherwise the root must itself be one.
     if (anchor) {

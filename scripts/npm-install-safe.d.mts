@@ -248,17 +248,34 @@ export function parseCliArgs(argv?: string[], { cwd }?: {
  *   env?: NodeJS.ProcessEnv,
  * }} [options]
  */
+/**
+ * WI-10006385: pair a lock's "waiting" notices with ONE closing line that says how long
+ * the wait actually lasted and under what budget. Without it a build log shows
+ * "waiting … (0s so far)" and then nothing, so nobody can tell a 1 s wait from a 50 min
+ * one, or whether PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC raised the budget. Prints nothing
+ * for an uncontested lock: the closing line only follows a printed notice.
+ *
+ * @param {{ lock: 'writer' | 'reader', describe: (owner: string, elapsedMs: number) => string, log: (line: string) => void, budgetMs: number }} opts
+ * @returns {{ onWaiting: (info: { owner: string, elapsedMs: number }) => void, onAcquired: (info: { waitedMs: number }) => void }}
+ */
+export function installLockWaitReporter({ lock, describe, log, budgetMs }: {
+    lock: "writer" | "reader";
+    describe: (owner: string, elapsedMs: number) => string;
+    log: (line: string) => void;
+    budgetMs: number;
+}): {
+    onWaiting: (info: {
+        owner: string;
+        elapsedMs: number;
+    }) => void;
+    onAcquired: (info: {
+        waitedMs: number;
+    }) => void;
+};
 export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand, env, }?: {
-    repoRoot?: string;
-    commandArgs?: string[];
-    runCommand?: (command: string, args: string[], options: {
-        cwd: string;
-        stdio: "inherit";
-        env: NodeJS.ProcessEnv;
-    }) => {
-        status: number | null;
-    };
-    env?: NodeJS.ProcessEnv;
+    repoRoot?: string | undefined;
+    runCommand?: typeof spawnSync | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
 }): Promise<number>;
 export function main(argv?: string[]): Promise<any>;
 export { installMutexIsHeld } from "./lib/install-lock-name.mjs";

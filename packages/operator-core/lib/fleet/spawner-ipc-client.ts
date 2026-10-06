@@ -24,6 +24,23 @@ import * as net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveSpawnerSocketPath } from './spawner-socket-path';
+import type { ProcessExecCallerLabel } from './sidecar-exec-process';
+
+// Keep this exhaustive against the source type while avoiding a runtime import
+// of sidecar-exec-process (which pulls the child-process execution stack into
+// the parent process that this IPC client is meant to keep light).
+const SAFE_PROCESS_EXEC_CALLER_LABELS: Readonly<Record<ProcessExecCallerLabel, true>> = {
+  'git-via-sidecar.runCommandViaSpawnerSidecar': true,
+  'git-via-sidecar.runGitStdinViaSpawnerSidecar': true,
+};
+
+function safeProcessExecCallerLabel(method: string, params: unknown): ProcessExecCallerLabel | undefined {
+  if (method !== 'process:exec' || params === null || typeof params !== 'object') return undefined;
+  const candidate = (params as { callerLabel?: unknown }).callerLabel;
+  return typeof candidate === 'string' && Object.prototype.hasOwnProperty.call(SAFE_PROCESS_EXEC_CALLER_LABELS, candidate)
+    ? candidate as ProcessExecCallerLabel
+    : undefined;
+}
 
 export interface SpawnerRpcError {
   code: number;
@@ -58,7 +75,12 @@ export class SpawnerIpcClient {
   private socketPath: string;
   private connected = false;
   private requestId = 0;
-  private pending = new Map<number, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private pending = new Map<number, {
+    method: string;
+    callerLabel?: ProcessExecCallerLabel;
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+  }>();
   /** Per-request push-notification callbacks, keyed by request id. */
   private callbacks = new Map<number, { onPid?: (pid: number) => void; onOutputActivity?: () => void }>();
   private buffer = '';
@@ -87,9 +109,10 @@ export class SpawnerIpcClient {
     details: {
       requestId?: number;
       method?: string;
+      callerLabel?: ProcessExecCallerLabel;
       relatedRequestId?: number | string;
       error?: Error;
-      activeRequests?: Array<{ requestId: number; method: string }>;
+      activeRequests?: Array<{ requestId: number; method: string; callerLabel?: ProcessExecCallerLabel }>;
     } = {},
   ): void {
     const code = (details.error as NodeJS.ErrnoException | undefined)?.code;
@@ -100,6 +123,7 @@ export class SpawnerIpcClient {
       serverConnectionId: this.serverFence?.connectionId ?? null,
       requestId: details.requestId ?? null,
       method: details.method ?? null,
+      ...(details.callerLabel ? { callerLabel: details.callerLabel } : {}),
       relatedRequestId: details.relatedRequestId ?? null,
       errorCode: code ?? null,
       errorName: details.error?.name ?? null,
@@ -190,8 +214,12 @@ export class SpawnerIpcClient {
         settleOk();
       });
       this.socket = sock;
-      const activeRequests = (): Array<{ requestId: number; method: string }> =>
-        Array.from(this.pending, ([requestId, pending]) => ({ requestId, method: pending.method }));
+      const activeRequests = (): Array<{ requestId: number; method: string; callerLabel?: ProcessExecCallerLabel }> =>
+        Array.from(this.pending, ([requestId, pending]) => ({
+          requestId,
+          method: pending.method,
+          ...(pending.callerLabel ? { callerLabel: pending.callerLabel } : {}),
+        }));
       const reportTransportFault = (event: string, error?: Error): void => {
         if (transportFaultLogged || this.socket !== sock) return;
         transportFaultLogged = true;
@@ -280,6 +308,10 @@ export class SpawnerIpcClient {
       params !== null && typeof params === 'object'
         ? (params as { requestId?: number | string }).requestId
         : undefined;
+    const relatedCallerLabel = typeof relatedRequestId === 'number'
+      ? this.pending.get(relatedRequestId)?.callerLabel
+      : undefined;
+    const callerLabel = safeProcessExecCallerLabel(method, params) ?? relatedCallerLabel;
     const request = {
       jsonrpc: '2.0',
       method,
@@ -298,7 +330,7 @@ export class SpawnerIpcClient {
         timeoutMs > 0
           ? setTimeout(() => {
               if (!this.pending.has(id)) return;
-              this.logFault('rpc-timeout', { requestId: id, method, relatedRequestId });
+              this.logFault('rpc-timeout', { requestId: id, method, callerLabel, relatedRequestId });
               this.pending.delete(id);
               this.callbacks.delete(id);
               reject(new Error(`RPC request timeout: ${method}`));
@@ -310,6 +342,7 @@ export class SpawnerIpcClient {
 
       this.pending.set(id, {
         method,
+        ...(callerLabel ? { callerLabel } : {}),
         resolve: (value: unknown) => {
           clear();
           this.callbacks.delete(id);
@@ -324,7 +357,7 @@ export class SpawnerIpcClient {
 
       this.socket!.write(JSON.stringify(request) + '\n', (err) => {
         if (err) {
-          this.logFault('write-error', { requestId: id, method, relatedRequestId, error: err });
+          this.logFault('write-error', { requestId: id, method, callerLabel, relatedRequestId, error: err });
           clear();
           this.pending.delete(id);
           this.callbacks.delete(id);

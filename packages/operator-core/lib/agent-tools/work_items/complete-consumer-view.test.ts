@@ -85,6 +85,20 @@ describe('attestCompletionConsumerView', () => {
     // ...and the block and the reconciler can never disagree about whether a divergence happened.
     expect(Boolean(out)).toBe(reconciled.divergedFromComputed);
   });
+
+  it('does not attribute another in-process downgrade to content identity just because files were declared', () => {
+    const reconciled = reconcileStampedAuthority({
+      stamped: true,
+      persisted: 'proposed',
+      computed: 'proposed',
+      authorityByEvidence: 'committed',
+      declaredFilesCount: 4,
+      inProcessContentIdentityMissing: false,
+    });
+
+    expect(reconciled.stampedAuthority).toBe('proposed');
+    expect(reconciled.contentIdentityDowngrade).toBe(false);
+  });
 });
 
 describe('complete.ts wiring (source pin — a correct leaf behind a dropped spread is a no-op)', () => {

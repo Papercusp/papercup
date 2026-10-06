@@ -565,10 +565,20 @@ export function s37DefinitionAsserts(): CustomAssert[] {
 
 export type CodeSearchTarget = 'su-code' | 'worker';
 
+/**
+ * Scenario ids per run, spelled as LITERALS in the file that registers each set. The llm
+ * ledger finds a scenario's source file by searching for its id, so an id built from a
+ * prefix variable resolves to the wrong file or to none (test-run-ledger.ts).
+ */
+export interface CodeSearchScenarioIds {
+  absence: string;
+  impact: string;
+  definition: string;
+}
+
 const CAPS = { maxTurns: 6, maxWallSecs: 300, maxCostUsd: 2.0 } as const;
 
-export function makeS37Scenarios(target: CodeSearchTarget): Scenario[] {
-  const prefix = target === 'worker' ? 'worker-W01' : 'su-S37';
+export function makeS37Scenarios(target: CodeSearchTarget, ids: CodeSearchScenarioIds): Scenario[] {
   const base = {
     version: 1,
     target,
@@ -583,7 +593,7 @@ export function makeS37Scenarios(target: CodeSearchTarget): Scenario[] {
   return [
     {
       ...base,
-      id: `${prefix}a-absence-claim`,
+      id: ids.absence,
       description:
         `A developer in the papercusp repo wants to delete the function ${S37_ABSENCE_SYMBOL} ` +
         `(defined in ${ABSENCE_DEF.file}) and asks: is ${S37_ABSENCE_SYMBOL} still used anywhere, or can I delete it?`,
@@ -591,7 +601,7 @@ export function makeS37Scenarios(target: CodeSearchTarget): Scenario[] {
     },
     {
       ...base,
-      id: `${prefix}b-signature-impact`,
+      id: ids.impact,
       description:
         `A developer plans to add a required second parameter to ${S37_IMPACT_SYMBOL} (${IMPACT_DEF.file}) ` +
         `and asks: what breaks if I change ${S37_IMPACT_SYMBOL}'s signature?`,
@@ -599,11 +609,15 @@ export function makeS37Scenarios(target: CodeSearchTarget): Scenario[] {
     },
     {
       ...base,
-      id: `${prefix}c-definition-lookup`,
+      id: ids.definition,
       description: `A developer in the papercusp repo asks: where is ${S37_DEFINITION_SYMBOL} defined?`,
       asserts: s37DefinitionAsserts(),
     },
   ];
 }
 
-export const SU_S37_CODE_SEARCH: Scenario[] = makeS37Scenarios('su-code');
+export const SU_S37_CODE_SEARCH: Scenario[] = makeS37Scenarios('su-code', {
+  absence: 'su-S37a-absence-claim',
+  impact: 'su-S37b-signature-impact',
+  definition: 'su-S37c-definition-lookup',
+});

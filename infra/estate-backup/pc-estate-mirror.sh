@@ -112,6 +112,14 @@ degraded() {
   [ -x "$ALERT" ] && "$ALERT" --degraded "$*" || log "DEGRADED (no alert script): $*"
 }
 
+partial_source() {
+  # The fourth channel: a fault in a SOURCE backup that the mirror copied and
+  # verified faithfully. Neither the mirror nor its probe is broken, so neither the
+  # FAILING nor the DEGRADED latch applies, and nothing re-raises it later: the
+  # caller fires this exactly once, when the snapshot is first published (WI-10006330).
+  [ -x "$ALERT" ] && "$ALERT" --partial-source "$*" || log "PARTIAL SOURCE (no alert script): $*"
+}
+
 clear_failing_marker() {
   # Retraction half of the ALERT-MIRROR-FAILING latch, callable from EVERY branch
   # that has positively MEASURED the backups to be fine — not only the fully
@@ -509,6 +517,19 @@ PY
     fi
     $sealed && { seal "$dst" || log "WARNING: seal failed for $dst"; }
     mirrored=$((mirrored+1))
+    # A snapshot whose MANIFEST records producer failures verifies cleanly here --
+    # every artifact it DECLARES is present -- yet that day's backup is missing data,
+    # and nothing on the source VMs alerts on it. 2026-10-05 hetzner-restore-mesh
+    # shipped 108/109 artifacts (a ClickHouse export hit SOCKET_TIMEOUT) and this
+    # mirror published it silently (WI-10006330). The producer writes an integer;
+    # a list form is counted by length so neither shape reads as zero.
+    mfail=$(python3 -c 'import json,sys
+f=json.load(open(sys.argv[1])).get("manifest_failures")
+print(len(f) if isinstance(f,list) else int(f or 0))' "$dst/MIRROR-META.json" 2>/dev/null || echo 0)
+    if [ "${mfail:-0}" -gt 0 ] 2>/dev/null; then
+      log "PARTIAL SOURCE BACKUP $host/$ts: MANIFEST records $mfail producer failure(s)"
+      partial_source "$host/$ts: the source backup recorded $mfail artifact failure(s) in its MANIFEST, so that day's backup is missing data (the mirror copy itself verified clean)"
+    fi
     held[$host]=$(( ${held[$host]:-0} + 1 ))
   done <<<"$ordered"
   [ "$beyond_keep" -gt 0 ] && \

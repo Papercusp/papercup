@@ -243,7 +243,8 @@ async function streamGitFieldsViaSidecar(
   const startedAt = Date.now();
   let res: Awaited<ReturnType<typeof runGitViaSpawnerSidecar>>;
   try {
-    res = await runGitViaSpawnerSidecar([...args], process.cwd(), timeoutMs, process.env, {
+    res = await runGitViaSpawnerSidecar([...args], process.cwd(), timeoutMs,
+      { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, {
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
   } catch (error) {
@@ -287,7 +288,12 @@ function streamGitFieldsLocal(
       return;
     }
     try {
-      child = spawn(opts.gitBinary ?? 'git', [...args], { stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(opts.gitBinary ?? 'git', [...args], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        // This helper serves read-only status/path probes; do not let Git's optional
+        // index refresh create .git/index.lock in the shared checkout.
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      });
     } catch {
       resolve('failed');
       return;

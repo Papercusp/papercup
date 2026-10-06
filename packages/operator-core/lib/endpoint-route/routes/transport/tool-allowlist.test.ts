@@ -17,6 +17,7 @@ import {
   activateSessionTools,
   applyCompactTier,
   rememberSessionToolRegistryRevision,
+  sessionToolRegistryRevisionState,
   sessionToolRegistryRevisionChanged,
   __resetSessionSurfaces,
 } from './tool-allowlist';
@@ -118,6 +119,19 @@ describe('session serving-generation baseline', () => {
 
     rememberSessionToolRegistryRevision('session-a', 'generation-2');
     expect(sessionToolRegistryRevisionChanged('session-a', 'generation-2')).toBe(false);
+  });
+
+  it('distinguishes a new transport session from a stale baseline on the old session', () => {
+    rememberSessionToolRegistryRevision('mcp-transport-a', 'generation-1', 1_000);
+
+    expect(sessionToolRegistryRevisionState('mcp-transport-a', 'generation-1', 1_001))
+      .toEqual({ status: 'current', revision: 'generation-1' });
+    expect(sessionToolRegistryRevisionState('mcp-transport-a', 'generation-2', 1_002))
+      .toEqual({ status: 'stale', revision: 'generation-1' });
+    expect(sessionToolRegistryRevisionState('mcp-transport-b', 'generation-1', 1_003))
+      .toEqual({ status: 'missing' });
+    expect(sessionToolRegistryRevisionState(null, 'generation-1', 1_004))
+      .toEqual({ status: 'unavailable' });
   });
 });
 

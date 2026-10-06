@@ -71,6 +71,8 @@
 #   TESTVM_REAPER_VMCTL_TIMEOUT  hard bound in seconds on the `vmctl down`
 #                                attempt before falling back to a direct kill
 #                                (default: 90)
+#   PAPERCUSP_REPO_ROOT          checkout holding papercusp-desktop/.../vmctl
+#                                (default: this script's parent directory)
 
 set -uo pipefail
 
@@ -78,8 +80,12 @@ MAX_AGE_SECS="${TESTVM_REAPER_MAX_AGE_SECS:-21600}"
 DRY_RUN="${TESTVM_REAPER_DRY_RUN:-0}"
 VMCTL_TIMEOUT="${TESTVM_REAPER_VMCTL_TIMEOUT:-90}"
 
+# The systemd unit runs this from a papercusp-script-snapshot.sh copy under
+# $TMPDIR, where a path climbed from BASH_SOURCE points nowhere, so the unit pins
+# PAPERCUSP_REPO_ROOT; the self-located default serves a direct run (WI-10006358).
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VMCTL="$SELF_DIR/../papercusp-desktop/scripts/linux-test-vm/vmctl"
+REPO_ROOT="${PAPERCUSP_REPO_ROOT:-$(cd "$SELF_DIR/.." && pwd)}"
+VMCTL="$REPO_ROOT/papercusp-desktop/scripts/linux-test-vm/vmctl"
 
 # Keep the strings that the census looks for in data variables rather than in
 # the command text of a process-substitution/pipeline.  A shell launched to

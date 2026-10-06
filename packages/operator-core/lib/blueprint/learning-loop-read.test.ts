@@ -98,6 +98,17 @@ describe('readLearningLoopHealth wiring', () => {
     expect(opts.activityLagGraceMs).toBeGreaterThan(27 * 60_000);
   });
 
+  it('forwards a sweep-supplied process start time while leaving pull-only reads unmasked', async () => {
+    const processStartedAtMs = Date.parse('2026-08-03T00:00:00.000Z');
+    await readLearningLoopHealth(fakeSql(), 'ws-1', { processStartedAtMs });
+    expect((computeM.mock.calls[0]![2] as { processStartedAtMs?: number }).processStartedAtMs).toBe(
+      processStartedAtMs,
+    );
+
+    await readLearningLoopHealth(fakeSql(), 'ws-1', {});
+    expect((computeM.mock.calls[1]![2] as { processStartedAtMs?: number }).processStartedAtMs).toBeUndefined();
+  });
+
   it('passes the live-observed lag shape (27min) as within the widened grace, not past it', async () => {
     await readLearningLoopHealth(fakeSql(), 'ws-1', { nowMs: Date.parse('2026-08-03T00:35:33.291Z') });
     const opts = computeM.mock.calls[0]![2] as { activityLagGraceMs?: number };

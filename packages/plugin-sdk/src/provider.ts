@@ -95,6 +95,22 @@ export interface ProviderWakeResult {
 /** Capability a provider declares to be asked, on each driver tick, whether a source should sync now. */
 export const PROVIDER_SYNC_WAKE_CAPABILITY = 'sync.wake';
 
+/**
+ * Result of `invoke({ capability: 'sync.adopt', args: { prior } })` (D-020). `prior` is the
+ * source's pre-provider cursor state: its cursor object without the host-owned `provider` and
+ * `wake` keys, e.g. what a retired host path wrote before this provider existed. The host asks
+ * once, before the first page of a source whose cursor has no `provider` key.
+ */
+export interface ProviderAdoptResult {
+  /** Provider cursor to start from, or null when there is nothing to adopt (a normal fresh start). */
+  cursor: string | null;
+  /** False when the adopted position still owes a historical backfill. */
+  backfillComplete: boolean;
+}
+
+/** Capability a provider declares to adopt a source's pre-provider cursor state on its first pass. */
+export const PROVIDER_SYNC_ADOPT_CAPABILITY = 'sync.adopt';
+
 /** Sync request issued by the host-owned connector driver. */
 export interface ProviderSyncRequest {
   /** Opaque source id. The provider never learns the account's credentials. */

@@ -480,6 +480,20 @@ const reviewPr = defineTool({
       );
     }
 
+    // The standing PR lands only via the exact tested merge commit, never squash. Branch
+    // BEFORE posting a GitHub approval: the pot's own account authors it and GitHub
+    // refuses self-approval, so that post would fail this request outright. The
+    // reviewer's merge decision is the approval (WI-10006351); actOnPr re-checks the
+    // review permission.
+    if (action === 'approve_and_merge') {
+      const { isStandingPr } = await import('../../../harness/git-sync/standing-pr-merge');
+      if (isStandingPr(pr)) {
+        const result = await actOnPr(prNumber, 'merge', await livePrViewerDeps(slug));
+        await Promise.all(['harnessPrs.byHarness', 'harnessPrs.detail'].map(name => notifySyncInvalidate(name)));
+        return Response.json({ ok: true, ...result });
+      }
+    }
+
     const approveCtx: AutoApproveContext = {
       harnessSlug: slug,
       reviewerGithubId,
@@ -499,14 +513,6 @@ const reviewPr = defineTool({
       // Re-fetch so review_decision reflects the approval we just posted.
       const refreshed = await host.getPr({ remote, number: prNumber });
       const prForMerge = refreshed.ok ? refreshed.data : pr;
-
-      // The standing PR must land via the exact tested merge commit, never squash.
-      const { isStandingPr } = await import('../../../harness/git-sync/standing-pr-merge');
-      if (isStandingPr(prForMerge)) {
-        const result = await actOnPr(prNumber, 'merge', await livePrViewerDeps(slug));
-        await Promise.all(['harnessPrs.byHarness', 'harnessPrs.detail'].map(name => notifySyncInvalidate(name)));
-        return Response.json({ ok: true, ...result });
-      }
 
       const mergeCtx: AutoMergeContext = {
         harnessSlug: slug,

@@ -86,6 +86,7 @@ import {
   releaseAgentLaunchClaim,
   type LaunchMode,
 } from '../../../agent-launch-core';
+import { renderModeInstructionsFact } from '../../../agent-tools/mode/set';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
 import { writeSuCodexHome } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
@@ -943,6 +944,32 @@ export async function stampPresenceAtBoot(opts: {
  * only in the sense of not failing the request — this function itself never
  * throws, returning a message instead, mirroring stampFleetMembershipAtBoot).
  */
+/**
+ * A launcher's session scope is not a member's role assignment. In particular,
+ * copying a leader's pre-rendered DRAIN fact also copied "set by the owner" and
+ * made the child owner-sticky. Derive member scope from the registered fleet
+ * role and reuse its admitted claim spec for the work boundary instead.
+ * Use this same normalization for both durable writes and first-turn prose.
+ */
+export function normalizeBootstrapLaunchMode(
+  value: unknown,
+  fleet?: { slug: string; role: string | null } | null,
+): LaunchMode | null {
+  const mode = normalizeLaunchMode(value);
+  if (!mode || mode.mode !== 'drain' || fleet?.role !== 'member') return mode;
+  return normalizeLaunchMode({
+    ...mode,
+    ownerDirected: false,
+    instructions: renderModeInstructionsFact({
+      modeId: mode.mode,
+      instructions: `Work as a member of fleet '${fleet.slug}' under its current registered leader. ` +
+        'Use only the fleet\'s admitted claim spec. Do not take leadership or monitor the fleet.',
+      ownerDirected: false,
+      setBy: 'bootstrap-su:registered-fleet-member',
+    }),
+  });
+}
+
 export async function syncLaunchModeToRegistry(opts: {
   workspaceId: string;
   ownerId: string;
@@ -954,6 +981,7 @@ export async function syncLaunchModeToRegistry(opts: {
   subject?: string | null;
   instructions?: string | null;
   ownerDirected?: boolean;
+  fleet?: { slug: string; role: string | null } | null;
 }): Promise<string | null> {
   const namedMode = opts.namedMode ?? (opts.drainMode ? 'drain' : null);
   if (!opts.autoMode && !namedMode) return null;
@@ -963,19 +991,21 @@ export async function syncLaunchModeToRegistry(opts: {
       '../../../agent-tools/coordination/control-anchor'
     );
     const launchMode: LaunchMode | null = namedMode
-      ? normalizeLaunchMode({
+      ? normalizeBootstrapLaunchMode({
           mode: namedMode,
           subject: opts.subject,
           instructions: opts.instructions,
           ownerDirected: opts.ownerDirected,
-        })
+        }, opts.fleet)
       : null;
+    const memberDrain = namedMode === 'drain' && opts.fleet?.role === 'member';
+    let namedModeCommitted = false;
     for (const modeId of [...(opts.autoMode ? ['auto'] : []), ...(namedMode ? [namedMode] : [])]) {
       const namedFields =
-        modeId === namedMode && (opts.subject !== undefined || opts.ownerDirected !== undefined)
+        modeId === namedMode && (opts.subject !== undefined || opts.ownerDirected !== undefined || memberDrain)
           ? {
               ...(opts.subject !== undefined ? { subject: launchMode?.subject ?? null } : {}),
-              ...(opts.ownerDirected !== undefined ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
+              ...(opts.ownerDirected !== undefined || memberDrain ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
             }
           : {};
       const res = await setMode({
@@ -992,13 +1022,14 @@ export async function syncLaunchModeToRegistry(opts: {
         // which just means a peer/earlier launch already armed it more strongly)
         return res.error ?? `setMode('${modeId}') failed`;
       }
+      if (modeId === namedMode) namedModeCommitted = res.ok;
     }
     // D-002: when a launch carries the parent's bounded standing instruction,
     // assert that exact body under the canonical mode key. Do not render it a
     // second time: callers read the already-rendered fact from the parent, and
     // duplicating the prefix would alter the operative instruction on every
     // resumption. A supplied empty value deliberately retracts stale scope.
-    if (namedMode && opts.instructions !== undefined) {
+    if (namedMode && namedModeCommitted && (opts.instructions !== undefined || memberDrain)) {
       const { assertFact, retractFact } = await import('../../../agent-facts/store');
       const { modeInstructionsFactKey } = await import('../../../agent-tools/mode/set');
       const key = modeInstructionsFactKey(namedMode);
@@ -2701,12 +2732,12 @@ export const bootstrapSu = defineTool({
     // shared core is the single bound for subject/instructions, so a direct
     // loopback POST cannot smuggle an unbounded scope into a child session.
     const launchMode = modeRaw
-      ? normalizeLaunchMode({
+      ? normalizeBootstrapLaunchMode({
           mode: modeRaw,
           subject: body.mode_subject,
           instructions: body.mode_instructions,
           ownerDirected: body.mode_owner_directed === true,
-        })
+        }, fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null)
       : null;
 
     // EI-11110 / WI-5976: keep the mode REGISTRY in sync with the AUTO/DRAIN prose
@@ -2719,6 +2750,7 @@ export const bootstrapSu = defineTool({
       autoMode,
       drainMode,
       namedMode: launchMode?.mode ?? null,
+      fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
       ...(launchMode?.subject !== null && launchMode?.subject !== undefined
         ? { subject: launchMode.subject }
         : body.mode_subject !== undefined

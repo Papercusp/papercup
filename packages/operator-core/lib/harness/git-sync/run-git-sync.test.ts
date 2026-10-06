@@ -181,6 +181,52 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
       },
     ]);
   });
+
+  // EI-25203408414398603: the edit ledger records a nested repo's edit relative to THAT repo with
+  // repo=NULL ('libs/db/sql/NNNN-x.sql', never '<scope>/libs/db/sql/…'). Matching only the
+  // scope-qualified form left every real child migration unattributed, which deferred EVERY dirty
+  // superproject path — one stray migration froze the whole superproject for 30+ minutes.
+  it('attributes a child migration recorded nested-repo-relative, the shape the edit ledger writes', () => {
+    const roster: AttributionRosterEntry[] = [
+      { agent: 'su-migration', files: ['libs/db/sql/999-unreserved-migration.sql'], workItems: [] },
+      { agent: 'su-migration', files: ['schema-consumer.ts'], workItems: [] },
+      { agent: 'su-unrelated', files: ['root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(
+      migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster).map((s) => [
+        s.path,
+        s.detail,
+      ]),
+    ).toEqual([
+      [
+        'schema-consumer.ts',
+        'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+          'libs/sub/libs/db/sql/999-unreserved-migration.sql',
+      ],
+    ]);
+  });
+
+  it('normalizes absolute roster paths against superRoot, like every other attribution caller', () => {
+    const roster: AttributionRosterEntry[] = [
+      {
+        agent: 'su-migration',
+        files: ['/repo/libs/sub/libs/db/sql/999-unreserved-migration.sql', '/repo/schema-consumer.ts'],
+        workItems: ['WI-migration'],
+      },
+      { agent: 'su-unrelated', files: ['/repo/root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(
+      migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster, '/repo').map(
+        (s) => s.path,
+      ),
+    ).toEqual(['schema-consumer.ts']);
+    // Without superRoot the absolute entries cannot match, so the fence fails closed on everything.
+    expect(
+      migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster).map((s) => s.path),
+    ).toEqual(['schema-consumer.ts', 'root-unrelated.ts']);
+  });
 });
 
 describe('EI-24827889655898454 git-sync TSX install boundary', () => {

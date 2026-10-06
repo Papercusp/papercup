@@ -13592,7 +13592,21 @@ export function forkBootstrapBody(
   account = null,
   launchMode = null,
   ownerId = null,
+  launchArgs = null,
 ) {
+  // A fork bootstraps a fresh row, but its provenance is the actual resume/fork
+  // invocation. Reuse the normal launch record so the parent, owner pin and
+  // headless discriminator survive bootstrap and session:end can recognize an
+  // agent-launched child. Calls without launch args retain the legacy body.
+  const launchArgv = launchArgs ? psuLaunchArgvRecord({
+    agent: "claude", workspace: session.workspaceId || null,
+    harness: null, plan: session.planSlug || null,
+  }, {
+    ...launchArgs, sessionPortSourceAdvSessionId: null,
+    ownerId: ownerId || launchArgs.ownerId || null,
+    account: account || launchArgs.account || null,
+  }) : null;
+  if (launchArgv) launchArgv.splice(2, 0, `--resume=${session.sessionId}`, "--fork");
   return {
     agent: "claude",
     workspace: session.workspaceId || null,
@@ -13605,6 +13619,9 @@ export function forkBootstrapBody(
     // must name its responder BEFORE the answering session boots, so it pins the
     // id here and bootstrap-su adopts it exactly as on a fresh --owner-id launch.
     ...(ownerId ? { owner_id: ownerId } : {}),
+    ...(launchArgv ? { launch_argv: launchArgv } : {}),
+    ...(launchArgs?.launchedBy ? { launched_by: launchArgs.launchedBy } : {}),
+    ...(launchArgs?.headless ? { headless: true } : {}),
     // A tracked fork mints a fresh session, so the gateway account pin is folded
     // server-side (resolveAccountPin) into the new launch envelope — the same path
     // a fresh psu launch takes. Omitted → no `account` key (byte-identical).
@@ -14115,6 +14132,7 @@ export async function launchTrackedFork(
           acct?.forward ?? acct?.id ?? null,
           launchModeFromArgs(args),
           args.ownerId || null,
+          { ...args, model: model || args.model || null },
         ),
       ),
     });

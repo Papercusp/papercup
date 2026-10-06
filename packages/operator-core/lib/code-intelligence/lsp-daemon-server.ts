@@ -86,14 +86,15 @@ export async function dispatchLspDaemonRequest(
 export function runLspDaemonServer(
   execute: typeof dispatchLspDaemonRequest = dispatchLspDaemonRequest,
   executeApply: typeof dispatchLspDaemonApply = dispatchLspDaemonApply,
+  shutdown?: (closeRpc: () => Promise<void>) => void,
 ): Server {
   const socketPath = resolveLspDaemonSocketPath();
   mkdirSync(dirname(socketPath), { recursive: true });
   reapOrphanedLspDaemonSockets();
-  const clients = new Set<Socket>();
+  const clients = new Map<Socket, Map<string, AbortController>>();
   const server = createServer((socket) => {
-    clients.add(socket);
     const controllers = new Map<string, AbortController>();
+    clients.set(socket, controllers);
     let buffer = '';
     const send = (value: unknown) => { if (!socket.destroyed) socket.write(`${JSON.stringify(value)}\n`); };
     socket.setEncoding('utf8');
@@ -157,7 +158,18 @@ export function runLspDaemonServer(
     });
     socket.once('close', () => { clients.delete(socket); for (const controller of controllers.values()) controller.abort(); });
   });
-  const cleanup = () => { for (const client of clients) client.destroy(); server.close(); };
+  const closeRpc = () => new Promise<void>((resolve) => {
+    // Abort before resolving the listener drain. Socket 'close' is delivered
+    // later, so relying on it lets adapter/database teardown overtake work.
+    for (const [client, controllers] of clients) {
+      for (const controller of controllers.values()) controller.abort();
+      client.destroy();
+    }
+    server.close(() => resolve());
+  });
+  // An embedded RPC server owns only its socket. The daemon entrypoint also
+  // owns adapter children and database pools, and supplies its bounded drain.
+  const cleanup = () => { if (shutdown) shutdown(closeRpc); else void closeRpc(); };
   process.once('SIGTERM', cleanup);
   process.once('SIGINT', cleanup);
   let ownsSocket = false;

@@ -148,6 +148,62 @@ sudo systemctl daemon-reload
 
 ---
 
+# Operator boot-availability check — user-unit installation (WI-10006021)
+
+`papercusp-operator-boot-availability.{service,timer}` samples
+`http://127.0.0.1:3070/api/health` once a minute, starting 60 seconds after the
+user manager starts. It reads `user@1000.service`'s monotonic active-enter time,
+records the first healthy sample for that manager lifetime, and logs an
+`ALERT` if the endpoint is still unavailable after 10 minutes. The check runs
+from `timers.target` and has no ordering edge to `default.target`, so it can
+report an API job waiting on that target. It only observes availability; it
+does not restart the manager or operator unit. The separate root
+`papercusp-user-manager-watchdog` remains the recovery actor when the user
+manager itself is down.
+
+## Install or update
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+install -Dm0644 papercusp-operator-boot-availability.service \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.service"
+install -Dm0644 papercusp-operator-boot-availability.timer \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.timer"
+systemctl --user daemon-reload
+systemctl --user enable --now papercusp-operator-boot-availability.timer
+```
+
+## Verify
+
+```bash
+systemd-analyze --user verify \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.service" \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.timer"
+systemctl --user is-enabled papercusp-operator-boot-availability.timer
+systemctl --user is-active papercusp-operator-boot-availability.timer
+systemctl --user start papercusp-operator-boot-availability.service
+journalctl --user -u papercusp-operator-boot-availability.service --since "5 min ago" --no-pager
+```
+
+The first healthy line reports the elapsed time from `user@1000.service` start
+to the first successful health sample. If the timer's first healthy sample
+arrives after the 10-minute window, it says the startup window was not observed
+instead of presenting a late probe as the boot latency. If the endpoint remains
+unavailable at the deadline, the failed oneshot records an `ALERT` in the user
+journal. A successful sample clears the per-manager alert marker; restarting
+the user manager begins a new measurement.
+
+## Roll back
+
+```bash
+systemctl --user disable --now papercusp-operator-boot-availability.timer
+rm -f "$HOME/.config/systemd/user/papercusp-operator-boot-availability.service"
+rm -f "$HOME/.config/systemd/user/papercusp-operator-boot-availability.timer"
+systemctl --user daemon-reload
+```
+
+---
+
 # User-manager signal audit — installation (WI-1430770)
 
 `papercusp-usermgr-signal-audit.{service,timer}` is the FORENSIC half of the

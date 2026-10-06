@@ -290,9 +290,9 @@ describe('scripts/affected-tests.mjs wiring (source pins)', () => {
     expect(source).toMatch(/selectRelatedTests\(\{[\s\S]*?executedMap: executedMap\.map,[\s\S]*?judgedSha: executedMapContext\.judgedSha,[\s\S]*?changedBetween: executedMapContext\.changedBetween,/);
   });
 
-  it('stamps the reporter arming env on unit vitest tasks only, and prints one line per workspace', () => {
+  it('stamps the reporter arming env on unit and integration vitest tasks, and prints one line per workspace', () => {
     expect(source).toMatch(
-      /const recordsExecutedMap =\s*executedMapRecordingEnabled\(\) &&\s*\(spawnTask\.script === "test" \|\| LANE_SCRIPTS\.includes\(spawnTask\.script\)\);/,
+      /const recordsExecutedMap =\s*executedMapRecordingEnabled\(\) &&\s*\(spawnTask\.script === "test" \|\| LANE_SCRIPTS\.includes\(spawnTask\.script\) \|\|\s*spawnTask\.script === "test:integration"\);/,
     );
     expect(source).toMatch(/\.\.\.\(recordsExecutedMap \? \{ \[EXECUTED_MAP_WORKSPACE_ENV\]: spawnTask\.ws\.name \} : \{\}\)/);
     // WI-10003603: the result channel — same env name on both sides, and the runner reads it back,

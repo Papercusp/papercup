@@ -122,6 +122,33 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
 }
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
+  it.each([
+    { costUsdMeasurementMissing: true },
+    { unreportedFrames: 2 },
+  ])('stops after an incomplete judge receipt and retains the known subtotal %j', async evidence => {
+    const ab = fakeAbDeps(ALL_MEASURED);
+    const runPipeline = ab.runPipeline;
+    let pipelines = 0;
+    let scored = 0;
+    ab.runPipeline = async input => { pipelines++; return runPipeline(input); };
+    ab.store.recordScore = async () => { scored++; };
+    const { deps } = makeDeps({ abDeps: ab, judgeCall: async opts => ({ ...await fakeJudge(opts), ...evidence }) });
+    await expect(deps.evaluate('baseline', { promptOverrides: {} })).rejects.toMatchObject({
+      costUsd: PIPELINE_USD + JUDGE_USD, costUsdMeasurementMissing: true,
+      ...(evidence.unreportedFrames ? { unreportedFrames: 2 } : {}),
+    });
+    expect(pipelines).toBe(1);
+    expect(scored).toBe(0);
+  });
+
+  it('retains every judge repair charge in a partial evaluation failure', async () => {
+    const { deps } = makeDeps({ judgeCall: async () => ({ text: 'malformed', costUsd: JUDGE_USD,
+      inputTokens: 1, outputTokens: 1 }) });
+    await expect(deps.evaluate('baseline', { promptOverrides: {} })).rejects.toMatchObject({
+      costUsd: PIPELINE_USD + 2 * JUDGE_USD,
+    });
+  });
+
   it('stops before judging incomplete pipeline usage while retaining its priced subtotal and receipt', async () => {
     const ab = fakeAbDeps(ALL_MEASURED);
     const run = ab.runPipeline;

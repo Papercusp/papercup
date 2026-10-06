@@ -225,6 +225,19 @@ mod tests {
     }
 
     #[test]
+    fn backend_is_reachable_from_the_menu() {
+        assert_eq!(
+            resolve("backend", 0).map(|c| c.kind),
+            Some(SlashKind::Backend)
+        );
+        assert_eq!(
+            resolve("b", 0).map(|c| c.kind),
+            Some(SlashKind::Backend),
+            "the only command starting with b"
+        );
+    }
+
+    #[test]
     fn the_unknown_message_names_the_escape_hatch() {
         let m = unknown_message("nope");
         assert!(m.contains("/nope"));

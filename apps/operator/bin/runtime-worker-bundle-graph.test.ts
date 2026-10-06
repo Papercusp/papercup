@@ -41,7 +41,7 @@ const BUNDLER_FLAGS: BuildOptions = {
 
 function bundledWorkerSources(): string[] {
   const text = readFileSync(BUNDLER, 'utf8');
-  return [...text.matchAll(/"\$repo_root\/([^"]+\.worker\.ts)"/g)].map((m) => m[1]!);
+  return [...text.matchAll(/"\$repo_root\/([^"]+(?:\.worker|precision-bench-worker)\.ts)"/g)].map((m) => m[1]!);
 }
 
 const firstLines = (err: unknown, n = 6): string => String((err as Error)?.message ?? err).split('\n').slice(0, n).join('\n');
@@ -116,6 +116,7 @@ describe('bg-host runtime worker bundles stay small and buildable', () => {
   it('derives the esbuild-bundled worker list from bundle-host-common.sh', () => {
     // Positive control: a parser that matched nothing would make every case below vacuous.
     expect(workers).toContain('packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts');
+    expect(workers).toContain('packages/operator-core/lib/memory/bench/precision-bench-worker.ts');
     expect(workers.length).toBeGreaterThanOrEqual(2);
   });
 

@@ -3,7 +3,6 @@ import type { RunSummary } from '@papercusp/testing-shell/llm';
 
 import {
   affirmsAbsence,
-  makeS37Scenarios,
   s37AbsenceAsserts,
   s37DefinitionAsserts,
   s37ImpactAsserts,
@@ -12,6 +11,7 @@ import {
   S37_WORLD,
   SU_S37_CODE_SEARCH,
 } from './S37-code-search-discipline';
+import { WORKER_W01_CODE_SEARCH } from '../worker/W01-code-search-discipline';
 
 type Call = [tool: string, args: Record<string, unknown>];
 
@@ -134,8 +134,16 @@ describe('S37 registration shape', () => {
       'su-S37b-signature-impact',
       'su-S37c-definition-lookup',
     ]);
-    const worker = makeS37Scenarios('worker');
+    const worker = WORKER_W01_CODE_SEARCH;
+    expect(SU_S37_CODE_SEARCH.map((s) => s.target)).toEqual(['su-code', 'su-code', 'su-code']);
     expect(worker.map((s) => s.target)).toEqual(['worker', 'worker', 'worker']);
+    // Same scenarios, different ids: the briefs and assert sets match (asserts are fresh
+    // closures per factory call, so compare their kinds, not their identity).
+    const shape = (s: (typeof worker)[number]) => ({
+      description: s.description,
+      asserts: (s.asserts ?? []).map((a) => JSON.stringify(a, (_k, v) => (typeof v === 'function' ? 'fn' : v))),
+    });
+    expect(worker.map(shape)).toEqual(SU_S37_CODE_SEARCH.map(shape));
     expect(worker.map((s) => s.id)).toEqual([
       'worker-W01a-absence-claim',
       'worker-W01b-signature-impact',

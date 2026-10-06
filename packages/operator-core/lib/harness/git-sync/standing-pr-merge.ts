@@ -79,6 +79,15 @@ export interface StandingPrMergeInput {
   promotedSha: string | null;
   /** contribution-admission: the PR author is a revoked contributor. */
   authorRevoked: boolean;
+  /**
+   * A reviewer holding review permission chose Merge in the PR viewer (D-007: work
+   * reaches <repo> through PRs "you (or a reviewer) approve"). The pot's own GitHub
+   * account authors the standing PR and GitHub refuses self-approval, so in a
+   * one-account setup no GitHub approval can ever exist: this click IS the approval
+   * (WI-10006351). A GitHub `changes_requested` review still blocks. The poller never
+   * sets it.
+   */
+  viewerApproved?: boolean;
 }
 
 export type StandingPrMergeOutcome =
@@ -106,7 +115,10 @@ export async function stepStandingPrMerge(
   if (input.authorRevoked) {
     return { action: 'refused', reason: 'author-revoked', detail: 'The PR author is a revoked contributor.' };
   }
-  if (pr.review_decision !== 'approved') {
+  if (pr.review_decision === 'changes_requested') {
+    return { action: 'skipped', reason: 'not-approved', detail: 'Changes were requested on GitHub. Resolve them before merging.' };
+  }
+  if (pr.review_decision !== 'approved' && input.viewerApproved !== true) {
     return { action: 'skipped', reason: 'not-approved', detail: `Review decision is ${pr.review_decision}.` };
   }
   if (pr.checks_state !== 'success' && pr.checks_state !== 'unknown') {

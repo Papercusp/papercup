@@ -541,3 +541,127 @@ describe('connector sync driver over registered providers (R-3)', () => {
     expect((await sync(src)).sources).toEqual([]);
   });
 });
+
+/**
+ * D-020: a provider declaring `sync.adopt` starts a source a retired host path drove from that
+ * path's freshest cursor, instead of null (a full re-walk under new delivery keys).
+ */
+describe('sync.adopt: adopting a pre-provider cursor (D-020)', () => {
+  let adoptRegistry: ProviderRegistry;
+  let adoptCalls: Array<Record<string, unknown>>;
+  let adoptAnswer: () => unknown;
+
+  const adoptingAdapter: ProviderAdapter = {
+    describe: () => ({ ...descriptor, capabilities: ['mail.read', 'sync.adopt'] }),
+    syncPage: adapter.syncPage,
+    invoke: async (req) => {
+      if (req.capability !== 'sync.adopt') throw new Error(`unexpected capability ${req.capability}`);
+      adoptCalls.push((req.args as { prior: Record<string, unknown> }).prior);
+      return adoptAnswer();
+    },
+  };
+
+  async function setCursor(sourceId: string, cursor: Record<string, unknown>): Promise<void> {
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET cursor = ${org.adminSql.json(cursor as never)}::jsonb
+       WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+  }
+
+  async function hasProviderKey(sourceId: string): Promise<boolean> {
+    const [row] = await org.adminSql<{ has: boolean }[]>`
+      SELECT cursor ? 'provider' AS has FROM harness_shared.data_sources
+       WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    return row.has;
+  }
+
+  const adoptSync = (sourceId: string) => syncOne(sourceId, { registry: adoptRegistry });
+
+  beforeAll(async () => {
+    adoptRegistry = createProviderRegistry();
+    await adoptRegistry.register({
+      descriptor: { ...descriptor, capabilities: ['mail.read', 'sync.adopt'] },
+      adapter: adoptingAdapter,
+      pluginName: 'connector-fixture-adopting-plugin',
+    });
+  });
+
+  beforeEach(() => {
+    adoptCalls = [];
+    adoptAnswer = () => ({ cursor: null, backfillComplete: false });
+  });
+
+  it('adopts the legacy position once, without the host-owned wake key, and syncs incrementally from it', async () => {
+    const src = await createSource();
+    await setCursor(src, { historyId: '500', emailAddress: 'a@example.com', wake: 'wake-state' });
+    adoptAnswer = () => ({ cursor: 'adopted-500', backfillComplete: true });
+    handler = scripted({ 'adopted-500': page([mail('m1')], 'c1', false) });
+
+    const first = await adoptSync(src);
+    expect(first).toMatchObject({ outcome: 'synced', adopted: true, mode: 'incremental', admitted: 1 });
+    expect(adoptCalls).toEqual([{ historyId: '500', emailAddress: 'a@example.com' }]);
+    expect(calls).toEqual([{ cursor: 'adopted-500', mode: 'incremental' }]);
+    expect(await state(src)).toMatchObject({ cursor: 'c1', backfill_status: 'complete' });
+
+    // The provider now owns the cursor: no second adoption.
+    await makeDue(src);
+    handler = scripted({ c1: page([], 'c2', false) });
+    const second = await adoptSync(src);
+    expect(second.adopted).toBeUndefined();
+    expect(adoptCalls).toHaveLength(1);
+    expect(calls.at(-1)).toEqual({ cursor: 'c1', mode: 'incremental' });
+  });
+
+  it('an adopted position that still owes a backfill syncs in backfill mode', async () => {
+    const src = await createSource();
+    await setCursor(src, { historyId: '700', backfill: { status: 'pending', pageToken: 'p9' } });
+    adoptAnswer = () => ({ cursor: 'adopted-700', backfillComplete: false });
+    handler = scripted({ 'adopted-700': page([mail('m1')], 'b1', true), b1: page([], 'b2', false) });
+    const outcome = await adoptSync(src);
+    expect(outcome).toMatchObject({ outcome: 'synced', adopted: true, mode: 'backfill' });
+    expect(calls).toEqual([
+      { cursor: 'adopted-700', mode: 'backfill' },
+      { cursor: 'b1', mode: 'backfill' },
+    ]);
+    expect(await state(src)).toMatchObject({ cursor: 'b2', backfill_status: 'complete' });
+  });
+
+  it('never re-adopts once the provider key exists, even when a cursor-expired reset nulled it', async () => {
+    const src = await createSource();
+    await setCursor(src, { provider: null, historyId: '900' });
+    const outcome = await adoptSync(src);
+    expect(outcome.outcome).toBe('synced');
+    expect(adoptCalls).toEqual([]);
+    expect(calls).toEqual([{ cursor: null, mode: 'backfill' }]);
+  });
+
+  it('a provider with nothing to adopt starts fresh, and a source with no prior state is never asked', async () => {
+    const src = await createSource();
+    await setCursor(src, { lastSyncAt: '2026-09-01T00:00:00Z' });
+    expect((await adoptSync(src)).adopted).toBeUndefined();
+    expect(adoptCalls).toHaveLength(1);
+    expect(calls).toEqual([{ cursor: null, mode: 'backfill' }]);
+
+    const fresh = await createSource();
+    await adoptSync(fresh);
+    expect(adoptCalls).toHaveLength(1);
+  });
+
+  it('an adopt failure fails the pass and writes no cursor, rather than falling back to a null start', async () => {
+    const src = await createSource();
+    await setCursor(src, { historyId: '1200' });
+    adoptAnswer = () => {
+      throw new Error('adopt exploded');
+    };
+    const failed = await adoptSync(src);
+    expect(failed).toMatchObject({ outcome: 'failed' });
+    expect(calls).toEqual([]);
+    expect(await hasProviderKey(src)).toBe(false);
+    expect((await state(src)).failure_count).toBe(1);
+
+    // A malformed answer is a failure too.
+    await makeDue(src);
+    adoptAnswer = () => ({ cursor: 42, backfillComplete: true });
+    expect((await adoptSync(src)).outcome).toBe('failed');
+    expect(await hasProviderKey(src)).toBe(false);
+  });
+});

@@ -309,6 +309,13 @@ describe('response timeout', () => {
         return runtime;
       }),
     }));
+    // ElevenLabs full-agent is outside the voice-final-public-release-2026-10-01#D-005
+    // scope and refused at activation. Re-admit only it here so this dormant
+    // session path stays covered for when the engine returns with acceptance.
+    vi.doMock('@papercusp/operator-core/lib/voice-release-availability', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/operator-core/lib/voice-release-availability')>()),
+      isFullAgentEngineUnavailable: (engine: unknown) => engine === 'gemini-live',
+    }));
 
     try {
       const prefs = await import('./voice-prefs-client');
@@ -501,7 +508,7 @@ describe('setVoiceMode', () => {
       const mod = await loadVoiceMode();
       mod.setVoiceMode('always-on');
       await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith(
-        expect.stringContaining('Gemini Live is not supported'), expect.anything(),
+        expect.stringContaining('Gemini Live is not available in this release'), expect.anything(),
       ));
       expect(mod.getVoiceState()).toMatchObject({ mode: 'off', status: 'off', micOwnedByFullAgent: false });
       expect(prefs.loadVoicePrefsClient().fullAgentEngine).toBe('gemini-live');

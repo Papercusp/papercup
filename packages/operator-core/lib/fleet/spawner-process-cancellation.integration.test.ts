@@ -211,7 +211,8 @@ describe('cancellable caller with real IPC and child processes', () => {
     const accepted: net.Socket[] = [];
     const captureConnection = (socket: net.Socket): void => { accepted.push(socket); };
     server.on('connection', captureConnection);
-    const child = runChild();
+    const callerLabel = PROCESS_EXEC_CALLER_LABELS.command;
+    const child = runChild(undefined, callerLabel);
     try {
       await child.started;
       const serverSocket = accepted[0];
@@ -231,7 +232,7 @@ describe('cancellable caller with real IPC and child processes', () => {
         clientConnectionId: child.clientConnectionId(),
         errorCode: 'ECONNRESET',
         errorName: 'Error',
-        activeRequests: [{ requestId: child.id(), method: 'process:exec' }],
+        activeRequests: [{ requestId: child.id(), method: 'process:exec', callerLabel }],
       });
       expect(JSON.stringify(fault)).not.toContain('synthetic ECONNRESET');
       expect(fault).not.toHaveProperty('command');
@@ -246,10 +247,38 @@ describe('cancellable caller with real IPC and child processes', () => {
         clientConnectionId: child.clientConnectionId(),
         serverGeneration: fence.serverGeneration,
         serverConnectionId: fence.connectionId,
-        activeRequests: [{ requestId: child.id(), method: 'process:exec' }],
+        activeRequests: [{ requestId: child.id(), method: 'process:exec', callerLabel }],
       });
     } finally {
       server.off('connection', captureConnection);
+    }
+  });
+
+  it('omits unrecognized caller labels from client fault records', async () => {
+    const clientWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unrecognizedCallerLabel = 'command=/secret' as ProcessExecCallerLabel;
+    const child = runChild(undefined, unrecognizedCallerLabel);
+    try {
+      await child.started;
+      const fence = await executionFence(child.client);
+      const socket = (child.client as unknown as { socket: net.Socket | null }).socket;
+      if (!socket) throw new Error('client socket missing before peer EOF');
+      socket.end();
+      await vi.waitFor(() => expect(clientWarning.mock.calls.some(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'peer-eof',
+      )).toBe(true));
+      const clientFault = clientWarning.mock.calls.find(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'peer-eof',
+      )?.[1] as Record<string, unknown> | undefined;
+      expect(JSON.stringify(clientFault)).not.toContain(unrecognizedCallerLabel);
+      expect(clientFault?.activeRequests).toEqual([{ requestId: child.id(), method: 'process:exec' }]);
+      await recoveryClient().call('process:drain', { ...fence, requestId: child.id() });
+    } finally {
+      await child.result.catch(() => {});
     }
   });
 });

@@ -3663,6 +3663,26 @@ export function checkpointResultMarkerPayload(
       omitted.push("repairTickLegs(outputTails, signature caps)");
     }
   }
+  const maxPayloadBytes =
+    CHECKPOINT_RESULT_MARKER_ATOMIC_BYTES -
+    Buffer.byteLength(GREEN_CHECKPOINT_RESULT_MARKER + " \n");
+  const markerPayload = (): Record<string, unknown> =>
+    omitted.length > 0 ? { ...out, markerCompacted: { omitted } } : out;
+  const payloadBytes = (): number => Buffer.byteLength(JSON.stringify(markerPayload()) ?? "");
+  if (payloadBytes() > maxPayloadBytes) {
+    const pathFields = ["failingTests", "flakeSuspects"]
+      .filter((field) => Array.isArray(out[field]))
+      .sort(
+        (a, b) =>
+          Buffer.byteLength(JSON.stringify(out[b]) ?? "") -
+          Buffer.byteLength(JSON.stringify(out[a]) ?? ""),
+      );
+    for (const field of pathFields) {
+      if (payloadBytes() <= maxPayloadBytes) break;
+      delete out[field];
+      omitted.push(field);
+    }
+  }
   if (omitted.length > 0) out.markerCompacted = { omitted };
   return out;
 }
@@ -7222,14 +7242,13 @@ export function needsOwnFileRunner(
  * EI-24542010215430349: stamp a rescue rerun (load-flake isolation, co-execution confirmation,
  * worker-crash workspace rerun) with the executed-source capture the SUITE ran that file under.
  *
- * The suite arms the executed-source-map reporter and its per-file input capture on every unit
- * vitest task (scripts/affected-tests.mjs `recordsExecutedMap`: the `test` script and the lanes).
+ * The suite arms the executed-source-map reporter and its per-file input capture on unit and
+ * integration vitest tasks (scripts/affected-tests.mjs `recordsExecutedMap`).
  * A rescue rerun that runs UNARMED changes a variable the rescue is not meant to change: a red
  * the capture itself causes (a capture-setup crash, a fixture the capture's fs hooks break)
  * passes unarmed and is absorbed as a load flake — false green. Every rescue rerun goes through
  * the workspace's `test` script, so it is armed exactly when the suite would have armed it:
- * recording enabled and no `*.integration.test.*` file (those ran under the unarmed
- * `test:integration` script, so arming them would be the variable change in the other direction).
+ * recording enabled, including files originally run by `test:integration`.
  *
  * Armed NO-PERSIST: a rescue rerun is not a suite run, so nothing it sees becomes a reusable pass
  * proof or retires one. It also never inherits the suite's per-task result file, rows file or
@@ -7250,9 +7269,7 @@ export function armRescueRerunCapture(
   ]) {
     delete env[key];
   }
-  const armed =
-    executedMapRecordingEnabled(env) &&
-    !input.files.some((file) => /\.integration\.test\./.test(file));
+  const armed = executedMapRecordingEnabled(env);
   if (armed) {
     env[EXECUTED_MAP_WORKSPACE_ENV] = input.workspace;
     env[EXECUTED_MAP_NO_PERSIST_ENV] = "1";

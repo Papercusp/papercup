@@ -153,6 +153,12 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    messagePattern:
+      'patch verification could not find the expected|patch was rejected before writing because .*abbreviated text|patch was rejected because one expected source line did not match exactly',
+    why: 'the patch tool deliberately refused a hunk whose expected source context did not match; refresh the exact file context instead of filing a Papercusp structural defect',
+  },
+  {
+    class: 'caller',
     messagePattern: 'Identity capability \\(unresolved\\): outside-ceiling',
     why: 'the kernel refused a call outside the caller identity’s authored capability ceiling; this expected authorization refusal is not a tool implementation defect',
   },

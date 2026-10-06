@@ -423,6 +423,142 @@ esac
     }
   });
 
+  it("recovers an activating managed unit without treating its transient listener as legacy", () => {
+    const files = fixture();
+    const managedCgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-cloud-portal.service";
+    const stopped = join(files.dir, "managed-stopped");
+    const systemctl = join(files.binDir, "systemctl-activating");
+    const ss = join(files.binDir, "ss-managed-listener");
+    const curl = join(files.binDir, "curl-managed-listener");
+    const kill = join(files.binDir, "kill-recording");
+    const killLog = join(files.dir, "kill.log");
+
+    writeFileSync(join(files.procRoot, "4242", "cgroup"), `0::${managedCgroup}\n`);
+    writeFileSync(killLog, "");
+    writeFileSync(systemctl, `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$SYSTEMCTL_LOG"
+shift
+case "$1" in
+  daemon-reload|enable|reset-failed|start) exit 0 ;;
+  stop) : > '${stopped}'; exit 0 ;;
+  is-active) exit 1 ;;
+  show)
+    case "$*" in
+      *--property=ControlGroup*) printf '%s\\n' '${managedCgroup}' ;;
+      *--property=MainPID*) printf '4242\\n' ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+`);
+    chmodSync(systemctl, 0o755);
+    writeFileSync(ss, `#!/usr/bin/env bash
+set -eu
+[[ -e '${stopped}' ]] && exit 0
+printf '%s\\n' 'LISTEN 0 511 127.0.0.1:3801 0.0.0.0:* users:(("node",pid=4242,fd=18))'
+`);
+    chmodSync(ss, 0o755);
+    writeFileSync(curl, `#!/usr/bin/env bash
+set -eu
+[[ -e '${stopped}' ]] || exit 7
+exit 0
+`);
+    chmodSync(curl, 0o755);
+    writeFileSync(kill, `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> '${killLog}'
+`);
+    chmodSync(kill, 0o755);
+
+    try {
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_SS: ss,
+        PAPERCUSP_CLOUD_PORTAL_CURL: curl,
+        PAPERCUSP_CLOUD_PORTAL_KILL: kill,
+        SYSTEMCTL_LOG: files.logPath,
+      });
+      const calls = readFileSync(files.logPath, "utf8");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("started papercusp-cloud-portal.service and verified");
+      expect(result.stderr).not.toContain("legacy :3801 listener is not healthy");
+      expect(calls).toContain("--user show papercusp-cloud-portal.service --property=ControlGroup --value");
+      expect(calls).toContain("--user stop papercusp-cloud-portal.service");
+      expect(calls).toContain("--user start papercusp-cloud-portal.service");
+      expect(calls.indexOf("--user stop papercusp-cloud-portal.service"))
+        .toBeLessThan(calls.indexOf("--user start papercusp-cloud-portal.service"));
+      expect(readFileSync(killLog, "utf8")).toBe("");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not stop an unhealthy listener outside the managed ControlGroup", () => {
+    const files = fixture();
+    const managedCgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-cloud-portal.service";
+    const externalCgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/other.service";
+    const systemctl = join(files.binDir, "systemctl-external-listener");
+    const ss = join(files.binDir, "ss-external-listener");
+    const curl = join(files.binDir, "curl-unhealthy-listener");
+    const kill = join(files.binDir, "kill-recording");
+    const killLog = join(files.dir, "kill.log");
+
+    writeFileSync(join(files.procRoot, "4242", "cgroup"), `0::${externalCgroup}\n`);
+    writeFileSync(killLog, "");
+    writeFileSync(systemctl, `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$SYSTEMCTL_LOG"
+shift
+case "$1" in
+  daemon-reload|enable|reset-failed|start|stop) exit 0 ;;
+  is-active) exit 1 ;;
+  show)
+    case "$*" in
+      *--property=ControlGroup*) printf '%s\\n' '${managedCgroup}' ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+`);
+    chmodSync(systemctl, 0o755);
+    writeFileSync(ss, `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' 'LISTEN 0 511 127.0.0.1:3801 0.0.0.0:* users:(("node",pid=4242,fd=18))'
+`);
+    chmodSync(ss, 0o755);
+    writeFileSync(curl, `#!/usr/bin/env bash
+set -eu
+exit 7
+`);
+    chmodSync(curl, 0o755);
+    writeFileSync(kill, `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> '${killLog}'
+`);
+    chmodSync(kill, 0o755);
+
+    try {
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_SS: ss,
+        PAPERCUSP_CLOUD_PORTAL_CURL: curl,
+        PAPERCUSP_CLOUD_PORTAL_KILL: kill,
+        SYSTEMCTL_LOG: files.logPath,
+      });
+      const calls = readFileSync(files.logPath, "utf8");
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("legacy :3801 listener is not healthy; refusing handoff");
+      expect(calls).toContain("--user show papercusp-cloud-portal.service --property=ControlGroup --value");
+      expect(calls).not.toContain("--user stop papercusp-cloud-portal.service");
+      expect(readFileSync(killLog, "utf8")).toBe("");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
   it("suppresses transient curl noise and reports one bounded health failure diagnostic", () => {
     const transient = fixture();
     const transientSystemctl = staleTestSystemctl(transient);

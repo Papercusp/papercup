@@ -6,6 +6,7 @@
  * and invoke it in a one-shot process without starting host infrastructure.
  */
 import { parseMcpToolText } from './mcp-result-text';
+import { OUTPUT_ENVELOPE_SCHEMA_VERSION } from '../../../output-envelope';
 
 export type McpCallResult = {
   content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
@@ -76,6 +77,17 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
     return true;
   }
   if (Array.isArray(body.entries) && body.entries.length > 0) return true;
+  // The result door moves large, intact payloads behind a typed reference envelope.
+  // These have no `ok` field, so the generic success-envelope check below would
+  // otherwise call a recoverable populated result empty and attach a misleading
+  // data-plane warning to it.
+  if (
+    body.schemaVersion === OUTPUT_ENVELOPE_SCHEMA_VERSION &&
+    Array.isArray(body.content) &&
+    body.content.length > 0
+  ) {
+    return true;
+  }
   if (
     typeof body.ownerId === 'string' &&
     body.ownerId.trim().length > 0 &&

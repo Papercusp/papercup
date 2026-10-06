@@ -4388,6 +4388,40 @@ describe("psu-launcher arg parsing", () => {
     ).toMatchObject({ mode: "default", id: null, env: defaultAccountEnv() });
   });
 
+  it.each([
+    { name: "agent-launched headless", launchedBy: "su-parent", headless: true },
+    { name: "human-launched visible", launchedBy: null, headless: false },
+  ])("records $name fork provenance in the actual bootstrap request", async ({ launchedBy, headless }) => {
+    const source = {
+      agent: "claude", sessionId: "native-source", coordOwnerId: "su-source",
+      id: 17, cwd: "/repo", workspaceId: "fork-workspace", planSlug: "source-plan",
+    };
+    const postBootstrap = vi.fn().mockRejectedValue(new Error("stop after captured request"));
+    const launchResume = vi.fn();
+    await expect(launchTrackedFork(source, {
+      ownerId: "su-fork", launchedBy, headless, contextSize: "trimmed",
+    }, { forward: "auto", id: null, env: {}, notice: null }, "fable[1m]", {
+      api: postBootstrap, launchResume,
+    })).rejects.toThrow(/pre-pinned managed identity requires a launch record/);
+    const body = JSON.parse(postBootstrap.mock.calls[0]![1].body);
+    expect(body.launch_argv).toEqual(expect.arrayContaining([
+      "--resume=native-source", "--fork", "--owner-id=su-fork",
+      "--agent=claude", "--workspace=fork-workspace", "--plan=source-plan",
+      "--account=auto", "--model=fable[1m]",
+    ]));
+    expect(body.owner_id).toBe("su-fork");
+    if (launchedBy) {
+      expect(body.launched_by).toBe(launchedBy);
+      expect(body.launch_argv).toContain(`--launched-by=${launchedBy}`);
+    } else {
+      expect(body).not.toHaveProperty("launched_by");
+      expect(body.launch_argv.some((arg: string) => arg.startsWith("--launched-by="))).toBe(false);
+    }
+    expect(body.headless === true).toBe(headless);
+    expect(body.launch_argv.includes("--headless")).toBe(headless);
+    expect(launchResume).not.toHaveBeenCalled();
+  });
+
   it("pre-pinned managed forks fail closed instead of launching without a record", async () => {
     const source = {
       agent: "claude",

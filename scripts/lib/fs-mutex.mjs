@@ -591,7 +591,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number }} [opts]
+ * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
@@ -673,6 +673,10 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   }
 
   try {
+    // WI-10006385: same admission report as the writer's onAcquired, so a reader that
+    // queued behind an install can say how long it waited. Inside the try so a throwing
+    // callback still removes the reader marker.
+    if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
     return await fn();
   } finally {
     await rm(readerDir, { recursive: true, force: true });

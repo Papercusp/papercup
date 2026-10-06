@@ -259,6 +259,46 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn on a recoverable output envelope containing evidence references', () => {
+    const body = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      summary: '',
+      summaryProvenance: 'authored',
+      content: [{
+        kind: 'evidence-reference',
+        uri: 'papercusp://scratch/papercusp-workspace/scorecards:get/result.spill',
+        preview: 'criterion page',
+        byteCount: 2048,
+        sha256: 'abc123',
+        expiresAt: '2026-10-07T00:00:00.000Z',
+        ownerId: 'su-1',
+        audience: 'owner',
+        evidenceClass: 'work-item',
+      }],
+      state: 'incomplete',
+      incomplete: {
+        reason: 'aggregate-output-budget-exceeded',
+        spilledItems: 1,
+        recoverable: true,
+        note: 'Read the evidence reference to recover the complete result.',
+      },
+      metrics: {},
+      accounting: { summaryChars: 0, summaryBytes: 0, contentBytes: 128, totalBytes: 128, summaryBudgetChars: 0 },
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T02:24:09.000Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
   it.each([
     ['loop:end', { ok: true, ended: true }],
     ['events:await', { ok: true, await_id: 158065 }],

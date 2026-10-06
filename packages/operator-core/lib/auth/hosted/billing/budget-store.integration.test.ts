@@ -7,11 +7,13 @@ import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { journalEntryForMovement } from '../../../cupboard/money-journal';
+import { postMoneyJournalEntry } from '../../../cupboard/money-journal-store';
+import { pgPaymentReceiptStore, type NewPaymentReceipt } from '../../../cupboard/payment-receipt-store';
 import { receiptCommitment } from '../../../cupboard/payment-receipt';
 import type { HostedPrepaidFundingInput } from './budget-funding';
 import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetObservation,
   type HostedBudgetRequest, type HostedBudgetScope, type HostedPrepaidAllocationRequest, type HostedPrepaidFundingReader,
-  evaluateLockedHostedPrepaidFunding, readLockedHostedPrepaidAllocations } from './budget-store';
+  evaluateLockedHostedPrepaidFunding, readLockedHostedPrepaidAllocations, readLockedHostedStripeFundingPopulation } from './budget-store';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -98,6 +100,38 @@ const prepaidStore = (reader: HostedPrepaidFundingReader = async (_sql, r) => pr
   new PostgresHostedBudgetStore({ readPrepaidFunding: reader, run, now });
 const allocationRows = (account: string) => db.adminSql`SELECT * FROM papercusp_auth.hosted_prepaid_allocations
   WHERE stripe_account_id = ${account}`;
+const populationInput = { pool: { controlWorkspaceId: 'fixture-funding-control', stripeAccountId: 'acct_FundingPopulation' },
+  journalWorkspaceId: 'fixture-funding-journal' };
+const populationReceipt = (id: string, customer = 'cus_PopulationA'): NewPaymentReceipt => {
+  const transaction = { id, amount: 100, fee: 0, currency: 'usd', created: T / 1000 };
+  const salt = 'b'.repeat(64);
+  return { transaction, salt, commitment: receiptCommitment(transaction, salt), sourceId: 'ch_' + id, sourceCustomer: customer };
+};
+const populationEntry = (id: string) => {
+  const built = journalEntryForMovement({ entryId: 'stripe-bt:' + id, occurredAtMs: T, currency: 'USD',
+    externalRef: { kind: 'stripe-balance-transaction', id },
+    movement: { kind: 'credit-purchase', grossCents: 100, feeCents: 0, taxCents: 0 } });
+  if (!built.ok) throw new Error(built.detail);
+  return built.entry;
+};
+async function withPopulationHeld(check: () => Promise<void>, rollback = false) {
+  let release!: () => void; let announce!: () => void; let failed!: (error: unknown) => void;
+  const unblock = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>((resolve, reject) => { announce = resolve; failed = reject; });
+  const holder = service(async sql => {
+    await readLockedHostedStripeFundingPopulation(sql, populationInput);
+    announce(); await unblock;
+    if (rollback) throw new Error('population rollback');
+  });
+  // A failed read must reject ready, never leave the test awaiting a phantom holder.
+  void holder.catch(failed);
+  try { await ready; await check(); }
+  finally {
+    release();
+    if (rollback) await expect(holder).rejects.toThrow('population rollback');
+    else await holder;
+  }
+}
 
 describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
   beforeAll(async () => {
@@ -120,6 +154,12 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     try { allocationMigration = readFileSync(allocationDraft, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; allocationMigration = readFileSync(allocationArmed, 'utf8'); }
     await db.adminSql.unsafe(allocationMigration); await db.adminSql.unsafe(allocationMigration);
+    const populationDraft = new URL('../../../../../../libs/papercusp/libs/db/sql/1375-hosted-stripe-funding-population.sql.DRAFT', import.meta.url);
+    const populationArmed = new URL('../../../../../../libs/papercusp/libs/db/sql/1375-hosted-stripe-funding-population.sql', import.meta.url);
+    let populationMigration: string;
+    try { populationMigration = readFileSync(populationDraft, 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; populationMigration = readFileSync(populationArmed, 'utf8'); }
+    await db.adminSql.unsafe(populationMigration); await db.adminSql.unsafe(populationMigration);
     await db.adminSql.unsafe(`CREATE TABLE papercusp_auth.test_budget_authority (
       control text NOT NULL, org text NOT NULL, cap bigint NOT NULL, funding bigint NOT NULL,
       retained bigint, workspace_cap bigint, PRIMARY KEY(control, org));
@@ -687,5 +727,141 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
       allocation: { ...r.allocation, customerWorkspaceId: null } };
     await expect(prepaidStore().allocatePrepaid(unbound)).rejects.toThrow(/foreign key/);
     expect(await allocationRows(r.stripeAccountId)).toHaveLength(1);
+  });
+
+  it('reads an empty local funding population without manufacturing backing or admission authority', async () => {
+    const population = await service(sql => readLockedHostedStripeFundingPopulation(sql, populationInput));
+    expect(population).toEqual({ allocations: [], entries: [], receipts: [], customers: [] });
+    expect(Object.isFrozen(population)).toBe(true);
+    expect('cashBacking' in population).toBe(false);
+  });
+
+  it('locks every source relation even when empty, permits concurrent readers and releases on commit', async () => {
+    const tables = ['harness_shared.money_journal_entries', 'harness_shared.money_journal_lines',
+      'harness_shared.payment_receipts', 'papercusp_auth.hosted_billing_customers'];
+    await withPopulationHeld(async () => {
+      // Any SQL writer needs RowExclusiveLock, even a zero-row UPDATE. This
+      // distinguishes a real population lock from locking only existing rows.
+      for (const table of tables) await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        const column = table === 'papercusp_auth.hosted_billing_customers' ? 'livemode' : 'workspace_id';
+        await tx.unsafe(`UPDATE ${table} SET ${column} = ${column} WHERE false`);
+      })).rejects.toMatchObject({ code: '55P03' });
+      // A different account may read the same source tables concurrently;
+      // account allocations still serialize only under their account key.
+      await service(async sql => {
+        await sql.unsafe("SET LOCAL lock_timeout = '100ms'");
+        expect(await readLockedHostedStripeFundingPopulation(sql, { ...populationInput,
+          pool: { ...populationInput.pool, stripeAccountId: 'acct_AnotherReader' } })).toMatchObject({ entries: [], receipts: [] });
+      });
+    });
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
+      VALUES (${randomUUID()}::uuid, 'cus_PopulationA', true)`;
+  });
+
+  it('serializes real journal and receipt writers and keeps every customer binding in the local census', async () => {
+    const entry = populationEntry('txn_PopulationA'); const receipt = populationReceipt('txn_PopulationA');
+    await withPopulationHeld(async () => {
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await pgPaymentReceiptStore(tx as unknown as Sql).insertMissing(populationInput.journalWorkspaceId, [receipt]);
+      })).rejects.toMatchObject({ code: '55P03' });
+      await expect(postMoneyJournalEntry({ workspaceId: populationInput.journalWorkspaceId, entry }, {
+        // The production writer runs its real SQL transaction; this wrapper
+        // adds only a bounded lock wait before its first query.
+        sql: { begin: (fn: (tx: Sql) => Promise<unknown>) => db.adminSql.begin(async tx => {
+          await tx.unsafe("SET LOCAL lock_timeout = '100ms'"); return fn(tx as unknown as Sql);
+        }) } as unknown as Sql, ledgerChain: null,
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    expect(await postMoneyJournalEntry({ workspaceId: populationInput.journalWorkspaceId, entry },
+      { sql: db.adminSql, ledgerChain: null })).toMatchObject({ ok: true, duplicate: false });
+    expect(await pgPaymentReceiptStore(db.adminSql).insertMissing(populationInput.journalWorkspaceId, [receipt])).toBe(1);
+    const otherOrg = randomUUID();
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
+      VALUES (${otherOrg}::uuid, 'cus_PopulationB', false)`;
+    const population = await service(sql => readLockedHostedStripeFundingPopulation(sql, populationInput));
+    expect(population.entries).toEqual([entry]);
+    expect(population.receipts).toEqual([{ ...receipt, receiptSeq: population.receipts[0]!.receiptSeq }]);
+    expect(population.customers.map(c => c.stripeCustomerId)).toEqual(['cus_PopulationA', 'cus_PopulationB']);
+    expect(population.customers.find(c => c.stripeCustomerId === 'cus_PopulationB'))
+      .toEqual({ organizationId: otherOrg, stripeCustomerId: 'cus_PopulationB', livemode: false });
+  });
+
+  it('uses the supplied transaction for bindings and releases the population on rollback', async () => {
+    const org = randomUUID();
+    await expect(service(async sql => {
+      await sql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
+        VALUES (${org}::uuid, 'cus_PopulationRollback', true)`;
+      const population = await readLockedHostedStripeFundingPopulation(sql, populationInput);
+      expect(population.customers.some(c => c.organizationId === org)).toBe(true);
+      throw new Error('population rollback');
+    })).rejects.toThrow('population rollback');
+    expect(await service(sql => sql`SELECT organization_id FROM papercusp_auth.hosted_billing_customers
+      WHERE organization_id = ${org}::uuid`)).toHaveLength(0);
+    await withPopulationHeld(async () => {
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await pgPaymentReceiptStore(tx as unknown as Sql).insertMissing(populationInput.journalWorkspaceId, [populationReceipt('txn_AfterRollback')]);
+      })).rejects.toMatchObject({ code: '55P03' });
+    }, true);
+    expect(await pgPaymentReceiptStore(db.adminSql).insertMissing(populationInput.journalWorkspaceId, [populationReceipt('txn_AfterRollback')])).toBe(1);
+  });
+
+  it('refuses other-workspace receipts instead of silently omitting a competing cash-pool partition', async () => {
+    await expect(db.adminSql.begin(async tx => {
+      await pgPaymentReceiptStore(tx as unknown as Sql).insertMissing('fixture-unmapped-workspace', [populationReceipt('txn_Unmapped')]);
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      await readLockedHostedStripeFundingPopulation(tx as unknown as Sql, populationInput);
+    })).rejects.toThrow('unmapped funding journal workspace');
+  });
+
+  it('refuses other-workspace journal entries even when its receipt is absent', async () => {
+    await expect(db.adminSql.begin(async tx => {
+      const e = populationEntry('txn_UnmappedJournal');
+      await tx`INSERT INTO harness_shared.money_journal_entries
+        (workspace_id, entry_id, occurred_at, currency, movement, external_ref_kind, external_ref, rollup_id, memo)
+        VALUES ('fixture-unmapped-journal', ${e.entryId}, ${new Date(e.occurredAtMs)}, ${e.currency}, ${e.movement},
+          ${e.externalRef.kind}, 'txn_UnmappedJournal', ${e.rollupId}, ${e.memo})`;
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      await readLockedHostedStripeFundingPopulation(tx as unknown as Sql, populationInput);
+    })).rejects.toThrow('unmapped funding journal workspace');
+  });
+
+  it('keeps the bridge service-only and grants no financial writes or customer directory access', async () => {
+    await expect(db.appSql`SELECT papercusp_auth.lock_hosted_stripe_funding_population()`).rejects.toThrow(/permission denied/);
+    await expect(service(sql => sql`SELECT * FROM harness_shared.customer_workspaces`)).rejects.toThrow(/permission denied/);
+    for (const table of ['harness_shared.money_journal_entries', 'harness_shared.money_journal_lines', 'harness_shared.payment_receipts']) {
+      for (const privilege of ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) {
+        const [row] = await db.adminSql`SELECT has_table_privilege('hosted_service', ${table}, ${privilege}) AS allowed`;
+        expect(row!.allowed).toBe(false);
+      }
+    }
+    await expect(db.appSql.begin(async tx => {
+      await tx.unsafe('SET LOCAL ROLE hosted_app');
+      await tx`SELECT salt FROM harness_shared.payment_receipts`;
+    })).rejects.toThrow(/permission denied/);
+    const [role] = await service(sql => sql`SELECT current_user AS role`);
+    expect(role!.role).toBe('hosted_service');
+  });
+
+  it('refuses stale-snapshot isolation in both the reader and the fixed SQL lock bridge', async () => {
+    for (const isolation of ['REPEATABLE READ', 'SERIALIZABLE']) {
+      await expect(db.appSql.begin(async tx => {
+        await tx.unsafe(`SET TRANSACTION ISOLATION LEVEL ${isolation}`);
+        await tx.unsafe('SET LOCAL ROLE hosted_service');
+        await readLockedHostedStripeFundingPopulation(tx as unknown as Sql, populationInput);
+      })).rejects.toThrow('funding population requires read committed');
+      await expect(db.appSql.begin(async tx => {
+        await tx.unsafe(`SET TRANSACTION ISOLATION LEVEL ${isolation}`);
+        await tx.unsafe('SET LOCAL ROLE hosted_service');
+        await tx`SELECT papercusp_auth.lock_hosted_stripe_funding_population()`;
+      })).rejects.toThrow('funding population requires read committed');
+    }
+  });
+
+  it('refuses a pool autocommit client whose locks were released between reads', async () => {
+    await expect(readLockedHostedStripeFundingPopulation(db.adminSql, populationInput))
+      .rejects.toThrow('funding population requires one transaction');
   });
 });

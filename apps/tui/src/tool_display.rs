@@ -91,6 +91,107 @@ fn str_arg<'a>(input: Option<&'a Value>, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
+/// A Codex `mcpToolCall` item: `(server, tool, arguments)`.
+fn codex_mcp(input: Option<&Value>) -> Option<(&str, &str, Option<&Value>)> {
+    let item = input?;
+    if item.get("type")?.as_str()? != "mcpToolCall" {
+        return None;
+    }
+    let server = str_arg(Some(item), "server")?;
+    let tool = str_arg(Some(item), "tool")?;
+    Some((server, tool, item.get("arguments")))
+}
+
+/// Codex runs every command through a login shell and reports the whole line
+/// (`/bin/bash -lc 'rg --files'`); the row shows the command the model wrote.
+fn strip_shell_wrapper(command: &str) -> &str {
+    let trimmed = command.trim();
+    let Some((shell, rest)) = trimmed.split_once(' ') else {
+        return trimmed;
+    };
+    let shell_name = shell.rsplit('/').next().unwrap_or(shell);
+    if !matches!(shell_name, "bash" | "sh" | "zsh") {
+        return trimmed;
+    }
+    let Some(script) = ["-lc ", "-c "]
+        .iter()
+        .find_map(|flag| rest.trim_start().strip_prefix(flag))
+    else {
+        return trimmed;
+    };
+    let script = script.trim();
+    for quote in ['\'', '"'] {
+        if let Some(inner) = script
+            .strip_prefix(quote)
+            .and_then(|s| s.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    script
+}
+
+/// Claude's Read output numbers each line (`    12\tconst …`, shown with the
+/// tab already widened to spaces, or `12→const …` in older builds).
+fn is_numbered_line(line: &str) -> bool {
+    let rest = line.trim_start();
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    digits > 0
+        && rest[digits..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == '→')
+}
+
+fn count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// The single line a finished call collapses to (pui-chat-first-ux P-025), the
+/// way Claude Code prints `⎿ Read 40 lines` and Codex `└ …`: what came back, in
+/// words, for reads and searches; otherwise the output's first line and how
+/// many more there are. `width` bounds the line in characters.
+pub(crate) fn result_summary(
+    name: &str,
+    input: Option<&Value>,
+    text: &str,
+    width: usize,
+) -> String {
+    let (name, input) = effective(name, input);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let n = lines.len();
+    let summary = match name {
+        "Read" | "NotebookRead" | "read" => {
+            let numbered = lines.iter().filter(|l| is_numbered_line(l)).count();
+            Some(format!(
+                "Read {}",
+                count(if numbered > 0 { numbered } else { n }, "line", "lines")
+            ))
+        }
+        "Glob" | "glob" | "find" | "ls" => Some(format!("Found {}", count(n, "file", "files"))),
+        "Grep" | "grep" => Some(match str_arg(input, "output_mode") {
+            Some("content") => format!("Found {}", count(n, "line", "lines")),
+            Some("count") => format!("Found matches in {}", count(n, "file", "files")),
+            _ => format!("Found {}", count(n, "file", "files")),
+        }),
+        _ => None,
+    };
+    if let Some(summary) = summary {
+        return clip(&summary, width.max(1));
+    }
+    let first = lines.first().map(|l| l.trim()).unwrap_or("");
+    if n <= 1 {
+        return clip(first, width.max(1));
+    }
+    let more = format!(" … +{}", count(n - 1, "line", "lines"));
+    let room = width.saturating_sub(more.chars().count()).max(8);
+    format!("{}{more}", clip(first, room))
+}
+
 /// Label one tool call. `cwd` is the chat's launch directory, used to shorten
 /// file paths; `None` shows them in full.
 pub(crate) fn tool_display(name: &str, input: Option<&Value>, cwd: Option<&str>) -> ToolDisplay {
@@ -351,5 +452,91 @@ mod tests {
         assert!(!multi.contains('\n'), "{multi}");
         let uni = human_args(&json!({"s": "café☕".repeat(50)}), 12).unwrap();
         assert!(uni.chars().count() <= 12, "{uni}");
+    }
+
+    /// P-025: Codex and OMP calls get the same `verb(target)` rows as Claude's.
+    #[test]
+    fn codex_and_omp_tool_calls_get_claude_style_rows() {
+        let cwd = Some("/w");
+        let title = |name: &str, input: Value| tool_display(name, Some(&input), cwd).title;
+        // OMP's lower-case built-ins.
+        assert_eq!(
+            title("read", json!({"path": "/w/calc.js"})),
+            "Read(calc.js)"
+        );
+        assert_eq!(
+            title("edit", json!({"path": "/w/calc.js"})),
+            "Update(calc.js)"
+        );
+        assert_eq!(
+            title("write", json!({"path": "/w/new.js"})),
+            "Write(new.js)"
+        );
+        assert_eq!(
+            title("bash", json!({"command": "npm test"})),
+            "Bash(npm test)"
+        );
+        assert_eq!(title("grep", json!({"pattern": "TODO"})), "Search(TODO)");
+        // Codex items: the login-shell wrapper is not the command.
+        let command = json!({"type": "commandExecution", "command": "/bin/bash -lc 'rg --files'"});
+        assert_eq!(title("commandExecution", command), "Bash(rg --files)");
+        let plain = json!({"type": "commandExecution", "command": "ls -la"});
+        assert_eq!(title("commandExecution", plain), "Bash(ls -la)");
+        let one = json!({"type": "fileChange", "changes": [
+            {"path": "/w/calc.js", "kind": {"type": "update", "move_path": null}, "diff": ""}
+        ]});
+        assert_eq!(title("fileChange", one), "Update(calc.js)");
+        let added = json!({"type": "fileChange", "changes": [
+            {"path": "/w/new.js", "kind": {"type": "add"}, "diff": "x"}
+        ]});
+        assert_eq!(title("fileChange", added), "Write(new.js)");
+        let two = json!({"type": "fileChange", "changes": [
+            {"path": "/w/a.js", "kind": {"type": "update"}, "diff": ""},
+            {"path": "/w/b.js", "kind": {"type": "update"}, "diff": ""}
+        ]});
+        assert_eq!(title("fileChange", two), "Update(2 files)");
+        let mcp = json!({"type": "mcpToolCall", "server": "papercusp-su", "tool": "plans_get",
+            "arguments": {"slug": "p"}});
+        let shown = tool_display("plans_get", Some(&mcp), cwd);
+        assert_eq!(shown.title, "papercusp-su · plans get (MCP)");
+        assert_eq!(shown.summary.as_deref(), Some("slug: p"));
+    }
+
+    /// P-025: the one line a finished call collapses to.
+    #[test]
+    fn result_summary_says_what_came_back_in_one_line() {
+        let read =
+            "     1  const a = 1;\n     2  const b = 2;\n\n<system-reminder>x</system-reminder>";
+        assert_eq!(result_summary("Read", None, read, 80), "Read 2 lines");
+        assert_eq!(result_summary("Read", None, "only\n", 80), "Read 1 line");
+        assert_eq!(
+            result_summary("Glob", None, "a.rs\nb.rs", 80),
+            "Found 2 files"
+        );
+        assert_eq!(
+            result_summary(
+                "Grep",
+                Some(&json!({"output_mode": "content"})),
+                "a:1:x",
+                80
+            ),
+            "Found 1 line"
+        );
+        assert_eq!(result_summary("Bash", None, "ok", 80), "ok");
+        assert_eq!(
+            result_summary("Bash", None, "\n\nfirst\nsecond\nthird", 80),
+            "first … +2 lines"
+        );
+        let long = result_summary("Bash", None, &format!("{}\nmore", "x".repeat(200)), 30);
+        assert!(
+            long.ends_with(" … +1 line") && long.chars().count() <= 30,
+            "{long}"
+        );
+        // A wrapped tools:invoke call is summarised as the tool it ran.
+        let wrapped = json!({"name": "Read", "args": {}});
+        assert_eq!(
+            result_summary("tools:invoke", Some(&wrapped), "  1  x", 80),
+            "Read 1 line"
+        );
     }
 }

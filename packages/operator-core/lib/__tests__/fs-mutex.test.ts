@@ -83,6 +83,60 @@ describe('withFsMutexRead wait observations', () => {
     }
   });
 
+  it('reports how long admission queued behind a writer, before the reader body runs (WI-10006385)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-acquired-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const writerDir = join(dir, 'npm-install.lock');
+    await mkdir(writerDir);
+    await writeFile(join(writerDir, 'owner.json'), JSON.stringify({ pid: process.pid, host: hostname() }));
+    const events: string[] = [];
+    const acquired: number[] = [];
+    let noticed!: () => void;
+    const firstNotice = new Promise<void>(resolve => { noticed = resolve; });
+    try {
+      const reader = withFsMutexRead('npm-install', async () => { events.push('body'); }, {
+        timeoutMs: 5_000,
+        retryMs: 2,
+        staleMs: 10_000,
+        onWaiting: () => { events.push('waiting'); noticed(); },
+        onAcquired: ({ waitedMs }) => { events.push('acquired'); acquired.push(waitedMs); },
+      });
+      await firstNotice;
+      await new Promise(resolve => setTimeout(resolve, 60));
+      await rm(writerDir, { recursive: true, force: true });
+      await reader;
+      expect(events).toEqual(['waiting', 'acquired', 'body']);
+      expect(acquired).toHaveLength(1);
+      expect(acquired[0]).toBeGreaterThanOrEqual(60);
+      expect(await readdir(join(dir, 'npm-install.readers'))).toEqual([]);
+
+      // Uncontested: reported once, with no queueing to speak of.
+      const uncontested: number[] = [];
+      await withFsMutexRead('npm-install', async () => undefined, {
+        onAcquired: ({ waitedMs }) => { uncontested.push(waitedMs); },
+      });
+      expect(uncontested).toHaveLength(1);
+      expect(uncontested[0]).toBeLessThan(60);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the reader marker when the onAcquired callback throws', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-acquired-throw-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    let bodyRan = false;
+    try {
+      await expect(withFsMutexRead('npm-install', async () => { bodyRan = true; }, {
+        onAcquired: () => { throw new Error('reporter exploded'); },
+      })).rejects.toThrow('reporter exploded');
+      expect(bodyRan).toBe(false);
+      expect(await readdir(join(dir, 'npm-install.readers'))).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the one-shot default and cleans up after a bounded timeout', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-default-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

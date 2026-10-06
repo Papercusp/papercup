@@ -7,6 +7,7 @@ import {
   computeActivityLaneHealth,
   summarizeLearningLoopHealth,
   singletonRoutineName,
+  DEFAULT_BG_HOST_START_FIRE_GRACE_MS,
   DEFAULT_RESUME_FIRE_GRACE_MS,
   type LearningLoopSpec,
   type LearningRoutineRow,
@@ -45,6 +46,58 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     });
     expect(cal.status).toBe('stale');
     expect(cal.daysSinceFire).toBe(5);
+  });
+
+  it('keeps an overdue loop pending during bg-host startup grace when it has not fired since process start', () => {
+    const processStartedAtMs = NOW - 5 * 60_000;
+    const row = sRow('calibration', {
+      lastFiredAt: new Date(processStartedAtMs - 5 * 86_400_000).toISOString(),
+      nextFireAt: new Date(processStartedAtMs - 60_000).toISOString(),
+    });
+    const [duringGrace] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: NOW,
+      processStartedAtMs,
+    });
+
+    expect(duringGrace.status).toBe('pending');
+    expect(summarizeLearningLoopHealth([duringGrace]).needsAttention).toEqual([]);
+  });
+
+  it('restores stale classification after the 15-minute bg-host startup grace expires', () => {
+    const processStartedAtMs = NOW - DEFAULT_BG_HOST_START_FIRE_GRACE_MS - 1;
+    const row = sRow('calibration', {
+      lastFiredAt: new Date(processStartedAtMs - 5 * 86_400_000).toISOString(),
+      nextFireAt: new Date(processStartedAtMs - 60_000).toISOString(),
+    });
+    const [afterGrace] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: NOW,
+      processStartedAtMs,
+    });
+
+    expect(afterGrace.status).toBe('stale');
+  });
+
+  it('does not mask a post-start fire whose activity remains unproven', () => {
+    const processStartedAtMs = NOW - 5 * 60_000;
+    const firedAtMs = processStartedAtMs + 60_000;
+    const row = sRow('calibration', {
+      lastFiredAt: new Date(firedAtMs).toISOString(),
+      nextFireAt: new Date(processStartedAtMs - 60_000).toISOString(),
+    });
+    const [health] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: NOW,
+      processStartedAtMs,
+      activityByBlueprintId: {
+        calibration: {
+          lastActivityAt: new Date(firedAtMs - 60_000).toISOString(),
+          source: 'test-ledger',
+          mode: 'since-fire',
+          graceMs: 60_000,
+        },
+      },
+    });
+
+    expect(health.status).toBe('stale');
   });
 
   it('keeps a due loop pending briefly after a recorded resume, then restores the stale verdict', () => {

@@ -317,14 +317,8 @@ const UNWRAPPED_ALLOWLIST: Record<string, string> = {
     'bundle-host.sh derives REPO_ROOT from its own directory, cds there, re-execs itself under a lock and reads .mjs helpers beside itself; it needs a repo-root override before it can run from a snapshot.',
   'apps/operator/scripts/systemd/papercup-embed-sidecar.service ExecStartPre apps/operator/bin/bundle-host.sh':
     'Same bundle-host.sh constraint as the bg-host drop-in: self-located repo root, lock re-exec, sibling .mjs helpers.',
-  'apps/operator/scripts/systemd/papercup-fedplane-disk-health.service ExecStart apps/operator/scripts/papercup-fedplane-disk-health-check.sh':
-    'Derives REPO_ROOT from BASH_SOURCE/../../..; it needs a repo-root override before it can run from a snapshot.',
-  'apps/operator/scripts/systemd/papercup-isolated-dht-liveness.service ExecStart apps/operator/scripts/papercup-dht-liveness-check.sh':
-    'Derives REPO_ROOT from BASH_SOURCE/../../..; it needs a repo-root override before it can run from a snapshot.',
   'apps/operator/scripts/systemd/papercup-live-federation-gate.service ExecStart scripts/pc-heavy.sh':
     'The target live-federation-gate.sh snapshots itself and re-execs from /tmp (wrapping it again breaks its BASH_SOURCE repo root); the pc-heavy.sh admission prefix has not been assessed for snapshot safety.',
-  'apps/operator/scripts/systemd/papercup-testvm-reaper.service ExecStart bin/reap-stale-testvms.sh':
-    'Resolves vmctl relative to its own directory (SELF_DIR/../papercusp-desktop/...); it needs an override before it can run from a snapshot.',
 };
 
 type ExecFinding = { key: string; wrapped: boolean };
@@ -442,5 +436,95 @@ describe('systemd unit census: shared-tree scripts run from a snapshot (WI-10006
       'allowlist entries no longer measured: delete them (the allowlist is shrink-only)',
     ).toEqual([]);
     for (const [key, reason] of Object.entries(UNWRAPPED_ALLOWLIST)) expect(reason.length, key).toBeGreaterThan(40);
+  });
+});
+
+// ── Wrapped scripts must not find the checkout from their own path (WI-10006358) ──
+// The launcher runs a COPY under $TMPDIR, so a path climbed out of the script's own
+// directory (BASH_SOURCE / $0 / SELF_DIR / _HERE + "/..") lands in the temp dir, not the
+// checkout: the script runs, finds nothing beside it, and fails or silently no-ops.
+// Wrapping is only correct when every such climb is the fallback of a ${NAME:-…}
+// override whose NAME the unit pins with Environment=NAME=…. SELF_CLIMB_ALLOWLIST is
+// shrink-only, like the census allowlist above.
+
+const SELF_CLIMB = /(BASH_SOURCE|\$0\b|\b_HERE\b|SELF_DIR|SCRIPT_DIR)[^#]*\/\.\.(?![.\w])/;
+
+const SELF_CLIMB_ALLOWLIST: Record<string, string> = {
+  'apps/operator/scripts/systemd/papercup-staging-sync.service.d/50-script-snapshot.conf apps/operator/bin/release/sync-staging-checkout.sh':
+    '_REPO_DEFAULT is only the fallback of ${PAPERCUSP_INTEGRATION_ROOT:-…}; the installed base unit papercup-staging-sync.service is generated outside this tree and pins that variable to the canonical checkout.',
+};
+
+function isSelfClimb(line: string): boolean {
+  return !line.trimStart().startsWith('#') && SELF_CLIMB.test(line);
+}
+
+function pinnedEnvironment(...unitTexts: string[]): Set<string> {
+  const names = new Set<string>();
+  for (const text of unitTexts) {
+    for (const line of text.split('\n')) {
+      const value = /^Environment=(.*)$/.exec(line.trim())?.[1];
+      if (value) for (const m of value.matchAll(/(?:^|\s)"?([A-Za-z_]\w*)=/g)) names.add(m[1]);
+    }
+  }
+  return names;
+}
+
+function unpinnedSelfClimbs(script: string, pinned: ReadonlySet<string>): string[] {
+  return script
+    .split('\n')
+    .filter(isSelfClimb)
+    .filter((line) => ![...line.matchAll(/\$\{([A-Za-z_]\w*):-/g)].some((m) => pinned.has(m[1])))
+    .map((line) => line.trim());
+}
+
+describe('wrapped scripts pin their checkout instead of climbing out of the snapshot (WI-10006358)', () => {
+  it('flags a self-located climb unless a unit-pinned override guards it (calibration)', () => {
+    const script = [
+      '# R="$(dirname "${BASH_SOURCE[0]}")/.." in a comment is not a climb',
+      'A="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"',
+      'B="${PINNED:-$(cd "$SELF_DIR/.." && pwd)}"',
+      'C="${UNPINNED:-$_HERE/../x}"',
+      'D="$(dirname "${BASH_SOURCE[0]}")/lib/helper.sh"',
+      'echo "usage: $0 [ARG ...]"',
+    ].join('\n');
+    const pinned = pinnedEnvironment('[Service]\nEnvironment=PATH=/usr/bin PINNED=%h/x');
+    expect([...pinned].sort()).toEqual(['PATH', 'PINNED']);
+    expect(unpinnedSelfClimbs(script, pinned)).toEqual([
+      'A="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"',
+      'C="${UNPINNED:-$_HERE/../x}"',
+    ]);
+  });
+
+  it('every wrapped unit pins the checkout its script would otherwise derive from the snapshot path', async () => {
+    const violations: string[] = [];
+    const climbing: string[] = [];
+    for (const { key } of (await censusTrackedUnits()).filter((f) => f.wrapped)) {
+      const [unit, , script] = key.split(' ');
+      const text = await readFile(join(REPO_ROOT, script), 'utf8').catch(() => null);
+      if (text === null) continue;
+      if (text.split('\n').some(isSelfClimb)) climbing.push(script);
+      const unitTexts = [await readFile(join(REPO_ROOT, unit), 'utf8')];
+      const base = /^(.*\.service)\.d\/[^/]+\.conf$/.exec(unit);
+      if (base) unitTexts.push(await readFile(join(REPO_ROOT, base[1]), 'utf8').catch(() => ''));
+      if (unpinnedSelfClimbs(text, pinnedEnvironment(...unitTexts)).length > 0) violations.push(`${unit} ${script}`);
+    }
+    // Positive control: these wrapped scripts DO climb (each behind a pinned override), so a
+    // detector that matched nothing would pass the checks below vacuously.
+    expect(climbing).toEqual(
+      expect.arrayContaining([
+        'bin/reap-stale-testvms.sh',
+        'apps/operator/scripts/papercup-dht-liveness-check.sh',
+        'infra/estate-backup/pc-estate-mirror-alert.sh',
+      ]),
+    );
+    expect(
+      violations.filter((key) => !(key in SELF_CLIMB_ALLOWLIST)),
+      'these wrapped scripts locate the checkout from their own (snapshot) path: make the climb the default of a ${NAME:-…} override and pin NAME with Environment= in the unit',
+    ).toEqual([]);
+    expect(
+      Object.keys(SELF_CLIMB_ALLOWLIST).filter((key) => !violations.includes(key)),
+      'allowlist entries no longer measured: delete them (the allowlist is shrink-only)',
+    ).toEqual([]);
+    for (const [key, reason] of Object.entries(SELF_CLIMB_ALLOWLIST)) expect(reason.length, key).toBeGreaterThan(40);
   });
 });

@@ -68,6 +68,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
   PACKAGE_CACHE_MUTEX_NAME,
+  resolveFsMutexTimeoutMs,
   withFsMutexRead,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
@@ -868,6 +869,30 @@ export function parseCliArgs(
  *   env?: NodeJS.ProcessEnv,
  * }} [options]
  */
+/**
+ * WI-10006385: pair a lock's "waiting" notices with ONE closing line that says how long
+ * the wait actually lasted and under what budget. Without it a build log shows
+ * "waiting … (0s so far)" and then nothing, so nobody can tell a 1 s wait from a 50 min
+ * one, or whether PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC raised the budget. Prints nothing
+ * for an uncontested lock: the closing line only follows a printed notice.
+ *
+ * @param {{ lock: 'writer' | 'reader', describe: (owner: string, elapsedMs: number) => string, log: (line: string) => void, budgetMs: number }} opts
+ * @returns {{ onWaiting: (info: { owner: string, elapsedMs: number }) => void, onAcquired: (info: { waitedMs: number }) => void }}
+ */
+export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
+  let noticed = false;
+  return {
+    onWaiting: ({ owner, elapsedMs }) => {
+      noticed = true;
+      log(describe(String(owner).trim(), elapsedMs));
+    },
+    onAcquired: ({ waitedMs }) => {
+      if (!noticed) return;
+      log(`NPM_INSTALL_SAFE_LOCK_ACQUIRED lock=${lock} waitedMs=${waitedMs} budgetMs=${budgetMs}`);
+    },
+  };
+}
+
 export function runCommandUnderInstallMutex({
   repoRoot = DEFAULT_REPO_ROOT,
   commandArgs,
@@ -904,11 +929,15 @@ export function runCommandUnderInstallMutex({
   if (mutexAlreadyHeld) return executeReader();
 
   return withFsMutexRead(lockName, executeReader, {
-    onWaiting: ({ owner, elapsedMs }) => {
-      console.error(
-        `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
-      );
-    },
+    // Reader diagnostics stay on stderr (see executeReader).
+    ...installLockWaitReporter({
+      lock: "reader",
+      describe: (owner, elapsedMs) =>
+        `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner}`,
+      log: (line) => console.error(line),
+      // The budget withFsMutexRead itself applies (it resolves from process.env).
+      budgetMs: resolveFsMutexTimeoutMs(),
+    }),
     waitingNoticeIntervalMs: 30_000,
   });
 }
@@ -1007,11 +1036,15 @@ export async function main(argv = process.argv.slice(2)) {
       );
     },
     {
-      onWaiting: ({ owner, elapsedMs }) => {
-        console.log(
-          `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
-        );
-      },
+      // WI-10006385: re-announce every 30 s (was once) and close with the real wait.
+      ...installLockWaitReporter({
+        lock: "writer",
+        describe: (owner, elapsedMs) =>
+          `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner}`,
+        log: (line) => console.log(line),
+        budgetMs: resolveFsMutexTimeoutMs(),
+      }),
+      waitingNoticeIntervalMs: 30_000,
     },
   );
   if (installStatus !== 0) return installStatus;

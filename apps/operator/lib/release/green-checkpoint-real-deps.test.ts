@@ -4245,7 +4245,7 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
 
 // ── EI-24542010215430349: rescue reruns run under the capture the suite ran under ──
 //
-// The suite arms the executed-source-map reporter + per-file input capture on every unit vitest
+// The suite arms the executed-source-map reporter + per-file input capture on unit and integration vitest
 // task. A rescue rerun that ran UNARMED changed a second variable besides concurrency: a red the
 // capture itself caused passed unarmed and was absorbed as a load flake. Each rescue now arms the
 // same capture NO-PERSIST (nothing it sees becomes a reusable pass proof) and never inherits the
@@ -4304,19 +4304,22 @@ describe("EI-24542010215430349: rescue reruns arm executed-source capture, no-pe
     armedAs(env, "@x/w");
   });
 
-  it("helper: an integration file stays unarmed — the suite ran it under the unarmed test:integration", () => {
+  it("helper: integration files retain the suite's capture with no persistence", () => {
     const env: NodeJS.ProcessEnv = { ...process.env };
     expect(
       armRescueRerunCapture(env, { workspace: "@x/w", files: ["lib/a.test.ts", "lib/b.integration.test.ts"] }),
-    ).toBe(false);
-    unarmed(env);
+    ).toBe(true);
+    armedAs(env, "@x/w");
   });
 
   it("helper: recording switched off stays unarmed, exactly as the suite would", () => {
     for (const off of ["0", "false", "off", "no"]) {
       const env: NodeJS.ProcessEnv = { ...process.env, [EXECUTED_MAP_RECORD_ENV]: off };
-      expect(armRescueRerunCapture(env, { workspace: "@x/w", files: ["lib/a.test.ts"] })).toBe(false);
-      unarmed(env);
+      for (const files of [["lib/a.test.ts"], ["lib/a.integration.test.ts"]]) {
+        const childEnv = { ...env };
+        expect(armRescueRerunCapture(childEnv, { workspace: "@x/w", files })).toBe(false);
+        unarmed(childEnv);
+      }
     }
   });
 
@@ -4346,7 +4349,7 @@ describe("EI-24542010215430349: rescue reruns arm executed-source capture, no-pe
     armedAs(calls[1].opts?.env, "@example/fixture-pkg");
   });
 
-  it("wired: an isolation re-run of an integration file spawns unarmed", async () => {
+  it("wired: an isolation re-run of an integration file spawns armed no-persist", async () => {
     const { exec, calls } = makeExec([]);
     await realCheckpointDeps(cfg, exec).isolationRun?.({
       workspace: "@example/fixture-pkg",
@@ -4354,7 +4357,7 @@ describe("EI-24542010215430349: rescue reruns arm executed-source capture, no-pe
     });
     const run = calls.find((c) => c.args.includes("lib/a.integration.test.ts"));
     expect(run).toBeDefined();
-    unarmed(run!.opts?.env);
+    armedAs(run!.opts?.env, "@example/fixture-pkg");
   });
 });
 

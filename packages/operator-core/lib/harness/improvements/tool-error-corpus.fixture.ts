@@ -254,6 +254,24 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'state:subscribe delegates predicate registration; a strict-prefix SHA operand is an intentional caller-input refusal that prevents a false wake, not a structural tool defect (EI-24876630811914890)',
   },
+  {
+    n: 1, errorCode: 'context_mismatch', status: 'rejected',
+    message: 'Patch verification could not find the expected workspace-map heading and path lines in apps/operator/prompts/pot-instances/papercup-pot.su.md; no files were changed.',
+    expectedClass: 'caller',
+    note: 'apply_patch rejected mismatched expected hunk context before writing; refresh the current file text (EI-24740711211595015)',
+  },
+  {
+    n: 1, errorCode: 'verification_failed', status: '',
+    message: 'A three-file resource-governor repair patch was rejected before writing because I matched a long project-doc-parts disposition line with abbreviated text. Corrected patch will anchor on the unique array terminator and use short exact hunks.',
+    expectedClass: 'caller',
+    note: 'the report identifies abbreviated patch context as the caller error; no Papercusp tool defect is evidenced (EI-23737545927303638)',
+  },
+  {
+    n: 1, errorCode: 'verification-failed', status: 'patch-context-mismatch',
+    message: 'A one-file patch was rejected because one expected source line did not match exactly. The patch applied nothing. Re-read the exact line context and reformulate the single-file patch.',
+    expectedClass: 'caller',
+    note: 'the patch tool refused stale/mismatched hunk context before writing; re-read the exact source lines (EI-25197457482157766)',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

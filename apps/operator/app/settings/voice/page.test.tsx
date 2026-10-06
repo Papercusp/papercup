@@ -53,17 +53,41 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('full-agent engine capabilities', () => {
-  it('disables Gemini even with a configured Google key, while supported engines remain selectable', async () => {
+  // voice-final-public-release-2026-10-01#D-005: every full-agent engine is out of
+  // this release's scope — disabled even when its provider key reads configured.
+  it('disables every release-unavailable full-agent engine even with configured keys, and never saves one', async () => {
     render(<VoiceSettingsPage />);
     const select = await screen.findByRole('combobox', { name: 'Full-agent engine' });
-    await waitFor(() => expect(screen.getByRole('option', { name: /OpenAI Realtime/ }).textContent).not.toContain('needs OpenAI key'));
-    const gemini = screen.getByRole('option', { name: /Gemini Live/ }) as HTMLOptionElement;
-    expect(gemini.disabled).toBe(true);
-    expect(gemini.textContent).toMatch(/not supported/i);
+    for (const name of [/OpenAI Realtime/, /Gemini Live/, /ElevenLabs Conversational/]) {
+      const option = screen.getByRole('option', { name }) as HTMLOptionElement;
+      expect(option.disabled).toBe(true);
+      expect(option.textContent).toMatch(/not available in this release/);
+    }
+    expect((screen.getByRole('option', { name: /^Off — use the STT \+ TTS pair/ }) as HTMLOptionElement).disabled).toBe(false);
     fireEvent.change(select, { target: { value: 'openai-realtime' } });
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/agent-mcp/operator-voice-prefs', expect.objectContaining({
-      method: 'PUT', body: JSON.stringify({ fullAgentEngine: 'openai-realtime' }),
-    })));
+    expect(fetch).not.toHaveBeenCalledWith('/api/agent-mcp/operator-voice-prefs', expect.anything());
+  });
+
+  it('disables release-unavailable cloud TTS and Porcupine while local engines stay selectable', async () => {
+    render(<VoiceSettingsPage />);
+    await screen.findByRole('combobox', { name: 'TTS engine' });
+    for (const name of [/ElevenLabs Turbo/, /OpenAI tts-1/, /Cartesia/, /Porcupine/]) {
+      const option = screen.getByRole('option', { name }) as HTMLOptionElement;
+      expect(option.disabled).toBe(true);
+      expect(option.textContent).toMatch(/not available in this release/);
+    }
+    for (const name of [/Kokoro/, /Browser \(OS voices\)/, /openWakeWord/]) {
+      expect((screen.getByRole('option', { name }) as HTMLOptionElement).disabled).toBe(false);
+    }
+  });
+
+  it('preserves a saved unavailable TTS engine and explains it', async () => {
+    h.prefs.ttsEngine = 'elevenlabs';
+    render(<VoiceSettingsPage />);
+    const select = await screen.findByRole('combobox', { name: 'TTS engine' }) as HTMLSelectElement;
+    expect(select.value).toBe('elevenlabs');
+    expect(screen.getByRole('alert').textContent).toMatch(/ElevenLabs TTS is not available in this release/);
+    expect(fetch).not.toHaveBeenCalledWith('/api/agent-mcp/operator-voice-prefs', expect.anything());
   });
 
   it('preserves a saved Gemini value, explains the unsupported state, and lets the user choose Off', async () => {
@@ -71,7 +95,7 @@ describe('full-agent engine capabilities', () => {
     render(<VoiceSettingsPage />);
     const select = await screen.findByRole('combobox', { name: 'Full-agent engine' }) as HTMLSelectElement;
     expect(select.value).toBe('gemini-live');
-    expect(screen.getByRole('alert').textContent).toMatch(/Gemini Live is not supported/);
+    expect(screen.getByRole('alert').textContent).toMatch(/Gemini Live is not available in this release/);
     expect(fetch).not.toHaveBeenCalledWith('/api/agent-mcp/operator-voice-prefs', expect.anything());
     fireEvent.change(select, { target: { value: 'off' } });
     await waitFor(() => expect(select.value).toBe('off'));

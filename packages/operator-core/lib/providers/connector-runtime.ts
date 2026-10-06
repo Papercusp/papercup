@@ -46,7 +46,9 @@ import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import {
+  PROVIDER_SYNC_ADOPT_CAPABILITY,
   PROVIDER_SYNC_WAKE_CAPABILITY,
+  type ProviderAdoptResult,
   type ProviderServices,
   type ProviderWakeResult,
 } from '@papercusp/plugin-sdk';
@@ -97,6 +99,8 @@ export interface ConnectorSourceOutcome {
   deduped: number;
   rejected: number;
   cursorReset: boolean;
+  /** True when this pass adopted the source's pre-provider cursor state (D-020). */
+  adopted?: boolean;
   hasMore: boolean;
   error?: string;
 }
@@ -206,9 +210,44 @@ function defaultLeaseOwner(): string {
   return `${hostname()}:${process.pid}:${randomUUID()}`;
 }
 
+/**
+ * A scalar for `jsonb_set`, as JSON TEXT cast `::text::jsonb`. `sql.json(<bare string>)` sends
+ * the string unquoted, so `::jsonb` rejects it ("invalid input syntax for type json") and every
+ * cursor commit failed after its page was admitted.
+ */
+export function jsonText(value: string | null): string {
+  return JSON.stringify(value);
+}
+
 function providerCursorOf(source: ConnectorSourceRow): string | null {
   const value = source.cursor?.provider;
   return typeof value === 'string' && value ? value : null;
+}
+
+/**
+ * The source's pre-provider cursor state, for `sync.adopt` (D-020): its cursor object without
+ * the host-owned `provider` and `wake` keys. Null when there is nothing to adopt, and null once
+ * the `provider` key EXISTS at all. A cursor-expired reset writes `provider: null`, and
+ * re-adopting the stale legacy position after that would loop on the same expired cursor.
+ */
+export function priorCursorStateOf(source: Pick<ConnectorSourceRow, 'cursor'>): Record<string, unknown> | null {
+  const raw: unknown = source.cursor;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (Object.prototype.hasOwnProperty.call(raw, 'provider')) return null;
+  const prior: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  delete prior.wake;
+  return Object.keys(prior).length > 0 ? prior : null;
+}
+
+function asAdoptResult(value: unknown, provider: RegisteredProvider): ProviderAdoptResult {
+  const candidate = (value ?? {}) as { cursor?: unknown; backfillComplete?: unknown };
+  if (
+    !(candidate.cursor === null || (typeof candidate.cursor === 'string' && candidate.cursor))
+    || typeof candidate.backfillComplete !== 'boolean'
+  ) {
+    throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned a malformed sync.adopt result` });
+  }
+  return { cursor: candidate.cursor, backfillComplete: candidate.backfillComplete };
 }
 
 function assertPage(page: unknown, provider: RegisteredProvider): asserts page is ProviderSyncPage {
@@ -299,7 +338,7 @@ async function commitCursor(
 ): Promise<boolean> {
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.data_sources
-       SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{provider}', ${sql.json(cursor)}::jsonb),
+       SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{provider}', ${jsonText(cursor)}::text::jsonb),
            backfill_status = ${backfillStatus},
            sync_lease_expires_at = now() + make_interval(secs => ${leaseSeconds}),
            updated_at = now()
@@ -479,6 +518,37 @@ async function syncSource(
   let working = source;
   const sinkCache = new Map<string, ExternalTriggerSink[]>();
   try {
+    // D-020: a source a retired host path used to drive starts from that path's freshest
+    // position, not from null (which would re-walk the whole history). A failure here fails
+    // the pass and is retried; it never falls back to a null start.
+    const prior = cursor === null && provider.descriptor.capabilities.includes(PROVIDER_SYNC_ADOPT_CAPABILITY)
+      ? priorCursorStateOf(source)
+      : null;
+    if (prior) {
+      const adopted = asAdoptResult(
+        await provider.adapter.invoke(
+          {
+            source: source.id,
+            capability: PROVIDER_SYNC_ADOPT_CAPABILITY,
+            args: { prior },
+            ...(deps.services ? { services: deps.services } : {}),
+          },
+          { fetch: deps.hostFetch },
+        ),
+        provider,
+      );
+      if (adopted.cursor !== null) {
+        const backfillStatus = adopted.backfillComplete ? 'complete' : 'pending';
+        if (!(await commitCursor(sql, working, deps.owner, opts.leaseSeconds, adopted.cursor, backfillStatus))) {
+          return { ...outcome, outcome: 'leased-elsewhere' };
+        }
+        cursor = adopted.cursor;
+        working = { ...working, cursor: { ...working.cursor, provider: cursor }, backfillStatus };
+        mode = adopted.backfillComplete ? 'incremental' : 'backfill';
+        outcome.mode = mode;
+        outcome.adopted = true;
+      }
+    }
     while (outcome.pages < opts.maxPagesPerSource) {
       let page: ProviderSyncPage;
       try {
@@ -721,7 +791,7 @@ export async function runConnectorWakes(
       if (result.state !== undefined && result.state !== wakeStateOf(source)) {
         await sql`
           UPDATE harness_shared.data_sources
-             SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{wake}', ${sql.json(result.state ?? null)}::jsonb),
+             SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{wake}', ${jsonText(result.state ?? null)}::text::jsonb),
                  updated_at = now()
            WHERE workspace_id = ${source.workspaceId}
              AND id = ${source.id}::uuid`;

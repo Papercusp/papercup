@@ -152,6 +152,26 @@ describe('learningLoopHealthSweep (EI-19281872822982156, defect 2)', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the bg-host process start time into the shared classifier read', async () => {
+    const nowMs = Date.parse('2026-10-06T04:00:00.000Z');
+    const uptimeSeconds = 321;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const uptimeSpy = vi.spyOn(process, 'uptime').mockReturnValue(uptimeSeconds);
+    vi.mocked(readLearningLoopHealth).mockResolvedValue([]);
+
+    try {
+      await learningLoopHealthSweep();
+
+      expect(readLearningLoopHealth).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(readLearningLoopHealth).mock.calls[0]?.[2]).toEqual({
+        processStartedAtMs: nowMs - uptimeSeconds * 1_000,
+      });
+    } finally {
+      nowSpy.mockRestore();
+      uptimeSpy.mockRestore();
+    }
+  });
+
   it('keeps real alarms active on a packaged desktop after a project is provisioned', async () => {
     process.env.PAPERCUSP_DESKTOP = '1';
     vi.mocked(isLikelyFreshInstallGap).mockResolvedValue(false);

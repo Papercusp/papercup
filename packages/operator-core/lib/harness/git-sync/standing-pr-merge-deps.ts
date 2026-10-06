@@ -26,7 +26,7 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -213,11 +213,48 @@ export function isStandingPrMergeRunActive(installSlug: string, prNumber: number
 }
 
 /**
+ * The dependency install a fresh merge worktree needs before the pot's suite runs
+ * (WI-10006355). `npm ci` only with a lockfile — it refuses to run without one —
+ * `npm install` for declared dependencies without a lockfile, and nothing when the
+ * package declares none. Pure, so the rule is testable without a repository.
+ */
+export function pickNodeInstallCommand(input: {
+  hasPackageJson: boolean;
+  hasLockfile: boolean;
+  dependencyCount: number;
+}): string | null {
+  if (!input.hasPackageJson) return null;
+  if (input.hasLockfile) return 'npm ci';
+  if (input.dependencyCount > 0) return 'npm install --no-audit --no-fund';
+  return null;
+}
+
+/** Read {@link pickNodeInstallCommand}'s inputs from a checkout. */
+export async function nodeInstallCommandFor(dir: string): Promise<string | null> {
+  let pkg: Record<string, unknown> | null = null;
+  try {
+    pkg = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')) as Record<string, unknown>;
+  } catch {
+    pkg = null;
+  }
+  const count = (key: string) => {
+    const v = pkg?.[key];
+    return v && typeof v === 'object' ? Object.keys(v).length : 0;
+  };
+  return pickNodeInstallCommand({
+    hasPackageJson: pkg !== null,
+    hasLockfile: existsSync(join(dir, 'package-lock.json')) || existsSync(join(dir, 'npm-shrinkwrap.json')),
+    dependencyCount: count('dependencies') + count('devDependencies') + count('optionalDependencies'),
+  });
+}
+
+/**
  * The default suite runner: a throwaway detached worktree of `repoDir` at `sha`
- * (submodules initialised when present), `bash -c <command>` inside it, then the
- * worktree is removed. Exit 0 = pass, any other exit = fail; a spawn failure or a
- * timeout throws (could not run). The command must be self-contained for a fresh
- * checkout — e.g. `npm ci && npm test` for a node repo.
+ * (submodules initialised when present), the dependency install that worktree needs
+ * ({@link nodeInstallCommandFor}), then `bash -c <command>` inside it; the worktree
+ * is removed afterwards. Exit 0 = pass, any other exit = fail; a spawn failure or a
+ * timeout throws (could not run). `command` is the pot's suite alone (e.g.
+ * `npm test`) — the install is not part of it.
  */
 export function makeWorktreeSuiteRunner(command: string, opts: { timeoutMs?: number } = {}): RunSuite {
   const timeout = opts.timeoutMs ?? 2 * 60 * 60 * 1000;
@@ -228,8 +265,11 @@ export function makeWorktreeSuiteRunner(command: string, opts: { timeoutMs?: num
       if (existsSync(join(dir, '.gitmodules'))) {
         await git(dir, ['submodule', 'update', '--init', '--recursive', '--quiet']);
       }
+      // Decided from the merge result itself, so a lockfile the PR adds or removes counts.
+      const install = await nodeInstallCommandFor(dir);
+      const script = install ? `${install} && ${command}` : command;
       try {
-        await execFileP('bash', ['-c', command], { cwd: dir, timeout, maxBuffer: 64 * 1024 * 1024 });
+        await execFileP('bash', ['-c', script], { cwd: dir, timeout, maxBuffer: 64 * 1024 * 1024 });
         return true;
       } catch (err) {
         const e = err as { code?: unknown; killed?: boolean };

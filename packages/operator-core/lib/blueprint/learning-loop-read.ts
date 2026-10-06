@@ -68,6 +68,8 @@ export interface ReadLearningLoopHealthOpts {
   /** An active loop that has not fired within this many days is "stale" (default 3). */
   staleAfterDays?: number;
   nowMs?: number;
+  /** Optional bg-host process start time. The scheduled escalation sweep opts in; reads do not. */
+  processStartedAtMs?: number;
 }
 
 /**
@@ -167,6 +169,7 @@ export async function readLearningLoopHealth(
 
   return computeLearningLoopHealth(LEARNING_SINGLETONS, routines, {
     nowMs: opts.nowMs ?? Date.now(),
+    ...(opts.processStartedAtMs === undefined ? {} : { processStartedAtMs: opts.processStartedAtMs }),
     staleAfterDays: opts.staleAfterDays,
     homeSlug: operatorHomeHarnessSlug(),
     expectedMaterialized: (id) => platformLoopsOn || !isPlatformImprovementLoop(id),

@@ -99,6 +99,35 @@ describe('stepStandingPrMerge (P-021 + P-024 exact-merge gate)', () => {
       .toMatchObject({ action: 'skipped', reason: 'checks-failing' });
   });
 
+  // WI-10006351: the pot's own GitHub account authors the standing PR and GitHub
+  // refuses self-approval, so a viewer reviewer's merge click must be the approval.
+  it('treats a PR-viewer merge as the approval when GitHub has no review', async () => {
+    const { deps, calls } = fakeDeps();
+    const out = await stepStandingPrMerge({ ...base, pr: pr({ review_decision: 'none' }), viewerApproved: true }, deps);
+    expect(out).toMatchObject({ action: 'testing', reason: 'never-tested', mergeSha: MERGE });
+    expect(calls.started.map((r) => r.mergeSha)).toEqual([MERGE]);
+  });
+
+  it('still needs an approval without a viewer merge (the poller path)', async () => {
+    const { deps, calls } = fakeDeps();
+    expect(await stepStandingPrMerge({ ...base, pr: pr({ review_decision: 'none' }) }, deps))
+      .toEqual({ action: 'skipped', reason: 'not-approved', detail: 'Review decision is none.' });
+    expect(await stepStandingPrMerge({ ...base, pr: pr({ review_decision: 'none' }), viewerApproved: false }, deps))
+      .toMatchObject({ action: 'skipped', reason: 'not-approved' });
+    expect(calls.started).toEqual([]);
+  });
+
+  it('lets a GitHub changes-requested review block even a viewer merge', async () => {
+    const { deps, calls } = fakeDeps();
+    const out = await stepStandingPrMerge(
+      { ...base, pr: pr({ review_decision: 'changes_requested' }), viewerApproved: true },
+      deps,
+    );
+    expect(out).toMatchObject({ action: 'skipped', reason: 'not-approved' });
+    expect(calls.started).toEqual([]);
+    expect(calls.advanced).toEqual([]);
+  });
+
   it('builds the exact merge result and starts the suite on it when never tested', async () => {
     const { deps, calls } = fakeDeps();
     const out = await stepStandingPrMerge({ ...base, pr: pr() }, deps);

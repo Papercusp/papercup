@@ -15,7 +15,7 @@
  *
  * Inert while the `papercusp-slack-org-connector` flag is off: the fire returns
  * before reading a single source, so nothing is listed, fetched or written. The flag
- * stays dark until the legal read of Slack's API terms (WI-10005258) is on record.
+ * defaults ON now that the legal read of Slack's API terms (WI-10005258) is on record.
  *
  * Config (routine `trigger_config`, all optional):
  *   - `max_steps` — backfill steps per source per fire (default 5, 1..40).

@@ -23,7 +23,8 @@ import {
 
 const SUBJECT: CompletionSubject = { id: 'WI-1', title: 'Ship the thing', kind: 'feature', closer: 'su-closer' };
 const NOW = new Date('2026-10-06T04:00:00.000Z');
-const TASK_SOURCE = { kind: 'task', title: 'Verify', summary: 'Verify' } as never;
+/** The row's own source: the seal binds the title/summary the task row is created with. */
+const sourceOf = (built: { title: string; body: string }) => ({ kind: 'task', title: built.title, summary: built.body }) as never;
 
 function deps(over: Partial<CompletionVerificationDeps> = {}): CompletionVerificationDeps & {
   created: Array<Record<string, unknown>>;
@@ -110,7 +111,7 @@ describe('completion-verification acceptance policy', () => {
     const built = buildCompletionTaskPayload(SUBJECT, NOW);
     expect(built.ok).toBe(true);
     if (!built.ok) return;
-    const verdict = evaluateImplementationAcceptance(built.payload, TASK_SOURCE);
+    const verdict = evaluateImplementationAcceptance(built.payload, sourceOf(built));
     expect(verdict.state).not.toBe('incomplete');
     expect(verdict.state).not.toBe('absent');
   });
@@ -118,9 +119,9 @@ describe('completion-verification acceptance policy', () => {
   it('does not admit the same contract on a row without a completion verification block', () => {
     const built = buildCompletionTaskPayload(SUBJECT, NOW);
     if (!built.ok) throw new Error('seal refused');
-    const admitted = evaluateImplementationAcceptance(built.payload, TASK_SOURCE).state;
+    const admitted = evaluateImplementationAcceptance(built.payload, sourceOf(built)).state;
     const { verification: _dropped, ...rest } = built.payload as Record<string, unknown>;
-    expect(evaluateImplementationAcceptance(rest, TASK_SOURCE).state).not.toBe(admitted);
+    expect(evaluateImplementationAcceptance(rest, sourceOf(built)).state).not.toBe(admitted);
   });
 
   it('refuses to seal with the completion policy on a row that is not a completion task', () => {
@@ -146,9 +147,9 @@ describe('completion-verification acceptance policy', () => {
     if (!built.ok) throw new Error('seal refused');
     const other = buildCompletionTaskPayload({ ...SUBJECT, id: 'WI-99' }, NOW);
     if (!other.ok) throw new Error('seal refused');
-    const admitted = evaluateImplementationAcceptance(built.payload, TASK_SOURCE).state;
+    const admitted = evaluateImplementationAcceptance(built.payload, sourceOf(built)).state;
     const swapped = { ...(built.payload as Record<string, unknown>), verification: (other.payload as Record<string, unknown>).verification };
-    expect(evaluateImplementationAcceptance(swapped, TASK_SOURCE).state).not.toBe(admitted);
+    expect(evaluateImplementationAcceptance(swapped, sourceOf(built)).state).not.toBe(admitted);
   });
 });
 

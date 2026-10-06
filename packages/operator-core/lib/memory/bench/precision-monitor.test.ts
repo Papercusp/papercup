@@ -14,6 +14,8 @@ import {
   PRECISION_BENCH_JEV_CONSUMER,
   PRECISION_BENCH_JEV_GATE_ENV,
   PRECISION_BENCH_RESULT_MARKER,
+  precisionBenchWorkerInvocation,
+  resolvePrecisionBenchWorkerTarget,
   runBenchInWorker,
   runMemoryPrecisionMonitor,
   type MemoryPrecisionBenchDeps,
@@ -304,6 +306,26 @@ describe('runMemoryPrecisionMonitor', () => {
 });
 
 describe('precision bench worker protocol', () => {
+  it('resolves the bundled sibling from the relocated host entry and runs it with plain Node', () => {
+    const moduleUrl = new URL('../../../../../apps/operator/dist-host/hono-host.mjs', import.meta.url).href;
+    const target = resolvePrecisionBenchWorkerTarget(moduleUrl, (path) => path.endsWith('precision-bench-worker.mjs'));
+
+    expect(target).toMatchObject({ path: expect.stringContaining('precision-bench-worker.mjs'), runtime: 'node' });
+    expect(
+      precisionBenchWorkerInvocation(target, '/runtime/node', '/runtime/tsx'),
+    ).toEqual({ command: '/runtime/node', args: [target.path] });
+  });
+
+  it('keeps source-mode development on the TypeScript worker through tsx', () => {
+    const moduleUrl = new URL('./precision-monitor.ts', import.meta.url).href;
+    const target = resolvePrecisionBenchWorkerTarget(moduleUrl, () => false);
+
+    expect(target).toMatchObject({ path: expect.stringContaining('precision-bench-worker.ts'), runtime: 'tsx' });
+    expect(
+      precisionBenchWorkerInvocation(target, '/runtime/node', '/runtime/tsx'),
+    ).toEqual({ command: '/runtime/node', args: ['/runtime/tsx', target.path] });
+  });
+
   it('parses the marked result while ignoring unrelated child logs', () => {
     const parsed = parsePrecisionBenchWorkerOutput(
       `startup log\n${PRECISION_BENCH_RESULT_MARKER}${JSON.stringify(METRICS)}\n`,

@@ -4936,6 +4936,12 @@ impl App {
                 self.open_effort_picker();
                 Action::Render
             }
+            // P-025: the `b` picker; a bound conversation shows every row
+            // disabled with "Open a new conversation to change it" (/clear).
+            SlashKind::Backend => {
+                self.open_backend_picker();
+                Action::Render
+            }
             SlashKind::Status => {
                 let line = self.chat_status_report();
                 self.chat_toast("info", line);
@@ -5305,6 +5311,12 @@ impl App {
     /// reads the conversation's persisted class (P-013) and is not reproducible
     /// by eye at a second call site.
     fn dispatch_chat_turn(&mut self, draft: String) -> Option<Action> {
+        // An acknowledgement toast describes the owner's last action ("Your
+        // next message starts a Codex conversation."); once a message goes out
+        // it is stale, and pui toasts never expire on their own (D-027).
+        if self.toast_is_ack {
+            self.toast = None;
+        }
         if self.require_session_setup
             && !self.session_setup_accepted
             && self.agent_chat_id.is_none()
@@ -6730,10 +6742,65 @@ impl App {
         ));
     }
 
+    /// P-025 / D-027: an engine pick in chat-first starts the next
+    /// conversation on that engine. An open conversation is ended the way
+    /// /clear ends it, so it stays in /resume. Chat-first never draws
+    /// `session_note`, so the result is a toast.
+    fn chat_first_pick_backend(&mut self, id: &str, label: &str) -> Action {
+        use crate::su_session::{SuSessionBackend, SuSessionControl};
+        let backend = match id {
+            "codex" => SuSessionBackend::Codex,
+            "omp" => SuSessionBackend::Omp,
+            _ => SuSessionBackend::Claude,
+        };
+        self.session_picker = None;
+        let bound = self.agent_chat_id.is_some() || self.su_session.is_some();
+        let current = self.su_session.as_ref().map(|session| session.backend());
+        if bound && current == Some(backend) {
+            self.chat_toast(
+                "info",
+                format!("This conversation already runs on {label}."),
+            );
+            return Action::Render;
+        }
+        let end = (bound && self.su_session_running()).then(|| {
+            self.su_session_control(SuSessionControl::End {
+                reason: Some(format!(
+                    "owner picked {label} for a new conversation (/backend)"
+                )),
+            })
+        });
+        if bound {
+            self.reset_agent_chat_binding();
+        }
+        // A model spec belongs to its engine; keep a `--model` pick when the
+        // engine does not change.
+        let effective = self
+            .su_backend
+            .or_else(|| self.configured_su_backend())
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        if effective != backend {
+            self.chat_model = None;
+        }
+        self.su_backend = Some(backend);
+        self.chat_toast(
+            "info",
+            if bound {
+                format!("New conversation on {label}. The last one is in /resume.")
+            } else {
+                format!("Your next message starts a {label} conversation.")
+            },
+        );
+        end.unwrap_or(Action::Render)
+    }
+
     pub fn open_backend_picker(&mut self) {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
         use crate::su_session::SuSessionBackend;
-        let bound = self.session_setup.is_none()
+        // Chat-first switches by starting a new conversation (D-027), so its
+        // rows stay selectable while one is open.
+        let bound = !self.chat_first
+            && self.session_setup.is_none()
             && (self.agent_chat_id.is_some() || self.su_session.is_some());
         let options = [
             SuSessionBackend::Claude,
@@ -6881,6 +6948,14 @@ impl App {
                         });
                         return Action::Render;
                     }
+                }
+                // P-025 / D-027: chat-first has no setup form to send an engine
+                // pick to (the message box is the whole app).
+                if self.chat_first
+                    && self.session_setup.is_none()
+                    && axis == crate::session_config::PickerAxis::Backend
+                {
+                    return self.chat_first_pick_backend(&id, &label);
                 }
                 // Backend/account/mode are launch-time choices: a bound
                 // conversation's engine already runs with its own and no turn
@@ -18639,6 +18714,101 @@ mod tests {
         a.tab = Tab::Operator;
         a.chat_composing = true;
         a
+    }
+
+    /// P-025: chat-first Esc stays in the message box (P-027), so `/backend`
+    /// is how a bare `pui` user picks Codex or OMP for a new conversation.
+    #[test]
+    fn chat_first_backend_command_picks_the_engine_for_a_new_conversation() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app();
+        a.chat_input = "/backend".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert!(a.chat_input.is_empty(), "the command text is consumed");
+        let picker = a
+            .session_picker
+            .as_ref()
+            .expect("the backend picker opened");
+        assert_eq!(picker.axis, PickerAxis::Backend);
+        assert!(
+            picker.options.iter().all(|option| !option.disabled),
+            "no conversation is bound yet, so every engine is selectable"
+        );
+        // The engine it would start on anyway keeps a `--model` pick.
+        a.chat_model = Some("sonnet".into());
+        let _ = pick(&mut a, PickerAxis::Backend, "claude");
+        assert_eq!(a.chat_model.as_deref(), Some("sonnet"));
+
+        a.open_backend_picker();
+        let _ = pick(&mut a, PickerAxis::Backend, "codex");
+        assert!(a.session_picker.is_none());
+        assert_eq!(
+            a.su_backend,
+            Some(crate::su_session::SuSessionBackend::Codex)
+        );
+        assert_eq!(a.chat_model, None, "a Claude model spec does not carry to Codex");
+        assert_eq!(
+            a.toast.as_ref().map(|t| t.message.as_str()),
+            Some("Your next message starts a Codex conversation.")
+        );
+
+        // Once a message goes out the acknowledgement is stale.
+        a.chat_input = "hi".into();
+        a.chat_cursor = a.chat_input.len();
+        let _ = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.toast.is_none());
+    }
+
+    /// D-027: with a conversation open, a chat-first engine pick ends it the
+    /// way /clear does (it stays in /resume) and the next message starts on
+    /// the picked engine. Picking the engine it already runs on changes nothing.
+    #[test]
+    fn chat_first_backend_pick_on_an_open_conversation_starts_a_new_one() {
+        use crate::session_config::PickerAxis;
+        use crate::su_session::SuSessionBackend;
+        let mut a = chat_first_app_on_live_session("haiku");
+        a.chat_first = true;
+        let running = a.su_session.as_ref().map(|s| s.backend()).unwrap();
+
+        a.open_backend_picker();
+        assert!(
+            a.session_picker
+                .as_ref()
+                .unwrap()
+                .options
+                .iter()
+                .all(|option| !option.disabled),
+            "chat-first switches by starting a new conversation"
+        );
+        let same = running.label().to_ascii_lowercase();
+        let _ = pick(&mut a, PickerAxis::Backend, &same);
+        assert!(
+            a.su_session.is_some(),
+            "the same engine keeps the conversation"
+        );
+
+        let other = if running == SuSessionBackend::Omp {
+            "codex"
+        } else {
+            "omp"
+        };
+        a.open_backend_picker();
+        let _ = pick(&mut a, PickerAxis::Backend, other);
+        assert!(a.su_session.is_none() && a.agent_chat_id.is_none());
+        assert_eq!(
+            a.su_backend.map(|b| b.label().to_ascii_lowercase()).as_deref(),
+            Some(other)
+        );
+        assert!(a
+            .toast
+            .as_ref()
+            .unwrap()
+            .message
+            .ends_with("The last one is in /resume."));
     }
 
     /// P-027 (G-11): Ctrl+C with a draft clears it and keeps it in ↑ history;

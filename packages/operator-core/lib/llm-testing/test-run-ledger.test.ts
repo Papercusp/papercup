@@ -33,6 +33,13 @@ describe('resolveScenarioSourceFile', () => {
     expect(resolveScenarioSourceFile('su-S02-tauri-only', 'su', SCENARIOS_ROOT)).toBe(
       join(SCENARIOS_ROOT, 'su', 'S02-tauri-only.ts'),
     );
+    // One factory, two registering files: each set resolves to the file spelling its ids.
+    expect(resolveScenarioSourceFile('su-S37a-absence-claim', 'su-code', SCENARIOS_ROOT)).toBe(
+      join(SCENARIOS_ROOT, 'su', 'S37-code-search-discipline.ts'),
+    );
+    expect(resolveScenarioSourceFile('worker-W01c-definition-lookup', 'worker', SCENARIOS_ROOT)).toBe(
+      join(SCENARIOS_ROOT, 'worker', 'W01-code-search-discipline.ts'),
+    );
     const dir = mkdtempSync(join(tmpdir(), 'scen-resolve-'));
     try {
       mkdirSync(join(dir, 'su'));
@@ -42,6 +49,30 @@ describe('resolveScenarioSourceFile', () => {
       expect(resolveScenarioSourceFile('su-S40-case', 'su', dir)).toBeUndefined();
       expect(resolveScenarioSourceFile('su-S41-case', 'su', dir)).toBeUndefined();
       expect(resolveScenarioSourceFile('su-S99-none', 'nope', dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a bare role prefix claims ids only inside the target dir, never across the tree', () => {
+    // A fixture builder like `su-${n}` in a helper file once captured su-S37a (target
+    // su-code, no su-code dir) and misattributed its llm ledger rows.
+    const dir = mkdtempSync(join(tmpdir(), 'scen-resolve-'));
+    try {
+      mkdirSync(join(dir, 'su'));
+      mkdirSync(join(dir, 'papercup'));
+      writeFileSync(join(dir, 'su', '_helpers.ts'), 'export const owner = (n: number) => `su-${n}`;\n');
+      writeFileSync(join(dir, 'papercup', '_mirror.ts'), 'export const id = (b: string) => `sn-${b}`;\n');
+      expect(resolveScenarioSourceFile('su-S50-new-case', 'su-code', dir)).toBeUndefined();
+      // Inside its own target dir the role prefix still resolves (mirror-generated ids).
+      expect(resolveScenarioSourceFile('sn-S01-mirrored', 'papercup', dir)).toBe(
+        join(dir, 'papercup', '_mirror.ts'),
+      );
+      // A family prefix (role + token) still resolves across the tree.
+      writeFileSync(join(dir, 'su', 'S50-family.ts'), 'export const id = (c: string) => `su-S50-${c}`;\n');
+      expect(resolveScenarioSourceFile('su-S50-new-case', 'su-code', dir)).toBe(
+        join(dir, 'su', 'S50-family.ts'),
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

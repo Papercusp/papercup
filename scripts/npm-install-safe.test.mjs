@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   cacheVerifyArgs,
+  installLockWaitReporter,
   lockfileDepFlagOnlyChanges,
   main,
   publishDependencyGeneration,
@@ -53,6 +54,36 @@ test("fs-mutex wait budget honours the unattended knob below the explicit one", 
     25,
   );
   assert.equal(resolveFsMutexTimeoutMs({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: "junk" }), 180_000);
+});
+
+// WI-10006385: a printed wait must be closed by a line saying how long it really lasted
+// and under which budget; an uncontested lock stays silent.
+test("installLockWaitReporter closes a printed wait with its real length and stays quiet uncontested", () => {
+  const quiet = [];
+  const uncontested = installLockWaitReporter({
+    lock: "writer",
+    describe: (owner, elapsedMs) => `waiting ${elapsedMs} ${owner}`,
+    log: line => quiet.push(line),
+    budgetMs: 3_600_000,
+  });
+  uncontested.onAcquired({ waitedMs: 3 });
+  assert.deepEqual(quiet, []);
+
+  const lines = [];
+  const contested = installLockWaitReporter({
+    lock: "writer",
+    describe: (owner, elapsedMs) => `waiting ${elapsedMs} ${owner}`,
+    log: line => lines.push(line),
+    budgetMs: 3_600_000,
+  });
+  contested.onWaiting({ owner: "  {\"pid\":7}\n", elapsedMs: 0 });
+  contested.onWaiting({ owner: "{\"pid\":8}", elapsedMs: 30_000 });
+  contested.onAcquired({ waitedMs: 2_712_345 });
+  assert.deepEqual(lines, [
+    'waiting 0 {"pid":7}',
+    'waiting 30000 {"pid":8}',
+    "NPM_INSTALL_SAFE_LOCK_ACQUIRED lock=writer waitedMs=2712345 budgetMs=3600000",
+  ]);
 });
 
 // WI-10003114 fixture: the measured shape of the 2026-09-29 flip. An unscoped
@@ -645,12 +676,14 @@ test("install readers keep reporting a held writer on the configured cadence", a
     const first = new Promise(resolve => { firstNotice = resolve; });
     const next = new Promise(resolve => { nextNotice = resolve; });
     const notices = [];
+    const acquiredLines = [];
     console.error = message => {
       if (String(message).startsWith("NPM_INSTALL_SAFE reader waiting")) {
         notices.push(String(message));
         if (notices.length === 1) firstNotice();
         else nextNotice();
       }
+      if (String(message).startsWith("NPM_INSTALL_SAFE_LOCK_ACQUIRED")) acquiredLines.push(String(message));
     };
     // Advance only the observed clock. Real filesystem operations and the
     // mutex retry timer continue to run, without waiting 30 seconds in CI.
@@ -670,10 +703,17 @@ test("install readers keep reporting a held writer on the configured cadence", a
     assert.match(notices[0], /\(0s so far\)/);
     assert.match(notices[1], /\(30s so far\)/);
     assert.equal(childEntered, false);
+    assert.deepEqual(acquiredLines, []);
     releaseWriter();
     await writer;
     assert.equal(await reading, 0);
     assert.equal(childEntered, true);
+    // WI-10006385: the wait closes with ONE line naming its real length and budget.
+    assert.equal(acquiredLines.length, 1);
+    const [, waitedMs, budgetMs] =
+      acquiredLines[0].match(/^NPM_INSTALL_SAFE_LOCK_ACQUIRED lock=reader waitedMs=(\d+) budgetMs=(\d+)$/) ?? [];
+    assert.ok(Number(waitedMs) >= 30_000, acquiredLines[0]);
+    assert.equal(Number(budgetMs), 180_000);
   } finally {
     clearTimeout(noticeDeadline);
     releaseWriter?.();

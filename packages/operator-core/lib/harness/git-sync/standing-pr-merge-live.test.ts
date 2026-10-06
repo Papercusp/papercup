@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Pr } from '../../pr-host/types';
-import { makeLiveStandingPrMerge, suiteCommandFromScripts, type LiveStandingPrMergeResolvers } from './standing-pr-merge-live';
+import { makeLiveStandingPrMerge, type LiveStandingPrMergeResolvers } from './standing-pr-merge-live';
 import type { StandingPrMergeDeps } from './standing-pr-merge';
+import { nodeInstallCommandFor, pickNodeInstallCommand } from './standing-pr-merge-deps';
 
 const PR = {
   ref: { number: 7 },
@@ -78,6 +82,19 @@ describe('makeLiveStandingPrMerge', () => {
     expect(await step({ ...args, authorRevoked: true })).toMatchObject({ action: 'refused', reason: 'author-revoked' });
   });
 
+  // WI-10006351: a self-authored standing PR has no GitHub review; the viewer merge
+  // must reach stepStandingPrMerge as the approval.
+  it('passes a PR-viewer approval through to the merge step', async () => {
+    const unreviewed = { ...PR, review_decision: 'none' } as Pr;
+    const deps = fakeDeps();
+    const step = makeLiveStandingPrMerge({ store, resolvers: resolvers({ buildDeps: () => deps }) });
+    expect(await step({ ...args, pr: unreviewed })).toMatchObject({ action: 'skipped', reason: 'not-approved' });
+    expect(deps.started).toBe(0);
+    expect(await step({ ...args, pr: unreviewed, viewerApproved: true }))
+      .toMatchObject({ action: 'testing', reason: 'never-tested', mergeSha: 'c'.repeat(40) });
+    expect(deps.started).toBe(1);
+  });
+
   it('refuses when nothing was promoted to the working copy main', async () => {
     const step = makeLiveStandingPrMerge({ store, resolvers: resolvers({ promotedSha: async () => null }) });
     expect(await step(args)).toMatchObject({ action: 'refused', reason: 'nothing-promoted' });
@@ -92,11 +109,48 @@ describe('makeLiveStandingPrMerge', () => {
   });
 });
 
-describe('suiteCommandFromScripts', () => {
-  it('prefers test:affected, then test, else none', () => {
-    expect(suiteCommandFromScripts({ test: 'x', 'test:affected': 'y' })).toBe('npm ci && npm run test:affected');
-    expect(suiteCommandFromScripts({ test: 'x' })).toBe('npm ci && npm test');
-    expect(suiteCommandFromScripts({})).toBeNull();
-    expect(suiteCommandFromScripts(undefined)).toBeNull();
+// WI-10006355: the merge result runs the pot's own suite (the gate's rule), verbatim.
+describe('makeLiveStandingPrMerge suite command', () => {
+  it('takes the suite from the pot resolver and runs exactly that command', async () => {
+    const suiteCommand = vi.fn(async () => 'npm test');
+    const runSuite = vi.fn(() => async () => true);
+    const step = makeLiveStandingPrMerge({ store, resolvers: resolvers({ suiteCommand, runSuite }) });
+    await step(args);
+    expect(suiteCommand).toHaveBeenCalledWith('pot', 'ws');
+    expect(runSuite).toHaveBeenCalledWith('npm test');
+  });
+});
+
+describe('pickNodeInstallCommand', () => {
+  it('uses npm ci only with a lockfile, npm install for unlocked dependencies, else nothing', () => {
+    expect(pickNodeInstallCommand({ hasPackageJson: true, hasLockfile: true, dependencyCount: 0 })).toBe('npm ci');
+    expect(pickNodeInstallCommand({ hasPackageJson: true, hasLockfile: false, dependencyCount: 2 }))
+      .toBe('npm install --no-audit --no-fund');
+    expect(pickNodeInstallCommand({ hasPackageJson: true, hasLockfile: false, dependencyCount: 0 })).toBeNull();
+    expect(pickNodeInstallCommand({ hasPackageJson: false, hasLockfile: true, dependencyCount: 3 })).toBeNull();
+  });
+});
+
+describe('nodeInstallCommandFor', () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+  async function repo(files: Record<string, string>): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'node-install-'));
+    dirs.push(dir);
+    await Promise.all(Object.entries(files).map(([name, body]) => writeFile(join(dir, name), body)));
+    return dir;
+  }
+
+  it('installs nothing for a lockfile-less package with no dependencies (the pilot shape)', async () => {
+    expect(await nodeInstallCommandFor(await repo({ 'package.json': '{"scripts":{"test":"node --test"}}' }))).toBeNull();
+  });
+
+  it('reads the lockfile and dependency fields from the checkout', async () => {
+    expect(await nodeInstallCommandFor(await repo({ 'package.json': '{"devDependencies":{"x":"1"}}' })))
+      .toBe('npm install --no-audit --no-fund');
+    expect(await nodeInstallCommandFor(await repo({ 'package.json': '{}', 'package-lock.json': '{}' }))).toBe('npm ci');
+    expect(await nodeInstallCommandFor(await repo({ 'README.md': 'no node here' }))).toBeNull();
   });
 });

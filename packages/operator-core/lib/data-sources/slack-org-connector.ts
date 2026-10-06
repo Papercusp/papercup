@@ -18,10 +18,10 @@
  *     included, written as raw chat messages (chat-retrieval-units.ts) that the
  *     rollup turns into thread / window units.
  *
- * GATE: a legal read of Slack's 2025 API terms for this credential model must be on
- * record before the connector is enabled for any customer workspace. Every entry
- * point refuses unless the `papercusp-slack-org-connector` flag is ON; the flag is dark with
- * case owner-authority until that read exists.
+ * GATE: a legal read of Slack's 2025 API terms for this credential model had to be on
+ * record before the connector was enabled for any customer workspace; it is
+ * (enterprise-data-sources-2026-10-01 D-029), so the `papercusp-slack-org-connector`
+ * flag defaults ON. Every entry point still refuses while that flag is switched OFF.
  */
 import type postgres from 'postgres';
 import { FLAGS } from '@papercusp/flags';

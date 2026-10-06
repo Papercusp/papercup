@@ -286,6 +286,15 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
           // The judge response is billed even if recording the score fails.
           const judgeCostUsd = costUsdOf(score.costUsd);
           incurredCostUsd += judgeCostUsd;
+          if (score.costUsdMeasurementMissing || score.unreportedFrames) {
+            // The successful score still carries only a usage subtotal. Stop
+            // before another task spends and let the attempt remain OPEN.
+            // Its subtotal is already in incurredCostUsd; do not charge twice.
+            throw Object.assign(new Error('Gym judge usage evidence is incomplete'), {
+              costUsd: 0, costUsdMeasurementMissing: true,
+              ...(score.unreportedFrames ? { unreportedFrames: score.unreportedFrames } : {}),
+            });
+          }
           await ab.store.recordScore(evaluationRunId, score);
           const sig = (rawSignals ?? {}) as Record<string, unknown>;
           composites.push(score.composite);
