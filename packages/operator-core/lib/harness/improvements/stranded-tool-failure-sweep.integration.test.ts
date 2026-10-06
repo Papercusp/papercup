@@ -85,18 +85,23 @@ describe('stranded tool-failure sweep (P-003 / D-022)', () => {
     // The failing call a receipt cites, and the failure that keeps a row open.
     const [{ id: receiptCall }] = await db.adminSql<{ id: string }[]>`
       INSERT INTO harness_shared.tool_invocations
-        (workspace_id, harness_slug, tool_name, status, error_code, serving_build_sha, invoked_at)
-      VALUES (${workspaceId}, 'papercusp', ${tool('verified')}, 'error', 'handler_error', ${REPORT}, ${at(0)}::timestamptz)
+        (workspace_id, harness_slug, plugin_name, role, spawn_id, window_key,
+         tool_name, status, error_code, serving_build_sha, invoked_at)
+      VALUES (${workspaceId}, 'papercusp', 'papercusp', 'su', 'sweep-test', 'sweep-test',
+              ${tool('verified')}, 'error', 'handler_error', ${REPORT}, ${at(0)}::timestamptz)
       RETURNING id`;
-    await db.adminSql`
-      INSERT INTO harness_shared.tool_invocations
-        (workspace_id, harness_slug, tool_name, status, error_code, serving_build_sha, invoked_at)
-      VALUES
-        (${workspaceId}, 'papercusp', ${tool('retire')}, 'error', 'handler_error', ${REPORT}, ${at(1)}::timestamptz),
-        (${workspaceId}, 'papercusp', ${tool('recurring')}, 'error', 'timeout', ${CURRENT}, ${at(4)}::timestamptz),
-        -- A success and a different error code never block retirement.
-        (${workspaceId}, 'papercusp', ${tool('retire')}, 'ok', NULL, ${CURRENT}, ${at(5)}::timestamptz),
-        (${workspaceId}, 'papercusp', ${tool('retire')}, 'invalid-input', 'invalid_input', ${CURRENT}, ${at(5)}::timestamptz)`;
+    const call = (name: string, status: string, errorCode: string | null, build: string, hours: number) =>
+      db.adminSql`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, role, spawn_id, window_key,
+           tool_name, status, error_code, serving_build_sha, invoked_at)
+        VALUES (${workspaceId}, 'papercusp', 'papercusp', 'su', 'sweep-test', 'sweep-test',
+                ${tool(name)}, ${status}, ${errorCode}, ${build}, ${at(hours)}::timestamptz)`;
+    await call('retire', 'error', 'handler_error', REPORT, 1);
+    await call('recurring', 'error', 'timeout', CURRENT, 4);
+    // A success and a different error code never block retirement.
+    await call('retire', 'ok', null, CURRENT, 5);
+    await call('retire', 'invalid-input', 'invalid_input', CURRENT, 5);
 
     // Put each row in the state the pre-P-002 producers left it: promoted, awaiting a
     // verifier, no agentReview record, no admission hold.
