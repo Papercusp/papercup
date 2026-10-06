@@ -1194,6 +1194,15 @@ export interface GatewayCarryTrialAttempt {
   readonly signal: AbortSignal;
 }
 
+/** Per-provider attempt evidence, separate from aggregate caller usage. Headers
+ * or a fetch error cannot establish a charge; only refusal before fetch is a
+ * measured zero. The controller retains OPEN reservations for unknown usage.
+ * No request body or raw credential is copied into this result. */
+export type GatewayCarryTrialAttemptResult = Readonly<Omit<GatewayCarryTrialAttempt, 'body' | 'signal'> & {
+  reservationRef: string;
+} & ({ outcome: 'send-refused'; responseStatus: null; costUsd: 0; costUsdMeasurementMissing: false } |
+  { outcome: 'fetch-failed' | 'response-headers'; responseStatus: number | null; costUsdMeasurementMissing: true })>;
+
 export interface GatewayCarryTrialBinding {
   readonly manifestSha256: string;
   readonly armId: string;
@@ -1213,6 +1222,10 @@ export interface GatewayCarryTrialBinding {
      * return undefined; an async check cannot authorize a write. Omission
      * preserves the existing bounded-trial receipt's expiry-only contract. */
     readonly validateAuthorization?: () => void;
+    /** Optional private controller observer. Runs once for this exact provider
+     * attempt before its response headers reach the retry kernel. Observer
+     * failure refuses the route; it never refunds or settles unknown usage. */
+    readonly observeAttemptResult?: (result: GatewayCarryTrialAttemptResult) => Promise<void>;
   } | null>;
 }
 
@@ -2360,8 +2373,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     accountId: string | undefined,
     target: string,
     init: { headers: Record<string, string>; body?: Uint8Array | null; signal: AbortSignal },
-  ): Promise<() => void> {
-    if (!carryTrial) return () => {};
+  ): Promise<(send: () => Promise<Response>) => Promise<Response>> {
+    if (!carryTrial) return send => send();
     if (!carryTrialRequests.has(req) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
     const headers = new Headers(init.headers);
     const authorization = headers.get('authorization');
@@ -2373,20 +2386,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const credential = authorization ?? apiKey!;
     const body = Buffer.from(init.body).toString('utf8');
     const attemptId = randomUUID();
+    const attempt: GatewayCarryTrialAttempt = Object.freeze({
+      attemptId, manifestSha256: carryTrial.manifestSha256, armId: carryTrial.armId,
+      transport, accountId, target, body,
+      bodySha256: createHash('sha256').update(init.body).digest('hex'),
+      credentialHeader, credentialSha256: createHash('sha256').update(credential).digest('hex'),
+      clockId: processMonotonicClock.id, signal: init.signal,
+    });
     let reservation: Awaited<ReturnType<GatewayCarryTrialBinding['authorizeAttempt']>>;
     try {
-      reservation = await carryTrial.authorizeAttempt(Object.freeze({
-        attemptId, manifestSha256: carryTrial.manifestSha256, armId: carryTrial.armId,
-        transport, accountId, target, body,
-        bodySha256: createHash('sha256').update(init.body).digest('hex'),
-        credentialHeader, credentialSha256: createHash('sha256').update(credential).digest('hex'),
-        clockId: processMonotonicClock.id, signal: init.signal,
-      }));
+      reservation = await carryTrial.authorizeAttempt(attempt);
     } catch { throw trialRefusal(); } // Do not expose private controller errors.
     // Copy the receipt: mutation after return must not extend the send window.
     const receipt = reservation ? { ...reservation } : null;
     let checked = false;
-    return () => {
+    let invoked = false;
+    const check = () => {
       // Last synchronous check INSIDE the observed fetch callback, after any
       // authorization wait. Post-send headers-write evidence still judges the
       // actual D017 band; this is not proof of remote receipt or invoice cost.
@@ -2394,7 +2409,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         typeof receipt.reservationRef !== 'string' || !receipt.reservationRef.trim() ||
         receipt.clockId !== processMonotonicClock.id ||
         !Number.isFinite(receipt.validUntilMonotonicMs) ||
-        processMonotonicClock.now() >= receipt.validUntilMonotonicMs) throw trialRefusal();
+        processMonotonicClock.now() >= receipt.validUntilMonotonicMs ||
+        (receipt.observeAttemptResult !== undefined && typeof receipt.observeAttemptResult !== 'function')) throw trialRefusal();
       checked = true;
       // The asynchronous issuer result is not evidence that authority remains
       // live at the write. Reuse the caller guard's synchronous-check contract;
@@ -2411,6 +2427,45 @@ export function createInferenceGateway(deps: GatewayDeps) {
       } catch { throw trialRefusal(); }
       // The callback itself can revoke the signal or cross the send deadline.
       if (init.signal.aborted || processMonotonicClock.now() >= receipt.validUntilMonotonicMs) throw trialRefusal();
+    };
+    const observe = async (disposition: Pick<GatewayCarryTrialAttemptResult, 'outcome' | 'responseStatus' | 'costUsdMeasurementMissing'> & { costUsd?: 0 }) => {
+      if (!receipt?.observeAttemptResult || typeof receipt.observeAttemptResult !== 'function') return;
+      const { body: _body, signal: _signal, ...identity } = attempt;
+      try {
+        await receipt.observeAttemptResult(Object.freeze({ ...identity,
+          reservationRef: receipt.reservationRef, ...disposition }) as GatewayCarryTrialAttemptResult);
+      } catch { throw trialRefusal(); }
+    };
+    return async send => {
+      if (invoked) throw trialRefusal();
+      invoked = true;
+      try { check(); } catch (error) {
+        // A matching issued receipt may be reconciled as zero only when no
+        // fetch was invoked. A malformed/foreign receipt is never attributed.
+        if (receipt?.attemptId === attemptId && receipt.clockId === attempt.clockId &&
+          typeof receipt.reservationRef === 'string' && receipt.reservationRef.trim()) {
+          await observe({ outcome: 'send-refused', responseStatus: null, costUsd: 0, costUsdMeasurementMissing: false });
+        }
+        throw error;
+      }
+      let response: Response;
+      try { response = await send(); } catch (error) {
+        await observe({ outcome: 'fetch-failed', responseStatus: null, costUsdMeasurementMissing: true });
+        // Network exceptions can contain private routes or credentials. The
+        // exact attempt identity stays with the controller, not the response.
+        throw new GatewayRequestKernelError('carry trial provider attempt failed', {
+          code: 'upstream-error', outcome: 'gateway-error', status: 502, retryable: false,
+        });
+      }
+      try {
+        await observe({ outcome: 'response-headers', responseStatus: response.status, costUsdMeasurementMissing: true });
+      } catch (error) {
+        // Reporting failed after the provider send. Release the response body,
+        // preserve the unknown charge, and never expose the private error.
+        await response.body?.cancel().catch(() => {});
+        throw error;
+      }
+      return response;
     };
   }
   const processStartedAt = Date.now();
@@ -6670,12 +6725,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
             if (init.body) fetchInit.body = init.body as unknown as BodyInit;
             if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-            const check = await authorizeCarryTrialAttempt(req, 'anthropic-http', init.diagnosticAccountId, target, init);
+            const authorizedSend = await authorizeCarryTrialAttempt(req, 'anthropic-http', init.diagnosticAccountId, target, init);
             if (carryTrial) fetchInit.redirect = 'error';
             // Authorization sees the adapter's final body and selected provider
             // account. Re-check its copied receipt synchronously at every send.
-            check();
-            const upstream = await doFetch(target, fetchInit as RequestInit);
+            const upstream = await authorizedSend(() => doFetch(target, fetchInit as RequestInit));
             return {
               status: upstream.status,
               headers: upstream.headers,
@@ -8578,9 +8632,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
           if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-          const check = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
+          const authorizedSend = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
           if (carryTrial) fetchInit.redirect = 'error'; // A redirect would be another, unreserved send.
-          const send = () => { check(); return doFetch(target, fetchInit as RequestInit); };
+          const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
           const upstream = stageSpan
             ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
             : await send();
@@ -9655,9 +9709,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // rather than the per-attempt re-copy the widening would otherwise force.
         if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-        const check = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
+        const authorizedSend = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
         if (carryTrial) fetchInit.redirect = 'error';
-        const send = () => { check(); return doFetch(target, fetchInit as RequestInit); };
+        const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
         const upstream = stageSpan
           ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
           : await send();
