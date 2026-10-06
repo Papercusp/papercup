@@ -622,7 +622,13 @@ export async function runCommandViaSpawnerSidecar(
     }
     // Before dispatch a rejection is safe for local fallback. Afterwards keep
     // the caller's repository lease until this exact execution cannot run.
-    if (!isolated || !fence || !containment || requestId === undefined) throw error;
+    if (!isolated || !fence || !containment || requestId === undefined) {
+      // WI-10006716: an unsignalled call keeps the legacy rethrow contract, but a
+      // transport loss AFTER dispatch has an unknown outcome — the child may have
+      // run. Mark it so a caller never replays a mutation locally on its account.
+      if (requestId !== undefined && isTransportFault) throw markSidecarPostDispatchFault(error, requestId);
+      throw error;
+    }
     isolated.close();
     const unknownResult = (): GitRunResult => ({
       code: -1, stdout: '',

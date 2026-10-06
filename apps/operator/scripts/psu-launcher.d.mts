@@ -3992,6 +3992,17 @@ export function ensureInteractiveConfigViaOperator(owner: any, configDir: any, {
  */
 export function isCodexHomeLaunchReady(codexHome: string | null | undefined, expectedOwner?: string | null): boolean;
 /**
+ * Why a Codex home is NOT launch-ready, or `null` when it is. The boolean
+ * above folds every condition into one `false`, so a resume refusal could only
+ * say "not ready" and the failing condition was unknowable once the home was
+ * gone (WI-10006770). Each returned reason names exactly one check.
+ *
+ * @param {string | null | undefined} codexHome
+ * @param {string | null} [expectedOwner]
+ * @returns {string | null}
+ */
+export function codexHomeLaunchReadiness(codexHome: string | null | undefined, expectedOwner?: string | null): string | null;
+/**
  * WI-38706 — the codex twin of `ensureInteractiveConfigViaOperator`, and for the
  * same structural reason: a FRESH psu launch has its CODEX_HOME materialized
  * server-side by bootstrap-su (`writeSuCodexHome`), while a RESUME does no

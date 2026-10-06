@@ -3303,6 +3303,48 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
       expect(result.stdout, result.stderr).toContain('BEFORE=[]');
       expect(result.stdout, result.stderr).toContain(`RC=0 AFTER=[${real}]`);
     }, NATIVE_SHELL_TIMEOUT_MS);
+
+    // WI-10006767: setup-release-checkout sources this script and calls
+    // dependency_generation_ensure directly, so main never ran and the reserve
+    // stayed fail-closed (160 GB on the 8 TB data disk) for every build.
+    it('record_reserve_fs records the physical root once and stays empty for an unresolvable one', () => {
+      const { root } = copyFixture();
+      mkdirSync(join(root, 'real'));
+      symlinkSync(join(root, 'real'), join(root, 'link'));
+      const result = runShell(
+        [
+          'dependency_generation_record_reserve_fs "$ROOT/link"',
+          'echo "FIRST=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'dependency_generation_record_reserve_fs /proc',
+          'echo "KEPT=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'DEPENDENCY_GENERATION_RESERVE_FS_PATH=""',
+          'dependency_generation_record_reserve_fs "$ROOT/missing"',
+          'echo "MISSING=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+        ].join('\n'),
+        { ROOT: root, DEPENDENCY_GENERATION_RESERVE_FS_PATH: '' },
+      );
+      const real = realpathSync(join(root, 'real'));
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(`FIRST=[${real}]`);
+      expect(result.stdout).toContain(`KEPT=[${real}]`);
+      expect(result.stdout).toContain('MISSING=[]');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('a sourced dependency_generation_ensure records the integration root (WI-10006767)', () => {
+      const integration = makeIntegration();
+      const result = runShell(
+        [
+          'echo "BEFORE=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'dependency_generation_configure_workspace_dirs "$ROOT"',
+          'dependency_generation_ensure "$ROOT" "$ROOT/.papercusp/dependency-generations"',
+          'echo "AFTER=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+        ].join('\n'),
+        { ROOT: integration, DEPENDENCY_GENERATION_RESERVE_FS_PATH: '' },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('BEFORE=[]');
+      expect(result.stdout).toContain(`AFTER=[${realpathSync(integration)}]`);
+    }, NATIVE_SHELL_TIMEOUT_MS);
   });
 
   it('materialize_tree propagates the typed headroom exit instead of a generic mv error', () => {

@@ -28,6 +28,14 @@ export function agentLeaseKey(ownerId: string, name: string): string {
 }
 
 /**
+ * Lease key for a person's own cloud desktop (personal-cloud-desktop-2026-10-06): one
+ * per person, so the hosted userId alone is the key — no name.
+ */
+export function userLeaseKey(userId: string): string {
+  return `user:${userId}`;
+}
+
+/**
  * The first free `desktop-<n>` (n ≥ 1) not in `taken`. Reuses a released number
  * rather than counting forever, so an agent that cycles desktops keeps short names.
  */

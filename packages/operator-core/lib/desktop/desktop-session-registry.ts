@@ -81,7 +81,12 @@ export const DESKTOP_KINDS = [
 ] as const;
 
 export type DesktopKind = (typeof DESKTOP_KINDS)[number];
-export type DesktopScope = 'pot' | 'agent' | 'workspace';
+/**
+ * Who owns a desktop. `user` (migration 1402, plan personal-cloud-desktop-2026-10-06):
+ * a person's own cloud desktop — `scopeRef` is their hosted userId, it runs as the
+ * customer account, the idle reaper never governs it, and only that person may open it.
+ */
+export type DesktopScope = 'pot' | 'agent' | 'workspace' | 'user';
 export type DesktopState = 'provisioning' | 'ready' | 'idle' | 'frozen' | 'released' | 'dead';
 export type DesktopViewerMode = 'none' | 'watch' | 'takeover';
 
