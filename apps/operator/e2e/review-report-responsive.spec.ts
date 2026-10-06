@@ -155,10 +155,11 @@ const scenarios = [
     owner: "opcbr",
     runId: INBOX_RUN_ID,
     queryName: "plans.attentionBulkRun",
-    // The commit button carries the selected verb's own label
-    // (ReviewReportShell VERBS["mark-done"].commit), not the generic
-    // "Apply selected (n)" fallback (WI-10006792).
-    applyLabel: "Mark 12 done",
+    // The commit button carries the selected verb's own label, not the generic
+    // "Apply selected (n)" fallback (WI-10006792). Inbox rows are coord-message
+    // items, so the verb is VERBS["ack"].commit; the Plans scenario below is
+    // flip-to-done → VERBS["mark-done"].commit (measured on the rig, 22:46Z).
+    applyLabel: "Acknowledge 12",
   },
   {
     name: "Plans cleanup",
