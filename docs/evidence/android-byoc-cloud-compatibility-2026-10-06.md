@@ -118,4 +118,21 @@ Under D-015 the shared BYOC Rust layer is **this lane** (P-015): URL-prefix hand
 
 The 512 KiB frame cap (G9) must be an **acceptance check** on the relay item: voice/turn bodies either fit under the cap or are chunked.
 
+### Status-code mapping the shared client must get right (read in code, 19:25Z)
+
+The relay's refusal codes (`packages/operator-core/lib/workspace-host/hosted-app-relay.ts`, `refuse(...)` and `RELAY_ERROR_STATUS`) do not line up with the Rust client's mapping. In `papercup-rust-mobile/crates/papercup-core/src/client.rs`, `into_api_error` turns **every** 401 and 403 into `ApiError::Unauthorized`, and everything else into `Server{status}`. **[code]**
+
+| Relay response | Today's client result | Required result |
+|---|---|---|
+| `503 workspace_offline` (+ `retry-after: 30`) | `Server{503}` | A distinct `WorkspaceOffline { retry_after }`. Retryable, never re-pair. |
+| `403 byoc_plaintext_relay_refused` | **`Unauthorized` → re-pair, wiping valid credentials** | A distinct relay-policy error. A sealing bug must never wipe the pairing. |
+| `403 route_not_relayed` | **`Unauthorized` → re-pair** | Same relay-policy error: the client called an off-allowlist path. |
+| `401` from the VM (device JWT revoked or rotated) | `Unauthorized` | Unchanged. This is the only true re-pair signal (constraint d). |
+| `413 request_body_too_large` (cap `HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES` = 512 KiB) | `Server{413}` | A distinct too-large error, so voice/turn can chunk. G9 acceptance. |
+| `429 rate_limited` (+ `retry-after`) | `Server{429}` | A distinct rate-limited error that honours `retry-after`. |
+
+So the device-http plane must tell its own refusals apart from the VM's. Either the relay never answers 403 for the device plane, or the client branches on the `error` code in the body before it falls back to "403 means Unauthorized". Branching on the body code is the safer contract, because it does not depend on the relay's choice of status code. These are the first contract tests to write once the work item is held (wiremock, in `crates/papercup-core`).
+
+Base-URL joining is already safe for a relay path prefix: `new`/`set_base_url` trim trailing slashes, and requests are built as `format!("{base}{path}")`. Constraint (a) only needs a test that pins this, plus the Android `EndpointSecurity.kt` change (member 1, P-004). **[code]**
+
 No code changes before P-015's work item is held.
