@@ -489,3 +489,46 @@ describe('P-012 — script hygiene', () => {
     expect(script).not.toMatch(/^HOST_ID=h'; rm -rf/m);
   });
 });
+
+describe('personal-cloud-desktop-2026-10-06 R-2 — the personal worker instance runs as the customer account', () => {
+  const unit = (script: string, path: string): string[] => {
+    const match = script.match(new RegExp(`cat > ${path.replace(/[.@]/g, '\\$&')} <<UNIT\\n([\\s\\S]*?)\\nUNIT\\n`));
+    expect(match, path).not.toBeNull();
+    return match![1].split('\n');
+  };
+  it('installs a second socket + unit that runs the worker in personal mode as the workspace user', () => {
+    const script = render();
+    const socket = unit(script, '/etc/systemd/system/papercusp-personal-desktop.socket');
+    expect(socket).toEqual(expect.arrayContaining([
+      'ListenStream=/run/papercusp-personal-desktop/session.sock', 'SocketGroup=$SERVICE_USER', 'SocketMode=0660', 'Accept=yes',
+    ]));
+    expect(socket.filter((line) => /^(After|Requires|BindsTo|Wants|Requisite)=/.test(line))).toEqual([]);
+    const service = unit(script, '/etc/systemd/system/papercusp-personal-desktop@.service');
+    expect(service).toEqual(expect.arrayContaining([
+      'User=$WORKSPACE_USER', 'Environment=HOME=$WORKSPACE_HOME',
+      'ExecStart=$DESKTOP_LIB/node $DESKTOP_LIB/session.cjs --personal --stdio',
+      'JoinsNamespaceOf=papercusp-workspace.service', 'NoNewPrivileges=true', 'KillMode=control-group',
+    ]));
+    // Never the sandbox identity, and never the sandbox's per-uid egress rules.
+    expect(service).not.toContain('User=$DESKTOP_USER');
+    expect(service.some((line) => line.includes('nft'))).toBe(false);
+    expect(script).toContain('fail personal-desktop-runtime');
+    expect(script).toContain('fail personal-desktop-socket');
+  });
+  it('verifies the negative pair: each worker mode refuses the other mode\'s account', () => {
+    const script = render();
+    expect(script).toMatch(/if runuser -u "\$DESKTOP_USER" -- [^\n]*\\\n\s+"\$DESKTOP_LIB\/node" "\$DESKTOP_LIB\/session\.cjs" --personal --check[^\n]*; then\n\s+fail personal-desktop-identity/);
+    expect(script).toMatch(/if runuser -u "\$WORKSPACE_USER" -- [^\n]*\\\n\s+"\$DESKTOP_LIB\/node" "\$DESKTOP_LIB\/session\.cjs" --check[^\n]*; then\n\s+fail personal-desktop-identity/);
+  });
+  it('leaves the sandbox unit and its isolation assertions untouched (R-21)', () => {
+    const script = render();
+    const sandbox = unit(script, '/etc/systemd/system/papercusp-desktop@.service');
+    expect(sandbox).toEqual(expect.arrayContaining(['User=$DESKTOP_USER', 'ProtectHome=true', 'ExecStart=$DESKTOP_LIB/node $DESKTOP_LIB/session.cjs --stdio']));
+    expect(script).toContain('id -nG "$DESKTOP_USER" | tr \' \' \'\\n\' | grep -qx "$WORKSPACE_USER" && fail workspace-credential-isolation');
+    expect(script).toContain('id -nG "$DESKTOP_USER" | tr \' \' \'\\n\' | grep -qx "$SERVICE_USER" && fail workspace-credential-isolation');
+  });
+  it('attests the personal checks, and refuses a non-default workspace account it could not serve', () => {
+    expect(WORKSPACE_HOST_DESKTOP_PACK_CHECKS).toEqual(expect.arrayContaining(['personal-desktop-runtime', 'personal-desktop-identity', 'personal-desktop-socket']));
+    expect(() => render({ isolation: { workspaceUser: 'customer-workspace' } })).toThrow(/fixed papercusp-workspace identity/);
+  });
+});

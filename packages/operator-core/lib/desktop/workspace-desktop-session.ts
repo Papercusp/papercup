@@ -92,6 +92,8 @@ export async function serveWorkspaceDesktop(
   output: Writable,
   provision: (options: z.infer<typeof workspaceDesktopOptions>) => Promise<SandboxDesktop>,
   log: (line: string) => void = (line) => console.warn(`[desktop-session] ${line}`),
+  /** The Unix account this worker asserted it runs as; the personal worker reports it (D-001). */
+  account?: string,
 ): Promise<void> {
   let desktop: SandboxDesktop | undefined;
   let ending = false;
@@ -109,7 +111,7 @@ export async function serveWorkspaceDesktop(
         if (desktop) throw new Error('desktop already provisioned');
         const served: SandboxDesktop = desktop = await provision(request.options);
         if (input.destroyed || output.destroyed) return;
-        output.write(encodeJsonFrame(FrameType.EVENT_JSON, serializeWorkspaceDesktop(served)));
+        output.write(encodeJsonFrame(FrameType.EVENT_JSON, serializeWorkspaceDesktop(served, account)));
         // A worker that outlives its X server holds the socket open, and the operator then
         // offers a `ready` desktop that nothing serves. End the session instead: the socket
         // closes, the lease reads dead, and the next start provisions a fresh desktop.
