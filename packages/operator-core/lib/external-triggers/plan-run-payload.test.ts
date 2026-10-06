@@ -28,6 +28,18 @@ interface PackPlanTarget {
   args: TriggerRunArgs;
   /** Top-level inputs a binding supplies beside the projected envelope. */
   bindingInput: Record<string, unknown>;
+  /** The plan text the pack installs for this target (its manifest `path`). */
+  planText: string;
+}
+
+/**
+ * True when plan text tells the agent to read the event from the plan inputs
+ * (`payload.plan_run.inputs.trigger.payload`, or the short `trigger.payload`).
+ * The binding engine strips that field before launch, so such a step reads
+ * nothing; the event is fetched with `triggers:read-payload { planRunId }`.
+ */
+function readsStrippedTriggerPayload(text: string): boolean {
+  return /\btrigger\.payload\b/.test(text);
 }
 
 /**
@@ -113,7 +125,9 @@ function firstPartyTriggerPackPlanTargets(): PackPlanTarget[] {
       for (const key of inputSchema.required ?? []) {
         if (key !== 'trigger') bindingInput[key] = sampleFor(inputSchema.properties[key as 'trigger'] ?? {});
       }
-      targets.push({ label: `${dir}/${String(target.id)}`, inputSchema, args, bindingInput });
+      const planPath = `${pluginsDir}${dir}/${String(target.path)}`;
+      const planText = existsSync(planPath) ? readFileSync(planPath, 'utf8') : '';
+      targets.push({ label: `${dir}/${String(target.id)}`, inputSchema, args, bindingInput, planText });
     }
   }
   return targets;
@@ -242,6 +256,23 @@ describe('projected plan inputs satisfy every shipped trigger input schema', () 
       .filter((target) => (target.inputSchema.properties.trigger.required ?? []).includes('payload'))
       .map((target) => target.label);
     expect(requiring).toEqual([]);
+  });
+
+  it('no shipped pack plan text reads the stripped trigger.payload from its inputs', () => {
+    const missingText = packTargets.filter((target) => target.planText === '').map((target) => target.label);
+    expect(missingText).toEqual([]);
+    const reading = packTargets
+      .filter((target) => readsStrippedTriggerPayload(target.planText))
+      .map((target) => target.label);
+    expect(reading).toEqual([]);
+  });
+
+  it('CONTROL: the plan-text detector flags both spellings and spares triggers:read-payload', () => {
+    expect(readsStrippedTriggerPayload('Parse `payload.plan_run.inputs.trigger.payload`;')).toBe(true);
+    expect(readsStrippedTriggerPayload('1. Read `trigger.payload`. Use ONLY fields')).toBe(true);
+    expect(
+      readsStrippedTriggerPayload('Call `triggers:read-payload { planRunId: payload.plan_run.runId }` and read its `payload`.'),
+    ).toBe(false);
   });
 
   /**

@@ -387,6 +387,33 @@ describe('engineer issues surface (real PG)', () => {
     expectFresh((await issues.mergeIssuePayload(id, { note: 'x' }))?.updatedAt);
   });
 
+  // P-001 / D-029: setIssueState is a bottom writer (resolve-core reached needs-human through it
+  // without the canonical guard), so it applies the same answerable-ask precondition itself.
+  it('setIssueState refuses needs-human without an answerable owner ask, and accepts one that has it', async () => {
+    const { id } = await issues.createIssue({ title: `needs-human-guard-${Date.now()}`, createdBy: 'agA' });
+    const ask = {
+      status: 'active',
+      kind: 'human',
+      capability: 'credential',
+      ref: 'credential:needs-human-guard',
+      summary: 'Provide the deploy credential.',
+      createdBy: 'agA',
+      createdAt: new Date().toISOString(),
+      nextVerb: 'setup:save_key',
+    };
+
+    await expect(issues.setIssueState(id, 'needs-human', 'agA')).rejects.toThrow(/no answerable owner ask/);
+    // A structured ask that omits defaultIfUnanswered is still unanswerable.
+    await issues.mergeIssuePayload(id, { externalBlockers: [ask] });
+    await expect(issues.setIssueState(id, 'needs-human', 'agA')).rejects.toThrow(/no answerable owner ask/);
+    expect((await issues.getIssue(id))?.state).toBe('open');
+
+    await issues.mergeIssuePayload(id, {
+      externalBlockers: [{ ...ask, defaultIfUnanswered: 'stay parked until the credential is supplied' }],
+    });
+    expect((await issues.setIssueState(id, 'needs-human', 'agA'))?.state).toBe('needs-human');
+  });
+
   it("an explicit null nested in outputPayload round-trips into payload->'out' (EI-24552921468661465)", async () => {
     // mergeWorkItemOutputPayload's issue-family leg is exactly this call. The key must
     // EXIST as a JSON null — a value test (=== null) would also pass on an absent key

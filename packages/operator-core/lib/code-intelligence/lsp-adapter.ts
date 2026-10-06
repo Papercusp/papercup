@@ -43,7 +43,8 @@ import {
 } from 'vscode-jsonrpc/node';
 
 import { pinModuleState } from '@papercusp/module-singleton';
-import { managedSpawn } from '../task-manager/managed-spawn.ts';
+import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn.ts';
+import { killScopeUnit, killTask } from '../task-manager/control.ts';
 import { recordLspWireRequest } from './lsp-query-evidence.ts';
 import {
   initializeCapabilityObservations, lspCapabilityStore, lspServerIdentity,
@@ -330,6 +331,7 @@ interface LspClient {
   capabilityServerIdentity?: string;
   child: ChildProcess;
   taskId: string;
+  scopeUnit?: string | null;
   language: LspLanguage;
   rootUri: string;
   /** The project root this client is keyed under — see `clientKey`. */
@@ -1239,6 +1241,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     connection,
     child,
     taskId: spawned.taskId,
+    scopeUnit: spawned.scopeUnit,
     language,
     rootUri: pathToFileURL(rootPath).href,
     rootPath,
@@ -2558,12 +2561,17 @@ export function lspResyncDocument(absPath: string, rootPath: string, newText: st
 export async function shutdownAllLspClients(): Promise<number> {
   const clients = [...state.clients.values()];
   state.clients.clear();
-  await Promise.all(clients.map(shutdownLspClient));
+  const outcomes = await Promise.allSettled(clients.map(shutdownLspClient));
+  const failed = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+  if (failed.length) throw new AggregateError(failed.map(outcome => outcome.reason), 'LSP client teardown failed');
   return clients.length;
 }
 
 /** Also owns clients whose capability initialization failed before registration. */
-async function shutdownLspClient(c: LspClient): Promise<void> {
+export async function shutdownLspClient(
+  c: Pick<LspClient, 'connection' | 'child' | 'taskId' | 'scopeUnit'>,
+): Promise<void> {
+      const deadlineAt = Date.now() + GRACEFUL_EXIT_WAIT_MS;
       // Only speak to a server whose pipe is actually still open. Writing to a
       // destroyed stream raises ERR_STREAM_DESTROYED as an UNHANDLED rejection
       // (vscode-jsonrpc writes asynchronously), which Vitest reports as an
@@ -2571,14 +2579,22 @@ async function shutdownLspClient(c: LspClient): Promise<void> {
       // correctness guard, not tidiness.
       const writable = c.child.exitCode === null && !c.child.killed && c.child.stdin?.writable;
       if (writable) {
+        let protocolTimer: ReturnType<typeof setTimeout> | undefined;
         try {
-          await c.connection.sendRequest('shutdown');
-          // sendNotification also returns a promise that can reject once the
-          // server closes its end in response to `shutdown` — await it so the
-          // rejection is HANDLED here rather than surfacing globally.
-          await c.connection.sendNotification('exit');
+          await Promise.race([
+            (async () => {
+              await c.connection.sendRequest('shutdown');
+              // The write can also stall; it shares the same protocol budget.
+              await c.connection.sendNotification('exit');
+            })(),
+            new Promise<never>((_, reject) => {
+              protocolTimer = setTimeout(() => reject(new Error('LSP shutdown reply deadline exceeded')), GRACEFUL_EXIT_WAIT_MS);
+            }),
+          ]);
         } catch {
           /* the server closed its pipe first — expected on a clean exit */
+        } finally {
+          if (protocolTimer) clearTimeout(protocolTimer);
         }
       }
       try {
@@ -2597,8 +2613,21 @@ async function shutdownLspClient(c: LspClient): Promise<void> {
       // A protocol `exit` makes the SERVER terminate itself inside the scope,
       // which is the only clean way out from here; killing a subtree by hand is
       // `processes:kill { taskId }`'s job, never a bare signal.
-      if (!(await waitForChildExit(c.child, GRACEFUL_EXIT_WAIT_MS))) {
-        if (c.child.exitCode === null && !c.child.killed) c.child.kill('SIGTERM');
+      if (!(await waitForChildExit(c.child, Math.max(0, deadlineAt - Date.now())))) {
+        // Signal the owned scope, including grandchildren, rather than the
+        // systemd-run client. The controller re-verifies the target and
+        // escalates a server that ignores SIGTERM within the daemon deadline.
+        const undoTeardown = markManagedSpawnTeardown(c.child);
+        const outcome = c.scopeUnit
+          ? await killScopeUnit(c.scopeUnit, { escalateAfterMs: 500 })
+          : await killTask(c.taskId, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 500 });
+        if (!outcome.ok && outcome.error !== 'already_gone') {
+          undoTeardown();
+          throw new Error(`LSP child teardown refused: ${outcome.error}`);
+        }
+        if (!(await waitForChildExit(c.child, 1_000))) {
+          throw new Error('LSP managed child did not exit after teardown');
+        }
       }
 }
 

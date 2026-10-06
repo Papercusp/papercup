@@ -91,6 +91,7 @@ import {
   buildIsolatedScopeArgv,
   CHECKPOINT_FORKS_BY_MODE,
   checkpointScopeMemoryMaxG,
+  checkpointScopeMemoryMaxGForGreenCmd,
   SCOPE_LAUNCH_FAILURE_RE,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
 } from '../../systemd-scope';
@@ -152,6 +153,98 @@ function parseMarkerLine(stdout: string, marker: string): Record<string, unknown
   } catch {
     return null;
   }
+}
+
+function parseDetailedCheckpointResult(logText: string, runId: string): Record<string, unknown> | null {
+  let cursor = 0;
+  while (cursor < logText.length) {
+    const newline = logText.indexOf('\n', cursor);
+    const lineEnd = newline < 0 ? logText.length : newline;
+    const line = logText.slice(cursor, lineEnd).replace(/\r$/, '');
+    if (line.startsWith('{')) {
+      const expectedClosers: string[] = [];
+      let inString = false;
+      let escaped = false;
+      let jsonEnd: number | null = null;
+      for (let index = cursor; index < logText.length; index += 1) {
+        const char = logText[index]!;
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (char === '\\') escaped = true;
+          else if (char === '"') inString = false;
+          continue;
+        }
+        if (char === '"') {
+          inString = true;
+          continue;
+        }
+        if (char === '{') expectedClosers.push('}');
+        else if (char === '[') expectedClosers.push(']');
+        else if (char === '}' || char === ']') {
+          if (expectedClosers.pop() !== char) break;
+          if (expectedClosers.length === 0) {
+            jsonEnd = index + 1;
+            break;
+          }
+        }
+      }
+      if (jsonEnd !== null) {
+        try {
+          const parsed: unknown = JSON.parse(logText.slice(cursor, jsonEnd));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            !Array.isArray(parsed) &&
+            (parsed as Record<string, unknown>).runId === runId &&
+            typeof (parsed as Record<string, unknown>).reason === 'string'
+          ) {
+            return parsed as Record<string, unknown>;
+          }
+        } catch {
+          // The log can contain unrelated JSON; only a complete matching run result is useful.
+        }
+        cursor = jsonEnd;
+        while (cursor < logText.length && (logText[cursor] === '\r' || logText[cursor] === '\n')) {
+          cursor += 1;
+        }
+        continue;
+      }
+    }
+    if (newline < 0) break;
+    cursor = newline + 1;
+  }
+  return null;
+}
+
+export function resolveCheckpointResultFromLogs(
+  primaryLog: string,
+  terminalLog?: string | null,
+  expectedRunId?: string,
+): Record<string, unknown> | null {
+  const marker =
+    parseMarkerLine(primaryLog, GREEN_CHECKPOINT_RESULT_MARKER) ??
+    parseMarkerLine(terminalLog ?? '', GREEN_CHECKPOINT_RESULT_MARKER);
+  if (!marker) return null;
+  const markerRunId = typeof marker.runId === 'string' ? marker.runId : expectedRunId;
+  const runId = expectedRunId ?? markerRunId;
+  if (!runId || (markerRunId && markerRunId !== runId)) return marker;
+  const detail = parseDetailedCheckpointResult(terminalLog ?? primaryLog, runId);
+  if (
+    !detail ||
+    detail.reason !== marker.reason ||
+    (typeof marker.candidate === 'string' &&
+      typeof detail.candidate === 'string' &&
+      marker.candidate !== detail.candidate)
+  ) {
+    return marker;
+  }
+  const resolved = { ...marker };
+  for (const field of ['failingTests', 'flakeSuspects']) {
+    if (!Array.isArray(resolved[field]) && Array.isArray(detail[field])) {
+      resolved[field] = detail[field];
+    }
+  }
+  return resolved;
 }
 
 /**
@@ -406,7 +499,7 @@ async function reconcileLoadedScheduledCheckpointTerminal(
     };
   }
 
-  const emitted = parseMarkerLine(logText, GREEN_CHECKPOINT_RESULT_MARKER);
+  const emitted = resolveCheckpointResultFromLogs(logText, logText, terminal.runId);
   const emittedReason = typeof emitted?.reason === 'string' && emitted.reason.trim() ? emitted.reason.trim() : null;
   const reason = emittedReason ?? checkpointFallbackStatus(false, terminal.exitCode ?? undefined, null, terminal);
   const green = typeof emitted?.green === 'boolean' ? emitted.green : null;
@@ -2576,7 +2669,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // Unlike readQualificationAdmission above, this one FAILS OPEN — see the module note. An
   // unmeasurable probe must not be more restrictive than the unbounded status quo it replaces,
   // and a lone run is never refused.
-  const checkpointMemoryG = checkpointScopeMemoryMaxG();
+  // WI-10006274: size the request by the suite this install actually runs. The operator home
+  // runs the Papercusp Vitest fork runner; a foreign pot's own `npm test` requests the overhead.
+  const checkpointMemoryG = checkpointScopeMemoryMaxGForGreenCmd(routing.greenCmd ?? null);
   const memoryAdmission = admitCheckpointMemory({ requestG: checkpointMemoryG });
   if (!memoryAdmission.admit) {
     console.warn(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${memoryAdmission.detail}`);
@@ -2768,8 +2863,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   let failingTests: string[] | undefined;
   let flakeSuspects: string[] | undefined;
   // P-008: parse the delimited result marker, not a brace-slice of all stdout.
-  const parsed = (parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) ??
-    parseMarkerLine(loadedTerminal?.logText ?? '', GREEN_CHECKPOINT_RESULT_MARKER)) as CheckpointVerdict | null;
+  const parsed = resolveCheckpointResultFromLogs(
+    r.stdout,
+    loadedTerminal?.logText,
+    loadedTerminal?.terminal.runId ?? r.runId,
+  ) as CheckpointVerdict | null;
   if (parsed?.reason) {
     status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed | skipped-locked
     candidate = parsed.candidate;

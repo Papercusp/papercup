@@ -456,6 +456,8 @@ describe('resolveCheckpointRouting', () => {
     expect(r.root).toBe('/DEFAULT');
     expect(r.extraEnv).toEqual({});
     expect(r.skip).toBeUndefined();
+    // WI-10006274: the home keeps the fork-derived memory cap, so it carries no foreign greenCmd.
+    expect(r.greenCmd ?? null).toBeNull();
   });
 
   it('keeps caller tooling but binds every home launcher to the registered canonical subject', async () => {
@@ -481,13 +483,16 @@ describe('resolveCheckpointRouting', () => {
   it('gated coding hive → TOOLING root (not the hive) + the hive in extraEnv (P-019)', async () => {
     const dir = makeHiveDir('coding', { git: true });
     registryProjects = [{ slug: 'oddsmith-hive', path: dir, self_repo: true }];
-    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveCheckpointRouting, DEFAULT_GREEN_CMD } = await import('./hive-release-env');
     const r = await resolveCheckpointRouting({ installSlug: 'oddsmith-hive', workspaceId: 'default' }, '/DEFAULT');
     // root stays the TOOLING root — green-checkpoint.ts + the setup script live there, not in
     // the hive's repo. The hive is the SUBJECT, carried in extraEnv.
     expect(r.root).toBe('/DEFAULT');
     expect(r.extraEnv.PAPERCUSP_INTEGRATION_ROOT).toBe(dir);
     expect(r.skip).toBeUndefined();
+    // WI-10006274: the memory admission sizes this pot's request from its own gate command,
+    // so the routing must carry it (a coding hive with no testCommand runs the build fallback).
+    expect(r.greenCmd).toBe(DEFAULT_GREEN_CMD);
   });
 
   it('EI-20709645463022690: a gated hive threads clearEnv + the namespaced DSN through to the caller', async () => {

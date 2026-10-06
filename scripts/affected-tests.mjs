@@ -6610,9 +6610,10 @@ function runCapturedTask(
   // Integration runs need execution diagnostics, including failures and source gaps, rather
   // than reusable unit-pass rows. Keep each workspace/attempt's OUT separate from its result
   // channel; retries retain diagnostics without replacing the initial invocation's verdict.
-  const integrationSourceMapOut = recordsExecutedMap && spawnTask.script === "test:integration"
+  const integrationSourceMapOut = recordsExecutedMap &&
+    (spawnTask.script === "test:integration" || context.t.script === "test:integration")
     ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.${createHash("sha256")
-      .update(JSON.stringify([taskKey(spawnTask), journalLabel, extraArgs])).digest("hex").slice(0, 16)}.sources.json`
+      .update(JSON.stringify([taskKey(context.t), taskKey(spawnTask), journalLabel, extraArgs])).digest("hex").slice(0, 16)}.sources.json`
     : null;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,

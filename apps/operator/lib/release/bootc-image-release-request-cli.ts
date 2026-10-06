@@ -55,7 +55,10 @@ import {
   type ArtifactTrustTool,
   type SecretFinding,
 } from "@papercusp/operator-core/lib/workspace-host/artifact-trust";
-import type { AwsAmiReleaseRequest } from "@papercusp/operator-core/lib/workspace-host/aws-ami-release";
+import {
+  AWS_AMI_REQUIRED_GUEST_TOOLS,
+  type AwsAmiReleaseRequest,
+} from "@papercusp/operator-core/lib/workspace-host/aws-ami-release";
 import {
   parseWorkspaceHostBootcBakeManifest,
   workspaceHostBootcBakeReleaseMismatch,
@@ -336,6 +339,48 @@ export function rpmOwnedPaths(sbom: unknown): Set<string> {
 }
 
 /**
+ * WI-10006386: name -> the distinct versions the image's rpm DATABASE records, read from the
+ * syft SBOM. Only installed rpms count (isInstalledRpm): syft's elf-binary cataloger also emits
+ * type-rpm rows, guessed from binaries in ostree objects and without the epoch (the P-012 bake
+ * recorded nftables '1.1.5-6.el10' beside the database's '1:1.1.5-6.el10').
+ */
+export function installedRpmVersions(sbom: unknown): Map<string, string[]> {
+  const versions = new Map<string, string[]>();
+  const artifacts = isRecord(sbom) && Array.isArray(sbom.artifacts) ? sbom.artifacts : [];
+  for (const artifact of artifacts) {
+    if (!isRecord(artifact) || !isInstalledRpm(artifact)) continue;
+    if (typeof artifact.name !== "string" || typeof artifact.version !== "string" || !artifact.version.trim()) continue;
+    const known = versions.get(artifact.name) ?? [];
+    if (!known.includes(artifact.version)) known.push(artifact.version);
+    versions.set(artifact.name, known);
+  }
+  return versions;
+}
+
+/**
+ * The one installed version of each required guest tool. Refuses a tool the rpm database does
+ * not record (the image lacks it) and one it records at more than one version (which one the
+ * image runs is not determinable), rather than tag the image with a guess.
+ */
+export function requiredGuestToolVersions(
+  installed: ReadonlyMap<string, readonly string[]>,
+  tools: readonly string[],
+): Record<string, string> {
+  const missing = tools.filter((tool) => !installed.get(tool)?.length);
+  if (missing.length > 0) {
+    fail(`the bake's syft SBOM records no installed rpm for guest tool(s): ${missing.join(", ")}`);
+  }
+  const ambiguous = tools.filter((tool) => installed.get(tool)!.length > 1);
+  if (ambiguous.length > 0) {
+    fail(
+      `the bake's syft SBOM records more than one installed version for: ` +
+        ambiguous.map((tool) => `${tool} (${installed.get(tool)!.join(", ")})`).join("; "),
+    );
+  }
+  return Object.fromEntries(tools.map((tool) => [tool, installed.get(tool)![0]!]));
+}
+
+/**
  * D-029 (WI-10005719). syft locates a base-layer binary the build did not replace at its ostree
  * OBJECT (the base layer hardlinks the live path to it). release-supply-chain.sh probes each such
  * object inside the image and records the live path(s) with identical content, or proves it has
@@ -612,6 +657,8 @@ export interface BootcTrustBuild {
   staleBaseObjectIds: string[];
   /** D-027: the vendor-pending findings' ids, reported beside the verdict, never dropped. */
   vendorPendingIds: string[];
+  /** WI-10006386: installed rpm name -> versions, from the same SBOM the trust report binds. */
+  installedRpms: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
@@ -745,6 +792,7 @@ export async function buildBootcTrustReport(
     },
     staleBaseObjectIds: narrowed.staleBaseObjectIds,
     vendorPendingIds: narrowed.vendorPendingIds,
+    installedRpms: installedRpmVersions(sbomDoc),
   };
 }
 
@@ -956,6 +1004,8 @@ export async function composeBootcAwsRequest(
     cleanAccount: requiredRecord(aws.cleanAccount, "aws.cleanAccount"),
     publishedAt: built.publishedAt,
     deprecatePreviousAt: requiredTimestamp(aws.deprecatePreviousAt, "aws.deprecatePreviousAt"),
+    // WI-10006386: derived from the bake's own SBOM; the AMI is tagged with exactly these.
+    guestToolVersions: requiredGuestToolVersions(built.installedRpms, AWS_AMI_REQUIRED_GUEST_TOOLS),
   } as unknown as AwsAmiReleaseRequest;
   return { request, connection };
 }

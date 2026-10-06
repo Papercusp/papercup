@@ -211,7 +211,10 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     cwd: REPO_ROOT,
     env: { ...process.env, PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: gateMeta, ...extraEnv },
     encoding: 'utf8',
-    timeout: 30_000,
+    // WI-10006392: precision-bench-worker.ts bundles the full operator cone
+    // (~100 MB, ~12s alone on a loaded host), so the five-worker build no
+    // longer fits 30s. A timeout here reads as status=null, not a resolve error.
+    timeout: 150_000,
   });
 
   beforeAll(() => {
@@ -223,7 +226,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
     const result = build();
     expect(result.status, result.stdout + result.stderr).toBe(0);
-  }, 40_000);
+  }, 170_000);
 
   afterAll(() => {
     if (output) rmSync(output, { recursive: true, force: true });

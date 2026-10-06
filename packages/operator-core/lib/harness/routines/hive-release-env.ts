@@ -330,6 +330,10 @@ export interface CheckpointRouting {
    *  `misconfigured` marks a gated hive whose gate cannot promote (WI-10006317) — the
    *  handler records it as `skipped-misconfigured`, not as a deliberately disabled gate. */
   skip?: { reason: string; misconfigured?: boolean };
+  /** The foreign pot's resolved gate command (WI-10006274), so the memory admission can size
+   *  its request by the suite this install actually runs. Absent for the operator home, whose
+   *  suite is the Papercusp Vitest fork runner and keeps the fork-derived cap. */
+  greenCmd?: string | null;
 }
 
 /**
@@ -376,7 +380,7 @@ export async function resolveCheckpointRouting(
   // the hive's repo: the hive's checkout has no release scripts. The hive is the SUBJECT,
   // carried ONLY in extraEnv (PAPERCUSP_INTEGRATION_ROOT) so the script runs FROM papercusp
   // and OPERATES ON the hive. (Earlier this returned the hive root → script-not-found.)
-  return { root: defaultRoot, extraEnv: hive.env, clearEnv: hive.clearEnv };
+  return { root: defaultRoot, extraEnv: hive.env, clearEnv: hive.clearEnv, greenCmd: hive.greenCmd ?? null };
 }
 
 /**

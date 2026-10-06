@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ import {
   type WorkspaceHostCleanRoomInstallSpec,
 } from "@papercusp/deployment-driver";
 import { WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
+import { AWS_AMI_REQUIRED_GUEST_TOOLS } from "@papercusp/operator-core/lib/workspace-host/aws-ami-release";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runGovernedOperation } from "@papercusp/operator-core/lib/resource-governor/execution";
 
@@ -35,6 +36,8 @@ import {
   parseVerifiedProvenance,
   ostreeObjectIndex,
   rpmOwnedPaths,
+  installedRpmVersions,
+  requiredGuestToolVersions,
   signedBaseImage,
   VENDOR_MIN_AVAILABLE_PACKAGES,
   vendorShipsNothingNewer,
@@ -44,6 +47,14 @@ import {
 // rpmdb and lists its files in metadata.files; a Go module inside an RPM-owned binary is a
 // go-module located at that binary; stale base-layer copies sit in /sysroot/ostree objects.
 const RPMDB = "/usr/share/rpm/rpmdb.sqlite";
+/** One installed rpm per required AWS guest tool, so a composed request can derive its versions. */
+const GUEST_TOOL_RPMS = AWS_AMI_REQUIRED_GUEST_TOOLS.map((name, index) => ({
+  name,
+  type: "rpm",
+  version: `1.${index}-1.el10`,
+  foundBy: "rpm-db-cataloger",
+  locations: [{ path: RPMDB }],
+}));
 const vendorSbomArtifacts = [
   { name: "skopeo", type: "rpm", version: "3:1.22.2-4.el9", locations: [{ path: RPMDB }], metadata: { files: [{ path: "/usr/bin/skopeo" }] } },
   // An .rpm ARCHIVE lying in the image: catalogued as type rpm, but not installed.
@@ -313,6 +324,33 @@ describe("bootc release request evidence readers", () => {
     expect(() => parseVerifiedProvenance(provenanceLine("1".repeat(64)), DIGEST)).toThrow(/no verified SLSA v1/);
   });
 
+  it("derives guest-tool versions from the rpm database only, refusing absent or ambiguous tools (WI-10006386)", () => {
+    // Shape measured on the P-012 AWS bake: syft's elf-binary cataloger also emits a type-rpm
+    // nftables row, located at an ostree object and missing the epoch the rpm database records.
+    const sbom = {
+      artifacts: [
+        { name: "nftables", type: "rpm", version: "1.1.5-6.el10", foundBy: "elf-binary-package-cataloger", locations: [{ path: "/sysroot/ostree/repo/objects/48/3c9b.file" }] },
+        { name: "nftables", type: "rpm", version: "1:1.1.5-6.el10", foundBy: "rpm-db-cataloger", locations: [{ path: RPMDB }] },
+        { name: "acl", type: "rpm", version: "2.4.0-2.el10", locations: [{ path: RPMDB }] },
+        { name: "acl", type: "rpm", version: "2.4.0-2.el10", locations: [{ path: RPMDB }] },
+        { name: "curl", type: "rpm", version: "8.12.1-6.el10", locations: [{ path: "/opt/papercusp/cache/curl.rpm" }] },
+        { name: "kernel-core", type: "rpm", version: "6.12.0-1.el10", locations: [{ path: RPMDB }] },
+        { name: "kernel-core", type: "rpm", version: "6.12.0-2.el10", locations: [{ path: RPMDB }] },
+      ],
+    };
+    const installed = installedRpmVersions(sbom);
+    expect(installed.get("nftables")).toEqual(["1:1.1.5-6.el10"]);
+    expect(installed.get("acl")).toEqual(["2.4.0-2.el10"]);
+    // An .rpm archive lying in the image is not an installed package.
+    expect(installed.has("curl")).toBe(false);
+
+    expect(requiredGuestToolVersions(installed, ["acl", "nftables"])).toEqual({ acl: "2.4.0-2.el10", nftables: "1:1.1.5-6.el10" });
+    expect(() => requiredGuestToolVersions(installed, ["acl", "curl", "jq"])).toThrow(/no installed rpm for guest tool\(s\): curl, jq/);
+    expect(() => requiredGuestToolVersions(installed, ["kernel-core"])).toThrow(
+      /more than one installed version for: kernel-core \(6\.12\.0-1\.el10, 6\.12\.0-2\.el10\)/,
+    );
+  });
+
   it("requires a clean-room report before it will emit a request", () => {
     expect(() => parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json"])).toThrow(/clean-room-report/);
     expect(parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json", "--emit", "artifact"]).emit).toBe("artifact");
@@ -333,6 +371,7 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       inputBaseSha256?: string;
       /** The release the bake recorded; "absent" writes a pre-WI-10005761 manifest with no key. */
       bakeRelease?: { version: string } | null | "absent";
+      sbomArtifacts?: unknown[];
     } = {},
   ) {
     const root = mkdtempSync(join(tmpdir(), "bootc-release-request-"));
@@ -370,7 +409,7 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
         type: "image",
         metadata: { manifestDigest: overrides.sbomDigest ?? DIGEST, imageSize: 2_000_000_000, manifest: overrides.sbomManifest ?? IMAGE_MANIFEST_B64 },
       },
-      artifacts: [{ name: "bash" }, { name: "glibc" }, { name: "openssl-libs" }],
+      artifacts: overrides.sbomArtifacts ?? [{ name: "bash" }, { name: "glibc" }, { name: "openssl-libs" }, ...GUEST_TOOL_RPMS],
     }));
     writeFileSync(join(sc, "vulns.json"), JSON.stringify({
       descriptor: { name: "grype", version: "0.99.0" },
@@ -659,10 +698,24 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
     const composed = await composeBootcAwsRequest({ inputFile: f.inputFile, repoRoot: f.repo, emit: "request", cleanRoomReportFile: reportFile }, NOW);
     expect(composed.request.releaseGate.bootcBakeManifest?.digest).toBe(DIGEST);
     expect(composed.request.cleanAccount.accountId).toBe("497149484242");
+    // WI-10006386: every required guest tool's version comes from the bake's own SBOM.
+    expect(composed.request.guestToolVersions).toEqual(
+      Object.fromEntries(GUEST_TOOL_RPMS.map((row) => [row.name, row.version])),
+    );
 
     writeFileSync(reportFile, JSON.stringify({ cleanRoomReport: { ...report, image: { ...report.image, version: "other" } } }));
     await expect(
       composeBootcAwsRequest({ inputFile: f.inputFile, repoRoot: f.repo, emit: "request", cleanRoomReportFile: reportFile }, NOW),
     ).rejects.toThrow(/clean-room report is for/);
+
+    // WI-10006386: an image whose rpm database lacks a required guest tool composes no request.
+    writeFileSync(reportFile, JSON.stringify({ cleanRoomReport: report }));
+    const sbomPath = join(f.root, "out/supply-chain/sbom.syft.json");
+    const sbom = JSON.parse(readFileSync(sbomPath, "utf8")) as { artifacts: { name?: string }[] };
+    sbom.artifacts = sbom.artifacts.filter((row) => row.name !== "amazon-ssm-agent");
+    writeFileSync(sbomPath, JSON.stringify(sbom));
+    await expect(
+      composeBootcAwsRequest({ inputFile: f.inputFile, repoRoot: f.repo, emit: "request", cleanRoomReportFile: reportFile }, NOW),
+    ).rejects.toThrow(/no installed rpm for guest tool\(s\): amazon-ssm-agent/);
   });
 });

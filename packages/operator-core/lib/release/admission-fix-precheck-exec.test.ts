@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createHeadTailCapture,
   defaultExec,
@@ -148,19 +148,58 @@ describe('admission pre-check defaultExec output, idle watchdog and durable log 
   }, 15_000);
 
   it('a child that keeps printing outlives the idle window (progress resets it)', async () => {
-    // 12 lines 250 ms apart = ~3 s total, well past the idle window. The window is at the
-    // 1000 ms floor (lint:test-timing-budgets): the idle clock is armed at spawn, so a slow
-    // child boot under gate load must not be charged against a shorter first window.
+    // EI-25204110947684935: real sleep gaps do not prove the child kept printing inside
+    // the idle window. Control the parent's clock and acknowledge each real output chunk
+    // before advancing it; the child boots without consuming any virtual idle time.
     const PROGRESS_IDLE_WINDOW_MS = 1_000;
-    const r = await defaultExec(['bash', '-c', 'for i in $(seq 1 12); do echo tick-$i; sleep 0.25; done'], {
-      cwd: process.cwd(),
-      timeoutMs: 20_000,
-      idleTimeoutMs: PROGRESS_IDLE_WINDOW_MS,
-    });
-    expect(r).toMatchObject({ exitCode: 0, timedOut: false });
-    expect(r.durationMs).toBeGreaterThan(PROGRESS_IDLE_WINDOW_MS); // it really outlived one window
-    expect(r.idleTimedOut).toBeUndefined();
-    expect(r.output).toContain('tick-8');
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'precheck-progress-'));
+    const pidFile = path.join(dir, 'child.pid');
+    let childPid = 0;
+    let pending: ReturnType<typeof defaultExec> | undefined;
+    let notify: (() => void) | undefined;
+    const nextOutput = () => new Promise<void>((resolve) => { notify = resolve; });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      const ready = nextOutput();
+      pending = defaultExec([process.execPath, '-e', `
+        let ticks = 0;
+        const keepAlive = setInterval(() => {}, 30_000);
+        process.on('SIGUSR2', () => {
+          process.stdout.write('tick-' + ++ticks + '\\n', () => {
+            if (ticks === 12) clearInterval(keepAlive);
+          });
+        });
+        require('node:fs').writeFileSync(process.argv[1], String(process.pid));
+        process.stdout.write('ready\\n');
+      `, pidFile], {
+        cwd: process.cwd(),
+        timeoutMs: 20_000,
+        idleTimeoutMs: PROGRESS_IDLE_WINDOW_MS,
+        onOutput: () => { const resolve = notify; notify = undefined; resolve?.(); },
+      });
+      const prematureExit = pending.then((result) => {
+        throw new Error(`progress fixture exited before its output acknowledgement: ${JSON.stringify(result)}`);
+      });
+      await Promise.race([ready, prematureExit]);
+      childPid = Number(readFileSync(pidFile, 'utf8'));
+      expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
+      for (let tick = 1; tick <= 12; tick += 1) {
+        const output = nextOutput();
+        await vi.advanceTimersByTimeAsync(PROGRESS_IDLE_WINDOW_MS / 4);
+        process.kill(childPid, 'SIGUSR2');
+        await Promise.race([output, prematureExit]);
+      }
+      const result = await pending;
+      expect(result, JSON.stringify(result)).toMatchObject({ exitCode: 0, timedOut: false });
+      expect(result.durationMs).toBe(PROGRESS_IDLE_WINDOW_MS * 3);
+      expect(result.idleTimedOut).toBeUndefined();
+      expect(result.output).toContain('tick-12');
+    } finally {
+      vi.useRealTimers();
+      if (childPid && alive(childPid)) process.kill(childPid, 'SIGKILL');
+      if (pending) await pending;
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 15_000);
 
   it('appends the full output and an exit trailer to the durable log', async () => {

@@ -126,6 +126,19 @@ const fireReactionInProcess = vi.fn();
 vi.mock('../../events', () => ({
   fireReactionInProcess: (...a: unknown[]) => fireReactionInProcess(...a),
 }));
+// P-007 Phase C (D-028): complete.ts lazily imports the completion-verification store after a
+// terminal close. Hermetic spies: by default nothing is spawned, applied or accepted, and an
+// unset (reset) spy still resolves to that default so no other case grows a warning.
+const cvStore = vi.hoisted(() => ({
+  spawn: vi.fn(),
+  applyVerdict: vi.fn(),
+  acceptOnSettlement: vi.fn(),
+}));
+vi.mock('../../harness/improvements/completion-verification-store', () => ({
+  spawnCompletionVerificationForClose: async (...a: unknown[]) => (await cvStore.spawn(...a)) ?? { outcome: 'no-dependents' },
+  applyCompletionVerdictForClose: async (...a: unknown[]) => (await cvStore.applyVerdict(...a)) ?? null,
+  acceptCompletionOnSettlementForSubject: async (...a: unknown[]) => (await cvStore.acceptOnSettlement(...a)) ?? null,
+}));
 
 // TEST-COMPLETION GATE (P-006): the flag + the gate helper are mocked so these unit tests
 // exercise the gate WIRING in completeOne (flag-off skips, flag-on consults, refusal blocks)
@@ -3035,7 +3048,8 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.completion.status).toBe('done'); // reads as done…
       expect(r.stateWarning).toMatch(/NOT closed/); // …but the item is not closed
       expect(r.stateWarning).toContain('F-12');
-      expect(r.stateWarning).toMatch(/passed'\|'deprecated'/); // points at the terminal states
+      // Points at the terminal states, split by intent (EI-25189121547866671).
+      expect(r.stateWarning).toMatch(/success: 'passed', discard: 'deprecated'/);
     });
 
     it('does NOT warn when a terminal `state` closed the item', async () => {
@@ -3064,7 +3078,7 @@ describe('work_items:complete (keyed-array)', () => {
       const issue = { ...item, id: 'WI-7', kind: 'bug', family: 'issue', state: 'open' };
       getWorkItem.mockResolvedValue(issue);
       const open = await one({ id: 'WI-7', completion: { summary: 'fixed in tree' } });
-      expect(open.stateWarning).toMatch(/resolved'\|'closed'/);
+      expect(open.stateWarning).toMatch(/success: 'resolved'\/'done', discard: 'closed'\/'dropped'/);
 
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
@@ -7318,5 +7332,116 @@ describe('D-041 — a close citing an UNOWNED follow-up is told so', () => {
     const r = await close();
     expect(r.ok).toBe(true);
     expect(r.residueUnownedWarning).toBeUndefined();
+  });
+});
+
+// P-007 Phase C (unified-bug-pipeline-and-honest-queue-2026-10-05, D-028): the call sites in
+// completeOne, behind the hermetic store spies declared with the module mocks above. The
+// store itself runs against real Postgres in
+// harness/improvements/completion-verification.integration.test.ts.
+describe('work_items:complete — completion verification wiring (P-007 Phase C, D-028)', () => {
+  const subject = { ...item, id: 'WI-CV-1', kind: 'bug', family: 'issue', state: 'open', title: 'rotate the export key' };
+  /** A completion task for WI-CV-1 whose verified completion was closed by `closer`. */
+  async function completionTask(closer: string) {
+    const { completionVerificationPayload } = await import('../../harness/improvements/completion-verification');
+    const payload = completionVerificationPayload(
+      { id: subject.id, title: subject.title, kind: 'bug', closer },
+      '2026-10-06T00:00:00.000Z',
+    );
+    return { ...item, id: 'WI-CV-TASK', kind: 'task', family: 'issue', state: 'open', title: `Verify completion of ${subject.id}`, payload };
+  }
+
+  beforeEach(() => {
+    cvStore.spawn.mockReset();
+    cvStore.applyVerdict.mockReset();
+    cvStore.acceptOnSettlement.mockReset();
+    setWorkItemStateWithAliasInfo.mockClear();
+  });
+
+  it('a successful proposed close spawns the verification task, naming the landed terminal owner as closer', async () => {
+    getWorkItem.mockResolvedValue(subject);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'resolved', completionAuthority: 'proposed', terminalOwner: 'su-closer' }),
+    );
+    cvStore.spawn.mockResolvedValue({ outcome: 'created', taskId: 'WI-CV-TASK', gated: ['WI-CV-DEP'], notGated: [] });
+    const r = await one({ id: subject.id, state: 'resolved', completion: { summary: 'rotated' } });
+    expect(cvStore.spawn).toHaveBeenCalledTimes(1);
+    expect(cvStore.spawn.mock.calls[0][0]).toMatchObject({ id: subject.id, closer: 'su-closer', kind: 'bug', title: subject.title });
+    expect(r.completionVerification).toMatchObject({ spawned: { outcome: 'created', taskId: 'WI-CV-TASK' } });
+    expect(r.completionVerificationWarning).toBeUndefined();
+  });
+
+  it('spawns nothing for a committed close or a discard close', async () => {
+    getWorkItem.mockResolvedValue(subject);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'resolved', completionAuthority: 'committed', terminalOwner: 'su-closer' }),
+    );
+    expect((await one({ id: subject.id, state: 'resolved', completion: { summary: 'rotated' } })).ok).toBe(true);
+    getWorkItem.mockResolvedValue(subject);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'dropped', completionAuthority: 'proposed', terminalOwner: 'su-closer' }),
+    );
+    expect((await one({ id: subject.id, state: 'closed', completion: { summary: 'wontfix', tests: 'n/a' } })).ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
+    expect(cvStore.spawn).not.toHaveBeenCalled();
+  });
+
+  it('a re-close that upgrades a stored proposed completion accepts the open task instead of spawning one', async () => {
+    getWorkItem.mockResolvedValue({ ...subject, state: 'resolved', completionAuthority: 'proposed' });
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'resolved', completionAuthority: 'committed', terminalOwner: 'su-closer' }),
+    );
+    cvStore.acceptOnSettlement.mockResolvedValue({ accepted: 'WI-CV-TASK' });
+    const r = await one({ id: subject.id, state: 'resolved', completion: { summary: 'rotated, evidence now committed' } });
+    expect(cvStore.acceptOnSettlement).toHaveBeenCalledWith(subject.id, 'committed');
+    expect(cvStore.spawn).not.toHaveBeenCalled();
+    expect(r.completionVerification).toMatchObject({ acceptedBySettlement: { accepted: 'WI-CV-TASK' } });
+  });
+
+  it('a completion task refuses a terminal close without a verdict, and a reject without a reason', async () => {
+    getWorkItem.mockResolvedValue(await completionTask('su-closer'));
+    const bare = await one({ id: 'WI-CV-TASK', state: 'resolved', completion: { summary: 'looked at it' } });
+    expect(bare.ok).toBe(false);
+    expect(bare.error).toMatch(/requires completion\.verificationVerdict/);
+    const noReason = await one({
+      id: 'WI-CV-TASK',
+      state: 'resolved',
+      completion: { summary: 'not convinced', verificationVerdict: { verdict: 'reject' } },
+    });
+    expect(noReason.ok).toBe(false);
+    expect(noReason.error).toMatch(/requires completion\.verificationVerdict\.reason/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(cvStore.applyVerdict).not.toHaveBeenCalled();
+  });
+
+  it('the closer of the verified completion cannot record the verdict', async () => {
+    getWorkItem.mockResolvedValue(await completionTask('su-tester'));
+    const r = await one({
+      id: 'WI-CV-TASK',
+      state: 'resolved',
+      completion: { summary: 'my own work is fine', verificationVerdict: { verdict: 'accept' } },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/^verifier_conflict/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('an independent verifier closes it and the verdict is applied as that verifier', async () => {
+    const task = await completionTask('su-closer');
+    getWorkItem.mockResolvedValue(task);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...task, state: 'resolved', completionAuthority: 'committed' }));
+    cvStore.applyVerdict.mockResolvedValue({ applied: 'accept', subject: subject.id });
+    const r = await one({
+      id: 'WI-CV-TASK',
+      state: 'resolved',
+      completion: { summary: 'completion matches the item', verificationVerdict: { verdict: 'accept' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(cvStore.applyVerdict).toHaveBeenCalledTimes(1);
+    const input = cvStore.applyVerdict.mock.calls[0][0] as { verifier: string; taskPayload: unknown; completion: unknown };
+    expect(input.verifier).toBe('su-tester');
+    expect(input.taskPayload).toEqual(task.payload);
+    expect(input.completion).toMatchObject({ verificationVerdict: { verdict: 'accept' } });
+    expect(r.completionVerification).toMatchObject({ verdict: { applied: 'accept', subject: subject.id } });
   });
 });

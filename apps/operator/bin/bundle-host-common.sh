@@ -178,6 +178,21 @@ bundle_host_workers() {
     index=$((index + 1))
   done
   local -a meta_args
+  # EI-24812987867215907 fix (a), widened 2026-10-06: a TS worker whose import
+  # graph reaches the operator cone (precision-bench-worker.ts -> precision-monitor
+  # -> sync-sse / @papercusp/db-org reaches @dbos-inc/dbos-sdk telemetry, ssh2 and
+  # onnxruntime-node .node binaries) must externalize EXACTLY what the host entry
+  # externalizes, or esbuild cannot resolve them and bg-host refuses to start.
+  # Prefer the caller's full HOST_EXTERNALS (bundle-host.sh / build-desktop-sidecar.sh
+  # define it as HOST_COMMON_EXTERNALS + native packages + runtime-resolved deps);
+  # fall back to the shared optional externals + native packages (both defined in
+  # THIS file) for a caller that does not, e.g. worker-scripts-bundled.test.ts.
+  local -a worker_externals=("${HOST_COMMON_EXTERNALS[@]}")
+  local native_pkg
+  for native_pkg in "${NATIVE_PKGS[@]}"; do worker_externals+=("--external:$native_pkg"); done
+  if declare -p HOST_EXTERNALS >/dev/null 2>&1; then
+    worker_externals=("${HOST_EXTERNALS[@]}")
+  fi
   for source in \
     "$repo_root/packages/operator-core/lib/event-loop-sentinel.worker.ts" \
     "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts" \
@@ -193,6 +208,7 @@ bundle_host_workers() {
     [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ] && meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")
     if ! npx --yes esbuild@0.25.0 "$source" \
       --bundle --platform=node --format=esm --target=node22 \
+      "${worker_externals[@]}" \
       --external:sodium-native --external:esbuild --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" --outfile="$tmp" --log-limit=5 \
       "${meta_args[@]}"; then
       rm -f "$tmp"

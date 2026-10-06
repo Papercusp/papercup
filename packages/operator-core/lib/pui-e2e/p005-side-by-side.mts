@@ -91,6 +91,11 @@ type Cli = {
   ready: RegExp;
   statusCmds: string[];
   refocus?: { unless: RegExp; key: string };
+  // A screen that means no conversation can run (no operator, a refused
+  // model). A probe that ends on it aborts the battery: before this, the
+  // P-025 legs typed every prompt into pui's connection form and logged
+  // each step as a normal 6s run.
+  blocked?: RegExp;
 };
 
 // A stock Codex install reads its config, AGENTS.md, hooks, skills and MCP
@@ -176,6 +181,7 @@ const CLIS: Record<string, Cli> = {
     // Esc with nothing running leaves pui's message box (app.rs, the composing
     // branch's `KeyCode::Esc => self.chat_composing = false`); `i` re-enters it.
     refocus: { unless: /Message — Enter send|Enter sends|\? for shortcuts/, key: 'i' },
+    blocked: /Connection: Unavailable|Not connected · send a message|no longer available for this backend|is not available on this operator|no longer offered by the operator/,
   },
 };
 const battery = (arg('battery', 'p005') ?? 'p005') as 'p005' | 'parity';
@@ -554,8 +560,13 @@ async function probe(label: string, fn: () => Promise<Record<string, unknown>>) 
   const t0 = Date.now();
   try {
     log.push({ label, ...(await fn()), probeMs: Date.now() - t0, exited });
+    const blocked = cli.blocked && !exited ? screen().match(cli.blocked)?.[0] : undefined;
+    if (blocked) {
+      frame(`${label}.BLOCKED`);
+      throw new Error(`BATTERY_BLOCKED: ${cliName} shows "${blocked}" after ${label}; no conversation ran. See ${label}.BLOCKED.txt`);
+    }
   } catch (error) {
-    if (String(error).includes('not a stock install')) throw error;
+    if (String(error).includes('not a stock install') || String(error).includes('BATTERY_BLOCKED')) throw error;
     frame(`${label}.ERROR`);
     log.push({ label, error: String(error), probeMs: Date.now() - t0, exited });
   }
@@ -587,6 +598,17 @@ async function runParity() {
     log.push({ label: 'version', version: execFileSync(cli.launch[0], ['--version'], { encoding: 'utf8', env: stockEnv(), timeout: 20_000 }).trim() });
   } catch (error) {
     log.push({ label: 'version', error: String(error) });
+  }
+  if (cliName === 'pui') {
+    // The staging operator restarts often; a leg run across a restart
+    // measures pui's connection form, not the engine. Record which build
+    // served the leg so a result can be tied to code.
+    const operator = cli.env?.PUI_OPERATOR ?? 'http://127.0.0.1:3170';
+    const health = await fetch(`${operator}/api/health`, { signal: AbortSignal.timeout(5_000) })
+      .then((r) => r.json() as Promise<{ ok?: boolean; sha?: string }>)
+      .catch((error) => ({ ok: false, error: String(error) }) as { ok?: boolean; sha?: string; error?: string });
+    log.push({ label: 'operator', url: operator, ...health });
+    if (!health.ok) throw new Error(`BATTERY_BLOCKED: operator ${operator} is not answering /api/health`);
   }
   start(cli.launch);
   log.push({ label: '00-ready', ...(await waitReady('00', 120_000)) });

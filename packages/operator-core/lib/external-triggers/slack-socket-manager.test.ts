@@ -79,6 +79,61 @@ describe('SlackSocketManager', () => {
     manager.stop();
   });
 
+  it('opens the "Report a bug" form at once with the bot token, outside the serialized ingest chain', async () => {
+    const sockets: FakeSocket[] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const processEnvelope = vi.fn(async () => { await blocked; return null; });
+    const openReportBugModal = vi.fn(async () => {});
+    const reportingSource: ExternalTriggerSourceRow = {
+      ...source,
+      config: { installSlug: 'papercusp', reportBug: { channels: { C1: { shortcut: true } } } },
+    };
+    const manager = new SlackSocketManager({
+      sql: {} as never,
+      workspaceId: () => 'papercusp-workspace',
+      listSources: vi.fn(async () => [reportingSource]),
+      resolveCredentials: vi.fn(async () => ({ appToken: 'xapp-token', botToken: 'xoxb-token' })),
+      reconcileHistory: vi.fn(async (value) => value),
+      openUrl: vi.fn(async () => 'wss://slack.test/socket'),
+      createSocket: vi.fn(() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      }),
+      processEnvelope,
+      openReportBugModal,
+      updateSource: vi.fn(async (_sql, _workspace, _id, input) => ({ ...reportingSource, status: input.status })),
+      log: () => {},
+    });
+
+    await manager.reconcile();
+    sockets[0].emit('open');
+    // An earlier envelope is stuck in the ingest chain…
+    sockets[0].emit('message', JSON.stringify({ envelope_id: 'e-slow', type: 'events_api', payload: {} }));
+    // …and the click still opens its form without waiting behind it.
+    sockets[0].emit('message', JSON.stringify({
+      envelope_id: 'e-click',
+      type: 'interactive',
+      payload: {
+        type: 'message_action', callback_id: 'papercusp_report_bug', trigger_id: 'trig-9',
+        user: { id: 'U4' }, channel: { id: 'C1' }, message: { ts: '1777000003.000300', text: 'broken' },
+      },
+    }));
+    expect(sockets[0].sent.map((payload) => JSON.parse(payload))).toEqual([{ envelope_id: 'e-slow' }, { envelope_id: 'e-click' }]);
+    await vi.waitFor(() => expect(openReportBugModal).toHaveBeenCalledTimes(1));
+    expect(openReportBugModal).toHaveBeenCalledWith('xoxb-token', {
+      triggerId: 'trig-9', channelId: 'C1', messageTs: '1777000003.000300', threadTs: null, reporterUserId: 'U4',
+    });
+    release();
+    // The click itself never reaches ingest; only the slow envelope does.
+    await vi.waitFor(() => expect(processEnvelope).toHaveBeenCalledTimes(1));
+    expect(processEnvelope.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+      expect.objectContaining({ envelope_id: 'e-slow' }),
+    ]);
+    manager.stop();
+  });
+
   it('reuses one starter state across repeated module evaluation', async () => {
     const first = startSlackSocketManager({
       listSources: vi.fn(async () => []),

@@ -214,12 +214,34 @@ const EXCLUDE_VENDORED = String.raw`(?![^\n]*node_modules)`;
 const EXCLUDE_CONTEXT = String.raw`(?![^\n]*\s(?:-[A-Za-z]*[ABC]|--(?:after-|before-)?context))`;
 
 /**
+ * Any OTHER flag `cover()` cannot express is also excluded by pattern (D-008:
+ * narrow until the residue falls outside). A short cluster carrying a letter
+ * outside {@link EXPRESSIBLE_FLAGS} (`-c` counts, `-i` folds case, `-e` moves
+ * the pattern), or a long flag other than `--include`. Measured on the fires
+ * corpus this removed the `-rnc` count atom that was the pair's residue.
+ */
+const EXCLUDE_UNEXPRESSIBLE_FLAG =
+  String.raw`(?![^\n]*\s(?:-[A-Za-z]*(?![rRlnwIhsE])[A-Za-z]|--(?!include(?:=|\s))[a-z]))`;
+
+/** `--include` must name TypeScript sources only (`*.ts`, `"*.tsx"`, `*.{ts,tsx}`). */
+const TS_EXT_ALT = '(?:ts|tsx|mts|cts)';
+const TS_GLOB = `\\*\\.(?:${TS_EXT_ALT}|\\{${TS_EXT_ALT}(?:,${TS_EXT_ALT})*\\})`;
+const EXCLUDE_NON_TS_INCLUDE = `(?![^\\n]*\\s--include(?:=|\\s+)(?!["']?${TS_GLOB}["']?(?:\\s|$))\\S)`;
+
+/**
+ * A FILE root must be a TypeScript source: `lsp:query` opens it as a document in
+ * the TypeScript server, and a `.mjs` / `.json` / `.md` root is not one. Any
+ * unquoted, non-flag operand ending in a non-TS extension takes the atom out.
+ */
+const EXCLUDE_NON_TS_FILE_ROOT = `(?![^\\n]*\\s(?!-)[^\\s"']*\\.(?!${TS_EXT_ALT}(?:\\s|$))[A-Za-z0-9]+(?=\\s|$))`;
+
+/**
  * A second search root has no single faithful call. A path operand is any token
  * after the quoted pattern that is not a flag, stderr plumbing or backgrounding;
  * two of them take the atom out. (The pattern operand itself is quoted and comes
- * first, so it never counts.)
+ * first, so it never counts; `--include <glob>` is consumed as one flag.)
  */
-const SKIPPABLE_TOKEN = String.raw`(?:-\S+|2>\S*|&)`;
+const SKIPPABLE_TOKEN = String.raw`(?:--include\s+\S+|-\S+|2>\S*|&)`;
 const PATH_TOKEN = String.raw`(?!-|2>|&)\S+`;
 const EXCLUDE_SECOND_ROOT =
   `(?![^\\n]*${DEFINITION_PATTERN}(?:\\s+${SKIPPABLE_TOKEN})*\\s+${PATH_TOKEN}` +
@@ -425,8 +447,15 @@ function expressionFor(symbol: string, anchor: string): string {
  * strictly that; `-I`/`-h`/`-s` are output/binary plumbing that does not change
  * the question; `--include` is a source-type filter checked separately.
  * Context flags are NOT here: D-010(b) excludes body reads by pattern.
+ *
+ * `-E` is covered because it cannot change the question for THIS pattern
+ * shape: a pattern only reaches `cover()` after {@link DEFINITION_RE} accepts it,
+ * so its text is identifier characters, spaces, and at most a leading `^` — and
+ * `^`/`$` anchor identically in basic and extended syntax. (Measured: 3 of the
+ * 286 fired atoms carried `-E`.) `-F` is NOT covered: it makes a leading `^`
+ * literal, which does change the match.
  */
-const EXPRESSIBLE_FLAGS = new Set(['-r', '-R', '-l', '-n', '-w', '-I', '-h', '-s', '--include']);
+const EXPRESSIBLE_FLAGS = new Set(['-r', '-R', '-l', '-n', '-w', '-I', '-h', '-s', '-E', '--include']);
 
 /** Everything `lsp:query workspace_symbols` can and cannot express about a parsed grep. */
 export function coverDefinitionLookup(parsed: ParsedGrepCommand): CoverageResult {
@@ -480,6 +509,13 @@ export function coverDefinitionLookup(parsed: ParsedGrepCommand): CoverageResult
   }
 
   const anchor = anchorForRoot(parsed.paths[0]);
+  const fileExt = /\.([A-Za-z0-9]+)$/.exec(anchor.split('/').pop() ?? '')?.[1];
+  if (fileExt !== undefined && !TS_EXTENSIONS.has(fileExt)) {
+    return {
+      covered: false,
+      reason: `search root "${anchor}" is a .${fileExt} file, which the TypeScript server cannot open as a project document`,
+    };
+  }
   if (projectForAnchor(anchor) === null) {
     return {
       covered: false,
@@ -508,7 +544,8 @@ export const lspDefinitionLookup: BashSubstitutionPair = {
   id: 'code-search.definition-lookup',
   intentLabel: 'find-where-a-symbol-is-defined',
   bashPattern: new RegExp(
-    `^${EXCLUDE_UNEXPRESSIBLE}${EXCLUDE_VENDORED}${EXCLUDE_CONTEXT}${EXCLUDE_SECOND_ROOT}` +
+    `^${EXCLUDE_UNEXPRESSIBLE}${EXCLUDE_VENDORED}${EXCLUDE_CONTEXT}${EXCLUDE_UNEXPRESSIBLE_FLAG}` +
+      `${EXCLUDE_NON_TS_INCLUDE}${EXCLUDE_NON_TS_FILE_ROOT}${EXCLUDE_SECOND_ROOT}` +
       `${EXCLUDE_CONTAINER_ROOT}${REQUIRE_PROJECT_ROOT}` +
       `(?=[^\\n]*\\s${DEFINITION_PATTERN})` +
       `grep(?:\\s+-[A-Za-z]*[rR][A-Za-z]*)` +
@@ -522,11 +559,13 @@ export const lspDefinitionLookup: BashSubstitutionPair = {
     '(libs/generic) is refused, so anchor the package you mean. To read the body, follow with capability:read ' +
     '{ file_path, offset: line1, limit }. Searches across several projects, symbols in files a tsconfig excludes, ' +
     'and exact-text matching remain grep\'s job.',
+  // Kept within a few bytes of the row it replaced: this table is spliced into
+  // launch-prose surfaces that sit at their ceilings (lint:launch-prose-budget).
   routing: {
-    want: 'to find where a symbol is DEFINED (one root inside one TypeScript project)',
-    use: '`lsp:query { op: "workspace_symbols", name: "managedSetInterval", file: "libs/generic/scheduled-registry" }` — then `capability:read { file_path, offset: line1, limit }` for the body',
+    want: 'to find where a symbol is DEFINED',
+    use: '`lsp:query { op: "workspace_symbols", name: "X", file: "<grep root>" }`; body: `capability:read`',
     insteadOf:
-      '`grep -rn "export function managedSetInterval" libs/generic/scheduled-registry`. ⚠ A multi-project or repo-wide search and exact-text search remain grep\'s job: add `--exclude-dir={node_modules,.vitest-tmp,dist,coverage} --exclude-dir=sidecar` (generated bundles/caches are not source evidence; exhaustive exact-text search remains grep\'s job)',
+      '`grep -rn "export function X" <one project dir>` (repo-wide: add `--exclude-dir={node_modules,.vitest-tmp,dist,coverage} --exclude-dir=sidecar` — generated bundles/caches are not source evidence; exhaustive exact-text search remains grep\'s job)',
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {

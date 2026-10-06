@@ -161,6 +161,8 @@ interface BulkInput {
   pairShard: Map<string, number>;
   ghostIdsByShard: Map<number, string[]>;
   memberCount: number;
+  /** The census's pinned member ids (ghost context excluded). */
+  memberIds: ReadonlySet<string>;
   fingerprint: string;
 }
 
@@ -620,7 +622,7 @@ async function readBulkInput(
         .join('\x01'),
     )
     .digest('hex');
-  return { items, pairs, pairShard, ghostIdsByShard, memberCount: memberRows.length, fingerprint };
+  return { items, pairs, pairShard, ghostIdsByShard, memberCount: memberRows.length, memberIds, fingerprint };
 }
 
 export function buildBulkDedupPrompt(
@@ -2442,7 +2444,13 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         disposition.action === 'merge' ? [disposition.itemId, disposition.canonicalId] : [],
       );
       let committed:
-        | { census: AdmissionCensusRunResult; scopedPairsAfter: number; stage: BulkDedupStageResult }
+        | {
+            census: AdmissionCensusRunResult;
+            scopedPairsAfter: number;
+            /** Residual scoped pairs whose endpoints were both census-0 members (WI-10006336). */
+            census0ScopedPairsAfter: number;
+            stage: BulkDedupStageResult;
+          }
         | undefined;
 
       await withWorkItemDependencyAdmissionTransaction(sql, async (rawTx) => {
@@ -2634,7 +2642,14 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         // would overwrite `checkpoints.batches` with its stale snapshot and
         // erase every checkpoint written during this stage.
         await writeBulkStageEnvelope(tx, stageRunId, completedEnvelope, executionId);
-        committed = { census: nextCensus, scopedPairsAfter: nextInput.pairs.length, stage };
+        committed = {
+          census: nextCensus,
+          scopedPairsAfter: nextInput.pairs.length,
+          census0ScopedPairsAfter: nextInput.pairs.filter(
+            (pair) => fullInput.memberIds.has(pair.a.id) && fullInput.memberIds.has(pair.b.id),
+          ).length,
+          stage,
+        };
       });
 
       if (!committed) throw new Error(`bulk stage ${stageRunId} committed without a result`);
@@ -2652,9 +2667,11 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           stages,
         };
       }
-      if (committed.scopedPairsAfter >= scopedPairsBefore) {
+      // WI-10006336: judge progress on census-0's population. Pairs that touch
+      // an item filed during the stage are influx, not a stage that stalled.
+      if (committed.census0ScopedPairsAfter >= scopedPairsBefore) {
         throw new Error(
-          `bulk dedup made no scoped progress: ${scopedPairsBefore} -> ${committed.scopedPairsAfter} pair(s)`,
+          `bulk dedup made no scoped progress: ${scopedPairsBefore} -> ${committed.census0ScopedPairsAfter} pair(s) among census-0 members`,
         );
       }
       census = committed.census;

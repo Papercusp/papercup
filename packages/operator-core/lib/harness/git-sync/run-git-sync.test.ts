@@ -193,17 +193,15 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
       { agent: 'su-unrelated', files: ['root-unrelated.ts'], workItems: ['WI-other'] },
     ];
 
-    expect(
-      migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster).map((s) => [
-        s.path,
-        s.detail,
-      ]),
-    ).toEqual([
-      [
-        'schema-consumer.ts',
-        'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+    expect(migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster)).toEqual([
+      {
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
           'libs/sub/libs/db/sql/999-unreserved-migration.sql',
-      ],
+      },
     ]);
   });
 

@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } 
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
 import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
 import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
+import { GREEN_CHECKPOINT_RESULT_MARKER } from '../../release/checkpoint-log-tags';
 import { pipelineName } from '../../release/pipeline-name';
 import { evaluateGateReuseAuditWindow } from '../../release/gate-fire-ledger';
 import { buildTestPassReuseHealth } from '../../release/test-pass-reuse-report';
@@ -272,6 +273,7 @@ import {
   checkpointRunLogPaths,
   checkpointTerminalHasOomKill,
   parseScheduledCheckpointTerminal,
+  resolveCheckpointResultFromLogs,
   reconcileScheduledCheckpointTerminals,
   readFrozenCandidateRepairQueue,
   readFrozenCandidateRepairQueueState,
@@ -5074,6 +5076,40 @@ describe('WI-10004928 part 1 manual leg: sweepManualCheckpointToolingCrash', () 
       checkpointResultMarkerState('__GREEN_CHECKPOINT_RESULT__ {"rea\n__GREEN_CHECKPOINT_RESULT__ {"reason":"advanced","green":true}\n'),
     ).toBe('parsed');
     expect(checkpointResultMarkerState(`${ORCHESTRATOR_STDOUT_TAG_UNDER_TEST} __GREEN_CHECKPOINT_RESULT__ {"rea\n`)).toBe('absent');
+  });
+
+  it('WI-10006005: restores 500 failure and flake paths from the matching terminal log result', () => {
+    const runId = 'large-path-run';
+    const failingTests = Array.from(
+      { length: 500 },
+      (_, i) => 'packages/operator-core/lib/test-fixtures/failures/failure-' + i + '.test.ts',
+    );
+    const flakeSuspects = Array.from(
+      { length: 500 },
+      (_, i) => 'packages/operator-core/lib/test-fixtures/flakes/flake-' + i + '.test.ts',
+    );
+    const fullResult = {
+      reason: 'not-green',
+      green: false,
+      candidate: '0123456789abcdef',
+      runId,
+      failingTests,
+      flakeSuspects,
+    };
+    const marker: Record<string, unknown> = {
+      ...fullResult,
+      markerCompacted: { omitted: ['failingTests', 'flakeSuspects'] },
+    };
+    delete marker.failingTests;
+    delete marker.flakeSuspects;
+    const markerLine = GREEN_CHECKPOINT_RESULT_MARKER + ' ' + JSON.stringify(marker);
+    const terminalLog = JSON.stringify(fullResult, null, 2) + '\n' + markerLine + '\n';
+
+    const resolved = resolveCheckpointResultFromLogs(markerLine + '\n', terminalLog, runId);
+    expect(resolved?.failingTests).toEqual(failingTests);
+    expect(resolved?.flakeSuspects).toEqual(flakeSuspects);
+    expect(resolveCheckpointResultFromLogs(markerLine + '\n', terminalLog, 'another-run')?.failingTests)
+      .toBeUndefined();
   });
 
   it('WI-10005994: the torn cause wakes inconclusive awaiters with an honest reason, not "no suite ran"', async () => {

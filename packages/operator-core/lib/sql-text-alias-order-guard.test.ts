@@ -32,8 +32,8 @@
  *
  * ⚠ Bounds (not detected): a positional `ORDER BY 1`; an outer query ordering by a text
  * column of a derived table (`FROM (SELECT id::text AS id ...) s ORDER BY id`). A `*_id`
- * column that is a uuid is flagged and exempted below, because uuid text order equals uuid
- * order.
+ * (or bare `id`) column that is a uuid is flagged and exempted below, because uuid text
+ * order equals uuid order.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -194,6 +194,12 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
     file: 'packages/operator-core/lib/memory/recall-staleness.ts',
     contains: 'SELECT memory_id::text AS memory_id',
     reason: `harness_shared.memory_anchors.memory_id ${UUID_REASON}.`,
+  },
+  {
+    file: 'packages/operator-core/lib/cupboard/trigger-pack-lifecycle.ts',
+    contains:
+      'SELECT id::text AS id, plan_slug AS "planSlug", armed, pack_installation_id::text AS "packInstallationId" FROM harness_shared.trigger_bindings',
+    reason: `harness_shared.trigger_bindings.id ${UUID_REASON}.`,
   },
 ];
 

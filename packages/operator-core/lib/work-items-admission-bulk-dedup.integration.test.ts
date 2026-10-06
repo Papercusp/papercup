@@ -1295,6 +1295,60 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(stage[0]?.failure).toMatch(/ratchet violated/);
   }, 60_000);
 
+  // WI-10006336: the 10-05 scheduled stage failed "56606 -> 65264" because 39
+  // near-duplicate emitter items were FILED while it judged; the live recount
+  // counted their edges against census-0. The ratchet must judge census-0's own
+  // members (the rise test above stays red: `c` is a member), and disclose the
+  // influx instead of failing on it.
+  it('commits a stage when near-duplicates are filed between census-0 and the recount, disclosing the influx', async () => {
+    await seed();
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-influx',
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async (input) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'different remedy' })) },
+          inputTokens: 50,
+          outputTokens: 10,
+        };
+      },
+      beforePostStageCensus: async (sql) => {
+        await sql`
+          INSERT INTO harness_shared.work_items
+            (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+             item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+             admitted_at, admitted_by)
+          VALUES (${WS}, ${HARNESS}, 'd', 'Clone failure filed mid-stage', 'Clone failure filed mid-stage summary',
+                  'open', NULL, '{}'::jsonb, 'change', 'watch:clone', 4, 4, '[1,0,0]'::vector, 'gemma',
+                  'admitted', now(), 'test')`;
+      },
+    });
+
+    // Census-0 had one unadjudicated edge (a-b); the stage adjudicated it. The
+    // live corpus now also holds a-d and b-d, which arrived mid-stage.
+    // The influx pairs (a-d, b-d) are the next stage's work, not a stall.
+    expect(result).toMatchObject({ converged: false, convergenceReason: 'stage-budget', finalScopedPairs: 2 });
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ censusBefore: 1, censusAfter: 2 });
+    const [ledger] = await db.sql<Array<{ status: string; ratchet: unknown; census_after: number }>>`
+      SELECT detail->>'status' AS status, detail->'ratchet' AS ratchet, census_after
+        FROM harness_shared.admission_runs WHERE id = 'bulk-influx-stage-1'`;
+    expect(ledger).toEqual({
+      status: 'complete',
+      ratchet: { before: 1, after: 0, population: 'census-0-members', corpusAfter: 2, influxEdges: 2 },
+      census_after: 2,
+    });
+    expect(
+      await db.sql<Array<{ a: string; b: string }>>`SELECT a, b FROM harness_shared.dedup_adjudications ORDER BY a, b`,
+    ).toEqual([{ a: 'a', b: 'b' }]);
+  }, 60_000);
+
   it('persists a nested transport Error.cause alongside the compatible error message', async () => {
     await seed();
     const nested = Object.assign(new Error('fetch failed'), {
@@ -1355,7 +1409,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         FROM harness_shared.admission_runs WHERE id = 'bulk-cause-stage-1'`;
     expect(retried[0]?.detail).toMatchObject({
       status: 'failed',
-      error: 'bulk dedup made no scoped progress: 1 -> 1 pair(s)',
+      error: 'bulk dedup made no scoped progress: 1 -> 1 pair(s) among census-0 members',
     });
     expect(retried[0]?.has_error_cause).toBe(false);
   }, 60_000);

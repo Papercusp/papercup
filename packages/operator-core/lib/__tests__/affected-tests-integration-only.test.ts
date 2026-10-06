@@ -99,6 +99,20 @@ describe('integration executed-source capture (EI-25197689746466505)', () => {
     expect(env[EXECUTED_MAP_NO_PERSIST_ENV]).toBe('1');
   });
 
+  it('retains integration diagnostics and no-persist when a fresh-file retry uses the unit script', () => {
+    const retry = {
+      scriptOverride: 'test', extraArgs: ['a.integration.test.ts'], journalLabel: 'retry',
+      env: { [EXECUTED_MAP_OUT_ENV]: '/outer/shared.json', [EXECUTED_MAP_NO_PERSIST_ENV]: '0' },
+    };
+    const env = captureEnvironment(retry);
+    expect(env[EXECUTED_MAP_WORKSPACE_ENV]).toBe('@probe/core');
+    expect(env[EXECUTED_MAP_OUT_ENV]).toMatch(/^\/tmp\/capture\/.*\.sources\.json$/);
+    expect(env[EXECUTED_MAP_OUT_ENV]).not.toBe('/outer/shared.json');
+    expect(env[EXECUTED_MAP_NO_PERSIST_ENV]).toBe('1');
+    expect(env[EXECUTED_MAP_RESULT_ENV]).toBeUndefined();
+    expect(captureEnvironment({ ...retry, script: 'test' })[EXECUTED_MAP_OUT_ENV]).toBe('/outer/shared.json');
+  });
+
   it('respects the recording opt-out even when capture channels were inherited', () => {
     const env = captureEnvironment({ env: {
       AFFECTED_RECORD_EXECUTED_SOURCES: '0',

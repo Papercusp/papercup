@@ -1041,6 +1041,20 @@ describe('ptool timeoutForTool — coord:declare-intent and loop:arm outlive the
   });
 });
 
+describe('ptool timeoutForTool — sessions:list census outlives the flat client deadline (EI-24857804837312348)', () => {
+  it('uses a client deadline beyond the MCP cap for direct calls', () => {
+    const timeout = timeoutForTool('sessions:list', { mode: 'historical' });
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the same deadline through tools:invoke', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'sessions:list', args: { mode: 'historical' } }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool serviceOf / groupTools', () => {
   it('splits the service off the colon', () => {
     expect(serviceOf('work_items:list')).toBe('work_items');

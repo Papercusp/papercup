@@ -7,8 +7,10 @@
  * decaying immediately on a tree where git-sync commits every few minutes. A definition
  * lookup against a stale graph silently returns a symbol that has moved — or misses one
  * that is new — and the caller cannot tell which happened. That unowned decay is what
- * pins the `code-search.definition-lookup` substitution pair at `observe`
- * (`lib/bash-substitution/pairs/code-search.ts`).
+ * pinned the `code-search.definition-lookup` substitution pair at `observe`
+ * (`lib/bash-substitution/pairs/code-search.ts`) — a pair that, since D-010 of
+ * gitnexus-deterministic-integration-2026-10-05, routes definition lookups to
+ * `lsp:query` instead. The graph still answers callers, impact and topology.
  *
  * WHY A GATED HOURLY TICK RATHER THAN A PLAIN CRON. Every spawn is a FULL rebuild (see
  * `--force` below) that was measured on this box at **309s cold** on the 2026-08 graph,

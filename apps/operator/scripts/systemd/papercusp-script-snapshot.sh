@@ -57,6 +57,31 @@ snapshot_file() {
   return 75
 }
 
+# Copy many helpers from ONE directory with a constant number of processes
+# (WI-10006358). snapshot_file costs ~8 forks per file, so a target beside ~275
+# siblings (scripts/pc-heavy.sh) burned ~15s of CPU per launch. One hash pass
+# before, one cp, one pass over the sources and the copies after; any
+# disagreement (a helper edited mid-copy) falls back to snapshot_file's
+# per-file retry loop, so the consistency guarantee is unchanged.
+snapshot_batch() {
+  local source_dir="${1:-}" destination_dir="${2:-}" label="${3:-helper}" name
+  shift 3
+  (( $# > 0 )) || return 0
+  if command -v sha256sum >/dev/null 2>&1; then
+    local before after copied
+    if before="$(cd -- "$source_dir" && sha256sum -- "$@")" &&
+      cp -p -- "${@/#/$source_dir/}" "$destination_dir/" &&
+      after="$(cd -- "$source_dir" && sha256sum -- "$@")" &&
+      copied="$(cd -- "$destination_dir" && sha256sum -- "$@")" &&
+      [[ "$before" == "$after" && "$before" == "$copied" ]]; then
+      return 0
+    fi
+  fi 2>/dev/null
+  for name in "$@"; do
+    snapshot_file "$source_dir/$name" "$destination_dir/$name" "$label $name" || return $?
+  done
+}
+
 new_temp_dir() {
   mktemp -d "${TMPDIR:-/tmp}/papercusp-script-snapshot.XXXXXX" 2>/dev/null
 }
@@ -145,22 +170,22 @@ snapshot_script() {
   # pinned-lock-deps.mjs beside itself via BASH_SOURCE. Preserve adjacent shell
   # and Node helpers in the same directory; copying only the entry script
   # changes that path to this private snapshot directory and drops its helpers.
+  local -a helpers=()
   while IFS= read -r -d '' sidecar; do
     [[ "$sidecar" == "$source" ]] && continue
-    snapshot_file "$sidecar" "$destination_dir/$(basename -- "$sidecar")" \
-      "adjacent helper $(basename -- "$sidecar")" || return $?
+    helpers+=("${sidecar##*/}")
   done < <(find "$source_dir" -maxdepth 1 -type f \( -name '*.sh' -o -name '*.mjs' \) -print0 2>/dev/null)
+  snapshot_batch "$source_dir" "$destination_dir" "adjacent helper" ${helpers[@]+"${helpers[@]}"} || return $?
 
   # Health checks source lib/red-marker.sh through BASH_SOURCE. Preserve the
   # existing subdirectory layout for those shell sidecars too.
   if [[ -d "$source_dir/lib" ]]; then
     mkdir -p -- "$destination_dir/lib" || return 73
+    helpers=()
     while IFS= read -r -d '' sidecar; do
-      snapshot_file \
-        "$sidecar" \
-        "$destination_dir/lib/$(basename -- "$sidecar")" \
-        "sidecar $(basename -- "$sidecar")" || return $?
+      helpers+=("${sidecar##*/}")
     done < <(find "$source_dir/lib" -maxdepth 1 -type f -name '*.sh' -print0 2>/dev/null)
+    snapshot_batch "$source_dir/lib" "$destination_dir/lib" "sidecar" ${helpers[@]+"${helpers[@]}"} || return $?
   fi
 
   snapshots["$source"]="$destination"

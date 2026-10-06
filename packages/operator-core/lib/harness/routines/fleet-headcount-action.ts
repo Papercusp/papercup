@@ -9,6 +9,8 @@ import {
   claimFleetHeadcountAttempt,
   claimFleetLaunchSlot,
   getFleet,
+  lapseFleetTopUpRule,
+  listExpiredFleetTopUpRules,
   listFleetHeadcountTargets,
   measureFleetProductiveHeadcount,
   mergeFleetLaunchWorkerAttestations,
@@ -25,6 +27,7 @@ import {
   type FleetLaunchGovernorVerdict,
   type FleetLaunchTransaction,
 } from '../../agent-fleets-store';
+import type { FleetTopUpRule } from '../../fleet/top-up-rule';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
@@ -1653,6 +1656,41 @@ export function grantingHeadcountTargets(
   return targets.filter((target) => target.config?.supervise === true);
 }
 
+/**
+ * P-005 / D-030: a no-top-up rule SUSPENDS holding; when its `until` passes
+ * without re-ratification the suspension ends and the governor restores what
+ * the rule suspended (target and/or supervise grant). A fleet whose plan is
+ * terminal only has the rule cleared, mirroring the terminal-plan disarm below,
+ * so an expiry can never re-arm finished work. Returns the lapses performed.
+ */
+export async function lapseExpiredTopUpRules(
+  workspaceId: string,
+  now: number = Date.now(),
+): Promise<Array<{ fleetSlug: string; restored: boolean; rule: FleetTopUpRule }>> {
+  const done: Array<{ fleetSlug: string; restored: boolean; rule: FleetTopUpRule }> = [];
+  for (const expired of (await listExpiredFleetTopUpRules(workspaceId, now)).slice(0, 8)) {
+    const terminalStatus = await terminalPlanStatusForFleet(workspaceId, expired.config);
+    const restored = !terminalStatus;
+    const lapsed = await lapseFleetTopUpRule({
+      workspaceId,
+      fleetSlug: expired.fleetSlug,
+      expectedUntil: expired.rule.until,
+      restore: restored,
+      now,
+    });
+    if (!lapsed) continue; // re-ratified or wound down concurrently
+    done.push({ fleetSlug: expired.fleetSlug, restored, rule: expired.rule });
+    console.warn(
+      `[${FLEET_HEADCOUNT_EVENT_PREFIX}] no-top-up rule on ${expired.fleetSlug} expired ` +
+        `(ratified by ${expired.rule.ratifiedBy}: ${expired.rule.reason.slice(0, 120)}); ` +
+        (restored
+          ? `restored target=${expired.rule.suspendedTarget ?? '(unchanged)'} supervise=${expired.rule.suspendedSupervise ?? '(unchanged)'}`
+          : `plan is ${terminalStatus}; rule cleared without restoring`),
+    );
+  }
+  return done;
+}
+
 export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<void> {
   if (!(await getFlag(FLEET_HEADCOUNT_FLAG, 'system').catch(() => false))) return;
   // EI-23259368987233359, half 1 of 2 — a workspace-wide `loop:standdown-all`
@@ -1675,6 +1713,14 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
     );
     return;
   }
+  // P-005 / D-030: end expired no-top-up rules BEFORE listing granting targets, so
+  // a fleet whose rule lapsed is held again on this same tick. Never fatal: a
+  // failed lapse leaves the rule expired-and-alarming on every read surface.
+  await lapseExpiredTopUpRules(ctx.workspaceId).catch((e) => {
+    console.warn(
+      `[${FLEET_HEADCOUNT_EVENT_PREFIX}] top-up rule lapse sweep failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
   // R5: the flag above is the MASTER gate; the per-fleet grant scopes it. The
   // filter runs BEFORE the wave cap so ungranted rows neither consume the
   // per-tick budget nor receive any action (top-up OR the terminal-plan

@@ -128,6 +128,19 @@ vi.mock("@papercusp/operator-core/lib/identity/octokit-client", () => ({
   getOctokit: () => mockGetOctokit(),
 }));
 
+// WI-10006393: these push fixtures use unregistered synthetic checkouts. Keep the real
+// promotion routing and factory, but provide their registry input without opening live PG.
+vi.mock("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target")>();
+  return {
+    ...actual,
+    createDefaultPublishPromotionDeps: async (log: (line: string) => void) => ({
+      ...await actual.createDefaultPublishPromotionDeps(log),
+      loadProjects: async () => [],
+    }),
+  };
+});
+
 // WI-36238: `escalate` dynamic-imports these two seams. Mocking them lets the
 // REAL dep run without a database, so the coupling test at the bottom of this
 // file asserts against the record the gate actually emits.

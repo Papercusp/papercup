@@ -323,6 +323,12 @@ export interface FleetHeadcountConfig {
   compactionLimit?: number;
   carry?: 'warm' | 'cold';
   extraArgs?: string[];
+  /** P-005 / D-030 (unified-bug-pipeline-and-honest-queue-2026-10-05): the one
+   * structured form of "do not top this fleet up". Before it, the rule lived in
+   * plan prose, so a successor leader inherited it silently and a fleet ran with
+   * zero workers while its leader recorded quiet wakes. Every rule is attributed
+   * and EXPIRES; see resolveFleetTopUpRule. */
+  topUpRule?: FleetTopUpRule;
 }
 
 export interface FleetHeadcountTarget {
@@ -350,6 +356,14 @@ export type FleetHeadcountBasisKind =
 // rule that applies it (a pending non-keepalive await also counts) and why it
 // replaced the old 60-minute window live beside the constant.
 import { FLEET_MEMBER_SILENCE_THRESHOLD_MS } from './fleet/member-silence-threshold';
+import {
+  parseFleetTopUpRule,
+  resolveFleetHeadcountHeld,
+  type FleetHeadcountGovernance,
+  type FleetHeadcountNotHeldReason,
+  type FleetTopUpRule,
+  type ResolvedFleetTopUpRule,
+} from './fleet/top-up-rule';
 export { FLEET_MEMBER_SILENCE_THRESHOLD_MS };
 
 /** The exact population behind `FleetHeadcountState.current`.
@@ -483,6 +497,13 @@ export interface FleetHeadcountState {
   shortfall: number | null;
   underStrength: boolean | null;
   verdict: FleetHeadcountVerdict;
+  /** P-005 / D-030: will the governor actually restore this fleet? `target` and
+   * `verdict` describe a number; only this says whether anyone is acting on it.
+   * null when the governance facts were not supplied or could not be read. */
+  held: boolean | null;
+  notHeldBecause: FleetHeadcountNotHeldReason | null;
+  /** The fleet's no-top-up rule, resolved against the current leader and clock. */
+  topUpRule: ResolvedFleetTopUpRule | null;
   basis: FleetHeadcountBasis;
   countEvidence: {
     productive: CountEvidence | null;
@@ -495,6 +516,8 @@ export interface FleetHeadcountState {
 export interface FleetHeadcountObservation {
   measuredAt?: string;
   scope?: Record<string, CountContractDimension>;
+  /** P-005 / D-030: supply to resolve `held` / `notHeldBecause` / `topUpRule`. */
+  governance?: FleetHeadcountGovernance;
 }
 
 function buildFleetHeadcountCountEvidence(
@@ -645,6 +668,7 @@ export function projectFleetHeadcountState(
     transaction,
     observation,
   );
+  const governed = resolveFleetHeadcountHeld(profile, observation?.governance);
   if (profile === undefined) {
     return {
       enabled: null,
@@ -653,6 +677,7 @@ export function projectFleetHeadcountState(
       shortfall: null,
       underStrength: null,
       verdict: 'unknown',
+      ...governed,
       basis,
       countEvidence,
     };
@@ -665,6 +690,7 @@ export function projectFleetHeadcountState(
       shortfall: null,
       underStrength: null,
       verdict: 'disabled',
+      ...governed,
       basis,
       countEvidence,
     };
@@ -677,6 +703,7 @@ export function projectFleetHeadcountState(
       shortfall: null,
       underStrength: null,
       verdict: 'unknown',
+      ...governed,
       basis,
       countEvidence,
     };
@@ -689,6 +716,7 @@ export function projectFleetHeadcountState(
     shortfall,
     underStrength: shortfall > 0,
     verdict: shortfall > 0 ? 'under-strength' : 'at-target',
+    ...governed,
     basis,
     countEvidence,
   };
@@ -1503,29 +1531,132 @@ export async function setFleetHeadcountTarget(opts: {
   fleetSlug: string;
   target: number | null;
   config?: FleetHeadcountConfig;
+  /** P-005 / D-030: the no-top-up rule this write ratifies. A write WITHOUT one
+   * clears any stored rule: re-arming ends a rule, and a system disarm (terminal
+   * plan) must never leave a rule whose lapse would re-arm a finished fleet. */
+  topUpRule?: FleetTopUpRule;
   sql?: Sql;
 }): Promise<void> {
   const s = pg(opts.sql);
   if (opts.target == null) {
+    // The rule rides the PRESERVED recipe: a disabled row keeps headcount_config
+    // for takeover/respawn, so `||` merges into it and `-` strips from it. A row
+    // with no recipe has nothing a rule could ever restore, so it stays NULL.
     await s.unsafe(
       `UPDATE harness_shared.agent_fleets
           SET headcount_target = NULL,
+              headcount_config = CASE
+                WHEN headcount_config IS NULL THEN NULL
+                WHEN $4::jsonb IS NULL THEN headcount_config - 'topUpRule'
+                ELSE headcount_config || jsonb_build_object('topUpRule', $4::jsonb)
+              END,
               headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
               headcount_last_error = NULL, updated_at = $3
         WHERE workspace_id = $1 AND fleet_slug = $2`,
-      [opts.workspaceId, opts.fleetSlug, Date.now()],
+      [opts.workspaceId, opts.fleetSlug, Date.now(), opts.topUpRule ? JSON.stringify(opts.topUpRule) : null],
     );
     return;
   }
   if (!opts.config) throw new Error('headcount target requires a launch configuration');
+  const { topUpRule: _staleRule, ...rest } = normalizeFleetHeadcountConfig(opts.config);
+  const config: FleetHeadcountConfig = opts.topUpRule ? { ...rest, topUpRule: opts.topUpRule } : rest;
   await s.unsafe(
     `UPDATE harness_shared.agent_fleets
         SET headcount_target = $3, headcount_config = $4::jsonb,
             headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
             headcount_last_error = NULL, updated_at = $5
       WHERE workspace_id = $1 AND fleet_slug = $2`,
-    [opts.workspaceId, opts.fleetSlug, opts.target, JSON.stringify(normalizeFleetHeadcountConfig(opts.config)), Date.now()],
+    [opts.workspaceId, opts.fleetSlug, opts.target, JSON.stringify(config), Date.now()],
   );
+}
+
+/** One fleet whose no-top-up rule has passed its `until`. */
+export interface ExpiredFleetTopUpRule {
+  workspaceId: string;
+  fleetSlug: string;
+  rule: FleetTopUpRule;
+  config: FleetHeadcountConfig;
+}
+
+/**
+ * P-005 / D-030: rules past their `until` on fleets that are not winding down.
+ * A malformed rule is not listed (it cannot be trusted to restore anything); the
+ * read surfaces already report it as an expired, malformed rule.
+ */
+export async function listExpiredFleetTopUpRules(
+  workspaceId: string,
+  now: number,
+  sql?: Sql,
+): Promise<ExpiredFleetTopUpRule[]> {
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT workspace_id, fleet_slug, headcount_config
+       FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1
+        AND headcount_config ? 'topUpRule'
+        AND control_state IS DISTINCT FROM 'winding-down'
+        AND jsonb_typeof(headcount_config->'topUpRule'->'until') = 'number'
+        AND (headcount_config->'topUpRule'->>'until')::numeric <= $2
+      ORDER BY updated_at ASC`,
+    [workspaceId, now],
+  )) as unknown as Array<{ workspace_id: string; fleet_slug: string; headcount_config: unknown }>;
+  const out: ExpiredFleetTopUpRule[] = [];
+  for (const row of rows) {
+    const raw = typeof row.headcount_config === 'string' ? JSON.parse(row.headcount_config) : row.headcount_config;
+    const rule = parseFleetTopUpRule((raw as { topUpRule?: unknown } | null)?.topUpRule);
+    if (!rule) continue;
+    out.push({
+      workspaceId: row.workspace_id,
+      fleetSlug: row.fleet_slug,
+      rule,
+      config: normalizeFleetHeadcountConfig(raw as Record<string, unknown>),
+    });
+  }
+  return out;
+}
+
+/**
+ * P-005 / D-030: end one expired rule. `restore:true` puts back what the rule
+ * suspended (the target for 'target-disabled', the supervise grant for either
+ * kind) so the governor holds the fleet again; `restore:false` only clears the
+ * rule (used when the fleet's plan is terminal). Compare-and-set on the rule's
+ * `until`: a re-ratification that lands first wins and this write is a no-op.
+ * Returns whether this call ended the rule.
+ */
+export async function lapseFleetTopUpRule(opts: {
+  workspaceId: string;
+  fleetSlug: string;
+  expectedUntil: number;
+  restore: boolean;
+  now?: number;
+  sql?: Sql;
+}): Promise<boolean> {
+  const s = pg(opts.sql);
+  const rows = (await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET headcount_target = CASE
+              WHEN $4::boolean
+               AND headcount_config->'topUpRule'->>'kind' = 'target-disabled'
+               AND jsonb_typeof(headcount_config->'topUpRule'->'suspendedTarget') = 'number'
+                THEN (headcount_config->'topUpRule'->>'suspendedTarget')::int
+              ELSE headcount_target
+            END,
+            headcount_config = (headcount_config - 'topUpRule') || CASE
+              WHEN $4::boolean
+               AND jsonb_typeof(headcount_config->'topUpRule'->'suspendedSupervise') = 'boolean'
+                THEN jsonb_build_object('supervise', headcount_config->'topUpRule'->'suspendedSupervise')
+              ELSE '{}'::jsonb
+            END,
+            headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
+            headcount_last_error = NULL, updated_at = $5
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND control_state IS DISTINCT FROM 'winding-down'
+        AND jsonb_typeof(headcount_config->'topUpRule'->'until') = 'number'
+        AND (headcount_config->'topUpRule'->>'until')::numeric = $3
+      RETURNING fleet_slug`,
+    [opts.workspaceId, opts.fleetSlug, opts.expectedUntil, opts.restore, opts.now ?? Date.now()],
+  )) as unknown as Array<{ fleet_slug: string }>;
+  return rows.length > 0;
 }
 
 function headcountRowToTarget(r: {

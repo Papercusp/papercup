@@ -303,13 +303,23 @@ function innerTruncationRecoveryInstruction(toolName: string, markers: readonly 
   if (toolName === 'code:run' && markers.includes('summaryNotice.truncated')) {
     return 'Re-run code:run with a smaller return, splitting the script output into bounded slices.';
   }
+  if (toolName === 'capability:read') {
+    return (
+      'capability:read has no per-field limit; `limit` counts lines. For exact long text, re-read the original ' +
+      'file with `byte_offset` + `byte_limit` (without `evidence_class`) and follow the returned `next_cursor`.'
+    );
+  }
   return `Re-call ${toolName} with a wider per-field limit.`;
 }
 
 function upstreamProjectionRecoveryInstruction(toolName: string): string {
-  return toolName === 'coord:send'
-    ? COORD_SEND_RECEIPT_RECOVERY
-    : `Re-call ${toolName} with payloadTier:'full' (or narrower args) for the missing detail.`;
+  if (toolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
+  const rawDispatch =
+    `tools:invoke { name:'${toolName}', args:{ …original args, payloadTier:'full' } }`;
+  return (
+    `Re-call ${toolName} with payloadTier:'full' (or narrower args) for the missing detail. ` +
+    `If your client validates against the target tool schema, use \`${rawDispatch}\`. `
+  );
 }
 
 /** Distinct truncation and partial marker names found in text (capped — this

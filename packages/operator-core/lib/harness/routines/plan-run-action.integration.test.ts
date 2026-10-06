@@ -155,6 +155,9 @@ beforeEach(async () => {
   await sql`TRUNCATE harness_shared.work_item_deps`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS})`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
+  // Instance slugs (`<template>@run-<n>`) repeat across cases, so revisions must be reset
+  // with their plans or a case inherits the previous cases' revision rows.
+  await sql`DELETE FROM harness_shared.plan_revisions WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
   // Seed the TEMPLATE plan with a parsed items index.
   await sql`
@@ -1445,31 +1448,32 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
     const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
     const slug = res!.instanceSlug;
-    const cloned = await live(slug);
+    // Promotion writes the instance again through withPlanLock (which records its own
+    // revisions), so the clone is the FIRST revision, not the only one.
     let revs = await revisionsOf(slug);
-    expect(revs).toHaveLength(1);
-    expect(revs[0]).toMatchObject({
-      seq: 1,
-      author_kind: 'system',
-      author_id: 'plan-run:instance-clone',
-      content_hash: cloned.content_hash,
-      content_snapshot: cloned.content,
-    });
+    expect(revs[0]).toMatchObject({ seq: 1, author_kind: 'system', author_id: 'plan-run:instance-clone' });
+    expect(revs[0]!.content_hash).toBe(hashPlanContent(revs[0]!.content_snapshot));
+    expect(revs.filter((r) => r.author_id === 'plan-run:instance-clone')).toHaveLength(1);
+    // The spine is complete at the head: the live body has a byte-equal latest revision,
+    // which is exactly what the reconcile sweep's content clock looks up.
+    const promoted = await live(slug);
+    expect(revs.at(-1)).toMatchObject({ content_hash: promoted.content_hash, content_snapshot: promoted.content });
+    const afterFire = revs.length;
 
     const replay = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
     expect(replay!.replayed).toBe(true);
-    expect(await revisionsOf(slug)).toHaveLength(1);
+    expect(await revisionsOf(slug)).toHaveLength(afterFire);
 
     const retired = await retireRunInstancePlan(sql, {
       workspaceId: WS, planStorageSlug: HARNESS, instanceSlug: slug, templateSlug: TEMPLATE, outcome: 'failed',
     });
     expect(retired.retired).toBe(true);
     const after = await live(slug);
-    expect(after.content_hash).not.toBe(cloned.content_hash);
+    expect(after.content_hash).not.toBe(promoted.content_hash);
     revs = await revisionsOf(slug);
-    expect(revs).toHaveLength(2);
-    expect(revs[1]).toMatchObject({
-      seq: 2,
+    expect(revs).toHaveLength(afterFire + 1);
+    expect(revs.at(-1)).toMatchObject({
+      seq: afterFire + 1,
       author_kind: 'system',
       author_id: 'plan-run:instance-retire',
       content_hash: after.content_hash,
@@ -1480,6 +1484,6 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     await retireRunInstancePlan(sql, {
       workspaceId: WS, planStorageSlug: HARNESS, instanceSlug: slug, templateSlug: TEMPLATE, outcome: 'failed',
     });
-    expect(await revisionsOf(slug)).toHaveLength(2);
+    expect(await revisionsOf(slug)).toHaveLength(afterFire + 1);
   });
 });

@@ -9,11 +9,11 @@
  * noise (over-gates) or into a rubber stamp (under-gates), and both look green from outside.
  *
  * The analyzer is a pure function over parsed `npm audit` / `npm ls` JSON, so every case
- * below runs on inline fixtures — no npm invocation, no shared-tree mutation (the
- * copy-out/fixture tier from CLAUDE.md's falsifiability table).
+ * uses inline fixtures. The workspace integrity controls also exercise the real npm
+ * CLI on isolated temporary packages; no shared-tree mutation is involved.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -163,6 +163,87 @@ describe('reachable-advisory gate: fails closed on a measurement gap', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('reachable-advisory gate: real npm workspace override integrity', () => {
+  // npm 11.12.1 leaves overrides on workspace Link nodes without forwarding them
+  // to their targets. A healthy security override then looks invalid to npm ls.
+  // Exercise the CLI that the gate actually uses, including genuinely invalid controls.
+  function measureWorkspaceTree({
+    leafVersion = '2.0.0',
+    transitive = false,
+    mismatchedPeer = false,
+  } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'advisory-workspace-override-'));
+    const put = (directory: string, manifest: Record<string, unknown>) => {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest));
+    };
+    try {
+      put(root, {
+        name: 'override-root', version: '1.0.0', private: true,
+        workspaces: ['packages/*'],
+        dependencies: { 'workspace-consumer': '*' },
+        overrides: { 'override-leaf': '^2.0.0' },
+      });
+      put(join(root, 'packages/consumer'), {
+        name: 'workspace-consumer', version: '1.0.0',
+        dependencies: transitive ? { 'override-parent': '1.0.0' } : { 'override-leaf': '1.0.0' },
+        ...(mismatchedPeer ? { peerDependencies: { 'unrelated-peer': '^1.0.0' } } : {}),
+      });
+      put(join(root, 'node_modules/override-leaf'), { name: 'override-leaf', version: leafVersion });
+      symlinkSync('../packages/consumer', join(root, 'node_modules/workspace-consumer'), 'dir');
+      if (transitive) {
+        put(join(root, 'node_modules/override-parent'), {
+          name: 'override-parent', version: '1.0.0', dependencies: { 'override-leaf': '1.0.0' },
+        });
+      }
+      if (mismatchedPeer) {
+        put(join(root, 'node_modules/unrelated-peer'), { name: 'unrelated-peer', version: '2.0.0' });
+      }
+      const result = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json'], {
+        cwd: root, encoding: 'utf8', timeout: 15_000,
+        env: { ...process.env, npm_config_workspaces: 'true' },
+      });
+      expect(result.error).toBeUndefined();
+      return {
+        status: result.status,
+        tree: JSON.parse(result.stdout) as {
+          problems?: string[];
+          dependencies: Record<string, { dependencies: Record<string, { version: string; overridden?: boolean }> }>;
+        },
+      };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('accepts a correctly installed root override on a workspace dependency', () => {
+    const { status, tree } = measureWorkspaceTree();
+    expect(tree.problems ?? []).toEqual([]);
+    expect(status).toBe(0);
+    expect(tree.dependencies['workspace-consumer'].dependencies['override-leaf'].version).toBe('2.0.0');
+  });
+
+  it('forwards root overrides through a workspace to a transitive dependency', () => {
+    const { status, tree } = measureWorkspaceTree({ transitive: true });
+    expect(tree.problems ?? []).toEqual([]);
+    expect(status).toBe(0);
+  });
+
+  it('rejects an installed version that violates the effective root override', () => {
+    // 1.0.0 satisfies the raw workspace range but violates the effective ^2.0.0.
+    const { status, tree } = measureWorkspaceTree({ leafVersion: '1.0.0' });
+    expect(status).toBe(1);
+    expect(tree.problems).toEqual(expect.arrayContaining([expect.stringContaining('invalid: override-leaf@1.0.0')]));
+  });
+
+  it('preserves a genuine unrelated peer mismatch alongside a healthy override', () => {
+    const { status, tree } = measureWorkspaceTree({ mismatchedPeer: true });
+    expect(status).toBe(1);
+    expect(tree.problems).toEqual(expect.arrayContaining([expect.stringContaining('invalid: unrelated-peer@2.0.0')]));
+    expect(tree.problems?.some((problem) => problem.includes('invalid: override-leaf'))).toBe(false);
   });
 });
 

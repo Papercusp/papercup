@@ -344,6 +344,7 @@ describe('EI-13766 — plan-authoritative needs-human writer guard', () => {
         ref: 'credential:test',
         summary: 'Provide test credential',
         nextVerb: 'provide credential',
+        defaultIfUnanswered: 'stay parked until the credential is supplied',
       },
       'agA',
     );

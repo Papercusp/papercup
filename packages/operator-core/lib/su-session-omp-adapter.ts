@@ -365,11 +365,19 @@ function recordIndicatesCompaction(record: Record<string, unknown>): boolean {
   return type.includes('compact') || subtype.includes('compact') || record.isCompaction === true;
 }
 
+/** OMP stops an assistant message to run its tool calls and then continues
+ *  the same turn, so `toolUse` is a pause, not a turn end. Treating it as one
+ *  reported `waiting-for-owner` mid-turn on every tool call: PUI closed the
+ *  turn ("Worked for 3s" above the tool row) and could send a queued draft
+ *  into a turn still running (pui-chat-first-ux P-025). */
+const OMP_TOOL_USE_STOPS = new Set(['tooluse', 'tool_use', 'tool_calls']);
+
 function recordEndsTurn(record: Record<string, unknown>): boolean {
   const type = String(record.type ?? '').toLowerCase();
   if (type === 'turn_end' || type === 'message_end') return true;
   const message = asRecord(record.message);
-  return type === 'message' && message?.role === 'assistant' && message?.stopReason != null;
+  if (type !== 'message' || message?.role !== 'assistant' || message?.stopReason == null) return false;
+  return !OMP_TOOL_USE_STOPS.has(String(message.stopReason).toLowerCase());
 }
 
 export class OmpSuSessionAdapter {

@@ -91,6 +91,41 @@ fn str_arg<'a>(input: Option<&'a Value>, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
+/// The files an OMP hashline edit touches (P-025). OMP's `edit` has no path
+/// argument: its `input` patch, and the result it returns, name each file in a
+/// `[calc.js#5ED7]` header line. In order of first appearance, without repeats.
+fn hashline_files(text: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let Some(inner) = line
+            .trim()
+            .strip_prefix('[')
+            .and_then(|l| l.strip_suffix(']'))
+        else {
+            continue;
+        };
+        let Some((path, hash)) = inner.rsplit_once('#') else {
+            continue;
+        };
+        let path = path.trim();
+        let hash_ok =
+            (1..=16).contains(&hash.len()) && hash.chars().all(|c| c.is_ascii_alphanumeric());
+        if !path.is_empty() && hash_ok && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// `calc.js`, or `2 files`, for a call that names its files in a list.
+fn files_target(files: &[&str], cwd: Option<&str>) -> Option<String> {
+    match files {
+        [] => None,
+        [one] => Some(clip(&display_path(one, cwd), TARGET_CHARS)),
+        many => Some(format!("{} files", many.len())),
+    }
+}
+
 /// A Codex `mcpToolCall` item: `(server, tool, arguments)`.
 fn codex_mcp(input: Option<&Value>) -> Option<(&str, &str, Option<&Value>)> {
     let item = input?;
@@ -178,6 +213,11 @@ pub(crate) fn result_summary(
             Some("count") => format!("Found matches in {}", count(n, "file", "files")),
             _ => format!("Found {}", count(n, "file", "files")),
         }),
+        // An OMP hashline edit returns the changed region under its
+        // `[calc.js#FB74]` header; say which file changed, not the header.
+        "Edit" | "MultiEdit" | "edit" => {
+            files_target(&hashline_files(text), None).map(|t| format!("Updated {t}"))
+        }
         _ => None,
     };
     if let Some(summary) = summary {
@@ -220,7 +260,12 @@ pub(crate) fn tool_display(name: &str, input: Option<&Value>, cwd: Option<&str>)
     match name {
         // OMP names its built-in tools in lower case (`read`, `edit`, `bash`).
         "Read" | "NotebookRead" | "read" => target("Read", path()),
-        "Edit" | "MultiEdit" | "NotebookEdit" | "edit" => target("Update", path()),
+        "Edit" | "MultiEdit" | "NotebookEdit" | "edit" => target(
+            "Update",
+            path().or_else(|| {
+                files_target(&hashline_files(str_arg(input, "input").unwrap_or("")), cwd)
+            }),
+        ),
         "Write" | "write" => target("Write", path()),
         "ls" => target("List", path()),
         // P-025: Codex reports its edits as one `fileChange` item.
@@ -468,6 +513,13 @@ mod tests {
             title("edit", json!({"path": "/w/calc.js"})),
             "Update(calc.js)"
         );
+        // OMP's hashline edit names its file only in the patch header (the
+        // shape a real OMP session wrote, 2026-10-06).
+        let hashline = json!({"i": "add c", "input": "\n[calc.js#5ED7]\nPUT 1.=3:\n+x\n"});
+        assert_eq!(title("edit", hashline), "Update(calc.js)");
+        let two = json!({"input": "[a.js#AB12]\n+x\n[b.js#CD34]\n+y\n[a.js#EF56]\n+z\n"});
+        assert_eq!(title("edit", two), "Update(2 files)");
+        assert_eq!(title("edit", json!({"input": "[not a header]"})), "Update");
         assert_eq!(
             title("write", json!({"path": "/w/new.js"})),
             "Write(new.js)"
@@ -523,6 +575,16 @@ mod tests {
             "Found 1 line"
         );
         assert_eq!(result_summary("Bash", None, "ok", 80), "ok");
+        // OMP's edit result leads with the raw `[file#hash]` header.
+        assert_eq!(
+            result_summary("edit", None, "[calc.js#FB74]\n1:function add(a, b, c = 0) {", 80),
+            "Updated calc.js"
+        );
+        // Claude's Edit result has no header: its first line stays.
+        assert_eq!(
+            result_summary("Edit", None, "The file /p/calc.js has been updated.", 80),
+            "The file /p/calc.js has been updated."
+        );
         assert_eq!(
             result_summary("Bash", None, "\n\nfirst\nsecond\nthird", 80),
             "first … +2 lines"

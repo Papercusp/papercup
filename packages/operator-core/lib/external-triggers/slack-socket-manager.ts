@@ -15,11 +15,17 @@ import {
   openSlackSocketUrl,
   parseSlackSocketEnvelope,
   reconcileSlackHistoryOnce,
+  openSlackReportBugModal,
   resolveSlackSocketCredentials,
   type SlackNormalizedEvent,
   type SlackSocketCredentials,
   type SlackSocketEnvelope,
 } from './slack';
+import {
+  classifySlackReportBugEnvelope,
+  slackReportBugConfig,
+  type SlackReportModalRequest,
+} from './slack-report-bug';
 
 const RECONCILE_MS = 15_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -52,6 +58,8 @@ export interface SlackSocketManagerDeps {
     source: ExternalTriggerSourceRow,
     envelope: SlackSocketEnvelope,
   ) => Promise<SlackNormalizedEvent | null>;
+  /** Opens the "Report a bug" form for a message-shortcut click; defaults to Slack views.open. */
+  openReportBugModal?: (botToken: string, request: SlackReportModalRequest) => Promise<void>;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
   now?: () => number;
   log?: (message: string) => void;
@@ -106,6 +114,15 @@ export class SlackSocketManager {
     }).catch((updateError) => this.log(`source ${source.id} health update failed: ${String(updateError)}`));
   }
 
+  private async openReportBugModal(source: ExternalTriggerSourceRow, request: SlackReportModalRequest): Promise<void> {
+    const credentials = await (this.deps.resolveCredentials
+      ?? ((row, slug) => resolveSlackSocketCredentials(row, slug)))(source, installSlug(source));
+    await (this.deps.openReportBugModal ?? ((token, req) => openSlackReportBugModal(token, req)))(
+      credentials.botToken,
+      request,
+    );
+  }
+
   private rememberLiveChannel(connection: Connection, event: SlackNormalizedEvent | null): Promise<void> {
     if (!event?.channelId) return Promise.resolve();
     const current = Array.isArray(connection.source.cursor.channels)
@@ -144,6 +161,15 @@ export class SlackSocketManager {
       }
       if (envelope.type === 'disconnect') {
         try { socket.close(); } catch { /* already closed */ }
+        return;
+      }
+      // A "Report a bug" click must open its form within Slack's 3-second trigger_id
+      // window, so it skips the serialized ingest chain; the form's submission arrives as
+      // a separate envelope and is ingested in order like any other signal.
+      const reportBug = classifySlackReportBugEnvelope(envelope, slackReportBugConfig(connection.source.config));
+      if (reportBug?.kind === 'open-modal') {
+        void this.openReportBugModal(connection.source, reportBug.request)
+          .catch((error) => this.log(`source ${source.id} report-bug form failed: ${String(error)}`));
         return;
       }
       connection.processing = connection.processing

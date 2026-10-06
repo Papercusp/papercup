@@ -47,7 +47,64 @@ async function waitForFile(path: string, timeoutMs = 4_000) {
   throw new Error(`timed out waiting for ${path}`);
 }
 
+// A PATH shim that counts sha256sum launches. `perturbFirstBatch` corrupts the first
+// multi-file call's output, which is what a helper edited mid-copy looks like to the batch.
+async function sha256Shim(root: string, perturbFirstBatch = false) {
+  const shim = join(root, 'shim');
+  await mkdir(shim);
+  const log = join(root, 'sha256sum.log');
+  const real = spawnSync('bash', ['-c', 'command -v sha256sum'], { encoding: 'utf8' }).stdout.trim();
+  expect(real).not.toBe('');
+  const perturb = perturbFirstBatch
+    ? `if [ "$#" -gt 2 ] && [ ! -e "${log}.perturbed" ]; then : > "${log}.perturbed"; "${real}" "$@"; echo changed; exit 0; fi\n`
+    : '';
+  await writeExecutable(join(shim, 'sha256sum'), `#!/usr/bin/env bash\necho "$#" >> "${log}"\n${perturb}exec "${real}" "$@"\n`);
+  return { env: { PATH: `${shim}:${process.env.PATH}` }, launches: async () => (await readFile(log, 'utf8')).split('\n').filter(Boolean).length };
+}
+
+async function helperFixture(root: string) {
+  const bin = join(root, 'bin');
+  await mkdir(join(bin, 'lib'), { recursive: true });
+  for (let i = 0; i < 40; i++) await writeFile(join(bin, `helper-${i}.sh`), `echo helper-${i}\n`);
+  for (let i = 0; i < 10; i++) await writeFile(join(bin, 'lib', `lib-${i}.sh`), `echo lib-${i}\n`);
+  const target = join(bin, 'target.sh');
+  await writeExecutable(
+    target,
+    '#!/usr/bin/env bash\nhere="$(dirname "${BASH_SOURCE[0]}")"\ncase "$here" in */bin) echo UNSNAPSHOTTED; exit 9;; esac\nsource "$here/helper-0.sh"\nsource "$here/helper-39.sh"\nsource "$here/lib/lib-9.sh"\n',
+  );
+  return target;
+}
+
 describe('papercusp-script-snapshot.sh', () => {
+  it('copies many adjacent helpers with a bounded number of hash processes (WI-10006358)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'script-snapshot-batch-'));
+    try {
+      const shim = await sha256Shim(root);
+      const result = await runWrapper(root, [await helperFixture(root)], shim.env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('helper-0\nhelper-39\nlib-9\n');
+      // Per-file copying launched 3 hashes per helper (150 for these 50). Batched it is
+      // constant: 3 for the launcher's self-copy, 3 for the target, 3 per helper directory.
+      expect(await shim.launches()).toBeLessThanOrEqual(12);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to per-file copying when a batch hash disagrees, still snapshotting every helper', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'script-snapshot-batch-fallback-'));
+    try {
+      const shim = await sha256Shim(root, true);
+      const result = await runWrapper(root, [await helperFixture(root)], shim.env);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('helper-0\nhelper-39\nlib-9\n');
+      // The perturbed directory was re-copied file by file (3 hashes each for 40 helpers).
+      expect(await shim.launches()).toBeGreaterThan(120);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('routes staging sync and its mutable setup script through the shared snapshot launcher', async () => {
     const dropin = await readFile(STAGING_DROPIN, 'utf8');
     expect(dropin).toContain('ExecStart=\nExecStart=/usr/bin/bash ');
@@ -317,11 +374,9 @@ const UNWRAPPED_ALLOWLIST: Record<string, string> = {
     'bundle-host.sh derives REPO_ROOT from its own directory, cds there, re-execs itself under a lock and reads .mjs helpers beside itself; it needs a repo-root override before it can run from a snapshot.',
   'apps/operator/scripts/systemd/papercup-embed-sidecar.service ExecStartPre apps/operator/bin/bundle-host.sh':
     'Same bundle-host.sh constraint as the bg-host drop-in: self-located repo root, lock re-exec, sibling .mjs helpers.',
-  'apps/operator/scripts/systemd/papercup-live-federation-gate.service ExecStart scripts/pc-heavy.sh':
-    'The target live-federation-gate.sh snapshots itself and re-execs from /tmp (wrapping it again breaks its BASH_SOURCE repo root); the pc-heavy.sh admission prefix has not been assessed for snapshot safety.',
 };
 
-type ExecFinding = { key: string; wrapped: boolean };
+type ExecFinding = { key: string; wrapped: boolean; scripts: string[] };
 
 const EXEC_LINE = /^(Exec(?:Start|StartPre|StartPost|Stop|StopPost|Reload|Condition))=(.*)$/;
 const SHELL_TOKEN = /[^\s'"=;]+\.sh\b/g;
@@ -359,6 +414,7 @@ function classifyUnitExecLines(unitPath: string, text: string, inheritedWorkDir?
     findings.push({
       key: `${unitPath} ${match[1]} ${script}`,
       wrapped: launcherAt !== -1 && launcherAt < rels.indexOf(script),
+      scripts: rels.filter((rel) => rel !== LAUNCHER_REL),
     });
   }
   return findings;
@@ -400,18 +456,28 @@ describe('systemd unit census: shared-tree scripts run from a snapshot (WI-10006
       'ExecStop=',
     ].join('\n');
     expect(classifyUnitExecLines('u.service', unit)).toEqual([
-      { key: 'u.service ExecStart bin/direct.sh', wrapped: false },
-      { key: 'u.service ExecStartPre bin/wrapped.sh', wrapped: true },
+      { key: 'u.service ExecStart bin/direct.sh', wrapped: false, scripts: ['bin/direct.sh'] },
+      { key: 'u.service ExecStartPre bin/wrapped.sh', wrapped: true, scripts: ['bin/wrapped.sh'] },
+    ]);
+    // Every shared-tree script on the line is recorded, so a target behind a wrapper prefix
+    // (pc-heavy.sh -- … gate.sh) is still visible to the self-climb check below.
+    const prefixed = `ExecStart=${launcher} ${SHARED_TREE_PREFIX}scripts/pc-heavy.sh -- /usr/bin/env bash bin/gate.sh`;
+    expect(classifyUnitExecLines('p.service', prefixed, SHARED_TREE_PREFIX + 'papercusp-desktop')).toEqual([
+      {
+        key: 'p.service ExecStart scripts/pc-heavy.sh',
+        wrapped: true,
+        scripts: ['scripts/pc-heavy.sh', 'papercusp-desktop/bin/gate.sh'],
+      },
     ]);
     // A relative script counts only under a shared-tree WorkingDirectory (its own or the base unit's).
     const relative = "ExecStartPre=/usr/bin/bash -c 'exec bin/bundle.sh'";
     expect(classifyUnitExecLines('r.service', relative, SHARED_TREE_PREFIX + 'apps/operator')).toEqual([
-      { key: 'r.service ExecStartPre apps/operator/bin/bundle.sh', wrapped: false },
+      { key: 'r.service ExecStartPre apps/operator/bin/bundle.sh', wrapped: false, scripts: ['apps/operator/bin/bundle.sh'] },
     ]);
     expect(classifyUnitExecLines('r.service', relative, '%h/windows-vm')).toEqual([]);
     // The launcher must PRECEDE the script; naming it after the target wraps nothing.
     expect(classifyUnitExecLines('a.service', `ExecStart=${SHARED_TREE_PREFIX}bin/t.sh ${launcher}`)).toEqual([
-      { key: 'a.service ExecStart bin/t.sh', wrapped: false },
+      { key: 'a.service ExecStart bin/t.sh', wrapped: false, scripts: ['bin/t.sh'] },
     ]);
   });
 
@@ -498,15 +564,18 @@ describe('wrapped scripts pin their checkout instead of climbing out of the snap
   it('every wrapped unit pins the checkout its script would otherwise derive from the snapshot path', async () => {
     const violations: string[] = [];
     const climbing: string[] = [];
-    for (const { key } of (await censusTrackedUnits()).filter((f) => f.wrapped)) {
-      const [unit, , script] = key.split(' ');
-      const text = await readFile(join(REPO_ROOT, script), 'utf8').catch(() => null);
-      if (text === null) continue;
-      if (text.split('\n').some(isSelfClimb)) climbing.push(script);
+    for (const { key, scripts } of (await censusTrackedUnits()).filter((f) => f.wrapped)) {
+      const unit = key.split(' ')[0];
       const unitTexts = [await readFile(join(REPO_ROOT, unit), 'utf8')];
       const base = /^(.*\.service)\.d\/[^/]+\.conf$/.exec(unit);
       if (base) unitTexts.push(await readFile(join(REPO_ROOT, base[1]), 'utf8').catch(() => ''));
-      if (unpinnedSelfClimbs(text, pinnedEnvironment(...unitTexts)).length > 0) violations.push(`${unit} ${script}`);
+      const pinned = pinnedEnvironment(...unitTexts);
+      for (const script of scripts) {
+        const text = await readFile(join(REPO_ROOT, script), 'utf8').catch(() => null);
+        if (text === null) continue;
+        if (text.split('\n').some(isSelfClimb)) climbing.push(script);
+        if (unpinnedSelfClimbs(text, pinned).length > 0) violations.push(`${unit} ${script}`);
+      }
     }
     // Positive control: these wrapped scripts DO climb (each behind a pinned override), so a
     // detector that matched nothing would pass the checks below vacuously.
@@ -515,6 +584,7 @@ describe('wrapped scripts pin their checkout instead of climbing out of the snap
         'bin/reap-stale-testvms.sh',
         'apps/operator/scripts/papercup-dht-liveness-check.sh',
         'infra/estate-backup/pc-estate-mirror-alert.sh',
+        'papercusp-desktop/bin/live-federation-gate.sh',
       ]),
     );
     expect(

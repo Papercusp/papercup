@@ -1718,6 +1718,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // search result (or its structured server-side failure) wins over an
   // ambiguous -32001 outcome.
   ['sessions:search', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-24857804837312348: the bounded historical sessions:list census can
+  // legitimately outlive ptool's 30s default while its indexed SQL completes.
+  // The tool does not declare a shorter server timeout, so the MCP transport
+  // owns the ~55s bound; keep the client outside it to observe the result or
+  // the server's typed timeout instead of returning outcome-unknown at 30s.
+  ['sessions:list', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21386877660531420: release:deploy status fans out through the release
   // pipeline and has a 20s server-side status bound. The dispatch queue and
   // projection overhead can consume the ordinary 30s client budget when it

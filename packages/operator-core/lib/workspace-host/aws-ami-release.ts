@@ -114,6 +114,13 @@ export interface AwsAmiReleaseRequest {
   publishedAt: string;
   /** AWS requires a future timestamp when image deprecation is enabled. */
   deprecatePreviousAt: string;
+  /**
+   * WI-10006386: the installed version of every AWS_AMI_REQUIRED_GUEST_TOOLS entry, as the rpm
+   * database in the bake's syft SBOM records it. bootc-image-release-request-cli derives it from
+   * the same SBOM the trust report binds; nothing hand-maintains it. When absent, the adapter needs
+   * the operator's `--guest-tool-versions-file`; when both exist they must agree.
+   */
+  guestToolVersions?: Readonly<Record<string, string>>;
 }
 
 export interface AwsAmiSnapshotEvidence {

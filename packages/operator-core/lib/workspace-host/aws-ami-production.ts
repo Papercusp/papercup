@@ -850,6 +850,32 @@ export async function probeAwsAmiExecutables(
 }
 
 /** Run the release contract through the connection-bound production adapter. */
+/**
+ * WI-10006386: the guest-tool versions the AMI is tagged with. `derived` is the request's
+ * SBOM-derived set (AwsAmiReleaseRequest.guestToolVersions); `override` is the operator's
+ * `--guest-tool-versions-file`. An override may restate the derived versions but never contradict
+ * them, and may not name a tool the SBOM does not record: either would tag the image with a
+ * version no evidence supports.
+ */
+export function resolveAwsAmiGuestToolVersions(
+  derived: Readonly<Record<string, string>> | undefined,
+  override: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> | undefined {
+  if (!derived) return override;
+  if (!override) return derived;
+  const conflicts = Object.entries(override)
+    .filter(([name, version]) => derived[name] !== version.trim())
+    .map(([name, version]) =>
+      derived[name] === undefined
+        ? `${name} (override ${version}; the SBOM records no version)`
+        : `${name} (override ${version}; SBOM ${derived[name]})`,
+    );
+  if (conflicts.length > 0) {
+    fail(`--guest-tool-versions-file disagrees with the bake SBOM: ${conflicts.join('; ')}`);
+  }
+  return derived;
+}
+
 export async function executeConfiguredAwsAmiRelease(
   request: AwsAmiReleaseRequest,
   connection: WorkspaceHostProviderConnection,
@@ -859,5 +885,9 @@ export async function executeConfiguredAwsAmiRelease(
   if (connection.scope?.id !== request.publisherAccountId) {
     fail(`publisherAccountId '${request.publisherAccountId}' is not the connection's account '${connection.scope?.id ?? ''}'`);
   }
-  return await executeAwsAmiRelease(request, composeAwsAmiReleaseAdapter(connection, options, overrides));
+  const guestToolVersions = resolveAwsAmiGuestToolVersions(request.guestToolVersions, options.guestToolVersions);
+  return await executeAwsAmiRelease(
+    request,
+    composeAwsAmiReleaseAdapter(connection, { ...options, ...(guestToolVersions ? { guestToolVersions } : {}) }, overrides),
+  );
 }

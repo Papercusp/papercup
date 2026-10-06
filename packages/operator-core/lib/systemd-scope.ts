@@ -273,6 +273,26 @@ export function checkpointScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env):
   return CHECKPOINT_SCOPE_OVERHEAD_G + CHECKPOINT_FORKS_BY_MODE[mode] * CHECKPOINT_FORK_HEAP_G;
 }
 
+/** A green command that runs the Papercusp Vitest fork runner (the suite the fork heaps model). */
+const VITEST_FORK_SUITE_RE = /\btest:affected\b|\bvitest\b/;
+
+/**
+ * Memory cap (GiB) for one install's green-checkpoint scope, sized by the suite it runs
+ * (WI-10006274). The fork-derived cap models the Papercusp Vitest affected runner; an install
+ * whose green command runs anything else (a foreign pot's `npm test` running node:test, a build)
+ * has no Vitest fork heaps, so it requests the scope overhead alone. `greenCmd` is the routing
+ * overlay's command; null/undefined means the install runs the operator-home default suite.
+ */
+export function checkpointScopeMemoryMaxGForGreenCmd(
+  greenCmd: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (greenCmd == null || greenCmd.trim() === '' || VITEST_FORK_SUITE_RE.test(greenCmd)) {
+    return checkpointScopeMemoryMaxG(env);
+  }
+  return CHECKPOINT_SCOPE_OVERHEAD_G;
+}
+
 /**
  * Swap policy for a transient scope. Choose by what the payload IS, not by habit.
  *

@@ -3240,7 +3240,7 @@ export const DARK_FLAGS: ReadonlyMap<
     {
       case: "owner-authority",
       reason:
-        "external-triggers-gmail-slack-2026-08-22 P-011: automatic Gmail sending is an outward-facing owner-authority action. The shipped gmail:create-draft tool has no send branch and remains live independently; OFF reserves the separate auto-send capability until the owner ratifies its review, recipient, and failure policy.",
+        "external-triggers-gmail-slack-2026-08-22 P-011: automatic Gmail sending is an outward-facing owner-authority action. Enforced by mail:reply's trigger-run path (capability-verbs/mail.ts replyToTriggerPlanRun), which refuses mode:'send' from a triggered run while this is OFF; drafting stays live independently. OFF reserves auto-send until the owner ratifies its review, recipient, and failure policy.",
     },
   ],
   [

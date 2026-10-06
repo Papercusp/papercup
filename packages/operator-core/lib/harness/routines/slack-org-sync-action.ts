@@ -1,7 +1,8 @@
 /**
  * `system:slack-org-sync` — runs the Slack organization connector on a cadence
- * (plan enterprise-data-sources-2026-10-01 P-016, D-026; modelled on
- * `google-gmail-poll-action.ts`).
+ * (plan enterprise-data-sources-2026-10-01 P-016, D-026; modelled on the
+ * since-retired `google-gmail-poll-action.ts`, whose Gmail sync is now the `gmail`
+ * provider plugin run by `system:connector-sync`).
  *
  * Each fire, for every organization Slack source (credential model
  * `customer-internal-app`, connected via `POST /admin/triggers/slack/connect-org`):

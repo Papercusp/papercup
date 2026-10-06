@@ -146,6 +146,7 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
         ref: 'credential:prod-db',
         summary: 'Provide the production DB credential.',
         nextVerb: 'setup:save_key',
+        defaultIfUnanswered: 'stay parked until the credential is supplied',
       },
       'tester',
       '2026-08-23T18:00:00.000Z',
@@ -194,7 +195,37 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
 
     await expect(
       wi.setWorkItemStateWithAliasInfo('EI-echo-1', 'needs-human', { harness: H, by: 'tester' }),
-    ).rejects.toThrow(/no structured owner ask.*work_items:set_blocker/);
+    ).rejects.toThrow(/no answerable owner ask.*work_items:set_blocker/);
+  });
+
+  // D-029: a structured ask with no defaultIfUnanswered cannot be answered (the owner cannot see
+  // what happens if they never reply), so the canonical writer refuses it exactly like no ask.
+  it('refuses a structured owner ask that carries no defaultIfUnanswered', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:no-default',
+        summary: 'Provide the staging credential.',
+        nextVerb: 'setup:save_key',
+      },
+      'tester',
+      '2026-08-23T18:00:00.000Z',
+    );
+    await seedIssue('EI-no-default', {
+      kind: 'change',
+      status: 'open',
+      createdTs: 100,
+      payload: { humanCapability: 'credential', externalBlockers: blockers },
+    });
+
+    await expect(
+      wi.setWorkItemStateWithAliasInfo('EI-no-default', 'needs-human', { harness: H, by: 'tester' }),
+    ).rejects.toThrow(/no answerable owner ask.*defaultIfUnanswered/);
+    const rows = await db.sql<{ status: string }[]>`
+      SELECT status FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = 'EI-no-default'`;
+    expect(rows[0]?.status).toBe('open');
   });
 
   it('keeps a strict structured owner ask parked and replaces the legacy key atomically', async () => {
@@ -206,6 +237,7 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
         ref: 'credential:prod-db',
         summary: 'Provide the production DB credential.',
         nextVerb: 'setup:save_key',
+        defaultIfUnanswered: 'stay parked until the credential is supplied',
       },
       'tester',
       '2026-08-23T18:00:00.000Z',
@@ -235,6 +267,7 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
         ref: 'decision:scope',
         summary: 'Choose the supported scope.',
         nextVerb: 'Record the product decision.',
+        defaultIfUnanswered: 'keep the current scope',
       },
       'tester',
       '2026-08-23T18:00:00.000Z',

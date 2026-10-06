@@ -2,10 +2,11 @@
   "name": "@papercupai/papercusp-monorepo",
   "private": true,
   "version": "0.0.1",
-  "packageManager": "npm@11.12.1",
+  "packageManager": "npm@11.19.0",
   "engines": {
     "//": "Pin the runtime to Node 25 (ABI 141 / NODE_MODULE_VERSION 141). The fleet runs linuxbrew node 25; native addons (better-sqlite3) built under any other major (e.g. nvm 22 = ABI 127) fail to load at runtime ('Module did not self-register'). See infra-fail-fast-build-integrity-2026-06-19 P-003 + .nvmrc. Advisory (no engine-strict) — declares the pin for nvm/CI/contributors; the deploy-gate native-addon preflight is the hard ABI enforcer.",
-    "node": ">=25"
+    "node": ">=25",
+    "npm": ">=11.19.0"
   },
   "workspaces": [
     "apps/*",

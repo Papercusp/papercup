@@ -31,8 +31,17 @@ describe('Slack external-trigger adapter', () => {
   it('ships a Socket Mode manifest with the event, history, command, and reply scopes', () => {
     expect(SLACK_APP_MANIFEST_TEMPLATE.settings).toMatchObject({
       socket_mode_enabled: true,
-      event_subscriptions: { bot_events: ['app_mention', 'message.im'] },
+      interactivity: { is_enabled: true },
+      event_subscriptions: {
+        bot_events: ['app_mention', 'message.im', 'reaction_added', 'message.channels', 'message.groups'],
+      },
     });
+    // slack-messages-to-bug-reports P-002: the report-bug gestures need the reaction
+    // scope and the "Report a bug" message shortcut.
+    expect(SLACK_APP_MANIFEST_TEMPLATE.oauth_config.scopes.bot).toEqual(expect.arrayContaining(['reactions:read', 'files:read']));
+    expect(SLACK_APP_MANIFEST_TEMPLATE.features.shortcuts).toEqual([
+      expect.objectContaining({ type: 'message', callback_id: 'papercusp_report_bug', name: 'Report a bug' }),
+    ]);
     expect(SLACK_APP_MANIFEST_TEMPLATE.oauth_config.scopes.bot).toEqual(expect.arrayContaining([
       'app_mentions:read', 'channels:history', 'groups:history', 'im:history', 'mpim:history', 'commands',
       // The flagship below calls chat.postMessage; without this the canonical

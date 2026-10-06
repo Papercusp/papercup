@@ -1588,3 +1588,44 @@ ssh aviweiss@172.31.44.2 'curl -s 127.0.0.1:18788/healthz | head -c 80; echo;
 systemctl --user disable --now papercusp-mac-vm-gateway-tunnel.service
 # and boot the VM operator with PAPERCUSP_RIG_GATEWAY_UPSTREAM= (empty) to use its own sign-in
 ```
+
+# VirtualBox kernel-update rebuild hook — reboot-residue D-004 (WI-10005993, WI-10006387)
+
+Oracle's `virtualbox-7.2` package ships **no kernel-update hook**. Without one, every
+kernel update leaves `vboxdrv` unbuilt for the new kernel, and VirtualBox is down after
+the next reboot until someone runs `vboxdrv.sh setup` by hand. That is exactly how the
+`7.0.0-34-generic` reboot took it down (reboot-residue-service-repairs-2026-10-03).
+`vboxdrv-rebuild.kernel-hook` runs `vboxdrv.sh setup <kver>` for each newly installed
+kernel. It **never exits non-zero**, because a failing kernel hook wedges dpkg (WI-38019);
+a failed build is reported on stderr and to syslog (`journalctl -t vboxdrv-rebuild`), with
+the build log in `/var/log/vboxdrv-rebuild-<kver>.log`. The image hook can fire before the
+headers are installed; the `header_postinst.d` copy runs it again once they are.
+
+Behaviour is pinned by `apps/operator/scripts/__tests__/vboxdrv-rebuild-kernel-hook.test.ts`,
+which executes the hook against stubs.
+
+## Install or update
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+sudo install -o root -g root -m 0755 vboxdrv-rebuild.kernel-hook \
+  /etc/kernel/postinst.d/vboxdrv-rebuild
+sudo install -o root -g root -m 0755 vboxdrv-rebuild.kernel-hook \
+  /etc/kernel/header_postinst.d/vboxdrv-rebuild
+```
+
+Install root-owned copies, not symlinks: dpkg runs these as root, so they must never
+execute from the user-writable shared checkout.
+
+## Verify
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+cmp vboxdrv-rebuild.kernel-hook /etc/kernel/postinst.d/vboxdrv-rebuild
+cmp vboxdrv-rebuild.kernel-hook /etc/kernel/header_postinst.d/vboxdrv-rebuild
+run-parts --test --arg="$(uname -r)" /etc/kernel/postinst.d | grep vboxdrv-rebuild
+modinfo -F vermagic vboxdrv   # first field must equal `uname -r`
+```
+
+Both `cmp` calls must be silent (exit 0). A difference means the installed hook has
+drifted from the reviewed copy, so re-run the install step.

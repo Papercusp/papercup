@@ -14,6 +14,13 @@ import {
   upsertOwnedExternalTriggerSource,
   updateExternalTriggerSourceSyncState,
 } from './source-store';
+import {
+  classifySlackReportBugEnvelope,
+  slackReportBugConfig,
+  slackReportBugModalView,
+  SLACK_REPORT_BUG_SHORTCUT_CALLBACK_ID,
+  type SlackReportModalRequest,
+} from './slack-report-bug';
 
 export const SLACK_HISTORY_MIN_INTERVAL_MS = 60_000;
 const SLACK_API_ORIGIN = 'https://slack.com';
@@ -22,7 +29,7 @@ export const SLACK_APP_MANIFEST_TEMPLATE = {
   _metadata: { major_version: 2 },
   display_information: {
     name: 'Papercusp Triggers',
-    description: 'Starts Papercusp triggered plans from Slack mentions, direct messages, and slash commands.',
+    description: 'Starts Papercusp triggered plans from Slack mentions, direct messages, and slash commands, and reports bugs from flagged messages.',
     background_color: '#312e81',
   },
   features: {
@@ -31,6 +38,13 @@ export const SLACK_APP_MANIFEST_TEMPLATE = {
       command: '/papercusp',
       description: 'Start a Papercusp triggered plan',
       should_escape: false,
+    }],
+    // slack-messages-to-bug-reports P-002: the "Report a bug" entry in a message's ⋯ menu.
+    shortcuts: [{
+      name: 'Report a bug',
+      type: 'message',
+      callback_id: SLACK_REPORT_BUG_SHORTCUT_CALLBACK_ID,
+      description: 'Report this message to Papercusp as a bug',
     }],
   },
   oauth_config: {
@@ -43,13 +57,20 @@ export const SLACK_APP_MANIFEST_TEMPLATE = {
         'mpim:history',
         'commands',
         'chat:write',
+        // Report-bug gestures: the bug-emoji reaction, and the files a reporter consents to attach.
+        'reactions:read',
+        'files:read',
       ],
     },
   },
   settings: {
     socket_mode_enabled: true,
     token_rotation_enabled: false,
-    event_subscriptions: { bot_events: ['app_mention', 'message.im'] },
+    // reaction_added, message.channels and message.groups carry the report-bug gestures
+    // (slack-report-bug.ts); each is ignored unless a channel rule turns its gesture on.
+    event_subscriptions: {
+      bot_events: ['app_mention', 'message.im', 'reaction_added', 'message.channels', 'message.groups'],
+    },
     interactivity: { is_enabled: true },
   },
 } as const;
@@ -68,7 +89,7 @@ export interface SlackSocketEnvelope {
 }
 
 export interface SlackNormalizedEvent {
-  event: 'mention' | 'dm' | 'slash-command';
+  event: 'mention' | 'dm' | 'slash-command' | 'report-bug';
   externalId: string;
   dedupeKey: string;
   occurredAt: string | null;
@@ -291,13 +312,23 @@ export function normalizeSlackSocketEnvelope(envelope: SlackSocketEnvelope): Sla
   return null;
 }
 
+/**
+ * Ingest one Socket Mode envelope. Report-bug gestures (slack-report-bug.ts) are
+ * classified first: a gesture becomes one `report-bug` chat event, and an envelope the
+ * report-bug path consumes emits nothing. The "Report a bug" shortcut itself emits
+ * nothing here either: SlackSocketManager opens its form BEFORE the serialized ingest
+ * chain, because Slack's trigger_id expires 3 seconds after the click; the form's
+ * submission is the signal.
+ */
 export async function ingestSlackSocketEnvelope(
   sql: postgres.Sql,
   source: ExternalTriggerSourceRow,
   envelope: SlackSocketEnvelope,
   ingest: Ingest = (db, event) => ingestExternalTriggerEvent(db, event),
 ): Promise<SlackNormalizedEvent | null> {
-  const normalized = normalizeSlackSocketEnvelope(envelope);
+  const reportBug = classifySlackReportBugEnvelope(envelope, slackReportBugConfig(source.config));
+  if (reportBug && reportBug.kind !== 'signal') return null;
+  const normalized = reportBug?.event ?? normalizeSlackSocketEnvelope(envelope);
   if (!normalized) return null;
   const result = await ingest(sql, {
     workspaceId: source.workspaceId,
@@ -329,6 +360,28 @@ export async function openSlackSocketUrl(
   );
   if (!body.url?.startsWith('wss://')) throw new Error('slack_socket_url_missing');
   return body.url;
+}
+
+/** Open the "Report a bug" form for a message-shortcut click (Slack views.open). */
+export async function openSlackReportBugModal(
+  botToken: string,
+  request: SlackReportModalRequest,
+  deps: { fetch?: typeof fetch; apiOrigin?: string } = {},
+): Promise<void> {
+  if (!request.triggerId.trim()) throw new Error('slack_report_bug_trigger_missing');
+  const origin = (deps.apiOrigin ?? SLACK_API_ORIGIN).replace(/\/$/, '');
+  await slackJson<{ ok?: boolean }>(
+    await (deps.fetch ?? fetch)(`${origin}/api/views.open`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${assertToken(botToken, 'xoxb-', 'bot_token')}`,
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ trigger_id: request.triggerId, view: slackReportBugModalView(request) }),
+    }),
+    'views_open',
+  );
 }
 
 export interface SlackThreadMessageResult {
