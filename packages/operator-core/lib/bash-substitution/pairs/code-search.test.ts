@@ -14,7 +14,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { matchingAtoms } from '../equivalence';
+import { auditPair, matchingAtoms } from '../equivalence';
+import { renderRoutingBlock } from '../routing-table';
 import { assertPolicyTier } from '../types';
 import type { CorpusFixture } from '../corpus';
 import { resolveDirectoryAnchor } from '../../code-intelligence/lsp-adapter';
@@ -23,6 +24,8 @@ import {
   CALLERS_GRAPH_MEASUREMENT,
   CALLERS_GRAPH_OUTCOMES,
   callerIdentOf,
+  CODE_SEARCH_PAIRS,
+  coverCallersLookupAgainst,
   GITNEXUS_INDEX_FINDING,
   graphCallersLookup,
   lspDefinitionLookup,
@@ -270,34 +273,56 @@ describe('code-search.callers-lookup — what it claims', () => {
     expect(claimsCallers('grep -rn "requirePrincipal(" packages/operator-core/lib > /tmp/x')).toBe(false);
     expect(claimsCallers('grep -rn "isBogon(" node_modules/hyperdht/lib')).toBe(false);
   });
+
+  // WI-10006543: every line `"EventKey("` printed was another name (getEventKey( ...).
+  it('does not claim a capitalised partial name, but claims it word-bounded', () => {
+    expect(claimsCallers('grep -rn "EventKey(" --include=*.ts packages/operator-core/lib/cupboard')).toBe(false);
+    expect(claimsCallers("grep -rn 'EventKey\\(' packages/operator-core/lib")).toBe(false);
+    expect(claimsCallers('grep -rn "\\bEventKey(" packages/operator-core/lib')).toBe(true);
+  });
 });
 
 describe('code-search.callers-lookup — cover() names every reason the graph cannot answer', () => {
-  it('maps a resolved identifier with repo-anchored roots onto graph:query callers', () => {
-    expect(coverCallers('grep -rn "requirePrincipal(" --include=*.ts packages/operator-core/lib apps/operator/lib')).toEqual({
+  it('maps a resolved identifier onto graph:query callers over the grep roots', () => {
+    expect(coverCallers('grep -rn "requirePrincipal(" --include=*.ts packages/operator-core/lib apps/operator/lib/')).toEqual({
       covered: true,
-      expression: 'graph:query { op: "callers", name: "requirePrincipal" }',
+      expression: 'graph:query { op: "callers", name: "requirePrincipal", paths: ["packages/operator-core/lib","apps/operator/lib"] }',
     });
     // A directory that contains projects is still inside this repo.
-    expect(coverCallers('grep -rln "splitMarkdown(" libs/generic').covered).toBe(true);
+    expect(coverCallers('grep -rln "splitMarkdown(" libs/generic').expression).toContain('paths: ["libs/generic"]');
   });
 
-  it('covers a verified empty answer, and the names the GitNexus backend could not answer (D-027)', () => {
-    // no-callers: the only grep line is a comment, so the empty answer is grep's answer too.
-    expect(coverCallers('grep -rn "DBOSUnexpectedStepError(" packages/operator-core/lib').covered).toBe(true);
-    // Previously ambiguous, file-only, not-found and missed respectively.
-    for (const ident of ['readCell', 'gcVerifyInstances', 'supportsContext1m', 'joinSharedHarness']) {
-      expect(coverCallers(`grep -rn "${ident}(" packages/operator-core/lib`).covered, ident).toBe(true);
-    }
+  it('covers a verified empty answer: no code file under the root has the call', () => {
+    expect(coverCallers('grep -rn "failOnConsole(" packages/operator-core').covered).toBe(true);
   });
 
+  it('refuses a capitalised partial name and an unmeasured identifier', () => {
+    expect(coverCallers('grep -rn "EventKey(" packages/operator-core/lib').reason).toMatch(/partial-name search/);
+    expect(coverCallers('grep -rn "neverMeasuredIdentifier(" packages/operator-core/lib').reason).toMatch(
+      /no graph answerability measurement/,
+    );
+  });
+
+  // Against an explicit measurement, so each refusal stays tested when no sampled name has it.
   it.each([
-    ['error', 'grep -rn "fetch(" packages/operator-core/lib', /answered with an error/],
-    ['unmeasured', 'grep -rn "neverMeasuredIdentifier(" packages/operator-core/lib', /no graph answerability measurement/],
-  ])('a measured %s identifier is not covered', (_label, atom, reason) => {
-    const result = coverCallers(atom);
+    ['error', /answered with an error/],
+    ['missed', /omitted a line grep finds that is a call/],
+  ] as const)('a measured %s identifier is not covered', (outcome, reason) => {
+    const result = coverCallersLookupAgainst('grep -rn "someName(" packages/operator-core/lib', { someName: outcome }, {});
     expect(result.covered).toBe(false);
     expect(result.reason).toMatch(reason);
+  });
+
+  it('covers a root-missing identifier only on the recorded missing roots', () => {
+    const outcomes = { handler: 'root-missing' } as const;
+    const missing = { handler: ['packages/agent-mcp/src/define-tool.ts'] };
+    expect(coverCallersLookupAgainst('grep -rn "handler(" packages/agent-mcp/src/define-tool.ts', outcomes, missing)).toEqual({
+      covered: true,
+      expression: 'graph:query { op: "callers", name: "handler", paths: ["packages/agent-mcp/src/define-tool.ts"] }',
+    });
+    expect(coverCallersLookupAgainst('grep -rn "handler(" packages/operator-core/lib', outcomes, missing).reason).toMatch(
+      /measured only on a search root that does not exist/,
+    );
   });
 
   it.each([
@@ -342,16 +367,22 @@ describe('code-search.callers-lookup — measurement and promotion state', () =>
     expect(tally).toEqual(CALLERS_GRAPH_MEASUREMENT.tally);
   });
 
-  it('is recorded needs-widening and pinned at observe until the graph can answer', () => {
+  it('derives equivalent on the re-scoped sample, and records that verdict', () => {
+    const audit = auditPair(graphCallersLookup, fixture.sample, fixture);
+    expect(audit.failingCases).toEqual([]);
+    expect(audit.verdict).toBe('equivalent');
+    expect(graphCallersLookup.expectedVerdict).toBe('equivalent');
+  });
+
+  it('stays at observe and out of the routing table until `paths` is live on :3070', () => {
     expect(graphCallersLookup.toolName).toBe('graph:query');
-    expect(graphCallersLookup.expectedVerdict).toBe('needs-widening');
-    // D-027: the hold names what still blocks promotion — the deploy and the population re-scope.
-    expect(graphCallersLookup.holdAtObserve).toMatch(/D-027/);
-    expect(graphCallersLookup.holdAtObserve).toMatch(/:3070/);
-    expect(graphCallersLookup.holdAtObserve).toMatch(/not anchored inside this repo/);
-    // D-018: the hold names the work-item that owns lifting it, so the deferral cannot go unowned.
-    expect(graphCallersLookup.holdAtObserve).toMatch(/WI-10006543/);
+    // The hold and the withheld routing name the deploy that blocks them and the work-item that owns lifting them (D-018).
+    for (const reason of [graphCallersLookup.holdAtObserve, graphCallersLookup.routingWithheld]) {
+      expect(reason).toMatch(/:3070/);
+      expect(reason).toMatch(/WI-10006543/);
+    }
     expect(assertPolicyTier(graphCallersLookup)).toBe('observe');
+    expect(renderRoutingBlock(CODE_SEARCH_PAIRS)).not.toContain('who CALLS a symbol');
     expect(graphCallersLookup.advisoryText).toMatch(/answer with an error/);
   });
 

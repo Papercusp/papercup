@@ -575,10 +575,10 @@ export const lspDefinitionLookup: BashSubstitutionPair = {
 // ── P-002(d) / D-010(d): who CALLS this symbol ───────────────────────────────
 //
 // Population (30 days to 2026-10-06T08:00Z, harness_shared.session_turn_parts):
-// 462 recursive greps whose quoted pattern is `IDENT(` across 131 sessions, 363
-// distinct identifiers (fixtures/code-search.callers-lookup.sample.json carries
-// totalAtoms/totalSessions; D-017). graph:query { op:'callers', name } is the
-// routed tool.
+// recursive greps whose quoted pattern is `IDENT(` (D-017: 462 atoms, 131
+// sessions before the WI-10006543 re-scope below; the fixture's
+// totalAtoms/totalSessions carry the re-scoped count). graph:query
+// { op:'callers', name, paths } is the routed tool.
 //
 // Backend (D-026, WI-10006543): graph:query callers is answered by the vendored
 // TypeScript call hierarchy over the workspace's current source
@@ -588,41 +588,93 @@ export const lspDefinitionLookup: BashSubstitutionPair = {
 // (ambiguous names, file-level edges, symbols missing from the index) no longer
 // occur. {@link CALLERS_GRAPH_OUTCOMES} is re-measured against it (D-027).
 //
-// This pair is still RECORDED `needs-widening`, not certified (D-027):
-//  - The envelope refuses a search root that is not anchored inside this repo (a
-//    bare `packages`, `apps`, `libs`, `.`). The atom does not carry the cwd, and
-//    other checkouts on this box share those first segments. 25 of the 40 sampled
-//    atoms are refused this way before the backend is asked. The definition pair
-//    avoids this by requiring a project root in its bashPattern; re-scoping this
-//    pair's population the same way is the promotion step.
-//  - A name found in thousands of files (`fetch`: 2,578) exhausts the worker's
-//    heap, and the tool answers with an error. An error cannot be read as "no
-//    callers", but grep is still how that question gets asked.
+// Re-scoped by WI-10006543 (after D-027), and derived `equivalent` on the re-drawn
+// sample (40/40, see CALLERS_GRAPH_MEASUREMENT):
+//  - The population is greps whose EVERY root is anchored inside this repo. The
+//    atom does not carry the cwd, and other checkouts on this box share a bare
+//    `packages`/`apps`/`libs` first segment. 25 of the old 40 sampled atoms were such
+//    greps; the bashPattern now leaves them out (EXCLUDE_UNANCHORED_ROOT).
+//  - The tool takes `paths`, so it searches exactly the grep's roots. Repo-wide, a
+//    name in thousands of files (`fetch`: 2,578) exhausted the worker.
+//  - A capitalised `Name(` without a word boundary is a partial-name search
+//    (PARTIAL_NAME_PATTERN) and is left out too.
 // `cover()` therefore checks the envelope first, then looks the identifier up in
 // {@link CALLERS_GRAPH_OUTCOMES}: the tool's own answer for each identifier in the
 // frozen sample, measured on a named date. That table is evidence, not a model;
 // re-measure it whenever the fixture or the backend changes.
 //
 // What a resolved answer means: grep's matches include the definition line,
-// substrings (`fooBar(` matches `myfooBar(`), comments and strings. None of those
-// are callers, so the tool answering with fewer lines is the faithful answer to
-// "who calls X", not a loss. It can also return MORE than grep: a call through an
-// alias (`const f = mod.buildCarryBrief; f(...)`) has no `buildCarryBrief(` text.
-// A grep restricted to one root, an --include or an --exclude-dir asks about a
-// subset of the repo; the tool answers repo-wide with a path on every site, so the
-// subset is a filter over the answer, not a different question.
+// longer names ending in the pattern (`openEscalation(` matches
+// `reopenEscalation(`), comments and strings. None of those are callers, so the
+// tool answering with fewer lines is the faithful answer to "who calls X", not a
+// loss. It can also return MORE than grep: a call through an alias
+// (`const f = mod.sendMessage; f(...)`) or with type arguments (`fn<T>(`) has no
+// `NAME(` text. An --include or --exclude-dir narrows within the roots; the
+// answer carries a path on every site, so that subset is a filter over it.
 
 /** A quoted `IDENT(` pattern, optionally word-bounded or with an escaped paren. */
 const CALLER_PATTERN =
   String.raw`(?:"(?:\\b|\\<)?[A-Za-z_][\w$]*\\?\("|'(?:\\b|\\<)?[A-Za-z_][\w$]*\\?\(')`;
 
-/** Recover the identifier and whether the paren was escaped. */
-const CALLER_RE = /^(?:\\b|\\<)?([A-Za-z_][\w$]*)(\\?)\($/;
+/** Recover the word boundary (if any), the identifier and whether the paren was escaped. */
+const CALLER_RE = /^(\\b|\\<)?([A-Za-z_][\w$]*)(\\?)\($/;
+
+/**
+ * WI-10006543: a quoted `Name(` that starts with a capital and carries no word boundary. It matches
+ * the tail of every camelCase name ending in it (`"EventKey("` prints `getEventKey(`,
+ * `normalizeEventKey(`, ...), so the grep is a partial-name search, which graph:query callers (one
+ * exact name) cannot express. Measured on the re-scoped sample: all 19 lines `EventKey(` printed
+ * were other names, and no symbol is called `EventKey`. A word-bounded `"\bName("` asks for the
+ * exact name and stays claimed.
+ */
+const PARTIAL_NAME_PATTERN = String.raw`(?:"[A-Z][\w$]*\\?\("|'[A-Z][\w$]*\\?\(')`;
+
+/**
+ * Multi-segment directories that CONTAIN a listed project without being inside one
+ * (`libs/papercusp` holds `libs/papercusp/libs/db`). {@link repoAnchored} accepts them.
+ */
+const PROJECT_CONTAINERS: readonly string[] = (() => {
+  const out = new Set<string>();
+  for (const project of TS_PROJECT_ROOTS) {
+    const segments = project.split('/');
+    for (let i = 2; i < segments.length; i++) out.add(segments.slice(0, i).join('/'));
+  }
+  return [...out].filter((dir) => projectForAnchor(dir) === null).sort();
+})();
+
+/**
+ * A search operand anchored inside this repo, read the way {@link repoAnchored} reads
+ * {@link anchorForRoot}: a listed project or any path below it, or a containing
+ * directory, optionally followed by one glob segment (`libs/papercusp/*`).
+ */
+const ANCHORED_OPERAND =
+  `(?:${PROJECT_OPERAND}` +
+  `|(?:${byLengthDesc(PROJECT_CONTAINERS).join('|')})(?:/(?:[^\\s/]*[*?[{][^\\s]*)?)?)`;
+
+/** Flags that consume the NEXT token in their space form (`--include *.ts`). */
+const CALLER_SKIPPABLE = String.raw`(?:--(?:include|exclude|exclude-dir)\s+\S+|-\S+|2>\S*|&)`;
+
+/**
+ * WI-10006543 / D-027: the population is greps whose EVERY search root is anchored in
+ * this repo. Any token after the caller pattern that is not a flag, stderr plumbing or
+ * an anchored operand (`.`, `packages/`, an absolute path, another checkout) takes the
+ * atom out. A space-form `--include <glob>` can be read as a bare glob token here, so
+ * that spelling is excluded too: a narrowing, never a false claim.
+ */
+const EXCLUDE_UNANCHORED_ROOT =
+  `(?![^\\n]*${CALLER_PATTERN}(?:\\s+(?:${CALLER_SKIPPABLE}|${ANCHORED_OPERAND}(?=\\s|$)))*` +
+  `\\s+(?!-|2>|&)(?!${ANCHORED_OPERAND}(?=\\s|$))\\S)`;
+
+/** At least one anchored root: a rootless grep walks the shell's cwd, which the atom no longer carries. */
+const REQUIRE_ANCHORED_ROOT = `(?=[^\\n]*\\s${ANCHORED_OPERAND}(?=\\s|$))`;
+
+/** A partial-name search (see {@link PARTIAL_NAME_PATTERN}) is outside the population. */
+const EXCLUDE_PARTIAL_NAME = `(?![^\\n]*\\s${PARTIAL_NAME_PATTERN}(?=\\s|$))`;
 
 /** The identifier a caller-shaped grep asks about, or null. */
 export function callerIdentOf(atom: string): string | null {
   const parsed = parseGrepAtom(atom);
-  return parsed.pattern === null ? null : (CALLER_RE.exec(parsed.pattern)?.[1] ?? null);
+  return parsed.pattern === null ? null : (CALLER_RE.exec(parsed.pattern)?.[2] ?? null);
 }
 
 /**
@@ -638,72 +690,85 @@ export function callerIdentOf(atom: string): string | null {
  *  - `missed`: the answer omits a grep line that is a call. The worst class: an
  *    empty or short answer reads as "no other callers".
  *  - `error`: the tool answered with an error instead of sites.
+ *  - `root-missing`: the sampled grep searched a path that does not exist (the
+ *    agent's own grep failed on it too). The tool refuses that path by name, which
+ *    is grep's answer, so ONLY the recorded roots in
+ *    {@link CALLERS_GRAPH_MISSING_ROOTS} are covered; the name over any other root
+ *    is unmeasured.
  */
-export type CallersGraphOutcome = 'resolved' | 'no-callers' | 'not-found' | 'missed' | 'error';
+export type CallersGraphOutcome = 'resolved' | 'no-callers' | 'not-found' | 'missed' | 'error' | 'root-missing';
 
 /** Outcomes whose answer is the faithful answer to the grep's question. */
 const COVERED_CALLER_OUTCOMES: ReadonlySet<CallersGraphOutcome> = new Set(['resolved', 'no-callers', 'not-found']);
 
 export const CALLERS_GRAPH_MEASUREMENT = {
-  measuredAt: '2026-10-06T19:52:00Z',
-  headAtMeasurement: 'b7e4e4e4180b42f94d1781878808279e674cea23',
+  measuredAt: '2026-10-06T21:09:00Z',
+  headAtMeasurement: '902eb5976a2aa278aaf7f778fd227948d6b922cd',
   backend: 'typescript-service (code-intelligence/first-party-callers.ts, D-026)',
   tool:
-    "graph:query { op: 'callers', name, limit: 500 }: the real handler run in-process on the staging working tree " +
-    '(forked worker, 60 s budget, 3,072 MB heap), not the deployed :3070 facade',
+    "graph:query { op: 'callers', name, limit: 500, paths: <the atom's own anchored roots> }: the real handler run " +
+    'in-process on the staging working tree (forked worker, 60 s budget, 3,072 MB heap), not the deployed :3070 facade',
   grepCheck:
-    'ripgrep `(?<![\\w$])NAME\\s*\\(` over ts/tsx/mts/cts/js/jsx/mjs/cjs outside node_modules; each omitted line ' +
-    'classified by AST, and the scoped program compared with the full transitive closure',
-  evidence: 'docs/evidence/gitnexus-callers-remeasure-2026-10-06.json',
-  tally: { resolved: 38, 'no-callers': 1, error: 1 },
+    'ripgrep `(?<![\\w$])NAME\\s*\\(` over ts/tsx/mts/cts/js/jsx/mjs/cjs outside node_modules, over the SAME roots, ' +
+    'with --with-filename (a single-file root otherwise prints no path and parsed as zero lines); each omitted line ' +
+    'classified by AST. A literal `NAME(` census over the same roots checks for partial-name searches.',
+  evidence: 'docs/evidence/gitnexus-callers-remeasure-scoped-2026-10-06.json',
+  tally: { resolved: 39, 'not-found': 1 },
 } as const;
 
 export const CALLERS_GRAPH_OUTCOMES: Readonly<Record<string, CallersGraphOutcome>> = {
-  // The one grep line is a comment.
-  DBOSUnexpectedStepError: 'no-callers',
-  acknowledgeControlTransition: 'resolved',
-  amendRubric: 'resolved',
-  applyShippedDocVectorSeed: 'resolved',
+  // Plus one call grep cannot see (su-session-host.test.ts).
+  acceptCommand: 'resolved',
+  appliedIdentityArtifact: 'resolved',
+  applySessionPresenceSet: 'resolved',
   attributionMapForRepo: 'resolved',
-  // Plus one aliased call grep cannot see (events/await/wake-executor.ts).
-  buildCarryBrief: 'resolved',
-  bulkDedupInFlight: 'resolved',
-  claimAdvSessionResume: 'resolved',
-  compileLaunchSpecificationArtifact: 'resolved',
-  createHostedDesktopBackend: 'resolved',
-  createOrgTestDb: 'resolved',
-  deriveSessionState: 'resolved',
-  drainQueuedEpochContent: 'resolved',
-  ensureHeapSampling: 'resolved',
-  estimatePrice: 'resolved',
-  // 2,578 candidate files: the worker exhausted its heap and the tool returned that error.
-  fetch: 'error',
-  gcVerifyInstances: 'resolved',
-  gitSidecarEnabled: 'resolved',
-  hostedAwsHostStackFragment: 'resolved',
-  intakeConfidenceRefusal: 'resolved',
-  joinSharedHarness: 'resolved',
-  listLiveSessionPresence: 'resolved',
+  buildRubricTemplateData: 'resolved',
+  claimIssue: 'resolved',
+  createCheckpointTreeFixPrecheckRunner: 'resolved',
+  // Plus two calls grep cannot see (plan-items/convert.integration.test.ts).
+  createWorkItem: 'resolved',
+  dispatchProjectedTool: 'resolved',
+  enqueueDependencyPrebuild: 'resolved',
+  ensurePotGitRepo: 'resolved',
+  evaluateScorecardInstrumentContract: 'resolved',
+  // No code file under the root contains `failOnConsole(`; the call lives in libs/test-config.
+  failOnConsole: 'not-found',
+  getContent: 'resolved',
+  gitPipelineSnapshot: 'resolved',
+  harnessFsAdapter: 'resolved',
+  installPluginFromCupboard: 'resolved',
+  invalidateFromSse: 'resolved',
+  json: 'resolved',
+  llmCallViaCodexGateway: 'resolved',
   mapLiveLockHoldingsForRepo: 'resolved',
-  openAppChannel: 'resolved',
-  planWorkspaceHostRecovery: 'resolved',
-  promotePlanItems: 'resolved',
-  readCell: 'resolved',
-  readSocialPost: 'resolved',
+  // 5 of grep's 131 lines are `reopenEscalation(`: another name, omitted by design.
+  openEscalation: 'resolved',
+  planAcceptanceChangedKey: 'resolved',
+  preflightExactPlanAdmission: 'resolved',
+  reactionRulesFor: 'resolved',
+  readGoalPortfolioBrief: 'resolved',
+  realCheckpointDeps: 'resolved',
   recordEditAttribution: 'resolved',
-  registerDesktopSession: 'resolved',
+  registerConnectionAdapter: 'resolved',
   requirePrincipal: 'resolved',
-  resolveClassFireTarget: 'resolved',
-  resolveWorkspaceHostInitializationOperationsForHost: 'resolved',
-  runGoldSet: 'resolved',
-  runWorkspaceHostDestroy: 'resolved',
-  // Plus one aliased call grep cannot see (agent-tools/fleet/place_batch.ts).
-  sendMessage: 'resolved',
-  setKernelEnforcementResolver: 'resolved',
+  resolveControllerWorkspaceHostBootstrap: 'resolved',
+  resolveMessageRef: 'resolved',
+  rotateTestPgReuseGeneration: 'resolved',
+  runPhysicalDrillCliToExit: 'resolved',
+  scoutConfigDelta: 'resolved',
+  setCommsTrust: 'resolved',
+  setHiveSetting: 'resolved',
   splitMarkdown: 'resolved',
-  supportsContext1m: 'resolved',
-  validateScorecardCompleteness: 'resolved',
+  terminalDependencies: 'resolved',
+  // Plus one call grep cannot see.
+  wakeRecipients: 'resolved',
 };
+
+/**
+ * For each `root-missing` identifier, the anchored roots it was measured on, none of
+ * which exists. Only a grep on exactly these roots is covered.
+ */
+export const CALLERS_GRAPH_MISSING_ROOTS: Readonly<Record<string, readonly string[]>> = {};
 
 const CALLER_OUTCOME_REASON: Record<'missed' | 'error', string> = {
   missed:
@@ -729,14 +794,34 @@ function repoAnchored(anchor: string): boolean {
 
 /** Everything `graph:query callers` can and cannot express about a caller-shaped grep. */
 export function coverCallersLookup(atom: string): CoverageResult {
+  return coverCallersLookupAgainst(atom, CALLERS_GRAPH_OUTCOMES, CALLERS_GRAPH_MISSING_ROOTS);
+}
+
+/**
+ * {@link coverCallersLookup} against an explicit measurement, so every outcome's
+ * refusal stays testable when no sampled identifier currently has it.
+ */
+export function coverCallersLookupAgainst(
+  atom: string,
+  outcomes: Readonly<Record<string, CallersGraphOutcome>>,
+  missingRoots: Readonly<Record<string, readonly string[]>>,
+): CoverageResult {
   const parsed = parseGrepAtom(atom);
   if (parsed.writes) return { covered: false, reason: 'redirects the match output to a file; graph:query writes no artifact' };
   if (parsed.dynamic) return { covered: false, reason: 'a search operand is a shell expansion, so the searched tree is not decidable from the atom' };
   if (!parsed.recursive) return { covered: false, reason: 'not a recursive search: the command greps named files, not a tree' };
   const shape = parsed.pattern === null ? null : CALLER_RE.exec(parsed.pattern);
   if (!shape) return { covered: false, reason: 'the pattern is not a bare `IDENT(` call shape' };
-  const ident = shape[1]!;
-  const escaped = shape[2] === '\\';
+  const ident = shape[2]!;
+  const escaped = shape[3] === '\\';
+  if (shape[1] === undefined && /^[A-Z]/.test(ident)) {
+    return {
+      covered: false,
+      reason:
+        `\`${ident}(\` without a word boundary also prints every camelCase name ending in it (get${ident}(), so it is a ` +
+        'partial-name search; graph:query callers takes one exact name',
+    };
+  }
   const extended = parsed.flags.includes('-E') || parsed.flags.includes('-P');
   const fixed = parsed.flags.includes('-F');
   if (fixed ? escaped : escaped !== extended) {
@@ -773,20 +858,39 @@ export function coverCallersLookup(atom: string): CoverageResult {
         'or absolute path, or another checkout on this box); the graph indexes this repo only',
     };
   }
-  const outcome = CALLERS_GRAPH_OUTCOMES[ident];
+  const outcome = outcomes[ident];
   if (outcome === undefined) {
     return { covered: false, reason: `no graph answerability measurement for \`${ident}\`; re-measure CALLERS_GRAPH_OUTCOMES` };
+  }
+  // The tool searches exactly these roots (graph:query `paths`), so the answer is grep's
+  // question, not a repo-wide superset filtered by hand. A glob root is cut to its
+  // anchor directory, which can only widen the searched set.
+  const roots = [...new Set(parsed.paths.map(anchorForRoot))];
+  const expression = `graph:query { op: "callers", name: "${ident}", paths: ${JSON.stringify(roots)} }`;
+  if (outcome === 'root-missing') {
+    const recorded = missingRoots[ident] ?? [];
+    const unmeasured = roots.find((root) => !recorded.includes(root));
+    if (unmeasured !== undefined) {
+      return {
+        covered: false,
+        reason:
+          `\`${ident}\` was measured only on a search root that does not exist; "${unmeasured}" is unmeasured, so ` +
+          're-measure CALLERS_GRAPH_OUTCOMES',
+      };
+    }
+    // grep fails on the missing path and graph:query refuses it by name: the same answer.
+    return { covered: true, expression };
   }
   if (!COVERED_CALLER_OUTCOMES.has(outcome)) {
     return { covered: false, reason: CALLER_OUTCOME_REASON[outcome as 'missed' | 'error'] };
   }
-  return { covered: true, expression: `graph:query { op: "callers", name: "${ident}" }` };
+  return { covered: true, expression };
 }
 
 /**
  * P-002(d) / D-010(d): `grep -r "IDENT(" <roots in this repo>` routed to
- * graph:query callers. Recorded `needs-widening` from the measured sample, so it
- * is not projected into the routing table and stays at observe (see header).
+ * graph:query callers. Derived `equivalent` from the measured sample; held at
+ * observe and withheld from the routing table until `paths` is live on :3070.
  */
 export const graphCallersLookup: BashSubstitutionPair = {
   id: 'code-search.callers-lookup',
@@ -794,28 +898,30 @@ export const graphCallersLookup: BashSubstitutionPair = {
   bashPattern: new RegExp(
     `^${EXCLUDE_UNEXPRESSIBLE}${EXCLUDE_VENDORED}` +
       `(?=[^\\n]*\\s-[A-Za-z]*[rR])(?=[^\\n]*\\s${CALLER_PATTERN}(?=\\s|$))` +
+      `${EXCLUDE_CONTEXT}${EXCLUDE_PARTIAL_NAME}${EXCLUDE_UNANCHORED_ROOT}${REQUIRE_ANCHORED_ROOT}` +
       `grep\\s[^\\n]*$`,
   ),
   toolName: 'graph:query',
   advisoryText:
-    'graph:query { op: "callers", name } answers "who calls X" from the TypeScript call hierarchy over the current ' +
-    'source: call sites with path and one-indexed line1, repo-wide, for every symbol that carries the name, excluding ' +
-    'the definition, comments and same-named substrings. An empty answer means no call in any searched file; ' +
-    'gitignored, hidden and node_modules paths are not searched. A name in thousands of files can exhaust the worker ' +
-    'and answer with an error: grep is still how to ask then.',
+    'graph:query { op: "callers", name, paths } answers "who calls X" from the TypeScript call hierarchy over the ' +
+    'current source: call sites with path and one-indexed line1 under the given paths (your grep roots), for every ' +
+    'symbol that carries the exact name, excluding the definition, comments and longer names that end in it. An empty ' +
+    'answer means no call in any searched file; gitignored, hidden and node_modules paths are not searched. A name in ' +
+    'thousands of files can exhaust the worker and answer with an error: grep is still how to ask then.',
   routing: {
     want: 'who CALLS a symbol',
-    use: '`graph:query { op: "callers", name: "X" }` (sites with lines, every same-named symbol)',
-    insteadOf: '`grep -rn "X(" <dirs>` — still required when the tool answers with an error',
+    use: '`graph:query { op: "callers", name: "X", paths: ["<grep root>"] }` (sites with lines, every same-named symbol)',
+    insteadOf: '`grep -rn "X(" <dirs>` — still required for a partial name or when the tool answers with an error',
   },
-  expectedVerdict: 'needs-widening',
+  expectedVerdict: 'equivalent',
   holdAtObserve:
-    'Measured needs-widening (D-027): on the first-party backend 39 of 40 sampled names answer like grep (fetch, in ' +
-    '2,578 files, exhausts the worker), but 25 of the 40 sampled greps search a root not anchored inside this repo, ' +
-    'which cover() refuses before asking the tool. Promote only after agent-tools/gitnexus/query.ts is live on :3070 ' +
-    '(routing projects any equivalent pair into CLAUDE.md, and agents call :3070) and the population is re-scoped to ' +
-    'repo-anchored roots with a re-extracted sample and re-measured outcomes. Owned by WI-10006543 (D-018, D-027): ' +
-    'caller routing is deferred, not delivered, until this hold is lifted.',
+    'Derived equivalent on the re-scoped sample (WI-10006543): 40 of 40 sampled greps are answered by graph:query ' +
+    'callers over their own roots. The `paths` argument that makes this true is not yet live on :3070, which every ' +
+    'agent calls, so the gate stays at observe until agent-tools/gitnexus/query.ts is deployed. Owned by WI-10006543 ' +
+    '(D-018, D-027).',
+  routingWithheld:
+    'graph:query callers `paths` (agent-tools/gitnexus/query.ts) is not yet live on :3070. Lift with holdAtObserve ' +
+    'once it is deployed, then run gen:tool-routing (WI-10006543).',
   cover: coverCallersLookup,
 };
 
