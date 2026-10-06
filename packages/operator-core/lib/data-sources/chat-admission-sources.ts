@@ -98,7 +98,14 @@ interface SourceRow {
   scope: string;
   scope_ref: string | null;
   owner_user_id: string | null;
+  /** The provider workspace (Slack team id). */
+  provider_account_id: string | null;
 }
+
+/** Most messages a report's thread excerpt quotes; a longer thread keeps its opening and its end. */
+export const CHAT_REPORT_EXCERPT_MAX_MESSAGES = 12;
+/** Longest single message line in a report's thread excerpt. */
+const EXCERPT_LINE_MAX = 400;
 
 interface MessageRow {
   provider_message_id: string;
@@ -149,7 +156,7 @@ export function admitterPrincipalUserId(admitter: Admitter): string | null {
 
 async function loadSource(ctx: AdmissionResolveContext, dataSourceId: string): Promise<SourceRow | null> {
   const [row] = await ctx.db<SourceRow[]>`
-    SELECT id::text AS id, kind, scope, scope_ref, owner_user_id::text AS owner_user_id
+    SELECT id::text AS id, kind, scope, scope_ref, owner_user_id::text AS owner_user_id, provider_account_id
       FROM harness_shared.data_sources
      WHERE workspace_id = ${ctx.workspaceId} AND id = ${dataSourceId}::uuid
      LIMIT 1`;
@@ -220,9 +227,84 @@ function bounded(text: string): string {
   return text.length > CHAT_SNAPSHOT_BODY_MAX ? `${text.slice(0, CHAT_SNAPSHOT_BODY_MAX - 1)}…` : text;
 }
 
+/**
+ * A display name only when the stored label is one: a connector that knows no name stores the
+ * user id as the label, and an id is not a name.
+ */
+function displayNameOf(m: MessageRow): string | null {
+  const label = m.author_label?.trim();
+  const ref = m.author_ref?.trim();
+  if (!label) return null;
+  if (ref && (label === ref || ref.endsWith(`:${label}`))) return null;
+  return label;
+}
+
+/**
+ * The thread around a report, as `speaker: text` lines: every message of a short thread, or the
+ * opening two and the last ten of a long one. Unredacted and unquoted here: the bug intake's
+ * report-context builder redacts, bounds and quotes it (Slack D-012).
+ */
+export function chatThreadExcerpt(rows: readonly MessageRow[]): string | null {
+  const live = rows.filter((m) => !m.deleted_at && m.body != null && m.body.trim());
+  if (live.length === 0) return null;
+  const line = (m: MessageRow) => {
+    const text = (m.body ?? '').replace(/\s+/g, ' ').trim();
+    return `${speaker(m)}: ${text.length > EXCERPT_LINE_MAX ? `${text.slice(0, EXCERPT_LINE_MAX - 1)}…` : text}`;
+  };
+  if (live.length <= CHAT_REPORT_EXCERPT_MAX_MESSAGES) return live.map(line).join('\n');
+  const tail = CHAT_REPORT_EXCERPT_MAX_MESSAGES - 2;
+  return [
+    ...live.slice(0, 2).map(line),
+    `… ${live.length - CHAT_REPORT_EXCERPT_MAX_MESSAGES} message(s) omitted …`,
+    ...live.slice(-tail).map(line),
+  ].join('\n');
+}
+
+/** The source's half of a chat report's context block (report-context.ts ReportChatContext). */
+function chatReportContext(
+  source: SourceRow,
+  channelId: string,
+  reported: MessageRow,
+  thread: readonly MessageRow[],
+): ResolvedAdmissionSource['reportContext'] {
+  const permalink = permalinkOf(reported);
+  return {
+    chat: {
+      provider: source.kind,
+      workspace: { id: source.provider_account_id },
+      channel: { id: channelId },
+      postedAt: iso(reported.posted_at),
+      author: { externalUserId: reported.author_ref, displayName: displayNameOf(reported) },
+      threadExcerpt: chatThreadExcerpt(thread.length > 0 ? thread : [reported]),
+      ...(permalink ? { permalink } : {}),
+    },
+  };
+}
+
+async function loadThread(
+  ctx: AdmissionResolveContext,
+  dataSourceId: string,
+  channelId: string,
+  threadKey: string,
+  rootMessageId: string | null,
+): Promise<MessageRow[]> {
+  return ctx.db<MessageRow[]>`
+    SELECT provider_message_id, thread_key, author_ref, author_label, body, posted_at, deleted_at, raw
+      FROM harness_shared.chat_messages
+     WHERE workspace_id = ${ctx.workspaceId}
+       AND data_source_id = ${dataSourceId}::uuid
+       AND channel_id = ${channelId}
+       AND (thread_key = ${threadKey}
+            OR (thread_key IS NULL AND provider_message_id = ${rootMessageId}::text))
+     ORDER BY posted_at, provider_message_id
+     LIMIT ${CHAT_THREAD_SNAPSHOT_MAX_MESSAGES}`;
+}
+
 export function createChatMessageAdmissionSource(): AdmissionSourceResolver<ChatMessageRef> {
   return {
     kind: CHAT_MESSAGE_SOURCE_KIND,
+    // A chat report is always a person writing in a chat workspace, whoever admits it (D-012).
+    reporterKind: 'chat',
     parseRef(raw) {
       return {
         dataSourceId: dataSourceIdField(raw, 'chat-message'),
@@ -251,12 +333,16 @@ export function createChatMessageAdmissionSource(): AdmissionSourceResolver<Chat
         ? [{ kind: CHAT_THREAD_SOURCE_KIND, key: chatThreadSourceKey({ ...ref, threadKey }) }]
         : [];
       const permalink = permalinkOf(row);
+      const thread = threadKey
+        ? await loadThread(ctx, ref.dataSourceId, ref.channelId, threadKey, ref.threadKey === threadKey ? ref.providerMessageId : null)
+        : [];
       return {
         dataSourceId: source.id,
         sourceKey: chatMessageSourceKey(ref),
         title: firstLine(row.body) || `Chat message in ${ref.channelId}`,
         body: bounded(`${speaker(row)}: ${row.body}`),
         permalink,
+        reportContext: chatReportContext(source, ref.channelId, row, thread),
         sourceRef: {
           provider: source.kind,
           dataSourceId: source.id,
@@ -277,6 +363,7 @@ export function createChatMessageAdmissionSource(): AdmissionSourceResolver<Chat
 export function createChatThreadAdmissionSource(): AdmissionSourceResolver<ChatThreadRef> {
   return {
     kind: CHAT_THREAD_SOURCE_KIND,
+    reporterKind: 'chat',
     parseRef(raw) {
       return {
         dataSourceId: dataSourceIdField(raw, 'chat-thread'),
@@ -311,6 +398,7 @@ export function createChatThreadAdmissionSource(): AdmissionSourceResolver<ChatT
         title: firstLine(opener.body ?? '') || `Chat thread in ${ref.channelId}`,
         body: bounded(live.map((m) => `${speaker(m)}: ${m.body}`).join('\n')),
         permalink,
+        reportContext: chatReportContext(source, ref.channelId, opener, live),
         sourceRef: {
           provider: source.kind,
           dataSourceId: source.id,
