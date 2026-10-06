@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "name": "P-007 e2e: Settings → Integrations lists Linear and Asana as connectable from the live provider registry; a ticket source appears and updates live, its config writes through the real route, and /admin/admission shows it (ticket-integrations leg of the GUI e2e surface suite, real isolated Tauri desktop)",
+  "name": "P-007 e2e (ticket-integrations suite leg, isolated Tauri desktop): Settings → Integrations lists Linear and Asana as connectable; a source updates live, its config writes, /admin/admission shows it",
   "framework": "shell",
   "command": [
     "env",
