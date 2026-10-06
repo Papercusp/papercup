@@ -64,6 +64,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     coverageEvidenceRef: 42,
     testRunId: 43,
+    testRunExecution: { passed: 1, failed: 0, skipped: 0, collectionFailed: false },
     details: {
       adequacy: {
         fixtureCalibrated: true,
@@ -742,6 +743,44 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     );
     expect(result.ratings['execution-integrity'].evidence).toContain('executed=true');
     expect(result.verdict).toBe('unknown');
+  });
+
+  it('uses test-run ledger skip counts instead of an unskipped binding attestation', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({
+          evidenceKind: 'test',
+          testRunId: 20846633,
+          coverageEvidenceRef: null,
+          testRunExecution: { passed: 6, failed: 0, skipped: 2, collectionFailed: false },
+          details: {
+            adequacy: {
+              collected: true,
+              skipped: false,
+              executed: true,
+              outcome: 'passed',
+            },
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['execution-integrity'].rating).toBe('fail');
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'testRunLedgerExecution={"passed":6,"failed":0,"skipped":2,"collectionFailed":false}',
+    );
+
+    const unavailable = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ testRunExecution: null })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(unavailable.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(unavailable.ratings['execution-integrity'].evidence).toContain(
+      'execution_details, so collection, skipped, and executed cases cannot be verified',
+    );
   });
 
   it('does not let a ledger-backed sibling hide an unbacked executable binding', () => {

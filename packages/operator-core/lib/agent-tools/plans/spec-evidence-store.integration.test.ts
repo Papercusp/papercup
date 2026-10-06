@@ -367,9 +367,26 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const pending = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
     expect(pending).toHaveLength(1);
     expect(pending[0].details.adequacy).toMatchObject({ outcome: 'pending', executed: false, causalPairIds: ['original-reconnect'] });
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: testPath,
+      runGroupId: runId,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'fixture-commit',
+      worktreeDirty: false,
+    };
     const [run] = await db.sql<{ id: number }[]>`INSERT INTO harness_shared.test_runs
-      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty)
-      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${runId},'fixture-commit',false) RETURNING id`;
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty,execution_details)
+      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${runId},'fixture-commit',false,
+        ${JSON.stringify(executionDetails)}::text::jsonb) RETURNING id`;
     await db.sql`INSERT INTO harness_shared.test_runs (workspace_id,harness_slug,file_path,status,finished_at,run_group_id)
       VALUES (${OTHER_WORKSPACE},${HARNESS},${testPath},'fail',now(),${runId})`;
     const result = { ok: true, runId, root: h.repoRoot, passed: 1, failed: 0, skipped: 0, files: 1,
@@ -383,6 +400,9 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     });
     expect(bound.testRunProvenance).toEqual({
       filePath: testPath, commitSha: 'fixture-commit', worktreeDirty: true,
+    });
+    expect(bound.testRunExecution).toEqual({
+      passed: 1, failed: 0, skipped: 0, collectionFailed: false,
     });
     await db.sql`UPDATE harness_shared.test_runs SET worktree_dirty = false WHERE id = ${run.id}`;
     // Integrated continuation: persist once, cross the reader boundary, and use
@@ -416,6 +436,9 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(await buildFailureLoopHintText(hint!)).toContain('Reuse the saved evidence');
     const recovered = await recoverTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: runId, runId }, scope, deps);
     expect(recovered.rows[0]).toMatchObject({ testRunId: Number(run.id), phase: 'settled', outcome: 'pass', bindingStatus: 'unchanged' });
+    // The next recovery check models a synthetic failed legacy row; clear the
+    // successful counters used above to verify the listSpecEvidence projection.
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = NULL WHERE id = ${run.id}`;
     await db.sql`UPDATE harness_shared.test_runs SET status = 'fail' WHERE id = ${run.id}`;
     const revised = await recoverTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: runId, runId }, scope, deps);
     expect(revised.rows[0]).toMatchObject({ testRunId: Number(run.id), phase: 'review-required', outcome: 'unknown' });

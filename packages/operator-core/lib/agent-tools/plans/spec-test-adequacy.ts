@@ -124,6 +124,13 @@ export interface SpecEvidenceForAdequacy {
      */
     mutationFailedCaseTitles?: string[];
   } | null;
+  /** Server-parsed counters for the bound test_runs row; null means its details were absent or invalid. */
+  testRunExecution?: {
+    passed: number;
+    failed: number;
+    skipped: number;
+    collectionFailed: boolean;
+  } | null;
   details: Record<string, unknown>;
   observedAt?: string;
   createdAt?: string;
@@ -769,6 +776,10 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
       : null,
     row.coverageEvidenceRef !== null ? `coverageEvidenceRef=${row.coverageEvidenceRef}` : null,
     row.testRunId !== null ? `testRunId=${row.testRunId}` : null,
+    row.testRunId !== null && row.testRunExecution === null ? 'testRunLedgerExecution=unavailable' : null,
+    row.testRunId !== null && row.testRunExecution != null
+      ? 'testRunLedgerExecution=' + JSON.stringify(row.testRunExecution)
+      : null,
     row.testRunProvenance
       ? `testRunLedgerFile=${JSON.stringify(row.testRunProvenance.filePath)}, ` +
         `testRunLedgerCommit=${JSON.stringify(row.testRunProvenance.commitSha)}, ` +
@@ -1948,20 +1959,35 @@ export function evaluateSpecTestAdequacy(input: {
 
   const executable = evidence.filter((row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind));
   const unbackedExecution = executable.filter((row) => !hasExecutionLedgerReference(row));
+  const unmeasuredTestRunExecution = executable.filter(
+    (row) => row.testRunId !== null && row.testRunExecution === null,
+  );
   const explicitBadExecutionRows = executable.filter((row) => {
     const d = detailsOf(row);
+    const ledger = row.testRunId !== null ? row.testRunExecution : undefined;
     return (
       d.collected === false ||
       d.skipped === true ||
       d.executed === false ||
-      FAILURE_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+      FAILURE_OUTCOMES.has(d.outcome?.toLowerCase() ?? '') ||
+      (ledger != null &&
+        (ledger.collectionFailed || ledger.skipped > 0 || ledger.passed + ledger.failed === 0))
     );
   });
   const explicitBadExecution = explicitBadExecutionRows.length > 0;
   const successfulExecution = executable.some((row) => {
     const d = detailsOf(row);
+    const ledger = row.testRunId !== null ? row.testRunExecution : undefined;
+    const ledgerExecutionVerified =
+      row.testRunId === null ||
+      ledger === undefined ||
+      (ledger !== null &&
+        !ledger.collectionFailed &&
+        ledger.skipped === 0 &&
+        ledger.passed + ledger.failed > 0);
     return (
       hasExecutionLedgerReference(row) &&
+      ledgerExecutionVerified &&
       d.collected === true &&
       d.skipped === false &&
       d.executed === true &&
@@ -1999,42 +2025,51 @@ export function evaluateSpecTestAdequacy(input: {
           suggestion:
             'Bind a recorded testRunId or coverageEvidenceRef; details.adequacy booleans alone are insufficient.',
         }
-      : incompleteMeasuredExecution.length > 0
-        ? {
-            rating: 'unknown',
-            evidence: evidenceWithBindings(
-              `Active measured test attempts have incomplete execution proof for ${clauseIdentity(clause)}.`,
-              incompleteMeasuredExecution,
-            ),
-          }
-        : successfulExecution
+        : unmeasuredTestRunExecution.length > 0
           ? {
-              rating: 'pass',
+              rating: 'unknown',
               evidence: evidenceWithBindings(
-                `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
-                executable.filter((row) => {
-                  const d = detailsOf(row);
-                  return (
-                    d.collected === true &&
-                    d.skipped === false &&
-                    d.executed === true &&
-                    SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-                  );
-                }),
+                `Bound testRunId(s) have absent or invalid execution_details, so collection, skipped, and executed cases cannot be verified for ${clauseIdentity(clause)}.`,
+                unmeasuredTestRunExecution,
               ),
+              suggestion: 'Re-record the test run with a valid test_runs.execution_details contract before relying on it.',
             }
-          : {
-              rating: executable.length ? 'unknown' : 'fail',
-              evidence: executable.length
-                ? evidenceWithBindings(
-                    `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
-                    executable,
-                  )
-                : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
-              // EI-23958122348412546: with zero executable rows this 'fail' reports ABSENCE,
-              // not bad evidence — the non-code exemption below must be able to reach it.
-              ...(executable.length ? {} : { absenceOnly: true }),
-            };
+          : incompleteMeasuredExecution.length > 0
+            ? {
+                rating: 'unknown',
+                evidence: evidenceWithBindings(
+                  `Active measured test attempts have incomplete execution proof for ${clauseIdentity(clause)}.`,
+                  incompleteMeasuredExecution,
+                ),
+              }
+            : successfulExecution
+              ? {
+                  rating: 'pass',
+                  evidence: evidenceWithBindings(
+                    `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
+                    executable.filter((row) => {
+                      const d = detailsOf(row);
+                      return (
+                        d.collected === true &&
+                        d.skipped === false &&
+                        d.executed === true &&
+                        SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+                      );
+                    }),
+                  ),
+                }
+              : {
+                  rating: executable.length ? 'unknown' : 'fail',
+                  evidence: executable.length
+                    ? evidenceWithBindings(
+                        `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
+                        executable,
+                      )
+                    : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
+                  // EI-23958122348412546: with zero executable rows this 'fail' reports ABSENCE,
+                  // not bad evidence — the non-code exemption below must be able to reach it.
+                  ...(executable.length ? {} : { absenceOnly: true }),
+                };
 
   let causalPairRating: AdequacyRatingEntry | null = null;
   if (clause.falsifier?.causalPairing === 'one-to-one') {
@@ -2345,11 +2380,13 @@ export function evaluateSpecTestAdequacy(input: {
       ? explicitBadExecutionRows
       : unbackedExecution.length > 0
         ? unbackedExecution
-        : incompleteMeasuredExecution.length > 0
-          ? incompleteMeasuredExecution
-          : successfulExecution
-            ? []
-            : executable,
+        : unmeasuredTestRunExecution.length > 0
+          ? unmeasuredTestRunExecution
+          : incompleteMeasuredExecution.length > 0
+            ? incompleteMeasuredExecution
+            : successfulExecution
+              ? []
+              : executable,
     freshness: evidence.some((row) => row.currentness.overall === 'stale')
       ? evidence.filter((row) => row.currentness.overall === 'stale')
       : evidence.filter((row) => row.currentness.overall === 'unknown'),

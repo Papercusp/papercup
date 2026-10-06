@@ -1281,6 +1281,7 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_file_path: string | null;
   test_run_commit_sha: string | null;
   test_run_worktree_dirty: boolean | null;
+  test_run_execution_details?: unknown;
   /** Ledger output tail of a FAILED mutation-probe run bound as mutation evidence; else NULL. */
   mutation_failure_tail: string | null;
   /** Same source/status fence as the tail; optional for legacy mock/read envelopes. */
@@ -1859,6 +1860,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            tr.file_path AS test_run_file_path,
            tr.commit_sha AS test_run_commit_sha,
            tr.worktree_dirty AS test_run_worktree_dirty,
+           tr.execution_details AS test_run_execution_details,
            -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
            -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
            CASE
@@ -2067,6 +2069,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   }
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];
+    const parsedTestRunExecution = row.test_run_id === null
+      ? undefined
+      : parseTestRunExecutionDetails(row.test_run_execution_details);
     const scopedCurrentKey = evidenceCurrentInputKey({
       planSlug: row.plan_slug,
       specId: row.spec_id,
@@ -2140,6 +2145,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       },
       coverageEvidenceRef: row.coverage_evidence_ref === null ? null : Number(row.coverage_evidence_ref),
       testRunId: row.test_run_id === null ? null : Number(row.test_run_id),
+      ...(row.test_run_id === null
+        ? {}
+        : {
+            testRunExecution: parsedTestRunExecution
+              ? {
+                  passed: parsedTestRunExecution.passed,
+                  failed: parsedTestRunExecution.failed,
+                  skipped: parsedTestRunExecution.skipped,
+                  collectionFailed: parsedTestRunExecution.collectionFailed,
+                }
+              : null,
+          }),
       testRunProvenance: row.test_run_id === null || row.test_run_file_path == null
         ? null
         : {

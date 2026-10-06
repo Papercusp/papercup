@@ -71,6 +71,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     coverageEvidenceRef: null,
     testRunId: 43,
+    testRunExecution: { passed: 1, failed: 0, skipped: 0, collectionFailed: false },
     details: {
       adequacy: {
         falsifiable: true,
