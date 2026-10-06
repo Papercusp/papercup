@@ -63,6 +63,61 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for a populated dev:pg_query rows result', () => {
+    const body = {
+      mode: 'query',
+      rowCount: 38,
+      truncated: false,
+      fields: ['n'],
+      elapsedMs: 322,
+      rows: Array.from({ length: 38 }, (_, index) => ({ n: index + 1 })),
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T10:08:38.199Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
+  it('does not warn for a populated fleet:assignments agents result', () => {
+    const body = {
+      ok: true,
+      self: { ownerId: 'su-1' },
+      summary: { agents: 1 },
+      agents: [{ agentId: 'su-1', claims: [], present: true }],
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T13:54:40.696Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
+  it('keeps the warning for an empty fleet:assignments agents result', () => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, agents: [] }) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T13:54:40.696Z') }),
+    );
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+
+    expect(body._dataPlaneMayBeDegraded).toContain('2026-10-06T13:54:40.696Z');
+  });
+
   it.each([
     ['loop:status', { ok: true, ownerId: 'su-1', loop: { active: true, goal: 'keep working' } }],
     ['scheduler:get_next', { ok: true, workItem: { id: 'EI-25212384048274593', state: 'open' } }],
@@ -74,6 +129,34 @@ describe('withMcpDiagnosticWarnings', () => {
     const annotated = withMcpDiagnosticWarnings(
       result,
       context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T09:18:42.036Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
+  it.each([
+    ['improvements:capture', {
+      ok: true,
+      created: false,
+      reason: 'coalesced',
+      coalescedOnto: { id: 'EI-22040058994011473', repeatCount: 2 },
+      issue: { id: 'EI-22040058994011473', kind: 'change', state: 'open' },
+    }],
+    ['locks:acquire', {
+      ok: true,
+      lock_id: '29ee5601-ba68-487e-9136-f0534ced9aa4',
+      held: ['packages/operator-core/lib/endpoint-route/routes/transport/mcp-diagnostic-warnings.ts'],
+      newly_held: ['packages/operator-core/lib/endpoint-route/routes/transport/mcp-diagnostic-warnings.ts'],
+    }],
+  ])('does not warn for a populated %s domain result', (_tool, body) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T13:28:18.593Z') }),
     );
 
     expect(annotated).toBe(result);
