@@ -953,12 +953,14 @@ function main() {
     const linkedPaths = [];
     const shadow = { remapped: 0, fallback: 0 };
     const workspacePaths = new Set();
+    const discoveredPackages = new Set();
     const nmDirs = spawnSync(
       'bash',
       ['-c', `find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*' 2>/dev/null`],
       { cwd: repoRoot, encoding: 'utf8' },
     );
-    for (const rel of (nmDirs.stdout || '').split('\n').map((s) => s.replace(/^\.\//, '').trim()).filter(Boolean)) {
+    const modulePaths = new Set((nmDirs.stdout || '').split('\n').map((s) => s.replace(/^\.\//, '').trim()).filter(Boolean));
+    for (const rel of modulePaths) {
       const target = join(repoRoot, rel);
       const linkPath = join(workRoot, rel);
       if (existsSync(linkPath)) continue;
@@ -985,6 +987,21 @@ function main() {
           `  ⚠ ${rel}: per-entry link failed (${err instanceof Error ? err.message : String(err)}); ` +
             `linked the whole directory, so @papercusp/* imports there run the SHARED tree`,
         );
+      }
+      // The shallow inventory cannot see installs in deeper selected packages.
+      // Follow the existing pinned-package set, including its resolution ancestors,
+      // rather than scanning scratch trees or descending into installed dependencies.
+      // Set iteration also visits the additional directories discovered here.
+      for (const packageRoot of workspacePaths) {
+        if (discoveredPackages.has(packageRoot)) continue;
+        discoveredPackages.add(packageRoot);
+        for (let owner = packageRoot; owner !== workRoot; owner = dirname(owner)) {
+          const localModules = relative(workRoot, join(owner, 'node_modules'));
+          const sourceModules = join(repoRoot, localModules);
+          if (existsSync(sourceModules) && statSync(sourceModules).isDirectory()) {
+            modulePaths.add(localModules);
+          }
+        }
       }
       linked += 1;
       linkedPaths.push(rel);
