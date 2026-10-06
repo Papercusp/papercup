@@ -280,8 +280,8 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let finalText = '';
   let inputTokens = 0;
   let outputTokens = 0;
-  let costUsd = 0;
   let reportedCostUsd: number | undefined;
+  let costUsdMeasurementMissing = false;
   let unreportedFrames: number | undefined;
   let stopReason: string | null | undefined;
   let servedAccount: string | undefined;
@@ -383,8 +383,9 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
         if (ev.finalText) finalText = ev.finalText;
         inputTokens = ev.tokensIn;
         outputTokens = ev.tokensOut;
-        costUsd = ev.costUsd;
-        if (Number.isFinite(ev.costUsd) && ev.costUsd >= 0) reportedCostUsd = ev.costUsd;
+        if (typeof ev.costUsd === 'number' && Number.isFinite(ev.costUsd) && ev.costUsd >= 0)
+          reportedCostUsd = ev.costUsd;
+        else costUsdMeasurementMissing = true;
         if (ev.unreportedFrames !== undefined) unreportedFrames = Math.max(unreportedFrames ?? 0, ev.unreportedFrames);
         stopReason = ev.stopReason;
         servedAccount = ev.servedAccount ?? servedAccount;
@@ -439,7 +440,10 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     json,
     inputTokens,
     outputTokens,
-    costUsd,
+    costUsd: reportedCostUsd ?? 0,
+    ...(costUsdMeasurementMissing || reportedCostUsd === undefined || (unreportedFrames ?? 0) > 0
+      ? { costUsdMeasurementMissing: true } : {}),
+    ...(unreportedFrames === undefined ? {} : { unreportedFrames }),
     stopReason,
     raw: transportDiagnostics.length ? { transportDiagnostics, promptSha256 } : null,
     execution: { model: model ?? opts.model, codeHash: null,

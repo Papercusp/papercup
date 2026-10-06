@@ -56,6 +56,9 @@ export interface CandidateProposal {
   diffFromParent: string;
   /** Cost of the proposer call, including a response that later fails validation. */
   costUsd: number;
+  /** The reported cost is only a subtotal; keep the reservation open. */
+  costUsdMeasurementMissing?: boolean;
+  unreportedFrames?: number;
 }
 
 /** Read a provider-reported cost from a successful value or a thrown error. */
@@ -181,7 +184,11 @@ export async function proposeCandidate(
     planVariantOverlay(overlay);
 
     const diffFromParent = Object.keys(proposal.promptOverrides).sort().join(', ');
-    return { overlay, rationale: proposal.rationale, diffFromParent, costUsd: costUsdOf(res.costUsd) };
+    const measured = typeof res.costUsd === 'number' && Number.isFinite(res.costUsd) && res.costUsd >= 0;
+    const missing = !measured || res.costUsdMeasurementMissing === true || (res.unreportedFrames ?? 0) > 0;
+    return { overlay, rationale: proposal.rationale, diffFromParent, costUsd: costUsdOf(res.costUsd),
+      ...(missing ? { costUsdMeasurementMissing: true } : {}),
+      ...(res.unreportedFrames === undefined ? {} : { unreportedFrames: res.unreportedFrames }) };
   } catch (error) {
     // The model response may have been billed even when parsing/validation rejects it.
     throwWithCostUsd(error, res.costUsd, res);
