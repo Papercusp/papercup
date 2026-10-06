@@ -17,7 +17,7 @@ import { readTeamInteractions } from '../personal-vault/team-disclosure';
 import type { PersonalToolContext } from '../personal-vault/types';
 import type { CanonicalExternalEvent } from '../external-triggers/ingestion';
 import { participantOf, type IdentityKey, type InteractionParticipant } from './identity-keys';
-import { createParticipantChain, isInteractionDatatype, type ParticipantSinkDeps } from './participants';
+import { createParticipantChain, INTERACTION_DATATYPES, isInteractionDatatype, type ParticipantSinkDeps } from './participants';
 
 export interface ParticipantBackfillInput {
   workspaceId: string;
@@ -125,4 +125,78 @@ export async function backfillInteractionParticipants(
     participants += result.participants;
   }
   return { ok: true, sources, documents, participants };
+}
+
+/**
+ * The principal the platform backfill reads under (D-018 point 1). A platform step, not an agent
+ * identity, and deliberately NOT a coding role: readTeamInteractions' D-001 fence still applies to
+ * every agent session, which is why an agent never runs this by hand.
+ */
+export const PARTICIPANT_BACKFILL_ROLE = 'relationship-graph';
+
+export interface PendingParticipantBackfill {
+  sourceId: string;
+  outcome: 'backfilled' | 'vault_disabled' | 'failed';
+  documents: number;
+  participants: number;
+  error?: string;
+}
+
+/**
+ * D-018: backfill every granted source of this workspace whose participant_backfill_at marker is
+ * NULL (migration 1394 clears it when a source newly grants person -> record), then stamp it. Run by
+ * the system:connector-sync routine each tick; independent of whether the source's own sync
+ * succeeds, because the stored interactions it reads are already in the owner's Vault.
+ *
+ * A source whose owner has the Vault disabled stays pending and is retried on a later tick; a
+ * failure is reported and also stays pending. Bounded by `maxSources` per call.
+ */
+export async function runPendingParticipantBackfills(
+  sql: Sql,
+  input: { workspaceId: string; maxSources?: number; batchSize?: number },
+  deps: ParticipantSinkDeps = {},
+): Promise<PendingParticipantBackfill[]> {
+  const pending = await sql<Array<{ id: string; owner_user_id: string }>>`
+    SELECT id::text AS id, owner_user_id::text AS owner_user_id
+      FROM harness_shared.data_sources
+     WHERE workspace_id = ${input.workspaceId}
+       AND owner_user_id IS NOT NULL
+       AND participant_backfill_at IS NULL
+       AND coalesce(destination_policy -> 'person', '[]'::jsonb) @> '["record"]'::jsonb
+       AND destination_policy ?| ${sql.array([...INTERACTION_DATATYPES])}::text[]
+     ORDER BY created_at, id
+     LIMIT ${Math.max(1, Math.min(input.maxSources ?? 4, 50))}`;
+  const out: PendingParticipantBackfill[] = [];
+  for (const source of pending) {
+    try {
+      const result = await backfillInteractionParticipants(
+        sql,
+        {
+          workspaceId: input.workspaceId,
+          userId: source.owner_user_id,
+          ctx: { workspaceId: input.workspaceId, role: PARTICIPANT_BACKFILL_ROLE },
+          sourceIds: [source.id],
+          batchSize: input.batchSize,
+        },
+        deps,
+      );
+      if (!result.ok) {
+        // coding_agent_denied cannot happen under PARTICIPANT_BACKFILL_ROLE; vault_disabled is the
+        // owner's choice and is re-checked on a later tick.
+        out.push({ sourceId: source.id, outcome: result.reason === 'vault_disabled' ? 'vault_disabled' : 'failed', documents: 0, participants: 0, ...(result.reason === 'vault_disabled' ? {} : { error: result.reason }) });
+        continue;
+      }
+      // Stamp only while the grant still holds: a revocation during the run leaves it pending.
+      await sql`
+        UPDATE harness_shared.data_sources
+           SET participant_backfill_at = now()
+         WHERE id = ${source.id}::uuid
+           AND participant_backfill_at IS NULL
+           AND coalesce(destination_policy -> 'person', '[]'::jsonb) @> '["record"]'::jsonb`;
+      out.push({ sourceId: source.id, outcome: 'backfilled', documents: result.documents, participants: result.participants });
+    } catch (cause) {
+      out.push({ sourceId: source.id, outcome: 'failed', documents: 0, participants: 0, error: cause instanceof Error ? cause.message : String(cause) });
+    }
+  }
+  return out;
 }
