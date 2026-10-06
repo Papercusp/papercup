@@ -563,7 +563,7 @@ describe('applyResultDoor', () => {
     expect(readSpill('ws-1', 'plans:evaluate-spec-test-adequacy', RUN_ID)).toContain('full-detail');
   });
 
-  it('EI-251528: oversized rubrics:amend output signals projection and retains the routed review in spill', () => {
+  it('EI-251528: oversized rubrics:amend output signals projection and keeps the routed review actionable inline and in spill', () => {
     const output = {
       ok: true,
       dryRun: true,
@@ -588,6 +588,7 @@ describe('applyResultDoor', () => {
     const spill = readSpill('ws-1', 'rubrics:amend', RUN_ID);
 
     expect(inline._projection.truncated).toBe(true);
+    expect(inline.review).toMatchObject(output.review);
     expect((doored as any)._meta.resultDoor.spillUri).toContain('papercusp://scratch/ws-1/rubrics:amend/');
     expect(spill).toContain('thread-post:42');
     expect(spill).toContain('consult:reply:conv-review-1');

@@ -1577,6 +1577,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // (EI-22186855527494865). `items[].text` follows: also load-bearing, but an
     // items array announces its own truncation in band, so a cut there is visible.
     const preservePaths = [
+      ...(opts.toolName === 'rubrics:amend'
+        ? ['review.state', 'review.conversationId', 'review.previewPostRef', 'review.next', 'ok', 'dryRun']
+        : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
       ...(opts.toolName === 'coord:send' ? COORD_SEND_DELIVERY_PRESERVE_PATHS : []),
