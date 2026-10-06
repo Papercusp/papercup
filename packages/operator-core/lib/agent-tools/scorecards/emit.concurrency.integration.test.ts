@@ -103,6 +103,7 @@ beforeAll(async () => {
         driftMarkers: 'Multiple persisted grading-audit cards cite one subject reservation.',
       },
     ],
+    ratingScale: ['pass', 'fail', 'unknown'],
     status: 'active',
     by: OWNER,
   });
@@ -244,6 +245,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     expect(auditRubric?.kind).toBe('standard');
     expect(auditRubric?.criteria.length).toBeGreaterThan(0);
     if (!auditRubric) throw new Error('grading-integrity rubric was not available in the test database');
+    expect(auditRubric.ratingScale).toEqual(['pass', 'fail', 'unknown']);
 
     const reservedAt = new Date().toISOString();
     console.info('[grading-audit concurrency fixture] creating pending source subject');
