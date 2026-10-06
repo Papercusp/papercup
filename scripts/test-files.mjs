@@ -2943,6 +2943,10 @@ export async function main(
       if (nodeLedger) {
         const ledgerOutcome = await nodeLedger.record();
         console.log(`TEST_FILE_LEDGER runner=node:test rows=${ledgerOutcome.recorded}${ledgerOutcome.reason ? ` reason=${JSON.stringify(ledgerOutcome.reason)}` : ''}`);
+        // Same TEST_FILE_ASSERTION_FAILURE contract as the Vitest route: mutation-probe scores a
+        // run CAUGHT only on measured assertion failures (EI-24836213046334894).
+        const nodeAssertionDiagnostics = formatFailedAssertionDiagnostics(ledgerOutcome.assertionFailures ?? null);
+        if (nodeAssertionDiagnostics) console.error(nodeAssertionDiagnostics);
       }
       printTestFinalizationError(result);
       if (result.error) {
