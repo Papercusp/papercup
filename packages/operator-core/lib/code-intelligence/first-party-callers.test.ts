@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { firstPartyCallers, findCandidateFiles } from './first-party-callers';
+import { firstPartyCallers, findCandidateFiles, resolveRipgrep } from './first-party-callers';
 import {
   incomingCallSites,
   openScopedTsTree,
@@ -105,6 +105,39 @@ describe('firstPartyCallers', () => {
     const noRg = firstPartyCallers({ ts, root, name: 'target', rgPath: join(root, 'no-such-rg') });
     expect(noRg.error).toMatch(/^ripgrep could not run/);
     expect(noRg.sites).toEqual([]);
+  });
+});
+
+describe('resolveRipgrep', () => {
+  const only = (...paths: string[]) => (p: string): boolean => paths.includes(p);
+
+  it('takes PATH first, in order', () => {
+    expect(resolveRipgrep({ PATH: '/a:/b' }, '/home/u', only('/b/rg', '/home/u/.local/bin/rg'))).toBe('/b/rg');
+  });
+
+  it('falls back to per-user install dirs a systemd unit PATH lacks', () => {
+    expect(resolveRipgrep({ PATH: '/usr/sbin' }, '/home/u', only('/home/u/.local/bin/rg'))).toBe('/home/u/.local/bin/rg');
+    expect(resolveRipgrep({}, '/home/u', only('/home/u/.cargo/bin/rg'))).toBe('/home/u/.cargo/bin/rg');
+  });
+
+  it('honours an absolute PAPERCUSP_RG and refuses a relative or missing one', () => {
+    expect(resolveRipgrep({ PAPERCUSP_RG: '/opt/rg', PATH: '/b' }, '/h', only('/opt/rg', '/b/rg'))).toBe('/opt/rg');
+    expect(resolveRipgrep({ PAPERCUSP_RG: 'rg', PATH: '/b' }, '/h', only('/b/rg'))).toBeNull();
+    expect(resolveRipgrep({ PAPERCUSP_RG: '/opt/rg' }, '/h', only())).toBeNull();
+  });
+
+  it('returns null when no rg exists, and the answer says so instead of an empty', () => {
+    expect(resolveRipgrep({ PATH: '/x' }, '/h', only())).toBeNull();
+    const prev = process.env.PAPERCUSP_RG;
+    process.env.PAPERCUSP_RG = join(root, 'no-such-rg');
+    try {
+      const a = firstPartyCallers({ ts, root, name: 'target' });
+      expect(a.error).toMatch(/^ripgrep \(rg\) was not found/);
+      expect(a.sites).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_RG;
+      else process.env.PAPERCUSP_RG = prev;
+    }
   });
 });
 

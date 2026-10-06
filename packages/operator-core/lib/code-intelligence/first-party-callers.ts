@@ -32,16 +32,20 @@
  * operator runs it off the main thread (first-party-callers-offthread.ts).
  */
 import { spawnSync } from 'node:child_process';
-import { join, relative } from 'node:path';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { homedir } from 'node:os';
+import { delimiter, isAbsolute, join, relative } from 'node:path';
 import type * as TsModule from 'typescript';
 import type { CodeIntelAnswer, SymbolSite } from './contracts';
+// Explicit `.ts`: the off-thread worker runs this graph under Node's native type
+// stripping, which resolves no extension-less relative import.
 import {
   incomingCallSites,
   isExternalPath,
   openScopedTsTree,
   tsDeclarations,
   type Ts,
-} from './typescript-service';
+} from './typescript-service.ts';
 
 /** ripgrep glob for every extension the program takes (typescript-service TS_TREE_EXTENSIONS). */
 export const FIRST_PARTY_SOURCE_GLOB = '*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}';
@@ -79,7 +83,7 @@ export interface FirstPartyCallersQuery {
   readonly root: string;
   readonly name: string;
   readonly limit?: number;
-  /** ripgrep binary. Default `rg` from PATH (the desktop install ships a shim). */
+  /** ripgrep binary. Default: {@link resolveRipgrep}. */
   readonly rgPath?: string;
   readonly now?: () => number;
 }
@@ -91,6 +95,43 @@ export interface CandidateSearch {
   readonly error: string | null;
   /** Set when ripgrep answered but reported unreadable paths (exit 2 with matches). */
   readonly partial: string | null;
+}
+
+const isExecutable = (path: string): boolean => {
+  try {
+    accessSync(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The ripgrep binary to run, or null. An operator under a systemd user unit
+ * does not necessarily inherit the login shell's PATH, and ripgrep is commonly
+ * installed per user (~/.local/bin, ~/.cargo/bin), so those are searched after
+ * PATH. `PAPERCUSP_RG` overrides all of them.
+ */
+export function resolveRipgrep(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+  executable: (path: string) => boolean = isExecutable,
+): string | null {
+  const override = env.PAPERCUSP_RG?.trim();
+  if (override) return isAbsolute(override) && executable(override) ? override : null;
+  const dirs = [
+    ...(env.PATH ?? '').split(delimiter).filter((d) => isAbsolute(d)),
+    join(home, '.local', 'bin'),
+    join(home, '.cargo', 'bin'),
+    '/home/linuxbrew/.linuxbrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+  ];
+  for (const dir of dirs) {
+    const candidate = join(dir, 'rg');
+    if (executable(candidate)) return candidate;
+  }
+  return null;
 }
 
 /** Source files under `root` that contain `name` as a whole word. */
@@ -212,6 +253,15 @@ function answer(
   };
 }
 
+/**
+ * The answer for a question this backend could not run at all (the off-thread
+ * worker failed, timed out, or could not load TypeScript). Never a bare empty:
+ * `error` is set and health is unhealthy.
+ */
+export function failedCallersAnswer(name: string, error: string, startedMs: number, nowMs: number = Date.now()): FirstPartyCallersAnswer {
+  return answer(name, startedMs, () => nowMs, { error });
+}
+
 /** Who calls `name`, from the first-party TypeScript backend. Synchronous: run it off the main thread. */
 export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersAnswer {
   const now = q.now ?? (() => Date.now());
@@ -220,7 +270,13 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   if (!IDENTIFIER.test(q.name)) {
     return answer(q.name, started, now, { error: `callers needs one identifier; "${q.name}" is not one` });
   }
-  const search = findCandidateFiles(q.root, q.name, q.rgPath);
+  const rgPath = q.rgPath ?? resolveRipgrep();
+  if (rgPath === null) {
+    return answer(q.name, started, now, {
+      error: 'ripgrep (rg) was not found on PATH, in ~/.local/bin, ~/.cargo/bin or the system bin dirs; set PAPERCUSP_RG',
+    });
+  }
+  const search = findCandidateFiles(q.root, q.name, rgPath);
   if (search.error) return answer(q.name, started, now, { error: search.error });
   const partial = search.partial ? [`ripgrep could not read every path: ${search.partial}`] : [];
   if (search.files.length === 0) {
