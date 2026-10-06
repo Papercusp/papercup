@@ -2738,7 +2738,8 @@ export async function readWorkItemReadinessProjection(opts: {
                ${implementationReadinessValidFromJsonSql(sql, sql`p.implementation_readiness`)} AS presentation_readiness_valid,
                CASE WHEN p.implementation_readiness -> 'evidence' -> 'acceptance' IS NOT NULL THEN
                  ${implementationAcceptanceStateFromReadinessSql(sql, sql`p.implementation_readiness`,
-                   acceptanceSourceRevisionFromFragmentsSql(sql, sql`p.item_kind`, sql`p.title`, sql`p.summary`))}
+                   acceptanceSourceRevisionFromFragmentsSql(sql, sql`p.item_kind`, sql`p.title`, sql`p.summary`),
+                   sql`p.item_kind`)}
                  ELSE 'absent' END AS acceptance_state,
                (p.agent_review ->> 'status' = 'pending') AS review_pending,
                (

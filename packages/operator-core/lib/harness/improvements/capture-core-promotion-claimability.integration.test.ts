@@ -211,6 +211,9 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     expect(claimability.breakdown.excluded.agentReview).toBe(1);
     expect(claimability.rows).toEqual([]);
 
+    // EI-25176539351759672: the awaiting-review stamp is backed by a real pending
+    // review, so approval has to clear that review too, not just the readiness key.
+    expect(stored.payload).toMatchObject({ agentReview: { status: 'pending', submittedBy: 'su-peer' } });
     const approved = createImplementationReadiness({
       status: 'ready',
       source: 'agent-review',
@@ -219,7 +222,9 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     });
     await db.adminSql`
       UPDATE harness_shared.work_items
-         SET payload = jsonb_set(payload, '{implementationReadiness}', ${JSON.stringify(approved)}::jsonb, true)
+         SET payload = jsonb_set(
+               jsonb_set(payload, '{implementationReadiness}', ${JSON.stringify(approved)}::jsonb, true),
+               '{agentReview,status}', '"approved"'::jsonb, false)
        WHERE feature_id = ${id}`;
     const afterApproval = await readIssueClaimability(
       filter,
@@ -233,6 +238,79 @@ describe('tool-failure probation promotion → scheduler admission', () => {
       { limit: 10 },
     );
     expect(afterApproval.rows.map((row) => row.id)).toEqual([id]);
+  });
+
+  // EI-25176539351759672 (plan unified-bug-pipeline-and-honest-queue-2026-10-05 P-002):
+  // ~450 promoted bugs carried readiness 'unknown/corroborated-tool-failure-awaiting-review'
+  // with NO agentReview record. The claim floor held them as in-review, and the reviewer
+  // lane selects only agentReview.status pending, so nobody could ever clear them.
+  const promoteBug = async (suffix: string, extra: Record<string, unknown> = {}) => {
+    const title = `promoted bug review enrolment ${suffix}`;
+    const watchdogKey = `repeated-tool-error:work_items:get:structural:${suffix}`;
+    const probation = (reporter: string) => ({
+      state: 'probation' as const,
+      class: 'structural',
+      watchdogKey,
+      correlationFingerprint: `work_items:get|handler_error|500|payload|bug|${suffix}`,
+      intendedKind: 'bug' as const,
+      reporters: [reporter],
+    });
+    const first = await captureImprovement({
+      title,
+      kind: 'bug',
+      lane: 'observation',
+      scope: 'harness:papercusp',
+      watchdogKey,
+      createdBy: 'su-test',
+      payloadExtra: { toolFailureProbation: probation('su-test') },
+    });
+    const promoted = await captureImprovement({
+      title,
+      kind: 'bug',
+      lane: 'observation',
+      scope: 'harness:papercusp',
+      watchdogKey,
+      createdBy: 'su-peer',
+      payloadExtra: { toolFailureProbation: probation('su-peer'), ...extra },
+    });
+    expect(promoted).toMatchObject({ ok: true, created: false, reason: 'promoted' });
+    const [stored] = await db.adminSql<{ workspace_id: string; payload: Record<string, unknown> }[]>`
+      SELECT workspace_id, payload FROM harness_shared.work_items WHERE feature_id = ${first.issue!.id}`;
+    return { id: first.issue!.id, stored: stored! };
+  };
+
+  it('enrols a peer-corroborated tool-failure promotion so the reviewer lane can claim it', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const { id, stored } = await promoteBug(suffix);
+    expect(stored.payload).toMatchObject({
+      agentReview: { status: 'pending', submittedBy: 'su-peer', round: 1 },
+      implementationReadiness: { status: 'unknown' },
+    });
+    const { claimAgentReview } = await import('./agent-review');
+    const review = await claimAgentReview({ id, reviewer: 'su-reviewer', harnessSlug: 'papercusp' });
+    expect(review).toMatchObject({ claimed: true, workItem: { id } });
+  });
+
+  it('treats a promotion carrying a verified failing-call receipt as born verified (D-011/D-024)', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const reproduction = {
+      schemaVersion: 'bug-reproduction-v1',
+      receipt: { kind: 'encounter', ref: 'tool_invocations:4242', buildSha: 'abcdef1234567' },
+      filedBy: 'su-peer',
+      verification: { status: 'verified', detail: 'tool_invocations:4242 failed (error) on abcdef1234567', checkedAt: new Date().toISOString() },
+    };
+    const { id, stored } = await promoteBug(suffix, { reproduction });
+    expect(stored.payload).toMatchObject({
+      implementationReadiness: { status: 'ready', reason: 'born-verified-tool-failure-promotion' },
+      reproduction: { receipt: { ref: 'tool_invocations:4242' }, verification: { status: 'verified' } },
+    });
+    expect(stored.payload).not.toHaveProperty('agentReview');
+    const claimability = await readIssueClaimability(
+      { field: 'id', op: 'in', value: [id] },
+      { harness: 'papercusp', workspaceId: stored.workspace_id, states: ['open'], assignee: 'su-test', client: db.adminSql },
+      { limit: 10 },
+    );
+    expect(claimability.rows.map((row) => row.id)).toEqual([id]);
   });
 
   it('keeps a row with no readiness key on the explicit legacy path', async () => {

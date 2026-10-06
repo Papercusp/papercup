@@ -193,7 +193,7 @@ describe('decideEgress', () => {
     });
   });
 
-  it('treats an unreachable or failing operator as restricted (fail closed)', async () => {
+  it('keeps WebFetch denied for unknown operator status while distinguishing request failures', async () => {
     const failing = vi.fn(async () => jsonResponse({ ok: false, error: 'boom' }, 500));
     const down = vi.fn(async () => {
       throw new Error('ECONNREFUSED');
@@ -203,6 +203,8 @@ describe('decideEgress', () => {
       await expect(
         decideEgress({ toolName: 'Bash', toolInput: { command: 'ls' }, env: ENV, fetchImpl, sandbox: (c) => `S[${c}]` }),
       ).resolves.toEqual({ decision: 'rewrite', updatedInput: { command: 'S[ls]' } });
+    }
+    for (const fetchImpl of [failing, down]) {
       const webFetch = await decideEgress({
         toolName: 'WebFetch',
         toolInput: { url: 'https://x.example' },
@@ -214,6 +216,9 @@ describe('decideEgress', () => {
       expect(webFetch.reason).toContain('restriction status is unknown, not a restriction verdict');
       expect(webFetch.reason).toContain('Retry after the operator responds');
     }
+    await expect(
+      decideEgress({ toolName: 'WebFetch', toolInput: { url: 'https://x.example' }, env: ENV, fetchImpl: unknownStatus }),
+    ).resolves.toMatchObject({ decision: 'deny' });
   });
 
   it('distinguishes an operator timeout from a restriction verdict and names a recovery path', async () => {
