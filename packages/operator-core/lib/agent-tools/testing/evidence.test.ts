@@ -13,7 +13,7 @@ import {
   RECOVERY_WAIT_CEILING_MS,
 } from './evidence';
 import type { TestFilesCoreResult } from './run';
-import { parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../testing-run-store';
+import { getRunAsync, parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../testing-run-store';
 import type { RunSnapshot } from '../../testing-run-store';
 
 /**
@@ -84,6 +84,23 @@ describe('test-time evidence continuity', () => {
     expect(bundle.rows[0]).toMatchObject({ phase: 'layer-mismatch', outcome: 'unknown' });
     expect(bundle.verificationFingerprint).toBeNull();
     expect(d.bind.mock.calls[1][0].details.adequacy).toMatchObject({ testLayer: 'unit', outcome: 'unknown', executed: false });
+  });
+
+  it('stamps the measured checkout into the binding when it is not the session root (EI-25203154942838341)', async () => {
+    // Without the stamp the evaluator re-measured hive-app proofs at the session harness root
+    // and rated them freshness:unknown forever (ENOENT on a path that only exists in the app repo).
+    const d = deps();
+    const hiveScope = { ...scope, root: '/hives/phone-app', rootHarnessSlug: 'phone-app' };
+    const [stamped] = await prepareTestEvidence(request, runId, [binding.testPath], hiveScope, d);
+    expect(d.measure).toHaveBeenCalledWith('/hives/phone-app', expect.objectContaining({ rootHarnessSlug: 'phone-app' }));
+    expect(stamped.measurement).toMatchObject({ rootHarnessSlug: 'phone-app', testPaths: [binding.testPath] });
+    expect(stamped.input.details?.currentMeasurement).toEqual(stamped.measurement);
+
+    // A run at the session root keeps the historical shape: no stamp at all, never null.
+    const plain = deps();
+    const [unstamped] = await prepareTestEvidence(request, runId, [binding.testPath], scope, plain);
+    expect(unstamped.measurement).not.toHaveProperty('rootHarnessSlug');
+    expect(plain.measure.mock.calls[0][1]).not.toHaveProperty('rootHarnessSlug');
   });
 
   it('returns a bounded pending recovery bundle for foreground timeouts', () => {
@@ -464,6 +481,32 @@ describe('test-time evidence continuity', () => {
     expect(d.retract.mock.calls.map(([options]) => options.bindingId)).toEqual([1]);
     expect(d.retract.mock.calls[0]![0].reason).toContain(
       `${Math.round(PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS / 1000)}s pending grace`);
+    expect(d.bind).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not abandon an origin whose foreground task is running without a snapshot or reporter row', async () => {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(0);
+    await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    d.list.mockResolvedValue([pendingEvidenceRow(1, d.bind.mock.calls[0]![0].details)]);
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join(' ').includes('FROM harness_shared.task_ledger') && values.includes(`testing:run:${runId}`)) {
+        return [{ task_id: 'live-foreground-task', title: `testing:run foreground ${runId}`,
+          argv: ['node', 'scripts/test-files.mjs'], state: 'running',
+          started_at: new Date('2026-09-24T00:00:00.000Z'), ended_at: null }];
+      }
+      return [];
+    });
+    d.runStatus.mockImplementation(id => getRunAsync(id, sql, scope));
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId, waitMs: 0 }, scope, d);
+
+    expect(bundle).toMatchObject({ status: 'incomplete', recoveryWait: { outcome: 'still-running' },
+      detachedRunStatus: { runId, status: 'running' },
+      rows: [{ phase: 'pending', outcome: 'unknown', bindingStatus: 'pending-retained' }] });
+    expect(d.retract).not.toHaveBeenCalled();
     expect(d.bind).toHaveBeenCalledTimes(1);
   });
 

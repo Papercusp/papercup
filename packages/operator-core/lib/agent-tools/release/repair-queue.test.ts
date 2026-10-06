@@ -1,10 +1,14 @@
 import type { ToolResult } from '@papercusp/tooldef';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { drainDetached } from '../../detached-imports';
+import { drainDetached, trackDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
 import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
+import {
+  runAdmissionPrecheckWorker,
+  type AdmissionPrecheckWorkerInput,
+} from '../../release/admission-fix-precheck-managed';
 
 vi.mock('../../release/gate-action-receipt', () => ({
   executeWithGateActionReceipt: vi.fn(async (input: { run: () => Promise<unknown>; ownerId: string }) => ({
@@ -86,6 +90,8 @@ const mocks = vi.hoisted(() => ({
   // creates for the canonical root, and the root canonicalization it consults first.
   precheckFactory: vi.fn(),
   canonicalRoot: vi.fn(),
+  getTask: vi.fn(),
+  startPrecheckWorker: vi.fn(),
   transition: vi.fn(),
   gateOwnership: vi.fn(),
   emitAwaitedEvent: vi.fn(),
@@ -122,6 +128,11 @@ vi.mock('../../release/admission-fix-precheck', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/admission-fix-precheck')>()),
   createCheckpointTreeFixPrecheckRunner: mocks.precheckFactory,
   resolveCanonicalIntegrationRoot: mocks.canonicalRoot,
+}));
+vi.mock('../../task-manager/store', () => ({ getTask: mocks.getTask }));
+vi.mock('../../release/admission-fix-precheck-managed', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/admission-fix-precheck-managed')>()),
+  startAdmissionPrecheckWorker: mocks.startPrecheckWorker,
 }));
 vi.mock('../../release/judged-sha-containment', () => ({
   integrationBranch: () => 'staging',
@@ -341,6 +352,23 @@ beforeEach(() => {
     commit,
     results: files.map((path) => ({ path, status: 'pass' as const })),
   }));
+  mocks.getTask.mockResolvedValue({ state: 'running', confined: true });
+  mocks.startPrecheckWorker.mockImplementation(async (input: AdmissionPrecheckWorkerInput) => {
+    const pending = mocks.write.mock.calls.at(-1)?.[1] as FrozenCandidateRepairQueue | undefined;
+    const worker = runAdmissionPrecheckWorker(input, {
+      getTask: (taskId) => mocks.getTask(taskId),
+      readQueue: async () => pending
+        ? { status: 'value', queue: pending }
+        : { status: 'absent' },
+      transition: (queueTarget, update) => mocks.transition(queueTarget, update),
+      createRunner: () => mocks.precheckFactory({
+        integrationRoot: input.integrationRoot,
+        checkpointRoot: input.checkpointRoot,
+      }),
+    });
+    void trackDetached(worker);
+    return { taskId: input.taskId, confined: true };
+  });
   mocks.containment.mockImplementation((paths: string[], judgedSha: string) =>
     paths.map((path) => ({ path, containedInJudgedSha: judgedSha === NEW_HEAD, judgedBlob: null, stagingBlob: null })),
   );
@@ -967,6 +995,48 @@ describe('release:repair-queue', () => {
       expect(mocks.transition).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps a live managed task running across host identity replacement and returns its persisted progress', async () => {
+      const liveIdentity = checkpointPidIdentity(process.pid);
+      expect(liveIdentity).not.toBeNull();
+      const updatedAtMs = Date.now() - 100;
+      const pending: FrozenCandidateRepairQueue = {
+        ...queueWithoutPrecheck(),
+        updatedAtMs,
+        admissionPrecheck: {
+          ...queue.admissionPrecheck,
+          status: 'running',
+          verdict: undefined,
+          runnerPid: process.pid,
+          runnerPidIdentity: `${liveIdentity}-replaced`,
+          runnerTaskId: 'managed-task-live',
+          startedAtMs: updatedAtMs - 1000,
+          updatedAtMs,
+          expiresAtMs: Date.now() + 60_000,
+          currentFile: 'lib/red.test.ts',
+          completedCount: 1,
+          totalCount: 1,
+          heartbeatAtMs: updatedAtMs,
+        },
+      };
+      mocks.getTask.mockResolvedValue({ state: 'running', confined: true });
+      mocks.readState.mockResolvedValue({ status: 'value', queue: pending });
+
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never)) as {
+        repairQueue: { admissionPrecheck: { status: string; currentFile: string; completedCount: number; heartbeatAtMs: number } };
+      };
+
+      expect(mocks.getTask).toHaveBeenCalledWith('managed-task-live');
+      expect(result.repairQueue.admissionPrecheck).toMatchObject({
+        operationId: queue.admissionPrecheck.operationId,
+        runnerTaskId: 'managed-task-live',
+        status: 'running',
+        currentFile: 'lib/red.test.ts',
+        completedCount: 1,
+        heartbeatAtMs: updatedAtMs,
+      });
+      expect(mocks.transition).not.toHaveBeenCalled();
+    });
+
     it('a live pre-check serializes the queue: another confirmed admission returns the same handle without building or launching', async () => {
       const pending = {
         ...queueWithoutPrecheck(),
@@ -1111,6 +1181,18 @@ describe('release:repair-queue', () => {
         { expectedUpdatedAtMs: queue.updatedAtMs },
       );
       expect(mocks.canonicalRoot).toHaveBeenCalledWith('/repo');
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledTimes(1);
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledWith(expect.objectContaining({
+        operationId: started.precheckOperation.operationId,
+        taskId: started.precheckOperation.runnerTaskId,
+        queueTarget: { workspaceId: 'ws-1', installSlug: 'papercusp' },
+        integrationRoot: '/canonical',
+        checkpointRoot: checkpointRootMirror('/canonical'),
+        expiresAtMs: started.precheckOperation.expiresAtMs,
+      }));
+      expect(mocks.write.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.startPrecheckWorker.mock.invocationCallOrder[0],
+      );
       expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
       expect(mocks.precheckFactory).toHaveBeenCalledWith({
         integrationRoot: '/canonical',

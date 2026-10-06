@@ -126,6 +126,7 @@ import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
+import { runAdmissionPrecheckWorkerFromEnvironment } from '@papercusp/operator-core/lib/release/admission-fix-precheck-managed';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
 import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';
@@ -157,7 +158,7 @@ installFatalDiagnostics();
 // respawn — the all-day :3270 crash-loop that destabilized the substrate
 // primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
 // sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
-const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | 'lsp' | null =
+const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | 'lsp' | 'repair-precheck' | null =
   process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
     ? 'substrate'
     : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
@@ -170,6 +171,8 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
             ? 'lsp'
           : process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1'
             ? 'resource-health'
+            : process.env.PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE === '1'
+              ? 'repair-precheck'
             : null;
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
@@ -191,6 +194,15 @@ if (sidecarMode === 'resource-health') {
     console.error('[resource-governor-health] fatal:', e);
     process.exit(1);
   });
+}
+if (sidecarMode === 'repair-precheck') {
+  void runAdmissionPrecheckWorkerFromEnvironment().then(
+    (code) => { process.exitCode = code; },
+    (error) => {
+      console.error('[release:repair-queue] pre-check worker startup failed', error);
+      process.exitCode = 1;
+    },
+  );
 }
 // WI-10002709: this process (primary AND every cluster worker — each re-evaluates
 // this entry) is a request host whose RSS makes a local fork cost ~240 ms of dead

@@ -208,6 +208,26 @@ describe('buildTestEvidenceRemeasure', () => {
     expect(built.files).toEqual(['src/subject.test.ts']);
   });
 
+  it('names the checkout each selected proof was measured in, null for the session root (EI-25203154942838341)', async () => {
+    // A proof measured in a hive app's own repo must be re-run THERE: re-measuring it at the
+    // session harness root is what made phone-app bindings permanently unmeasurable (ENOENT).
+    const inHive = row(1, { handBound: true, currentness: sourceStale, specId: 'S-1',
+      testPath: 'packages/data/src/usage.test.ts' }) as { details: { currentMeasurement: Record<string, unknown> } };
+    inHive.details.currentMeasurement.rootHarnessSlug = 'phone-app';
+    const inSession = row(2, { handBound: true, currentness: sourceStale, specId: 'S-2', testPath: 'src/other.test.ts' });
+    const viaRecipe = row(3, { currentness: sourceStale, specId: 'S-3', testPath: 'src/third.test.ts' });
+    const build = (rows: unknown[]) => buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h' }, { list: vi.fn().mockResolvedValue(rows) });
+
+    expect((await build([inHive])).rootHarnessSlugs).toEqual(['phone-app']);
+    // Unstamped measurements and recipe-only rows were measured at the session root.
+    expect((await build([inSession, viaRecipe])).rootHarnessSlugs).toEqual([null]);
+    const mixed = await build([inHive, inSession]);
+    expect(mixed.plan.selected).toHaveLength(2);
+    expect(mixed.rootHarnessSlugs).toHaveLength(2);
+    expect(mixed.rootHarnessSlugs).toEqual(expect.arrayContaining(['phone-app', null]));
+  });
+
   it('treats an old pending binding as abandoned only when its run and exact file ledger are absent', async () => {
     const now = Date.parse('2026-10-06T00:00:00.000Z');
     const oldRun = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';

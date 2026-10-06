@@ -1373,11 +1373,65 @@ export const SCOUT_ROUTED_IDEAS_MIN_DDL = `
  * `claim-path-bootstrap-guard.test.ts` fails a fixture-built claim-path test that does
  * not call `applyClaimPathReadDeps`.
  */
+/**
+ * Read shape used by listFleetAssignments when an ordinary claimant has no
+ * append-only fleet membership. Bare claim fixtures have no assignment rows;
+ * the real reader must observe that empty inventory rather than a missing view.
+ * IF NOT EXISTS preserves a fixture that installs the production view itself.
+ */
+export const FLEET_ASSIGNMENT_CLAIM_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.fleet_assignment (
+    source text,
+    workspace_id text NOT NULL,
+    agent_id text,
+    agent_name text,
+    harness_slug text,
+    plan_slug text,
+    item_id text,
+    work_item_id text,
+    fleet_slug text,
+    fleet_role text,
+    claim_active boolean,
+    holder_heartbeat_at timestamptz
+  )`;
+
+/** Current claim recall writer shape (migrations 240, 583, 703–771). */
+export const MEMORY_RECALL_CLAIM_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.memory_recall_stats (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    surface text NOT NULL,
+    hit_count integer NOT NULL,
+    top_score double precision,
+    scores jsonb NOT NULL DEFAULT '[]'::jsonb,
+    fragment_count integer NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    pools jsonb,
+    workspace_id text,
+    pot_slug text,
+    score_scale text,
+    query_chars integer,
+    query_sha256 text,
+    query_origin text,
+    session_id text,
+    legs jsonb,
+    admission jsonb,
+    client text,
+    top_cosine_score double precision,
+    cosine_scores jsonb
+  );
+  CREATE TABLE IF NOT EXISTS harness_shared.memory_recall_query_text (
+    stats_id bigint PRIMARY KEY REFERENCES harness_shared.memory_recall_stats(id) ON DELETE CASCADE,
+    query_text text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`;
+
 export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
   ADV_SESSIONS_CLAIM_MIN_DDL,
   FLEET_MEMBERSHIP_EVENTS_MIN_DDL,
+  FLEET_ASSIGNMENT_CLAIM_MIN_DDL,
+  MEMORY_RECALL_CLAIM_MIN_DDL,
   EVENT_AWAITS_MIN_DDL,
   SCOUT_ROUTED_IDEAS_MIN_DDL,
 ];

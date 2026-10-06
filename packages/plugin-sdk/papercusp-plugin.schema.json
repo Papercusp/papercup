@@ -142,6 +142,19 @@
           }
         },
         "egressHosts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "serviceCredentials": {
+          "type": "array",
+          "description": "Host-held service credentials the provider needs by reference (D-018), e.g. a Pub/Sub service account. Each ref is resolved by the host and injected by host.fetch only for its listed hosts, which must also be in egressHosts.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ref", "hosts"],
+            "properties": {
+              "ref": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+              "hosts": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+            }
+          }
+        },
         "configSchema": { "type": "object" }
       }
     },

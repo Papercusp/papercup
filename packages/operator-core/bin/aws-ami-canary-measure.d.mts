@@ -9,6 +9,16 @@ export declare const SSM_CHUNK_CHARS: number;
 export declare const DIAGNOSTICS_MAX_CHARS: number;
 export declare const DIAGNOSTICS_SECTION_MAX_CHARS: Readonly<{ status: number; startSamples: number; recentLogs: number }>;
 export declare const ROOT_VOLUME_INITIALIZATION_RATE_MIBPS: number;
+export declare const BOOT_CONSOLE_MAX_CHARS: number;
+export declare const BOOT_CONSOLE_POLL_EVERY: number;
+/** A boot console reduced to its bounded tail plus the lines naming a failed boot (WI-10006518). */
+export interface BootConsoleSummary {
+  fatal: boolean;
+  note?: string;
+  tail: string;
+  failureLines: string[];
+}
+export declare function summarizeBootConsole(raw: string | null | undefined): BootConsoleSummary;
 export interface AwsAmiCanaryBudgets {
   runningMs: number;
   ssmOnlineMs: number;
@@ -49,7 +59,9 @@ export interface CanaryInvocation {
 }
 export interface AwsAmiCanaryDeps {
   callerAccount(): Promise<string>;
-  describeImage(imageId: string): Promise<{ state: string; architecture: string; rootDeviceName?: string } | null>;
+  describeImage(
+    imageId: string,
+  ): Promise<{ state: string; architecture: string; rootDeviceName?: string; rootEncrypted?: boolean } | null>;
   describeSubnet(subnetId: string): Promise<{ subnetId: string; vpcId?: string } | null>;
   runInstance(input: {
     imageId: string;
@@ -60,9 +72,13 @@ export interface AwsAmiCanaryDeps {
     /** The AMI's root device; set together with the rate below (WI-10006110). */
     rootDeviceName?: string;
     volumeInitializationRateMiBps?: number;
+    /** Encrypt the root at launch with the account's default EBS key (unencrypted AMIs only, WI-10006518). */
+    encryptRootVolume?: boolean;
   }): Promise<string>;
   describeInstance(instanceId: string): Promise<{ state: string; publicIpv4?: string | null; stateReason?: string | null }>;
   ssmPingStatus(instanceId: string): Promise<string | null>;
+  /** The instance's latest serial console capture, decoded; null when there is none yet. */
+  consoleOutput(instanceId: string): Promise<string | null>;
   sendCommand(input: { instanceId: string; commands: readonly string[]; executionTimeoutSec: number }): Promise<string>;
   getInvocation(input: { commandId: string; instanceId: string }): Promise<CanaryInvocation | null>;
   terminate(instanceId: string): Promise<void>;

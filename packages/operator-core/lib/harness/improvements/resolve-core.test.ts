@@ -425,3 +425,61 @@ describe('resolveImprovement — dispatch-ledger close (consume-edges P-010 / B-
     warn.mockRestore();
   });
 });
+
+describe('own-node rows stranded at origin=remote (WI-10006515)', () => {
+  // origin records how a row ARRIVED, not who wrote it (WI-10003565). The heal dep owns the
+  // identity check; these cases pin that every route consults it before choosing peer
+  // reconciliation, and that a true peer row (heal answers false) keeps the peer route.
+  function stranded(id: string, ownNode: boolean) {
+    let row = issue({ id, origin: 'remote' });
+    const d = deps(row);
+    const healed: string[] = [];
+    d.getIssue = async () => row;
+    d.setIssueState = async (sid, state) => {
+      d.rec.states.push({ id: sid, state });
+      return row.origin === 'remote' ? null : { ...row, state };
+    };
+    d.healOwnNodeOrigin = async (hid) => {
+      healed.push(hid);
+      if (ownNode) row = { ...row, origin: 'local' };
+      return ownNode;
+    };
+    return { d, healed };
+  }
+
+  it('needs-human on an own-node row heals and takes the normal leader-triage route', async () => {
+    const { d, healed } = stranded('EI-own', true);
+    const r = await resolveImprovement({ id: 'EI-own', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(healed).toEqual(['EI-own']);
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'blocked', routedToLeaderTriage: true });
+    expect(r.routedToPeerReconciliation).toBeUndefined();
+  });
+
+  it('needs-human on a true peer row keeps the peer-reconciliation route', async () => {
+    const { d, healed } = stranded('EI-peer', false);
+    const r = await resolveImprovement({ id: 'EI-peer', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(healed).toEqual(['EI-peer']);
+    expect(r).toMatchObject({ ok: true, outcome: 'could-not-fix', routedToPeerReconciliation: true });
+    expect(d.rec.states).toEqual([]);
+  });
+
+  it('fixed on an own-node row heals first, so the resolve write lands instead of a false peer route', async () => {
+    const { d } = stranded('EI-own', true);
+    const r = await resolveImprovement({ id: 'EI-own', outcome: 'fixed', summary: 'fixed it', testsRun: 'vitest green' }, d);
+    expect(r).toMatchObject({ ok: true, outcome: 'fixed', state: 'resolved' });
+  });
+
+  it('the exhausted-attempts flip heals an own-node row so the leader-triage block sticks', async () => {
+    const { d } = stranded('EI-own', true);
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-own', attempts: 3 }, d);
+    expect(r).toMatchObject({ ok: true, flipped: true });
+  });
+
+  it('a local row never consults the heal', async () => {
+    const d = deps(issue({ id: 'EI-local' }));
+    const heal = vi.fn(async () => true);
+    d.healOwnNodeOrigin = heal;
+    await resolveImprovement({ id: 'EI-local', outcome: 'could-not-fix', summary: 'retry later' }, d);
+    expect(heal).not.toHaveBeenCalled();
+  });
+});

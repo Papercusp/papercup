@@ -396,6 +396,7 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
     const logStream = opts.logFile ? openExecLog(opts.logFile, argv, opts.cwd) : null;
     let timedOut = false;
     let idleTimedOut = false;
+    let directExited = false;
     let settled = false;
     let graceTimer: NodeJS.Timeout | null = null;
     let idleTimer: NodeJS.Timeout | null = null;
@@ -404,7 +405,7 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
       setTimeout(() => signalGroup(child, 'SIGKILL'), 5_000).unref();
     };
     const armIdle = () => {
-      if (!opts.idleTimeoutMs || settled) return;
+      if (!opts.idleTimeoutMs || settled || directExited) return;
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         timedOut = true;
@@ -447,6 +448,12 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
       finish({ exitCode: null, signal: null, output: `${capture.text()}\n${err.message}` });
     });
     child.on('exit', (code, signal) => {
+      // Execution ended; inherited pipes have a separate cleanup budget. Leaving
+      // these watchdogs armed can turn a successful exit into a timeout during
+      // that cleanup, and descendant output must not start another idle window.
+      directExited = true;
+      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
       // The direct child is gone. Normally 'close' follows at once; if a grandchild still holds
       // the pipes, kill the leftover group and resolve on the exit status instead of hanging.
       graceTimer = setTimeout(() => {

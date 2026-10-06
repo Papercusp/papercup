@@ -46,7 +46,7 @@ import { recordedTestLayer, type RecordedTestLayer } from '@papercusp/test-confi
 import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
-import { repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
+import { expandRepoFilesEvidenceSourcePathsAtRoot, repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { defaultGitRunner, type GitRunner } from './evidence-measurement-pin';
 
@@ -151,6 +151,7 @@ export const testRunBindingSchema = z
     sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths
       .optional()
       .describe("Override the derived subject files (default: the test file's relative imports)."),
+    sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
     canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
       .optional()
       .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout.'),
@@ -199,6 +200,7 @@ export interface DerivedTestRunBinding {
     schemaVersion: 1;
     kind: 'repo-files';
     sourcePaths: string[];
+    sourceGlobs?: string[];
     testPaths: string[];
   };
   details: Record<string, unknown>;
@@ -634,7 +636,13 @@ export function deriveBindingFromTestRun(
     evidenceKind,
     evidenceRef,
     testRunId,
-    measurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths, testPaths: [testPath] },
+    measurement: {
+      schemaVersion: 1,
+      kind: 'repo-files',
+      sourcePaths,
+      ...(input.sourceGlobs ? { sourceGlobs: input.sourceGlobs } : {}),
+      testPaths: [testPath],
+    },
     details: {
       ...otherDetails,
       adequacy: { ...declaredAdequacy, ...facts },
@@ -900,7 +908,8 @@ export async function expandTestRunBinding(
   }
   const result = deriveBindingFromTestRun(input, { ...row, file_path: testPath }, root, attribution);
   if (result.ok && asCommitted) {
-    const { testPaths, sourcePaths } = result.binding.measurement;
+    const { testPaths } = result.binding.measurement;
+    const sourcePaths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, result.binding.measurement);
     const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
     const content = await verifyAsCommittedContent(root, asCommitted, measured, deps.git ?? defaultGitRunner);
     if (!content.ok) {
@@ -916,7 +925,8 @@ export async function expandTestRunBinding(
     }
   }
   if (result.ok && !asCommitted) {
-    const { testPaths, sourcePaths } = result.binding.measurement;
+    const { testPaths } = result.binding.measurement;
+    const sourcePaths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, result.binding.measurement);
     const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
     const changed = await measuredFileModifiedAfterRun(
       root,

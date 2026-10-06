@@ -2984,7 +2984,7 @@
       "guidance": {
         "when": "A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` (or computer:observe) first to see, then act on what you see.",
         "notWhen": "Anything scriptable (create files, run a program, hit an API) → capability:bash. A web page → a browser tool (DOM automation is more reliable + cheaper than pixel-clicking). Never use this to operate the host machine — it only drives the agent's leased sandbox desktop.",
-        "chaining": "screenshot once to orient → then act, reading the tree that comes back with each action → screenshot again only when the tree cannot answer (a canvas, a video, a plain X11 client like xterm, or anything about pixels/layout/colour). Set `observe` per action: \"image\" when you must see pixels, \"none\" when you do not need to check the effect."
+        "chaining": "screenshot once to orient → then act, reading the tree that comes back with each action → screenshot again only when the tree cannot answer (a canvas, a video, a plain X11 client like xterm, or anything about pixels/layout/colour). Set `observe` per action: \"image\" when you must see pixels, \"none\" when you do not need to check the effect. Several desktops? Pass `desktop` (id or name); another agent's refuses desktop_not_owned."
       }
     },
     {
@@ -5170,7 +5170,7 @@
           "POST"
         ]
       },
-      "description": "List desktop sessions for this workspace from the registry — every kind (local Xvfb, frame slot, VM guest), with display/geometry, state, measured capabilities, and whether THIS process holds the live handle. Use to confirm computer:provision_desktop landed or to spot a leaked lease. Scope belongs to the outer operator envelope (for example ptool --workspace/--harness), not these tool args; pass {} as the tool arguments.",
+      "description": "List desktop sessions for this workspace from the registry — every kind (local sandbox, frame slot, VM guest), with id, name, owner, display/geometry, state, measured capabilities, and whether THIS process holds the live handle. `filter`: \"mine\" (your desktops), \"pot\" (your pot's shared one), \"all\" (default). Workspace/harness scope belongs to the outer operator envelope, not these args.",
       "capabilities": [
         "harness:read"
       ],
@@ -5187,11 +5187,12 @@
         "mug",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "cup"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Checking which desktops exist — after provisioning, before a VNC view, or auditing for leaks. Pass an empty tool-args object; provide workspace/harness through the outer operator envelope. liveHandleInThisProcess:false means the row is not backed here; it is not proof the desktop is dead.",
+        "when": "Checking which desktops exist — your own (filter:\"mine\"), after provisioning, before a live view, or auditing for leaks. liveHandleInThisProcess:false means the row is not backed here; it is not proof the desktop is dead.",
         "notWhen": "Driving a desktop (capability:computer) or standing one up (computer:provision_desktop).",
         "chaining": "computer:provision_desktop → computer:list_desktops (verify) → computer:release_desktop."
       }
@@ -5278,7 +5279,7 @@
           "POST"
         ]
       },
-      "description": "Provision a sandboxed GUI desktop (isolated Xvfb + openbox, never host :0) for a pot so its cups can operate it via capability:computer. Optionally launches GUI apps on it. Idempotent (returns the existing desktop; apps launch only on first provision). Tear down with computer:release_desktop or pot:dissolve.",
+      "description": "Start a sandboxed GUI desktop (isolated X server + openbox, never host :0) that capability:computer drives. Omit `pot` to start one for YOURSELF — you may run many, each with its own `name`; pass `pot` (Queen/operator) to equip a pot with its shared desktop. Optionally launches GUI apps. Idempotent per name. Tear down with computer:release_desktop.",
       "capabilities": [
         "harness:write"
       ],
@@ -5295,13 +5296,14 @@
         "mug",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "cup"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Equipping a pot for visual/GUI work — before a cup in that pot uses capability:computer. Pass `apps` to pre-launch the programs the cup will operate (e.g. a browser, a spreadsheet).",
-        "notWhen": "For scriptable work (files/CLIs/APIs) no desktop is needed — bees use capability:bash. On a deployed desktop FRAME the per-slot Xvfb is leased by the frame bootstrap (acquireAgentDisplay), not this tool.",
-        "chaining": "computer:provision_desktop { pot, apps } → spawn/let a bee in that hive call capability:computer → computer:list_desktops to inspect → computer:release_desktop when done."
+        "when": "You need a GUI to work in — a browser, a desktop app. Start one per parallel task (`name` each, e.g. \"checkout-flow\"); pass `apps` to pre-launch programs.",
+        "notWhen": "Scriptable work (files/CLIs/APIs) needs no desktop — use capability:bash. On a deployed desktop FRAME the per-slot Xvfb is leased by the frame bootstrap, not this tool.",
+        "chaining": "computer:provision_desktop { name } → capability:computer → computer:list_desktops { filter:\"mine\" } → computer:release_desktop { desktop } when done."
       }
     },
     {
@@ -5387,7 +5389,7 @@
           "POST"
         ]
       },
-      "description": "Tear down a pot's sandbox desktop (kill its Xvfb + apps, free the display) without dissolving the pot. Idempotent — a no-op if the pot holds no desktop. (pot:dissolve releases automatically.)",
+      "description": "Tear down a desktop (kill its X server + apps, free the display). Pass `desktop` (an id from computer:list_desktops, or the name of one of YOUR desktops) or `pot` (Queen/operator: a pot's shared desktop). Idempotent — a no-op when nothing is live.",
       "capabilities": [
         "harness:write"
       ],
@@ -5404,13 +5406,14 @@
         "mug",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "cup"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A pot is done with GUI work but stays alive — reclaim the Xvfb/display. Also good demo hygiene after computer:provision_desktop.",
-        "notWhen": "Tearing down the whole pot — pot:dissolve already releases the desktop. There is nothing to release if the pot never provisioned one.",
-        "chaining": "computer:list_desktops to see what is leased → computer:release_desktop { pot }."
+        "when": "You are done with a desktop — free it so the machine has room for others. Also good hygiene after a demo.",
+        "notWhen": "Tearing down a whole pot — pot:dissolve already releases its desktop.",
+        "chaining": "computer:list_desktops { filter:\"mine\" } → computer:release_desktop { desktop }."
       }
     },
     {
@@ -11642,7 +11645,7 @@
           "POST"
         ]
       },
-      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Standing once:false watches require confirm_standing:true after checking events:status because queued deliveries are dropped with the watch. Pass at least one.",
+      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Standing once:false watches require confirm_standing:true after checking events:status because queued deliveries are dropped with the watch. An active loop owner cannot cancel their coord:inbox-wake; call loop:end first. Loopless owners may still opt out. Pass at least one.",
       "capabilities": [
         "coord:write"
       ],
@@ -11659,7 +11662,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately.",
+        "when": "The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately. A loopless owner may opt out of coord:inbox-wake; an active loop must end before its wake watch can be cancelled.",
         "notWhen": "A fired await needs no cancel (one-shot — it already cleared). Do not use await_id as a mistaken substitute for the narrow delivery_id ACK path. You cannot cancel or ack a peer’s.",
         "chaining": "events:status to find the await_id / delivery_id / declaration id → events:cancel."
       }

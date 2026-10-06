@@ -26,6 +26,9 @@ import {
   slackReportBugConfig,
   type SlackReportModalRequest,
 } from './slack-report-bug';
+import type { ExternalTriggerSink } from './ingestion';
+import { createChatAdmissionSink } from '../data-sources/chat-admission-sink';
+import { createSlackChatAdmissionAdapter } from '../data-sources/slack-org-connector';
 
 const RECONCILE_MS = 15_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -60,6 +63,11 @@ export interface SlackSocketManagerDeps {
   ) => Promise<SlackNormalizedEvent | null>;
   /** Opens the "Report a bug" form for a message-shortcut click; defaults to Slack views.open. */
   openReportBugModal?: (botToken: string, request: SlackReportModalRequest) => Promise<void>;
+  /**
+   * The sinks each ingested envelope also feeds besides the event bus and binding engine.
+   * Defaults to the chat admission sink: the source's Slack bug rules (D-008, D-009).
+   */
+  additionalSinks?: (source: ExternalTriggerSourceRow) => ExternalTriggerSink[];
   updateSource?: typeof updateExternalTriggerSourceSyncState;
   now?: () => number;
   log?: (message: string) => void;
@@ -112,6 +120,13 @@ export class SlackSocketManager {
       status: terminalCredentialFailure(error) ? 'error' : 'degraded',
       lastError: error,
     }).catch((updateError) => this.log(`source ${source.id} health update failed: ${String(updateError)}`));
+  }
+
+  private additionalSinks(source: ExternalTriggerSourceRow): ExternalTriggerSink[] {
+    if (this.deps.additionalSinks) return this.deps.additionalSinks(source);
+    const botToken = async () => (await (this.deps.resolveCredentials
+      ?? ((row, slug) => resolveSlackSocketCredentials(row, slug)))(source, installSlug(source))).botToken;
+    return [createChatAdmissionSink(this.sql(), source, { adapter: createSlackChatAdmissionAdapter(source, botToken) })];
   }
 
   private async openReportBugModal(source: ExternalTriggerSourceRow, request: SlackReportModalRequest): Promise<void> {
@@ -176,7 +191,13 @@ export class SlackSocketManager {
         .then(async () => {
           const event = await (this.deps.processEnvelope
             ? this.deps.processEnvelope(connection.source, envelope)
-            : ingestSlackSocketEnvelope(this.sql(), connection.source, envelope));
+            : ingestSlackSocketEnvelope(
+              this.sql(),
+              connection.source,
+              envelope,
+              undefined,
+              this.additionalSinks(connection.source),
+            ));
           await this.rememberLiveChannel(connection, event);
         })
         .catch((error) => {

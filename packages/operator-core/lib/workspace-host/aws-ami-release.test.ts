@@ -586,6 +586,7 @@ describe('AWS workspace-host AMI release', () => {
           runInstance: async () => 'i-0roundtrip',
           describeInstance: async () => ({ state, publicIpv4: null }),
           ssmPingStatus: async () => 'Online',
+          consoleOutput: async () => null,
           sendCommand: async ({ commands }) => {
             sent.push(commands.join('\n'));
             return String(sent.length - 1);

@@ -152,8 +152,12 @@ export type { OpenAiEmbedderOpts };
 export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {}): EmbedFn {
   return buildOpenAiEmbedderCore(apiKey, opts, {
     markFailure: (now, failure) => markOpenAiEmbedFailure(now, failure),
-    clearAlert: () => clearEmbedExhaustionAlertIfActive('openai_billing'),
-    maybeEscalate: () => maybeEscalateEmbedExhaustion('openai_billing'),
+    clearAlert: () => {
+      clearEmbedExhaustionAlertIfActive('openai_billing');
+    },
+    maybeEscalate: () => {
+      maybeEscalateEmbedExhaustion('openai_billing');
+    },
   });
 }
 

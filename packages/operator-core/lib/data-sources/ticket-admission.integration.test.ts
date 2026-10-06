@@ -558,7 +558,8 @@ describe('ticket write-back requested by work-item id (linear-asana-task-sync P-
     // Already there: the provider changes nothing, and nothing is ledgered for it.
     expect(await transitionAdmission(WS, workItemId, 'in-progress', sql, deps)).toMatchObject({ ok: true, transitioned: false });
     expect(await writeBacksForWorkItem(sql, WS, workItemId)).toEqual([
-      expect.objectContaining({ action: 'transition', updateId: 'history:in-progress-1', detail: { toCategory: 'in-progress' } }),
+      // `changed` records whether the provider actually moved the task (P-003 lifecycle reads it).
+      expect.objectContaining({ action: 'transition', updateId: 'history:in-progress-1', detail: { toCategory: 'in-progress', changed: true } }),
     ]);
     expect(await findAdmissionWriteBack(sql, { workspaceId: WS, dataSourceId: sourceId, updateId: 'history:in-progress-1' }))
       .toMatchObject({ workItemId, action: 'transition', detail: { toCategory: 'in-progress' } });

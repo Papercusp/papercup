@@ -24,6 +24,7 @@ import {
   type GoalReportCitedRef,
   type GoalReportMeasuredSpend,
   type GoalReportOwnerWall,
+  goalSpendFromGoalRow,
   workItemRefsIn,
 } from './goal-owner-report';
 
@@ -86,13 +87,7 @@ export function makeGoalOwnerReportTruthReads(sql: Sql, workspaceId: string, goa
           FROM harness_shared.goals
          WHERE workspace_id = ${workspaceId} AND id = ${goalId}`;
       if (!row) return null;
-      const spentCents = typeof row.spent === 'number' && Number.isFinite(row.spent) ? Math.round(row.spent) : null;
-      return {
-        spentCents,
-        measured: spentCents != null && row.source === GOAL_SPEND_SNAPSHOT_SOURCE && !row.unmeasured,
-        source: row.source,
-        measuredAt: row.at,
-      };
+      return goalSpendFromGoalRow(row, GOAL_SPEND_SNAPSHOT_SOURCE);
     },
     async readOwnerWalls() {
       const rows = await sql<{ ref: string; action: string | null }[]>`

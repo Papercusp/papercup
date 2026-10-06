@@ -49,6 +49,7 @@ import {
   type WorkItem,
 } from '../../work-items';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { selfHealOwnNodeOriginIfStranded } from '../../work-items-admission';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import {
@@ -132,6 +133,11 @@ export interface AgentReviewDeps {
     ownerId: string,
     hints: { claimsHeld: boolean },
   ) => Promise<SubmitterLivenessVerdict | null>;
+  /**
+   * WI-10006314: flip an own-node row's stranded `origin='remote'` to 'local'. The heal's WHERE
+   * clause IS the identity check (WI-10003565), so a foreign remote row is never touched.
+   */
+  healOwnNodeOrigin: typeof selfHealOwnNodeOriginIfStranded;
 }
 
 async function readLedgerGrade(ideaId: string): Promise<AgentReviewLedgerGrade | null> {
@@ -375,7 +381,41 @@ const defaultDeps: AgentReviewDeps = {
   readLedgerGrade,
   deliverRevision,
   resolveSubmitterLiveness,
+  healOwnNodeOrigin: selfHealOwnNodeOriginIfStranded,
 };
+
+/**
+ * WI-10006314 — heal an own-node row stranded at `origin='remote'` BEFORE the eligibility check.
+ *
+ * `agentReviewEligibility` is pure and reads the raw `origin` column, but `origin` records how a
+ * row ARRIVED, not who wrote it (WI-10003565): the claim gate (`issueOwnAuthorWhereSql`) and the
+ * write path (`setWorkItemState`) already treat an own-author row as ours. Without this the review
+ * doors were the one place that disagreed — they refused such a row as 'remote-owned', and only the
+ * failure stamp's write healed it as a side effect, so it entered review on a LATER attempt
+ * (measured 2026-10-06: 3 of 601 rows in the P-003 stranded sweep). Healing first also matters for
+ * what follows the check: the `engineer_issues` view trigger no-ops writes while origin='remote'.
+ *
+ * A foreign row is untouched (the heal's WHERE is the identity check) and stays refused. Any heal
+ * failure FAILS CLOSED: the row is returned unchanged, so the refusal stands as before.
+ */
+async function healOwnNodeRemoteOrigin(
+  workItem: WorkItem,
+  deps: AgentReviewDeps,
+  scope: { harnessSlug?: string; workspaceId?: string },
+): Promise<WorkItem> {
+  if (workItem.origin !== 'remote') return workItem;
+  try {
+    const healed = await deps.healOwnNodeOrigin(
+      scope.workspaceId ?? activeWorkspaceId(),
+      workItem.id,
+      scope.harnessSlug ?? workItem.harness ?? null,
+    );
+    if (!healed) return workItem;
+    return (await deps.getWorkItem(workItem.id, scope.harnessSlug)) ?? { ...workItem, origin: 'local' };
+  } catch {
+    return workItem;
+  }
+}
 
 function reviewImplementationReadiness(
   payload: unknown,
@@ -487,8 +527,9 @@ export async function enterAgentReview(
   input: EnterAgentReviewInput,
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<{ entered: boolean; state?: AgentReviewState; reason?: string }> {
-  const workItem = await deps.getWorkItem(input.id, input.harnessSlug);
-  if (!workItem) return { entered: false, reason: 'not-found' };
+  const found = await deps.getWorkItem(input.id, input.harnessSlug);
+  if (!found) return { entered: false, reason: 'not-found' };
+  const workItem = await healOwnNodeRemoteOrigin(found, deps, input);
   const eligibility = agentReviewEligibility(workItem);
   if (!eligibility.eligible) return { entered: false, reason: eligibility.reason };
 
@@ -904,13 +945,14 @@ export async function claimAgentReview(
   input: { id: string; reviewer: string; harnessSlug: string },
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<ClaimAgentReviewResult> {
-  const workItem = await deps.getWorkItem(input.id, input.harnessSlug);
+  let workItem = await deps.getWorkItem(input.id, input.harnessSlug);
   if (!workItem || workItem.harness !== input.harnessSlug) {
     return { claimed: false, workItem: null, reason: 'not-found' };
   }
   if (workItem.state !== 'open') {
     return { claimed: false, workItem: null, reason: 'not-open' };
   }
+  workItem = await healOwnNodeRemoteOrigin(workItem, deps, { harnessSlug: input.harnessSlug });
   const eligibility = agentReviewEligibility(workItem);
   if (!eligibility.eligible) {
     return { claimed: false, workItem: null, reason: eligibility.reason };
@@ -1021,8 +1063,10 @@ export async function claimNextAgentReview(
      ORDER BY feature_order ASC NULLS LAST, created_ts ASC
      LIMIT 25`;
   for (const row of rows) {
-    const workItem = await deps.getWorkItem(row.feature_id, input.harnessSlug);
-    if (!workItem || !agentReviewEligibility(workItem).eligible) continue;
+    const found = await deps.getWorkItem(row.feature_id, input.harnessSlug);
+    if (!found) continue;
+    const workItem = await healOwnNodeRemoteOrigin(found, deps, { harnessSlug: input.harnessSlug, workspaceId: ws });
+    if (!agentReviewEligibility(workItem).eligible) continue;
     const review = readAgentReviewState(workItem.payload);
     if (review?.status !== 'pending' || review.submittedBy === input.reviewer) continue;
     const parties = verificationParties(workItem);

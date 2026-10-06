@@ -1017,14 +1017,18 @@ export function mintRecycleArgs(args?: string[], { mintId, agent, personaFile, m
  *
  * Claude only (D-025: an idle Codex CLI is ~17 MB, not worth parking). Returns
  * null — "this child cannot be parked" — for any other agent or when the argv
- * carries no session id to resume. Pure; exported for tests.
+ * carries no session id to resume. `nativeId` overrides the argv's id: the host
+ * passes the id of the session's newest transcript when it differs, because an
+ * in-TUI `/clear` starts a new conversation the argv never learns about.
+ * Pure; exported for tests.
  *
  * @param {string[]} [liveArgs]
- * @param {{ agent?: string | null }} [opts]
+ * @param {{ agent?: string | null, nativeId?: string | null }} [opts]
  * @returns {{ args: string[], nativeId: string } | null}
  */
-export function mintParkResumeArgs(liveArgs?: string[], { agent }?: {
+export function mintParkResumeArgs(liveArgs?: string[], { agent, nativeId: overrideId }?: {
     agent?: string | null;
+    nativeId?: string | null;
 }): {
     args: string[];
     nativeId: string;
@@ -3380,11 +3384,16 @@ export function codexThreadWriterStatErrorCode(error: any): any;
  * carry-respawn mints a new uuid, and adv row #18052 still recorded 01a036a4-…
  * while 01a038ff-… was the live thread.
  * Pure apart from the injected readers — exported for tests.
+ * @param {string | null | undefined} codexHome
+ * @param {string | null} sessionId
+ * @param {{readProcLocks?: () => string, statFile?: typeof statSync,
+ * listDir?: typeof safeReaddir, holderPid?: number | null}} [options]
  */
-export function codexThreadWriterHolder(codexHome: any, sessionId: any, { readProcLocks, statFile, listDir, }?: {
-    readProcLocks?: (() => string) | undefined;
-    statFile?: import("fs").StatSyncFn | undefined;
-    listDir?: typeof safeReaddir | undefined;
+export function codexThreadWriterHolder(codexHome: string | null | undefined, sessionId: string | null, { readProcLocks, statFile, listDir, holderPid, }?: {
+    readProcLocks?: () => string;
+    statFile?: typeof statSync;
+    listDir?: typeof safeReaddir;
+    holderPid?: number | null;
 }): {
     statErrorCodes?: any[] | undefined;
     held: boolean;
@@ -3397,7 +3406,7 @@ export function codexThreadWriterHolder(codexHome: any, sessionId: any, { readPr
     held: boolean;
     pid: number;
     lockPath: string | null;
-    sessionId: any;
+    sessionId: string;
     reason: string;
 };
 /**
@@ -3448,6 +3457,16 @@ export function procAncestorPids(startPid: any, { readStat, maxDepth }?: {
     readStat?: ((pid: any) => string) | undefined;
     maxDepth?: number | undefined;
 }): Set<any>;
+/** The startup native id of THIS PTY, never a sibling/nested writer in its home.
+ * Reuses Codex's writer-lock oracle and the existing native-process reader.
+ * @param {string | undefined} codexHome
+ * @param {number} ptyPid
+ * @param {{readHolder?: typeof codexThreadWriterHolder, readStartupPid?: typeof resolveLinuxCodexStartupPid}} [options]
+ */
+export function codexNativeIdForPty(codexHome: string | undefined, ptyPid: number, { readHolder, readStartupPid, }?: {
+    readHolder?: typeof codexThreadWriterHolder;
+    readStartupPid?: typeof resolveLinuxCodexStartupPid;
+}): string | null;
 /**
  * Is any live process (outside the caller's own ancestor chain) carrying this
  * native session id in its argv?
@@ -4808,7 +4827,9 @@ declare function slowRequestNoticeOncePerLaunch({ url }: {
     url: any;
 }): Promise<string | null>;
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
+import { statSync } from "node:fs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
+import { resolveLinuxCodexStartupPid } from "./psu-pty-host.mjs";
 declare function defaultListProcPids(): number[];
 declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchFreshSu(selections: any, args: any, { brain }?: {

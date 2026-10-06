@@ -130,6 +130,13 @@ pub const CHAT_FIRST_QUIET_WAIT: std::time::Duration = std::time::Duration::from
 pub const CHAT_CTRL_C_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 pub const CHAT_DISCONNECTED_HINT: &str = "Not connected — press i and send a message to open setup, where l signs in to Papercusp cloud.";
 pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page, then press r. The desktop app is optional; l signs in to cloud and h uses a remote host.";
+/// Setup's note when the operator answered earlier in this launch and has
+/// stopped answering (P-028, WI-10006466): it is most likely restarting, so
+/// installing anything is the wrong advice.
+pub const SETUP_STOPPED_ANSWERING_NOTE: &str = "The operator at that address answered earlier and has stopped answering; it may be restarting. Press r to try again.";
+/// How often a pending chat-first quick start re-checks an operator that
+/// stopped answering, inside `CHAT_FIRST_QUIET_WAIT`.
+pub const CHAT_FIRST_IDENTITY_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What the run-loop should do after handling one event.
 /// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
@@ -2232,6 +2239,15 @@ pub struct App {
     /// quiet wait (`chat_first_quiet_wait`, P-012): past
     /// `CHAT_FIRST_QUIET_WAIT` the setup form opens on the live reason.
     pub chat_first_autostart_since: Option<std::time::Instant>,
+    /// The operator answered an identity check at least once in this launch.
+    /// A later "nothing answered" is then an operator that stopped answering
+    /// (most often restarting), not a computer without Papercusp (P-028,
+    /// WI-10006466): the quick start keeps waiting and retries instead of
+    /// opening setup on the first failed check.
+    pub operator_answered: bool,
+    /// When the pending chat-first quick start next re-checks an operator
+    /// that stopped answering (`on_tick`, `CHAT_FIRST_IDENTITY_RETRY`).
+    pub chat_first_identity_retry_at: Option<std::time::Instant>,
     /// pui-chat-first-ux P-027 (G-11): when a Ctrl+C in the chat-first message
     /// box last armed the exit. A second Ctrl+C inside
     /// `CHAT_CTRL_C_EXIT_WINDOW` quits; any other key disarms it.
@@ -2957,6 +2973,8 @@ impl App {
             require_session_setup: false,
             chat_first_autostart: false,
             chat_first_autostart_since: None,
+            operator_answered: false,
+            chat_first_identity_retry_at: None,
             chat_ctrl_c_armed: None,
             chat_esc_armed: None,
             harnesses_loaded: false,
@@ -8595,7 +8613,11 @@ impl App {
             if crate::http::RendezvousFailure::of_status_line(error)
                 == Some(crate::http::RendezvousFailure::Unreachable)
             {
-                return Some(SETUP_UNREACHABLE_NOTE.into());
+                return Some(if self.operator_answered {
+                    SETUP_STOPPED_ANSWERING_NOTE.into()
+                } else {
+                    SETUP_UNREACHABLE_NOTE.into()
+                });
             }
             return Some(format!("Operator unavailable: {error}"));
         }
@@ -9068,7 +9090,9 @@ impl App {
             &setup.project
         };
         let settling = if self.backend_identity_error.is_some() {
-            false
+            // An operator that answered earlier in this launch is re-checked
+            // (`on_tick`) rather than shown as missing (P-028, WI-10006466).
+            self.operator_answered
         } else if self.backend_identity.is_none() {
             true
         } else if !self.harnesses.iter().any(|p| &p.slug == project) {
@@ -9144,6 +9168,20 @@ impl App {
         if self.chat_esc_armed.is_some() && !self.chat_esc_clear_armed() {
             self.chat_esc_armed = None;
             idle = Action::Render;
+        }
+        // P-028 (WI-10006466): a pending quick start whose operator stopped
+        // answering re-checks it until the quiet wait runs out; then setup
+        // opens on the reason and a repaint shows it.
+        if let Some(at) = self.chat_first_identity_retry_at {
+            if !self.chat_first_autostart || self.backend_identity_error.is_none() {
+                self.chat_first_identity_retry_at = None;
+            } else if self.chat_first_quiet_wait().is_none() {
+                self.chat_first_identity_retry_at = None;
+                return Action::Render;
+            } else if std::time::Instant::now() >= at {
+                self.chat_first_identity_retry_at = None;
+                return Action::CheckSessionSetup;
+            }
         }
         let Some(refresh) = self.session_browser.launch_refresh.as_mut() else {
             return idle;
@@ -12432,10 +12470,19 @@ impl App {
                         }
                         self.backend_identity = Some(identity);
                         self.backend_identity_error = None;
+                        self.operator_answered = true;
+                        self.chat_first_identity_retry_at = None;
                     }
                     Err(error) => {
                         self.backend_identity = None;
                         self.backend_identity_error = Some(error);
+                        // An operator that answered before and stops now is
+                        // usually restarting: a pending quick start re-checks
+                        // it (`on_tick`) while its quiet wait lasts.
+                        if self.chat_first_autostart && self.operator_answered {
+                            self.chat_first_identity_retry_at =
+                                Some(std::time::Instant::now() + CHAT_FIRST_IDENTITY_RETRY);
+                        }
                     }
                 }
                 self.try_chat_first_autostart().unwrap_or(Action::Render)
@@ -19425,6 +19472,72 @@ mod tests {
             ),
             "got {action:?}"
         );
+    }
+
+    /// pui-chat-first-ux P-028 (WI-10006466): two Codex legs of the parity
+    /// battery (/tmp/pui-p028d-codex, /tmp/pui-p028f-codex) showed "Starting
+    /// Codex…" and then, 3.5s later, setup's "Nothing answered at that address.
+    /// … install … the Papercusp Server package", because one identity
+    /// re-check at the first send failed while the staging operator was
+    /// unreachable. An operator that answered earlier in this launch is re-checked
+    /// behind the chat instead; a first run where nothing ever answered still
+    /// opens setup at once.
+    #[test]
+    fn chat_first_quick_start_rechecks_an_operator_that_stopped_answering() {
+        use crate::http::{RendezvousError, RendezvousFailure};
+        let down = RendezvousError::new(RendezvousFailure::Unreachable, "http://127.0.0.1:3170", "refused")
+            .status_line();
+        let started = |answered_before: bool| {
+            let mut a = chat_first_app();
+            let identity = a.backend_identity.take().unwrap();
+            if answered_before {
+                a.update(Event::BackendIdentity(Ok(identity.clone())));
+                assert!(a.operator_answered);
+                // Still being re-checked when the first message is sent.
+                a.backend_identity = None;
+            }
+            a.chat_input = "hello".into();
+            assert_eq!(
+                a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+                Action::CheckSessionSetup
+            );
+            assert_eq!(a.update(Event::BackendIdentity(Err(down.clone()))), Action::Render);
+            (a, identity)
+        };
+
+        // Answered at launch, down at the first send: keep waiting, re-check.
+        let (mut a, identity) = started(true);
+        assert_eq!(a.chat_first_quiet_wait().as_deref(), Some("Starting Claude…"));
+        assert!(a.chat_first_autostart);
+        assert_eq!(a.setup_blocker().as_deref(), Some(SETUP_STOPPED_ANSWERING_NOTE));
+        assert!(a.chat_first_identity_retry_at.is_some(), "a re-check is armed");
+        assert_eq!(a.on_tick(), Action::None, "not due yet");
+        a.chat_first_identity_retry_at =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        assert_eq!(a.on_tick(), Action::CheckSessionSetup, "the due re-check runs");
+        assert!(a.chat_first_identity_retry_at.is_none());
+        // The operator is back: the waiting message starts.
+        let action = a.update(Event::BackendIdentity(Ok(identity)));
+        assert!(
+            matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "hello"),
+            "got {action:?}"
+        );
+
+        // Still down when the quiet wait runs out: setup opens on the reason,
+        // which names a restart, not an install.
+        let (mut b, _) = started(true);
+        b.chat_first_autostart_since = std::time::Instant::now().checked_sub(CHAT_FIRST_QUIET_WAIT);
+        assert_eq!(b.chat_first_quiet_wait(), None);
+        assert_eq!(b.on_tick(), Action::Render, "the form is repainted");
+        assert!(b.chat_first_identity_retry_at.is_none(), "no more re-checks");
+        let note = b.setup_blocker().unwrap();
+        assert!(note.contains("stopped answering") && !note.contains("install"), "{note}");
+
+        // Nothing ever answered: the ordinary first run opens setup at once.
+        let (c, _) = started(false);
+        assert_eq!(c.chat_first_quiet_wait(), None);
+        assert!(c.chat_first_identity_retry_at.is_none());
+        assert_eq!(c.setup_blocker().as_deref(), Some(SETUP_UNREACHABLE_NOTE));
     }
 
     /// The quiet wait is for conditions that clear by themselves. A loaded

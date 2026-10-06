@@ -29,6 +29,7 @@ import {
   commentIssue,
   releaseIssue,
   mergeIssuePayload,
+  healOwnNodeIssueOrigin,
   type EngineerIssue,
   type IssueState,
 } from '../../issues-engineer';
@@ -120,6 +121,9 @@ export interface ResolveDeps {
    *  so a unit test can never silently fall through to the PG-backed default —
    *  defaultDeps wires the real closeDispatchesForItem. */
   closeDispatches: (itemId: string, opts: { outcome: ResolveOutcome; by?: string }) => Promise<number>;
+  /** WI-10006515: heal an own-node row stranded at origin='remote' (true iff healed). Absent ⇒
+   *  no heal, so a unit test without it never reaches PG; defaultDeps wires the real one. */
+  healOwnNodeOrigin?: (id: string) => Promise<boolean>;
 }
 
 const defaultDeps: ResolveDeps = {
@@ -130,7 +134,22 @@ const defaultDeps: ResolveDeps = {
   mergeIssuePayload,
   enterAgentReview,
   closeDispatches: closeDispatchesForItem,
+  healOwnNodeOrigin: (id) => healOwnNodeIssueOrigin(id),
 };
+
+/**
+ * WI-10006515: read the issue, healing an own-node row stranded at origin='remote' first.
+ * `origin` records how a row ARRIVED, not who wrote it (WI-10003565). Unhealed, every branch
+ * below would route our own row to "peer reconciliation" on an authoring node that IS this one,
+ * and every write through the engineer_issues view would silently no-op. A true peer's row is
+ * untouched (the heal's WHERE clause is the identity check) and keeps the peer route.
+ */
+async function getIssueHealingOwnNode(deps: ResolveDeps, id: string): Promise<EngineerIssue | null> {
+  const issue = await deps.getIssue(id);
+  if (issue?.origin !== 'remote' || !deps.healOwnNodeOrigin) return issue;
+  if (!(await deps.healOwnNodeOrigin(id))) return issue;
+  return (await deps.getIssue(id)) ?? issue;
+}
 
 function attemptsOf(issue: EngineerIssue): number {
   const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
@@ -182,7 +201,7 @@ export async function resolveImprovement(
   input: ResolveImprovementInput,
   deps: ResolveDeps = defaultDeps,
 ): Promise<ResolveImprovementResult> {
-  const issue = await deps.getIssue(input.id);
+  const issue = await getIssueHealingOwnNode(deps, input.id);
   if (!issue) return { ok: false, id: input.id, error: `issue ${input.id} not found` };
 
   const by = input.by ?? 'improvement-runner';
@@ -488,7 +507,7 @@ export async function routeExhaustedImprovementToLeaderTriage(
   input: ExhaustedFlipInput,
   deps: ResolveDeps = defaultDeps,
 ): Promise<ExhaustedFlipResult> {
-  const issue = await deps.getIssue(input.id);
+  const issue = await getIssueHealingOwnNode(deps, input.id);
   if (!issue) return { ok: false, id: input.id, flipped: false, reason: `issue ${input.id} not found` };
   if (issue.state !== 'open') return { ok: true, id: input.id, flipped: false, reason: 'not open' };
   const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};

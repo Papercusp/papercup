@@ -54,7 +54,13 @@ export const recoverTestEvidenceSchema = z.object({
 }).strict();
 type Request = z.infer<typeof testEvidenceSchema>;
 type Recovery = z.infer<typeof recoverTestEvidenceSchema>;
-type Scope = { workspaceId: string; harnessSlug: string; actorId: string; root: string };
+/**
+ * `rootHarnessSlug` names the registered checkout `root` belongs to when it is NOT the
+ * session harness's own tree (a hive app such as phone-app). It is stamped into every
+ * measurement so the evaluator and a later re-measure resolve the SAME checkout instead
+ * of the plan harness root, where the paths do not exist (EI-25203154942838341).
+ */
+type Scope = { workspaceId: string; harnessSlug: string; actorId: string; root: string; rootHarnessSlug?: string };
 type Prepared = { input: BindSpecEvidenceInput; binding: Request['bindings'][number]; measurement: RepoFilesEvidenceMeasurement;
   observedAt?: string };
 type Deps = {
@@ -192,6 +198,7 @@ export async function prepareTestEvidence(request: Request, runId: string, files
     if (!selected.has(absolute)) throw new Error(`evidence_test_not_selected:${binding.testPath}`);
     const testPath = relative(scope.root, absolute).replaceAll('\\', '/');
     const measurement = repoFilesEvidenceMeasurementSchema.parse({ schemaVersion: 1, kind: 'repo-files',
+      ...(scope.rootHarnessSlug ? { rootHarnessSlug: scope.rootHarnessSlug } : {}),
       sourcePaths: binding.sourcePaths, testPaths: [testPath] });
     const fingerprints = await deps.measure(scope.root, measurement);
     const pin = await pinFor(scope.root, measurement, fingerprints, deps);
@@ -809,7 +816,15 @@ export async function buildTestEvidenceRemeasure(remeasure: Remeasure,
   const request = plan.selected.length === 0 ? null : testEvidenceSchema.parse({
     workItemId: remeasure.workItemId, ...(remeasure.planSlug ? { planSlug: remeasure.planSlug } : {}),
     bindings: plan.selected.map((entry) => entry.binding) });
-  return { request, files: [...new Set(plan.selected.map((entry) => entry.testPath))], plan,
+  // The checkout each selected proof was measured in: `null` = the session harness root.
+  // The caller must re-run in THAT checkout; more than one distinct value cannot share a
+  // run (EI-25203154942838341).
+  const rowById = new Map(rows.map((row) => [row.id, row]));
+  const rootHarnessSlugs = [...new Set(plan.selected.map((entry) => {
+    const measured = repoFilesEvidenceMeasurementSchema.safeParse(rowById.get(entry.bindingId)?.details?.currentMeasurement);
+    return measured.success ? measured.data.rootHarnessSlug ?? null : null;
+  }))];
+  return { request, files: [...new Set(plan.selected.map((entry) => entry.testPath))], plan, rootHarnessSlugs,
     abandonedPendingBindingIds: [...abandoned].sort((a, b) => a - b),
     summary: { examined: rows.length, selected: plan.selected.length, skipped: plan.skipped.length,
       abandonedPending: abandoned.size } };

@@ -2804,7 +2804,12 @@ function ImproveGrid({
     {
       key: "item",
       header: "Item",
-      width: 1.1,
+      // A FLOOR under the fraction (WI-10006513): a bare `1.1fr` shrank this
+      // column to 132px on a 1536px-wide window, and the cell's `overflow:
+      // hidden` cropped the last digits off every 19-character work-item id —
+      // the distinguishing end of the id, with no ellipsis to say so. 160px
+      // fits the id plus the cell's 10px padding each side.
+      width: "minmax(160px, 1.1fr)",
       toCopyText: (r) =>
         r.item?.id ??
         (r.idea ? (ctx.railMetaMap[r.idea.rail]?.label ?? r.idea.rail) : ""),

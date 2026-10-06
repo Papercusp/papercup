@@ -29,6 +29,7 @@ import { AGENT_OBLIGATION_SCHEMA_VERSION, formatAgentObligationLine } from './ag
 import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
 import { deliveredGoalPlacementRows } from './goal-placement-turn-receipts';
 import type { FleetUnderStaffedEvaluation } from './fleet/under-staffed-alert';
+import { inboxWakeKey } from './agent-tools/coordination/inbox-wake';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -1139,6 +1140,19 @@ describe('frozen provider matrix: waiting-on (P-011)', () => {
     // A hand-retyped key does not rendezvous — so the key must survive the hop
     // into evidence too, where a successor recovers it.
     expect(row!.evidence[0]!.ref).toBe('event-await:work-item:done:WI-10002222');
+  });
+
+  it("does not report this session's standing inbox-wake as a blocking dependency", () => {
+    const rows = waitingOnObligations(
+      waitingInput({
+        status: 'known',
+        value: [awaitRow({ key: inboxWakeKey(base.ownerId), timeoutAt: null })],
+      }),
+    );
+
+    expect(rows.every((row) => row.status !== 'blocked')).toBe(true);
+    expect(rows.map((row) => formatAgentObligationLine(row, 'action')).join('\n'))
+      .not.toContain(`[BLOCKED] Awaiting ${inboxWakeKey(base.ownerId)}`);
   });
 
   it('ranks a SILENTLY-expiring await above a waking one and says so in the title', () => {

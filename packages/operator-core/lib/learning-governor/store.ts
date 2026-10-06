@@ -461,7 +461,7 @@ export interface ReserveLearningSpendInput {
 }
 
 type ExactReservationRefusal = 'invalid-exact-request' | 'transaction-required' | 'binding-required' |
-  'stale-binding' | 'disabled' | 'unsupported-budget-kind' | 'insufficient-headroom' | 'already-reserved' |
+  'stale-binding' | 'disabled' | 'pot-disabled' | 'unsupported-budget-kind' | 'insufficient-headroom' | 'already-reserved' |
   'resource-binding-required' | 'resource-accounting-incomplete' | 'resource-cap-exceeded';
 
 export type ReserveLearningSpendResult =
@@ -518,6 +518,10 @@ export async function reserveLearningSpend(
     // Preflight may have allowed the loop before an async pool/dispatch wait.
     // Re-read authority under the registration lock for every reservation,
     // including native per-cycle mirrors and zero-cost attempts.
+    // Attribution on the request cannot choose a different pot's authority.
+    if (reg?.potSlug && !(await potLearningEnabled(tx as Sql, {
+      workspaceId: q.workspaceId, potSlug: reg.potSlug,
+    }))) return refuse('pot-disabled');
     if (reg && !reg.enabled) return refuse('disabled');
     if ((reg?.meta?.reservationBinding != null || reg?.meta?.reservationResourceBudget != null) && !exact) {
       return refuse('binding-required');

@@ -18,6 +18,7 @@ import desktopVersion from './desktop/version';
 import deployFrameView from './deploy/frame-view';
 import deployFrames from './deploy/frames';
 import deployLocalDesktops from './deploy/local-desktops';
+import deployLocalDesktopThumbnail from './deploy/local-desktop-thumbnail';
 import discoveryPots from './discovery/pots';
 import discoveryFederationStatus from './discovery/federation-status';
 import discoveryPotMeta from './discovery/pot-meta';
@@ -534,6 +535,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deployFrameView as AnyRoute),
   ...flatten(deployFrames as AnyRoute),
   ...flatten(deployLocalDesktops as AnyRoute),
+  ...flatten(deployLocalDesktopThumbnail as AnyRoute),
   ...flatten(discoveryPots as AnyRoute),
   ...flatten(discoveryFederationStatus as AnyRoute),
   ...flatten(discoveryPotMeta as AnyRoute),

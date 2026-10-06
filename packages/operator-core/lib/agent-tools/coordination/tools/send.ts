@@ -1090,6 +1090,8 @@ async function sendOne(
    * unchunked message, which is judged here as before.
    */
   goalReportPreVerdict?: GoalOwnerReportVerdict,
+  /** The dispatcher aborts this signal when the caller stops waiting. */
+  requestSignal?: AbortSignal,
 ): Promise<BulkItemResult> {
   // Reference prose is server-derived before cap/chunk/inline truth checks.
   // A caller's short body cannot substitute for the pinned snapshot.
@@ -1696,6 +1698,17 @@ async function sendOne(
   // on the envelope. Deliberately NOT re-caught/reshaped here: that would
   // diverge from the one established, tested shape every other sendMessage
   // failure (e.g. a PG lock-timeout) already reports through.
+  // A client disconnect or request deadline can fire while the per-message
+  // enrichment above is still running. Check at the durable-write boundary so
+  // that work cannot append a message after its caller has stopped waiting.
+  if (requestSignal?.aborted) {
+    return {
+      ok: false,
+      to: msg.to,
+      error: 'request_aborted',
+      message: 'coord:send was aborted before persistence; the message was not appended.',
+    };
+  }
   let env: Awaited<ReturnType<typeof sendMessage>>;
   try {
     env = await withDbCallDeadline(
@@ -3309,6 +3322,7 @@ export default defineTool({
           idempotencyKey,
           itemIndex,
           goalReportPreVerdict,
+          ctx.signal,
         );
       },
       {

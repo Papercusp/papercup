@@ -57,6 +57,14 @@ const stockArgs = () => (arg('stock-args') ?? '').split(/\s+/).filter(Boolean);
 const probeFilter = (arg('probes') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const probeSelected = (label: string) => probeFilter.length === 0 || probeFilter.some((p) => label.startsWith(`${p}-`) || label === p);
 /**
+ * `--max-approvals N` (default 4): how many approval prompts one settle answers
+ * with Yes. In ask mode on this dev box, Codex spent all four on commands it ran
+ * for the global ~/.codex/AGENTS.md (papercusp file locks) before it reached the
+ * edit (P-028, /tmp/pui-p028i-codex), so that leg needs a higher cap.
+ */
+const maxApprovals = Number(arg('max-approvals', '4'));
+if (!Number.isInteger(maxApprovals) || maxApprovals < 0) throw new Error('--max-approvals must be a whole number');
+/**
  * `--pui-backend claude|codex|omp` picks pui's engine the way a user does: the
  * `/backend` command's picker (app.rs open_backend_picker), whose rows are
  * Claude, Codex, OMP in that order.
@@ -314,7 +322,7 @@ async function settle(label: string, maxMs: number, opts: { approve?: boolean; f
     }
     if (now !== last) { last = now; stableSince = Date.now(); }
     if (firstChangeMs === null && now !== base) firstChangeMs = Date.now() - t0;
-    if (opts.approve && cli.approve.when.test(now) && approvals < 4) {
+    if (opts.approve && cli.approve.when.test(now) && approvals < maxApprovals) {
       approvals += 1;
       frame(`${label}.approval-${approvals}`);
       await sleep(300);

@@ -133,6 +133,26 @@ describe('Slack report-bug gestures', () => {
     expect(event.payload).toMatchObject({ target: { channelId: 'C1', ts: '1777000003.000300' } });
   });
 
+  it('target.text carries the reported message’s own text only when the gesture event IS that message (D-009)', () => {
+    // Only these two may be stored as the reported message's body by the chat admission sink.
+    const post = { type: 'message', channel: 'CBUGS', channel_type: 'channel', user: 'U5', text: 'login loops forever', ts: '1777000010.000100' };
+    const bugChannel = signalOf(classifySlackReportBugEnvelope(events(post, 'Ev20'), ON_IN_C1));
+    expect((bugChannel.payload.target as Record<string, unknown>).text).toBe('login loops forever');
+    const topMention = signalOf(classifySlackReportBugEnvelope(events({ ...THREAD_MENTION, thread_ts: undefined }, 'Ev21'), ON_IN_C1));
+    expect((topMention.payload.target as Record<string, unknown>).text).toBe(THREAD_MENTION.text);
+    // The reaction carries no text, the in-thread mention reports the ROOT (its text is the
+    // mention's), and the shortcut's text is the reporter's note: none of them names the subject.
+    const reaction = signalOf(classifySlackReportBugEnvelope(events(REACTION, 'Ev22'), ON_IN_C1));
+    const threadMention = signalOf(classifySlackReportBugEnvelope(events(THREAD_MENTION, 'Ev23'), ON_IN_C1));
+    const shortcut = signalOf(classifySlackReportBugEnvelope(
+      submission({ channelId: 'C1', messageTs: '1777000003.000300' }, { note: { note: { value: 'every export' } } }, 'V20'),
+      ON_IN_C1,
+    ));
+    for (const signal of [reaction, threadMention, shortcut]) {
+      expect(signal.payload.target).not.toHaveProperty('text');
+    }
+  });
+
   it('a new top-level post in a bug channel is exactly one signal, even though Slack also sends app_mention', () => {
     const post = { type: 'message', channel: 'CBUGS', channel_type: 'channel', user: 'U5', text: '<@UPAPER> login loops forever', ts: '1777000010.000100' };
     const fromMessage = signalOf(classifySlackReportBugEnvelope(events(post, 'Ev10'), ON_IN_C1));

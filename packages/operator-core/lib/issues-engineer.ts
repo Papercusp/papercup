@@ -20,7 +20,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from './work-items';
-import { admittedWhereSql, type BornAdmission } from './work-items-admission';
+import { admittedWhereSql, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import { harnessPreference, resolveIssuePhysicalSlug } from './work-items-physical-row';
 import { resolveWorkItemPot } from './pot-membership';
@@ -2714,6 +2714,22 @@ export async function resolveIssueWorkspace(id: string, fallback?: string, clien
      ORDER BY (workspace_id = ${ambient}) DESC, updated_at DESC NULLS LAST
      LIMIT 1`;
   return rows[0]?.workspace_id ?? ambient;
+}
+
+/**
+ * WI-10006515: heal an own-node issue row stranded at origin='remote', resolving its workspace by
+ * id. `origin` records how a row ARRIVED, not who wrote it (WI-10003565), and every write through
+ * the engineer_issues view is a silent no-op while origin='remote' — so a write path that would
+ * otherwise route an own-node row to "peer reconciliation" (a peer that is THIS node) heals first.
+ * The identity check lives in selfHealOwnNodeOriginIfStranded's WHERE clause: a true peer's row is
+ * never touched. Fail-closed: any read or write failure answers false and the refusal stands.
+ */
+export async function healOwnNodeIssueOrigin(id: string, harness?: string | null): Promise<boolean> {
+  try {
+    return await selfHealOwnNodeOriginIfStranded(await resolveIssueWorkspace(id), id, harness ?? null);
+  } catch {
+    return false;
+  }
 }
 
 /**

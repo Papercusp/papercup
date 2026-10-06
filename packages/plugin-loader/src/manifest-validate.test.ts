@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import type { ProviderDescriptor, ProviderOAuthDescriptor, ProviderOAuthIdentity } from '@papercusp/plugin-sdk';
 import { validateManifest } from './manifest-validate';
@@ -292,8 +295,9 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     datatypes: ['ticket'],
     capabilities: ['ticket.read'],
     oauth,
-    egressHosts: ['api.example.com', 'example.com'],
+    egressHosts: ['api.example.com', 'example.com', 'pubsub.example.com'],
     configSchema: { type: 'object' },
+    serviceCredentials: [{ ref: 'example-service', hosts: ['pubsub.example.com'] }],
   };
   const manifest = (p: unknown) => ({ name: 'example-provider', version: '0.1.0', papercusp: '^0.1.0', provider: p });
 
@@ -307,5 +311,40 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, clientSecret: 'x' } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { ...identity, token: 'x' } } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { url: identity.url } } })).ok).toBe(false);
+  });
+
+  it('still refuses a malformed service credential', () => {
+    expect(validateManifest(manifest({ ...provider, serviceCredentials: [{ ref: 'example-service' }] })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, serviceCredentials: [{ ref: 'x', hosts: ['pubsub.example.com'], secret: 'y' }] })).ok).toBe(false);
+  });
+});
+
+/**
+ * Runtime guard over the REAL first-party plugins (WI-10006546). The `Required<…>` fixture above
+ * only fails under a typecheck, and vitest never typechecks, so a field added to the SDK type and
+ * used by a bundled manifest shipped while every test stayed green: the Gmail plugin declared
+ * provider.serviceCredentials, the schema refused it, and the plugin failed to load in every
+ * process. Validating each bundled manifest here fails at TEST time instead.
+ */
+describe('validateManifest: every bundled first-party plugin manifest validates', () => {
+  const pluginsDir = process.env.PAPERCUSP_BUNDLED_PLUGINS_DIR
+    ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/plugins');
+  const manifests = existsSync(pluginsDir)
+    ? readdirSync(pluginsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => join(pluginsDir, entry.name, 'papercusp.json'))
+        .filter((path) => existsSync(path))
+    : [];
+
+  it('finds the bundled plugins, including the provider plugins', () => {
+    expect(manifests.length).toBeGreaterThan(10);
+    const providers = manifests.filter((path) => 'provider' in JSON.parse(readFileSync(path, 'utf8')));
+    expect(providers.map((path) => basename(dirname(path)))).toEqual(expect.arrayContaining(['gmail', 'google-calendar']));
+  });
+
+  it.each(manifests.map((path) => [basename(dirname(path)), path] as const))('%s', (_name, path) => {
+    const result = validateManifest(JSON.parse(readFileSync(path, 'utf8')));
+    expect(result.issues).toEqual([]);
+    expect(result.ok).toBe(true);
   });
 });

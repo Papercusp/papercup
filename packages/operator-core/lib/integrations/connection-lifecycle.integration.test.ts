@@ -444,7 +444,11 @@ describe('Google Workspace through the same lifecycle', () => {
        WHERE binding.workspace_id = ${WS} AND source.kind = 'gmail'`;
   }
 
-  it('shares one credential across Gmail, Calendar and Contacts and never arms the Gmail draft binding on connect or reconnect', async () => {
+  // Plan generalized-integrations-google-migration-cupboard-workflows-2026-10-05
+  // D-019.3: connect creates NO Gmail draft binding at all (a draft responder is
+  // opt-in through the email-draft-responder trigger pack), so a binding count
+  // above zero after connect or reconnect is the regression this guards.
+  it('shares one credential across Gmail, Calendar and Contacts and creates no Gmail draft binding on connect or reconnect', async () => {
     await expect(googleConnect('owner-slot')).resolves.toEqual({ connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN, error: null });
     const first = await sources(GOOGLE_KINDS);
     expect(first.map((row) => [row.kind, row.providerAccountId, row.credentialRef, row.status])).toEqual([
@@ -452,9 +456,7 @@ describe('Google Workspace through the same lifecycle', () => {
       ['gcal', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
       ['gmail', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
     ]);
-    const connected = await gmailBindings();
-    expect(connected.length).toBeGreaterThan(0);
-    expect(connected.every((binding) => binding.armed === false)).toBe(true);
+    expect(await gmailBindings()).toEqual([]);
 
     await expect(googleConnect('owner-slot', 'owner@example.com')).resolves.toEqual({
       connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
@@ -462,9 +464,7 @@ describe('Google Workspace through the same lifecycle', () => {
     });
     const second = await sources(GOOGLE_KINDS);
     expect(second.map((row) => row.id)).toEqual(first.map((row) => row.id));
-    const reconnected = await gmailBindings();
-    expect(reconnected).toHaveLength(connected.length);
-    expect(reconnected.every((binding) => binding.armed === false)).toBe(true);
+    expect(await gmailBindings()).toEqual([]);
   });
 
   it('refuses a Google reconnect that signs in to a different mailbox', async () => {

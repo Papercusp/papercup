@@ -1,18 +1,37 @@
 import { describe, expect, it } from 'vitest';
+import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import {
   classifyDissolvedCluster,
   costLineIsUnmeasured,
   coverageHasUncoveredClusterNeed,
   emptyDissolvedClusterFates,
+  GOAL_SPEND_ROLLUP_SOURCE,
   HOLDER_BEHAVIOR_CRITERIA,
   HOLDER_BEHAVIOR_INSTRUMENT_KEYS,
   holderBehaviorCriterionForInstrument,
+  ownerReportCostVerdict,
   rateGoalHolderBehavior,
   summarizeGoalReviews,
   summarizeOwnerReports,
   walledEntries,
   type GoalHolderBehaviorMetrics,
 } from './goal-holder-behavior-metrics';
+import { goalSpendFromGoalRow, type GoalReportMeasuredSpend } from './goal-owner-report';
+
+/** The witnessed window's goal spend WAS measured, so "not measured per goal" was false. */
+const WITNESSED_SPEND: GoalReportMeasuredSpend = {
+  spentCents: 290656,
+  measured: true,
+  source: 'goal-lineage-rollup',
+  measuredAt: '2026-10-03T00:45:43Z',
+};
+/** Goal 60d3a8 on 2026-10-06: the lineage rollup could not measure spend (WI-10006542). */
+const UNMEASURED_SPEND: GoalReportMeasuredSpend = {
+  spentCents: null,
+  measured: false,
+  source: 'goal-lineage-rollup',
+  measuredAt: '2026-10-06T08:19:59.897Z',
+};
 
 const WINDOW = {
   workspaceId: 'papercusp-workspace',
@@ -32,7 +51,7 @@ const WINDOW = {
  */
 function witnessed(): GoalHolderBehaviorMetrics {
   return {
-    version: 1,
+    version: 2,
     window: WINDOW,
     // The rating's fail case is an OVERDUE CLUSTER, not the 31 unplanned singletons
     // (WI-10005920). Whether the real 00:53Z window had one depends on the detector
@@ -66,7 +85,7 @@ function witnessed(): GoalHolderBehaviorMetrics {
         cost: 'not measured per goal; pot-wide last read $4266/24h.',
         ownerWalled: 'hud P-003 route; budget ceiling ask conv-murpg1rk (propose 500000c/86400s); WI-10004856, WI-10004875, WI-10005042.',
       },
-    ]),
+    ], WITNESSED_SPEND),
     loop: { deliveredFires: 3, suppressedFires: 2, windowHours: 79.88 / 60 },
     nudges: { timedReminders: 3, fired: 1, cancelled: 2, cancelledWithReason: 0, dischargedCancels: 0, watchChurnWithoutReason: 28 },
   };
@@ -75,7 +94,7 @@ function witnessed(): GoalHolderBehaviorMetrics {
 /** A window that meets every bar. */
 function healthy(): GoalHolderBehaviorMetrics {
   return {
-    version: 1,
+    version: 2,
     window: WINDOW,
     planAuthorship: {
       plansNew: 1,
@@ -96,11 +115,65 @@ function healthy(): GoalHolderBehaviorMetrics {
       noNewPlanReviewsOverUnplannedCluster: 0,
       reviewsWithUncoveredClusterNeed: 0,
     },
-    ownerReports: { reports: 2, costNotMeasured: 0, walledEntries: 2, bareWalledEntries: 0 },
+    ownerReports: {
+      reports: 2,
+      costCitedMeasured: 2,
+      costNotMeasured: 0,
+      costGoalSpendUnmeasured: 0,
+      costUnverified: 0,
+      walledEntries: 2,
+      bareWalledEntries: 0,
+    },
     loop: { deliveredFires: 5, suppressedFires: 0, windowHours: 1.33 },
     nudges: { timedReminders: 3, fired: 2, cancelled: 1, cancelledWithReason: 1, dischargedCancels: 1, watchChurnWithoutReason: 0 },
   };
 }
+
+describe('owner-report COST is judged against measured spend, never by wording (WI-10006542)', () => {
+  // The two real wordings goal 60d3a8's holder used on 2026-10-06 for the SAME unmeasured goal
+  // spend. The lexical rule scored the first "measured" (pass) and the second a failure.
+  const W1_WORDING = 'unknown; coverage=no-ceiling; source=goal-lineage-rollup; measured at=2026-10-06T06:39:42.181Z.';
+  const W2_WORDING =
+    'Goal lineage rollup reports spentCents=null (07:14:47Z); spend remains unknown. Interactive-holder cost attribution remains unmeasured.';
+
+  it('scores both wordings identically when the goal spend is unmeasured, stamped or not', () => {
+    for (const cost of [W1_WORDING, W2_WORDING]) {
+      expect(ownerReportCostVerdict({ cost, truthCost: null }, UNMEASURED_SPEND)).toBe('goal-spend-unmeasured');
+      expect(ownerReportCostVerdict({ cost, truthCost: 'goal-spend-unmeasured' }, UNMEASURED_SPEND)).toBe('goal-spend-unmeasured');
+    }
+    const at = (cost: string) =>
+      rateGoalHolderBehavior({
+        ...healthy(),
+        ownerReports: summarizeOwnerReports([{ ts: '2026-10-06T07:22:02Z', cost, ownerWalled: 'WI-1 approve the GitHub App install' }], UNMEASURED_SPEND),
+      })['owner-report-truthfulness'].verdict;
+    expect(at(W1_WORDING)).toBe('pass');
+    expect(at(W2_WORDING)).toBe('pass');
+  });
+
+  it('scores both wordings identically as NOT citing a measured spend, whatever they say', () => {
+    for (const cost of [W1_WORDING, W2_WORDING]) {
+      expect(ownerReportCostVerdict({ cost, truthCost: null }, WITNESSED_SPEND)).toBe('measured-spend-not-cited');
+    }
+    expect(ownerReportCostVerdict({ cost: 'goal spend $2,906.56 (goal-lineage-rollup)', truthCost: null }, WITNESSED_SPEND)).toBe('cited-measured');
+  });
+
+  it("lets the stamp's send-time truth win over the grading-time spend read", () => {
+    expect(ownerReportCostVerdict({ cost: W2_WORDING, truthCost: 'goal-spend-unmeasured' }, WITNESSED_SPEND)).toBe('goal-spend-unmeasured');
+    expect(ownerReportCostVerdict({ cost: 'n/a', truthCost: 'cited-measured' }, UNMEASURED_SPEND)).toBe('cited-measured');
+    // 'unread' means the gate could not read spend at send time: fall through to the spend read.
+    expect(ownerReportCostVerdict({ cost: W1_WORDING, truthCost: 'unread' }, WITNESSED_SPEND)).toBe('measured-spend-not-cited');
+    expect(ownerReportCostVerdict({ cost: W1_WORDING, truthCost: null }, null)).toBe('unverified');
+  });
+
+  it('maps goal spend columns by the same rule as the send-time gate, against the DB source tag', () => {
+    expect(GOAL_SPEND_ROLLUP_SOURCE).toBe(GOAL_SPEND_SNAPSHOT_SOURCE);
+    const row = { spent: 290656, source: GOAL_SPEND_SNAPSHOT_SOURCE, at: '2026-10-03T00:45:43Z', unmeasured: null };
+    expect(goalSpendFromGoalRow(row, GOAL_SPEND_ROLLUP_SOURCE).measured).toBe(true);
+    expect(goalSpendFromGoalRow({ ...row, unmeasured: 'interactive-usage-stale' }, GOAL_SPEND_ROLLUP_SOURCE).measured).toBe(false);
+    expect(goalSpendFromGoalRow({ ...row, spent: null }, GOAL_SPEND_ROLLUP_SOURCE).measured).toBe(false);
+    expect(goalSpendFromGoalRow({ ...row, source: 'pot-wide' }, GOAL_SPEND_ROLLUP_SOURCE).measured).toBe(false);
+  });
+});
 
 describe('goal-holder behavior parsing', () => {
   it('treats a COST line that admits no goal measurement as unmeasured', () => {
@@ -145,7 +218,15 @@ describe('goal-holder behavior parsing', () => {
 describe('rateGoalHolderBehavior thresholds', () => {
   it('fails every holder-behavior criterion on the witnessed 00:53Z-02:13Z window (positive control)', () => {
     const metrics = witnessed();
-    expect(metrics.ownerReports).toEqual({ reports: 2, costNotMeasured: 2, walledEntries: 6, bareWalledEntries: 2 });
+    expect(metrics.ownerReports).toEqual({
+      reports: 2,
+      costCitedMeasured: 0,
+      costNotMeasured: 2,
+      costGoalSpendUnmeasured: 0,
+      costUnverified: 0,
+      walledEntries: 6,
+      bareWalledEntries: 2,
+    });
     const ratings = rateGoalHolderBehavior(metrics);
     for (const criterion of HOLDER_BEHAVIOR_CRITERIA) {
       expect({ criterion, verdict: ratings[criterion].verdict }).toEqual({ criterion, verdict: 'fail' });
@@ -287,11 +368,39 @@ describe('rateGoalHolderBehavior thresholds', () => {
   });
 
   it('owner reports: no report is unknown; one unmeasured COST or one bare walled entry fails', () => {
-    const at = (reports: GoalHolderBehaviorMetrics['ownerReports']) =>
-      rateGoalHolderBehavior({ ...healthy(), ownerReports: reports })['owner-report-truthfulness'].verdict;
-    expect(at({ reports: 0, costNotMeasured: 0, walledEntries: 0, bareWalledEntries: 0 })).toBe('unknown');
-    expect(at({ reports: 3, costNotMeasured: 1, walledEntries: 0, bareWalledEntries: 0 })).toBe('fail');
-    expect(at({ reports: 3, costNotMeasured: 0, walledEntries: 4, bareWalledEntries: 1 })).toBe('fail');
+    const zero = { costCitedMeasured: 0, costNotMeasured: 0, costGoalSpendUnmeasured: 0, costUnverified: 0 };
+    const at = (reports: Partial<GoalHolderBehaviorMetrics['ownerReports']>) =>
+      rateGoalHolderBehavior({
+        ...healthy(),
+        ownerReports: { reports: 0, walledEntries: 0, bareWalledEntries: 0, ...zero, ...reports },
+      })['owner-report-truthfulness'].verdict;
+    expect(at({ reports: 0 })).toBe('unknown');
+    expect(at({ reports: 3, costCitedMeasured: 2, costNotMeasured: 1 })).toBe('fail');
+    expect(at({ reports: 3, costCitedMeasured: 3, walledEntries: 4, bareWalledEntries: 1 })).toBe('fail');
+    // WI-10006542: a truthful "unmeasured" COST while the platform has no measured goal spend passes.
+    expect(at({ reports: 3, costGoalSpendUnmeasured: 3 })).toBe('pass');
+    expect(at({ reports: 2, costGoalSpendUnmeasured: 1, costUnverified: 1 })).toBe('pass');
+    // ...but when no report's COST truth could be established at all, the verdict is unknown.
+    expect(at({ reports: 2, costUnverified: 2 })).toBe('unknown');
+  });
+
+  it('owner reports: the pass reason never claims measured COST the reports did not cite (WI-10006542)', () => {
+    const rating = rateGoalHolderBehavior({
+      ...healthy(),
+      ownerReports: {
+        reports: 3,
+        costCitedMeasured: 0,
+        costNotMeasured: 0,
+        costGoalSpendUnmeasured: 3,
+        costUnverified: 0,
+        walledEntries: 11,
+        bareWalledEntries: 0,
+      },
+    })['owner-report-truthfulness'];
+    expect(rating.verdict).toBe('pass');
+    expect(rating.reason).toContain('cited the measured goal spend in 0');
+    expect(rating.reason).toContain('truthfully stated goal spend unmeasured (no measured lineage spend) in 3');
+    expect(rating.reason).not.toMatch(/with measured COST/);
   });
 
   it('loop liveness: exactly 1 suppressed fire per hour passes; more fails; fires with none delivered fails', () => {

@@ -35,6 +35,7 @@ import {
   upsertOwnedExternalTriggerSource,
 } from '../external-triggers/source-store';
 import { upsertChatMessages, type ChatMessageInput } from './chat-retrieval-units';
+import type { ChatAdmissionAdapter } from './chat-admission-sink';
 import { replacePermissionListMembers, upsertPermissionList } from './documents-corpus';
 
 const SLACK_API_ORIGIN = 'https://slack.com';
@@ -318,6 +319,57 @@ async function fetchReplies(deps: SlackOrgDeps, botToken: string, channelId: str
     cursor = text(page.response_metadata?.next_cursor) || undefined;
   } while (cursor);
   return out;
+}
+
+/**
+ * Slack's chat admission adapter (chat-admission-sink.ts; slack-messages-to-bug-reports D-008,
+ * D-009). Slack messages are stored exactly as the backfill stores them (toChatMessage): channel
+ * `<team>:<channel>`, provider id = ts, thread key `<team>:<channel>:<thread_ts>`. A subject the
+ * event does not carry (a reaction, an in-thread mention, a shortcut) is fetched as ONE message:
+ * conversations.history pinned to its ts finds a top-level post, conversations.replies a reply.
+ * Fetching reads channel history, so it is gated like the backfill (slack-org-connector flag).
+ */
+export function createSlackChatAdmissionAdapter(
+  source: ExternalTriggerSourceRow,
+  botToken: () => Promise<string>,
+  deps: SlackOrgDeps = {},
+): ChatAdmissionAdapter {
+  // Resolved per call, not here: the sink is built for every envelope, and a source without a
+  // team id must fail only its chat admission (when a rule needs it), never the whole ingest.
+  const team = () => teamOf(source);
+  return {
+    keys(subject) {
+      const channel = slackOrgChannelRef(team(), subject.channelId);
+      return {
+        channelId: channel,
+        providerMessageId: subject.ts,
+        threadKey: subject.threadTs ? `${channel}:${subject.threadTs}` : null,
+        ownThreadKey: `${channel}:${subject.ts}`,
+      };
+    },
+    fromEvent(subject, payload) {
+      const sender = text(payload.sender);
+      const own = toChatMessage(team(), subject.channelId, {
+        ts: subject.ts,
+        ...(subject.threadTs ? { thread_ts: subject.threadTs } : {}),
+        ...(sender ? { user: sender } : {}),
+        text: subject.text,
+      });
+      if (!own) throw new Error(`slack_chat_message_unmappable:${subject.channelId}:${subject.ts}`);
+      return own;
+    },
+    async fetch(subject) {
+      await assertEnabled(deps);
+      const token = await botToken();
+      const top = await slackCall<{ messages?: SlackMessage[] }>(
+        deps, token, 'conversations.history',
+        { channel: subject.channelId, latest: subject.ts, oldest: subject.ts, inclusive: 'true', limit: '1' },
+      );
+      const found = (top.messages ?? []).find((m) => text(m.ts) === subject.ts)
+        ?? (await fetchReplies(deps, token, subject.channelId, subject.ts)).find((m) => text(m.ts) === subject.ts);
+      return found ? toChatMessage(team(), subject.channelId, found) : null;
+    },
+  };
 }
 
 export interface SlackOrgBackfillStep {

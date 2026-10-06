@@ -84,6 +84,7 @@ function build(refuse: ReadonlySet<string> = new Set()) {
     commentWorkItem: vi.fn(async () => ({}) as never),
     readLedgerGrade: vi.fn(async () => null),
     deliverRevision: vi.fn(async () => ({ woken: 0 })),
+    healOwnNodeOrigin: vi.fn(async () => false),
   } as unknown as AgentReviewDeps;
   return { deps, claimWorkItem };
 }

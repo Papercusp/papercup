@@ -1048,6 +1048,145 @@ describe('governed attempt persisted settlement receipts', () => {
 describe('spend reservation + settlement — every attempt closes', () => {
   const LOOP = 'frontier:reserve-test';
 
+  it.each(['lifetime', 'per-cycle', 'exact'] as const)(
+    'refuses a paused registered pot for %s admission despite caller pot attribution', async mode => {
+      const loopId = `gym:paused-pot-${randomUUID()}`;
+      const potSlug = `paused-pot-${randomUUID()}`;
+      const binding = 'e'.repeat(64);
+      await registerLearningLoop(sql, { workspaceId: WS, loopId, potSlug, budgetUsd: 10,
+        budgetKind: mode === 'per-cycle' ? 'per-cycle' : 'lifetime',
+        ...(mode === 'exact' ? { meta: { reservationBinding: binding } } : {}),
+      });
+      await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [potSlug], enabled: false, setBy: 'su-test' });
+      const request = { workspaceId: WS, loopId, requestedUsd: 1, potSlug: `other-${randomUUID()}`,
+        ...(mode === 'exact' ? { exact: { reservationId: randomUUID(), binding, expectedBudgetUsd: 10 } } : {}),
+      };
+      expect(await reserveLearningSpend(sql, request)).toMatchObject({ ok: false, reason: 'pot-disabled' });
+      expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+      expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toEqual([]);
+      expect(await getLearningLoop(sql, { workspaceId: WS, loopId })).toMatchObject({ enabled: true, budgetUsd: 10, potSlug });
+
+      await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [potSlug], enabled: true, setBy: 'su-test' });
+      expect(await reserveLearningSpend(sql, request)).toMatchObject({ ok: true });
+    },
+  );
+
+  it.each(['lifetime', 'per-cycle', 'exact'] as const)(
+    'does not dispatch a %s attempt when its registered pot pauses after preflight', async mode => {
+      const loopId = `gym:pot-revoked-preflight-${randomUUID()}`;
+      const potSlug = `revoked-pot-${randomUUID()}`;
+      const binding = 'f'.repeat(64);
+      await registerLearningLoop(sql, { workspaceId: WS, loopId, potSlug, budgetUsd: 10,
+        budgetKind: mode === 'per-cycle' ? 'per-cycle' : 'lifetime',
+        ...(mode === 'exact' ? { meta: { reservationBinding: binding } } : {}),
+      });
+      expect(await governorCheck(sql, { workspaceId: WS, loopId })).toMatchObject({ allow: true });
+      const run = vi.fn(async () => ({ costUsd: 0, value: 'dispatched' }));
+      const settle = vi.fn(settleLearningSpend);
+      const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+        requestedUsd: 1, run, accumulate: mode !== 'exact' ? false : true,
+        ...(mode === 'exact' ? { exact: { reservationId: randomUUID(), binding, expectedBudgetUsd: 10 } } : {}),
+      }, { enabled: async () => true, getSql: async () => {
+        await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [potSlug], enabled: false, setBy: 'su-test' });
+        return sql;
+      }, log: () => {}, settle });
+      expect(out).toMatchObject({ ok: false, reason: 'refused', refusal: 'pot-disabled' });
+      expect(run).not.toHaveBeenCalled();
+      expect(settle).not.toHaveBeenCalled();
+      expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+      expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toEqual([]);
+    },
+  );
+
+  it('also refuses a zero-cost attempt for a paused registered pot', async () => {
+    const loopId = `gym:paused-pot-zero-${randomUUID()}`;
+    const potSlug = `zero-pot-${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, potSlug, budgetKind: 'per-cycle', budgetUsd: 10 });
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [potSlug], enabled: false, setBy: 'su-test' });
+    expect(await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 0 }))
+      .toMatchObject({ ok: false, reason: 'pot-disabled' });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+  });
+
+  it.each(['lifetime', 'per-cycle', 'exact'] as const)(
+    'preserves pre-migration pot fallback in a %s reservation transaction', async mode => {
+      const loopId = `gym:pot-premigration-${randomUUID()}`;
+      const binding = 'a'.repeat(64);
+      await registerLearningLoop(sql, { workspaceId: WS, loopId, potSlug: 'not-migrated', budgetUsd: 10,
+        budgetKind: mode === 'per-cycle' ? 'per-cycle' : 'lifetime',
+        ...(mode === 'exact' ? { meta: { reservationBinding: binding } } : {}),
+      });
+      // This database belongs to this file; restore the relation even when
+      // reserveLearningSpend rolls back its own failed transaction.
+      await sql`ALTER TABLE harness_shared.learning_pot_scope RENAME TO learning_pot_scope_unavailable`;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        expect(await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 1,
+          ...(mode === 'exact' ? { exact: { reservationId: randomUUID(), binding, expectedBudgetUsd: 10 } } : {}),
+        })).toMatchObject({ ok: true });
+        expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toHaveLength(1);
+        if (mode === 'lifetime') expect(warn).toHaveBeenCalledWith(expect.stringContaining('is answering fail-OPEN'));
+        expect(warn.mock.calls.every(([message]) => String(message).includes('[learning-pot-scope]'))).toBe(true);
+      } finally {
+        warn.mockRestore();
+        await sql`ALTER TABLE harness_shared.learning_pot_scope_unavailable RENAME TO learning_pot_scope`;
+      }
+    },
+  );
+
+  it.each([null, 'absent', 'other'] as const)('preserves %s pot authority when a different pot is paused', async potMode => {
+    const loopId = `gym:unpaused-pot-${randomUUID()}`;
+    const pausedPot = `unrelated-paused-${randomUUID()}`;
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [pausedPot], enabled: false, setBy: 'su-test' });
+    const potSlug = potMode === null ? null : `${potMode}-pot-${randomUUID()}`;
+    if (potMode === 'other') {
+      await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [potSlug!], enabled: true, setBy: 'su-test' });
+    }
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, potSlug, budgetKind: 'per-cycle', budgetUsd: 10 });
+    expect(await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 1 })).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    ['lifetime', 0], ['lifetime', 1], ['per-cycle', 0], ['per-cycle', 1],
+  ] as const)('refuses disabled %s registrations before reserving $%s', async (budgetKind, requestedUsd) => {
+    const loopId = `gym:disabled-reservation-${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind, budgetUsd: 10, enabled: false });
+    const request = { workspaceId: WS, loopId, attemptKind: 'proposer' as const, requestedUsd };
+    const refusal = await reserveLearningSpend(sql, request);
+    expect(refusal).toMatchObject({ ok: false, reason: 'disabled' });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toEqual([]);
+
+    // The same budget and request become admissible when authority is restored.
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, enabled: true });
+    expect(await reserveLearningSpend(sql, request)).toMatchObject({ ok: true,
+      reservation: { workspaceId: WS, loopId, requestedUsd, reservedUsd: requestedUsd, status: 'open' } });
+  });
+
+  it.each(['lifetime', 'per-cycle'] as const)(
+    'does not dispatch a %s attempt disabled after successful preflight', async budgetKind => {
+      const loopId = `gym:revoked-preflight-${randomUUID()}`;
+      await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind, budgetUsd: 10, enabled: true });
+      expect(await governorCheck(sql, { workspaceId: WS, loopId })).toMatchObject({ allow: true });
+      const run = vi.fn(async () => ({ costUsd: 0, value: 'dispatched' }));
+      const settle = vi.fn(settleLearningSpend);
+      const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+        requestedUsd: 1, accumulate: false, run,
+      }, { enabled: async () => true, getSql: async () => {
+        // Revoke while the helper awaits its pool, before the issuer reads the
+        // registration under FOR UPDATE. An earlier allow cannot authorize it.
+        await registerLearningLoop(sql, { workspaceId: WS, loopId, enabled: false });
+        return sql;
+      }, log: () => {}, settle });
+      expect(out).toMatchObject({ ok: false, reason: 'refused', refusal: 'disabled' });
+      expect(run).not.toHaveBeenCalled();
+      expect(settle).not.toHaveBeenCalled();
+      expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+      expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toEqual([]);
+      expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+    },
+  );
+
   it.each(['status', 'workspaceId', 'loopId', 'reservedUsd'] as const)(
     'does not dispatch or settle a substituted %s receipt from an actual reservation', async field => {
       const loopId = `gym:invalid-dispatch-grant-${randomUUID()}`;

@@ -11,6 +11,23 @@ import {
 const HEAD = "a".repeat(40);
 
 describe("targeted gate outcome evidence", () => {
+  it("retains bounded stdout and stderr for a clean nonzero task, including failure before test reporting", async () => {
+    const result = await measureTargetedGateRuns(["lint:broken", "lint:after"], async (script) => ({
+      code: script === "lint:broken" ? 1 : 0,
+      stdout: "x".repeat(10_000) + "\nSTDOUT-LAST-LINE",
+      stderr: "y".repeat(10_000) + "\nCONFIG-LOAD-FAILED; module missing",
+    }));
+    expect(result.pass).toBe(false);
+    expect(result.coverageComplete).toBe(true);
+    const failed = result.perGate?.[0];
+    expect(failed).toMatchObject({ id: "lint:broken", status: "fail" });
+    expect(failed?.outputTail).toContain("STDOUT-LAST-LINE");
+    expect(failed?.outputTail).toContain("CONFIG-LOAD-FAILED; module missing");
+    expect(failed?.outputTail!.length).toBeLessThanOrEqual(2_000);
+    expect(result.summary).toContain("CONFIG-LOAD-FAILED, module missing");
+    expect(result.perGate?.[1]).toEqual({ id: "lint:after", status: "pass" });
+  });
+
   it("runs beyond the first failure and retains each task's actual result", async () => {
     const run = vi.fn(async (script: string) => ({ code: script === "lint:broken" ? 1 : 0 }));
     const result = await measureTargetedGateRuns(["lint:before", "lint:broken", "lint:after"], run);

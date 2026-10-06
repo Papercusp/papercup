@@ -10,6 +10,8 @@ import { buildHostedUsageStatement, type HostedUsageRecord, type HostedUsageScop
 import { PostgresHostedUsageStore, type OpenRouterGenerationBinding } from './usage-store';
 import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
 import { createHostedUsageSource } from './usage-service';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetExecutionGrant } from './budget-store';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -91,6 +93,13 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       populationMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1382-hosted-usage-population-lock.sql', import.meta.url), 'utf8');
     }
     await db.adminSql.unsafe(populationMigration); await db.adminSql.unsafe(populationMigration);
+    let grantMigration: string;
+    try { grantMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1391-hosted-openrouter-budget-binding.sql.DRAFT', import.meta.url), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      grantMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1391-hosted-openrouter-budget-binding.sql', import.meta.url), 'utf8');
+    }
+    await db.adminSql.unsafe(grantMigration); await db.adminSql.unsafe(grantMigration);
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
@@ -437,6 +446,160 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     occurredAtMs: T, observedAtMs: T + 10, evidenceRef: 'execution:bound-generation',
   });
   const bindings = (scope: HostedUsageScope, asOfMs = T + 1000) => store().readOpenRouterBindings({ scope, month: MONTH, asOfMs });
+
+  // Exercise the real admission/dispatch writer with fixture-only authority.
+  // This context never installs a production funding or entitlement reader.
+  const grantContext: HostedBudgetContextReader = async (_sql, request) => {
+    const { startMs, endMs } = shadowMonthBounds(request.month);
+    return { scope: request.scope, month: request.month, asOfMs: request.asOfMs, evidenceRef: 'fixture:grant-authority',
+      policy: { policyId: 'fixture-grant-policy', revision: 1, budgetKey: request.budgetKey,
+        effectiveFromMs: startMs, effectiveUntilMs: endMs, warningBps: 8000 },
+      limits: [{ customerWorkspaceId: null, entitlements: { budgets: { [request.budgetKey]: 100 } },
+        fundedMicros: 1_000_000, externalSpentMicros: 0, retainedReserveMicros: 0, unreconciled: false }] };
+  };
+  const budgetStore = () => new PostgresHostedBudgetStore({ run: runService, readContext: grantContext, now: () => T });
+  async function admittedGrant(scope: OpenRouterGenerationBinding['scope']): Promise<HostedBudgetExecutionGrant> {
+    const result = await budgetStore().executeOnce({ scope, reservationId: randomUUID(), month: MONTH,
+      budgetKey: 'consumption.usd_cents', maximumCostMicros: 100_000,
+      providerLimitRef: 'fixture:opaque-provider-limit', asOfMs: T }, async grant => grant);
+    if (result.execution !== 'dispatched') throw new Error('fixture admission was refused');
+    return result.value;
+  }
+
+  it('joins a real executeOnce admission to one private generation capture, survives restart and excludes the grant from public usage', async () => {
+    const scope = await tenant(); const grant = await admittedGrant(scope);
+    const b = { ...captured(scope), budgetGrant: grant };
+    const outcomes = await Promise.all(Array.from({ length: 8 }, () => store().bindOpenRouterGeneration(b)));
+    expect(outcomes.filter(x => x === 'recorded')).toHaveLength(1);
+    expect(outcomes.filter(x => x === 'duplicate')).toHaveLength(7);
+    expect((await bindings(scope))[0]?.budgetGrant).toEqual(grant);
+    await runService(async sql => {
+      const population = await store().readLockedPopulation(sql);
+      const saved = population.openRouterBindings.find(x => x.generationId === b.generationId)!;
+      expect(saved.budgetGrant).toEqual(grant);
+      expect(Object.isFrozen(saved.budgetGrant)).toBe(true);
+      expect(Object.isFrozen(saved.budgetGrant!.scope)).toBe(true);
+      expect(Object.hasOwn(population, 'complete')).toBe(false);
+    });
+    const correction = openRouterUsageRecord({ ...b, revision: 2, observedAtMs: T + 20 }, {
+      data: { id: b.generationId, is_byok: false, total_cost: 0.0000001 },
+    });
+    expect(await store().append(correction)).toBe('recorded');
+    expect((await bindings(scope))[0]?.budgetGrant).toEqual(grant);
+    const records = await read(scope);
+    expect(records.at(-1)?.costMicrosExact).toBe('0.1');
+    expect(JSON.stringify(records)).not.toMatch(/budgetGrant|reservationId|policyId|providerLimitRef|credential/);
+    const statement = buildHostedUsageStatement({ scope, month: MONTH, asOfMs: T + 1000,
+      source: { complete: false, observedAtMs: T + 20, maximumAgeMs: 1000, evidenceRef: 'fixture:partial-census' }, records });
+    expect(statement.settlementEligible).toBe(false);
+    expect(JSON.stringify(statement)).not.toMatch(/budgetGrant|reservationId|policyId|providerLimitRef|credential/);
+  });
+
+  it('refuses copied or changed admission fields, foreign tenants, non-consumption payers and execution before admission', async () => {
+    const scope = await tenant(); const foreign = await tenant(); const grant = await admittedGrant(scope);
+    const b = { ...captured(scope), budgetGrant: grant };
+    for (const change of [{ reservationId: randomUUID() }, { month: '2026-11' }, { budgetKey: 'other.usd_cents' },
+      { maximumCostMicros: 99_999 }, { providerLimitRef: 'fixture:same-amount-different-limit' },
+      { policyId: 'fixture:other-policy' }, { policyRevision: 2 }, { evidenceRef: 'fixture:other-authority' },
+      { scope: foreign }]) {
+      expect(await store().bindOpenRouterGeneration({ ...b, budgetGrant: { ...grant, ...change } })).toBe('replay-mismatch');
+    }
+    expect(await store().bindOpenRouterGeneration({ ...b, scope: foreign })).toBe('replay-mismatch');
+    expect(await store().bindOpenRouterGeneration({ ...b, payer: 'customer-direct' })).toBe('replay-mismatch');
+    expect(await store().bindOpenRouterGeneration({ ...b, occurredAtMs: T - 1 })).toBe('replay-mismatch');
+    expect(await read(scope)).toEqual([]); expect(await read(foreign)).toEqual([]);
+  });
+
+  it('serializes two generation captures for one admission across independent generation locks', async () => {
+    const scope = await tenant(); const grant = await admittedGrant(scope);
+    const a = { ...captured(scope), budgetGrant: grant }; const b = { ...captured(scope), budgetGrant: grant };
+    expect((await Promise.all([store().bindOpenRouterGeneration(a), store().bindOpenRouterGeneration(b)])).sort())
+      .toEqual(['recorded', 'replay-mismatch']);
+    const saved = await bindings(scope); expect(saved).toHaveLength(1); expect(saved[0]?.budgetGrant).toEqual(grant);
+    expect(await read(scope)).toHaveLength(1);
+  });
+
+  it('preserves legacy unjoined bindings and refuses attaching, removing or replacing a grant on replay', async () => {
+    const scope = await tenant(); const grant = await admittedGrant(scope); const legacy = captured(scope);
+    expect(await store().bindOpenRouterGeneration(legacy)).toBe('recorded');
+    expect(await store().bindOpenRouterGeneration({ ...legacy, budgetGrant: grant })).toBe('replay-mismatch');
+    const b = { ...captured(scope), budgetGrant: grant };
+    expect(await store().bindOpenRouterGeneration(b)).toBe('recorded');
+    expect(await store().bindOpenRouterGeneration({ ...b, budgetGrant: undefined })).toBe('replay-mismatch');
+    const replacement = await admittedGrant(scope);
+    expect(await store().bindOpenRouterGeneration({ ...b, budgetGrant: replacement })).toBe('replay-mismatch');
+    const saved = await bindings(scope);
+    expect(saved.find(x => x.generationId === legacy.generationId)).not.toHaveProperty('budgetGrant');
+    expect(saved.find(x => x.generationId === b.generationId)?.budgetGrant).toEqual(grant);
+  });
+
+  it('snapshots private admission fields before the first await and rejects malformed grants before opening a runner', async () => {
+    const scope = await tenant(); const original = await admittedGrant(scope);
+    const mutable = { ...original, scope: { ...original.scope } };
+    const b = { ...captured(scope), budgetGrant: mutable };
+    const changing = new PostgresHostedUsageStore(fn => {
+      mutable.maximumCostMicros = 1; mutable.scope.customerWorkspaceId = randomUUID(); return runService(fn);
+    });
+    expect(await changing.bindOpenRouterGeneration(b)).toBe('recorded');
+    expect((await bindings(scope))[0]?.budgetGrant).toEqual(original);
+    const run = vi.fn(); const malformed = new PostgresHostedUsageStore(fn => { run(); return runService(fn); });
+    for (const value of [null, [], { ...original, privateContent: 'secret' }, { ...original, maximumCostMicros: -1 },
+      { ...original, policyRevision: 0 }, { ...original, scope: { ...scope, extra: 'secret' } },
+      { ...original, month: '2026-13' }]) {
+      await expect(malformed.bindOpenRouterGeneration({ ...b, budgetGrant: value } as OpenRouterGenerationBinding))
+        .rejects.toThrow();
+    }
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('enforces the exact admission and one-generation join against direct SQL without widening financial DML grants', async () => {
+    const scope = await tenant(); const grant = await admittedGrant(scope);
+    const a = { ...captured(scope), budgetGrant: grant }; expect(await store().bindOpenRouterGeneration(a)).toBe('recorded');
+    const insert = (value: unknown, payer = 'consumption', credential = a.credentialRef) => runService(sql => sql`
+      INSERT INTO papercusp_auth.hosted_usage_receipts
+        (control_workspace_id, organization_id, customer_workspace_id, provider, record_id, usage_id,
+         revision, category, payer, occurred_at_ms, observed_at_ms, quantity, unit, cost_source, cost_micros,
+         source_ref, openrouter_credential_ref, openrouter_key_sha256, openrouter_is_byok, openrouter_budget_grant)
+      VALUES (${scope.controlWorkspaceId}, ${scope.organizationId}, ${scope.customerWorkspaceId}, 'openrouter',
+        ${randomUUID()}, ${'gen-' + randomUUID()}, 1, 'inference-fees', ${payer}, ${T}, ${T + 10}, 1, 'generations',
+        'unpriced', NULL, 'fixture:direct-capture', ${credential}, ${a.credentialSha256}, false, ${JSON.stringify(value)}::jsonb)`);
+    for (const value of [[], { ...grant, maximumCostMicros: 99_999 }, { ...grant, reservationId: randomUUID() },
+      { ...grant, scope: { ...scope, customerWorkspaceId: randomUUID() } }, { ...grant, extra: 'content' }]) {
+      await expect(insert(value)).rejects.toMatchObject({ code: '23514' });
+    }
+    await expect(insert(grant, 'customer-direct')).rejects.toMatchObject({ code: '23514' });
+    await expect(insert(grant)).rejects.toMatchObject({ code: '23505' });
+    await expect(runService(sql => sql`UPDATE papercusp_auth.hosted_usage_receipts SET openrouter_budget_grant = NULL
+      WHERE usage_id = ${a.generationId}`)).rejects.toMatchObject({ code: '42501' });
+    await expect(runService(sql => sql`DELETE FROM papercusp_auth.hosted_budget_receipts
+      WHERE reservation_id = ${grant.reservationId}`)).rejects.toMatchObject({ code: '42501' });
+    expect(await read(scope)).toHaveLength(1);
+  });
+
+  it('does not bind an uncommitted or rolled-back admission and succeeds only after its durable commit', async () => {
+    const scope = await tenant(); const grant = await admittedGrant(scope);
+    let ready!: () => void; let release!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const b = { ...captured(scope), budgetGrant: { ...grant, reservationId: randomUUID() } };
+    const sentinel = new Error('fixture admission rollback');
+    const pending = runService(async sql => {
+      await sql`INSERT INTO papercusp_auth.hosted_budget_receipts
+        SELECT control_workspace_id, organization_id, customer_workspace_id, ${b.budgetGrant.reservationId},
+          ${'admission:' + b.budgetGrant.reservationId}, revision, month, budget_key, maximum_cost_micros,
+          provider_limit_ref, request_hash, policy_id, policy_revision, observed_at_ms, cost_source,
+          cost_micros, provider_final, evidence_ref, received_at
+        FROM papercusp_auth.hosted_budget_receipts WHERE reservation_id = ${grant.reservationId} AND revision = 0`;
+      ready(); await released; throw sentinel;
+    }).catch(error => { if (error !== sentinel) throw error; });
+    try {
+      await Promise.race([started, pending]);
+      expect(await store().bindOpenRouterGeneration(b)).toBe('replay-mismatch');
+    } finally { release(); await pending; }
+    expect(await store().bindOpenRouterGeneration(b)).toBe('replay-mismatch');
+    const actual = { ...captured(scope), budgetGrant: grant };
+    expect(await store().bindOpenRouterGeneration(actual)).toBe('recorded');
+  });
 
   it('durably binds once across concurrent execution receipts, survives restart and excludes private metadata from public records', async () => {
     const scope = await tenant(); const b = captured(scope);

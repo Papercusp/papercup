@@ -33,6 +33,7 @@ import { clampText, softText } from '../limits';
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
 import { PREMISE_STAMPS_FIELD } from '../coordination/premise-resolve';
+import { healOwnNodeIssueOrigin as healOwnNodeOrigin } from '../../issues-engineer';
 
 const RELEASE_REASON_MAX_CHARS = 500;
 const releaseReasonSchema = () =>
@@ -591,7 +592,7 @@ export default defineTool({
         // or one already held by `ident.ownerId` (unless `force`), so a peer's live claim
         // can never be silently cleared. A null return here is either "not found" or "held
         // by someone else" — re-read to tell them apart and report an honest error.
-        const workItem = await releaseWorkItem(it.id, {
+        const releaseOpts: NonNullable<Parameters<typeof releaseWorkItem>[1]> = {
           harness,
           // The durable claim hold is applied after releaseWorkItem returns. Suppress its
           // broad pool announcement here so the pre-hold snapshot cannot advertise work
@@ -607,7 +608,25 @@ export default defineTool({
             prior.assignee = p.assignee;
             prior.wasClaimed = p.wasClaimed;
           },
-        });
+        };
+        let workItem = await releaseWorkItem(it.id, releaseOpts);
+        // WI-10006515: a null release on an OWN-NODE issue row stranded at origin='remote' is
+        // the view trigger no-op'ing a write this node is entitled to make (`origin` records how
+        // the row arrived, not who wrote it). Heal it and retry ONCE. The heal's WHERE clause is
+        // the identity check, so a true peer row is untouched and falls through to the refusal
+        // below; a row a peer holds is never healed here (that is the not_holder answer).
+        if (!workItem) {
+          const probe = await getWorkItem(it.id, harness);
+          const probeHolder = probe?.assignee?.trim();
+          if (
+            probe?.family === 'issue' &&
+            probe.origin === 'remote' &&
+            (!probeHolder || probeHolder === ident.ownerId || (forced !== null && forced !== undefined && probeHolder === forced.holder)) &&
+            (await healOwnNodeOrigin(it.id, probe.harness))
+          ) {
+            workItem = await releaseWorkItem(it.id, releaseOpts);
+          }
+        }
         // The force path read the row a moment earlier for the authority guard; prefer the
         // library's read (it is the one the UPDATE acted on) and fall back to that read only
         // if the row vanished before it.

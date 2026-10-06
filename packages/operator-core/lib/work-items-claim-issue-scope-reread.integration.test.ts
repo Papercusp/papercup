@@ -75,6 +75,7 @@ const ie = await import('./issues-engineer');
 
 const H = 'papercup';
 let db: FreshPgDb;
+let statementObserver: ((query: string) => void) | null = null;
 
 /** An issue-family (bug/change/task) row in the work_items BASE, in an EXPLICIT workspace. */
 async function seedIssueInWorkspace(
@@ -90,7 +91,9 @@ async function seedIssueInWorkspace(
 }
 
 beforeAll(async () => {
-  db = await createFreshPgDb('wi-claim-issue-scope-reread');
+  db = await createFreshPgDb('wi-claim-issue-scope-reread', {
+    onQuery: (query) => statementObserver?.(query),
+  });
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
@@ -151,25 +154,36 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(exact?.assignee).toBe('w1');
   });
 
+  it('counts executed statements without counting interpolated tagged SQL fragments', async () => {
+    const statementTexts: string[] = [];
+    statementObserver = (query) => statementTexts.push(query);
+    try {
+      const fragment = db.sql`1`;
+      expect(statementTexts).toEqual([]);
+      await db.sql`SELECT 1 ORDER BY ${fragment}`;
+      expect(statementTexts).toHaveLength(1);
+      expect(statementTexts[0]).toMatch(/SELECT 1 ORDER BY 1/);
+    } finally {
+      statementObserver = null;
+    }
+  });
+
   it('WI-10003631: getIssue is ONE statement and, with no ambient twin, returns the freshest row across workspaces; a miss is one statement too', async () => {
     // The old two-step (resolveIssueWorkspace → getIssueInWorkspace) picked the freshest
     // row's workspace, then the freshest twin inside it — the same row the single ordered
     // read returns. Two non-ambient workspaces, freshest in ws-b.
     await seedIssueInWorkspace('EI-one', 'ws-a', { takenBy: 'older', updatedTs: 10, harnessSlug: '' });
     await seedIssueInWorkspace('EI-one', 'ws-b', { takenBy: 'newer', updatedTs: 1_000 });
-    const real = h.sql;
-    let statements = 0;
-    h.sql = new Proxy(real, {
-      apply(target, thisArg, args) { statements += 1; return Reflect.apply(target, thisArg, args); },
-    }) as typeof real;
+    const statementTexts: string[] = [];
+    statementObserver = (query) => statementTexts.push(query);
     try {
       expect((await ie.getIssue('EI-one'))?.assignee).toBe('newer');
-      expect(statements).toBe(1);
-      statements = 0;
+      expect(statementTexts, JSON.stringify(statementTexts)).toHaveLength(1);
+      statementTexts.length = 0;
       expect(await ie.getIssue('EI-missing')).toBeNull();
-      expect(statements).toBe(1);
+      expect(statementTexts, JSON.stringify(statementTexts)).toHaveLength(1);
     } finally {
-      h.sql = real;
+      statementObserver = null;
     }
   });
 
@@ -276,6 +290,80 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
       SELECT origin FROM harness_shared.work_items
        WHERE workspace_id = 'default' AND feature_id = 'WI-edit-heal'`;
     expect(rows[0]?.origin).toBe('local');
+  });
+
+  // WI-10006515: `origin` records how a row ARRIVED, not who wrote it. A row whose author key
+  // this workspace has written locally is OURS even when no caller matches its created_by
+  // (system-filed rows), so the field-edit and needs-human paths must not strand it.
+  const OWN_KEY = 'f89879623b37aaaa';
+  const PEER_KEY = 'beef0000peer1111';
+  async function seedStranded(id: string, author: string): Promise<void> {
+    await seedIssueInWorkspace(id, 'default', { status: 'open' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET origin = 'remote', author_pubkey = ${author},
+             payload = '{"_ei":{"created_by":"system:capture"}}'::jsonb
+       WHERE workspace_id = 'default' AND feature_id = ${id}`;
+  }
+  async function originOf(id: string): Promise<string | null> {
+    const [r] = await db.sql<{ origin: string | null }[]>`
+      SELECT origin FROM harness_shared.work_items WHERE workspace_id = 'default' AND feature_id = ${id}`;
+    return r?.origin ?? null;
+  }
+  async function seedOwnKeyWitness(): Promise<void> {
+    await seedIssueInWorkspace('WI-own-witness', 'default', { status: 'open' });
+    await db.sql`
+      UPDATE harness_shared.work_items SET origin = 'local', author_pubkey = ${OWN_KEY}
+       WHERE workspace_id = 'default' AND feature_id = 'WI-own-witness'`;
+  }
+
+  it('WI-10006515: updateWorkItem heals an OWN-NODE row stranded at remote for a non-author caller', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-own-edit', OWN_KEY);
+    const res = await wi.updateWorkItem('WI-own-edit', { title: 'own-node edit' }, 'w9', { harness: H });
+    expect(res.ok).toBe(true);
+    expect(await originOf('WI-own-edit')).toBe('local');
+  });
+
+  it('WI-10006515 control: updateWorkItem still refuses a TRUE peer row (author key never written here)', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-peer-edit', PEER_KEY);
+    const res = await wi.updateWorkItem('WI-peer-edit', { title: 'peer edit' }, 'w9', { harness: H });
+    expect(res).toMatchObject({ ok: false, reason: 'remote_origin_not_editable' });
+    expect(await originOf('WI-peer-edit')).toBe('remote');
+  });
+
+  it('WI-10006515: ownNodeAuthoredRemoteIds classifies own-node strands, excludes peers and local rows, never writes', async () => {
+    const { ownNodeAuthoredRemoteIds } = await import('./work-items-admission');
+    await seedOwnKeyWitness();
+    await seedStranded('WI-own-batch', OWN_KEY);
+    await seedStranded('WI-peer-batch', PEER_KEY);
+    const own = await ownNodeAuthoredRemoteIds('default', ['WI-own-batch', 'WI-peer-batch', 'WI-own-witness', 'WI-absent']);
+    expect([...own]).toEqual(['WI-own-batch']);
+    expect(await originOf('WI-own-batch')).toBe('remote');
+    expect(await ownNodeAuthoredRemoteIds('other-ws', ['WI-own-batch'])).toEqual(new Set());
+  });
+
+  it('WI-10006515: a needs-human request on an OWN-NODE stranded row is not short-circuited as remote-owned', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-own-nh', OWN_KEY);
+    const outcome = await wi
+      .setWorkItemStateWithAliasInfo('WI-own-nh', 'needs-human', { harness: H, by: 'w9' })
+      .then(
+        (r) => ({ note: r.aliasNote ?? '' }),
+        (e: unknown) => ({ note: String(e) }),
+      );
+    // Reaches the canonical writer (which applies its own structured-ask rule) instead of
+    // being answered "remote-owned" by the wrapper.
+    expect(outcome.note).not.toMatch(/remote-owned|remote-authored/);
+  });
+
+  it('WI-10006515 control: a needs-human request on a TRUE peer row is still answered remote-owned', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-peer-nh', PEER_KEY);
+    const r = await wi.setWorkItemStateWithAliasInfo('WI-peer-nh', 'needs-human', { harness: H, by: 'w9' });
+    expect(r.aliasNote ?? '').toMatch(/remote-owned/);
+    expect(await originOf('WI-peer-nh')).toBe('remote');
   });
 
   it('claim_next SERVES an open issue even when the captured claim scope has drifted from getIssue’s re-derived scope (no leaked claim, no false miss)', async () => {

@@ -99,12 +99,71 @@ describe('repo-backed server measurement', () => {
     expect(changed.testFingerprint).toBe(first.testFingerprint);
   });
 
+  it('includes globbed source changes, additions, and removals in the source fingerprint', async () => {
+    const plugins = join(measurementRoot, 'dynamic', 'plugins');
+    await Promise.all([
+      mkdir(join(plugins, 'linear-sync'), { recursive: true }),
+      mkdir(join(measurementRoot, 'dynamic', 'migrations'), { recursive: true }),
+    ]);
+    const manifest = join(plugins, 'linear-sync', 'papercusp.json');
+    const migration = join(measurementRoot, 'dynamic', 'migrations', '1400-recreate-plugin.sql');
+    await Promise.all([
+      writeFile(manifest, '{"enabled":false}\n'),
+      writeFile(migration, 'CREATE TABLE one();\n'),
+    ]);
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      sourceGlobs: ['dynamic/plugins/*/papercusp.json', 'dynamic/migrations/14*.sql'],
+      testPaths: ['test/feature.test.ts'],
+    };
+
+    const initial = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    await writeFile(manifest, '{"enabled":true}\n');
+    const changed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(changed.sourceFingerprint).not.toBe(initial.sourceFingerprint);
+
+    const addedManifest = join(plugins, 'calendar-sync', 'papercusp.json');
+    await mkdir(join(plugins, 'calendar-sync'), { recursive: true });
+    await writeFile(addedManifest, '{"enabled":false}\n');
+    const added = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(added.sourceFingerprint).not.toBe(changed.sourceFingerprint);
+
+    await rm(addedManifest);
+    const removed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(removed.sourceFingerprint).not.toBe(added.sourceFingerprint);
+    expect(removed.testFingerprint).toBe(initial.testFingerprint);
+  });
+
+  it('bounds the number of files expanded from source globs', async () => {
+    const bounded = join(measurementRoot, 'bounded-glob');
+    await mkdir(bounded, { recursive: true });
+    await Promise.all(Array.from({ length: 129 }, (_, index) =>
+      writeFile(join(bounded, `file-${index}.ts`), 'export {};\n')));
+
+    await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, {
+      schemaVersion: 1,
+      kind: 'repo-files',
+      sourcePaths: ['src/feature.ts'],
+      sourceGlobs: ['bounded-glob/*.ts'],
+    })).rejects.toThrow(/repo_measurement_too_many_glob_files/);
+  });
+
   it('rejects traversal and symlink escapes before reading bytes', async () => {
     await expect(
       measureRepoFilesEvidenceAtRoot(measurementRoot, {
         schemaVersion: 1,
         kind: 'repo-files',
         sourcePaths: ['../outside.ts'],
+      }),
+    ).rejects.toThrow(/normalized repo-relative POSIX/);
+    await expect(
+      measureRepoFilesEvidenceAtRoot(measurementRoot, {
+        schemaVersion: 1,
+        kind: 'repo-files',
+        sourcePaths: ['src/feature.ts'],
+        sourceGlobs: ['../outside/*.ts'],
       }),
     ).rejects.toThrow(/normalized repo-relative POSIX/);
   });

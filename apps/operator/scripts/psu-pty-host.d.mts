@@ -1437,13 +1437,14 @@ export function countProcessDescendants(rootPid: number, { procRoot, readdir, re
  *   childPromptReady: boolean,
  *   parked?: boolean,
  *   busy?: boolean,
+ *   quotaBlocked?: boolean,
  *   composerPending?: boolean,
  *   resumable?: boolean,
  *   descendants: () => number | null,
  * }} input
  * @returns {{ park: boolean, reason: string, idleForMs?: number, descendants?: number | null }}
  */
-export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptReady, parked, busy, composerPending, resumable, descendants, }: {
+export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptReady, parked, busy, quotaBlocked, composerPending, resumable, descendants, }: {
     idleMs: number;
     agent?: string | null;
     now: number;
@@ -1451,6 +1452,7 @@ export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptRea
     childPromptReady: boolean;
     parked?: boolean;
     busy?: boolean;
+    quotaBlocked?: boolean;
     composerPending?: boolean;
     resumable?: boolean;
     descendants: () => number | null;
@@ -1460,6 +1462,29 @@ export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptRea
     idleForMs?: number;
     descendants?: number | null;
 };
+/**
+ * psu-process-free-parking P-017: the id of the newest top-level Claude
+ * transcript in a PER-SESSION config dir (`<configDir>/projects/<cwd>/<id>.jsonl`).
+ * An in-TUI `/clear` starts a new conversation under a new id that the launch
+ * argv never learns, so resuming the argv's id alone could revive the wrong
+ * conversation. Only trusted when the config dir is this session's isolation
+ * dir (its path names `ownerId`): in a shared dir the newest file can belong to
+ * another session. Returns null when it cannot tell. Exported for tests.
+ * @param {string | null | undefined} configDir
+ * @param {{ ownerId?: string | null, readdir?: (p: string) => string[], stat?: (p: string) => { mtimeMs: number, isFile: () => boolean } }} [opts]
+ * @returns {{ id: string, mtimeMs: number } | null}
+ */
+export function newestSessionTranscriptId(configDir: string | null | undefined, { ownerId, readdir, stat }?: {
+    ownerId?: string | null;
+    readdir?: (p: string) => string[];
+    stat?: (p: string) => {
+        mtimeMs: number;
+        isFile: () => boolean;
+    };
+}): {
+    id: string;
+    mtimeMs: number;
+} | null;
 /**
  * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
  * P-006): the OUTPUT-side sibling of makeIdleGate. The pty stream is a true
@@ -2964,6 +2989,29 @@ export function clearSettleMs(env?: EnvironmentMap): any;
  *  @param {EnvironmentMap} [env]
  */
 export function submitVerifyQuietMs(env?: EnvironmentMap): any;
+/** EI-24961854655864836: authenticate the successor before submitting its work.
+ * A failed first report may confirm through the launcher's existing durable retry.
+ * The bounded wait never treats submission/transcript proof as identity authority.
+ * @param {{nativeId?: string | null, readNativeId?: () => string | null,
+ * report?: (id: string, options: {onConfirmed: (id?: string) => void}) => any,
+ * isCurrent?: () => boolean, timeoutMs?: number, pollMs?: number,
+ * alreadyConfirmed?: boolean}} options
+ */
+export function waitForRespawnBinding({ nativeId, readNativeId, report, isCurrent, timeoutMs, pollMs, alreadyConfirmed, }: {
+    nativeId?: string | null;
+    readNativeId?: () => string | null;
+    report?: (id: string, options: {
+        onConfirmed: (id?: string) => void;
+    }) => any;
+    isCurrent?: () => boolean;
+    timeoutMs?: number;
+    pollMs?: number;
+    alreadyConfirmed?: boolean;
+}): Promise<{
+    ok: boolean;
+    nativeId: string | null;
+    reason: string;
+}>;
 /**
  * Complete the existing carry lifecycle after native delivery and mapping are
  * proven. Codex assigns its id at startup: use the exact isolated rollout from
@@ -3170,6 +3218,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
  * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
@@ -3226,6 +3275,7 @@ export function hostThroughPty(o: {
     ensureCodexHome?: (() => Promise<any>) | undefined;
     refreshPersonaFile?: (() => Promise<any>) | undefined;
     onRespawn?: ((...args: any[]) => any) | undefined;
+    resolveRespawnNativeId?: ((pid: number) => string | null) | null | undefined;
     emitCompacted?: typeof fireSessionCompactedEvent | undefined;
     onReexec?: ((...args: any[]) => any) | null | undefined;
     hostCodeStalenessFn?: (() => any) | undefined;

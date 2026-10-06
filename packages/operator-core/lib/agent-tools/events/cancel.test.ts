@@ -239,6 +239,37 @@ describe('events:cancel dual-path result', () => {
     });
   });
 
+  it('surfaces the active-loop inbox-wake refusal and keeps the loop recheck untouched', async () => {
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue({
+      awaitId: 7,
+      cancelled: false,
+      eventKey: 'coord:inbox-wake:su-canceller',
+      once: false,
+      expiresTs: null,
+      droppedDeliveries: 0,
+      inFlightDeliveries: 0,
+      error: 'active_loop_inbox_wake_requires_loop_end',
+    });
+
+    const out = await call({ await_id: 7, confirm_standing: true });
+
+    expect(out).toMatchObject({
+      counts: { ok: 0, failed: 1 },
+      results: [{
+        ok: false,
+        await_id: 7,
+        cancelled: false,
+        event: 'coord:inbox-wake:su-canceller',
+        once: false,
+        error: 'active_loop_inbox_wake_requires_loop_end',
+      }],
+    });
+    expect(rebaseLoopAfterAwaitCancellation).not.toHaveBeenCalled();
+    expect(cancel.guidance?.returns).toContain('active_loop_inbox_wake_requires_loop_end');
+    expect(cancel.guidance?.returns).toContain('loop:end');
+    expect(cancel.guidance?.returns).toContain('may explicitly opt out');
+  });
+
   it('reports queued drops and in-flight deliveries for an explicitly confirmed standing watch', async () => {
     vi.mocked(cancelAwaitDetailed).mockResolvedValue({
       awaitId: 7,

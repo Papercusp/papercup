@@ -262,6 +262,76 @@ describe('on-demand "send what is green now" with real git (P-020)', () => {
   });
 });
 
+/**
+ * SPEC-P-023-pilot: the PR opened after the first merge lists only commits made after that
+ * merge. A PR's commit list is what GitHub computes: commits reachable from the head that
+ * are not reachable from the base (`git rev-list base..head`). The first standing PR is
+ * merged at its EXACT tested sha (P-024), so upstream main then CONTAINS that commit and
+ * the next promotion's range is only the new work. The squash control shows the property is
+ * not vacuous: a merge that rewrites the sha leaves the old commit in the next PR.
+ */
+describe('the PR after a merge lists only new work (SPEC-P-023-pilot, real git)', () => {
+  let fx: Fixture;
+
+  beforeEach(() => {
+    fx = makeFixture();
+  });
+
+  afterEach(() => {
+    rmSync(fx.root, { recursive: true, force: true });
+  });
+
+  /** The commits GitHub would list on the standing PR: upstream main..fork standing branch. */
+  function standingPrCommits(): string[] {
+    git(fx.checkout, 'fetch', '--quiet', fx.upstream, '+refs/heads/main:refs/remotes/pr-base/main');
+    git(fx.checkout, 'fetch', '--quiet', fx.fork, `+refs/heads/${STANDING_PR_BRANCH}:refs/remotes/pr-head/standing`);
+    const out = git(fx.checkout, 'rev-list', 'refs/remotes/pr-base/main..refs/remotes/pr-head/standing');
+    return out ? out.split('\n') : [];
+  }
+
+  async function promote(sha: string, open: Pr[]): Promise<void> {
+    const host = fakePrHost(fx.checkout, open);
+    const run = await realDeps(fx, { mode: { mode: 'review', source: 'set' }, prHost: host.deps });
+    const outcome = await publishPromotion({ repoPath: fx.checkout, workspaceId: 'ws-test', sha, ref: 'main' }, run.deps);
+    expect(outcome.kind).toBe('fork');
+  }
+
+  function secondCandidate(): string {
+    writeFileSync(join(fx.checkout, 'feature.txt'), 'work made after the first merge\n');
+    git(fx.checkout, 'commit', '-am', 'second tested candidate');
+    return git(fx.checkout, 'rev-parse', 'HEAD');
+  }
+
+  it('an exact-sha merge leaves the next standing PR with only the commits made after it', async () => {
+    await promote(fx.promotedSha, []);
+    expect(standingPrCommits()).toEqual([fx.promotedSha]);
+
+    // The PR-viewer merge lands exactly the tested sha on the main repository (P-024).
+    git(fx.checkout, 'push', '--quiet', fx.upstream, `${fx.promotedSha}:refs/heads/main`);
+    expect(branchSha(fx.upstream, 'main')).toBe(fx.promotedSha);
+    expect(standingPrCommits()).toEqual([]);
+
+    const nextSha = secondCandidate();
+    await promote(nextSha, []);
+    expect(branchSha(fx.fork, STANDING_PR_BRANCH)).toBe(nextSha);
+    const listed = standingPrCommits();
+    expect(listed).toEqual([nextSha]);
+    expect(listed).not.toContain(fx.promotedSha);
+  });
+
+  it('control: a merge that rewrites the sha (squash) would leave the merged commit in the next PR', async () => {
+    await promote(fx.promotedSha, []);
+    // Same tree as the tested commit, different sha: what a squash merge produces.
+    const tree = git(fx.checkout, 'rev-parse', `${fx.promotedSha}^{tree}`);
+    const squashSha = git(fx.checkout, 'commit-tree', tree, '-p', fx.baseSha, '-m', 'squash of the standing PR');
+    git(fx.checkout, 'push', '--quiet', fx.upstream, `${squashSha}:refs/heads/main`);
+
+    const nextSha = secondCandidate();
+    await promote(nextSha, []);
+    expect(standingPrCommits()).toEqual([nextSha, fx.promotedSha]);
+  });
+});
+
 describe('working-copy promotion with real git (P-020)', () => {
   let fx: Fixture;
 

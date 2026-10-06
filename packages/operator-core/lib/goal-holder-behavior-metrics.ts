@@ -19,7 +19,15 @@
  * the parsing and rating halves are pure and unit-tested.
  */
 import type { Sql } from 'postgres';
-import { costLineIsUnmeasured, GOAL_OWNER_REPORT_FIELD, walledEntries } from './goal-owner-report';
+import {
+  costCitesMeasuredSpend,
+  costLineIsUnmeasured,
+  GOAL_OWNER_REPORT_FIELD,
+  goalSpendFromGoalRow,
+  walledEntries,
+  type GoalOwnerReportTruthSummary,
+  type GoalReportMeasuredSpend,
+} from './goal-owner-report';
 
 // The classifiers live with the report contract (the send gate refuses on the same
 // definitions, P-005); re-exported so existing importers keep one source.
@@ -31,7 +39,15 @@ import {
 } from './goal-planning-review';
 import { readGoalHolderRows } from './goals/holder';
 
-export const GOAL_HOLDER_METRICS_VERSION = 1 as const;
+/** v2 (WI-10006542): ownerReports COST is judged against measured goal spend, never by wording. */
+export const GOAL_HOLDER_METRICS_VERSION = 2 as const;
+
+/**
+ * Source tag of the authoritative goal spend rollup. Literal here because this module never
+ * imports @papercusp/db-org (SQL is injected); pinned equal to GOAL_SPEND_SNAPSHOT_SOURCE by
+ * goal-holder-behavior-metrics.test.ts.
+ */
+export const GOAL_SPEND_ROLLUP_SOURCE = 'goal-lineage-rollup' as const;
 /** Ideation is judged per goal-day: the 24h ending at the window end. */
 export const GOAL_DAY_MS = 86_400_000;
 /** More than this many suppressed loop fires per hour of lease fails liveness. */
@@ -91,7 +107,27 @@ export interface OwnerReportRow {
   ts: string;
   cost: string | null;
   ownerWalled: string | null;
+  /**
+   * The COST verdict the send-time truth gate stamped on this report (stamp.truth.cost, P-005).
+   * Absent/null when the stamp carries no truth summary (older stamps, reference-form reports).
+   */
+  truthCost?: GoalOwnerReportTruthSummary['cost'] | null;
 }
+
+const TRUTH_COSTS: ReadonlySet<string> = new Set<GoalOwnerReportTruthSummary['cost']>([
+  'cited-measured',
+  'goal-spend-unmeasured',
+  'unread',
+]);
+const isTruthCost = (value: string | null): value is GoalOwnerReportTruthSummary['cost'] =>
+  value != null && TRUTH_COSTS.has(value);
+
+/** How one delivered report's COST stands against the goal's measured spend. */
+export type OwnerReportCostVerdict =
+  | 'cited-measured'
+  | 'goal-spend-unmeasured'
+  | 'measured-spend-not-cited'
+  | 'unverified';
 
 export interface GoalHolderBehaviorMetrics {
   version: typeof GOAL_HOLDER_METRICS_VERSION;
@@ -133,7 +169,14 @@ export interface GoalHolderBehaviorMetrics {
   };
   ownerReports: {
     reports: number;
+    /** COST cited the goal's measured spend. */
+    costCitedMeasured: number;
+    /** The goal's spend was measured but COST did not cite it (a false or missing figure). */
     costNotMeasured: number;
+    /** The platform had no measured goal spend, so an unmeasured COST was the truthful answer. */
+    costGoalSpendUnmeasured: number;
+    /** No send-time truth summary and no goal spend read: COST truth not established. */
+    costUnverified: number;
     walledEntries: number;
     /** Walled entries that are only work-item ids: they name no owner action. */
     bareWalledEntries: number;
@@ -209,18 +252,53 @@ export function summarizeGoalReviews(rows: readonly GoalReviewRow[]): Omit<
   };
 }
 
-export function summarizeOwnerReports(rows: readonly OwnerReportRow[]): GoalHolderBehaviorMetrics['ownerReports'] {
-  let costNotMeasured = 0;
+/**
+ * COST verdict for one delivered report, by the send-time truth gate's own rule
+ * (checkGoalOwnerReportTruth) and never by the COST line's wording (WI-10006542: the
+ * lexical `costLineIsUnmeasured` scored "unknown; coverage=no-ceiling" as measured and
+ * "spend remains unknown ... unmeasured" as a failure for the same unmeasured goal spend).
+ * The stamp's truth summary wins (it was measured at send time); a stamp without one is
+ * judged against `spend`, the goal's spend read at grading time; no spend read leaves the
+ * report unverified.
+ */
+export function ownerReportCostVerdict(
+  row: Pick<OwnerReportRow, 'cost' | 'truthCost'>,
+  spend: GoalReportMeasuredSpend | null | undefined,
+): OwnerReportCostVerdict {
+  if (row.truthCost === 'cited-measured' || row.truthCost === 'goal-spend-unmeasured') return row.truthCost;
+  if (!spend) return 'unverified';
+  if (!spend.measured || spend.spentCents == null) return 'goal-spend-unmeasured';
+  return costCitesMeasuredSpend(row.cost ?? '', spend.spentCents) ? 'cited-measured' : 'measured-spend-not-cited';
+}
+
+export function summarizeOwnerReports(
+  rows: readonly OwnerReportRow[],
+  spend?: GoalReportMeasuredSpend | null,
+): GoalHolderBehaviorMetrics['ownerReports'] {
+  const cost: Record<OwnerReportCostVerdict, number> = {
+    'cited-measured': 0,
+    'goal-spend-unmeasured': 0,
+    'measured-spend-not-cited': 0,
+    unverified: 0,
+  };
   let walled = 0;
   let bare = 0;
   for (const row of rows) {
-    if (costLineIsUnmeasured(row.cost)) costNotMeasured += 1;
+    cost[ownerReportCostVerdict(row, spend)] += 1;
     for (const entry of walledEntries(row.ownerWalled)) {
       walled += 1;
       if (entry.bare) bare += 1;
     }
   }
-  return { reports: rows.length, costNotMeasured, walledEntries: walled, bareWalledEntries: bare };
+  return {
+    reports: rows.length,
+    costCitedMeasured: cost['cited-measured'],
+    costNotMeasured: cost['measured-spend-not-cited'],
+    costGoalSpendUnmeasured: cost['goal-spend-unmeasured'],
+    costUnverified: cost.unverified,
+    walledEntries: walled,
+    bareWalledEntries: bare,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -358,13 +436,26 @@ export function rateGoalHolderBehavior(
       return {
         verdict: 'fail',
         reason:
-          `${reports.costNotMeasured} of ${reports.reports} report(s) gave no measured goal COST; ` +
+          `${reports.costNotMeasured} of ${reports.reports} report(s) did not cite the goal's measured spend in COST; ` +
           `${reports.bareWalledEntries} of ${reports.walledEntries} walled entries named no owner action.`,
       };
     }
+    if (reports.costUnverified === reports.reports) {
+      return {
+        verdict: 'unknown',
+        reason: `COST truth unverifiable: none of ${reports.reports} report(s) carries a send-time truth summary and no goal spend was read.`,
+      };
+    }
+    const costParts = [
+      `cited the measured goal spend in ${reports.costCitedMeasured}`,
+      `truthfully stated goal spend unmeasured (no measured lineage spend) in ${reports.costGoalSpendUnmeasured}`,
+      ...(reports.costUnverified ? [`unverifiable in ${reports.costUnverified}`] : []),
+    ];
     return {
       verdict: 'pass',
-      reason: `${reports.reports} report(s) with measured COST and an owner action on every walled entry (correction-of-false-lines is graded by hand).`,
+      reason:
+        `${reports.reports} report(s): COST ${costParts.join(', ')}; an owner action on every walled entry ` +
+        '(correction-of-false-lines is graded by hand).',
     };
   })();
 
@@ -745,10 +836,11 @@ export async function collectGoalHolderBehaviorMetrics(
            AND t.invoked_at BETWEEN ${daySince} AND ${end}
          ORDER BY t.invoked_at`,
       countGoalPlansWritten({ workspaceId: window.workspaceId, goalId: window.goalId, since: daySince, at: end }, sql),
-      sql<{ ts: Date; cost: string | null; owner_walled: string | null }[]>`
+      sql<{ ts: Date; cost: string | null; owner_walled: string | null; truth_cost: string | null }[]>`
         SELECT e.ts,
                e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'cost' AS cost,
-               e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'ownerWalled' AS owner_walled
+               e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'ownerWalled' AS owner_walled,
+               e.body -> ${GOAL_OWNER_REPORT_FIELD} -> 'truth' ->> 'cost' AS truth_cost
           FROM harness_shared.coord_event_log e
          WHERE e.workspace_id = ${window.workspaceId}
            AND e.body ->> 'from' = ${window.holderOwnerId}
@@ -781,6 +873,16 @@ export async function collectGoalHolderBehaviorMetrics(
            AND cancelled_at BETWEEN ${start} AND ${end}
            AND cancel_reason IS NULL`,
     ]);
+  // The goal's spend, read the way the send-time truth gate reads it. Only reports whose stamp
+  // carries no truth summary are judged against it (at grading time, not their send time).
+  const [spendRow] = await sql<{ spent: unknown; source: string | null; at: string | null; unmeasured: string | null }[]>`
+    SELECT metadata -> 'spentCents' AS spent,
+           metadata ->> 'spentCentsSource' AS source,
+           metadata ->> 'spentCentsAt' AS at,
+           NULLIF(metadata ->> 'spentCentsUnmeasuredReason', '') AS unmeasured
+      FROM harness_shared.goals
+     WHERE workspace_id = ${window.workspaceId} AND id = ${window.goalId}`;
+  const goalSpend = spendRow ? goalSpendFromGoalRow(spendRow, GOAL_SPEND_ROLLUP_SOURCE) : null;
 
   const reviews = summarizeGoalReviews(
     reviewRows.map((row) => ({
@@ -808,7 +910,13 @@ export async function collectGoalHolderBehaviorMetrics(
     },
     ideation: { since: daySince.toISOString(), plansNew: plansNewDay, ...reviews },
     ownerReports: summarizeOwnerReports(
-      reportRows.map((row) => ({ ts: new Date(row.ts).toISOString(), cost: row.cost, ownerWalled: row.owner_walled })),
+      reportRows.map((row) => ({
+        ts: new Date(row.ts).toISOString(),
+        cost: row.cost,
+        ownerWalled: row.owner_walled,
+        truthCost: isTruthCost(row.truth_cost) ? row.truth_cost : null,
+      })),
+      goalSpend,
     ),
     loop: {
       deliveredFires: Number(loopRows[0]?.delivered ?? 0),

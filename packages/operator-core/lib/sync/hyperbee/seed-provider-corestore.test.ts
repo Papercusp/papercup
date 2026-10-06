@@ -23,6 +23,7 @@ import { loadSodium, encodeOpAAD } from './hive-epoch-aead';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import {
   createCorestoreSeedProvider,
+  captureSeedUuidOriginalSpan,
   exportSeedUuidIdempotencySource,
   CORESTORE_SEED_KIND,
   isExternalTriggerEnvelope,
@@ -34,10 +35,98 @@ import {
   valueCarriesSeedIdentity,
   type SeedUuidIdempotencyDropPlan,
 } from './seed-provider-corestore';
-import { DROP_SNAPSHOT_ROW, produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
+import { buildSnapshotChunkOp, DROP_SNAPSHOT_ROW, foldFilteredSnapshotRows, produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+describe('D-174 original signed snapshot-span census', () => {
+  const row = (hbKey: string, value: unknown): PeerLogOp => ({ type: 'put', table: 'harness_plans',
+    hbKey, value, author_pubkey: '', ts: 1, schema_version: 1 });
+  it('matches the from-zero winner/disposition census and omits a superseded prefix sentinel from both outputs', async () => {
+    const source = makeStore(tmpDir('span-source-')); await source.ready();
+    const own = await openOwnLog(source);
+    await own.append(row('safe', { body: 'superseded-prefix-sentinel' }));
+    await own.append(row('safe', { body: 'public' }));
+    await own.append(row('redact', { contact: 'fixture@example.org' }));
+    await own.append(row('drop', { body: 'fixture-private-owner' }));
+    const seedIndex = own.length;
+    await produceLogSnapshot(own, { now: 1000, schemaVersion: 1, maxChunkBytes: 100 });
+    await own.append(row('tail', { public: true }));
+    const dir = tmpDir('span-private-'); chmodSync(dir, 0o700);
+    const exported = await exportSeedUuidIdempotencySource({ sourceStore: source, sourceKeyHex: own.keyHex,
+      sourceLength: own.length, outputDir: dir, segment: 'segment-000001.blob', now: 1000,
+      redactValues: ['fixture-private-owner'] });
+    const full = await foldFilteredSnapshotRows(own, { now: 1000, excludeTables: SEED_EXCLUDED_TABLES, priorSnapshotHint: null });
+    const fullProjected = await foldFilteredSnapshotRows(own, { now: 1000, excludeTables: SEED_EXCLUDED_TABLES,
+      priorSnapshotHint: null, transformValue: seedSnapshotValueTransform(['fixture-private-owner']).transform });
+    const projected = new Map(fullProjected.rows.map(r => [JSON.stringify([r.table, r.hbKey]), r]));
+    const originalRows = readFileSync(exported.rowsPath, 'utf8').trim().split('\n').map(s => JSON.parse(s));
+    expect(originalRows.map(({ segment, line, storedValueJson, privacyProjection, ...r }) => r)).toEqual(full.rows);
+    expect(exported.sourceInput.winners).toEqual(full.rows.map(r => ({ table: r.table, hbKey: r.hbKey,
+      disposition: !projected.has(JSON.stringify([r.table, r.hbKey])) ? 'drop'
+        : JSON.stringify(projected.get(JSON.stringify([r.table, r.hbKey]))!.value) === JSON.stringify(r.value) ? 'carry' : 'redact' })));
+    expect(exported.sourceInput).toMatchObject({ coverage: 'complete-snapshot-set + tail', seedIndex,
+      coversUpTo: seedIndex, omittedPrefixBlocks: seedIndex, sourceBlocksRead: own.length - seedIndex, foldNow: 1000 });
+    expect(exported.sourceInput.snapshotSetSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(exported.sourceInput.proofInventorySha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(originalRows) + JSON.stringify(fullProjected.rows)).not.toContain('superseded-prefix-sentinel');
+    const replicaDir = join(dir, 'original-span');
+    const captured = await captureSeedUuidOriginalSpan({ sourceStore: source, sourceKeyHex: own.keyHex,
+      sourceInput: exported.sourceInput, replicaDir });
+    expect(captured).toEqual({ sourceHead: exported.sourceInput.sourceHead,
+      proofInventorySha256: exported.sourceInput.proofInventorySha256, sourceBlocksRead: exported.sourceBlocksRead });
+    const replicaStore = new Corestore(replicaDir, { readOnly: true, wait: false });
+    cleanups.push(() => replicaStore.close()); await replicaStore.ready();
+    const replicaExport = await exportSeedUuidIdempotencySource({ sourceStore: replicaStore, sourceKeyHex: own.keyHex,
+      sourceLength: own.length, outputDir: dir, segment: 'segment-000003.blob', now: 1000,
+      redactValues: ['fixture-private-owner'] });
+    expect(replicaExport.sourceInput).toEqual(exported.sourceInput);
+    expect(readFileSync(replicaExport.rowsPath, 'utf8').trim().split('\n')
+      .map(text => { const { segment, ...r } = JSON.parse(text); return r; }))
+      .toEqual(originalRows.map(({ segment, ...r }) => r));
+    await expect(captureSeedUuidOriginalSpan({ sourceStore: source, sourceKeyHex: own.keyHex,
+      sourceInput: { ...exported.sourceInput, proofInventorySha256: '00'.repeat(32) }, replicaDir: join(dir, 'bad-replica') }))
+      .rejects.toThrow(/inventory/);
+    expect(readdirSync(dir)).not.toContain('bad-replica');
+    const target = makeStore(tmpDir('span-target-')); await target.ready();
+    const plan: SeedUuidIdempotencyDropPlan = { schema: 'papercusp-uuid-idempotency-row-drop-plan-v1',
+      reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166', sourceKeyHex: own.keyHex,
+      sourceLength: own.length, rows: [], sourceInput: exported.sourceInput };
+    const minted = await mintFilteredSeedContentCore({ sourceStore: source, stagingStore: target,
+      ownerKeyHex: own.keyHex, uuidIdempotencyDropPlan: plan, redactValues: ['fixture-private-owner'], onProjection: vi.fn() });
+    const output = await exportSeedUuidIdempotencySource({ sourceStore: target, sourceKeyHex: minted.keyHex,
+      sourceLength: minted.length, outputDir: dir, segment: 'segment-000002.blob', now: 1000 });
+    const emitted = readFileSync(output.rowsPath, 'utf8').trim().split('\n').map(s => JSON.parse(s));
+    expect(emitted.map(({ segment, line, storedValueJson, privacyProjection, ...r }) => r)).toEqual(fullProjected.rows);
+    expect(JSON.stringify(emitted)).not.toContain('superseded-prefix-sentinel');
+    for (const sourceInput of [{ ...exported.sourceInput, sourceBlocksRead: exported.sourceBlocksRead + 1 },
+      { ...exported.sourceInput, winners: exported.sourceInput.winners.slice(1) },
+      { ...exported.sourceInput, sourceHead: { ...exported.sourceInput.sourceHead, treeHash: '00'.repeat(32) } }]) {
+      await expect(mintFilteredSeedContentCore({ sourceStore: source, stagingStore: target, ownerKeyHex: own.keyHex,
+        uuidIdempotencyDropPlan: { ...plan, sourceInput }, redactValues: ['fixture-private-owner'], onProjection: vi.fn() }))
+        .rejects.toThrow(/census\/producer/);
+    }
+  });
+
+  for (const earlier of [true, false]) {
+    it(`keeps exact coverage after a torn newest set falls back ${earlier ? 'to an earlier complete set' : 'to zero'}`, async () => {
+      const source = makeStore(tmpDir('span-torn-')); await source.ready();
+      const own = await openOwnLog(source); await own.append(row('safe', { public: true }));
+      if (earlier) await produceLogSnapshot(own, { now: 1000, schemaVersion: 1 });
+      const completeIndex = earlier ? 1 : 0;
+      await own.append(buildSnapshotChunkOp({ rows: [], coversUpTo: own.length, chunkCount: 2,
+        chunkIdx: 0, author_pubkey: own.keyHex, ts: 1000, schema_version: 1 }));
+      await own.append(row('tail', { public: true }));
+      const dir = tmpDir('span-torn-private-'); chmodSync(dir, 0o700);
+      const exported = await exportSeedUuidIdempotencySource({ sourceStore: source, sourceKeyHex: own.keyHex,
+        sourceLength: own.length, outputDir: dir, segment: 'segment-000001.blob', now: 1000 });
+      expect(exported.sourceInput.seedIndex).toBe(completeIndex);
+      expect(exported.sourceBlocksRead).toBe(own.length - completeIndex);
+      expect(exported.sourceInput.coverage).toBe(earlier ? 'complete-snapshot-set + tail' : 'full-log');
+    });
+  }
+});
 
 describe('D-166 source-bound UUID output row drops', () => {
   for (const priorSnapshot of [false, true]) {
@@ -189,7 +278,7 @@ print(json.dumps({'verified':True,'negativeControls':5}))
     const before = await own.get(0);
     const dir = tmpDir('seed-uuid-export-files-'); chmodSync(dir, 0o700);
     const input = { sourceStore: source, sourceKeyHex: own.keyHex, sourceLength: own.length,
-      outputDir: dir, segment: 'segment-000001.blob' };
+      outputDir: dir, segment: 'segment-000001.blob', now: 1 };
     const exported = await exportSeedUuidIdempotencySource(input);
     const bytes = readFileSync(exported.rowsPath);
     const rows = bytes.toString().trim().split('\n').map(text => JSON.parse(text));

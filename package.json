@@ -488,6 +488,12 @@
       "undici": "^6.28.1"
     },
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "tsconfck": {
+      "typescript": "$typescript"
+    },
+    "@nx/jest": {
+      "@phenomnomnominal/tsquery": "^6.2.0"
+    },
     "mem0ai": {
       "@anthropic-ai/sdk": "^0.93.0"
     }

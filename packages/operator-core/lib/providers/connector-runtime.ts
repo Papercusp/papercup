@@ -106,6 +106,8 @@ export interface ConnectorSourceOutcome {
   adopted?: boolean;
   hasMore: boolean;
   error?: string;
+  /** The afterSourceSynced hook failed (the pass itself succeeded). */
+  afterSyncError?: string;
 }
 
 export interface ConnectorSyncResult {
@@ -134,6 +136,19 @@ export interface ConnectorSyncDeps {
   /** Parameters of the provider's configured service credentials (D-018.1). */
   servicesFor?: (provider: RegisteredProvider) => Promise<ProviderServices | undefined>;
   leaseOwner?: string;
+  /**
+   * Runs after a source's pass ends `synced`. Defaults to the admission lifecycle write-back pass
+   * (work-admission/lifecycle.ts, linear-asana-task-sync P-003): what the source's admitted work
+   * items have done since the last pass is written back once the source's own state is current.
+   * A failure here is logged on the outcome and never fails the sync.
+   */
+  afterSourceSynced?: (sql: postgres.Sql, source: ConnectorSourceRow) => Promise<unknown>;
+}
+
+async function defaultAfterSourceSynced(sql: postgres.Sql, source: ConnectorSourceRow): Promise<unknown> {
+  // Imported on use: the lifecycle module reaches back into data sources through work admission.
+  const { reconcileAdmissionLifecycle } = await import('../work-admission/lifecycle');
+  return reconcileAdmissionLifecycle(sql, { workspaceId: source.workspaceId, dataSourceId: source.id });
 }
 
 function defaultServicesFor(provider: RegisteredProvider): Promise<ProviderServices | undefined> {
@@ -707,6 +722,7 @@ export async function runConnectorSync(
   const hostFetchFor = deps.hostFetchFor ?? defaultHostFetchFor;
   const sources = await listDueConnectorSources(sql, opts.workspaceId, [...byKind.keys()], opts.sourceIds);
   const servicesFor = deps.servicesFor ?? defaultServicesFor;
+  const afterSourceSynced = deps.afterSourceSynced ?? defaultAfterSourceSynced;
   const fetchers = new Map<string, HostFetch>();
   const servicesByProvider = new Map<string, ProviderServices | undefined>();
   const outcomes: ConnectorSourceOutcome[] = [];
@@ -722,7 +738,15 @@ export async function runConnectorSync(
       servicesByProvider.set(provider.descriptor.id, await servicesFor(provider));
     }
     const services = servicesByProvider.get(provider.descriptor.id);
-    outcomes.push(await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, owner, services }));
+    const outcome = await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, owner, services });
+    if (outcome.outcome === 'synced') {
+      try {
+        await afterSourceSynced(sql, source);
+      } catch (cause) {
+        outcome.afterSyncError = cause instanceof Error ? cause.message : String(cause);
+      }
+    }
+    outcomes.push(outcome);
   }
   return { providers: providers.length, sources: outcomes };
 }

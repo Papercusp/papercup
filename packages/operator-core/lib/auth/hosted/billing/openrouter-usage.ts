@@ -13,6 +13,7 @@ import { PostgresHostedUsageStore, type HostedUsageAppendResult } from './usage-
 import { validateHostedUsageRecord, type HostedUsageRecord } from './usage-statement';
 import type { HostedUsageCollector } from './usage-service';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import type { HostedBudgetExecutionGrant } from './budget-store';
 
 type Scope = Pick<HostedUsageRecord, 'controlWorkspaceId' | 'organizationId' | 'customerWorkspaceId'>;
 export interface OpenRouterUsageBinding {
@@ -24,6 +25,9 @@ export interface OpenRouterUsageBinding {
   readonly credentialRef: string;
   /** SHA-256 of the actual key used for execution. Durable bindings require it. */
   readonly credentialSha256?: string;
+  /** Private persisted admission captured by execution. This local join does
+   * not certify an account invoice, final bill or provider-enforced maximum. */
+  readonly budgetGrant?: HostedBudgetExecutionGrant;
   readonly revision: number;
   readonly occurredAtMs: number;
   readonly observedAtMs: number;

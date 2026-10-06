@@ -305,9 +305,94 @@ interface BulkStageEnvelope {
     recordedAt: string;
   }>;
   checkpoints?: { batches?: Record<string, BulkBatchCheckpoint> };
-  workBudget?: { pairLimit: number; availablePairs: number; selectedPairs: number; deferredPairs: number };
+  workBudget?: BulkStageWorkBudget;
   failure?: { class: string; message: string; retryable: boolean };
+  /** WI-10006491: present once this stage's merge transaction has committed. */
+  mergeReceipt?: BulkStageMergeReceipt;
   [key: string]: unknown;
+}
+
+interface BulkStageWorkBudget {
+  pairLimit: number;
+  availablePairs: number;
+  selectedPairs: number;
+  deferredPairs: number;
+}
+
+/** Judge spend a stage reports, carried across the merge commit by its receipt. */
+interface BulkStageJudgeSummary {
+  modelCalls: number;
+  modelRetries: number;
+  modelProtocolFailures: number;
+  modelProtocolExhaustedBatches: number;
+  modelProtocolLastError: string | null;
+  ignoredUnknownJudgements: number;
+  omittedExpectedJudgements: number;
+  tokensIn: number;
+  tokensOut: number;
+  servedAccounts: string[];
+  reusedBatches: number;
+  priorRunDonatedPairs: number;
+}
+
+export const BULK_STAGE_MERGE_RECEIPT_SCHEMA = 'work-item-admission-bulk-merge-receipt-v1';
+
+/**
+ * WI-10006491: what a stage's merge transaction committed, written by that same
+ * transaction.
+ *
+ * The stage used to run persistAdmissionPlan, a FULL post-stage census, the
+ * ratchet read and the next-input read inside ONE serializable transaction.
+ * The census reads every open work item and every dedup edge, so it conflicted
+ * with the fleet's ordinary writes. Each 40001 retry re-ran the whole census.
+ * Measured 2026-10-06: stage bulk-dedup-scheduled-1791260346916-a3ffb71a-stage-1
+ * spent 05:13Z to 06:33Z on 12 attempts, then failed with
+ * `serializable transaction failed to commit after 12 attempts (pg 40001)` and
+ * lost all of its merges.
+ *
+ * Now only the merge writes and this receipt are serializable. The census runs
+ * after commit. A retry of the post-commit half (a census error, a ratchet
+ * violation, a process death) finds this receipt and finishes from it. It does
+ * not re-judge: the committed pairs are adjudicated now, so a fresh read would
+ * select different pairs. It does not re-merge either.
+ */
+interface BulkStageMergeReceipt {
+  schemaVersion: typeof BULK_STAGE_MERGE_RECEIPT_SCHEMA;
+  /** Census the stage's pairs were drawn from; a receipt answers only for it. */
+  sourceCensusRunId: string;
+  startedAt: number;
+  committedAt: number;
+  /** Serializable attempts the merge commit took (1 = no conflict). */
+  commitAttempts: number;
+  pairs: number;
+  scopedPairsBefore: number;
+  workBudget: BulkStageWorkBudget;
+  merged: number;
+  held: number;
+  /** Pairs adjudicated by the committed transaction. */
+  successful: number;
+  uniqueRowsChanged: number;
+  verdicts: Record<string, number>;
+  judged: BulkStageJudgeSummary;
+}
+
+/**
+ * WI-10006491: wall-clock budget for the merge transaction's serialization
+ * retries. Without the census in it, one attempt takes seconds and the retry
+ * ladder (DEPENDENCY_ADMISSION_RETRY_DEFAULTS) sleeps about 4 s in total. A
+ * commit still retrying after this long is not contention. Fail the stage
+ * visibly instead of silencing it for hours.
+ */
+export const BULK_STAGE_MERGE_COMMIT_BUDGET_MS = 10 * 60_000;
+
+function committedMergeReceipt(
+  envelope: BulkStageEnvelope,
+  sourceCensusRunId: string,
+): BulkStageMergeReceipt | null {
+  const receipt = envelope.mergeReceipt;
+  if (!receipt || typeof receipt !== 'object') return null;
+  if (receipt.schemaVersion !== BULK_STAGE_MERGE_RECEIPT_SCHEMA) return null;
+  return receipt.sourceCensusRunId === sourceCensusRunId ? receipt : null;
 }
 
 export interface BulkModelFailureClassification {
@@ -441,7 +526,12 @@ export interface BulkDedupRunOptions {
   now?: () => number;
   /** Stable owner identity for gateway attribution across retries/replays. */
   ownerId?: string;
-  /** Dependency seam used by the real-PG recurrence guard to inject a census rise. */
+  /**
+   * Dependency seam used by the real-PG recurrence guards to inject a census
+   * rise or a concurrent write. It runs AFTER the stage's merge transaction
+   * commits, on the run's own pool handle (WI-10006491), so whatever it writes
+   * is committed.
+   */
   beforePostStageCensus?: (sql: OrgSql, stageIndex: number) => Promise<void>;
   /**
    * Model spec for this run's judging calls. Defaults to {@link LEARNING_MODEL_SPEC}.
@@ -1069,6 +1159,9 @@ async function acquireBulkStageLease(
       ...(current.failure ? [{ ...current.failure, at: input.nowMs }] : []),
     ].slice(-8);
     delete next.failure;
+    // Describes the attempt that failed; its message is in failureHistory. A
+    // resumed stage keeps its mergeReceipt and finishes from it (WI-10006491).
+    delete next.failedAfterMergeCommit;
   }
   const updated = await sql`
     UPDATE harness_shared.admission_runs
@@ -1338,6 +1431,12 @@ async function failBulkStage(
   error: unknown,
   attempted: number | null = null,
   ownerId?: string,
+  /**
+   * WI-10006491: the stage's merge transaction already committed. The failure
+   * came after commit (post-stage census, ratchet, ledger write), so the merges
+   * are durable and the outcome reports them, not an unknown rollback.
+   */
+  committed: BulkStageMergeReceipt | null = null,
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
@@ -1349,12 +1448,38 @@ async function failBulkStage(
   const status =
     failure.kind === 'capacity' || failure.kind === 'quality' || failure.kind === 'guard' ? 'blocked' : 'failed';
   const allowCompletedQualityDisposition = failure.kind === 'quality';
+  const outcome: AdmissionRunOutcome = committed
+    ? {
+        unit: 'pairs',
+        attempted: committed.pairs,
+        successful: committed.successful,
+        rolledBack: 0,
+        unchanged: Math.max(0, committed.pairs - committed.successful),
+        uniqueRowsChanged: committed.uniqueRowsChanged,
+        failureReason: status === 'failed' ? message : null,
+        blockedReason: status === 'blocked' ? message : null,
+      }
+    : {
+        unit: 'pairs',
+        attempted,
+        successful: guardPersistence || prescreenNoMutation ? 0 : null,
+        // A failed stage is transactionally rolled back; the
+        // exact number of writes is unknowable when the error
+        // occurs during model/protocol handling.
+        rolledBack: prescreenNoMutation ? 0 : guardPersistence ? guardPersistence.uniqueRowsChanged : null,
+        unchanged: guardPersistence || prescreenNoMutation ? attempted : null,
+        uniqueRowsChanged: guardPersistence || prescreenNoMutation ? 0 : null,
+        failureReason: status === 'failed' ? message : null,
+        blockedReason: status === 'blocked' ? message : null,
+      };
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
+           merged = CASE WHEN ${committed !== null} THEN ${committed?.merged ?? 0} ELSE merged END,
            held = CASE
              WHEN ${prescreenNoMutation} THEN 0
              WHEN ${guardPersistence !== null} THEN ${guardPersistence?.guardRefusals.length ?? 0}
+             WHEN ${committed !== null} THEN ${committed?.held ?? 0}
              ELSE held
            END,
            detail = (COALESCE(detail, '{}'::jsonb) - 'errorCause') ||
@@ -1365,19 +1490,8 @@ async function failBulkStage(
                       ...(failure.class === 'canary_protocol_failure'
                         ? { canary: { status: 'failed', reason: failure.message } }
                         : {}),
-                      outcome: {
-                        unit: 'pairs',
-                        attempted,
-                        successful: guardPersistence || prescreenNoMutation ? 0 : null,
-                        // A failed stage is transactionally rolled back; the
-                        // exact number of writes is unknowable when the error
-                        // occurs during model/protocol handling.
-                        rolledBack: prescreenNoMutation ? 0 : guardPersistence ? guardPersistence.uniqueRowsChanged : null,
-                        unchanged: guardPersistence || prescreenNoMutation ? attempted : null,
-                        uniqueRowsChanged: guardPersistence || prescreenNoMutation ? 0 : null,
-                        failureReason: status === 'failed' ? message : null,
-                        blockedReason: status === 'blocked' ? message : null,
-                      } satisfies AdmissionRunOutcome,
+                      outcome,
+                      ...(committed ? { failedAfterMergeCommit: true } : {}),
                       ...(guardPersistence ? { guardRefusals: guardPersistence.guardRefusals } : {}),
                       ...(cause !== undefined ? { errorCause: serializeBulkErrorCause(cause) } : {}),
                     })}::text::jsonb
@@ -2394,6 +2508,219 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       }
     }
 
+    /**
+     * WI-10006491: the post-commit half of a stage. It runs on autocommit
+     * statements, not inside the serializable merge transaction. A full census
+     * reads the whole open corpus and edge set, and inside that transaction it
+     * lost every commit race against the fleet's writes. `census-after` resumes
+     * from its finished chunks (D-008) when it is interrupted.
+     *
+     * The ratchet now runs after commit. A rise still fails the stage and stops
+     * the pass. It no longer rolls back merges that persistAdmissionPlan judged
+     * and guarded, and the failure records them through the receipt.
+     */
+    const finishStageAfterMerge = async (
+      receipt: BulkStageMergeReceipt,
+      mergeQuality: AdmissionMergeQualityReport,
+    ): Promise<{ result: BulkDedupRunResult } | { census: AdmissionCensusRunResult }> => {
+      try {
+        await opts.beforePostStageCensus?.(sql, stageIndex);
+        const nextCensus = await runCensus({ ...censusBase, sql, runId: `${stageRunId}-census-after` });
+        // WI-10006336: ratchet over census-0's own members, not the live corpus.
+        // nextCensus re-reads "every open item", so it also counts items filed
+        // while this stage judged (one emitter cluster added ~9.5K edges in 50
+        // minutes). That influx is not the stage's doing; it is disclosed below
+        // and becomes the next stage's census-0.
+        const pinnedCensusAfter = await readPinnedUnadjudicatedCensus(sql, opts, {
+          pinnedRunId: census.runId,
+          currentRunId: nextCensus.runId,
+        });
+        assertAdmissionCensusRatchet(census.censusAfter, pinnedCensusAfter);
+        // before/after only. There used to be an `ok: true` here, a HARDCODED
+        // literal: this record is downstream of assertAdmissionCensusRatchet,
+        // which throws on a rise, so the field could never be anything but true.
+        // Worse, a flag named `ok` beside a merge count reads as an EFFICACY
+        // verdict when the assert it echoes is only a SAFETY one (the census did
+        // not grow). `after` is census-0's members only (WI-10006336);
+        // corpusAfter/influxEdges disclose what arrived meanwhile.
+        const ratchet = {
+          before: census.censusAfter,
+          after: pinnedCensusAfter,
+          population: 'census-0-members' as const,
+          corpusAfter: nextCensus.censusAfter,
+          influxEdges: Math.max(0, nextCensus.censusAfter - pinnedCensusAfter),
+        };
+        const nextInput = await readBulkInput(sql, {
+          workspaceId: opts.workspaceId,
+          harnessSlug: opts.harnessSlug,
+          censusRunId: nextCensus.runId,
+          expectedMembers: nextCensus.corpusSize,
+          scope,
+        });
+        const convergence: 'global-zero' | 'scope-zero' | null =
+          nextInput.pairs.length === 0 ? (nextCensus.censusAfter === 0 ? 'global-zero' : 'scope-zero') : null;
+        const stage: BulkDedupStageResult = {
+          runId: stageRunId,
+          sourceCensusRunId: census.runId,
+          resultCensusRunId: nextCensus.runId,
+          scope,
+          pairs: receipt.pairs,
+          merged: receipt.merged,
+          held: receipt.held,
+          modelCalls: receipt.judged.modelCalls,
+          modelRetries: receipt.judged.modelRetries,
+          modelProtocolFailures: receipt.judged.modelProtocolFailures,
+          modelProtocolExhaustedBatches: receipt.judged.modelProtocolExhaustedBatches,
+          ignoredUnknownJudgements: receipt.judged.ignoredUnknownJudgements,
+          omittedExpectedJudgements: receipt.judged.omittedExpectedJudgements,
+          tokensIn: receipt.judged.tokensIn,
+          tokensOut: receipt.judged.tokensOut,
+          censusBefore: census.censusAfter,
+          censusAfter: nextCensus.censusAfter,
+          scopedPairsAfter: nextInput.pairs.length,
+          servedAccounts: receipt.judged.servedAccounts,
+          reusedBatches: receipt.judged.reusedBatches,
+          priorRunDonatedPairs: receipt.judged.priorRunDonatedPairs,
+          mergeQuality,
+          // A non-empty refusal set aborts the merge transaction before a receipt exists.
+          guardRefusals: [],
+        };
+        const outcome = {
+          unit: 'pairs',
+          attempted: receipt.pairs,
+          successful: receipt.successful,
+          rolledBack: 0,
+          unchanged: Math.max(0, receipt.pairs - receipt.successful),
+          uniqueRowsChanged: receipt.uniqueRowsChanged,
+          failureReason: null,
+          blockedReason: null,
+        } satisfies AdmissionRunOutcome;
+        const finishedAt = now();
+        const completedEnvelope: BulkStageEnvelope = {
+          schemaVersion: BULK_STAGE_SCHEMA_VERSION,
+          status: 'complete',
+          convergence,
+          resultCensusRunId: nextCensus.runId,
+          stageResult: stage,
+          initialCensus,
+          runResult: convergence
+            ? {
+                runId: rootRunId,
+                scope,
+                converged: true,
+                convergenceReason: convergence,
+                initialCensus,
+                finalCensus: nextCensus.censusAfter,
+                finalScopedPairs: 0,
+                stages: [...stages, stage],
+              }
+            : undefined,
+          lease: {
+            ...(stageEnvelope.lease ?? { acquiredAt: finishedAt }),
+            ownerId: executionId,
+            heartbeatAt: finishedAt,
+            expiresAt: finishedAt + leaseMs,
+            takeoverCount: stageEnvelope.lease?.takeoverCount ?? 0,
+          },
+          outcome,
+          guardRefusals: [],
+        };
+        // Two ledger writes, one short READ COMMITTED transaction: the
+        // conditional UPDATE is the ownership fence for the envelope merge.
+        await sql.begin(async (rawTx) => {
+          const tx = rawTx as unknown as OrgSql;
+          const completedRows = await tx`
+            UPDATE harness_shared.admission_runs
+               SET finished_at = now(), promoted = 0, merged = ${receipt.merged}, held = ${receipt.held},
+                   census_before = ${census.censusAfter}, census_after = ${nextCensus.censusAfter},
+                   model_id = ${model}, tokens_in = ${receipt.judged.tokensIn}, tokens_out = ${receipt.judged.tokensOut},
+                   latency_ms = ${Math.max(0, finishedAt - receipt.startedAt)},
+                   detail = detail || ${JSON.stringify({
+                     status: 'complete',
+                     resultCensusRunId: nextCensus.runId,
+                     scopedPairsBefore: receipt.scopedPairsBefore,
+                     workBudget: receipt.workBudget,
+                     scopedPairsAfter: nextInput.pairs.length,
+                     convergence,
+                     modelCalls: receipt.judged.modelCalls,
+                     modelRetries: receipt.judged.modelRetries,
+                     modelProtocol: {
+                       failures: receipt.judged.modelProtocolFailures,
+                       exhaustedBatches: receipt.judged.modelProtocolExhaustedBatches,
+                       lastError: receipt.judged.modelProtocolLastError,
+                       ignoredUnknownJudgements: receipt.judged.ignoredUnknownJudgements,
+                       omittedExpectedJudgements: receipt.judged.omittedExpectedJudgements,
+                     },
+                     servedAccounts: receipt.judged.servedAccounts,
+                     reusedBatches: receipt.judged.reusedBatches,
+                     priorRunDonatedPairs: receipt.judged.priorRunDonatedPairs,
+                     verdicts: receipt.verdicts,
+                     ratchet,
+                     outcome,
+                     guardRefusals: [],
+                   })}::text::jsonb
+             WHERE id = ${stageRunId}
+               AND detail->'lease'->>'ownerId' = ${executionId}
+             RETURNING id`;
+          if (!completedRows?.length) throw new BulkRunActiveError('unknown-owner', now());
+          // Merge only terminal fields. Spreading the pre-judge envelope here
+          // would overwrite `checkpoints.batches` with its stale snapshot and
+          // erase every checkpoint written during this stage.
+          await writeBulkStageEnvelope(tx, stageRunId, completedEnvelope, executionId);
+        });
+        stages.push(stage);
+        if (convergence) {
+          return {
+            result: {
+              runId: rootRunId,
+              scope,
+              converged: true,
+              convergenceReason: convergence,
+              initialCensus,
+              finalCensus: nextCensus.censusAfter,
+              finalScopedPairs: 0,
+              stages,
+            },
+          };
+        }
+        // WI-10006336: judge progress on census-0's population. Pairs that touch
+        // an item filed during the stage are influx, not a stage that stalled.
+        const census0ScopedPairsAfter = nextInput.pairs.filter(
+          (pair) => fullInput.memberIds.has(pair.a.id) && fullInput.memberIds.has(pair.b.id),
+        ).length;
+        if (census0ScopedPairsAfter >= receipt.scopedPairsBefore) {
+          throw new Error(
+            `bulk dedup made no scoped progress: ${receipt.scopedPairsBefore} -> ${census0ScopedPairsAfter} pair(s) among census-0 members`,
+          );
+        }
+        return { census: nextCensus };
+      } catch (error) {
+        await failBulkStage(sql, stageRunId, error, receipt.pairs, executionId, receipt);
+        throw error;
+      }
+    };
+
+    // WI-10006491: an earlier attempt of THIS stage already committed its merges.
+    // Finish the post-commit half from its receipt; the pairs re-read above are
+    // the post-merge residue and must not be judged or merged under this row.
+    const committedReceipt = committedMergeReceipt(stageEnvelope, census.runId);
+    if (committedReceipt) {
+      let resumedQuality: AdmissionMergeQualityReport;
+      try {
+        resumedQuality = await ensureMergeQuality(stageRunId, stageEnvelope);
+        // Keep the DBOS step order of the attempt that judged this stage, as the
+        // completed-stage resume above does. The no-op returns the recorded output on replay.
+        await step(`bulk:${stageRunId}:canary`, async () => undefined);
+      } catch (error) {
+        await failBulkStage(sql, stageRunId, error, committedReceipt.pairs, executionId, committedReceipt);
+        throw error;
+      }
+      const finished = await finishStageAfterMerge(committedReceipt, resumedQuality);
+      if ('result' in finished) return finished.result;
+      census = finished.census;
+      continue;
+    }
+
     const workBudget = {
       pairLimit: maxPairsPerStage,
       availablePairs: scopedPairsBefore,
@@ -2523,8 +2850,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     }
 
     const startedAt = now();
+    let mergeQuality: AdmissionMergeQualityReport;
+    let receipt: BulkStageMergeReceipt;
     try {
-      const mergeQuality = await ensureMergeQuality(stageRunId, stageEnvelope);
+      mergeQuality = await ensureMergeQuality(stageRunId, stageEnvelope);
       const priorRunCheckpoints = await readPriorStageDonorCheckpoints(sql, {
         workspaceId: opts.workspaceId,
         harnessSlug: opts.harnessSlug,
@@ -2562,242 +2891,123 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       const reviewedReadyIds = plan.dispositions.flatMap((disposition) =>
         disposition.action === 'merge' ? [disposition.itemId, disposition.canonicalId] : [],
       );
-      let committed:
-        | {
-            census: AdmissionCensusRunResult;
-            scopedPairsAfter: number;
-            /** Residual scoped pairs whose endpoints were both census-0 members (WI-10006336). */
-            census0ScopedPairsAfter: number;
-            stage: BulkDedupStageResult;
+      // WI-10006491: ONLY the merge writes and their receipt are serializable.
+      // persistAdmissionPlan reads the workspace dependency graph, which is the
+      // invariant this boundary protects. The post-stage census, ratchet and
+      // next-input read run after commit, in finishStageAfterMerge.
+      const commitStartedMs = now();
+      let commitAttempts = 0;
+      let retryHeartbeat: Promise<void> | null = null;
+      receipt = await withWorkItemDependencyAdmissionTransaction(
+        sql,
+        async (rawTx) => {
+          commitAttempts += 1;
+          if (retryHeartbeat) {
+            // Started by onRetry during the backoff, when no attempt held a
+            // connection. A lost lease is not retryable and stops the commit.
+            const pending = retryHeartbeat;
+            retryHeartbeat = null;
+            await pending;
           }
-        | undefined;
-
-      await withWorkItemDependencyAdmissionTransaction(sql, async (rawTx) => {
-        const tx = rawTx as unknown as OrgSql;
-        const persistence = await persistAdmissionPlan(tx, {
-          workspaceId: opts.workspaceId,
-          harnessSlug: opts.harnessSlug,
-          runId: stageRunId,
-          modelId: model,
-          nowMs: now(),
-          pending: stageItems,
-          plan,
-          snapshots: stageItems.flatMap((item) => (item.mergeSnapshot ? [item.mergeSnapshot] : [])),
-          withinTransaction: true,
-          promoteUnmerged: false,
-          mergeAnyAdmission: true,
-          requireImplementationReadiness: true,
-          reviewedReadyIds,
-          actor: BULK_DEDUP_ACTOR,
-        });
-        // A guarded refusal is an intentional no-mutation outcome for the
-        // complete stage. Throwing inside this transaction rolls back any
-        // sibling writes too; failBulkStage records the exact refusal set.
-        if (persistence.guardRefusals.length > 0) {
-          throw new BulkAdmissionMergeGuardBlockedError(persistence);
-        }
-        const merged = persistence.mergedIds.length;
-        const held = persistence.held.length;
-        await opts.beforePostStageCensus?.(tx, stageIndex);
-        const nextCensus = await runCensus({
-          ...censusBase,
-          sql: tx,
-          withinTransaction: true,
-          runId: `${stageRunId}-census-after`,
-        });
-        // WI-10006336: ratchet over census-0's own members, not the live corpus.
-        // nextCensus re-reads "every open item", so it also counts items filed
-        // while this stage judged (one emitter cluster added ~9.5K edges in 50
-        // minutes). That influx is not the stage's doing; it is disclosed below
-        // and becomes the next stage's census-0.
-        const pinnedCensusAfter = await readPinnedUnadjudicatedCensus(tx, opts, {
-          pinnedRunId: census.runId,
-          currentRunId: nextCensus.runId,
-        });
-        assertAdmissionCensusRatchet(census.censusAfter, pinnedCensusAfter);
-        const ratchet = {
-          before: census.censusAfter,
-          after: pinnedCensusAfter,
-          population: 'census-0-members' as const,
-          corpusAfter: nextCensus.censusAfter,
-          influxEdges: Math.max(0, nextCensus.censusAfter - pinnedCensusAfter),
-        };
-        const nextInput = await readBulkInput(tx, {
-          workspaceId: opts.workspaceId,
-          harnessSlug: opts.harnessSlug,
-          censusRunId: nextCensus.runId,
-          expectedMembers: nextCensus.corpusSize,
-          scope,
-        });
-        const stage: BulkDedupStageResult = {
-          runId: stageRunId,
-          sourceCensusRunId: census.runId,
-          resultCensusRunId: nextCensus.runId,
-          scope,
-          pairs: input.pairs.length,
-          merged,
-          held,
-          modelCalls: judged.modelCalls,
-          modelRetries: judged.modelRetries,
-          modelProtocolFailures: judged.modelProtocolFailures,
-          modelProtocolExhaustedBatches: judged.modelProtocolExhaustedBatches,
-          ignoredUnknownJudgements: judged.ignoredUnknownJudgements,
-          omittedExpectedJudgements: judged.omittedExpectedJudgements,
-          tokensIn: judged.tokensIn,
-          tokensOut: judged.tokensOut,
-          censusBefore: census.censusAfter,
-          censusAfter: nextCensus.censusAfter,
-          scopedPairsAfter: nextInput.pairs.length,
-          servedAccounts: judged.servedAccounts,
-          reusedBatches: judged.reusedBatches,
-          priorRunDonatedPairs: judged.priorRunDonatedPairs,
-          mergeQuality,
-          guardRefusals: persistence.guardRefusals,
-        };
-        const verdicts = persistence.adjudications.reduce<Record<string, number>>((acc, row) => {
-          acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
-          return acc;
-        }, {});
-        const completedRows = await tx`
-          UPDATE harness_shared.admission_runs
-             SET finished_at = now(), promoted = 0, merged = ${merged}, held = ${held},
-                 census_before = ${census.censusAfter}, census_after = ${nextCensus.censusAfter},
-                 model_id = ${model}, tokens_in = ${judged.tokensIn}, tokens_out = ${judged.tokensOut},
-                 latency_ms = ${Math.max(0, now() - startedAt)},
-                 detail = detail || ${JSON.stringify({
-                   status: 'complete',
-                   resultCensusRunId: nextCensus.runId,
-                   scopedPairsBefore,
-                   workBudget,
-                   scopedPairsAfter: nextInput.pairs.length,
-                   convergence:
-                     nextInput.pairs.length === 0
-                       ? nextCensus.censusAfter === 0
-                         ? 'global-zero'
-                         : 'scope-zero'
-                       : null,
-                   modelCalls: judged.modelCalls,
-                   modelRetries: judged.modelRetries,
-                   modelProtocol: {
-                     failures: judged.modelProtocolFailures,
-                     exhaustedBatches: judged.modelProtocolExhaustedBatches,
-                     lastError: judged.modelProtocolLastError,
-                     ignoredUnknownJudgements: judged.ignoredUnknownJudgements,
-                     omittedExpectedJudgements: judged.omittedExpectedJudgements,
-                   },
-                   servedAccounts: judged.servedAccounts,
-                   reusedBatches: judged.reusedBatches,
-                   priorRunDonatedPairs: judged.priorRunDonatedPairs,
-                   preflight: preflightResult,
-                   verdicts,
-                   // before/after only. There used to be an `ok: true` here, a
-                   // HARDCODED literal: this write is downstream of
-                   // assertAdmissionCensusRatchet, which throws on a rise, so the
-                   // field could never be anything but true and recorded nothing.
-                   // Worse, a flag named `ok` beside a merge count reads as an
-                   // EFFICACY verdict when the assert it echoes is only a SAFETY
-                   // one (the census did not grow). Any reader wanting the verdict
-                   // derives it from the two fields that are actually measured.
-                   // `after` is census-0's members only (WI-10006336);
-                   // corpusAfter/influxEdges disclose what arrived meanwhile.
-                   ratchet,
-                   outcome: {
-                     unit: 'pairs',
-                     attempted: input.pairs.length,
-                     successful: persistence.adjudications.length,
-                     rolledBack: 0,
-                     unchanged: Math.max(0, input.pairs.length - persistence.adjudications.length),
-                     uniqueRowsChanged: persistence.uniqueRowsChanged,
-                     failureReason: null,
-                     blockedReason: null,
-                   } satisfies AdmissionRunOutcome,
-                   guardRefusals: persistence.guardRefusals,
-                 })}::text::jsonb
-           WHERE id = ${stageRunId}
-             AND detail->'lease'->>'ownerId' = ${executionId}
-           RETURNING id`;
-        if (!completedRows?.length) throw new BulkRunActiveError('unknown-owner', now());
-        const completedEnvelope: BulkStageEnvelope = {
-          schemaVersion: BULK_STAGE_SCHEMA_VERSION,
-          status: 'complete',
-          convergence:
-            nextInput.pairs.length === 0 ? (nextCensus.censusAfter === 0 ? 'global-zero' : 'scope-zero') : null,
-          resultCensusRunId: nextCensus.runId,
-          stageResult: stage,
-          initialCensus,
-          runResult:
-            nextInput.pairs.length === 0
-              ? {
-                  runId: rootRunId,
-                  scope,
-                  converged: true,
-                  convergenceReason: nextCensus.censusAfter === 0 ? 'global-zero' : 'scope-zero',
-                  initialCensus,
-                  finalCensus: nextCensus.censusAfter,
-                  finalScopedPairs: 0,
-                  stages: [...stages, stage],
-                }
-              : undefined,
-          lease: {
-            ...(stageEnvelope.lease ?? { acquiredAt: now() }),
-            ownerId: executionId,
-            heartbeatAt: now(),
-            expiresAt: now() + leaseMs,
-            takeoverCount: stageEnvelope.lease?.takeoverCount ?? 0,
-          },
-          outcome: {
-            unit: 'pairs',
-            attempted: input.pairs.length,
+          const elapsedMs = now() - commitStartedMs;
+          if (commitAttempts > 1 && elapsedMs >= BULK_STAGE_MERGE_COMMIT_BUDGET_MS) {
+            throw new Error(
+              `bulk stage ${stageRunId} merge commit still serialization-conflicted after ` +
+                `${commitAttempts - 1} retries over ${elapsedMs}ms (budget ${BULK_STAGE_MERGE_COMMIT_BUDGET_MS}ms)`,
+            );
+          }
+          const tx = rawTx as unknown as OrgSql;
+          const persistence = await persistAdmissionPlan(tx, {
+            workspaceId: opts.workspaceId,
+            harnessSlug: opts.harnessSlug,
+            runId: stageRunId,
+            modelId: model,
+            nowMs: now(),
+            pending: stageItems,
+            plan,
+            snapshots: stageItems.flatMap((item) => (item.mergeSnapshot ? [item.mergeSnapshot] : [])),
+            withinTransaction: true,
+            promoteUnmerged: false,
+            mergeAnyAdmission: true,
+            requireImplementationReadiness: true,
+            reviewedReadyIds,
+            actor: BULK_DEDUP_ACTOR,
+          });
+          // A guarded refusal is an intentional no-mutation outcome for the
+          // complete stage. Throwing inside this transaction rolls back any
+          // sibling writes too; failBulkStage records the exact refusal set.
+          if (persistence.guardRefusals.length > 0) {
+            throw new BulkAdmissionMergeGuardBlockedError(persistence);
+          }
+          const committedAt = now();
+          const mergeReceipt: BulkStageMergeReceipt = {
+            schemaVersion: BULK_STAGE_MERGE_RECEIPT_SCHEMA,
+            sourceCensusRunId: census.runId,
+            startedAt,
+            committedAt,
+            commitAttempts,
+            pairs: input.pairs.length,
+            scopedPairsBefore,
+            workBudget,
+            merged: persistence.mergedIds.length,
+            held: persistence.held.length,
             successful: persistence.adjudications.length,
-            rolledBack: 0,
-            unchanged: Math.max(0, input.pairs.length - persistence.adjudications.length),
             uniqueRowsChanged: persistence.uniqueRowsChanged,
-            failureReason: null,
-            blockedReason: null,
-          } satisfies AdmissionRunOutcome,
-          guardRefusals: persistence.guardRefusals,
-        };
-        // Merge only terminal fields. Spreading the pre-judge envelope here
-        // would overwrite `checkpoints.batches` with its stale snapshot and
-        // erase every checkpoint written during this stage.
-        await writeBulkStageEnvelope(tx, stageRunId, completedEnvelope, executionId);
-        committed = {
-          census: nextCensus,
-          scopedPairsAfter: nextInput.pairs.length,
-          census0ScopedPairsAfter: nextInput.pairs.filter(
-            (pair) => fullInput.memberIds.has(pair.a.id) && fullInput.memberIds.has(pair.b.id),
-          ).length,
-          stage,
-        };
-      });
-
-      if (!committed) throw new Error(`bulk stage ${stageRunId} committed without a result`);
-      stages.push(committed.stage);
-      if (committed.scopedPairsAfter === 0) {
-        const convergenceReason = committed.census.censusAfter === 0 ? 'global-zero' : 'scope-zero';
-        return {
-          runId: rootRunId,
-          scope,
-          converged: true,
-          convergenceReason,
-          initialCensus,
-          finalCensus: committed.census.censusAfter,
-          finalScopedPairs: 0,
-          stages,
-        };
-      }
-      // WI-10006336: judge progress on census-0's population. Pairs that touch
-      // an item filed during the stage are influx, not a stage that stalled.
-      if (committed.census0ScopedPairsAfter >= scopedPairsBefore) {
-        throw new Error(
-          `bulk dedup made no scoped progress: ${scopedPairsBefore} -> ${committed.census0ScopedPairsAfter} pair(s) among census-0 members`,
-        );
-      }
-      census = committed.census;
+            verdicts: persistence.adjudications.reduce<Record<string, number>>((acc, row) => {
+              acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
+              return acc;
+            }, {}),
+            judged: {
+              modelCalls: judged.modelCalls,
+              modelRetries: judged.modelRetries,
+              modelProtocolFailures: judged.modelProtocolFailures,
+              modelProtocolExhaustedBatches: judged.modelProtocolExhaustedBatches,
+              modelProtocolLastError: judged.modelProtocolLastError,
+              ignoredUnknownJudgements: judged.ignoredUnknownJudgements,
+              omittedExpectedJudgements: judged.omittedExpectedJudgements,
+              tokensIn: judged.tokensIn,
+              tokensOut: judged.tokensOut,
+              servedAccounts: judged.servedAccounts,
+              reusedBatches: judged.reusedBatches,
+              priorRunDonatedPairs: judged.priorRunDonatedPairs,
+            },
+          };
+          // Same transaction as the merges: a committed merge ALWAYS has its
+          // receipt, so a retry can never re-judge or re-merge this stage.
+          await writeBulkStageEnvelope(
+            tx,
+            stageRunId,
+            {
+              schemaVersion: BULK_STAGE_SCHEMA_VERSION,
+              mergeReceipt,
+              lease: {
+                ...(stageEnvelope.lease ?? { acquiredAt: committedAt }),
+                ownerId: executionId,
+                heartbeatAt: committedAt,
+                expiresAt: committedAt + leaseMs,
+                takeoverCount: stageEnvelope.lease?.takeoverCount ?? 0,
+              },
+            },
+            executionId,
+          );
+          return mergeReceipt;
+        },
+        {
+          onRetry: () => {
+            const pending = heartbeatBulkStage(sql, { id: stageRunId, ownerId: executionId, nowMs: now(), leaseMs });
+            // The next attempt awaits it; this only prevents an unhandled rejection meanwhile.
+            pending.catch(() => undefined);
+            retryHeartbeat = pending;
+          },
+        },
+      );
     } catch (error) {
       await failBulkStage(sql, stageRunId, error, input.pairs.length, executionId);
       throw error;
     }
+    const finished = await finishStageAfterMerge(receipt, mergeQuality);
+    if ('result' in finished) return finished.result;
+    census = finished.census;
   }
 
   // A bounded pass can succeed without exhausting the corpus. Its committed

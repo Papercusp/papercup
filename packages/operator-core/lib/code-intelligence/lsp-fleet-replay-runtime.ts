@@ -737,6 +737,29 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
     } else if (row.kind === 'control-exit') {
       if (!receipts.some(launch => launch.kind === 'child-launch' && launch.launchId === row.launchId && launch.controlPurpose))
         unknown.push('orphan-control-exit');
+    } else if (row.kind === 'child-stderr') {
+      const launches = receipts.filter(launch => launch.kind === 'child-launch' && launch.launchId === row.launchId);
+      const starts = receipts.filter(start => start.kind === 'child-started' && start.launchId === row.launchId);
+      const diagnostics = receipts.filter(diagnostic => diagnostic.kind === 'child-stderr' && diagnostic.launchId === row.launchId);
+      const terminals = receipts.filter(terminal => ['child-exit', 'child-error'].includes(String(terminal.kind)) &&
+        terminal.launchId === row.launchId);
+      const start = starts[0];
+      const tail = typeof row.tailBase64 === 'string' ? Buffer.from(row.tailBase64, 'base64') : null;
+      // Diagnostic integrity is separate from query success. Anchor to the
+      // original launch/epoch and terminal event, including an empty stream.
+      if (typeof row.launchId !== 'string' || launches.length !== 1 || launches[0].controlPurpose ||
+          starts.length !== 1 || diagnostics.length !== 1 || terminals.length === 0 ||
+          !Number.isSafeInteger(row.childPid) || Number(row.childPid) <= 0 ||
+          typeof row.childIdentity !== 'string' || row.childIdentity.length === 0 ||
+          row.childPid !== start?.childPid || row.childIdentity !== start?.childIdentity ||
+          !Number.isFinite(start?.atMs) || Number(start?.atMs) <= 0 || !Number.isFinite(row.atMs) ||
+          Number(row.atMs) < Number(start?.atMs) ||
+          terminals.some(terminal => terminal.childPid !== row.childPid || terminal.childIdentity !== row.childIdentity ||
+            !Number.isFinite(terminal.atMs) || Number(terminal.atMs) < Number(start?.atMs) || Number(terminal.atMs) > Number(row.atMs)) ||
+          typeof row.piped !== 'boolean' || !Number.isSafeInteger(row.totalBytes) || Number(row.totalBytes) < 0 ||
+          !tail || tail.toString('base64') !== row.tailBase64 || tail.length !== Math.min(Number(row.totalBytes), 8192) ||
+          replayHash(tail) !== row.sha256 || (!row.piped && Number(row.totalBytes) !== 0))
+        unknown.push('unqualified-child-stderr');
     } else if (row.kind === 'child-exit' || row.kind === 'child-error') {
       const launches = receipts.filter(launch => launch.kind === 'child-launch' && launch.launchId === row.launchId);
       const starts = receipts.filter(start => start.kind === 'child-started' && start.launchId === row.launchId);

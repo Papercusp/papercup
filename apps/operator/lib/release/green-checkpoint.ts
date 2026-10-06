@@ -6787,6 +6787,8 @@ export function validateTargetedFileOutcomes(
 export interface TargetedGateOutcome {
   id: string;
   status: "pass" | "fail" | "errored" | "not-checked";
+  /** Bounded stdout/stderr evidence for a measured nonzero task exit. */
+  outputTail?: string;
 }
 
 export interface TargetedGateResult {
@@ -6833,10 +6835,11 @@ export function validateTargetedGateOutcomes(
  */
 export async function measureTargetedGateRuns(
   gateIds: readonly string[],
-  run: (script: string, workspace: string | null) => Promise<{ code: number }>,
+  run: (script: string, workspace: string | null) => Promise<{ code: number; stdout?: string; stderr?: string }>,
 ): Promise<TargetedGateResult> {
   const key = (script: string, workspace: string | null) => JSON.stringify([workspace, script]);
   const measured = new Map<string, TargetedGateOutcome["status"]>();
+  const failureOutputs = new Map<string, string>();
   const summaries: string[] = [];
   for (const { script, workspace } of resolveGateRuns(gateIds)) {
     const label = workspace ? `${workspace} :: ${script}` : script;
@@ -6851,22 +6854,35 @@ export async function measureTargetedGateRuns(
       status = result.code === 0 ? "pass"
         : result.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label) ? "not-checked"
         : Number.isInteger(result.code) ? "fail" : "errored";
+      if (status === "fail") {
+        // A clean nonzero exit can fail before a test reporter runs. Keep both
+        // streams so a quiet stdout cannot hide the stderr that explains it.
+        const tail = [result.stdout?.slice(-1_000).trim(), result.stderr?.slice(-1_000).trim()]
+          .filter(Boolean).join("\n").slice(-2_000);
+        if (tail) failureOutputs.set(key(script, workspace), tail);
+      }
     } catch (e) {
       status = "errored";
       const firstLine = (e instanceof Error ? e.message : String(e)).split("\n", 1)[0] ?? "";
       erroredReason = firstLine.replace(/;/g, ",").trim().slice(0, 200) || null;
     }
     measured.set(key(script, workspace), status);
-    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${erroredReason ? ` (${erroredReason})` : ""}`);
+    const diagnostic = failureOutputs.get(key(script, workspace));
+    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${erroredReason ? ` (${erroredReason})` : ""}${diagnostic ? ` (output: ${diagnostic.replace(/\s+/g, " ").replace(/;/g, ",").slice(-600)})` : ""}`);
   }
   const perGate = [...new Set(gateIds)].map((id): TargetedGateOutcome => {
     const statuses = resolveGateRuns([id]).map(({ script, workspace }) => measured.get(key(script, workspace)));
+    const outputTail = resolveGateRuns([id]).map(({ script, workspace }) => {
+      const tail = failureOutputs.get(key(script, workspace));
+      return tail ? `${workspace ? `${workspace} :: ` : ""}${script}: ${tail}` : "";
+    }).filter(Boolean).join("\n").slice(-2_000);
     return {
       id,
       status: statuses.length === 0 || statuses.some((status) => status === undefined || status === "errored")
         ? "errored"
         : statuses.includes("fail") ? "fail"
         : statuses.includes("not-checked") ? "not-checked" : "pass",
+      ...(outputTail ? { outputTail } : {}),
     };
   });
   const pass = perGate.every((entry) => entry.status === "pass" || entry.status === "not-checked");

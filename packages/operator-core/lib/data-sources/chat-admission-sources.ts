@@ -18,7 +18,11 @@
  * admitting a reply of an already-admitted thread returns the thread's work item ('covered')
  * instead of minting a second one. The verb enforces it; the resolver only declares it.
  * A message carries a thread_key only when it has a thread (the Slack root carries thread_ts once
- * it has replies), so a stand-alone message declares nothing.
+ * it has replies), so a stand-alone message declares nothing — unless the caller names the thread
+ * the message roots (ref.threadKey). The ingest-time chat admission sink does exactly that for a
+ * top-level post, and names the opening message of a thread with no replies yet
+ * (ref.rootMessageId), so "every new thread is a bug" and "this message is a bug" fold onto one
+ * work item whichever rule fires first (slack-messages-to-bug-reports-2026-10-05 D-008).
  *
  * Visibility (person admissions). A person may admit only what they can read, using the same
  * model documents:search reads through:
@@ -60,12 +64,24 @@ export interface ChatMessageRef {
   dataSourceId: string;
   channelId: string;
   providerMessageId: string;
+  /**
+   * The thread this message belongs to or roots, when the caller knows it and the stored row
+   * does not say (a top-level post with no replies yet carries no thread_key). Only widens
+   * `coveredBy`: it never changes the source key.
+   */
+  threadKey?: string;
 }
 
 export interface ChatThreadRef {
   dataSourceId: string;
   channelId: string;
   threadKey: string;
+  /**
+   * The provider id of the thread's opening message. A top-level post with no replies yet is a
+   * thread of one, but its stored row carries no thread_key, so without this the thread would
+   * not resolve. Not part of the source key.
+   */
+  rootMessageId?: string;
 }
 
 export function chatMessageSourceKey(ref: ChatMessageRef): string {
@@ -100,6 +116,15 @@ function field(raw: Record<string, unknown>, name: string, what: string): string
   if (!value) throw new Error(`admission_source_invalid: ${what} source needs { ${name} }`);
   if (value.length > REF_FIELD_MAX) throw new Error(`admission_source_invalid: ${name} is too long`);
   return value;
+}
+
+function withOptional<K extends string>(name: K, value: string | undefined): Partial<Record<K, string>> {
+  return value === undefined ? {} : ({ [name]: value } as Record<K, string>);
+}
+
+function optionalField(raw: Record<string, unknown>, name: string, what: string): string | undefined {
+  if (raw[name] === undefined || raw[name] === null) return undefined;
+  return field(raw, name, what);
 }
 
 function dataSourceIdField(raw: Record<string, unknown>, what: string): string {
@@ -203,6 +228,7 @@ export function createChatMessageAdmissionSource(): AdmissionSourceResolver<Chat
         dataSourceId: dataSourceIdField(raw, 'chat-message'),
         channelId: field(raw, 'channelId', 'chat-message'),
         providerMessageId: field(raw, 'providerMessageId', 'chat-message'),
+        ...withOptional('threadKey', optionalField(raw, 'threadKey', 'chat-message')),
       };
     },
     async resolve(ctx, ref): Promise<ResolvedAdmissionSource | AdmissionRefusal> {
@@ -220,8 +246,9 @@ export function createChatMessageAdmissionSource(): AdmissionSourceResolver<Chat
          LIMIT 1`;
       if (!row) return refuse('source_not_found', 'no such chat message (it may have aged out of retention)');
       if (row.deleted_at || row.body == null) return refuse('source_deleted', 'the chat message was deleted at the provider');
-      const coveredBy: AdmissionSourceIdentity[] = row.thread_key
-        ? [{ kind: CHAT_THREAD_SOURCE_KIND, key: chatThreadSourceKey({ ...ref, threadKey: row.thread_key }) }]
+      const threadKey = row.thread_key ?? ref.threadKey ?? null;
+      const coveredBy: AdmissionSourceIdentity[] = threadKey
+        ? [{ kind: CHAT_THREAD_SOURCE_KIND, key: chatThreadSourceKey({ ...ref, threadKey }) }]
         : [];
       const permalink = permalinkOf(row);
       return {
@@ -255,6 +282,7 @@ export function createChatThreadAdmissionSource(): AdmissionSourceResolver<ChatT
         dataSourceId: dataSourceIdField(raw, 'chat-thread'),
         channelId: field(raw, 'channelId', 'chat-thread'),
         threadKey: field(raw, 'threadKey', 'chat-thread'),
+        ...withOptional('rootMessageId', optionalField(raw, 'rootMessageId', 'chat-thread')),
       };
     },
     async resolve(ctx, ref): Promise<ResolvedAdmissionSource | AdmissionRefusal> {
@@ -268,7 +296,8 @@ export function createChatThreadAdmissionSource(): AdmissionSourceResolver<ChatT
          WHERE workspace_id = ${ctx.workspaceId}
            AND data_source_id = ${ref.dataSourceId}::uuid
            AND channel_id = ${ref.channelId}
-           AND thread_key = ${ref.threadKey}
+           AND (thread_key = ${ref.threadKey}
+                OR (thread_key IS NULL AND provider_message_id = ${ref.rootMessageId ?? null}::text))
          ORDER BY posted_at, provider_message_id
          LIMIT ${CHAT_THREAD_SNAPSHOT_MAX_MESSAGES}`;
       if (rows.length === 0) return refuse('source_not_found', 'no such chat thread (it may have aged out of retention)');

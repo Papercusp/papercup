@@ -91,9 +91,35 @@ describe('acceptanceBarContractGaps', () => {
     ).toEqual([]);
   });
 
-  it('claims no mismatch when a file or a declared layer has no naming convention', () => {
+  it('claims no mismatch when a check file has no naming convention', () => {
     expect(gapsOf({ check: { kind: 'tests', files: ['scripts/probe.mjs'] } })).toEqual([]);
-    expect(gapsOf({ check: { kind: 'tests', files: ['lib/a.test.ts'] }, requiredTestLayers: ['mutation'] })).toEqual([]);
+  });
+
+  // WI-10006536: rubric acceptance-pot-review-integration-mode-2026-10-05 R-4 declared
+  // ['component','unit']. The ledger records *.component.test.tsx runs as 'unit' and binding
+  // refuses any other label, so correct-layer could never pass — yet authoring accepted it.
+  it('refuses a declared layer the run ledger can never record (component / mutation / live)', () => {
+    for (const layer of ['component', 'mutation', 'live']) {
+      const findings = acceptanceBarContractGaps({
+        ...complete,
+        check: { kind: 'tests', files: ['lib/a.test.ts'] },
+        requiredTestLayers: ['unit', layer],
+      });
+      expect(findings.map((finding) => finding.gap)).toEqual(['test_layer_unrecordable']);
+      expect(findings[0]!.detail).toContain(layer);
+      for (const recorded of RECORDED_TEST_LAYERS) expect(findings[0]!.detail).toContain(recorded);
+    }
+    // Normalized before judging, so a casing/underscore variant of a recorded layer is still fine.
+    expect(gapsOf({ check: { kind: 'tests', files: ['lib/a.test.ts'] }, requiredTestLayers: [' Unit '] })).toEqual([]);
+  });
+
+  it('accepts every layer the recorder persists', () => {
+    for (const layer of RECORDED_TEST_LAYERS) {
+      expect(
+        acceptanceBarContractGaps({ ...complete, check: { kind: 'tests', files: ['scripts/probe.mjs'] }, requiredTestLayers: [layer] })
+          .map((finding) => finding.gap),
+      ).not.toContain('test_layer_unrecordable');
+    }
   });
 
   // goal-agent-behavior-feedback-2026-09-06 carried seven BARs of exactly this shape.

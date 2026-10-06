@@ -23,9 +23,10 @@
  * itself once copied into the app's `checks/` directory. Built-in controls prove
  * the detector is not vacuous.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
@@ -83,6 +84,51 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
+/** Returns one `operationId -> role` finding per agent-execution operation whose role is not declared in `doc.roles`. */
+export function findUndeclaredAgentRoles(doc: unknown): string[] {
+  const blueprint = (doc ?? {}) as {
+    roles?: Array<{ id?: string }>;
+    operations?: Array<{ id?: string; execution?: { kind?: string; role?: string } }>;
+  };
+  const declared = new Set((blueprint.roles ?? []).map((role) => role.id));
+  return (blueprint.operations ?? [])
+    .filter((operation) => operation.execution?.kind === "agent")
+    .filter((operation) => !declared.has(operation.execution?.role))
+    .map((operation) => `${operation.id} -> ${operation.execution?.role}`);
+}
+
+// The template's own shipped reference root blueprint (absent once this check is
+// copied into an app's checks/ directory, where the gated block below applies).
+const REFERENCE_ROOT_BLUEPRINT = join(dirname(fileURLToPath(import.meta.url)), "..", "reference", "app-root.blueprint.yaml");
+const fillPlaceholders = (text: string): string => text.replace(/\{\{[A-Z0-9_]+\}\}/g, "x");
+
+describe("operation-first-triggers role-declaration controls", () => {
+  const agentOperation = { id: "draft", execution: { kind: "agent", role: "draft-worker" } };
+
+  it("flags an agent operation whose role is declared only elsewhere (positive control)", () => {
+    expect(findUndeclaredAgentRoles({ operations: [agentOperation] })).toEqual(["draft -> draft-worker"]);
+    expect(findUndeclaredAgentRoles({ roles: [{ id: "other" }], operations: [agentOperation] })).toHaveLength(1);
+  });
+
+  it("passes a declared role and a plan-target operation (negative control)", () => {
+    expect(findUndeclaredAgentRoles({ roles: [{ id: "draft-worker" }], operations: [agentOperation] })).toEqual([]);
+    expect(findUndeclaredAgentRoles({ operations: [{ id: "run", target: { kind: "plan" } }] })).toEqual([]);
+  });
+});
+
+describe.skipIf(!existsSync(REFERENCE_ROOT_BLUEPRINT))("operation-first-triggers reference root blueprint", () => {
+  it("declares at least one operation in the ROOT blueprint and every agent role locally", () => {
+    const doc = parse(fillPlaceholders(readFileSync(REFERENCE_ROOT_BLUEPRINT, "utf8"))) as { operations?: unknown[] };
+    expect(doc.operations?.length ?? 0).toBeGreaterThan(0);
+    expect(findUndeclaredAgentRoles(doc)).toEqual([]);
+  });
+
+  it("contains no direct-create trigger shape", () => {
+    const text = readFileSync(REFERENCE_ROOT_BLUEPRINT, "utf8");
+    expect(findDirectCreateTriggers(text, "reference/app-root.blueprint.yaml")).toEqual([]);
+  });
+});
+
 describe("operation-first-triggers detector controls", () => {
   it("flags each forbidden trigger shape (positive controls)", () => {
     const yamlBinding = `action:\n  type: ${DIRECT_CREATE_KIND}\n`;
@@ -114,15 +160,7 @@ describe.skipIf(!section)("operation-first-triggers", () => {
   });
 
   it("every agent-execution operation's role is declared in the root blueprint", () => {
-    const doc = parse(readFileSync(inApp(section!.rootBlueprint ?? ".papercusp/blueprint.yaml"), "utf8")) as {
-      roles?: Array<{ id?: string }>;
-      operations?: Array<{ id?: string; execution?: { kind?: string; role?: string } }>;
-    };
-    const declared = new Set((doc.roles ?? []).map((role) => role.id));
-    const undeclared = (doc.operations ?? [])
-      .filter((operation) => operation.execution?.kind === "agent")
-      .filter((operation) => !declared.has(operation.execution?.role))
-      .map((operation) => `${operation.id} -> ${operation.execution?.role}`);
-    expect(undeclared, "declare each worker role in the root blueprint's roles[] (D-003)").toEqual([]);
+    const doc = parse(readFileSync(inApp(section!.rootBlueprint ?? ".papercusp/blueprint.yaml"), "utf8"));
+    expect(findUndeclaredAgentRoles(doc), "declare each worker role in the root blueprint's roles[] (D-003)").toEqual([]);
   });
 });

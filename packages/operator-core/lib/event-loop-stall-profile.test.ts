@@ -164,3 +164,29 @@ describe('formatFrame / hotStackFields', () => {
     );
   });
 });
+
+describe('Profiler.start budget (WI-10006344)', () => {
+  // Profiler.start logs every compiled code object first, so on bg-host's
+  // multi-GB heap it took longer than the old hard-coded 3 s and every spinning
+  // stall logged `Profiler.start not answered within 3000ms`. Measured cost:
+  // 6.3 s at 1M functions (see STALL_PROFILE_DEFAULTS.startTimeoutMs).
+  it('defaults to a budget well above the measured large-heap start cost', () => {
+    expect(STALL_PROFILE_DEFAULTS.startTimeoutMs).toBeGreaterThanOrEqual(15_000);
+  });
+
+  it('reaches the worker through the resolved sentinel config', async () => {
+    const { resolveSentinelConfig } = await import('./event-loop-sentinel-host');
+    expect(resolveSentinelConfig({}).stallProfile.startTimeoutMs).toBe(
+      STALL_PROFILE_DEFAULTS.startTimeoutMs,
+    );
+  });
+
+  it('the worker uses the configured budget, not a literal, for Profiler.start', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./event-loop-sentinel.worker.ts', import.meta.url), 'utf8');
+    const startCalls = src.split('\n').filter((l) => l.includes("'Profiler.start'"));
+    expect(startCalls.length).toBe(1);
+    expect(startCalls[0]).toContain('cfg.startTimeoutMs');
+    expect(startCalls[0]).not.toMatch(/'Profiler\.start',\s*\d/);
+  });
+});

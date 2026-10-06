@@ -12,6 +12,8 @@
  * Run with: npx vitest run packages/operator-core/lib/agent-tools/tools/find.test.ts
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -191,6 +193,95 @@ describe('tools:find tool registration', () => {
     const withoutHint = await callHandler({ query: 'feature flag' });
     const withHint = await callHandler({ query: 'feature flag', harness: 'some-other-harness', workspace: 'some-other-workspace' });
     expect(withHint.hits.map((h) => h.tool)).toEqual(withoutHint.hits.map((h) => h.tool));
+  });
+});
+
+describe('documented tools:find argSchema selection (EI-25211864676774274)', () => {
+  type Selection = {
+    tool: string;
+    status: 'available' | 'unavailable';
+    format?: 'compact-text' | 'json-schema';
+    argSchema?: unknown;
+    reason?: string;
+  };
+
+  async function runExample(hits: Array<Record<string, unknown>>): Promise<Selection[]> {
+    const source = readFileSync(new URL(
+      '../../../../../apps/operator-docs/src/content/docs/agent-insights/toolsearch-stale-schema-snapshot-vs-imperative-required-field.mdx',
+      import.meta.url,
+    ), 'utf8');
+    const examples = [...source.matchAll(
+      /\{\/\* tools-find-argschema-example:start \*\/\}\r?\n```js\r?\n([\s\S]*?)\r?\n```\r?\n\{\/\* tools-find-argschema-example:end \*\/\}/g,
+    )];
+    expect(examples, 'the maintained runbook must contain exactly one executable example').toHaveLength(1);
+    const find = vi.fn().mockResolvedValue({ hits });
+    const selected = await runInNewContext(
+      `(async () => {\n${examples[0][1]}\n})()`,
+      { tools: { tools: { find } } },
+      { timeout: 1000 },
+    ) as Selection[];
+    expect(find).toHaveBeenCalledExactlyOnceWith({ query: 'work_items:get tools:invoke', limit: 8 });
+    expect(selected.map((row) => row.tool)).toEqual(['work_items:get', 'tools:invoke']);
+    return selected;
+  }
+
+  const schema = { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] };
+
+  it('preserves actual compactSchemaForResult text byte-for-byte and selects exact names only', async () => {
+    const compact = compactSchemaForResult(schema);
+    expect(typeof compact).toBe('string');
+    const selected = await runExample([
+      { tool: 'work_items:get-extra', argSchema: schema },
+      { tool: 'tools:invoke', argSchema: compact, description: 'do not copy', returns: 'do not copy' },
+      { tool: 'work_items:get', argSchema: compact, description: 'do not copy', via: 'lexical' },
+      { tool: 'unrelated', argSchema: schema },
+    ]);
+    for (const row of selected) {
+      expect(row).toEqual({ tool: row.tool, status: 'available', format: 'compact-text', argSchema: compact });
+      expect(Object.keys(row).sort()).toEqual(['argSchema', 'format', 'status', 'tool']);
+      expect(row).not.toHaveProperty('properties');
+    }
+  });
+
+  it.each([
+    ['object', schema],
+    ['JSON-encoded object', JSON.stringify(schema)],
+  ])('retains properties and required from a %s schema', async (_label, argSchema) => {
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'available', format: 'json-schema', argSchema: schema });
+  });
+
+  it('keeps arbitrary non-JSON text opaque without semantic validation', async () => {
+    const opaque = '  caller-supplied schema guidance: unknown grammar\n';
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema: opaque }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'available', format: 'compact-text', argSchema: opaque });
+  });
+
+  it('labels an absent exact hit unavailable', async () => {
+    const selected = await runExample([{ tool: 'work_items:get-extra', argSchema: schema }]);
+    expect(selected).toEqual([
+      { tool: 'work_items:get', status: 'unavailable', reason: 'missing-hit' },
+      { tool: 'tools:invoke', status: 'unavailable', reason: 'missing-hit' },
+    ]);
+  });
+
+  it.each([null, undefined, 7, true, [], 'null', '42', 'true', '["id"]', '"JSON string"'])(
+    'labels unsupported or non-object JSON schema %j unavailable without manufacturing properties',
+    async (argSchema) => {
+      const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+      expect(selected).toEqual({ tool: 'work_items:get', status: 'unavailable', reason: 'unsupported-schema' });
+      expect(Object.keys(selected).sort()).toEqual(['reason', 'status', 'tool']);
+    },
+  );
+
+  it.each(['', ' \n '])('labels empty schema text %j unavailable', async (argSchema) => {
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'unavailable', reason: 'missing-schema' });
+  });
+
+  it.each(['{bad JSON', '[bad JSON', '"unfinished'])('labels malformed JSON-looking text %j unavailable', async (argSchema) => {
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'unavailable', reason: 'malformed-json' });
   });
 });
 

@@ -42,6 +42,7 @@ import {
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
   EC2Client,
+  GetConsoleOutputCommand,
   RunInstancesCommand,
   TerminateInstancesCommand,
 } from '@aws-sdk/client-ec2';
@@ -105,11 +106,13 @@ function sdkDeps(input, runId) {
     async describeImage(imageId) {
       try {
         const image = (await ec2.send(new DescribeImagesCommand({ ImageIds: [imageId] }))).Images?.[0];
+        const rootEbs = image?.BlockDeviceMappings?.find((m) => m.DeviceName === image.RootDeviceName)?.Ebs;
         return image
           ? {
               state: image.State ?? 'unknown',
               architecture: image.Architecture ?? 'unknown',
               ...(image.RootDeviceName ? { rootDeviceName: image.RootDeviceName } : {}),
+              ...(typeof rootEbs?.Encrypted === 'boolean' ? { rootEncrypted: rootEbs.Encrypted } : {}),
             }
           : null;
       } catch (error) {
@@ -126,16 +129,24 @@ function sdkDeps(input, runId) {
         throw error;
       }
     },
-    async runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags, rootDeviceName, volumeInitializationRateMiBps }) {
+    async runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags, rootDeviceName, volumeInitializationRateMiBps, encryptRootVolume }) {
       const out = await ec2.send(
         new RunInstancesCommand({
           ImageId: imageId,
           InstanceType: instanceType,
           MinCount: 1,
           MaxCount: 1,
-          // The root mapping inherits the AMI's snapshot; only the initialization rate is set.
+          // The root mapping inherits the AMI's snapshot. Only the initialization rate is set, plus
+          // encryption at launch (the account's default EBS key) for an unencrypted AMI.
           ...(rootDeviceName && volumeInitializationRateMiBps
-            ? { BlockDeviceMappings: [{ DeviceName: rootDeviceName, Ebs: { VolumeInitializationRate: volumeInitializationRateMiBps } }] }
+            ? {
+                BlockDeviceMappings: [
+                  {
+                    DeviceName: rootDeviceName,
+                    Ebs: { VolumeInitializationRate: volumeInitializationRateMiBps, ...(encryptRootVolume ? { Encrypted: true } : {}) },
+                  },
+                ],
+              }
             : {}),
           IamInstanceProfile: { Arn: instanceProfileArn },
           NetworkInterfaces: [{ DeviceIndex: 0, SubnetId: subnetId, AssociatePublicIpAddress: false, DeleteOnTermination: true }],
@@ -169,6 +180,17 @@ function sdkDeps(input, runId) {
         new DescribeInstanceInformationCommand({ Filters: [{ Key: 'InstanceIds', Values: [instanceId] }] }),
       );
       return out.InstanceInformationList?.[0]?.PingStatus ?? null;
+    },
+    async consoleOutput(instanceId) {
+      let out;
+      try {
+        out = await ec2.send(new GetConsoleOutputCommand({ InstanceId: instanceId, Latest: true }));
+      } catch (error) {
+        // Latest is Nitro-only. Other types refuse it, so fall back to the buffered capture.
+        if (!/UnsupportedOperation|InvalidParameter/.test(errorName(error))) throw error;
+        out = await ec2.send(new GetConsoleOutputCommand({ InstanceId: instanceId }));
+      }
+      return out.Output ? Buffer.from(out.Output, 'base64').toString('utf8') : null;
     },
     async sendCommand({ instanceId, commands, executionTimeoutSec }) {
       const out = await ssm.send(

@@ -1,0 +1,180 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  ADMISSION_PRECHECK_WORKER_MODE_ENV,
+  admissionPrecheckProgressTransition,
+  admissionPrecheckSettlementTransition,
+  buildAdmissionPrecheckSpawnPlan,
+  parseAdmissionPrecheckWorkerInput,
+  runAdmissionPrecheckWorker,
+  type AdmissionPrecheckWorkerInput,
+} from './admission-fix-precheck-managed';
+import type { FrozenCandidateRepairQueue, FrozenRepairAdmissionPrecheck } from './frozen-candidate-repair-queue';
+
+const operation = (overrides: Partial<FrozenRepairAdmissionPrecheck> = {}): FrozenRepairAdmissionPrecheck => ({
+  schemaVersion: 1,
+  operationId: 'repair-precheck-1',
+  status: 'running',
+  candidate: 'a'.repeat(40),
+  repairHead: 'b'.repeat(40),
+  builtCommit: 'c'.repeat(40),
+  builtTree: 'd'.repeat(40),
+  files: ['lib/red.test.ts'],
+  actor: 'su-test',
+  runnerPid: 100,
+  runnerPidIdentity: 'boot:100',
+  runnerTaskId: 'task123456',
+  startedAtMs: 10,
+  updatedAtMs: 10,
+  expiresAtMs: 60_000,
+  currentFile: 'lib/red.test.ts',
+  completedCount: 0,
+  totalCount: 1,
+  heartbeatAtMs: 10,
+  ...overrides,
+});
+
+const queue = (precheck = operation()): FrozenCandidateRepairQueue => ({
+  schemaVersion: 4,
+  phase: 'awaiting-fixer',
+  candidate: 'a'.repeat(40),
+  base: 'e'.repeat(40),
+  repairHead: 'b'.repeat(40),
+  worktreePath: '/tmp/repair',
+  attempts: 0,
+  openedAtMs: 1,
+  updatedAtMs: 10,
+  fixerSpawnId: null,
+  failingTests: ['lib/red.test.ts'],
+  signature: [{ kind: 'test-file', id: 'lib/red.test.ts', recipe: 'test:file', admittedRound: 1, measuredHead: 'b'.repeat(40) }],
+  admissions: [],
+  admissionPrecheck: precheck,
+} as unknown as FrozenCandidateRepairQueue);
+
+const input: AdmissionPrecheckWorkerInput = {
+  operationId: 'repair-precheck-1',
+  taskId: 'task123456',
+  queueTarget: { workspaceId: 'workspace-1', installSlug: 'papercusp' },
+  integrationRoot: '/repo',
+  checkpointRoot: '/repo-checkpoint',
+  expiresAtMs: 60_000,
+};
+
+describe('managed R6 admission pre-check runner (WI-10006003)', () => {
+  it('re-execs as a host-independent task in source and bundled deployments', () => {
+    expect(buildAdmissionPrecheckSpawnPlan({
+      selfPath: '/repo/packages/operator-core/lib/release/admission-fix-precheck-managed.ts',
+      moduleDirOverride: '/repo/packages/operator-core/lib/release',
+      execPath: '/node',
+      spawnerPid: 42,
+    })).toEqual({
+      cmd: 'npx',
+      args: ['tsx', '/repo/packages/operator-core/lib/release/admission-fix-precheck-worker-bin.ts'],
+      env: { PAPERCUSP_DESKTOP_PARENT_PID: '42' },
+      mode: 'dev-tsx',
+    });
+    const bundled = buildAdmissionPrecheckSpawnPlan({ selfPath: '/app/dist-host/hono-host.mjs', execPath: '/app/node', spawnerPid: 43 });
+    expect(bundled).toMatchObject({
+      cmd: '/app/node',
+      args: ['/app/dist-host/hono-host.mjs'],
+      env: { [ADMISSION_PRECHECK_WORKER_MODE_ENV]: '1', PAPERCUSP_DESKTOP_PARENT_PID: '43' },
+      mode: 'bundled-reexec',
+    });
+  });
+
+  it('a successor can adopt the same operationId and observe persisted progress and verdict', async () => {
+    let persisted = queue();
+    const progress = { currentFile: 'lib/red.test.ts', completedCount: 0, totalCount: 1, heartbeatAtMs: 20 };
+    const runner = vi.fn(async (run: {
+      commit: string;
+      files: readonly string[];
+      onProgress?: (snapshot: typeof progress) => Promise<void> | void;
+    }) => {
+      await run.onProgress?.(progress);
+      return { ran: true as const, commit: run.commit, results: run.files.map((path) => ({ path, status: 'pass' as const })) };
+    });
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); },
+      createRunner: () => runner,
+      now: () => 30,
+    });
+
+    expect(outcome.status).toBe('settled');
+    expect(runner).toHaveBeenCalledWith(expect.objectContaining({
+      commit: 'c'.repeat(40),
+      files: ['lib/red.test.ts'],
+      onProgress: expect.any(Function),
+    }));
+    expect(persisted.admissionPrecheck).toMatchObject({
+      operationId: input.operationId,
+      runnerTaskId: input.taskId,
+      status: 'passed',
+      currentFile: 'lib/red.test.ts',
+      completedCount: 0,
+      totalCount: 1,
+      heartbeatAtMs: 20,
+      verdict: { ok: true, ran: true, fixes: ['lib/red.test.ts'] },
+    });
+    expect(persisted.dispatchReservation).toBeUndefined();
+  });
+
+  it('does not run outside a confined task or overwrite a successor operation', async () => {
+    const unconfinedRunner = vi.fn();
+    const unconfined = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: false }),
+      readQueue: async () => ({ status: 'value', queue: queue() }),
+      transition: async () => undefined,
+      createRunner: () => unconfinedRunner as never,
+    });
+    expect(unconfined.status).toBe('ignored');
+    expect(unconfinedRunner).not.toHaveBeenCalled();
+
+    let persisted = queue();
+    const newer = operation({ operationId: 'repair-precheck-newer', runnerTaskId: 'task-newer' });
+    const stale = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); },
+      createRunner: () => async () => {
+        persisted = queue(newer);
+        return { ran: true, commit: 'c'.repeat(40), results: [{ path: 'lib/red.test.ts', status: 'pass' }] };
+      },
+      now: () => 30,
+    });
+    expect(stale.status).toBe('settled');
+    expect(persisted.admissionPrecheck).toMatchObject({ operationId: 'repair-precheck-newer', status: 'running' });
+  });
+
+  it('rejects malformed worker context before it can read or write a queue', () => {
+    expect(parseAdmissionPrecheckWorkerInput(undefined)).toBeNull();
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify({ ...input, taskId: '' }))).toBeNull();
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify(input))).toEqual(input);
+  });
+
+  it('pins both host entrypoints to divert before normal host boot and parent-death handling', () => {
+    const root = join(import.meta.dirname, '../../../../');
+    const serve = readFileSync(join(root, 'apps/operator/bin/serve.ts'), 'utf8');
+    const hono = readFileSync(join(root, 'apps/operator/bin/hono-host.ts'), 'utf8');
+    expect(serve.indexOf('PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE')).toBeLessThan(serve.indexOf('startSidecarParentDeathWatch();'));
+    expect(serve).toContain('runAdmissionPrecheckWorkerFromEnvironment');
+    expect(hono).toContain("'repair-precheck'");
+    expect(hono).toContain('runAdmissionPrecheckWorkerFromEnvironment');
+  });
+
+  it('uses CAS transforms that ignore progress and settlements from a replaced operationId', () => {
+    const active = queue();
+    const replaced = queue(operation({ operationId: 'newer' }));
+    expect(admissionPrecheckProgressTransition(replaced, input.operationId, {
+      currentFile: 'lib/red.test.ts', completedCount: 1, totalCount: 1, heartbeatAtMs: 20,
+    })).toBe(replaced);
+    const verdict = { ok: true as const, ran: false as const, reason: 'nothing-to-run' as const, population: {
+      signatureTestFiles: [], admittedTestFiles: [], nonTestKinds: [], canProveDoesNotFix: false, files: [],
+    } };
+    expect(admissionPrecheckSettlementTransition(replaced, input.operationId, verdict, 30)).toBe(replaced);
+    expect(admissionPrecheckSettlementTransition(active, input.operationId, verdict, 30).admissionPrecheck)
+      .toMatchObject({ status: 'deferred', operationId: input.operationId });
+  });
+});

@@ -876,7 +876,7 @@ export interface CancelAwaitResult {
   expiresTs?: string | null;
   droppedDeliveries: number;
   inFlightDeliveries: number;
-  error?: 'standing_watch_requires_confirmation';
+  error?: 'standing_watch_requires_confirmation' | 'active_loop_inbox_wake_requires_loop_end';
 }
 
 /**
@@ -886,7 +886,9 @@ export interface CancelAwaitResult {
  * `source:'operator'` is reserved for the explicit events:cancel surface;
  * internal cleanup callers intentionally omit it and do not create a suppression.
  * Public cancellation also requires `confirmStanding:true` for a standing
- * (`once:false`) watch. A one-word `await_id` slip must not silently disable a
+ * (`once:false`) watch. The active loop's own inbox-wake is additionally
+ * protected until loop:end deactivates that loop; a loopless session may still
+ * explicitly opt out. A one-word `await_id` slip must not silently disable a
  * recurring wake source.
  */
 export async function cancelAwaitDetailed(input: {
@@ -938,6 +940,29 @@ export async function cancelAwaitDetailed(input: {
         cancelled: false,
         error: 'standing_watch_requires_confirmation',
       };
+    }
+
+    if (
+      input.source === 'operator' &&
+      !once &&
+      base.eventKey === 'coord:inbox-wake:' + input.subscriberId
+    ) {
+      const activeLoops = await tx`
+        SELECT 1
+          FROM harness_shared.routines
+         WHERE workspace_id = ${ws}
+           AND target_owner_id = ${input.subscriberId}
+           AND active = TRUE
+           AND reschedule_interval_sec IS NOT NULL
+         LIMIT 1
+      `;
+      if (activeLoops.length > 0) {
+        return {
+          ...base,
+          cancelled: false,
+          error: 'active_loop_inbox_wake_requires_loop_end',
+        };
+      }
     }
 
     const rows = await tx`

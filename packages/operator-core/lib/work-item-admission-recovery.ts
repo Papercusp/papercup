@@ -11,6 +11,7 @@ import {
   assignAndWakeActionableWorkItems,
 } from './agent-tools/coordination/actionable-work-item-dispatch';
 import { WORK_ITEM_ADMISSION_PROMOTER } from './work-items-admission-promoter';
+import { issueOwnAuthorWhereSql } from './work-items-admission';
 import { decodeOperatorSecretKey } from './operator-secret-key';
 import { getModes } from './modes/store';
 import { AUDIT_MODE, auditModeMutationDenyReason } from './capability-envelope/audit-mode-guard';
@@ -173,6 +174,26 @@ async function readItem(sql: Sql, scope: AdmissionRecoveryScope): Promise<Recove
   return item;
 }
 
+/**
+ * WI-10006515: an own-node row stranded at origin='remote' is OURS. `origin` records how a row
+ * ARRIVED, not who wrote it (WI-10003565), so "repaired by its originating actor" names THIS
+ * node. Heal the label on the base table before the eligibility gate, as the claim and write
+ * paths do (selfHealOwnNodeOriginIfStranded): left at 'remote', every later write through the
+ * engineer_issues view is a silent no-op. The WHERE clause IS the identity check, so a true
+ * peer's row is untouched and still refused. Runs on the caller's handle (inside its transaction
+ * where there is one), so a refusal later in that transaction rolls the heal back too.
+ */
+async function healOwnNodeStrand(sql: Sql, scope: AdmissionRecoveryScope, item: RecoveryItem): Promise<RecoveryItem> {
+  if (item.origin !== 'remote') return item;
+  const healed = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items wi SET origin = 'local'
+     WHERE wi.workspace_id = ${scope.workspaceId} AND wi.harness_slug = ${scope.harnessSlug}
+       AND wi.feature_id = ${scope.workItemId} AND wi.origin = 'remote'
+       AND ${issueOwnAuthorWhereSql(sql, scope.workspaceId)}
+     RETURNING wi.feature_id`;
+  return healed.length === 1 ? { ...item, origin: 'local' } : item;
+}
+
 function assertItemEligible(item: RecoveryItem, target: string): void {
   if (!['open', 'todo', 'failing', 'wip', 'in_progress', 'validating'].includes(item.status)) {
     throw new AdmissionRecoveryRefused(`original item is ${item.status}; recovery does not reopen it`);
@@ -233,7 +254,7 @@ export async function requestAdmissionRecovery(
   return sql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Sql;
     const locked = await lockRequest(tx, input);
-    const item = await readItem(tx, input);
+    const item = await healOwnNodeStrand(tx, input, await readItem(tx, input));
     assertItemEligible(item, input.target);
     const rawPrevious = item.payload?._admissionRecovery;
     // This is a NEW authorized request, not replay by the routine. A rotated key or
@@ -332,7 +353,7 @@ export async function runAdmissionRecoveries(
         const assertAllowed = async () => {
           await verifyRequest(sql, exact, request);
           await assertRoutineActive(sql, exact, request.routineId);
-          const live = await readItem(sql, exact);
+          const live = await healOwnNodeStrand(sql, exact, await readItem(sql, exact));
           const current = savedRequest(live);
           // SQL jsonb equality ignores object-key ordering, unlike JSON.stringify.
           const [same] = await sql<{ unchanged: boolean }[]>`

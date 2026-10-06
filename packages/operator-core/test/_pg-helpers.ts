@@ -715,13 +715,19 @@ export const FED_ORDER_KEY_DDL = `
  * `provisionRestartTestDb` (@papercusp/test-config) — those DO apply the actual
  * migration files.
  */
-export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
+export async function createFreshPgDb(
+  prefix = 'eng',
+  options: { onQuery?: (query: string) => void } = {},
+): Promise<FreshPgDb> {
   const db = await createFreshTestDb({ prefix });
 
   const sql = postgres(db.url, {
     max: 4,
     onnotice: () => {},
     prepare: false,
+    // Postgres calls debug for execution, while a tagged SQL fragment is only
+    // constructed. Tests measuring round trips must observe this boundary.
+    debug: options.onQuery ? (_connection, query) => options.onQuery?.(query) : undefined,
     types: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       bigint: { to: 20, from: [20], serialize: (x: any) => String(x), parse: (x: string) => Number(x) } as any,

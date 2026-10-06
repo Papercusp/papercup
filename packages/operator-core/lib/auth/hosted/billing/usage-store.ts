@@ -10,6 +10,7 @@ import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
+import type { HostedBudgetExecutionGrant } from './budget-store';
 import {
   buildHostedUsageStatement,
   validateHostedUsageRecord,
@@ -27,6 +28,7 @@ type ReceiptRow = {
   openrouter_credential_ref: string | null;
   openrouter_key_sha256: string | null;
   openrouter_is_byok: boolean | null;
+  openrouter_budget_grant: HostedBudgetExecutionGrant | null;
 };
 
 export type OpenRouterGenerationBinding = Omit<OpenRouterUsageBinding, 'revision' | 'credentialSha256'>
@@ -40,7 +42,31 @@ const sameTenant = (row: ReceiptRow, scope: HostedUsageScope) => row.control_wor
   && row.organization_id === scope.organizationId && row.customer_workspace_id === scope.customerWorkspaceId;
 const sameBinding = (row: ReceiptRow, binding?: OpenRouterGenerationBinding) => !binding
   || (row.openrouter_credential_ref === binding.credentialRef
-    && row.openrouter_key_sha256 === binding.credentialSha256 && row.openrouter_is_byok === binding.isByok);
+    && row.openrouter_key_sha256 === binding.credentialSha256 && row.openrouter_is_byok === binding.isByok
+    && grantIdentity(row.openrouter_budget_grant) === grantIdentity(binding.budgetGrant));
+const grantIdentity = (grant: HostedBudgetExecutionGrant | null | undefined) => grant == null ? null
+  : JSON.stringify([grant.scope.controlWorkspaceId, grant.scope.organizationId, grant.scope.customerWorkspaceId,
+    grant.reservationId, grant.month, grant.budgetKey, grant.maximumCostMicros, grant.providerLimitRef,
+    grant.policyId, grant.policyRevision, grant.evidenceRef]);
+
+/** Copy only a structurally valid private grant before the first await. The
+ * transaction and database guard still verify it against the real admission. */
+function snapshotGrant(value: HostedBudgetExecutionGrant): HostedBudgetExecutionGrant {
+  const identifier = (v: unknown) => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(v);
+  const safe = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).some(k => !['scope', 'reservationId', 'month', 'budgetKey', 'maximumCostMicros',
+        'providerLimitRef', 'policyId', 'policyRevision', 'evidenceRef'].includes(k))
+      || !value.scope || typeof value.scope !== 'object' || Array.isArray(value.scope)
+      || Object.keys(value.scope).some(k => !['controlWorkspaceId', 'organizationId', 'customerWorkspaceId'].includes(k))
+      || !identifier(value.scope.controlWorkspaceId) || !identifier(value.scope.organizationId)
+      || !identifier(value.scope.customerWorkspaceId) || !identifier(value.reservationId)
+      || !identifier(value.budgetKey) || !identifier(value.providerLimitRef) || !identifier(value.policyId)
+      || !identifier(value.evidenceRef) || !safe(value.maximumCostMicros)
+      || !safe(value.policyRevision) || value.policyRevision < 1) throw new Error('invalid OpenRouter budget grant');
+  shadowMonthBounds(value.month);
+  return Object.freeze({ ...value, scope: Object.freeze({ ...value.scope }) });
+}
 
 function receipt(row: ReceiptRow): HostedUsageRecord {
   const amount = row.cost_micros === null ? null : splitMicrosDecimal(String(row.cost_micros));
@@ -101,6 +127,7 @@ export class PostgresHostedUsageStore {
           customerWorkspaceId: r.customerWorkspaceId },
         generationId: r.usageId, payer: r.payer, isByok: row.openrouter_is_byok!,
         credentialRef: row.openrouter_credential_ref!, credentialSha256: row.openrouter_key_sha256!,
+        ...(row.openrouter_budget_grant == null ? {} : { budgetGrant: snapshotGrant(row.openrouter_budget_grant) }),
         occurredAtMs: r.occurredAtMs, observedAtMs: r.observedAtMs, evidenceRef: r.sourceRef,
       };
       openRouterUsageRecord({ ...binding, revision: r.revision }, {
@@ -125,12 +152,13 @@ export class PostgresHostedUsageStore {
    * value or customer content is stored, and bindings survive new instances. */
   async bindOpenRouterGeneration(input: OpenRouterGenerationBinding): Promise<HostedUsageAppendResult> {
     if (Object.keys(input).some(key => !['scope', 'generationId', 'payer', 'isByok', 'credentialRef',
-      'credentialSha256', 'occurredAtMs', 'observedAtMs', 'evidenceRef'].includes(key))
+      'credentialSha256', 'occurredAtMs', 'observedAtMs', 'evidenceRef', 'budgetGrant'].includes(key))
       || !/^[a-f0-9]{64}$/.test(input.credentialSha256)
       || !/^(?:env:[A-Za-z_][A-Za-z0-9_]*|file:\/[A-Za-z0-9._/-]+)$/.test(input.credentialRef)) {
       throw new Error('invalid durable OpenRouter generation binding');
     }
-    const binding = Object.freeze({ ...input, scope: Object.freeze({ ...input.scope }) });
+    const binding = Object.freeze({ ...input, scope: Object.freeze({ ...input.scope }),
+      ...(input.budgetGrant === undefined ? {} : { budgetGrant: snapshotGrant(input.budgetGrant) }) });
     const record = openRouterUsageRecord({ ...binding, revision: 1 }, {
       data: { id: binding.generationId, is_byok: binding.isByok, total_cost: null },
     });
@@ -144,6 +172,27 @@ export class PostgresHostedUsageStore {
         // Generation identity is global, even when two tenants race. A later
         // report cannot reassign the original generation or its payer/time.
         await sql`SELECT pg_advisory_xact_lock(hashtextextended(${'openrouter-generation:' + record.usageId}, 0))`;
+        if (binding?.budgetGrant) {
+          // Admission rows are immutable. No organization/account lock is
+          // acquired here, so this writer does not invert the reservation's
+          // budget -> organization -> account -> read-only source order.
+          // The database trigger independently validates direct SQL INSERTs.
+          const [admission] = await sql<{ matches: boolean }[]>`SELECT EXISTS (
+            SELECT 1 FROM papercusp_auth.hosted_budget_receipts b
+             WHERE b.control_workspace_id = ${record.controlWorkspaceId}
+               AND b.organization_id = ${record.organizationId}
+               AND b.customer_workspace_id = ${record.customerWorkspaceId}
+               AND b.reservation_id = ${binding.budgetGrant.reservationId} AND b.revision = 0
+               AND b.observed_at_ms <= ${record.occurredAtMs} AND ${record.payer} = 'consumption'
+               AND jsonb_build_object('scope', jsonb_build_object('controlWorkspaceId', b.control_workspace_id,
+                 'organizationId', b.organization_id, 'customerWorkspaceId', b.customer_workspace_id),
+                 'reservationId', b.reservation_id, 'month', b.month, 'budgetKey', b.budget_key,
+                 'maximumCostMicros', b.maximum_cost_micros, 'providerLimitRef', b.provider_limit_ref,
+                 'policyId', b.policy_id, 'policyRevision', b.policy_revision, 'evidenceRef', b.evidence_ref)
+                   = ${JSON.stringify(binding.budgetGrant)}::jsonb
+          ) AS matches`;
+          if (!admission?.matches) return 'replay-mismatch';
+        }
         const assigned = await sql<ReceiptRow[]>`SELECT * FROM papercusp_auth.hosted_usage_receipts
           WHERE provider = 'openrouter' AND usage_id = ${record.usageId}`;
         if (assigned.some(row => !sameTenant(row, record) || row.payer !== record.payer
@@ -185,12 +234,13 @@ export class PostgresHostedUsageStore {
           (control_workspace_id, organization_id, customer_workspace_id, provider,
            record_id, usage_id, revision, category, payer, occurred_at_ms,
            observed_at_ms, quantity, unit, cost_source, cost_micros, source_ref,
-           openrouter_credential_ref, openrouter_key_sha256, openrouter_is_byok)
+           openrouter_credential_ref, openrouter_key_sha256, openrouter_is_byok, openrouter_budget_grant)
         VALUES (${record.controlWorkspaceId}, ${record.organizationId}, ${record.customerWorkspaceId},
                 ${record.provider}, ${record.recordId}, ${record.usageId}, ${record.revision},
                 ${record.category}, ${record.payer}, ${record.occurredAtMs}, ${record.observedAtMs},
                 ${record.quantity}, ${record.unit}, ${record.costSource}, ${record.costMicrosExact ?? record.costMicros}, ${record.sourceRef},
-                ${binding?.credentialRef ?? null}, ${binding?.credentialSha256 ?? null}, ${binding?.isByok ?? null})
+                ${binding?.credentialRef ?? null}, ${binding?.credentialSha256 ?? null}, ${binding?.isByok ?? null},
+                ${binding?.budgetGrant === undefined ? null : JSON.stringify(binding.budgetGrant)}::jsonb)
         ON CONFLICT DO NOTHING RETURNING record_id`;
       if (inserted.length) return 'recorded';
       // One receipt id can race under two DIFFERENT usage ids. The table's
@@ -262,6 +312,7 @@ export class PostgresHostedUsageStore {
           scope: { controlWorkspaceId: r.controlWorkspaceId, organizationId: r.organizationId, customerWorkspaceId: r.customerWorkspaceId },
           generationId: r.usageId, payer: r.payer, isByok: row.openrouter_is_byok!,
           credentialRef: row.openrouter_credential_ref!, credentialSha256: row.openrouter_key_sha256!,
+          ...(row.openrouter_budget_grant == null ? {} : { budgetGrant: snapshotGrant(row.openrouter_budget_grant) }),
           revision: Number(row.latest_revision) + 1, occurredAtMs: r.occurredAtMs,
           observedAtMs: input.asOfMs, evidenceRef: 'openrouter:metadata-read',
         };

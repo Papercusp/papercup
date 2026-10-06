@@ -6,6 +6,7 @@ import { SLACK_SOCKET_PLUGIN, slackSocketCredentialRef, slackSocketCredentialFie
 export { SLACK_SOCKET_PLUGIN, slackSocketCredentialRef, slackSocketCredentialField } from './slack-credential-ref';
 import {
   ingestExternalTriggerEvent,
+  type ExternalTriggerSink,
   type IngestExternalTriggerInput,
   type IngestExternalTriggerResult,
 } from './ingestion';
@@ -285,6 +286,18 @@ export function normalizeSlackSocketEnvelope(envelope: SlackSocketEnvelope): Sla
         occurredAt: occurredAt ?? undefined,
         mentions: mentions(message),
         slackEventType: text(event.type),
+        // The message itself, in the shape report-bug signals use, so the chat admission sink
+        // can name it and tell a top-level post from a reply (slack-messages-to-bug-reports D-008).
+        ...(channelId && text(event.ts)
+          ? {
+              target: {
+                channelId,
+                ts: text(event.ts),
+                ...(text(event.thread_ts) && text(event.thread_ts) !== text(event.ts) ? { threadTs: text(event.thread_ts) } : {}),
+                text: message,
+              },
+            }
+          : {}),
       },
     };
   }
@@ -325,6 +338,8 @@ export async function ingestSlackSocketEnvelope(
   source: ExternalTriggerSourceRow,
   envelope: SlackSocketEnvelope,
   ingest: Ingest = (db, event) => ingestExternalTriggerEvent(db, event),
+  /** Sinks beyond the event bus and binding engine — the chat admission sink (D-009). */
+  additionalSinks: ExternalTriggerSink[] = [],
 ): Promise<SlackNormalizedEvent | null> {
   const reportBug = classifySlackReportBugEnvelope(envelope, slackReportBugConfig(source.config));
   if (reportBug && reportBug.kind !== 'signal') return null;
@@ -341,8 +356,15 @@ export async function ingestSlackSocketEnvelope(
     normalize: () => normalized.payload,
     occurredAt: normalized.occurredAt,
     dedupeKey: normalized.dedupeKey,
+    ...(additionalSinks.length > 0 ? { additionalSinks } : {}),
   });
-  if (!result.ok) throw new Error(`slack_canonical_payload_invalid:${result.validationErrors?.join(';') ?? 'unknown'}`);
+  if (!result.ok) {
+    if (result.validationErrors?.length) throw new Error(`slack_canonical_payload_invalid:${result.validationErrors.join(';')}`);
+    // A sink failure is already recorded on its own trigger_deliveries row; name it truthfully
+    // instead of reporting the (valid) payload as invalid.
+    const failed = result.deliveries.filter((d) => d.outcome === 'failed').map((d) => `${d.sinkKind}:${d.error ?? 'failed'}`);
+    throw new Error(`slack_event_delivery_failed:${failed.join(';') || 'unknown'}`);
+  }
   return normalized;
 }
 

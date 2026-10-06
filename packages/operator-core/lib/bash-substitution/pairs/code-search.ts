@@ -572,8 +572,232 @@ export const lspDefinitionLookup: BashSubstitutionPair = {
   },
 };
 
+// ── P-002(d) / D-010(d): who CALLS this symbol ───────────────────────────────
+//
+// Population (30 days to 2026-10-06T08:00Z, harness_shared.session_turn_parts):
+// 462 recursive greps whose quoted pattern is `IDENT(` across 131 sessions, 363
+// distinct identifiers (fixtures/code-search.callers-lookup.sample.json carries
+// totalAtoms/totalSessions; D-017). graph:query { op:'callers', name } is the
+// routed tool.
+//
+// This pair is RECORDED `needs-widening`, not certified, because measurement
+// says the tool cannot answer a large share of these questions in one call:
+//  - graph:query takes a name and an optional kind, but no file or uid. When a
+//    test file redeclares the name (a stub `getWorkItem`, a helper
+//    `managedSetInterval`), the facade refuses the whole question as ambiguous.
+//    grep never needs to disambiguate: it returns every textual call.
+//  - Some callers come back as FILE-level edges with no line. A caller grep asks
+//    for lines.
+//  - A symbol written after the last index run is reported as not found.
+// `cover()` therefore checks the envelope first, then looks the identifier up in
+// {@link CALLERS_GRAPH_OUTCOMES}: the graph's own answer for each identifier in
+// the frozen sample, measured on a named date and indexed commit. That table is
+// evidence, not a model; re-measure it whenever the fixture or the backend
+// changes (P-017 may replace the backend).
+//
+// What a resolved answer means: grep's matches include the definition line,
+// substrings (`fooBar(` matches `myfooBar(`), comments and same-named methods on
+// unrelated types. None of those are callers, so the graph answering with fewer
+// lines is the faithful answer to "who calls X", not a loss. A grep restricted to
+// one root, an --include or an --exclude-dir asks about a subset of the repo; the
+// graph answers repo-wide with a path on every site, so the subset is a filter
+// over the answer, not a different question.
+
+/** A quoted `IDENT(` pattern, optionally word-bounded or with an escaped paren. */
+const CALLER_PATTERN =
+  String.raw`(?:"(?:\\b|\\<)?[A-Za-z_][\w$]*\\?\("|'(?:\\b|\\<)?[A-Za-z_][\w$]*\\?\(')`;
+
+/** Recover the identifier and whether the paren was escaped. */
+const CALLER_RE = /^(?:\\b|\\<)?([A-Za-z_][\w$]*)(\\?)\($/;
+
+/** The identifier a caller-shaped grep asks about, or null. */
+export function callerIdentOf(atom: string): string | null {
+  const parsed = parseGrepAtom(atom);
+  return parsed.pattern === null ? null : (CALLER_RE.exec(parsed.pattern)?.[1] ?? null);
+}
+
+/**
+ * What the graph answered for each identifier in the frozen callers sample,
+ * from `graph:query { op: 'callers', name, limit: 500 }`.
+ *  - `resolved`: at least one call site with a line.
+ *  - `ambiguous`: refused; more than one symbol carries the name.
+ *  - `file-only`: every caller edge was file-level, with no line.
+ *  - `not-found`: no symbol of that name at the indexed commit.
+ *  - `missed`: an empty answer with no error while the tree has call sites
+ *    (checked by grep). The worst class: it reads as "no callers".
+ */
+export type CallersGraphOutcome = 'resolved' | 'ambiguous' | 'file-only' | 'not-found' | 'missed';
+
+export const CALLERS_GRAPH_MEASUREMENT = {
+  measuredAt: '2026-10-06T08:08:32Z',
+  indexedCommit: '4cd6d81cd66231fe8a5c3ae7a4f134a098429b23',
+  indexedAt: '2026-10-06T06:05:11Z',
+  tool: "graph:query { op: 'callers', name, limit: 500 } through the operator facade",
+  tally: { resolved: 23, ambiguous: 10, 'file-only': 4, 'not-found': 2, missed: 1 },
+} as const;
+
+export const CALLERS_GRAPH_OUTCOMES: Readonly<Record<string, CallersGraphOutcome>> = {
+  DBOSUnexpectedStepError: 'not-found',
+  acknowledgeControlTransition: 'file-only',
+  amendRubric: 'resolved',
+  applyShippedDocVectorSeed: 'file-only',
+  attributionMapForRepo: 'resolved',
+  buildCarryBrief: 'ambiguous',
+  bulkDedupInFlight: 'resolved',
+  claimAdvSessionResume: 'resolved',
+  compileLaunchSpecificationArtifact: 'ambiguous',
+  createHostedDesktopBackend: 'resolved',
+  createOrgTestDb: 'ambiguous',
+  deriveSessionState: 'resolved',
+  drainQueuedEpochContent: 'resolved',
+  ensureHeapSampling: 'resolved',
+  estimatePrice: 'ambiguous',
+  fetch: 'ambiguous',
+  gcVerifyInstances: 'file-only',
+  gitSidecarEnabled: 'ambiguous',
+  hostedAwsHostStackFragment: 'resolved',
+  intakeConfidenceRefusal: 'resolved',
+  // Empty, no error; grep finds 10+ calls in harness/__tests__/join-shared-harness.test.ts
+  // and join-default-boot-wiring.test.ts.
+  joinSharedHarness: 'missed',
+  listLiveSessionPresence: 'resolved',
+  mapLiveLockHoldingsForRepo: 'resolved',
+  openAppChannel: 'ambiguous',
+  planWorkspaceHostRecovery: 'file-only',
+  promotePlanItems: 'ambiguous',
+  readCell: 'ambiguous',
+  readSocialPost: 'resolved',
+  recordEditAttribution: 'resolved',
+  registerDesktopSession: 'resolved',
+  requirePrincipal: 'resolved',
+  resolveClassFireTarget: 'resolved',
+  resolveWorkspaceHostInitializationOperationsForHost: 'resolved',
+  runGoldSet: 'resolved',
+  runWorkspaceHostDestroy: 'resolved',
+  sendMessage: 'ambiguous',
+  setKernelEnforcementResolver: 'resolved',
+  splitMarkdown: 'resolved',
+  supportsContext1m: 'not-found',
+  validateScorecardCompleteness: 'resolved',
+};
+
+const CALLER_OUTCOME_REASON: Record<Exclude<CallersGraphOutcome, 'resolved'>, string> = {
+  ambiguous:
+    'graph:query refused the name as ambiguous: more than one symbol carries it (often a test-file stub), and the ' +
+    'tool has no file or uid argument to choose one. grep answers without choosing.',
+  'file-only':
+    'graph:query returned only file-level caller edges with no line; a caller grep asks for the lines.',
+  'not-found':
+    'graph:query found no symbol of this name at the indexed commit (unknown, or written after the last index run).',
+  missed:
+    'graph:query returned an empty answer with no error while the tree has call sites; read as "no callers", it is wrong.',
+};
+
+/** Flags whose request a repo-wide callers answer serves (paths are filters over it). */
+const CALLER_EXPRESSIBLE_FLAGS = new Set([
+  '-r', '-R', '-l', '-n', '-w', '-I', '-h', '-s', '-E', '-F', '-P', '--include', '--exclude-dir', '--exclude',
+]);
+
+/** Code the graph indexes; an --include outside it asks about docs or data. */
+const CODE_EXTENSIONS = new Set([...TS_EXTENSIONS, 'js', 'jsx', 'mjs', 'cjs']);
+
+/** Inside this repo: within a listed project, or a multi-segment directory that contains one. */
+function repoAnchored(anchor: string): boolean {
+  if (projectForAnchor(anchor) !== null) return true;
+  return anchor.includes('/') && TS_PROJECT_ROOTS.some((p) => p.startsWith(`${anchor}/`));
+}
+
+/** Everything `graph:query callers` can and cannot express about a caller-shaped grep. */
+export function coverCallersLookup(atom: string): CoverageResult {
+  const parsed = parseGrepAtom(atom);
+  if (parsed.writes) return { covered: false, reason: 'redirects the match output to a file; graph:query writes no artifact' };
+  if (parsed.dynamic) return { covered: false, reason: 'a search operand is a shell expansion, so the searched tree is not decidable from the atom' };
+  if (!parsed.recursive) return { covered: false, reason: 'not a recursive search: the command greps named files, not a tree' };
+  const shape = parsed.pattern === null ? null : CALLER_RE.exec(parsed.pattern);
+  if (!shape) return { covered: false, reason: 'the pattern is not a bare `IDENT(` call shape' };
+  const ident = shape[1]!;
+  const escaped = shape[2] === '\\';
+  const extended = parsed.flags.includes('-E') || parsed.flags.includes('-P');
+  const fixed = parsed.flags.includes('-F');
+  if (fixed ? escaped : escaped !== extended) {
+    return {
+      covered: false,
+      reason: fixed
+        ? 'with -F the backslash is literal, so the grep matches `IDENT\\(` text, not calls'
+        : `grep rejects this pattern as an unmatched paren in ${extended ? 'extended' : 'basic'} syntax, so the command asks nothing`,
+    };
+  }
+  if (parsed.readsBody) {
+    return {
+      covered: false,
+      reason: 'asks for context lines (-A/-B/-C), i.e. reads the caller BODY; graph:query returns sites, so the faithful form is two calls',
+    };
+  }
+  const unexpressible = parsed.flags.find((f) => !CALLER_EXPRESSIBLE_FLAGS.has(f));
+  if (unexpressible) return { covered: false, reason: `passes \`${unexpressible}\`, which graph:query callers has no argument for` };
+  for (const glob of parsed.includes) {
+    const exts = includeExtensions(glob);
+    if (exts === null || exts.some((ext) => !CODE_EXTENSIONS.has(ext))) {
+      return { covered: false, reason: `--include=${glob} reaches files the code graph does not index as code` };
+    }
+  }
+  if (parsed.paths.length === 0) {
+    return { covered: false, reason: "no search path: grep walks the shell's cwd, which the atom no longer carries" };
+  }
+  const outside = parsed.paths.find((root) => !repoAnchored(anchorForRoot(root)));
+  if (outside !== undefined) {
+    return {
+      covered: false,
+      reason:
+        `search root "${outside}" is not anchored inside this repo (a bare first segment such as packages/, a cwd-relative ` +
+        'or absolute path, or another checkout on this box); the graph indexes this repo only',
+    };
+  }
+  const outcome = CALLERS_GRAPH_OUTCOMES[ident];
+  if (outcome === undefined) {
+    return { covered: false, reason: `no graph answerability measurement for \`${ident}\`; re-measure CALLERS_GRAPH_OUTCOMES` };
+  }
+  if (outcome !== 'resolved') return { covered: false, reason: CALLER_OUTCOME_REASON[outcome] };
+  return { covered: true, expression: `graph:query { op: "callers", name: "${ident}" }` };
+}
+
+/**
+ * P-002(d) / D-010(d): `grep -r "IDENT(" <roots in this repo>` routed to
+ * graph:query callers. Recorded `needs-widening` from the measured sample, so it
+ * is not projected into the routing table and stays at observe (see header).
+ */
+export const graphCallersLookup: BashSubstitutionPair = {
+  id: 'code-search.callers-lookup',
+  intentLabel: 'find-who-calls-a-symbol',
+  bashPattern: new RegExp(
+    `^${EXCLUDE_UNEXPRESSIBLE}${EXCLUDE_VENDORED}` +
+      `(?=[^\\n]*\\s-[A-Za-z]*[rR])(?=[^\\n]*\\s${CALLER_PATTERN}(?=\\s|$))` +
+      `grep\\s[^\\n]*$`,
+  ),
+  toolName: 'graph:query',
+  advisoryText:
+    'graph:query { op: "callers", name } answers "who calls X" from the code graph: resolved call sites with path and ' +
+    'one-indexed line1, repo-wide, excluding the definition, comments and same-named substrings. It refuses a name that ' +
+    'more than one symbol carries (it has no file argument), can return file-level edges with no line, and an index ' +
+    'behind HEAD reports a new symbol as missing. An empty answer is not proof of absence: confirm with a grep -rl over ' +
+    'the whole tree before acting on "no callers".',
+  routing: {
+    want: 'who CALLS a symbol',
+    use: '`graph:query { op: "callers", name: "X" }` (empty is not absence)',
+    insteadOf: '`grep -rn "X(" <dirs>` — still required for ambiguous names and for proving absence',
+  },
+  expectedVerdict: 'needs-widening',
+  holdAtObserve:
+    'Measured needs-widening: graph:query cannot answer a share of sampled caller questions in one call (ambiguous ' +
+    'names with no file/uid argument, file-level edges without a line, symbols missing from the index). Promote only ' +
+    'after P-017 settles the graph backend, the facade gains a disambiguator and line resolution, and ' +
+    'CALLERS_GRAPH_OUTCOMES is re-measured to all-resolved. Owned by WI-10006543 (D-018): caller routing is ' +
+    'deferred, not delivered, until this hold is lifted.',
+  cover: coverCallersLookup,
+};
+
 /** Every pair in the code-search family, in registry order. */
-export const CODE_SEARCH_PAIRS: BashSubstitutionPair[] = [lspDefinitionLookup];
+export const CODE_SEARCH_PAIRS: BashSubstitutionPair[] = [lspDefinitionLookup, graphCallersLookup];
 
 /** Exported for the model-drift guard (D-015). */
 export { EXPRESSIBLE_FLAGS, TS_EXTENSIONS };

@@ -69,6 +69,8 @@ function harness(initial: WorkItem = issue()) {
     posts: Array<{ body: string; author: string }>;
     /** The submitter's liveness as the oracle would report it. `null` = NOT MEASURED. */
     submitterLiveness: SubmitterLivenessVerdict | null;
+    /** WI-10006314: is the row authored by one of THIS workspace's own keys (the heal's identity check)? */
+    ownNodeAuthored: boolean;
   } = {
     issue: cloneIssue(initial),
     ledger: null,
@@ -76,6 +78,7 @@ function harness(initial: WorkItem = issue()) {
     // Default to a live submitter: the conservative reading, and the one that preserves
     // pre-WI-41689 behaviour for every test that does not opt into the orphan path.
     submitterLiveness: { sessionState: 'live' },
+    ownNodeAuthored: false,
   };
 
   const recordRoutedIdea = vi.fn(async () => undefined);
@@ -96,6 +99,13 @@ function harness(initial: WorkItem = issue()) {
   });
   const deliverRevision = vi.fn(async () => ({ woken: 1 }));
   const resolveSubmitterLiveness = vi.fn(async () => state.submitterLiveness);
+  // WI-10006314: the real heal's WHERE clause IS the identity check — only an own-node
+  // origin='remote' row moves to 'local'; a foreign remote row is left untouched.
+  const healOwnNodeOrigin = vi.fn(async (_workspaceId: string, _id: string, _harnessSlug?: string | null) => {
+    if (!state.ownNodeAuthored || state.issue.origin !== 'remote') return false;
+    state.issue = { ...state.issue, origin: 'local' };
+    return true;
+  });
 
   const deps = {
     getWorkItem: vi.fn(async () => cloneIssue(state.issue)),
@@ -125,11 +135,13 @@ function harness(initial: WorkItem = issue()) {
     readLedgerGrade: vi.fn(async () => state.ledger),
     deliverRevision,
     resolveSubmitterLiveness,
+    healOwnNodeOrigin,
   } as unknown as AgentReviewDeps;
 
   return {
     state,
     deps,
+    healOwnNodeOrigin,
     recordRoutedIdea,
     resolveLedgerIdeaId,
     releaseWorkItem,
@@ -236,6 +248,47 @@ describe('enterAgentReview (abolish-human-review D-003)', () => {
       expect(h.recordRoutedIdea).not.toHaveBeenCalled();
     }
   });
+
+  // WI-10006314 — measured 2026-10-06 02:56Z: 3 of 601 own-node rows stranded at
+  // origin='remote' were refused 'remote-owned' and only entered review on a re-run,
+  // after the failure-stamp write had self-healed their origin as a side effect.
+  it('enrolls an own-node row stranded at origin=remote on the FIRST attempt', async () => {
+    const h = harness(issue({ origin: 'remote' }));
+    h.state.ownNodeAuthored = true;
+    const result = await enterAgentReview(
+      { id: 'WI-7', submittedBy: 'su-filer', harnessSlug: 'papercusp', workspaceId: 'ws-test' },
+      h.deps,
+    );
+    expect(result).toMatchObject({ entered: true });
+    expect(h.healOwnNodeOrigin).toHaveBeenCalledWith('ws-test', 'WI-7', 'papercusp');
+    expect(h.state.issue.origin).toBe('local');
+    expect(h.recordRoutedIdea).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses a FOREIGN remote row as remote-owned; the heal leaves it untouched', async () => {
+    const h = harness(issue({ origin: 'remote' }));
+    const result = await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer', workspaceId: 'ws-test' }, h.deps);
+    expect(result).toEqual({ entered: false, reason: 'remote-owned' });
+    expect(h.healOwnNodeOrigin).toHaveBeenCalledTimes(1);
+    expect(h.state.issue.origin).toBe('remote');
+    expect(h.recordRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the heal cannot run: the refusal stands and the error does not escape', async () => {
+    const h = harness(issue({ origin: 'remote' }));
+    h.state.ownNodeAuthored = true;
+    h.healOwnNodeOrigin.mockRejectedValueOnce(new Error('pg unavailable'));
+    const result = await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer', workspaceId: 'ws-test' }, h.deps);
+    expect(result).toEqual({ entered: false, reason: 'remote-owned' });
+    expect(h.recordRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('never calls the heal for a local row', async () => {
+    const h = harness(issue({ origin: 'local' }));
+    const result = await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer', workspaceId: 'ws-test' }, h.deps);
+    expect(result.entered).toBe(true);
+    expect(h.healOwnNodeOrigin).not.toHaveBeenCalled();
+  });
 });
 
 describe('claimAgentReview directed pickup', () => {
@@ -278,6 +331,28 @@ describe('claimAgentReview directed pickup', () => {
         }),
       }),
     );
+  });
+
+  it('claims an own-node pending row stranded at origin=remote instead of refusing it remote-owned (WI-10006314)', async () => {
+    const h = harness({ ...pending('WI-7'), origin: 'remote' });
+    h.state.ownNodeAuthored = true;
+    await expect(claimAgentReview({
+      id: 'WI-7',
+      reviewer: 'su-reviewer',
+      harnessSlug: 'papercusp',
+    }, h.deps)).resolves.toMatchObject({ claimed: true, workItem: { id: 'WI-7', assignee: 'su-reviewer' } });
+    expect(h.healOwnNodeOrigin).toHaveBeenCalledWith(expect.any(String), 'WI-7', 'papercusp');
+    expect(h.state.issue.origin).toBe('local');
+  });
+
+  it('refuses a FOREIGN remote pending row as remote-owned without claiming it', async () => {
+    const h = harness({ ...pending('WI-7'), origin: 'remote' });
+    await expect(claimAgentReview({
+      id: 'WI-7',
+      reviewer: 'su-reviewer',
+      harnessSlug: 'papercusp',
+    }, h.deps)).resolves.toMatchObject({ claimed: false, reason: 'remote-owned' });
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
   });
 
   it('refuses the submitter and non-pending work before claiming', async () => {

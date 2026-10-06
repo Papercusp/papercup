@@ -2390,6 +2390,53 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(liveLockHoldingsStrictMock).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['census', 'translation'] as const)('WI-10006526: names the actual stalled commit-lock refresh phase (%s)', async (stage) => {
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '1000');
+    vi.useFakeTimers();
+    const repo = join(tmpRoot, `refresh-phase-${stage}`);
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    registryProjects = [{ slug: 'papercup', path: repo }];
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    liveLockHoldingsStrictMock.mockResolvedValueOnce([]).mockImplementationOnce(async () => {
+      if (stage === 'census') {
+        start();
+        await pending;
+        return [];
+      }
+      return [{ path: 'package.json', owner: 'su-peer', intent: 'edit', coordinationDomain: join(tmpRoot, 'foreign-refresh-domain') }];
+    });
+    runGitBoundedMock.mockImplementation(async (...call: unknown[]) => {
+      const [args] = call as [string[]];
+      if (args[0] === 'rev-list') {
+        start();
+        await pending;
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      await (opts.refreshLiveLockHoldings as () => Promise<unknown>)();
+      return syncedOutcome;
+    });
+    const running = fireGitSyncNow('papercup', 'ws-42', repo).then(() => null, (error: unknown) => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(50);
+      const error = await running;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(stage === 'census' ? 'during refresh-live-file-locks' : 'during translate-refreshed-live-file-locks');
+      expect(appendPipelineEventMock).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('P-009 / WI-10002596: a NESTED install maps parent-root lock paths into its own repo root (initial read and refresh)', async () => {
     const parentRepo = join(tmpRoot, 'parent-repo');
     const childRepo = join(parentRepo, 'libs', 'child');

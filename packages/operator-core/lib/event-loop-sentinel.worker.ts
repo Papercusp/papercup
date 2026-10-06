@@ -62,7 +62,7 @@ import {
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — the plain-node Worker requires an explicit .ts specifier; apps/operator does not enable allowImportingTsExtensions.
-import { hotStackFields, shouldCaptureStallProfile, summarizeHotStacks, syncSpawnProducer, type CpuProfileLike, type StallProfileConfig } from './event-loop-stall-profile.ts';
+import { STALL_PROFILE_DEFAULTS, hotStackFields, shouldCaptureStallProfile, summarizeHotStacks, syncSpawnProducer, type CpuProfileLike, type StallProfileConfig } from './event-loop-stall-profile.ts';
 // EXPLICIT `.ts` EXTENSION IS LOAD-BEARING for the same reason as the import
 // below — this is a worker ENTRY, loaded by Node's native type stripping, which
 // has no extensionless lookup. `proc-thread-cpu.ts` is dependency-free and
@@ -504,7 +504,10 @@ async function captureStallProfile(
       mainThreadActivity: cpuKind,
       ...stallProfileField(),
     });
-    await inspectorPost(session, 'Profiler.start', 3_000);
+    // Not a responsiveness probe: start cost scales with heap/code size
+    // (STALL_PROFILE_DEFAULTS.startTimeoutMs). A late start is still useful
+    // while the stall lasts; discardRecoveredCapture() drops it if not.
+    await inspectorPost(session, 'Profiler.start', cfg.startTimeoutMs ?? STALL_PROFILE_DEFAULTS.startTimeoutMs);
     profilerStarted = true;
     if (discardRecoveredCapture()) return;
     await new Promise((r) => setTimeout(r, cfg.captureMs));

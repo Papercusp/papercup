@@ -498,6 +498,56 @@ describe('createHostedDesktopBackend', () => {
     expect(image).toEqual(Buffer.from([1]));
   });
 
+  it('P-005: grabs a leased desktop on demand when the capture loop has no fresh frame for it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    const grabThumbnail = vi.fn(async (display: number) => Buffer.from([0xff, 0xd8, display]));
+    // Absent: an agent-started desktop the bootstrap-time capture loop never lists.
+    expect(await backend({ captureDir: dir, grabThumbnail }).thumbnail('ds_1')).toEqual(Buffer.from([0xff, 0xd8, 110]));
+    expect(grabThumbnail).toHaveBeenCalledWith(110);
+
+    // Stale: the loop stopped. The on-demand frame replaces it rather than serving it.
+    await writeFile(join(dir, 'display-110.jpg'), Buffer.from([9]));
+    const old = new Date(Date.now() - HOSTED_THUMBNAIL_MAX_AGE_MS - 60_000);
+    await utimes(join(dir, 'display-110.jpg'), old, old);
+    expect(await backend({ captureDir: dir, grabThumbnail }).thumbnail('ds_1')).toEqual(Buffer.from([0xff, 0xd8, 110]));
+    expect(grabThumbnail).toHaveBeenCalledTimes(2);
+  });
+
+  it('P-005: a fresh capture-loop frame wins, with no on-demand grab', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    await writeFile(join(dir, 'display-110.jpg'), Buffer.from([0xff, 0xd8, 1]));
+    const grabThumbnail = vi.fn(async () => Buffer.from([2]));
+    expect(await backend({ captureDir: dir, grabThumbnail }).thumbnail('ds_1')).toEqual(Buffer.from([0xff, 0xd8, 1]));
+    expect(grabThumbnail).not.toHaveBeenCalled();
+  });
+
+  it('P-005: never grabs a display known only from a registry row (it may not be this host’s X server)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    const grabThumbnail = vi.fn(async () => Buffer.from([2]));
+    const image = await backend({
+      captureDir: dir,
+      grabThumbnail,
+      leasedDesktop: () => undefined,
+      listSessions: async () => [session({ id: 'ds_2', display: ':111' })],
+    }).thumbnail('ds_2');
+    expect(image).toBeNull();
+    expect(grabThumbnail).not.toHaveBeenCalled();
+  });
+
+  it('P-005: a failing on-demand grab is a warned null, never an error', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    const warnings: string[] = [];
+    const image = await backend({
+      captureDir: dir,
+      grabThumbnail: async () => {
+        throw new Error('ffmpeg missing');
+      },
+      onWarning: (m) => warnings.push(m),
+    }).thumbnail('ds_1');
+    expect(image).toBeNull();
+    expect(warnings).toEqual([expect.stringContaining('ffmpeg missing')]);
+  });
+
   it('returns null for a desktop whose display it cannot resolve', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
     expect(

@@ -40,6 +40,11 @@ export interface StallProfileConfig {
   cooldownMs: number;
   /** Retention: newest N artifacts are kept. */
   maxProfiles: number;
+  /**
+   * How long to wait for `Profiler.start` to answer (WI-10006344). Optional so
+   * older callers keep compiling; the worker falls back to the default below.
+   */
+  startTimeoutMs?: number;
 }
 
 /**
@@ -61,6 +66,16 @@ export const STALL_PROFILE_DEFAULTS = {
   captureMs: 2_500,
   cooldownMs: 10 * 60_000,
   maxProfiles: 20,
+  /**
+   * `Profiler.start` makes V8 log every compiled code object before sampling,
+   * so its cost grows with the heap and the bundle, not with responsiveness.
+   * Measured 2026-10-06 (node 25, .papercusp/scratch/p017/profstart-cost.mjs,
+   * main thread spinning): 19 ms empty, 1.4 s with 200k functions, 6.3 s with
+   * 1M, 3.4 s with 200k functions plus a 20M-object heap; `Profiler.enable`
+   * stayed at 0-1 ms throughout. On bg-host (multi-GB heap) a 3 s budget failed
+   * with `Profiler.start not answered` while the inspector answered in 6 ms.
+   */
+  startTimeoutMs: 20_000,
 } as const;
 
 export interface StallCaptureInput {

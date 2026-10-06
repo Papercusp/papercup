@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import fastGlob from 'fast-glob';
 import { z } from 'zod';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
@@ -40,6 +41,10 @@ export const SPEC_EVIDENCE_KINDS = [
 ] as const;
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
 
+const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
+const MAX_REPO_MEASUREMENT_GLOB_MATCHES = 128;
+const MAX_REPO_MEASUREMENT_GLOB_DEPTH = 16;
+
 const evidenceFingerprintSchema = z.string().trim().min(1).max(256);
 const repoMeasurementPathSchema = z
   .string()
@@ -54,6 +59,8 @@ const repoMeasurementPathSchema = z
       !value.split('/').some((part) => part === '' || part === '.' || part === '..'),
     'measurement paths must be normalized repo-relative POSIX file paths',
   );
+const repoMeasurementGlobSchema = repoMeasurementPathSchema
+  .refine((value) => !value.startsWith('!'), 'measurement globs must be positive patterns');
 
 export const repoFilesEvidenceMeasurementSchema = z
   .object({
@@ -67,6 +74,8 @@ export const repoFilesEvidenceMeasurementSchema = z
      */
     rootHarnessSlug: z.string().trim().min(1).max(120).optional(),
     sourcePaths: z.array(repoMeasurementPathSchema).min(1).max(32),
+    sourceGlobs: z.array(repoMeasurementGlobSchema).min(1).max(MAX_REPO_MEASUREMENT_SOURCE_GLOBS)
+      .refine((patterns) => new Set(patterns).size === patterns.length, 'measurement globs must be unique').optional(),
     testPaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
   })
   .strict();
@@ -161,6 +170,45 @@ async function fingerprintRepoFileSet(
   }
   const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
   return { fingerprint: `sha256-file-set-v1:${digest}`, files };
+}
+
+async function expandRepoMeasurementGlobsAtRoot(root: string, globs: readonly string[]): Promise<string[]> {
+  if (globs.length === 0) return [];
+  const matches = new Set<string>();
+  const stream = fastGlob.stream([...globs], {
+    cwd: root,
+    absolute: false,
+    dot: true,
+    onlyFiles: true,
+    followSymbolicLinks: false,
+    unique: true,
+    deep: MAX_REPO_MEASUREMENT_GLOB_DEPTH,
+  });
+  for await (const matched of stream as AsyncIterable<string>) {
+    const path = matched.split(sep).join('/');
+    matches.add(path);
+    if (matches.size > MAX_REPO_MEASUREMENT_GLOB_MATCHES) {
+      throw new Error(`repo_measurement_too_many_glob_files:${matches.size}>${MAX_REPO_MEASUREMENT_GLOB_MATCHES}`);
+    }
+  }
+  return [...matches].sort();
+}
+
+async function expandedRepoSourcePathsAtRoot(
+  root: string,
+  parsed: RepoFilesEvidenceMeasurement,
+): Promise<string[]> {
+  const globPaths = await expandRepoMeasurementGlobsAtRoot(root, parsed.sourceGlobs ?? []);
+  return [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
+}
+
+/** Resolve the bounded source file set recorded by a repo-files measurement. */
+export async function expandRepoFilesEvidenceSourcePathsAtRoot(
+  repoRoot: string,
+  measurement: RepoFilesEvidenceMeasurement,
+): Promise<string[]> {
+  const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
+  return expandedRepoSourcePathsAtRoot(await realpath(repoRoot), parsed);
 }
 
 /** The fingerprint tuple plus the per-file hashes it was computed from (P-018). */
@@ -295,8 +343,10 @@ async function readRepoFilesProbeSnapshots(
       if (!recipe || recipe.kind === 'work-items') return;
       const root = await rootFor(recipe).catch(() => null);
       if (!root) return;
+      const measuredPaths = await repoFilesMeasuredPathsAtRoot(root, recipe).catch(() => null);
+      if (!measuredPaths) return;
       const union = unions.get(root) ?? new Set<string>();
-      for (const path of repoFilesMeasuredPaths(recipe)) union.add(path);
+      for (const path of measuredPaths) union.add(path);
       unions.set(root, union);
     }),
   );
@@ -315,24 +365,27 @@ export async function measureRepoFilesEvidenceDetailedAtRoot(
 ): Promise<DetailedRepoEvidenceMeasurement> {
   const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
   const root = await realpath(repoRoot);
-  const measuredPaths = repoFilesMeasuredPaths(parsed);
+  const sourcePaths = await expandedRepoSourcePathsAtRoot(root, parsed);
+  const measuredPaths = [...sourcePaths, ...(parsed.testPaths ?? [])];
   await refuseMutationProbePaths(root, measuredPaths);
-  const detailed = await fingerprintRepoFilesMeasurement(root, parsed);
+  const detailed = await fingerprintRepoFilesMeasurement(root, parsed, sourcePaths);
   await refuseMutationProbePaths(root, measuredPaths);
   return detailed;
 }
 
-function repoFilesMeasuredPaths(parsed: RepoFilesEvidenceMeasurement): string[] {
-  return [...parsed.sourcePaths, ...(parsed.testPaths ?? [])];
+async function repoFilesMeasuredPathsAtRoot(root: string, parsed: RepoFilesEvidenceMeasurement): Promise<string[]> {
+  return [...(await expandedRepoSourcePathsAtRoot(root, parsed)), ...(parsed.testPaths ?? [])];
 }
 
 /** The UNFENCED read. Callers own the mutation-probe fence on both sides of it. */
 async function fingerprintRepoFilesMeasurement(
   root: string,
   parsed: RepoFilesEvidenceMeasurement,
+  expandedSourcePaths?: readonly string[],
 ): Promise<DetailedRepoEvidenceMeasurement> {
+  const sourcePaths = expandedSourcePaths ?? (await expandedRepoSourcePathsAtRoot(root, parsed));
   const [source, test] = await Promise.all([
-    fingerprintRepoFileSet(root, parsed.sourcePaths),
+    fingerprintRepoFileSet(root, sourcePaths),
     parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
   ]);
   return {
@@ -1702,13 +1755,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           // name the moved paths below at zero extra IO. Under a batch probe snapshot the
           // pre-read fence is decided locally; its post-read half runs after this loop.
           const snapshot = probeSnapshots.get(measurementRoot);
-          const refusal = snapshot
-            ? mutationProbeRefusal(snapshot.resolved, snapshot.probes, repoFilesMeasuredPaths(recipe))
-            : null;
-          if (refusal) throw new Error(refusal);
-          const detailed = snapshot
-            ? await fingerprintRepoFilesMeasurement(measurementRoot, recipe)
-            : await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe);
+          let detailed: DetailedRepoEvidenceMeasurement;
+          if (snapshot) {
+            const sourcePaths = await expandedRepoSourcePathsAtRoot(measurementRoot, recipe);
+            const measuredPaths = [...sourcePaths, ...(recipe.testPaths ?? [])];
+            const refusal = mutationProbeRefusal(snapshot.resolved, snapshot.probes, measuredPaths);
+            if (refusal) throw new Error(refusal);
+            detailed = await fingerprintRepoFilesMeasurement(measurementRoot, recipe, sourcePaths);
+          } else {
+            detailed = await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe);
+          }
           measured = { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint };
           files = detailed.files;
         }
@@ -1744,7 +1800,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         const recipe = recipes[index];
         if (!recipe || recipe.kind === 'work-items' || serverMeasurements[index]?.status !== 'measured') return;
         if ((await measurementRootFor(recipe)) !== root) return;
-        const paths = repoFilesMeasuredPaths(recipe);
+        const paths = await repoFilesMeasuredPathsAtRoot(root, recipe);
         try {
           if (!after) await refuseMutationProbePaths(root, paths);
           const refusal = after ? mutationProbeRefusal(after.resolved, after.probes, paths) : null;

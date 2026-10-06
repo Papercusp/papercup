@@ -48,10 +48,11 @@ type CancelItem = {
 export default defineTool({
   name: 'events:cancel',
   description:
-    'Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Standing once:false watches require confirm_standing:true after checking events:status because queued deliveries are dropped with the watch. Pass at least one.',
+    'Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Standing once:false watches require confirm_standing:true after checking events:status because queued deliveries are dropped with the watch. An active loop owner cannot cancel their coord:inbox-wake; call loop:end first. Loopless owners may still opt out. Pass at least one.',
   guidance: {
-    when: 'The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately.',
+    when: 'The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately. A loopless owner may opt out of coord:inbox-wake; an active loop must end before its wake watch can be cancelled.',
     notWhen: 'A fired await needs no cancel (one-shot — it already cleared). Do not use await_id as a mistaken substitute for the narrow delivery_id ACK path. You cannot cancel or ack a peer’s.',
+    returns: '`active_loop_inbox_wake_requires_loop_end` means the owner still has an active engine loop, so the standing coord:inbox-wake remains armed. Call loop:end before retrying; an owner without an active loop may explicitly opt out.',
     chaining: 'events:status to find the await_id / delivery_id / declaration id → events:cancel.',
     argRedirects: {
       reason: {

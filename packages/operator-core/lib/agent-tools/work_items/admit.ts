@@ -21,8 +21,11 @@ import { getSessionUserOrDefault } from '../../auth';
 import { ADMITTED_KINDS, admitWorkItem, transitionAdmission, writeBackAdmission } from '../../work-admission/admit';
 import { TICKET_STATUS_CATEGORIES } from '../../data-sources/ticket-vocabulary';
 import { listAdmissionSourceKinds } from '../../work-admission/admission-sources';
+import { CHAT_RULE_PRESETS, chatRulePreset, type ChatRulePreset } from '../../data-sources/chat-admission-sink';
 import {
   ADMISSION_BACKFILL_MAX,
+  ADMISSION_RULE_ACTIONS,
+  ADMISSION_RULE_SOURCE_KINDS,
   applyAdmissionRule,
   disableAdmissionRule,
   listAdmissionRules,
@@ -75,9 +78,25 @@ export default defineTool({
         id: z.string().min(1).max(200).optional(),
         dataSourceId: z.string().min(1).max(200),
         title: z.string().min(1).max(300),
-        match: z.record(z.string(), z.unknown()),
+        match: z.record(z.string(), z.unknown()).optional(),
+        sourceKind: z.enum(ADMISSION_RULE_SOURCE_KINDS).optional().describe('Default record; chat-message / chat-thread for chat rules.'),
+        action: z.enum(ADMISSION_RULE_ACTIONS).optional().describe("Default admit; 'suggest' (chat) files nothing."),
+        preset: z.enum(CHAT_RULE_PRESETS).optional().describe('Chat rule shorthand for channelId: sets sourceKind + match; workKind defaults to bug.'),
+        channelId: z.string().min(1).max(200).optional().describe('preset: the chat channel id.'),
         workKind: z.enum(ADMITTED_KINDS).optional(),
         enabled: z.boolean().optional(),
+        lifecycle: z
+          .object({
+            claim: z.boolean().optional(),
+            hold: z.boolean().optional(),
+            complete: z.boolean().optional(),
+            completeCategory: z.enum(TICKET_STATUS_CATEGORIES).optional(),
+            externalClose: z.boolean().optional(),
+            reopen: z.boolean().optional(),
+          })
+          .strict()
+          .optional()
+          .describe('Write-back/reaction switches; all on by default, completion moves the source to done.'),
       })
       .optional()
       .describe("rules-set: match is { field:{ eq|in|contains: value } }, all fields must match."),
@@ -105,9 +124,14 @@ type AdmitToolArgs = {
     id?: string;
     dataSourceId: string;
     title: string;
-    match: Record<string, unknown>;
+    match?: Record<string, unknown>;
+    sourceKind?: (typeof ADMISSION_RULE_SOURCE_KINDS)[number];
+    action?: (typeof ADMISSION_RULE_ACTIONS)[number];
+    preset?: ChatRulePreset;
+    channelId?: string;
     workKind?: (typeof ADMITTED_KINDS)[number];
     enabled?: boolean;
+    lifecycle?: Record<string, unknown>;
   };
   ruleId?: string;
   dataSourceId?: string;
@@ -169,16 +193,25 @@ async function runAdmitOp(args: AdmitToolArgs, ctx: AdmitToolCtx) {
         if (!args.harness) return need('harness');
         const ident = resolveAgentIdentity(ctx);
         try {
+          const preset = args.rule.preset ? chatRulePreset(args.rule.preset, args.rule.channelId ?? '') : null;
+          if (preset && (args.rule.match || args.rule.sourceKind)) {
+            throw new Error('admission_rule_invalid: give either preset+channelId or sourceKind+match, not both');
+          }
+          const match = preset?.match ?? args.rule.match;
+          if (!match) return need('rule.match (or rule.preset + rule.channelId)');
           const rule = await setAdmissionRule({
             workspaceId,
             dataSourceId: args.rule.dataSourceId,
             title: args.rule.title,
-            match: args.rule.match,
+            match,
             harness: args.harness,
-            workKind: args.rule.workKind,
+            workKind: args.rule.workKind ?? (preset ? 'bug' : undefined),
+            sourceKind: preset?.sourceKind ?? args.rule.sourceKind,
+            action: args.rule.action,
             createdBy: ident.ownerId,
             id: args.rule.id,
             enabled: args.rule.enabled,
+            lifecycle: args.rule.lifecycle,
           });
           return { ok: true as const, rule };
         } catch (err) {

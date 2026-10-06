@@ -48,7 +48,17 @@ export interface PsuPtyHost {
   ownerId: string;
   advSessionId: string | null;
   pid: number;
-  ptyPid: number;
+  /** The hosted CLI's pid. `null` while the host has PARKED its child
+   *  (psu-process-free-parking-2026-10-06): the CLI was stopped to free memory
+   *  and the host never advertises a dead, recyclable pid. */
+  ptyPid: number | null;
+  /** psu-process-free-parking-2026-10-06: the host stopped its idle CLI and
+   *  will resume the same conversation on the next keystroke or control-socket
+   *  delivery. The host, socket and session stay live — a parked host is
+   *  WAKEABLE, never dead. Absent on hosts that predate parking. */
+  parked?: boolean;
+  /** Epoch ms the current park began; null/absent when not parked. */
+  parkedAt?: number | null;
   /** Authenticated interactive tab-shell pid captured inside the visible console.
    *  Additive and absent/null for headless or pre-EI-24399199756155153 hosts.
    *  Consumers must revalidate its console birth identity immediately before use. */

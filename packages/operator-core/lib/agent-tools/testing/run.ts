@@ -378,6 +378,7 @@ export function buildDetachedTestRunRequest(opts: {
   };
   return {
     kind: 'vitest',
+    testRunSource: 'local',
     label: `testing:run timeout recovery (${opts.files.join(', ')})`,
     filePath: opts.files.length === 1 ? opts.files[0] : undefined,
     requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
@@ -506,6 +507,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
   };
   return {
     kind: 'vitest',
+    testRunSource: 'local',
     label: 'testing:run mixed-root timeout recovery (' + opts.groups.flatMap((group) => group.files).join(', ') + ')',
     requestedFiles: opts.groups.flatMap((group) => requestedLedgerFilePaths(group.root, group.files)),
     command: process.execPath,
@@ -828,6 +830,37 @@ export async function resolveRegisteredTestFileRoot(
     };
   }
   return { ok: true, selection: { root: resolve(root), source: 'registered-harness' } };
+}
+
+function realOrResolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+export function sameRealPath(a: string, b: string): boolean {
+  return realOrResolved(a) === realOrResolved(b);
+}
+
+/**
+ * The caller-workspace registry slug whose checkout IS `root` (EI-25203154942838341), so
+ * evidence measured there can name it in `rootHarnessSlug`. A repo-less hive borrows its
+ * member's checkout, so when several projects share the path the non-hive one wins.
+ */
+export async function registeredHarnessSlugForRoot(
+  root: string,
+  workspaceId: string,
+  loadRegistry: typeof loadHarnessRegistry = loadHarnessRegistry,
+): Promise<string | undefined> {
+  const target = realOrResolved(root);
+  const registry = await loadRegistry(workspaceId);
+  const matches = registry.projects.filter((project) => {
+    const path = resolveHarnessContentPath(registry, project.slug);
+    return path !== undefined && realOrResolved(path) === target;
+  });
+  return (matches.find((project) => project.harness_kind !== 'hive') ?? matches[0])?.slug;
 }
 
 /**
@@ -3673,6 +3706,20 @@ export default defineTool({
         };
       }
     }
+    // EI-25203154942838341: a re-measure must re-run in the checkout its proofs were
+    // MEASURED in (a hive app's own repo), never the session root where those paths are absent.
+    if (remeasure && remeasure.rootHarnessSlugs.length > 1) {
+      return {
+        data: {
+          ok: false,
+          error: 'evidence_remeasure_mixed_roots',
+          rootHarnessSlugs: remeasure.rootHarnessSlugs,
+          detail:
+            'The stale proofs were measured in more than one checkout (null = this harness). Re-run remeasureEvidence with specIds narrowed to one checkout at a time.',
+        },
+      };
+    }
+    const rootHarnessSlug = args.rootHarnessSlug ?? remeasure?.rootHarnessSlugs[0] ?? undefined;
     const evidenceRequest = args.evidence ?? remeasure?.request ?? undefined;
     const selectedFiles = args.files ?? remeasure?.files;
     if (
@@ -3748,16 +3795,16 @@ export default defineTool({
     // → cwd resolver every capability tool (read/write/edit/bash/inspect) already
     // uses, so this tool now reads the same tree those tools write.
     let rootSelection: SelectedTestFileRoot;
-    if (args.rootHarnessSlug !== undefined) {
+    if (rootHarnessSlug !== undefined) {
       let registeredRoot: RegisteredTestFileRootResult;
       try {
-        registeredRoot = await resolveRegisteredTestFileRoot(args.rootHarnessSlug, ctx.workspaceId);
+        registeredRoot = await resolveRegisteredTestFileRoot(rootHarnessSlug, ctx.workspaceId);
       } catch (error) {
         return {
           data: {
             ok: false,
             error: 'root_harness_resolution_failed',
-            rootHarnessSlug: args.rootHarnessSlug,
+            rootHarnessSlug,
             message: String(error),
           },
         };
@@ -3781,6 +3828,35 @@ export default defineTool({
     // receives the same scope that plans:bind-spec-evidence validates.
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     const runId = randomUUID();
+    // EI-25203154942838341: evidence measured in a checkout other than this harness's own tree
+    // must record WHICH registered checkout, or the evaluator re-measures the paths at the plan
+    // root (ENOENT) and the binding's freshness is `unknown` forever. An external checkout the
+    // registry cannot name is refused up front rather than bound unmeasurable.
+    let evidenceRootHarnessSlug = rootHarnessSlug;
+    if (
+      evidenceRequest && evidenceRootHarnessSlug === undefined && harnessSlug
+      && ctx.workspaceId && ctx.workspaceId !== '*'
+      && !sameRealPath(rootSelection.root, resolveAgentWorkspaceRoot(ctx))
+    ) {
+      let found: string | undefined;
+      try {
+        found = await registeredHarnessSlugForRoot(rootSelection.root, ctx.workspaceId);
+      } catch (error) {
+        return { data: { ok: false, error: 'root_harness_resolution_failed', root: rootSelection.root, message: String(error) } };
+      }
+      if (!found) {
+        return {
+          data: {
+            ok: false,
+            error: 'evidence_root_unregistered',
+            root: rootSelection.root,
+            detail:
+              'These test files live in a checkout no registered harness owns, so the bound evidence could never be re-measured. Register the checkout, or pass `rootHarnessSlug` naming it.',
+          },
+        };
+      }
+      evidenceRootHarnessSlug = found === harnessSlug ? undefined : found;
+    }
     const evidenceScope =
       evidenceRequest && harnessSlug && ctx.workspaceId && ctx.workspaceId !== '*'
         ? {
@@ -3788,6 +3864,7 @@ export default defineTool({
             harnessSlug,
             workspaceId: ctx.workspaceId,
             actorId: resolveAgentIdentity(ctx).ownerId,
+            ...(evidenceRootHarnessSlug ? { rootHarnessSlug: evidenceRootHarnessSlug } : {}),
           }
         : null;
     if (evidenceRequest && !evidenceScope) return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };

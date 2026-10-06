@@ -1,10 +1,50 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInRequestScope, runWithWorkspace } from '../../workspace-als';
 import { validateCriterionCheckPaths } from '../../rubrics-criterion-checks';
-import { checkoutRootForPath, groupTestFilesByCheckout, normalizeTestFilePaths } from './run';
+import {
+  checkoutRootForPath, groupTestFilesByCheckout, normalizeTestFilePaths, registeredHarnessSlugForRoot, sameRealPath,
+} from './run';
+
+describe('registeredHarnessSlugForRoot (EI-25203154942838341)', () => {
+  // Paths that do not exist exercise the resolve() fallback; real symlinks are covered below.
+  const app = '/nonexistent-ei25203154/apps/phone-app';
+  const registry = (projects: Array<Record<string, unknown>>) =>
+    vi.fn(async (_workspaceId?: string) => ({ projects }) as never);
+
+  it('names the registered project whose checkout IS the root, and nothing for an unregistered root', async () => {
+    const load = registry([
+      { slug: 'papercusp', path: '/nonexistent-ei25203154/papercusp', harness_kind: 'coding' },
+      { slug: 'phone-app', path: app, harness_kind: 'coding' },
+    ]);
+    await expect(registeredHarnessSlugForRoot(`${app}/`, 'ws-1', load)).resolves.toBe('phone-app');
+    expect(load).toHaveBeenCalledWith('ws-1');
+    await expect(registeredHarnessSlugForRoot('/nonexistent-ei25203154/elsewhere', 'ws-1', load)).resolves.toBeUndefined();
+  });
+
+  it('prefers the member project over a repo-less hive that borrows the same checkout', async () => {
+    // The hive is listed FIRST so a naive matches[0] would name it.
+    const load = registry([
+      { slug: 'phone-hive', harness_kind: 'hive' },
+      { slug: 'phone-app', path: app, harness_kind: 'coding', hive_slug: 'phone-hive' },
+    ]);
+    await expect(registeredHarnessSlugForRoot(app, 'ws-1', load)).resolves.toBe('phone-app');
+  });
+
+  it('compares real paths, so a symlinked checkout still matches its registration', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'same-real-path-'));
+    try {
+      mkdirSync(join(dir, 'real'));
+      symlinkSync(join(dir, 'real'), join(dir, 'link'));
+      expect(sameRealPath(join(dir, 'link'), join(dir, 'real'))).toBe(true);
+      expect(sameRealPath(join(dir, 'real'), dir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('portable managed app test evidence', () => {
   const fixture = mkdtempSync(join(tmpdir(), 'managed-app-tests-'));

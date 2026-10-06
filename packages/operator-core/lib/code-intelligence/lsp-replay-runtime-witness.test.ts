@@ -283,6 +283,77 @@ describe('actual replay load-byte witness', () => {
       });
     }
   }, 20_000);
+  it.each((['spawn', 'fork', 'execFile'] as const).flatMap(route =>
+    [false, true].map(decoded => ({ route, decoded }))))('preserves bounded $route stderr diagnostics without stealing consumer bytes (decoded=$decoded)', async ({ route, decoded }) => {
+    const f = fixture();
+    const worker = join(f.root, 'stderr-worker.cjs');
+    const bytes = Buffer.concat([Buffer.alloc(12_000, 120), Buffer.from('\nFATAL ERROR: fixture diagnostic 👋\n')]);
+    writeFileSync(worker, `const bytes=Buffer.from(${JSON.stringify(bytes.toString('base64'))},'base64');
+      process.stderr.write(bytes.subarray(0,bytes.length-3),()=>
+        process.stderr.write(bytes.subarray(bytes.length-3),()=>process.exit(7)));`);
+    const args = route === 'fork' ? JSON.stringify(worker) : `process.execPath,[${JSON.stringify(worker)}]`;
+    const options = route === 'fork' ? '{silent:true}' : '{stdio:["ignore","pipe","pipe"]}';
+    writeFileSync(f.entry, `import {${route}} from 'node:child_process';import {createHash} from 'node:crypto';
+      const c=${route}(${args},${options});const chunks=[];
+      ${route !== 'execFile' ? 'if(c.stderr.readableFlowing!==null)throw Error("recorder changed stderr flow");' : ''}
+      ${decoded ? "c.stderr.setEncoding('utf8');" : ''}
+      c.stderr.on('data',chunk=>chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk)));
+      c.once('close',()=>{if(createHash('sha256').update(Buffer.concat(chunks)).digest('hex')!==${JSON.stringify(replayHash(bytes))})
+        throw Error('diagnostic recorder changed consumer stderr');
+        console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);});`);
+    await withLiveRuntime(f, pids => {
+      const rows = receipts(f.root).filter(row => row.pid === pids[0]);
+      const started = rows.find(row => row.kind === 'child-started');
+      const diagnostics = rows.filter(row => row.kind === 'child-stderr');
+      expect(diagnostics).toHaveLength(1);
+      const diagnostic = diagnostics[0];
+      const tail = bytes.subarray(-8192);
+      expect(diagnostic).toMatchObject({ launchId: started.launchId, childPid: started.childPid,
+        childIdentity: started.childIdentity, piped: true, totalBytes: bytes.length,
+        tailBase64: tail.toString('base64'), sha256: replayHash(tail) });
+      expect(diagnostic.atMs).toBeGreaterThanOrEqual(rows.find(row => row.kind === 'child-exit').atMs);
+      const { witness, reader } = liveWitness(f, [f.entry, worker]);
+      const command = reader.text(`/proc/${pids[0]}/cmdline`).split('\0').filter(Boolean);
+      const qualify = () => replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown;
+      expect(qualify()).toEqual([]);
+      const rootPath = join(f.root, `${pids[0]}.jsonl`);
+      const rewrite = () => writeFileSync(rootPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      for (const [field, value] of [['launchId', 'another-launch'], ['childPid', -1],
+        ['childIdentity', 'reused-epoch'], ['atMs', null], ['atMs', 1], ['piped', false], ['piped', 'yes'],
+        ['totalBytes', 1], ['totalBytes', -1], ['totalBytes', 1.5],
+        ['tailBase64', '!not-base64!'], ['tailBase64', tail.toString('base64') + '\n'],
+        ['sha256', replayHash('changed')]] as const) {
+        const saved = diagnostic[field]; diagnostic[field] = value; rewrite();
+        expect(qualify()).toContain('unqualified-child-stderr');
+        diagnostic[field] = saved;
+      }
+      writeFileSync(rootPath, [...rows, diagnostic].map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify()).toContain('unqualified-child-stderr');
+      rewrite();
+      expect(qualify()).toEqual([]);
+      writeFileSync(rootPath, rows.filter(row => row.kind !== 'child-exit').map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify()).toContain('unqualified-child-stderr');
+      rewrite();
+    });
+  }, 20_000);
+  it.each(['pipe', 'ignore'] as const)('qualifies empty %s stderr after child close', async stderr => {
+    const f = fixture();
+    const worker = join(f.root, 'empty-stderr-worker.cjs');
+    writeFileSync(worker, 'process.exit(0);');
+    writeFileSync(f.entry, `import {spawn} from 'node:child_process';
+      const c=spawn(process.execPath,[${JSON.stringify(worker)}],{stdio:['ignore','ignore',${JSON.stringify(stderr)}]});
+      c.once('close',()=>{console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);});`);
+    await withLiveRuntime(f, pids => {
+      const rows = receipts(f.root).filter(row => row.pid === pids[0]);
+      const diagnostics = rows.filter(row => row.kind === 'child-stderr');
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]).toMatchObject({ piped: stderr === 'pipe', totalBytes: 0,
+        tailBase64: '', sha256: replayHash(Buffer.alloc(0)) });
+      const { witness, reader } = liveWitness(f, [f.entry, worker]);
+      const command = reader.text(`/proc/${pids[0]}/cmdline`).split('\0').filter(Boolean);
+      expect(replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown).toEqual([]);
+    });
+  }, 20_000);
   it('records child launch errors while preserving handled and unhandled error behavior', () => {
     for (const handled of [true, false]) {
       const f = fixture();

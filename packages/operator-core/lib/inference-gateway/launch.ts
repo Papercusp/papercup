@@ -73,7 +73,14 @@ export const DEFAULT_T1_RESERVE_FRAC = 0.15;
  * ✅ MEASURED 2026-08-17 (D-006 discharged; see D-011/D-012 for how the measurement was unblocked).
  * `llama-ornith.service` — 15.5GB IQ3_M blob, 2 slots x 90112 ctx, RTX 3090 — cold-started to a
  * 200 on `/health` in **67.5s**, with GPU memory moving 4448 -> 21754 MiB (+17.3GB) and the
- * process RSS settling at 1.2GB. The value below is therefore ~4.4x the measured figure.
+ * process RSS settling at 1.2GB. (The original 300s default was ~4.4x that figure.)
+ *
+ * ✅ DISK-COLD MEASURED 2026-10-06 (WI-10006503, reboot-residue R-002 live probe): the same unit,
+ * same blob, started on demand from idle in normal operation, logged `model loaded` at **261s**
+ * and **304s** on two cold starts (and 63s on a warm-page-cache one). 304s is past the old 300s
+ * budget, so the gateway returned 502 to the request that triggered the start while the load
+ * was still progressing. The value below is ~3x the measured disk-cold worst case; the guard in
+ * on-demand-start.test.ts fails if it is ever set below 2x it.
  *
  * ⚠ READ WHAT THE 67.5s ACTUALLY MEASURES BEFORE TIGHTENING IT. That run had the weights already
  * in the PAGE CACHE (an accidental CPU-only start minutes earlier had just read all 15.5GB into
@@ -89,7 +96,10 @@ export const DEFAULT_T1_RESERVE_FRAC = 0.15;
  * pressure — exactly when a cold start is slowest.
  */
 export const LOCAL_BACKEND_COLD_START_TIMEOUT_MS =
-  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_COLD_START_TIMEOUT_MS) || 300_000;
+  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_COLD_START_TIMEOUT_MS) || 900_000;
+
+/** Disk-cold load time of the slowest measured on-demand backend (llama-ornith, 2026-10-06). */
+export const LOCAL_BACKEND_MEASURED_DISK_COLD_START_MS = 304_000;
 
 /**
  * Resolve the priority-TIER admission config (gateway-priority-tiers-2026-06-22), flag-gated by
@@ -1079,6 +1089,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       const result = await startOnDemandBackendWithWatermark(backend.id, {
         markBusy: () => markLocalBackendBusy(backend.id, { workspaceId: opts.workspace }),
         log,
+        budgetMs: LOCAL_BACKEND_COLD_START_TIMEOUT_MS,
         start: () => ensureLocalBackendRunning(
         {
           id: backend.id,

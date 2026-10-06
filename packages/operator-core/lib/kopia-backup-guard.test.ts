@@ -124,6 +124,65 @@ async function waitForOutput(read: () => string, text: string, timeoutMs = 10_00
   }
 }
 
+// A transparent contender-side flock witness. The blocking call follows the
+// guard's lock_wait_started timestamp, so its acknowledgement establishes both
+// actual contention and the start of the long-wait measurement below.
+function witnessBlockingFlock(dir: string) {
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  const blocked = join(dir, 'contender-blocked');
+  writeFileSync(join(bin, 'flock'), `#!/bin/bash
+if [ "$#" = 1 ] && [ "$1" = 9 ]; then touch "$CONTENDER_BLOCKED"; fi
+exec /usr/bin/flock "$@"
+`, { mode: 0o755 });
+  return { blocked, env: { PATH: `${bin}:${process.env.PATH}`, CONTENDER_BLOCKED: blocked } };
+}
+
+async function stopFixtureGroup(child: ReturnType<typeof spawn>, closed: Promise<number | null>) {
+  // These detached children own only their fixture process groups.
+  if (child.pid) {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+  await closed;
+}
+
+async function contendWithFixtureHolder(fx: ReturnType<typeof fixture>, args: string[], waitReason?: string) {
+  const { dir, env } = fx;
+  const ready = join(dir, 'holder-ready');
+  const release = join(dir, 'release-holder');
+  const marker = join(dir, 'contender');
+  const witness = witnessBlockingFlock(dir);
+  const holder = spawn('bash', ['-c',
+    'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; /usr/bin/flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done',
+  ], { env: { ...env, READY: ready, RELEASE: release }, stdio: 'ignore', detached: true });
+  const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+  let child: ReturnType<typeof spawn> | undefined;
+  let closed: Promise<number | null> | undefined;
+  let output = '';
+  try {
+    await waitForPath(ready);
+    child = spawn('bash', [guard, ...args, '--', 'touch', marker],
+      { env: { ...env, ...witness.env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    closed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+    if (waitReason) {
+      await waitForPath(witness.blocked);
+      await waitForOutput(() => output, `result=waiting reason=${waitReason}`);
+      expect(existsSync(marker), output).toBe(false);
+      expect(child.exitCode, output).toBeNull();
+      writeFileSync(release, 'released after contender blocked');
+    }
+    const status = await closed;
+    return { status, output, ran: existsSync(marker) };
+  } finally {
+    // A non-waiting contender must finish BEFORE this releases the holder too.
+    writeFileSync(release, 'cleanup');
+    if (child && closed) await stopFixtureGroup(child, closed);
+    await stopFixtureGroup(holder, holderClosed);
+  }
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -373,33 +432,12 @@ describe('Kopia global backup guard', () => {
     // the child handles TERM promptly.
   }, 30_000);
 
-  it('defers a scheduled contender while a backup holds the lock', () => {
-    const { dir, env } = fixture();
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.4' _ "$READY" &
-        holder=$!
-        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
-        [ -e "$READY" ] || exit 91
-        out=$("$GUARD" --mode scheduled --label contender -- touch "$CONTENDER")
-        rc=$?
-        wait "$holder"
-        [ "$rc" -eq ${SCHEDULED_DEFER_EXIT} ] && [ ! -e "$CONTENDER" ] && grep -q 'result=deferred reason=lock-held' <<<"$out"
-      `,
-      ],
-      {
-        encoding: 'utf8',
-        env: { ...env, READY: join(dir, 'ready'), CONTENDER: join(dir, 'contender') },
-        timeout: 10_000,
-      },
-    );
-
-    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
-  });
+  it('defers a scheduled contender while a backup holds the lock', async () => {
+    const result = await contendWithFixtureHolder(fixture(), ['--mode', 'scheduled', '--label', 'contender']);
+    expect(result.status, result.output).toBe(SCHEDULED_DEFER_EXIT);
+    expect(result.ran, result.output).toBe(false);
+    expect(result.output).toContain('result=deferred reason=lock-held');
+  }, 30_000);
 
   it('signals lock readiness only after acquisition and keeps guard logs off dump stdout', async () => {
     const { dir, env } = fixture();
@@ -490,36 +528,13 @@ describe('Kopia global backup guard', () => {
   // so ANY contention at that tick discarded the whole hour. Measured 2026-09-29: 'backup
   // OK' only at even hours for 16h, each odd-hour tick logging deferred reason=lock-held.
   // This is the A/B twin of the test above: identical holder and contender, one flag.
-  it('waits out a held lock instead of deferring when the producer asks for --priority-on-contention', () => {
-    const { dir, env } = fixture();
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.4' _ "$READY" &
-        holder=$!
-        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
-        [ -e "$READY" ] || exit 91
-        out=$("$GUARD" --mode scheduled --label contender --priority-on-contention -- touch "$CONTENDER")
-        rc=$?
-        wait "$holder"
-        [ "$rc" -eq 0 ] &&
-          [ -e "$CONTENDER" ] &&
-          grep -q 'result=waiting reason=priority-on-contention' <<<"$out" &&
-          ! grep -q 'result=deferred reason=lock-held' <<<"$out"
-      `,
-      ],
-      {
-        encoding: 'utf8',
-        env: { ...env, READY: join(dir, 'ready'), CONTENDER: join(dir, 'contender') },
-        timeout: 10_000,
-      },
-    );
-
-    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
-  });
+  it('waits out a held lock instead of deferring when the producer asks for --priority-on-contention', async () => {
+    const result = await contendWithFixtureHolder(fixture(),
+      ['--mode', 'scheduled', '--label', 'contender', '--priority-on-contention'], 'priority-on-contention');
+    expect(result.status, result.output).toBe(0);
+    expect(result.ran, result.output).toBe(true);
+    expect(result.output).not.toContain('result=deferred reason=lock-held');
+  }, 30_000);
 
   // The wait must also REGISTER as a priority request, or a hot sweep that never pauses
   // would hold the lock through the whole hour and the wait would be a deferral with
@@ -1594,37 +1609,14 @@ describe('Kopia managed entrypoint contract', () => {
     expect(next.stdout).toMatch(/escalation_retry_in_sec=\d+/);
   });
 
-  it('waits for the lock when a scheduled cycle is already past its staleness deadline', () => {
-    const { dir, env } = fixture();
-    seedDeadlineBase(dir, 'stale-lock', 25_200);
-    const ready = join(dir, 'ready');
-    const marker = join(dir, 'ran');
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.35' _ "$READY" &
-        holder=$!
-        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
-        [ -e "$READY" ] || exit 91
-        out=$("$GUARD" --mode scheduled --label stale-lock -- touch "$MARKER")
-        rc=$?
-        wait "$holder"
-        [ "$rc" -eq 0 ] && [ -e "$MARKER" ] &&
-          grep -q 'result=waiting reason=staleness-override-lock' <<<"$out"
-      `,
-      ],
-      {
-        encoding: 'utf8',
-        env: { ...env, GUARD: guard, READY: ready, MARKER: marker },
-        timeout: 10_000,
-      },
-    );
-
-    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
-  });
+  it('waits for the lock when a scheduled cycle is already past its staleness deadline', async () => {
+    const fx = fixture();
+    seedDeadlineBase(fx.dir, 'stale-lock', 25_200);
+    const result = await contendWithFixtureHolder(fx, ['--mode', 'scheduled', '--label', 'stale-lock'],
+      'staleness-override-lock');
+    expect(result.status, result.output).toBe(0);
+    expect(result.ran, result.output).toBe(true);
+  }, 30_000);
 
   // WI-10003884, second half. The --priority-on-contention lock wait went live and the
   // very first tick after it (13:00 EDT 2026-09-29) waited out the lock for 5s, then
@@ -1877,7 +1869,7 @@ describe('Kopia managed entrypoint contract', () => {
   // pressure. A long TOTAL wait must not make that handoff look stale: the releasing
   // holder's note decides. Without a note the reading really is stale, and the producer
   // re-waits as before (the control below).
-  function longWaitBehindHolder(withNote: boolean) {
+  async function longWaitBehindHolder(withNote: boolean) {
     const fx = fixture();
     const { dir } = fx;
     // handoff_fresh_sec = monitor 0.05 + grace 1 + 5 = 6s. No child is TERM'd here,
@@ -1892,48 +1884,49 @@ describe('Kopia managed entrypoint contract', () => {
     pressureFile(ioHigh, 15.4);
     const dbLog = join(dir, 'db.log');
     const dbRan = join(dir, 'db-ran');
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        (
-          exec 9>>"$KOPIA_BACKUP_LOCK_PATH"
-          flock 9
-          touch "$HOLDER_READY"
-          sleep 7.5
-          cp "$IO_HIGH" "$KOPIA_BACKUP_IO_PSI_PATH"
-          if [ "$WITH_NOTE" = 1 ]; then date +%s >"$KOPIA_BACKUP_LOCK_PATH.handoff"; fi
-        ) &
-        holder=$!
-        for _ in $(seq 1 200); do [ -e "$HOLDER_READY" ] && break; sleep 0.01; done
-        [ -e "$HOLDER_READY" ] || exit 91
-        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- touch "$DB_RAN" >"$DB_LOG" 2>&1
-        db_rc=$?
-        wait "$holder"
-        exit "$db_rc"
-        `,
-      ],
-      {
-        encoding: 'utf8',
-        env: {
-          ...env,
-          HOLDER_READY: join(dir, 'holder-ready'),
-          IO_HIGH: ioHigh,
-          WITH_NOTE: withNote ? '1' : '0',
-          DB_LOG: dbLog,
-          DB_RAN: dbRan,
-        },
-        timeout: 25_000,
-      },
-    );
-    const dbOut = existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing';
-    return { scenario, dbOut, ran: existsSync(dbRan), notePath: `${env.KOPIA_BACKUP_LOCK_PATH}.handoff` };
+    const ready = join(dir, 'holder-ready');
+    const release = join(dir, 'release-holder');
+    const witness = witnessBlockingFlock(dir);
+    const holder = spawn('bash', ['-c', `
+      exec 9>>"$KOPIA_BACKUP_LOCK_PATH"
+      /usr/bin/flock 9
+      touch "$HOLDER_READY"
+      while [ ! -e "$RELEASE" ]; do sleep 0.01; done
+      cp "$IO_HIGH" "$KOPIA_BACKUP_IO_PSI_PATH"
+      if [ "$WITH_NOTE" = 1 ]; then date +%s >"$KOPIA_BACKUP_LOCK_PATH.handoff"; fi
+    `], { env: { ...env, HOLDER_READY: ready, RELEASE: release, IO_HIGH: ioHigh, WITH_NOTE: withNote ? '1' : '0' },
+      stdio: 'ignore', detached: true });
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+    let child: ReturnType<typeof spawn> | undefined;
+    let closed: Promise<number | null> | undefined;
+    let dbOut = '';
+    try {
+      await waitForPath(ready);
+      child = spawn('bash', [guard, '--mode', 'scheduled', '--label', 'db-dump', '--no-restart-safe', '--priority-on-contention', '--', 'touch', dbRan],
+        { env: { ...env, ...witness.env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      closed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { dbOut += chunk; });
+      child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { dbOut += chunk; });
+      await waitForPath(witness.blocked);
+      await waitForOutput(() => dbOut, 'result=waiting reason=priority-on-contention');
+      // This duration starts AFTER the guard entered its blocking flock call,
+      // rather than after holder startup. It must exceed the 6s freshness window.
+      await new Promise((resolve) => setTimeout(resolve, 7_500));
+      expect(existsSync(dbRan), dbOut).toBe(false);
+      writeFileSync(release, 'release after measured long contention');
+      const status = await closed;
+      await holderClosed;
+      writeFileSync(dbLog, dbOut);
+      return { scenario: { status, stdout: '', stderr: '' }, dbOut, ran: existsSync(dbRan), notePath: `${env.KOPIA_BACKUP_LOCK_PATH}.handoff` };
+    } finally {
+      writeFileSync(release, 'cleanup');
+      if (child && closed) await stopFixtureGroup(child, closed);
+      await stopFixtureGroup(holder, holderClosed);
+    }
   }
 
-  it('keeps a lock handed over after a long wait behind a non-yielding holder when the handoff note is fresh', () => {
-    const { scenario, dbOut, ran, notePath } = longWaitBehindHolder(true);
+  it('keeps a lock handed over after a long wait behind a non-yielding holder when the handoff note is fresh', async () => {
+    const { scenario, dbOut, ran, notePath } = await longWaitBehindHolder(true);
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\ndb guard:\n${dbOut}`).toBe(0);
     const admitted = dbOut.match(
       /result=admitted-after-handoff reason=io-pressure full_avg10=15\.40 limit=10 lock_waited_sec=(\d+) handoff_note_age_sec=(\d+) /,
@@ -1947,8 +1940,8 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(notePath)).toBe(false);
   }, 30_000);
 
-  it('re-waits on pressure after a long wait when the holder left no handoff note', () => {
-    const { scenario, dbOut, ran } = longWaitBehindHolder(false);
+  it('re-waits on pressure after a long wait when the holder left no handoff note', async () => {
+    const { scenario, dbOut, ran } = await longWaitBehindHolder(false);
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\ndb guard:\n${dbOut}`).toBe(SCHEDULED_DEFER_EXIT);
     expect(dbOut).not.toContain('result=admitted-after-handoff');
     expect(dbOut).toContain('result=waiting reason=priority-on-pressure io-pressure full_avg10=15.40');

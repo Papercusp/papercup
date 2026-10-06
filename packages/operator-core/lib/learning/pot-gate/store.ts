@@ -17,7 +17,7 @@
  * The picker's bulk footer must be ONE statement rather than N racing upserts,
  * and a single write is also one audit event instead of a burst.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { potScopeEnabled, potScopeLookup, type PotLearningScope } from './core';
 
 type Row = Record<string, unknown>;
@@ -41,9 +41,20 @@ function isMissingRelation(err: unknown): boolean {
  * permission error is a real problem the caller needs to see rather than a
  * silently-enabled pot.
  */
-async function failOpenOnMissingRelation<T>(run: () => Promise<T>, fallback: T, what: string): Promise<T> {
+async function failOpenOnMissingRelation<T>(
+  sql: Sql,
+  run: (sql: Sql) => Promise<T>,
+  fallback: T,
+  what: string,
+): Promise<T> {
   try {
-    return await run();
+    // A caught query error still aborts a PostgreSQL transaction. Roll back
+    // the read's savepoint BEFORE applying the missing-relation fallback, so
+    // the caller can continue its reservation or other transactional work.
+    const transaction = sql as Sql & Partial<Pick<TransactionSql, 'savepoint'>>;
+    return typeof transaction.savepoint === 'function'
+      ? await transaction.savepoint(tx => run(tx as unknown as Sql)) as T
+      : await run(sql);
   } catch (err) {
     if (!isMissingRelation(err)) throw err;
     if (!warnedMissingRelation) {
@@ -87,7 +98,8 @@ export async function getPotLearningScope(
   q: { workspaceId: string; potSlug: string },
 ): Promise<PotLearningScope | null> {
   return failOpenOnMissingRelation(
-    async () => {
+    sql,
+    async sql => {
       const rows = (await sql`
         SELECT * FROM harness_shared.learning_pot_scope
          WHERE workspace_id = ${q.workspaceId} AND pot_slug = ${q.potSlug}`) as Row[];
@@ -115,7 +127,8 @@ export async function listPotLearningScope(
   q: { workspaceId: string },
 ): Promise<PotLearningScope[]> {
   return failOpenOnMissingRelation(
-    async () => {
+    sql,
+    async sql => {
       const rows = (await sql`
         SELECT * FROM harness_shared.learning_pot_scope
          WHERE workspace_id = ${q.workspaceId}
@@ -134,7 +147,8 @@ export async function listPotLearningScope(
  */
 export async function disabledPotSlugs(sql: Sql, q: { workspaceId: string }): Promise<string[]> {
   return failOpenOnMissingRelation(
-    async () => {
+    sql,
+    async sql => {
       const rows = (await sql`
         SELECT pot_slug FROM harness_shared.learning_pot_scope
          WHERE workspace_id = ${q.workspaceId} AND enabled = false

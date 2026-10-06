@@ -100,8 +100,11 @@ export const AWS_AMI_DEFAULT_PARAMETER_PREFIX = '/papercusp/workspace-host/ami';
 const GUEST_TOOL_TAG_PREFIX = 'papercusp:guest-tool:';
 const SNAPSHOT_ID = /^snap-[a-f0-9]+$/;
 const AMI_ID = /^ami-[a-f0-9]+$/;
-/** coldsnap uploads a multi-GiB disk; an hour bounds a stalled upload without cutting a slow one. */
-const UPLOAD_TIMEOUT_MS = 60 * 60 * 1000;
+/**
+ * coldsnap uploads EVERY block of a multi-GiB disk (see uploadSnapshot): 15.6 GB at the measured
+ * 4.8 MiB/s uplink is ~52 min. Two hours bounds a stalled upload without cutting a slow one.
+ */
+const UPLOAD_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 /**
  * One retry, only for a connection-level failure that outlasted coldsnap's own per-block retries.
  * coldsnap's AWS SDK reports a failed connect, reset, or DNS lookup as "dispatch failure" (P-012
@@ -403,15 +406,20 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
 
   /**
    * coldsnap-upload a disk into a new EBS snapshot (WI-10006192).
-   * - `--omit-zero-blocks`: a snapshot with no parent reads every unwritten block as zero, and a bootc
-   *   disk is about half holes (r62b: 7.4 of 15.6 GB allocated), so skipping all-zero blocks halves an
-   *   upload that ran ~50 min against UPLOAD_TIMEOUT_MS.
+   * - EVERY block, never `--omit-zero-blocks` (WI-10006518). An omitted block is absent from the
+   *   snapshot. An unencrypted volume reads an absent block as zeros, but an ENCRYPTED one reads it
+   *   as decrypt(absent): per-sector noise, by EBS design (coldsnap README; awslabs/coldsnap#470).
+   *   Every released AMI is a CMK-encrypted copy and every customer launch is encrypted, so an
+   *   omitted block turns intended zeros into noise. P-012 chain14 release A (r62b) did exactly
+   *   that: the root XFS log beyond its head read non-zero, the guest refused to mount it
+   *   ('Log inconsistent') and booted to emergency mode. The unencrypted clean room, reading
+   *   zeros, passed.
    * - `--tag`: the run tags land at StartSnapshot, so even a partial snapshot is findable by run id.
    * - A failed upload leaves the snapshot it started. No parent is passed, so every snapshot id in the
    *   failed run's output is its own: delete them, and name any that would not delete in the error.
    */
   private async uploadSnapshot(region: string, diskPath: string, tags: Readonly<Record<string, string>>): Promise<string> {
-    const args = ['upload', '--wait', '--omit-zero-blocks', '--workers', String(COLDSNAP_UPLOAD_WORKERS)];
+    const args = ['upload', '--wait', '--workers', String(COLDSNAP_UPLOAD_WORKERS)];
     for (const tag of tagList(tags)) args.push('--tag', `Key=${tag.Key},Value=${tag.Value}`);
     args.push(diskPath);
     const ec2 = this.deps.ec2(region);

@@ -143,6 +143,13 @@ interface SignalInput {
   occurredAt: string | null;
   note?: string;
   attachmentConsent?: boolean;
+  /**
+   * The reported message's own text, set only when the gesture event IS that message (a
+   * bug-channel post, a top-level mention). An in-thread mention reports the thread's root and a
+   * shortcut carries the reporter's note, so their `text` is NOT the subject's and stays out of
+   * target.text (the chat admission sink stores target.text as the message body, D-009).
+   */
+  subjectText?: string;
 }
 
 function reportBugSignal(input: SignalInput): SlackNormalizedEvent {
@@ -163,7 +170,7 @@ function reportBugSignal(input: SignalInput): SlackNormalizedEvent {
       signal: 'report-bug',
       gesture: input.gesture,
       reporter: { kind: 'chat', provider: 'slack', externalUserId: input.reporterUserId },
-      target: compact({ channelId: input.channelId, ts: input.ts, threadTs: input.threadTs ?? undefined }),
+      target: compact({ channelId: input.channelId, ts: input.ts, threadTs: input.threadTs ?? undefined, text: input.subjectText }),
       note: input.note,
       attachmentConsent: input.attachmentConsent,
     }),
@@ -215,6 +222,7 @@ function classifyEvent(payload: Record<string, unknown>, config: SlackReportBugC
       event: reportBugSignal({
         externalId: eventId, gesture: 'mention', channelId, ts: targetTs, threadTs: topLevel ? null : threadTs,
         reporterUserId: user, text: message, occurredAt: occurredAtOf(event.event_ts ?? ts),
+        ...(topLevel ? { subjectText: message } : {}),
       }),
     };
   }
@@ -228,7 +236,7 @@ function classifyEvent(payload: Record<string, unknown>, config: SlackReportBugC
       kind: 'signal',
       event: reportBugSignal({
         externalId: eventId, gesture: 'bug-channel', channelId, ts, threadTs: null, reporterUserId: user,
-        text: message, occurredAt: occurredAtOf(ts),
+        text: message, occurredAt: occurredAtOf(ts), subjectText: message,
       }),
     };
   }

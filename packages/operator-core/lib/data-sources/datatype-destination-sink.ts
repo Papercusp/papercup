@@ -33,6 +33,7 @@ import {
 import type { CanonicalExternalEvent, ExternalTriggerSink } from '../external-triggers/ingestion';
 import { corpusRouteFor, ensurePermissionList, writeCorpusDocument } from './chat-retrieval-units';
 import { refreshAdmittedFromSource } from '../work-admission/admit';
+import { applySourceLifecycle } from '../work-admission/lifecycle';
 import { evaluateAdmissionRules, type RuleEvaluation } from '../work-admission/admission-rules';
 import { RECORD_SOURCE_KIND, recordSnapshot } from '../work-admission/record-source';
 
@@ -49,6 +50,8 @@ export interface DatatypeDestinationDeps {
     payload: Record<string, unknown>;
   }) => Promise<RuleEvaluation>;
   refreshAdmitted?: typeof refreshAdmittedFromSource;
+  /** Outside close / cancel / reopen of an admitted record (work-admission/lifecycle.ts, P-003). */
+  applyLifecycle?: (input: { workspaceId: string; recordId: string; payload: Record<string, unknown> }) => Promise<unknown>;
 }
 
 interface DestinationSourceRow {
@@ -206,6 +209,7 @@ export async function createDatatypeDestinationSinks(
     const harness = harnessOf(source);
     const admitRecord = deps.admitRecord ?? ((args) => evaluateAdmissionRules(args, { sql }));
     const refreshAdmitted = deps.refreshAdmitted ?? refreshAdmittedFromSource;
+    const applyLifecycle = deps.applyLifecycle ?? ((input) => applySourceLifecycle(sql, input));
     /** Which records this delivery created (vs updated), handed from the record sink to admission. */
     const created = new Map<string, boolean>();
     const recordSink: ExternalTriggerSink = {
@@ -244,6 +248,8 @@ export async function createDatatypeDestinationSinks(
           await refreshAdmitted(source.workspaceId, { kind: RECORD_SOURCE_KIND, key: id }, recordSnapshot(payload), { sql });
         }
         const evaluation = await admitRecord({ workspaceId: source.workspaceId, recordId: id, dataSourceId: source.id, payload });
+        // After evaluation, so a record admitted by this delivery starts its category baseline now.
+        await applyLifecycle({ workspaceId: source.workspaceId, recordId: id, payload });
         const refused = evaluation.results.filter(({ result }) => !result.ok);
         if (refused.length > 0) {
           const codes = refused.map(({ result }) => ('code' in result ? String(result.code) : 'refused'));

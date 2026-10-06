@@ -12,6 +12,7 @@
 import type postgres from 'postgres';
 import type { HostFetch } from '@papercusp/plugin-sdk';
 import { getExternalTriggerSource } from '../external-triggers/source-store';
+import { ensureBuiltinConnectionAdapters } from './builtin-connection-adapters';
 import { connectionAccessToken } from './connection-lifecycle';
 import { createHostFetch, HostFetchError } from './host-fetch';
 import { providerRegistry, type ProviderRegistry } from './provider-registry';
@@ -35,6 +36,12 @@ export interface SourceHostFetchOptions {
 }
 
 export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOptions): HostFetch {
+  // First-party sources (Google, Facebook) carry `<plugin>:<field>` credential
+  // refs whose token store is reached through a registered connection adapter.
+  // Registering here, on the one production token path, means a process that
+  // has never served an OAuth route still resolves those tokens (WI-10006541:
+  // the connector driver failed every Google source with "no access token").
+  ensureBuiltinConnectionAdapters();
   const allowed = opts.sourceIds ? new Set(opts.sourceIds) : null;
   return createHostFetch(opts.providerId, {
     registry: opts.registry ?? providerRegistry(),

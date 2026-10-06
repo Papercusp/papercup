@@ -457,6 +457,26 @@ export interface GoalReportMeasuredSpend {
   measuredAt: string | null;
 }
 
+/**
+ * Map the goal row's spend columns (metadata spentCents / spentCentsSource / spentCentsAt /
+ * spentCentsUnmeasuredReason) to a {@link GoalReportMeasuredSpend}. The ONE rule for "is the
+ * goal's spend measured", shared by the send-time truth gate and the holder-behavior metric so
+ * the two cannot disagree (WI-10006542). `snapshotSource` is the authoritative rollup's source
+ * tag (GOAL_SPEND_SNAPSHOT_SOURCE in @papercusp/db-org), passed in to keep this module pure.
+ */
+export function goalSpendFromGoalRow(
+  row: { spent: unknown; source: string | null; at: string | null; unmeasured: string | null },
+  snapshotSource: string,
+): GoalReportMeasuredSpend {
+  const spentCents = typeof row.spent === 'number' && Number.isFinite(row.spent) ? Math.round(row.spent) : null;
+  return {
+    spentCents,
+    measured: spentCents != null && row.source === snapshotSource && !row.unmeasured,
+    source: row.source,
+    measuredAt: row.at,
+  };
+}
+
 /** An open owner-walled work-item of the goal and the owner action recorded on it. */
 export interface GoalReportOwnerWall {
   ref: string;

@@ -20,7 +20,7 @@
     {"path": "apps/operator/scripts/systemd/vboxdrv-rebuild.kernel-hook", "sha256": "ce22765d1cbc4703a243a2dd82e202e8680aed0400f4d69e354039f27aecf562"}
   ],
   "rawEvidence": [
-    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r003-live-probe.log", "sha256": "a1e63e7f4e487cfe4427b54e8993f737ba049311d84eef38fbcae70050b4f154"}
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r003-live-probe.txt", "sha256": "a1e63e7f4e487cfe4427b54e8993f737ba049311d84eef38fbcae70050b4f154"}
   ],
   "hostObservations": {
     "unameR": "7.0.0-34-generic",

@@ -80,6 +80,7 @@ import {
   isAutoPickable,
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
+  isOwnNodeAuthoredRemoteRow,
   liveGateOpsSelfSelectExclusionSql,
   liveGateOpsSelfSelectExplanation,
   loadTrustedGithubUserIds,
@@ -4703,14 +4704,20 @@ export async function setWorkItemStateWithAliasInfo(
     const current = priorWorkItem;
     if (current?.family === 'issue') {
       const review = readAgentReviewState(current.payload);
-      if (current.origin === 'remote' || review?.status === 'pending' || review?.status === 'revision-requested') {
+      // WI-10006515: `origin` records how a row ARRIVED, not who wrote it. An own-node row
+      // stranded at origin='remote' is ours; the canonical writer below heals it, so it must
+      // not be short-circuited here as "remote-owned".
+      const remoteOwned =
+        current.origin === 'remote' &&
+        !(await isOwnNodeAuthoredRemoteRow(await resolveIssueWorkspace(id), id));
+      if (remoteOwned || review?.status === 'pending' || review?.status === 'revision-requested') {
         return {
           workItem: current,
           aliased: current.state !== requestedState,
           requestedState,
           appliedState: current.state,
           aliasNote:
-            current.origin === 'remote'
+            remoteOwned
               ? "requested state 'needs-human' was ignored because this item is remote-owned and must reconcile on its authoring peer."
               : "requested state 'needs-human' was ignored because this item is already in agent review.",
         };
@@ -6708,6 +6715,16 @@ export function reservedPlanLaneExclusionSql(
           OR LOWER(d.body) ~ '(^|[^a-z0-9_-])su-[a-f0-9-]{8,36} is the (single|sole) implementer([[:space:].;]|$)'
           OR LOWER(d.body) ~ '(^|[^a-z0-9_-])route is this session implementing directly, without (a new )?fleet([[:space:].;]|$)'
         )
+    )
+    -- WI-10006417: an explicit Route A sentence names one session as the plan's
+    -- implementer, so it reserves the whole plan even when the decision's itemRefs
+    -- describe only its other clauses (D-006's refs omit P-002). The durable
+    -- plan_item_assignments surface is per-item and is not populated by this ruling.
+    OR EXISTS (
+      SELECT 1 FROM harness_shared.plan_decisions d
+      WHERE d.workspace_id = ${wsCol}
+        AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
+        AND LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
     )
   )`;
 }
@@ -10222,6 +10239,13 @@ export async function updateWorkItem(
       harnessSlug: issueSlug,
     });
     if (healed) wi.origin = 'local';
+  }
+  // WI-10006515: the same own-node rule setWorkItemState applies (WI-10003565). A row whose
+  // author key THIS workspace has written locally is ours however it last arrived, so a
+  // system-filed row (createdBy="system:*", which no caller can match) is healed, not refused.
+  // The UPDATE's WHERE clause is the identity check; a true peer row is left untouched.
+  if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(issueWorkspaceId, id, issueSlug))) {
+    wi.origin = 'local';
   }
   if (wi.origin === 'remote') return { ok: false, reason: 'remote_origin_not_editable' };
   // `goal` is written against the base table after the issue-family metadata update:

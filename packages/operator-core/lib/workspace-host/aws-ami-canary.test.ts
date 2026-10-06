@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ATTESTATION_PREFIX,
+  BOOT_CONSOLE_POLL_EVERY,
   CANARY_RUN_DIR,
   CANARY_RUN_TAG,
   DIAGNOSTICS_MAX_CHARS,
@@ -24,6 +25,7 @@ import {
   parseAwsAmiCanaryInput,
   runAwsAmiCleanAccountCanary,
   ssmScriptPlan,
+  summarizeBootConsole,
   type AwsAmiCanaryDeps,
 } from '../../bin/aws-ami-canary-measure.mjs';
 
@@ -66,7 +68,21 @@ interface FakeOptions {
   censusThrows?: boolean;
   bootstrapFails?: boolean;
   diagnosticsThrows?: boolean;
+  /** Raw serial console the instance shows; a string that throws when it is an Error. */
+  console?: string | Error;
+  /** Whether the AMI's root snapshot is encrypted, as DescribeImages reports it. */
+  rootEncrypted?: boolean;
 }
+
+/** The console of the P-012 chain14 release AMI (WI-10006518), ANSI colours and all. */
+const EMERGENCY_CONSOLE = [
+  '[    4.326786] XFS (nvme0n1p4): Mounting V5 Filesystem f89740d6-3de3-4d7b-8b14-bf50a59c559b\r',
+  "[    4.430591] XFS (nvme0n1p4): Log inconsistent (didn't find previous header)\r",
+  '[    4.431679] XFS (nvme0n1p4): empty log check failed\r',
+  '[    4.433780] XFS (nvme0n1p4): log mount failed\r',
+  '\x1b[0;1;31mFAILED\x1b[0m] Failed to mount sysroot.mount - /sysroot.\r',
+  'You are in emergency mode. After logging in, type "journalctl -xb" to view\r',
+].join('\n');
 
 const JOURNAL_CAUSE = 'journal: Error: EACCES: permission denied, open /var/lib/papercusp/state.db';
 
@@ -84,12 +100,18 @@ function fakeDeps(options: FakeOptions = {}) {
       clock += ms;
     },
     callerAccount: async () => options.account ?? ACCOUNT,
-    describeImage: async () => ({ state: 'available', architecture: 'x86_64', rootDeviceName: '/dev/xvda' }),
+    describeImage: async () => ({
+      state: 'available',
+      architecture: 'x86_64',
+      rootDeviceName: '/dev/xvda',
+      ...(options.rootEncrypted === undefined ? {} : { rootEncrypted: options.rootEncrypted }),
+    }),
     describeSubnet: async (subnetId) => ({ subnetId }),
     runInstance: async (input) => {
       calls.push(`run:${input.instanceType}`);
       // WI-10006110: the AMI-restored root volume is initialized at a fixed rate, not lazily.
       tagsSeen.push(`root-init:${input.rootDeviceName}@${input.volumeInitializationRateMiBps}`);
+      tagsSeen.push(`root-encrypt:${input.encryptRootVolume === true}`);
       tagsSeen.push(...input.tags.map((tag) => `${tag.Key}=${tag.Value}`));
       state = 'pending';
       return 'i-0abc';
@@ -102,6 +124,11 @@ function fakeDeps(options: FakeOptions = {}) {
       return { state, publicIpv4: options.publicIp ? '3.3.3.3' : null };
     },
     ssmPingStatus: async () => (options.ssmNeverOnline ? 'ConnectionLost' : 'Online'),
+    consoleOutput: async () => {
+      calls.push('console');
+      if (options.console instanceof Error) throw options.console;
+      return options.console ?? '[  OK  ] Reached target multi-user.target\n';
+    },
     sendCommand: async ({ commands }) => {
       if (commands.join('\n').includes('--- bootstrap ERROR lines ---')) {
         calls.push('diagnostics');
@@ -285,6 +312,32 @@ describe('extractAttestation', () => {
   });
 });
 
+describe('summarizeBootConsole', () => {
+  it('keeps the failure lines in console order, without ANSI colour or carriage returns', () => {
+    const summary = summarizeBootConsole(EMERGENCY_CONSOLE);
+    expect(summary.fatal).toBe(true);
+    expect(summary.failureLines).toEqual([
+      "[    4.430591] XFS (nvme0n1p4): Log inconsistent (didn't find previous header)",
+      '[    4.431679] XFS (nvme0n1p4): empty log check failed',
+      '[    4.433780] XFS (nvme0n1p4): log mount failed',
+      'FAILED] Failed to mount sysroot.mount - /sysroot.',
+      'You are in emergency mode. After logging in, type "journalctl -xb" to view',
+    ]);
+  });
+
+  it('never calls a recovered filesystem warning or a healthy boot fatal', () => {
+    expect(summarizeBootConsole('XFS (nvme0n1p4): Metadata corruption detected, repaired\n[  OK  ] Reached target multi-user.target')).toMatchObject({
+      fatal: false,
+    });
+    expect(summarizeBootConsole('[  OK  ] Mounted sysroot.mount - /sysroot.\n')).toEqual({
+      fatal: false,
+      tail: '[  OK  ] Mounted sysroot.mount - /sysroot.\n',
+      failureLines: [],
+    });
+    expect(summarizeBootConsole(null)).toEqual({ fatal: false, tail: '', failureLines: [] });
+  });
+});
+
 describe('runAwsAmiCleanAccountCanary', () => {
   const input = parseAwsAmiCanaryInput(rawInput());
 
@@ -371,6 +424,52 @@ describe('runAwsAmiCleanAccountCanary', () => {
     expect(calls.slice(-3)).toEqual(['diagnostics', 'terminate', 'census:run0001']);
     expect(error.details.bootstrapDiagnostics).toContain(JOURNAL_CAUSE);
     expect(Object.keys(error.details).at(-1)).toBe('bootstrapDiagnostics');
+  });
+
+  it('ends the SSM wait within a minute when the boot console shows a failed root mount, and names the cause (WI-10006518)', async () => {
+    const { deps, calls } = fakeDeps({ ssmNeverOnline: true, console: EMERGENCY_CONSOLE });
+    const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & {
+      details: Record<string, unknown> & { bootConsole: { failureLines: string[] } };
+    };
+    expect(error.message).toContain('canary instance i-0abc failed to boot');
+    expect(error.message).toContain("XFS (nvme0n1p4): Log inconsistent (didn't find previous header)");
+    expect(error.message).toContain('Failed to mount sysroot.mount');
+    // One console read per BOOT_CONSOLE_POLL_EVERY pings, not the 900 s SSM budget.
+    expect(deps.now()).toBeLessThanOrEqual(BOOT_CONSOLE_POLL_EVERY * 10_000);
+    expect(calls).toEqual(['run:t3.medium', 'console', 'terminate', 'census:run0001']);
+    expect(error.details).toMatchObject({ terminated: true, residualResourceIds: [] });
+    expect(Object.keys(error.details).at(-1)).toBe('bootConsole');
+    expect(error.details.bootConsole.failureLines.join('\n')).not.toMatch(/\x1b|\r/);
+  });
+
+  it.each([
+    ['an unencrypted clean-room AMI gets an encrypted root, the read path every customer launch takes', false, 'root-encrypt:true'],
+    ['an already-encrypted release AMI launches exactly as a customer launches it', true, 'root-encrypt:false'],
+    ['an AMI whose root encryption is unknown is launched unchanged', undefined, 'root-encrypt:false'],
+  ])('WI-10006518: %s', async (_label, rootEncrypted, expected) => {
+    const { deps, tagsSeen } = fakeDeps({ rootEncrypted });
+    await runAwsAmiCleanAccountCanary(input, deps);
+    expect(tagsSeen).toContain(expected);
+  });
+
+  it('carries the console tail on a plain SSM timeout without inventing a boot failure', async () => {
+    const { deps, calls } = fakeDeps({ ssmNeverOnline: true });
+    const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & {
+      details: { bootConsole: { fatal: boolean; tail: string; failureLines: string[] } };
+    };
+    expect(error.message).toMatch(/^SSM agent Online did not happen within 900s$/);
+    expect(error.details.bootConsole).toMatchObject({ fatal: false, failureLines: [] });
+    expect(error.details.bootConsole.tail).toContain('multi-user.target');
+    expect(calls.slice(-2)).toEqual(['terminate', 'census:run0001']);
+  });
+
+  it('never lets an unreadable console mask the failure it accompanies', async () => {
+    const { deps } = fakeDeps({ ssmNeverOnline: true, console: new Error('GetConsoleOutput throttled') });
+    const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & {
+      details: { bootConsole: { note?: string } };
+    };
+    expect(error.message).toContain('SSM agent Online did not happen');
+    expect(error.details.bootConsole.note).toMatch(/^console unreadable: GetConsoleOutput throttled/);
   });
 
   it('reports an unhealthy attestation and an inactive service as observed, not as success', async () => {

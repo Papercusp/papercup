@@ -361,6 +361,11 @@ export async function refreshAdmittedFromSource(
 export interface WriteBackDeps {
   /** The resolver for a source kind; the process-wide registration by default (tests inject). */
   resolverFor?: (kind: string) => AdmissionSourceResolver<unknown> | undefined;
+  /**
+   * The lifecycle event this write answers (lifecycle.ts). When set, the write is ledgered under
+   * it even when the source reports nothing changed, so the event is not written again.
+   */
+  lifecycleKey?: string;
 }
 
 type WriteBackRefusal = { ok: false; code: string; message: string };
@@ -419,12 +424,13 @@ export async function writeBackAdmission(
     if (refusal) return refusal;
     throw err;
   }
-  if (res.posted && !res.alreadyPosted) {
+  if (res.posted && (!res.alreadyPosted || deps.lifecycleKey)) {
     await recordAdmissionWriteBack(sql, {
       admission,
       action: 'comment',
       updateId: res.updateId,
       externalRef: res.externalRef,
+      lifecycleKey: deps.lifecycleKey,
     });
   }
   return { ok: true, sourceKind: String(admission.sourceKind), ...res };
@@ -468,13 +474,14 @@ export async function transitionAdmission(
     if (refusal) return refusal;
     throw err;
   }
-  if (res.transitioned) {
+  if (res.transitioned || deps.lifecycleKey) {
     await recordAdmissionWriteBack(sql, {
       admission,
       action: 'transition',
       updateId: res.updateId,
       externalRef: res.externalRef,
-      detail: { toCategory: category },
+      detail: { toCategory: category, changed: res.transitioned },
+      lifecycleKey: deps.lifecycleKey,
     });
   }
   return { ok: true, sourceKind: String(admission.sourceKind), toCategory: category, ...res };

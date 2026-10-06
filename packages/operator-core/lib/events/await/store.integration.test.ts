@@ -177,6 +177,12 @@ beforeAll(async () => {
       taken_by text, last_progress_at timestamptz,
       admission text, admitted_at timestamptz, admitted_by text
     )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.routines (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
+      target_owner_id text, active boolean NOT NULL DEFAULT true,
+      reschedule_interval_sec integer
+    )`);
   hb.sql = rootSql;
 }, 90_000);
 
@@ -190,6 +196,7 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.predicate_watches`;
   await rootSql`TRUNCATE harness_shared.event_key_fires`;
   await rootSql`TRUNCATE harness_shared.work_items`;
+  await rootSql`TRUNCATE harness_shared.routines`;
 });
 
 async function waitForAnnouncementAdvisoryLock(eventKey: string, expected: 'held' | 'waiting') {
@@ -1286,6 +1293,52 @@ describe('await-event store (PG)', () => {
       droppedDeliveries: 1,
       inFlightDeliveries: 0,
     });
+  });
+
+  it('protects an active loop inbox-wake while preserving the loopless opt-out', async () => {
+    const owner = 'looping-owner';
+    const eventKey = 'coord:inbox-wake:' + owner;
+    await rootSql`
+      INSERT INTO harness_shared.routines (workspace_id, target_owner_id, active, reschedule_interval_sec)
+      VALUES ('default', ${owner}, TRUE, 60)
+    `;
+    const wake = await upsertInboxWakeAwait({
+      subscriberId: owner,
+      eventKey,
+      wakeHandle: { sessionId: 'loop-owner' } as never,
+    });
+
+    await expect(cancelAwaitDetailed({
+      awaitId: wake.id,
+      subscriberId: owner,
+      source: 'operator',
+      confirmStanding: true,
+    })).resolves.toMatchObject({
+      awaitId: wake.id,
+      cancelled: false,
+      eventKey,
+      once: false,
+      error: 'active_loop_inbox_wake_requires_loop_end',
+    });
+    expect(await listActiveAwaits(owner)).toHaveLength(1);
+
+    await rootSql`
+      UPDATE harness_shared.routines
+         SET active = FALSE
+       WHERE target_owner_id = ${owner}
+    `;
+    await expect(cancelAwaitDetailed({
+      awaitId: wake.id,
+      subscriberId: owner,
+      source: 'operator',
+      confirmStanding: true,
+    })).resolves.toMatchObject({
+      awaitId: wake.id,
+      cancelled: true,
+      eventKey,
+      once: false,
+    });
+    expect(await listActiveAwaits(owner)).toHaveLength(0);
   });
 
   it('never exposes or cancels an announcement through ordinary await ids', async () => {

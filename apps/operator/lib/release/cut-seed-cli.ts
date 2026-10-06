@@ -114,7 +114,7 @@ import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SEED_REA
 export { mergeReleaseSeedRedactionValues } from './seed-identity-guard.js';
 import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, realpath } from 'node:fs/promises';
 import Corestore from 'corestore';
-import { exportSeedUuidIdempotencySource } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
+import { captureSeedUuidOriginalSpan, exportSeedUuidIdempotencySource, readSeedFrozenExecution } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -355,8 +355,18 @@ export async function readSeedUuidIdempotencyDropPlans(
           || plan.reviewRef !== value.reviewRef || typeof plan.sourceKeyHex !== 'string'
           || !/^[0-9a-f]{64}$/.test(plan.sourceKeyHex) || keys.has(plan.sourceKeyHex)
           || !Number.isSafeInteger(plan.sourceLength) || plan.sourceLength <= 0
-          || !Array.isArray(plan.rows) || !plan.rows.length) throw refused();
+          || !Array.isArray(plan.rows) || (!plan.rows.length && !plan.sourceInput)) throw refused();
       keys.add(plan.sourceKeyHex);
+    }
+    // Keep every D174 census core bound even when it has no UUID drops. Otherwise
+    // the ordinary producer could choose a different input for that core silently.
+    const sources = value.privateSourceBindings.sources;
+    if (Array.isArray(sources) && sources.some(source => source.sourceInput)) {
+      if (sources.length !== value.plans.length || sources.some(source => {
+        const plan = value.plans.find((plan: { sourceKeyHex?: string }) => plan.sourceKeyHex === source.sourceKeyHex);
+        return !source.sourceInput?.executionBinding || !plan || plan.sourceLength !== source.sourceLength
+          || JSON.stringify(plan.sourceInput) !== JSON.stringify(source.sourceInput);
+      })) throw refused();
     }
     return value.plans;
   } catch { throw refused(); }
@@ -369,7 +379,13 @@ export async function exportSeedUuidIdempotencyCensus(input: {
   storeDir: string; manifestPath: string; manifestSha256: string;
   epochKeysPath: string; epochKeysSha256: string; outputDir: string;
   redactValues?: readonly string[];
-}): Promise<string> {
+  /** D-176 creates an original proof-built replica here; never a storage copy. */
+  captureOriginalSpan?: boolean;
+}, deps: { readFrozenExecution?: typeof readSeedFrozenExecution } = {}): Promise<string> {
+  // Dependency injection is internal to the library; the CLI always uses the
+  // real clean-checkout reader. A fixture may supply its own frozen environment.
+  const readExecution = deps.readFrozenExecution ?? readSeedFrozenExecution;
+  const executionBinding = await readExecution();
   if (!(await lstat(input.storeDir)).isDirectory()) throw new Error('UUID frozen source store missing');
   const manifestBytes = await readFile(input.manifestPath);
   if (!/^[0-9a-f]{64}$/.test(input.manifestSha256)
@@ -387,20 +403,46 @@ export async function exportSeedUuidIdempotencyCensus(input: {
         || !Number.isSafeInteger(coreLengths[key]) || (coreLengths[key] as number) <= 0)) {
     throw new Error('UUID source core coverage incomplete');
   }
-  const store = new Corestore(input.storeDir, { readOnly: true });
+  const store = new Corestore(input.storeDir, { readOnly: true, wait: false });
   try {
     await store.ready();
     const sources = [];
+    const foldNow = Date.now();
+    let replicaDir: string | undefined;
+    if (input.captureOriginalSpan) {
+      if (meta.coreKeys.length !== 1) throw new Error('UUID original span capture currently requires one manifest-bound core');
+      replicaDir = join(input.outputDir, 'original-signed-span');
+    }
     for (const [index, key] of (meta.coreKeys as string[]).entries()) {
-      sources.push(await exportSeedUuidIdempotencySource({ sourceStore: store,
-        sourceKeyHex: key, sourceLength: meta.coreLengths[key] as number,
+      const exported = await exportSeedUuidIdempotencySource({ sourceStore: store,
+        sourceKeyHex: key, sourceLength: coreLengths[key] as number,
         outputDir: input.outputDir, segment: `segment-${String(index + 1).padStart(6, '0')}.blob`,
-        redactValues: input.redactValues }));
+        redactValues: input.redactValues, now: foldNow, executionBinding });
+      if (replicaDir) {
+        const capture = await captureSeedUuidOriginalSpan({ sourceStore: store, sourceKeyHex: key,
+          sourceInput: exported.sourceInput, replicaDir });
+        const replica = new Corestore(replicaDir, { readOnly: true, wait: false });
+        try {
+          await replica.ready();
+          const verified = await exportSeedUuidIdempotencySource({ sourceStore: replica,
+            sourceKeyHex: key, sourceLength: exported.sourceLength, outputDir: input.outputDir,
+            segment: 'segment-000002.blob', redactValues: input.redactValues, now: foldNow, executionBinding });
+          if (JSON.stringify(verified.sourceInput) !== JSON.stringify(exported.sourceInput)
+              || capture.proofInventorySha256 !== verified.sourceInput.proofInventorySha256) {
+            throw new Error('UUID original replica census binding mismatch');
+          }
+          sources.push(verified);
+        } finally { await replica.close(); }
+      } else sources.push(exported);
     }
     const configPath = join(input.outputDir, 'uuid-census.private.json');
+    if (JSON.stringify(await readExecution()) !== JSON.stringify(executionBinding)) {
+      throw new Error('UUID frozen execution changed during census');
+    }
     await writeFile(configPath, JSON.stringify({ reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
       potId: manifest.potId, sourceManifestPath: input.manifestPath, sourceManifestSha256: input.manifestSha256,
-      epochKeysPath: input.epochKeysPath, epochKeysSha256: input.epochKeysSha256, sources }), { mode: 0o600, flag: 'wx' });
+      epochKeysPath: input.epochKeysPath, epochKeysSha256: input.epochKeysSha256, sources,
+      ...(replicaDir ? { originalSpanReplicaDir: replicaDir } : {}) }), { mode: 0o600, flag: 'wx' });
     return configPath;
   } finally { await store.close(); }
 }
@@ -1536,7 +1578,8 @@ async function main(): Promise<void> {
       manifestPath: str(args, 'uuid-source-manifest')!, manifestSha256: str(args, 'uuid-source-manifest-sha256')!,
       epochKeysPath: str(args, 'uuid-epoch-keys')!, epochKeysSha256: str(args, 'uuid-epoch-keys-sha256')!,
       outputDir: str(args, 'export-uuid-idempotency-census')!,
-      redactValues: releaseSeedRedactionValues(resolveWorkspaceRoot()) });
+      redactValues: releaseSeedRedactionValues(resolveWorkspaceRoot()),
+      captureOriginalSpan: args['capture-original-span'] === true });
     console.log(JSON.stringify({ schema: 'papercusp-uuid-idempotency-source-export-v1', configPath: config }));
     return;
   }

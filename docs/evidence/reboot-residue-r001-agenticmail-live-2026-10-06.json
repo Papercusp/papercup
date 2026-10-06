@@ -20,7 +20,7 @@
     {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.sh", "sha256": "ca564efa54371df330d2f51509c3e9ea0abb76fe9b292b9e8cd6a07f1e9afb94"}
   ],
   "rawEvidence": [
-    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.log", "sha256": "1072064db4fbedb0a950ea2bf78ab3eef9d2662097218125e5731a046b734e69"}
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.txt", "sha256": "1072064db4fbedb0a950ea2bf78ab3eef9d2662097218125e5731a046b734e69"}
   ],
   "hostObservations": {
     "unit": "agenticmail.service (user)",

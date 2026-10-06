@@ -38,9 +38,10 @@
 import Corestore from 'corestore';
 import { execFileSync } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import type {
   SeedProvider,
   SeedStoreEntry,
@@ -66,6 +67,7 @@ export { isExternalTriggerEnvelope, valueCarriesExternalIngest };
 import {
   DROP_SNAPSHOT_ROW,
   SnapshotRowFolder,
+  foldFilteredSnapshotRows,
   formatSnapshotFoldStall,
   isSnapshotOp,
   produceFilteredSnapshotIntoLog,
@@ -121,6 +123,7 @@ export interface SeedUuidIdempotencyDropPlan {
   readonly reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166';
   readonly sourceKeyHex: string;
   readonly sourceLength: number;
+  readonly sourceInput?: SeedSourceInput;
   readonly rows: readonly {
     readonly table: string;
     readonly hbKey: string;
@@ -128,6 +131,241 @@ export interface SeedUuidIdempotencyDropPlan {
     readonly valueSha256: string;
     readonly occurrences: readonly { segment: string; line: number; fieldPath: readonly (string | number)[] }[];
   }[];
+}
+
+/** D-174 private input and winner binding; never publish these original locators. */
+export interface SeedSourceInput {
+  executionBinding?: SeedFrozenExecution;
+  coverage: 'complete-snapshot-set + tail' | 'full-log';
+  sourceHead: { sourceKeyHex: string; sourceLength: number; fork: number; byteLength: number;
+    treeHash: string; signatureHex: string };
+  seedIndex: number;
+  coversUpTo: number;
+  chunkCount: number;
+  snapshotSetSha256: string | null;
+  omittedPrefixBlocks: number;
+  sourceBlocksRead: number;
+  sourceBlocksJsonSha256: string;
+  proofInventorySha256: string;
+  sealedRowOccurrences: number;
+  foldNow: number;
+  winners: readonly { table: string; hbKey: string; disposition: 'carry' | 'redact' | 'drop' }[];
+}
+
+export interface SeedFrozenExecution {
+  sourceCommit: string;
+  gitDirty: false;
+  nodeVersion: string;
+  packageLockSha256: string;
+  installedLockSha256: string;
+  dependencyGeneration: string;
+  directBlobs: { path: string; sha256: string }[];
+}
+
+const SEED_EXECUTION_PATHS = ['packages/operator-core/lib/sync/hyperbee/read-merge.ts',
+  'packages/operator-core/lib/sync/hyperbee/log-snapshot.ts',
+  'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts',
+  'apps/operator/lib/release/cut-seed-cli.ts'];
+// Capture at module load, before a long-lived TS runtime could outlive a source
+// edit. A stale runtime must not bind the new on-disk blobs as its loaded code.
+const LOADED_SEED_EXECUTION_BLOBS = (() => {
+  if (typeof import.meta.url !== 'string' || !import.meta.url.endsWith('/seed-provider-corestore.ts')) return null;
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  return SEED_EXECUTION_PATHS.map(path => ({ path,
+    sha256: createHash('sha256').update(readFileSync(join(root, path))).digest('hex') }));
+})();
+
+/** D-175: execution must be the clean source TS blobs, not a stale bundle whose
+ * files on disk merely resemble its code. Reuse the maintained release setup's
+ * verified dependency generation markers and npm integrity entries. GO still
+ * re-derives their installation and runtime provenance independently. */
+export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
+  if (!LOADED_SEED_EXECUTION_BLOBS) {
+    throw new Error('[seed:corestore] frozen census refuses compiled-only execution');
+  }
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+  const sourceCommit = git('rev-parse', 'HEAD');
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit) || git('status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none')) {
+    throw new Error('[seed:corestore] frozen census requires a clean source commit');
+  }
+  const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  const lockBytes = await readFile(join(root, 'package-lock.json'));
+  const sourceLock = await readFile(join(root, 'node_modules/.papercusp-source-package-lock.json'));
+  const installedBytes = await readFile(join(root, 'node_modules/.package-lock.json'));
+  const marker = await readFile(join(root, 'node_modules/.papercusp-dependency-generation'), 'utf8');
+  const isolated = await readFile(join(root, 'node_modules/.papercusp-isolated-snapshot'), 'utf8');
+  const dependencyGeneration = /^identity=(v1-[0-9a-f]{64})$/m.exec(marker)?.[1];
+  if (!dependencyGeneration || !isolated.split('\n').includes(`generation=${dependencyGeneration}`)
+      || hash(lockBytes) !== hash(sourceLock)) throw new Error('[seed:corestore] frozen dependency generation/lock mismatch');
+  const lock = JSON.parse(lockBytes.toString()).packages;
+  const installed = JSON.parse(installedBytes.toString()).packages;
+  for (const [path, expected] of Object.entries(lock) as [string, { integrity?: string; version?: string; link?: boolean }][]) {
+    if (!path.includes('node_modules/') || expected.link || !expected.integrity) continue;
+    if (installed[path]?.integrity !== expected.integrity || installed[path]?.version !== expected.version) {
+      throw new Error('[seed:corestore] installed dependency integrity does not match frozen lock');
+    }
+  }
+  const directBlobs = await Promise.all(SEED_EXECUTION_PATHS.map(async path => ({ path, sha256: hash(await readFile(join(root, path))) })));
+  if (JSON.stringify(directBlobs) !== JSON.stringify(LOADED_SEED_EXECUTION_BLOBS)) {
+    throw new Error('[seed:corestore] loaded source modules do not match frozen blobs');
+  }
+  if (git('rev-parse', 'HEAD') !== sourceCommit || git('status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none')) {
+    throw new Error('[seed:corestore] frozen execution changed while binding');
+  }
+  return { sourceCommit, gitDirty: false, nodeVersion: process.version,
+    packageLockSha256: hash(lockBytes), installedLockSha256: hash(installedBytes), dependencyGeneration, directBlobs };
+}
+
+const ORIGINAL_BLOCK_HASH = Symbol('proof-verified-original-block-sha256');
+
+/** A local get() alone cannot prove persisted bytes still match the signed head. */
+async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, sourceLength: number) {
+  const signed = core as ReadableCore & {
+    state: { length: number; fork: number; byteLength: number; signature: Buffer;
+      hash(): Buffer; createTreeBatch(): unknown };
+    core: { verifier: { verify(batch: unknown, signature: Buffer): boolean } };
+    proof(opts: unknown): Promise<{ block?: { value: Buffer } }>;
+    verifyFullyRemote(proof: unknown): Promise<{ length: number; fork: number; hash(): Buffer }>;
+  };
+  const head = () => {
+    const state = signed.state;
+    if (core.length !== sourceLength || state.length !== sourceLength || !state.signature
+        || !signed.core.verifier.verify(state.createTreeBatch(), state.signature)) {
+      throw new Error('[seed:corestore] original source signed head invalid or changed');
+    }
+    return { sourceKeyHex, sourceLength, fork: state.fork, byteLength: state.byteLength,
+      treeHash: state.hash().toString('hex'), signatureHex: state.signature.toString('hex') };
+  };
+  const sourceHead = head();
+  const assertHead = () => {
+    if (JSON.stringify(head()) !== JSON.stringify(sourceHead)) throw new Error('[seed:corestore] original source signed head changed');
+  };
+  const log: AdmittedLog = { keyHex: sourceKeyHex, length: sourceLength, get: async index => {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= sourceLength || !await core.has?.(index)) {
+      throw new Error('[seed:corestore] original source span requires every block locally');
+    }
+    const proof = await signed.proof({ block: { index, nodes: 0 }, upgrade: { start: 0, length: sourceLength } });
+    const verified = await signed.verifyFullyRemote(proof);
+    if (!proof.block?.value || verified.length !== sourceLength || verified.fork !== sourceHead.fork
+        || verified.hash().toString('hex') !== sourceHead.treeHash) throw new Error('[seed:corestore] original source block proof mismatch');
+    assertHead();
+    const op = JSON.parse(proof.block.value.toString('utf8')) as PeerLogOp;
+    Object.defineProperty(op, ORIGINAL_BLOCK_HASH, { value: createHash('sha256').update(proof.block.value).digest('hex') });
+    return op;
+  } };
+  const selected = await findLatestCompleteSnapshotDetailed(log);
+  if (selected.kind === 'unreadable') throw new Error('[seed:corestore] original snapshot selection unreadable');
+  return { log, sourceHead, assertHead, hint: selected.kind === 'found' ? selected.seed : null };
+}
+
+function sourceSpanRecorder(sourceLength: number) {
+  const blocks = createHash('sha256');
+  const snapshot = createHash('sha256');
+  const inventory = createHash('sha256');
+  let first = -1;
+  let next = -1;
+  let count = 0;
+  let snapshotEnd = -1;
+  let sealedRowOccurrences = 0;
+  return {
+    read(index: number, op: PeerLogOp) {
+      if (first === -1) {
+        first = next = index;
+        if (isSnapshotOp(op)) {
+          const value = op.value as { coversUpTo: number; chunkCount?: number };
+          if (value.coversUpTo === index) snapshotEnd = index + (value.chunkCount ?? 1);
+        }
+      }
+      if (index !== next++) throw new Error('[seed:corestore] original span read order/count mismatch');
+      const text = JSON.stringify([index, op]) + '\n';
+      blocks.update(text);
+      const rawHash = (op as PeerLogOp & { [ORIGINAL_BLOCK_HASH]?: string })[ORIGINAL_BLOCK_HASH];
+      if (!rawHash) throw new Error('[seed:corestore] original span block lacks proof verification');
+      inventory.update(JSON.stringify([index, rawHash]) + '\n');
+      const rows = isSnapshotOp(op) ? (op.value as { rows: { epoch?: number; value: unknown }[] }).rows : [op];
+      sealedRowOccurrences += rows.filter(row => row.epoch != null && row.value != null).length;
+      if (index < snapshotEnd) snapshot.update(text);
+      count++;
+    },
+    finish(fold: { seedIndex: number; coversUpTo: number; chunkCount: number }) {
+      if (first !== fold.seedIndex || count !== sourceLength - fold.seedIndex || next !== sourceLength) {
+        throw new Error('[seed:corestore] original span block coverage mismatch');
+      }
+      return { coverage: fold.chunkCount ? 'complete-snapshot-set + tail' as const : 'full-log' as const,
+        seedIndex: fold.seedIndex, coversUpTo: fold.coversUpTo, chunkCount: fold.chunkCount,
+        snapshotSetSha256: fold.chunkCount ? snapshot.digest('hex') : null,
+        omittedPrefixBlocks: fold.seedIndex, sourceBlocksRead: count,
+        sourceBlocksJsonSha256: blocks.digest('hex'), proofInventorySha256: inventory.digest('hex'), sealedRowOccurrences };
+    },
+  };
+}
+
+/** D-176: complete ORIGINAL span replica, built only by maintained proof admission.
+ * This private source never ships. The caller retains its point-in-time source
+ * handle throughout; head drift or any inventory mismatch aborts and removes output. */
+export async function captureSeedUuidOriginalSpan(inp: {
+  sourceStore: Corestore; sourceKeyHex: string; sourceInput: SeedSourceInput; replicaDir: string;
+}): Promise<{ sourceHead: SeedSourceInput['sourceHead']; proofInventorySha256: string; sourceBlocksRead: number }> {
+  const sourceCore = inp.sourceStore.get({ key: Buffer.from(inp.sourceKeyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
+  await sourceCore.ready();
+  const source = await signedSeedSource(sourceCore, inp.sourceKeyHex, inp.sourceInput.sourceHead.sourceLength);
+  if (JSON.stringify(source.sourceHead) !== JSON.stringify(inp.sourceInput.sourceHead)) {
+    throw new Error('[seed:corestore] original span capture head mismatch');
+  }
+  // An exclusive directory creation distinguishes this from resuming an arbitrary
+  // partial storage copy. Never reuse or overwrite a previous replica.
+  const parent = await lstat(dirname(inp.replicaDir));
+  if (!parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o077)
+      || await realpath(dirname(inp.replicaDir)) !== resolve(dirname(inp.replicaDir))) {
+    throw new Error('[seed:corestore] original replica parent must be private');
+  }
+  await mkdir(inp.replicaDir, { mode: 0o700 });
+  const store = new Corestore(inp.replicaDir);
+  const inventory = createHash('sha256');
+  let count = 0;
+  try {
+    await store.ready();
+    const replica = store.get({ key: Buffer.from(inp.sourceKeyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore & {
+      writable: boolean; keyPair?: { secretKey?: Buffer };
+      core: { bitfield: { firstSet(index: number): number } };
+      applyProof(proof: unknown): Promise<boolean>;
+    };
+    await replica.ready();
+    const original = sourceCore as ReadableCore & { manifest: unknown; proof(opts: unknown): Promise<{ block: { value: Buffer }; manifest?: unknown }> };
+    for (let index = inp.sourceInput.seedIndex; index < source.log.length; index++) {
+      source.assertHead();
+      const proof = await original.proof({ block: { index, nodes: 0 }, upgrade: { start: 0, length: source.log.length } });
+      proof.manifest = original.manifest;
+      if (!proof.block?.value || !await replica.applyProof(proof)) throw new Error('[seed:corestore] original span proof admission failed');
+      inventory.update(JSON.stringify([index, createHash('sha256').update(proof.block.value).digest('hex')]) + '\n');
+      count++;
+      if (count % 256 === 0) await new Promise<void>(done => setImmediate(done));
+    }
+    source.assertHead();
+    const digest = inventory.digest('hex');
+    if (count !== source.log.length - inp.sourceInput.seedIndex || count !== inp.sourceInput.sourceBlocksRead
+        || digest !== inp.sourceInput.proofInventorySha256
+        || replica.writable || replica.keyPair?.secretKey) throw new Error('[seed:corestore] original replica inventory/custody mismatch');
+    // Read-time re-verification, not trust in the capture-time admission receipt.
+    const audit = await signedSeedSource(replica, inp.sourceKeyHex, source.log.length);
+    if (JSON.stringify(audit.sourceHead) !== JSON.stringify(source.sourceHead)) throw new Error('[seed:corestore] original replica signed head mismatch');
+    const hashes = createHash('sha256');
+    for (let index = inp.sourceInput.seedIndex; index < source.log.length; index++) {
+      const op = await audit.log.get(index) as PeerLogOp & { [ORIGINAL_BLOCK_HASH]: string };
+      hashes.update(JSON.stringify([index, op[ORIGINAL_BLOCK_HASH]]) + '\n');
+    }
+    if (replica.core.bitfield.firstSet(0) !== inp.sourceInput.seedIndex) {
+      throw new Error('[seed:corestore] original replica contains an omitted prefix block or no declared span');
+    }
+    if (hashes.digest('hex') !== digest) throw new Error('[seed:corestore] original replica read-time inventory mismatch');
+    await store.close();
+    return { sourceHead: audit.sourceHead, proofInventorySha256: digest, sourceBlocksRead: count };
+  } catch (error) {
+    await store.close().catch(() => {});
+    await rm(inp.replicaDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Export the locally present canonical source population before UUID drops.
@@ -139,9 +377,12 @@ export async function exportSeedUuidIdempotencySource(inp: {
   sourceStore: Corestore; sourceKeyHex: string; sourceLength: number;
   outputDir: string; segment: string;
   redactValues?: readonly string[];
+  now?: number;
+  executionBinding?: SeedFrozenExecution;
 }): Promise<{
   sourceKeyHex: string; sourceLength: number; rowCount: number; rowsPath: string; rowsSha256: string;
   sourceBlocksRead: number; sourceBlocksJsonSha256: string;
+  sourceInput: SeedSourceInput;
   privacyProjectionContext: { schema: 'papercusp-seed-privacy-projection-v1'; literalsSha256: string; excludedTablesSha256: string };
 }> {
   if (!/^[0-9a-f]{64}$/.test(inp.sourceKeyHex) || !Number.isSafeInteger(inp.sourceLength)
@@ -156,24 +397,26 @@ export async function exportSeedUuidIdempotencySource(inp: {
   const core = inp.sourceStore.get({ key: Buffer.from(inp.sourceKeyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
   await core.ready();
   if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
-  const blocks = createHash('sha256');
-  const folder = new SnapshotRowFolder({ excludeTables: SEED_EXCLUDED_TABLES });
+  const source = await signedSeedSource(core, inp.sourceKeyHex, inp.sourceLength);
+  const recorder = sourceSpanRecorder(inp.sourceLength);
+  const foldNow = inp.now ?? Date.now();
   // Reuse the producer's normal privacy fold. This private expectation is distinct
   // from D166 drops; the independent validator must still authenticate originals
   // and refuse any output change beyond this exact, source-bound projection.
   const privacy = seedSnapshotValueTransform(inp.redactValues);
-  const projectedFolder = new SnapshotRowFolder({ excludeTables: SEED_EXCLUDED_TABLES,
-    transformValue: privacy.transform });
-  for (let index = 0; index < inp.sourceLength; index++) {
-    const op = await core.get(index, { wait: false }) as PeerLogOp | null;
-    if (!op) throw new Error('[seed:corestore] UUID source export requires every block locally');
-    blocks.update(JSON.stringify([index, op]) + '\n');
-    folder.add(op, op.value, index);
-    projectedFolder.add(op, op.value, index);
+  const options = { now: foldNow, excludeTables: SEED_EXCLUDED_TABLES,
+    priorSnapshotHint: source.hint, requireComplete: true };
+  const original = await foldFilteredSnapshotRows(source.log, { ...options, onSourceBlock: recorder.read });
+  const projected = await foldFilteredSnapshotRows(source.log, { ...options, transformValue: privacy.transform });
+  if (original.seedIndex !== projected.seedIndex || original.chunkCount !== projected.chunkCount) {
+    throw new Error('[seed:corestore] privacy census snapshot span mismatch');
   }
+  source.assertHead();
   if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
-  const rows = folder.finish();
-  const projectedRows = new Map(projectedFolder.finish().map(row => [JSON.stringify([row.table, row.hbKey]), row]));
+  const rows = original.rows;
+  const span = recorder.finish(original);
+  const projectedRows = new Map(projected.rows.map(row => [JSON.stringify([row.table, row.hbKey]), row]));
+  const winners: SeedSourceInput['winners'][number][] = [];
   const path = join(inp.outputDir, inp.segment);
   const file = await open(path, 'wx', 0o600);
   const digest = createHash('sha256');
@@ -184,13 +427,15 @@ export async function exportSeedUuidIdempotencySource(inp: {
       const privacyProjection = !projected ? { disposition: 'drop' } :
         JSON.stringify(projected.value) === JSON.stringify(row.value) ? { disposition: 'carry' } :
           { disposition: 'redact', value: projected.value };
+      winners.push({ table: row.table, hbKey: row.hbKey,
+        disposition: privacyProjection.disposition as 'carry' | 'redact' | 'drop' });
       const text = JSON.stringify({ ...row, segment: inp.segment, line: index + 1,
         storedValueJson: JSON.stringify(row.value), privacyProjection }) + '\n';
       digest.update(text);
       await file.writeFile(text);
     }
     await file.sync();
-    if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
+    source.assertHead();
   } catch (error) {
     await file.close();
     await rm(path, { force: true });
@@ -199,7 +444,9 @@ export async function exportSeedUuidIdempotencySource(inp: {
   await file.close();
   return { sourceKeyHex: inp.sourceKeyHex, sourceLength: inp.sourceLength,
     rowCount: rows.length, rowsPath: path, rowsSha256: digest.digest('hex'),
-    sourceBlocksRead: inp.sourceLength, sourceBlocksJsonSha256: blocks.digest('hex'),
+    sourceBlocksRead: span.sourceBlocksRead, sourceBlocksJsonSha256: span.sourceBlocksJsonSha256,
+    sourceInput: { ...span, sourceHead: source.sourceHead, foldNow, winners,
+      ...(inp.executionBinding ? { executionBinding: inp.executionBinding } : {}) },
     privacyProjectionContext: { schema: 'papercusp-seed-privacy-projection-v1',
       literalsSha256: createHash('sha256').update(JSON.stringify(inp.redactValues ?? SEED_BUILD_IDENTITY_LITERALS)).digest('hex'),
       excludedTablesSha256: createHash('sha256').update(JSON.stringify([...SEED_EXCLUDED_TABLES].sort())).digest('hex') } };
@@ -225,7 +472,8 @@ function uuidIdempotencyRowDropper(
       || plan.reviewRef !== 'p2p-public-release-endgame-2026-09-01#D-166'
       || !/^[0-9a-f]{64}$/.test(plan.sourceKeyHex) || plan.sourceKeyHex !== source.ownerKeyHex
       || !Number.isSafeInteger(plan.sourceLength) || plan.sourceLength <= 0
-      || plan.sourceLength !== source.sourceLength || !Array.isArray(plan.rows) || plan.rows.length === 0) {
+      || plan.sourceLength !== source.sourceLength || !Array.isArray(plan.rows)
+      || (plan.rows.length === 0 && !plan.sourceInput)) {
     throw new Error('[seed:corestore] UUID row-drop plan source/schema binding mismatch');
   }
   const rows = new Map<string, { hash: string; occurrences: SeedUuidIdempotencyRedactionReport['occurrences'] }>();
@@ -642,16 +890,28 @@ export async function mintFilteredSeedContentCore(inp: {
         );
       };
       const boundSourceLength = sourceCore.length;
+      const censusInput = inp.uuidIdempotencyDropPlan?.sourceInput;
+      if (censusInput?.executionBinding && JSON.stringify(await readSeedFrozenExecution()) !== JSON.stringify(censusInput.executionBinding)) {
+        throw new Error('[seed:corestore] census/producer frozen execution mismatch');
+      }
+      const boundSource = censusInput ? await signedSeedSource(sourceCore, inp.ownerKeyHex, boundSourceLength) : undefined;
+      const recorder = censusInput ? sourceSpanRecorder(boundSourceLength) : undefined;
+      const censusOriginal = censusInput ? new SnapshotRowFolder({ excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES }) : undefined;
+      const censusPrivacy = censusInput ? new SnapshotRowFolder({ excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
+        transformValue: seedSnapshotValueTransform(inp.redactValues).transform }) : undefined;
+      if (censusInput && JSON.stringify(boundSource!.sourceHead) !== JSON.stringify(censusInput.sourceHead)) {
+        throw new Error('[seed:corestore] census/producer signed source head mismatch');
+      }
       const projection = seedSnapshotValueTransform(inp.redactValues, inp.uuidIdempotencyDropPlan ? {
         plan: inp.uuidIdempotencyDropPlan, ownerKeyHex: inp.ownerKeyHex, sourceLength: boundSourceLength,
       } : undefined);
       // P-003: the producer's own seek only scans a short tail window, and the
       // proportional cadence leaves the newest set far behind it. Locate it with the
       // reader's unbounded scan and hand it over; a miss still folds from 0 correctly.
-      const priorSet = await findLatestCompleteSnapshot(sourceLog).catch(() => null);
-      const produced = await produceFilteredSnapshotIntoLog(sourceLog, synthetic, {
-        ...(priorSet ? { priorSnapshotHint: { coversUpTo: priorSet.coversUpTo, chunkCount: priorSet.chunkCount } } : {}),
-        now: inp.now ?? Date.now(),
+      const priorSet = boundSource ? boundSource.hint : await findLatestCompleteSnapshot(sourceLog).catch(() => null);
+      const produced = await produceFilteredSnapshotIntoLog(boundSource?.log ?? sourceLog, synthetic, {
+        ...(boundSource ? { priorSnapshotHint: priorSet } : priorSet ? { priorSnapshotHint: priorSet } : {}),
+        now: censusInput?.foldNow ?? inp.now ?? Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
         excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
         onProgress: inp.onProgress,
@@ -659,6 +919,35 @@ export async function mintFilteredSeedContentCore(inp: {
         stallMs: inp.filteredScanStallMs,
         seekReadBudgetMs: inp.seekReadBudgetMs,
         transformValue: projection.transform,
+        ...(censusInput ? { requireComplete: true, onSourceBlock: (index: number, op: PeerLogOp) => {
+          recorder!.read(index, op);
+          censusOriginal!.add(op, op.value, index);
+          censusPrivacy!.add(op, op.value, index);
+        },
+          onFoldedRows: (fold: Awaited<ReturnType<typeof foldFilteredSnapshotRows>>) => {
+            const actual = recorder!.finish(fold);
+            for (const field of Object.keys(actual) as (keyof typeof actual)[]) {
+              if (actual[field] !== censusInput[field]) throw new Error('[seed:corestore] census/producer original span mismatch');
+            }
+            const privacyRows = new Map(censusPrivacy!.finish({ now: censusInput.foldNow })
+              .map(row => [JSON.stringify([row.table, row.hbKey]), row]));
+            const winners = censusOriginal!.finish({ now: censusInput.foldNow }).map(row => {
+              const projected = privacyRows.get(JSON.stringify([row.table, row.hbKey]));
+              return { table: row.table, hbKey: row.hbKey, disposition: !projected ? 'drop'
+                : JSON.stringify(projected.value) === JSON.stringify(row.value) ? 'carry' : 'redact' };
+            });
+            if (JSON.stringify(winners) !== JSON.stringify(censusInput.winners)) {
+              throw new Error('[seed:corestore] census/producer original winner dispositions mismatch');
+            }
+            const dropped = new Set(inp.uuidIdempotencyDropPlan!.rows.map(row => JSON.stringify([row.table, row.hbKey])));
+            const expected = censusInput.winners.filter(row => row.disposition !== 'drop'
+              && !dropped.has(JSON.stringify([row.table, row.hbKey]))).map(row => JSON.stringify([row.table, row.hbKey])).sort();
+            const emitted = fold.rows.map(row => JSON.stringify([row.table, row.hbKey])).sort();
+            if (new Set(expected).size !== expected.length || JSON.stringify(expected) !== JSON.stringify(emitted)) {
+              throw new Error('[seed:corestore] census/producer winner set mismatch');
+            }
+            boundSource!.assertHead();
+          } } : {}),
       });
       if (inp.uuidIdempotencyDropPlan && sourceCore.length !== boundSourceLength) {
         throw new Error('[seed:corestore] UUID row-drop source head changed during projection');

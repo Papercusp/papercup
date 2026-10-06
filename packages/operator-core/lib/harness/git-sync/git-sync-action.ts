@@ -3770,10 +3770,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // Re-read the edit-lock plane at the final commit seam for every repo. The
         // initial census above protects setup, while this guarded callback closes
         // the longer submodule/guard window where a peer can acquire a lock.
-        refreshLiveLockHoldings: () =>
-          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(readCensus)).then(
-            (rows) => toRepoLockCoordinates(rows, false),
-          ),
+        refreshLiveLockHoldings: async () => {
+          const rows = await guarded('refresh-live-file-locks', () => acquireWithContentionRetry(readCensus));
+          // Coordinate identity can perform Git reads too. Keep that await inside
+          // the same cancellation guard, with its own phase so a stalled identity
+          // lookup is not reported as a lock-census read.
+          return guarded('translate-refreshed-live-file-locks', () => toRepoLockCoordinates(rows, false));
+        },
         loadRoster: attributionOn ? loadAttributionRosterForTick : undefined,
         loadMigrationFenceRoster: loadAttributionRosterForTick,
         // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as

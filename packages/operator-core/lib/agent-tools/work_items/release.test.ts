@@ -22,6 +22,15 @@ vi.mock('../../work-items', () => ({
   getWorkItem: vi.fn(),
   commentWorkItem: vi.fn(),
 }));
+// WI-10006515: release heals an own-node issue row stranded at origin='remote' and retries
+// once. Partial mock so every other export stays real. The helper is stubbed at the export
+// release.ts imports: the real one resolves the workspace through a same-module call that a
+// module mock cannot intercept, so stubbing only resolveIssueWorkspace would reach PG.
+const ownNode = vi.hoisted(() => ({ heal: vi.fn(async (_ws: string, _id: string, _h?: string | null) => false) }));
+vi.mock('../../issues-engineer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../issues-engineer')>()),
+  healOwnNodeIssueOrigin: vi.fn(async (id: string, harness?: string | null) => ownNode.heal('ws-test', id, harness ?? null)),
+}));
 
 // EI-21352358541526229: this factory is HAND-LISTED (no importOriginal), so every member
 // release.ts imports must appear here or it resolves to `undefined` and the tool crashes on
@@ -84,7 +93,7 @@ import {
   type WorkItem,
 } from '../../work-items';
 import { assessForceRelease, notifyForceRelease, recordForceReleaseAudit } from './release-force-guard';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 const releaseM = vi.mocked(releaseWorkItem);
 const holdM = vi.mocked(setWorkItemClaimHold);
 const getM = vi.mocked(getWorkItem);
@@ -349,6 +358,44 @@ describe('work_items:release remote-origin guard (WI-6031)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-REMOTE', error: 'release_blocked_remote_origin' });
     expect(b.results[0].hint).toMatch(/federated.*origin='remote'/);
     expect(b.results[0].workItem).toMatchObject({ id: 'EI-REMOTE', origin: 'remote' });
+  });
+
+  // WI-10006515: `origin` records how a row ARRIVED, not who wrote it.
+  it('an OWN-NODE issue stranded at origin=remote is healed and the release retried once', async () => {
+    ownNode.heal.mockReset();
+    ownNode.heal.mockResolvedValueOnce(true);
+    releaseM.mockReset();
+    mockResolvedOnceTyped(releaseM, null);
+    mockResolvedOnceTyped(releaseM, workItemFixture({ id: 'EI-OWN', family: 'issue', origin: 'local', harness: 'papercusp' }));
+    mockResolvedTyped(getM, workItemFixture({ id: 'EI-OWN', family: 'issue', origin: 'remote', assignee: null, harness: 'papercusp' }));
+    const b = await body({ id: 'EI-OWN' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-OWN' });
+    expect(ownNode.heal).toHaveBeenCalledTimes(1);
+    expect(ownNode.heal).toHaveBeenCalledWith('ws-test', 'EI-OWN', 'papercusp');
+    expect(releaseM).toHaveBeenCalledTimes(2);
+  });
+
+  it('a TRUE peer row (heal finds no own-node author key) is not retried and still names the remote origin', async () => {
+    ownNode.heal.mockReset();
+    ownNode.heal.mockResolvedValue(false);
+    releaseM.mockReset();
+    mockResolvedTyped(releaseM, null);
+    mockResolvedTyped(getM, workItemFixture({ id: 'EI-PEER', family: 'issue', origin: 'remote', assignee: null }));
+    const b = await body({ id: 'EI-PEER' });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-PEER', error: 'release_blocked_remote_origin' });
+    expect(ownNode.heal).toHaveBeenCalledTimes(1);
+    expect(releaseM).toHaveBeenCalledTimes(1);
+  });
+
+  it('a remote row a PEER holds is never healed (the answer is not_holder)', async () => {
+    ownNode.heal.mockReset();
+    ownNode.heal.mockResolvedValue(true);
+    releaseM.mockReset();
+    mockResolvedTyped(releaseM, null);
+    mockResolvedTyped(getM, workItemFixture({ id: 'EI-HELD', family: 'issue', origin: 'remote', assignee: 'su-peer' }));
+    const b = await body({ id: 'EI-HELD' });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-HELD', error: 'not_holder', holder: 'su-peer' });
+    expect(ownNode.heal).not.toHaveBeenCalled();
   });
 
   it('a local-origin item with no other cause still falls back to the generic release_failed', async () => {

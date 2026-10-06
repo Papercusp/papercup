@@ -12,6 +12,7 @@ const phases = vi.hoisted(() => ({
   prepare: vi.fn(),
   finish: vi.fn(),
   retract: vi.fn(),
+  buildRemeasure: vi.fn(),
 }));
 vi.mock('./mutation-probe-fence', () => ({ mutationProbeRefusal: phases.fence }));
 // The restricted-write fence (WI-10005634) reads the fence module's closure exports, which the
@@ -22,6 +23,7 @@ vi.mock('./evidence', async (original) => ({
   prepareTestEvidence: phases.prepare,
   finishTestEvidence: phases.finish,
   retractRefusedTestEvidence: phases.retract,
+  buildTestEvidenceRemeasure: phases.buildRemeasure,
 }));
 
 import runTool from './run';
@@ -48,6 +50,25 @@ async function invoke() {
   const result = await runTool.handler(args, ctx as never) as { data: Record<string, unknown> };
   return { root, result: result.data };
 }
+
+it('refuses a re-measure whose stale proofs were measured in more than one checkout (EI-25203154942838341)', async () => {
+  // One process runs in ONE checkout; a hive-app proof re-run at the session root is ENOENT.
+  phases.buildRemeasure.mockResolvedValue({
+    request: { workItemId: 'WI-refusal', planSlug: 'refusal-plan', bindings: [] },
+    files: ['feature.test.ts'], plan: { selected: [], skipped: [] }, rootHarnessSlugs: ['phone-app', null],
+    abandonedPendingBindingIds: [], summary: { examined: 2, selected: 2, skipped: 0, abandonedPending: 0 },
+  });
+  const ctx = { projectDir: tmpdir(), workspaceId: 'refusal-workspace', uiClientId: 'su-refusal-test', isSuperuser: true } as const;
+  const args = runTool.args.parse({ harness: 'refusal-harness',
+    remeasureEvidence: { workItemId: 'WI-refusal', planSlug: 'refusal-plan' } });
+
+  const result = (await runTool.handler(args, ctx as never) as { data: Record<string, unknown> }).data;
+
+  expect(result).toMatchObject({ ok: false, error: 'evidence_remeasure_mixed_roots', rootHarnessSlugs: ['phone-app', null] });
+  expect(phases.buildRemeasure).toHaveBeenCalledOnce();
+  expect(phases.prepare).not.toHaveBeenCalled();
+  expect(phases.fence).not.toHaveBeenCalled();
+});
 
 it('refuses before registering any evidence when a mutation probe is active', async () => {
   phases.fence.mockResolvedValue(refusal);

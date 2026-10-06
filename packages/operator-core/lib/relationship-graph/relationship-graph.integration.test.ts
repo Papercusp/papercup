@@ -112,7 +112,9 @@ async function sync(sourceId: string): Promise<void> {
     { workspaceId: WS, harness: HARNESS, sourceIds: [sourceId] },
     { registry, ingest, hostFetchFor: () => noFetch, leaseOwner: 'relationship-graph-it' },
   );
-  expect(result.sources).toEqual([expect.objectContaining({ sourceId, outcome: 'synced', rejected: 0 })]);
+  expect(result.sources, JSON.stringify(result.sources)).toEqual([
+    expect.objectContaining({ sourceId, outcome: 'synced', rejected: 0 }),
+  ]);
 }
 
 async function connect(kind: string, policy: Record<string, string[]> = { person: ['record'], organization: ['record'] }): Promise<string> {
@@ -328,12 +330,15 @@ describe('platform relationship graph (P-002, R-1)', () => {
 
   it('ingesting an email, a calendar event and a phone call for the same address yields exactly one person (SPEC-P-002, R-1)', async () => {
     const policy = { person: ['record'], organization: ['record'], call: ['document'] };
-    const email = { from: '"Ada Lovelace" <ada@acme.com>', to: ['me@papercusp.test'], subject: 'Renewal pricing', body: 'CONFIDENTIAL-BODY' };
-    const event = { title: 'Renewal review', organizer: 'me@papercusp.test', attendees: [{ email: 'ADA@acme.com', displayName: 'Ada' }], description: 'CONFIDENTIAL-AGENDA' };
-    const call = { title: 'Call with Ada', from: '+1 (555) 123-4567', to: ['+15550009999'], participants: [{ name: 'Ada Lovelace', email: 'ada@acme.com', phone: '+1 555 123 4567' }], text: 'CONFIDENTIAL-TRANSCRIPT' };
+    const email = { id: 'msg-1', from: '"Ada Lovelace" <ada@acme.com>', to: ['me@papercusp.test'], subject: 'Renewal pricing', body: 'CONFIDENTIAL-BODY' };
+    const event = { id: 'evt-1', title: 'Renewal review', organizer: 'me@papercusp.test', attendees: [{ email: 'ADA@acme.com', displayName: 'Ada' }], description: 'CONFIDENTIAL-AGENDA' };
+    // The canonical call schema (migration 1383) carries participants as strings: each entry is ONE
+    // identity, so the caller's number and Ada's address are two participants, never linked by
+    // co-occurring on the same call (D-012: conservative keys).
+    const call = { title: 'Call with Ada', from: '+1 (555) 123-4567', to: ['+15550009999'], participants: ['"Ada Lovelace" <ada@acme.com>', '+1 555 123 4567'], text: 'CONFIDENTIAL-TRANSCRIPT' };
     feeds[MAIL] = [
       { datatype: 'email-message', nativeId: 'msg-1', payload: email, occurredAt: '2026-10-02T09:00:00.000Z' },
-      { datatype: 'email-message', nativeId: 'msg-2', payload: { from: 'No Reply <no-reply@acme.com>', to: ['me@papercusp.test'], subject: 'Receipt' }, occurredAt: '2026-10-02T10:00:00.000Z' },
+      { datatype: 'email-message', nativeId: 'msg-2', payload: { id: 'msg-2', from: 'No Reply <no-reply@acme.com>', to: ['me@papercusp.test'], subject: 'Receipt' }, occurredAt: '2026-10-02T10:00:00.000Z' },
       { datatype: 'calendar-event', nativeId: 'evt-1', payload: event, occurredAt: '2026-10-03T15:00:00.000Z' },
     ];
     feeds[PHONE] = [{ datatype: 'call', nativeId: 'call-1', payload: call, occurredAt: '2026-10-04T11:00:00.000Z' }];
@@ -363,14 +368,19 @@ describe('platform relationship graph (P-002, R-1)', () => {
       canonical: true,
       displayName: 'Ada Lovelace',
       emails: ['ada@acme.com'],
-      phones: ['+15551234567'],
-      identityKeys: ['email:ada@acme.com', 'phone:+15551234567'],
+      identityKeys: ['email:ada@acme.com'],
     });
+    expect(ada.payload.phones ?? []).toEqual([]);
     expect([...(ada.payload.memberRecordIds as string[])].sort()).toEqual([
       dataSourceRecordId(WS, mail, 'person', 'participant:email:ada@acme.com'),
       dataSourceRecordId(WS, phone, 'person', 'participant:email:ada@acme.com'),
-      dataSourceRecordId(WS, phone, 'person', 'participant:phone:+15551234567'),
     ].sort());
+
+    // The number on the same call is its own person: co-occurrence is not identity.
+    const caller = await findEntityByIdentity(sql, WS, 'person', 'phone:+15551234567');
+    expect(caller).not.toBeNull();
+    expect(caller!.id).not.toBe(ada.feature_id);
+    expect(caller!.payload.emails ?? []).toEqual([]);
 
     // The three interaction records resolve to that one person.
     for (const [datatype, payload] of [['email-message', email], ['calendar-event', event], ['call', call]] as const) {
@@ -379,7 +389,7 @@ describe('platform relationship graph (P-002, R-1)', () => {
 
     // Every field carries source, observed-at and accepted-by provenance.
     const provenance = ada.payload.provenance as Record<string, { source?: unknown; observedAt?: unknown; acceptedBy?: unknown }>;
-    for (const key of ['displayName', listProvenanceKey('emails', 'ada@acme.com'), listProvenanceKey('phones', '+15551234567')]) {
+    for (const key of ['displayName', listProvenanceKey('emails', 'ada@acme.com')]) {
       expect(Object.keys(provenance), key).toContain(key);
     }
     for (const [key, entry] of Object.entries(provenance)) {
@@ -404,13 +414,16 @@ describe('platform relationship graph (P-002, R-1)', () => {
   });
 
   it('a source that does not route person to record projects no interaction participants (D-013 grant)', async () => {
-    feeds[PHONE] = [{ datatype: 'call', nativeId: 'call-1', payload: { from: '+1 555 123 4567', participants: [{ name: 'Ada', email: 'ada@acme.com' }] } }];
+    feeds[PHONE] = [{ datatype: 'call', nativeId: 'call-1', payload: { from: '+1 555 123 4567', participants: ['Ada <ada@acme.com>'] } }];
     const phone = await connect(PHONE, { call: ['document'] });
     await sync(phone);
     // Positive control: the call itself was stored, so the empty graph is the grant, not a dropped delivery.
     const stored = await sql<{ sink_kind: string }[]>`
       SELECT sink_kind FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ${phone}::uuid AND datatype_id = 'call'`;
-    expect(stored.map((s) => s.sink_kind)).toEqual(['data-source-document']);
+    const kinds = stored.map((s) => s.sink_kind);
+    expect(kinds, JSON.stringify(kinds)).toContain('data-source-document');
+    // The grant: no participant sink is attached for a source that does not route person to record.
+    expect(kinds, JSON.stringify(kinds)).not.toContain('relationship-graph-participants');
     expect(await graphRows('DSR-', 'person')).toEqual([]);
     expect(await graphRows('PER-', 'person')).toEqual([]);
   });

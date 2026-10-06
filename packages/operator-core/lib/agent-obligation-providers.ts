@@ -30,6 +30,7 @@ import type { FleetStaffingRow } from './fleet/fleet-staffing-read';
 import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
+import { inboxWakeKey } from './agent-tools/coordination/inbox-wake';
 
 export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v6';
 /** v3 (P-009): a no-new-plan review discharges only with a passing coverage map. */
@@ -37,7 +38,7 @@ export const GOAL_PLANNING_OBLIGATION_REVISION = 'goal-planning-needed-v3';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
-export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v1';
+export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v2';
 export const CONSULT_RECONCILIATION_OBLIGATION_REVISION = 'consult-proceed-reconciliation-v1';
 export const FLEET_STAFFING_OBLIGATION_REVISION = 'fleet-staffing-v1';
 
@@ -1536,7 +1537,12 @@ export function waitingOnObligations(input: WaitingOnProviderInput): AgentObliga
       }),
     ];
   }
-  const rows = input.read.value;
+  // Every session keeps this lifecycle watch armed so a delivered inbox message
+  // can resume it. It is wake plumbing, not a dependency the agent is waiting
+  // on; surfacing it as blocked sends the reader to inspect a healthy fixture.
+  const rows = input.read.value.filter(
+    (row) => row.kind !== 'event-await' || row.key !== inboxWakeKey(input.ownerId),
+  );
   if (rows.length === 0) {
     return [
       defineAgentObligation({

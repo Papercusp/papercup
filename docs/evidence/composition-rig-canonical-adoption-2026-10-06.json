@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "composition-rig-canonical-adoption-v1",
+  "workItem": "WI-10006495",
+  "originalSource": "WI-10005142",
+  "sourcePlan": "composition-rig-canonical-schema-2026-10-06",
+  "stage": "P-002 implementation and focused proof",
+  "sourceSha256": {
+    "packages/operator-core/lib/shared-pot-loop/composition-rig.ts": "970525f6a0931fd71cf80376147896fb1536817dc92fea82ba6d10999d2d420b",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts": "4b9196964228c4dc6dfa6d292106dd1f607e1d0d1fec533290af12dc99ad66cd",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-feature-write-schema-drift.test.ts": "dd2ddf50769bced8a525d44e64e71ec07f638815b78d0890a464e5e05b3ccaed",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-issue-schema-drift.test.ts": "9020a5fb6a5c94040e629ac1f394295e786772c2f90279b95bfad0ca6d2c2a30",
+    "packages/operator-core/lib/shared-pot-loop/federated-cell-setup.ts": "34f561c84ea2c8703dcae8ecc51ec53355027214561fae2f85292908e53a8a91",
+    "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts": "4f5cd94787014b628c862d3689646888e2dd3fb39b66baff251171af646f56f4",
+    "libs/test-config/src/pg-migrate.ts": "c50cb9703f37624ec0ebf4e9bc474145584576e813e4a26a5aa244561bb3a49c",
+    "libs/test-config/src/pg-migrate.integration.test.ts": "c2eda106f654495fe65e1b385dc05ac2826d1e2784255d5c98eff0fbd394f0a8"
+  },
+  "sourceHead": "202743ceba73f6107991c915144d47787a2e95f5",
+  "testConfigHead": "74d8095e5f4022b4348df3c06de264a2bc04f079",
+  "consumerPopulation": [
+    "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts"
+  ],
+  "changes": [
+    "Every cell uses createOrgTestDb(adminPoolMax4), keyed by maintained canonical migrations.",
+    "Only rig_side_effects and canonical project/pot/member seeds remain rig-specific.",
+    "Parent pot/home/peer username, per-cell HLC, authority HTTP seam, trust/CDC/projections, extra setup and local effects retained.",
+    "Depth and monitor health use the driven workspace/harness scope; template plan and pot membership CDC remain distinct.",
+    "Real-cell schema/constraints/readiness/capture/federation/cleanup regression controls replace private-DDL inference."
+  ],
+  "testRuns": {
+    "canonicalCells": {
+      "id": 20830477,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "templateKey": "8ac11bd6de104652",
+      "provisioningMs": [
+        25646.384803999998,
+        4918.636811999997
+      ]
+    },
+    "originalHappyPath": {
+      "id": 20830476,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "originalReadinessAndMonitor": {
+      "id": 20831048,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "templateFixture": {
+      "id": 20830538,
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0
+    },
+    "boundedDrops": {
+      "id": 20830542,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "parserAndSyntax": {
+      "log": "/tmp/wi10006495-focused-01.log",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "typecheck": {
+    "operatorCore": "clean; /tmp/wi10006495-typecheck-01.log",
+    "testConfig": "clean; /tmp/ei25215184-typecheck-02.log"
+  },
+  "priorPreflight": "docs/evidence/composition-rig-canonical-template-spike-2026-10-06.json",
+  "coldBuildCost": "unmeasured; global setup may warm template and keys changed during first run",
+  "boundEvidence": {
+    "r1": 25657,
+    "r2": 25658,
+    "canonicalAdoption": 25659,
+    "readiness": 25813
+  },
+  "incidents": [
+    {
+      "id": "EI-25214693249500099",
+      "state": "done",
+      "completionAuthority": "committed"
+    },
+    {
+      "id": "EI-25215184717616522",
+      "state": "done",
+      "completionAuthority": "committed"
+    }
+  ],
+  "coverage": {
+    "population": [
+      "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts"
+    ],
+    "checked": [
+      "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts"
+    ],
+    "notChecked": [
+      "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts"
+    ],
+    "notApplicable": [],
+    "residue": [
+      "WI-10005142"
+    ]
+  },
+  "remaining": {
+    "sourceCustodian": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+    "nextStage": "P-003 full consumer proof and committed source reconciliation",
+    "metaVetting": "Revision2 exact consult conv-muwdr64k-0000-86e883c9b8aa4f7ca274ddaa043ea102; native router failed expert kickoff, no verdict/attestation claimed.",
+    "sync": "git-sync:run fired and returned in_progress; no completion inferred."
+  },
+  "boundaries": "No original-source final closure, independent final D006, feature acceptance, main promotion, shipment or LIVE_GATE_OPS claim."
+}

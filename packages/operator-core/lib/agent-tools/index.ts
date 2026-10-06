@@ -1821,7 +1821,7 @@ import { backgroundWorkspaceIds } from '../workspace-registry';
 // (EI-312 leg 1: a test worker must not poke the live wake system). The
 // PAPERCUSP_BACKGROUND_WORKERS flag only controls background loops and is `0`
 // in the request workers whose process-local matcher must remain armed.
-import { isHostSingleton, reactionMatcherShouldArm } from '../background-workers';
+import { isHostSingleton, reactionMatcherShouldArm, whenOperatorHostProcess } from '../background-workers';
 try {
   if (reactionMatcherShouldArm()) {
     // WI-4890: :3070 is a reuse-port cluster, but event-reaction rules are
@@ -1915,22 +1915,19 @@ import '../harness/routines/loop-turn-outcome';
 // P-020: terminal work-item rows carry a durable done-event intent. Register
 // its source reconciler on this existing await sweep before the first tick.
 import '../work-item-completion-event-reconciler';
-try {
-  startAwaitSweeper();
-} catch {
-  /* never block boot */
-}
+// WI-10006280: these three loops claim and EXECUTE other agents' wake deliveries,
+// so they start only in an operator HOST — `whenOperatorHostProcess` runs them once
+// `runBootstrap()` declares the process a host (immediately if it already has).
+// Importing this registry from a script, a build generator or a vitest worker no
+// longer starts them. The wrapper keeps the never-block-boot contract.
+whenOperatorHostProcess('await-event-sweeper', startAwaitSweeper);
 
 // fleet-deltas-leader-primitives-2026-07-10 P-008 — the predicate-watch poller
 // (engine-side "wake me when a tool result crosses a threshold"). Boot-started so
 // rows registered before a host restart keep polling; same fail-soft contract as
 // the sweeper above (missing table pre-migration-541 must never block boot).
 import { startPredicateWatchPoller } from '../events/await/predicate-watch';
-try {
-  startPredicateWatchPoller();
-} catch {
-  /* never block boot */
-}
+whenOperatorHostProcess('predicate-watch-poller', startPredicateWatchPoller);
 
 // get-feedback-relevance-consults-2026-08-16 P-008 — the interest-watch sweeper
 // (push-interjection: peer in-flight work matched against standing embedded
@@ -1938,11 +1935,7 @@ try {
 // sweeping; same fail-soft contract (missing table pre-migration-839 must
 // never block boot — the tick catches its own errors).
 import { startInterestWatchSweeper } from '../events/await/interest-watch';
-try {
-  startInterestWatchSweeper();
-} catch {
-  /* never block boot */
-}
+whenOperatorHostProcess('interest-watch-sweeper', startInterestWatchSweeper);
 
 // EI-10966 — prompt-weight budget self-check. LAST import: every tool above has
 // registered, so this sees the full projected catalog. Warns (operator logs only,

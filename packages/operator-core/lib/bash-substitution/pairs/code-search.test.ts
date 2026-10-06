@@ -20,7 +20,11 @@ import type { CorpusFixture } from '../corpus';
 import { resolveDirectoryAnchor } from '../../code-intelligence/lsp-adapter';
 import {
   anchorForRoot,
+  CALLERS_GRAPH_MEASUREMENT,
+  CALLERS_GRAPH_OUTCOMES,
+  callerIdentOf,
   GITNEXUS_INDEX_FINDING,
+  graphCallersLookup,
   lspDefinitionLookup,
   NESTED_PROJECT_CONTAINERS,
   parseGrepAtom,
@@ -243,5 +247,102 @@ describe('code-search.definition-lookup — promotion state', () => {
   it('keeps the gitnexus index finding the reindex routine cites', () => {
     expect(GITNEXUS_INDEX_FINDING.refreshOwner).toContain('system:gitnexus-reindex');
     expect(GITNEXUS_INDEX_FINDING.note).toMatch(/scheduled analyze completions|graph canaries/i);
+  });
+});
+
+// ── P-002(d) / D-010(d): code-search.callers-lookup ──────────────────────────
+
+const claimsCallers = (atom: string) => matchingAtoms(graphCallersLookup, [{ sid: 's', ts: 't', atom }]).length === 1;
+const coverCallers = (atom: string) => graphCallersLookup.cover(atom);
+
+describe('code-search.callers-lookup — what it claims', () => {
+  it('claims a recursive grep whose quoted pattern is IDENT(', () => {
+    expect(claimsCallers('grep -rn "requirePrincipal(" --include=*.ts packages/operator-core/lib')).toBe(true);
+    expect(claimsCallers("grep -rln 'readCell(' packages/operator-core/lib apps/operator/lib")).toBe(true);
+    expect(claimsCallers('grep -n "registerDesktopSession(" -r packages/operator-core/lib apps/operator --include=*.ts')).toBe(true);
+    expect(claimsCallers('grep -rnE "runGoldSet\\(" packages/operator-core/lib')).toBe(true);
+  });
+
+  it('does not claim definition lookups, non-recursive greps, expansions, redirects or vendored code', () => {
+    expect(claimsCallers('grep -rn "export function requirePrincipal" packages/operator-core/lib')).toBe(false);
+    expect(claimsCallers('grep -n "requirePrincipal(" packages/operator-core/lib/auth.ts')).toBe(false);
+    expect(claimsCallers('grep -rn "$fn(" packages/operator-core/lib')).toBe(false);
+    expect(claimsCallers('grep -rn "requirePrincipal(" packages/operator-core/lib > /tmp/x')).toBe(false);
+    expect(claimsCallers('grep -rn "isBogon(" node_modules/hyperdht/lib')).toBe(false);
+  });
+});
+
+describe('code-search.callers-lookup — cover() names every reason the graph cannot answer', () => {
+  it('maps a resolved identifier with repo-anchored roots onto graph:query callers', () => {
+    expect(coverCallers('grep -rn "requirePrincipal(" --include=*.ts packages/operator-core/lib apps/operator/lib')).toEqual({
+      covered: true,
+      expression: 'graph:query { op: "callers", name: "requirePrincipal" }',
+    });
+    // A directory that contains projects is still inside this repo.
+    expect(coverCallers('grep -rln "splitMarkdown(" libs/generic').covered).toBe(true);
+  });
+
+  it.each([
+    ['ambiguous', 'grep -rn "readCell(" packages/operator-core/lib', /ambiguous/],
+    ['file-only', 'grep -rn "gcVerifyInstances(" packages/operator-core/lib', /file-level/],
+    ['not-found', 'grep -rn "supportsContext1m(" packages/operator-core/lib', /no symbol/],
+    ['missed', 'grep -rn "joinSharedHarness(" packages/operator-core/lib', /empty answer/],
+    ['unmeasured', 'grep -rn "neverMeasuredIdentifier(" packages/operator-core/lib', /no graph answerability measurement/],
+  ])('a measured %s identifier is not covered', (_label, atom, reason) => {
+    const result = coverCallers(atom);
+    expect(result.covered).toBe(false);
+    expect(result.reason).toMatch(reason);
+  });
+
+  it.each([
+    ['a bare first-segment root', 'grep -rn "requirePrincipal(" --include=*.ts packages apps libs', /not anchored inside this repo/],
+    ['no search path', 'grep -rn "requirePrincipal(" --include=*.ts', /no search path/],
+    ['a body read', 'grep -rn -A6 "requirePrincipal(" packages/operator-core/lib', /BODY/],
+    ['a non-code --include', 'grep -rn "requirePrincipal(" --include=*.md packages/operator-core/lib', /does not index as code/],
+    ['an unexpressible flag', 'grep -rnc "requirePrincipal(" packages/operator-core/lib', /`-c`/],
+    ['an escaped paren in basic syntax', 'grep -rn "requirePrincipal\\(" packages/operator-core/lib', /unmatched paren in basic/],
+    ['a bare paren in extended syntax', 'grep -rnE "requirePrincipal(" packages/operator-core/lib', /unmatched paren in extended/],
+    ['an escaped paren under -F', 'grep -rnF "requirePrincipal\\(" packages/operator-core/lib', /backslash is literal/],
+  ])('%s is not covered', (_label, atom, reason) => {
+    const result = coverCallers(atom);
+    expect(result.covered).toBe(false);
+    expect(result.reason).toMatch(reason);
+  });
+
+  it('accepts the escaped paren under -E and the bare paren under -F', () => {
+    expect(coverCallers('grep -rnE "requirePrincipal\\(" packages/operator-core/lib').covered).toBe(true);
+    expect(coverCallers('grep -rnF "requirePrincipal(" packages/operator-core/lib').covered).toBe(true);
+  });
+
+  it('parses the identifier out of word-bounded and escaped patterns', () => {
+    expect(callerIdentOf('grep -rn "\\bsendMessage(" packages/operator-core/lib')).toBe('sendMessage');
+    expect(callerIdentOf("grep -rnE 'runGoldSet\\(' packages")).toBe('runGoldSet');
+    expect(callerIdentOf('grep -rn "export function x" packages')).toBeNull();
+  });
+});
+
+describe('code-search.callers-lookup — measurement and promotion state', () => {
+  const fixture = JSON.parse(
+    readFileSync(join(HERE, '../fixtures/code-search.callers-lookup.sample.json'), 'utf8'),
+  ) as CorpusFixture;
+
+  it('measured every identifier in the frozen sample, and the tally matches the table', () => {
+    const idents = fixture.sample.map(({ atom }) => callerIdentOf(atom));
+    expect(idents.filter((i) => i === null)).toEqual([]);
+    expect(idents.filter((i) => CALLERS_GRAPH_OUTCOMES[i!] === undefined)).toEqual([]);
+    expect(Object.keys(CALLERS_GRAPH_OUTCOMES).sort()).toEqual([...new Set(idents as string[])].sort());
+    const tally: Record<string, number> = {};
+    for (const outcome of Object.values(CALLERS_GRAPH_OUTCOMES)) tally[outcome] = (tally[outcome] ?? 0) + 1;
+    expect(tally).toEqual(CALLERS_GRAPH_MEASUREMENT.tally);
+  });
+
+  it('is recorded needs-widening and pinned at observe until the graph can answer', () => {
+    expect(graphCallersLookup.toolName).toBe('graph:query');
+    expect(graphCallersLookup.expectedVerdict).toBe('needs-widening');
+    expect(graphCallersLookup.holdAtObserve).toMatch(/P-017/);
+    // D-018: the hold names the work-item that owns lifting it, so the deferral cannot go unowned.
+    expect(graphCallersLookup.holdAtObserve).toMatch(/WI-10006543/);
+    expect(assertPolicyTier(graphCallersLookup)).toBe('observe');
+    expect(graphCallersLookup.advisoryText).toMatch(/not proof of absence/);
   });
 });

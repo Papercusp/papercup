@@ -104,6 +104,15 @@ export interface HostedDesktopBackendDeps {
    * (WI-10002797). A failure is warned and retried on the next call.
    */
   reconcile?: () => Promise<number>;
+  /**
+   * Grab one frame on demand for a desktop this host leases when the capture loop has
+   * no fresh file for it — `desktopThumbnailer().thumbnail` (plan
+   * agent-multi-desktops-grid-2026-10-06 P-005 / D-008). The loop's display list is
+   * fixed at frame bootstrap, so a desktop an agent starts later is only ever seen
+   * through this path. Only a grid read calls it, so idle cost stays zero. Omitted:
+   * no fallback (a missing or stale capture file answers null).
+   */
+  grabThumbnail?: (display: number) => Promise<Buffer | null>;
   /** Override the capture directory (tests, or a pack that relocates it). */
   captureDir?: string;
   /** Override the KasmVNC websocket path. */
@@ -462,14 +471,25 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
       const display = await displayFor(desktopSessionId);
       if (display === null) return null;
       const path = `${captureDir}/display-${display}.jpg`;
+      let fromLoop: Buffer | null = null;
       try {
         const info = await stat(path);
-        if (now() - info.mtimeMs > HOSTED_THUMBNAIL_MAX_AGE_MS) return null;
-        return await readFile(path);
+        if (now() - info.mtimeMs <= HOSTED_THUMBNAIL_MAX_AGE_MS) fromLoop = await readFile(path);
       } catch {
         // Absent is the capture loop's NORMAL answer for a display with no active
-        // client (it removes the stale jpeg on purpose), so this is null, never an
-        // error — the picker renders "no recent frame" instead of a dead screen.
+        // client (it removes the stale jpeg on purpose), so this is not an error.
+      }
+      if (fromLoop) return fromLoop;
+      // A stale or absent file is never served as live. A desktop this host LEASES is
+      // grabbed directly instead — a fresh frame is the truth, and a dead display just
+      // yields null. A display number known only from a registry row is not grabbed:
+      // it could name an X server this process does not own.
+      const leased = displayNumber(deps.leasedDesktop(desktopSessionId)?.display);
+      if (leased === null || !deps.grabThumbnail) return null;
+      try {
+        return await deps.grabThumbnail(leased);
+      } catch (error) {
+        warn(`hosted-desktop-backend — on-demand thumbnail for ${desktopSessionId} failed: ${String(error)}`);
         return null;
       }
     },

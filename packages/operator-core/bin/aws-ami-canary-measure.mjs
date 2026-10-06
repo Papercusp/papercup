@@ -39,6 +39,27 @@ export const DIAGNOSTICS_SECTION_MAX_CHARS = Object.freeze({ status: 8_000, star
  * folio_wait_bit_common, ~7s CPU over a 120s health window).
  */
 export const ROOT_VOLUME_INITIALIZATION_RATE_MIBPS = 300;
+/** Bound on the boot console tail carried when an instance never reaches SSM Online (WI-10006518). */
+export const BOOT_CONSOLE_MAX_CHARS = 6_000;
+/** While waiting for SSM Online, read the boot console every Nth ping poll (~60 s at pollMs 10 s). */
+export const BOOT_CONSOLE_POLL_EVERY = 6;
+/**
+ * Console lines that only a FAILED boot prints. Seeing one ends the SSM wait at once. Measured on
+ * P-012 chain14 (WI-10006518): the release AMI's guest rejected its root XFS log and sat in
+ * emergency mode from t=90s. The canary waited the full 900 s SSM budget and then reported only
+ * "SSM agent Online did not happen", with nothing that named the failed root mount.
+ */
+const BOOT_FATAL_PATTERNS = [
+  /Failed to mount sysroot/,
+  /Entering emergency mode/i,
+  /You are in emergency mode/i,
+  /Kernel panic - not syncing/,
+  /VFS: Unable to mount root fs/,
+];
+/** The filesystem's own complaint, printed just before a failed root mount. */
+const BOOT_CAUSE_PATTERN = /\b(XFS|EXT4-fs|BTRFS)\b.*\b(error|failed|inconsistent|corrupt)/i;
+const BOOT_FAILURE_LINES_MAX = 6;
+const BOOT_FAILURE_LINE_MAX_CHARS = 200;
 export const CANARY_BUDGETS = Object.freeze({
   runningMs: 10 * 60_000,
   ssmOnlineMs: 15 * 60_000,
@@ -232,6 +253,40 @@ async function readBootstrapDiagnostics(deps, instanceId, commands, budgets) {
   }
 }
 
+/**
+ * Reduce a raw EC2 console capture to what explains a boot that never reached SSM: the bounded
+ * tail, plus the filesystem and initrd lines that name the failure, in console order. `fatal` is
+ * true only when a line from BOOT_FATAL_PATTERNS is present, and a healthy boot never prints one.
+ */
+export function summarizeBootConsole(raw) {
+  const text = String(raw ?? '')
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/\r/g, '');
+  const failureLines = [];
+  let fatal = false;
+  for (const line of text.split('\n')) {
+    const isFatal = BOOT_FATAL_PATTERNS.some((re) => re.test(line));
+    if (!isFatal && !BOOT_CAUSE_PATTERN.test(line)) continue;
+    fatal ||= isFatal;
+    const trimmed = line.trim().slice(0, BOOT_FAILURE_LINE_MAX_CHARS);
+    if (failureLines.length < BOOT_FAILURE_LINES_MAX && !failureLines.includes(trimmed)) failureLines.push(trimmed);
+  }
+  // `failureLines` LAST: callers keep the TAIL of the serialized failure payload.
+  return { fatal, tail: text.slice(-BOOT_CONSOLE_MAX_CHARS), failureLines };
+}
+
+/** Read the boot console. Never throws: an unreadable console is reported, never fatal. */
+async function readBootConsole(deps, instanceId) {
+  try {
+    const raw = await deps.consoleOutput(instanceId);
+    if (!raw) return { fatal: false, note: 'console output empty', tail: '', failureLines: [] };
+    return summarizeBootConsole(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { fatal: false, note: `console unreadable: ${message}`, tail: '', failureLines: [] };
+  }
+}
+
 /** Decode the attestation marker; a missing or undecodable marker is a hard failure. */
 export function extractAttestation(stdout) {
   const lines = String(stdout ?? '').split(/\r?\n/);
@@ -292,9 +347,10 @@ function requireSsmSuccess(result, label) {
  * Launch the shared AMI privately in the clean account, prove SSM + bootstrap + service, then
  * tear down and census. `deps` (all async unless noted):
  *   callerAccount() → account id of the assumed clean-account identity
- *   describeImage(imageId) → { state, architecture, rootDeviceName? } | null
+ *   describeImage(imageId) → { state, architecture, rootDeviceName?, rootEncrypted? } | null
  *   describeSubnet(subnetId) → { subnetId, vpcId } | null
- *   runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags, rootDeviceName?, volumeInitializationRateMiBps? }) → instanceId
+ *   runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags, rootDeviceName?, volumeInitializationRateMiBps?, encryptRootVolume? }) → instanceId
+ *   consoleOutput(instanceId) → latest serial console text | null
  *   describeInstance(instanceId) → { state, publicIpv4, stateReason } (state 'pending' while unknown)
  *   ssmPingStatus(instanceId) → 'Online' | 'ConnectionLost' | 'Inactive' | null
  *   sendCommand({ instanceId, commands, executionTimeoutSec }) → commandId
@@ -328,6 +384,7 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
   let failure = null;
   let bootstrapDiagnostics = null;
   let bootstrapWaitFailed = false;
+  let bootConsole = null;
   let plan = null;
   try {
     observed.instanceId = await deps.runInstance({
@@ -337,7 +394,15 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
       instanceType,
       tags: canaryTags(input, runId),
       ...(image.rootDeviceName
-        ? { rootDeviceName: image.rootDeviceName, volumeInitializationRateMiBps: ROOT_VOLUME_INITIALIZATION_RATE_MIBPS }
+        ? {
+            rootDeviceName: image.rootDeviceName,
+            volumeInitializationRateMiBps: ROOT_VOLUME_INITIALIZATION_RATE_MIBPS,
+            // Every launch of a released AMI reads an ENCRYPTED root, and an encrypted volume reads
+            // an absent snapshot block as noise rather than zeros. The clean room's transient AMI is
+            // unencrypted, so encrypt its root at launch, or it boots a read path no customer gets
+            // (WI-10006518: the clean room passed an image every encrypted launch of it failed).
+            ...(image.rootEncrypted === false ? { encryptRootVolume: true } : {}),
+          }
         : {}),
     });
     const instanceId = observed.instanceId;
@@ -349,7 +414,28 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     });
     observed.publicIpv4Assigned = Boolean(running.publicIpv4);
     if (observed.publicIpv4Assigned) fail(`canary instance ${instanceId} was assigned public IPv4 ${running.publicIpv4}`);
-    await waitFor(deps, budgets.ssmOnlineMs, budgets.pollMs, 'SSM agent Online', () => deps.ssmPingStatus(instanceId), (s) => s === 'Online');
+    let pingPolls = 0;
+    await waitFor(
+      deps,
+      budgets.ssmOnlineMs,
+      budgets.pollMs,
+      'SSM agent Online',
+      async () => {
+        const status = await deps.ssmPingStatus(instanceId);
+        pingPolls += 1;
+        // A guest stuck in emergency mode never reaches SSM. Read its console so a failed boot
+        // ends the wait within about a minute and names its cause (WI-10006518).
+        if (status !== 'Online' && pingPolls % BOOT_CONSOLE_POLL_EVERY === 0) {
+          const read = await readBootConsole(deps, instanceId);
+          if (read.fatal) {
+            bootConsole = read;
+            fail(`canary instance ${instanceId} failed to boot: ${read.failureLines.join(' | ')}`);
+          }
+        }
+        return status;
+      },
+      (s) => s === 'Online',
+    );
     observed.ssmOnline = true;
 
     plan = ssmScriptPlan(input.fixture);
@@ -378,6 +464,10 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     failure = error;
     if (bootstrapWaitFailed && observed.instanceId && bootstrapDiagnostics === null && plan) {
       bootstrapDiagnostics = await readBootstrapDiagnostics(deps, observed.instanceId, plan.readDiagnostics, budgets);
+    }
+    // Never reached SSM: the boot console is the only evidence left, and teardown destroys it.
+    if (observed.instanceId && !observed.ssmOnline && bootConsole === null) {
+      bootConsole = await readBootConsole(deps, observed.instanceId);
     }
   } finally {
     if (observed.instanceId) {
@@ -410,8 +500,14 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
       // LAST on purpose: callers keep the TAIL of this serialized payload, so the cause of a
       // failed service start must sit at the end to survive that cut.
       ...(bootstrapDiagnostics !== null ? { bootstrapDiagnostics } : {}),
+      // Set only when SSM never came Online, so it never competes with bootstrapDiagnostics.
+      ...(bootConsole !== null ? { bootConsole } : {}),
     };
-    throw new ToolError(failure instanceof Error ? failure.message : String(failure), details);
+    let message = failure instanceof Error ? failure.message : String(failure);
+    if (bootConsole?.failureLines.length && !message.includes('failed to boot')) {
+      message = `${message}; boot console: ${bootConsole.failureLines.join(' | ')}`;
+    }
+    throw new ToolError(message, details);
   }
   return { runId, ...observed };
 }

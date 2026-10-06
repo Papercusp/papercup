@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import runTool, { emptyDistilledRunRefusal, nameFilterNoMatchRefusal, testEvidenceRecoveryRunId } from './run';
+import runTool, {
+  buildDetachedMixedTestRunRequest,
+  buildDetachedTestRunRequest,
+  emptyDistilledRunRefusal,
+  nameFilterNoMatchRefusal,
+  testEvidenceRecoveryRunId,
+} from './run';
+import { REPO_ROOT } from '../docs/_repo-paths';
 
 /**
  * `files` became OPTIONAL when `changedPaths` was added, which made `testing:run {}`
@@ -72,6 +79,38 @@ describe('testing:run selector arbitration', () => {
     expect(testEvidenceRecoveryRunId(originRunId, { error: 'timeout', detachedRunId })).toBe(detachedRunId);
     expect(testEvidenceRecoveryRunId(originRunId, { error: 'timeout' })).toBe(originRunId);
     expect(testEvidenceRecoveryRunId(originRunId, { error: undefined, detachedRunId })).toBe(originRunId);
+  });
+
+  it('keeps detached timeout recovery locally adoptable and preserves its explicit harness scope', () => {
+    const files = ['agent-credentials.test.ts'];
+    const single = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files,
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      timeoutMs: 90_000,
+    });
+    const unscoped = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files,
+      timeoutMs: 90_000,
+    });
+    const mixed = buildDetachedMixedTestRunRequest({
+      groups: [{ root: REPO_ROOT, files }],
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      timeoutMs: 90_000,
+    });
+
+    for (const request of [single, mixed]) {
+      expect(request.testRunSource).toBe('local');
+      expect(request.env).toMatchObject({
+        PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+        PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+      });
+    }
+    expect(unscoped.testRunSource).toBe('local');
+    expect(unscoped.env).not.toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS');
   });
 
   it('does not claim evidence from an affected-test plan that runs nothing', async () => {

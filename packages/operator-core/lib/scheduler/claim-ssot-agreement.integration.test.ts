@@ -418,6 +418,9 @@ beforeAll(async () => {
   // P-007 Phase C / WI-10006221: re-rendered again with the completion-verification policy.
   await db.sql.unsafe(readMigration('1373-completion-verification-claim-floor.sql')).simple();
   await db.sql.unsafe(readMigration('1364-solo-decision-execution-reservation.sql')).simple();
+  // WI-10006417: Route A is plan-wide even when an owner answer's itemRefs list
+  // only the separate implementation details and omits the linked plan item.
+  await db.sql.unsafe(readMigration('1389-plan-wide-route-a-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -433,13 +436,13 @@ beforeEach(async () => {
 // title and an execution master with no plan_item back-pointer. No hold, lease,
 // assignment, active plan or spec exclusion supplies the answer in these cases.
 describe('WI-10006159 solo decision reservations', () => {
-  const decision = async (title: string, body: string, refs: string[] = []) => {
+  const decision = async (title: string, body: string, refs: string[] = [], id = 'D-005') => {
     await seedPlan('solo-route-plan', 'ready');
     await db.sql.begin(async (tx) => {
       await writePlanIndexRows(
         tx as unknown as Parameters<typeof writePlanIndexRows>[0],
         { workspaceId: WS, harnessSlug: H, planSlug: 'solo-route-plan' },
-        { decisions: [{ id: 'D-005', title, body, date: '2026-10-05', itemRefs: refs }] },
+        { decisions: [{ id, title, body, date: '2026-10-05', itemRefs: refs }] },
       );
     });
   };
@@ -488,6 +491,36 @@ describe('WI-10006159 solo decision reservations', () => {
       ? await wi.claimNextIssueWorkItem({ harness: H, assignee: 'another-drainer' }, WS)
       : await wi.claimNextWorkItem({ harness: H, assignee: 'another-drainer' })).toBeNull();
     expect((await wi.claimWorkItem('WI-10005829', 'route-owner', { harness: H }))?.id).toBe('WI-10005829');
+  });
+
+  it.each(['task', 'feature'])('reserves the plan-wide Route A owner for P-002 despite D-006 refs for %s', async (kind) => {
+    const planSlug = 'solo-route-plan';
+    const id = `WI-10006417-${kind.toUpperCase()}`;
+    // The decision names the executor by its short display prefix. The by-id claim API
+    // requires a canonical owner id unless the fixture also seeds coord_presence.
+    const routeOwnerId = 'su-dab96471-1234-4234-9234-123456789abc';
+    await decision(
+      'Owner answers: completion goes straight to Done; only delegated/assigned tasks plus added project rules become work; su-dab96471 builds it',
+      'Route A: this session (su-dab96471) implements the plan.',
+      ['P-003', 'P-006', 'P-010'],
+      'D-006',
+    );
+    await seed(id, {
+      kind,
+      payload: { plan_item: { plan_slug: planSlug, item_id: 'P-002', harness_slug: H } },
+    });
+
+    expect(await floors(id)).toContain('reserved-plan-lane');
+    if (kind === 'task') {
+      expect(await viewClaimableIds()).not.toContain(id);
+      expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'generic-drainer' }, WS)).toBeNull();
+    } else {
+      const candidates = await wi.listWorkItems({ harness: H, kind: 'feature', admissibleOnly: true });
+      expect(candidates.some((row) => row.id === id)).toBe(false);
+      expect(await wi.claimNextWorkItem({ harness: H, assignee: 'generic-drainer' })).toBeNull();
+    }
+    // The route owner can deliberately pick up the reserved item by id.
+    expect((await wi.claimWorkItem(id, routeOwnerId, { harness: H }))?.id).toBe(id);
   });
 
   it('does not infer solo authority from rejected routes, negated implementers or a foreign tenant', async () => {

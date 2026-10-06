@@ -14,7 +14,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
-import { trackDetached } from '../../detached-imports';
+import { getTask } from '../../task-manager/store';
+import { newTaskId } from '../../task-manager/types';
 import {
   applyFrozenCandidateRepairQueueTransition,
   readFrozenCandidateRepairQueueState,
@@ -56,14 +57,17 @@ import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   ADMISSION_PRECHECK_PER_FILE_BUDGET_MS,
   ADMISSION_PRECHECK_SETUP_BUDGET_MS,
-  createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
   precheckPopulation,
   resolveCanonicalIntegrationRoot,
   type FixPrecheckPopulation,
-  type FixPrecheckProgress,
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
+import {
+  settleAdmissionPrecheck,
+  startAdmissionPrecheckWorker,
+  type AdmissionPrecheckWorkerInput,
+} from '../../release/admission-fix-precheck-managed';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import { scheduleRepairAutoVerify } from '../../release/repair-auto-verify';
 import {
@@ -561,21 +565,47 @@ async function inspectQueue() {
   let queue = read.status === 'value' ? read.queue : null;
   let ledger: { status: string; reconciled: number; detail: string } | null = null;
   if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue));
-  // R6 runs in this host's process, not a persistent worker. A normal service restart
-  // kills its setup/test child and its in-memory finalizer. The marker must not keep
-  // advertising "running" until the entire per-file timeout budget expires.
+  // New R6 runs live in task-manager scopes and persist progress/verdict by operationId.
+  // The launcher host PID is only the pre-spawn race guard; after the task row exists,
+  // replacing that host must not cancel or fail an active pre-check.
   const pending = queue?.admissionPrecheck;
-  if (queue && pending?.status === 'running' && pending.runnerPidIdentity && pending.runnerPid) {
-    const alive = isPidAlive(pending.runnerPid);
-    const observedIdentity = alive === true ? checkpointPidIdentity(pending.runnerPid) : null;
-    if (alive === false || (observedIdentity !== null && observedIdentity !== pending.runnerPidIdentity)) {
-      const detail =
-        `R6 pre-check host process ${pending.runnerPid} ended or was replaced before settling ` +
-        `${pending.operationId}; no test verdict exists for ${pending.builtCommit.slice(0, 12)}. ` +
-        'The admission remains fail-closed; retryPrecheck:true starts a fresh measurement.';
+  if (queue && pending?.status === 'running') {
+    let managedTask: Awaited<ReturnType<typeof getTask>> | null = null;
+    let taskReadError: unknown;
+    if (pending.runnerTaskId) {
+      try {
+        managedTask = await getTask(pending.runnerTaskId);
+      } catch (err) {
+        taskReadError = err;
+      }
+    }
+    if (taskReadError) {
+      ledger = {
+        status: 'precheck-task-read-failed',
+        reconciled: 0,
+        detail: `Could not inspect managed runner ${pending.runnerTaskId}: ${String(taskReadError)}`,
+      };
+    }
+
+    const managedTaskLive = managedTask?.state === 'pending' || managedTask?.state === 'running';
+    const managedTaskEnded = Boolean(managedTask && !managedTaskLive);
+    let launcherHostDead = false;
+    if (!managedTask && !taskReadError && pending.runnerPidIdentity && pending.runnerPid) {
+      const alive = isPidAlive(pending.runnerPid);
+      const observedIdentity = alive === true ? checkpointPidIdentity(pending.runnerPid) : null;
+      launcherHostDead = alive === false || (observedIdentity !== null && observedIdentity !== pending.runnerPidIdentity);
+    }
+    const runnerLost = !taskReadError && (managedTaskEnded || launcherHostDead);
+    if (runnerLost) {
+      const detail = managedTaskEnded
+        ? `Managed R6 pre-check task ${pending.runnerTaskId} ended as ${managedTask!.state} ` +
+          `(exit=${managedTask!.exitCode ?? 'unknown'}${managedTask!.exitReason ? `, reason=${managedTask!.exitReason}` : ''}) ` +
+          `before persisting a verdict for ${pending.builtCommit.slice(0, 12)}.`
+        : `R6 pre-check launcher host process ${pending.runnerPid} ended or was replaced before ` +
+          `managed task ${pending.runnerTaskId ?? '(legacy runner)'} was registered; no verdict exists for ${pending.builtCommit.slice(0, 12)}.`;
       const verdict = evaluateFixPrecheck(
         precheckPopulation({ signature: queue.signature, admittedPaths: pending.files }),
-        { ran: false, reason: 'runner-failed', detail },
+        { ran: false, reason: 'runner-failed', detail: `${detail} The admission remains fail-closed; retryPrecheck:true starts a fresh measurement.` },
       );
       try {
         await settleAdmissionPrecheck(queueTarget, pending.operationId, verdict);
@@ -585,7 +615,7 @@ async function inspectQueue() {
         ledger = {
           status: 'precheck-reconcile-failed',
           reconciled: 0,
-          detail: `Could not persist host-restart failure for ${pending.operationId}: ${String(err)}`,
+          detail: `Could not persist managed-runner failure for ${pending.operationId}: ${String(err)}`,
         };
       }
     }
@@ -683,30 +713,6 @@ function admissionPrecheckDeadline(startedAtMs: number, files: readonly string[]
     files.length * ADMISSION_PRECHECK_PER_FILE_BUDGET_MS +
     ADMISSION_PRECHECK_SETTLEMENT_BUDGET_MS
   );
-}
-
-async function settleAdmissionPrecheck(
-  queueTarget: ReturnType<typeof target>,
-  operationId: string,
-  verdict: FixPrecheckVerdict,
-): Promise<void> {
-  const settledAtMs = Date.now();
-  await applyFrozenCandidateRepairQueueTransition(queueTarget, (fresh) => {
-    const current = fresh.admissionPrecheck;
-    if (!current || current.operationId !== operationId || current.status !== 'running') return fresh;
-    const { dispatchReservation, ...rest } = fresh;
-    return {
-      ...rest,
-      ...(dispatchReservation?.token === operationId ? {} : { dispatchReservation }),
-      admissionPrecheck: {
-        ...current,
-        status: verdict.ok ? (verdict.ran ? 'passed' : 'deferred') : 'failed',
-        verdict,
-        updatedAtMs: settledAtMs,
-      },
-      updatedAtMs: Math.max(fresh.updatedAtMs + 1, settledAtMs),
-    };
-  });
 }
 
 async function recordAudit(actor: string, details: Record<string, unknown>): Promise<boolean> {
@@ -1513,6 +1519,7 @@ export default defineTool({
           precheck = matchingPrecheck.verdict;
         } else {
           const startedAtMs = Date.now();
+          const runnerTaskId = newTaskId(startedAtMs);
           const runnerPidIdentity = checkpointPidIdentity(process.pid);
           const operationId =
             `repair-precheck-${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
@@ -1530,6 +1537,7 @@ export default defineTool({
             actor: identity.ownerId,
             runnerPid: process.pid,
             ...(runnerPidIdentity ? { runnerPidIdentity } : {}),
+            runnerTaskId,
             startedAtMs,
             updatedAtMs: startedAtMs,
             expiresAtMs: admissionPrecheckDeadline(startedAtMs, population.files),
@@ -1571,70 +1579,62 @@ export default defineTool({
               judgedSha: queue.repairHead,
             });
           }
-          const runner = createCheckpointTreeFixPrecheckRunner({
+          const workerInput: AdmissionPrecheckWorkerInput = {
+            operationId,
+            taskId: runnerTaskId,
+            queueTarget: inspected.target,
             integrationRoot: precheckRoot,
             checkpointRoot: checkpointRootMirror(precheckRoot),
-          });
-          const persistPrecheckProgress = async (progress: FixPrecheckProgress): Promise<void> => {
-            await applyFrozenCandidateRepairQueueTransition(inspected.target, (fresh) => {
-              const current = fresh.admissionPrecheck;
-              if (!current || current.operationId !== operationId || current.status !== 'running') return fresh;
-              const updatedAtMs = Math.max(fresh.updatedAtMs + 1, progress.heartbeatAtMs);
-              return {
-                ...fresh,
-                updatedAtMs,
-                admissionPrecheck: {
-                  ...current,
-                  currentFile: progress.currentFile,
-                  completedCount: progress.completedCount,
-                  totalCount: progress.totalCount,
-                  heartbeatAtMs: progress.heartbeatAtMs,
-                  updatedAtMs,
-                },
-              };
-            });
+            expiresAtMs: operation.expiresAtMs,
           };
-          void trackDetached(
-            (async () => {
-              let run: Awaited<ReturnType<typeof runner>>;
-              try {
-                run = await runner({
-                  commit: builtCommit,
-                  files: population.files,
-                  onProgress: persistPrecheckProgress,
-                });
-              } catch (err) {
-                run = { ran: false, reason: 'runner-failed', detail: (err as Error).message };
-              }
-              await settleAdmissionPrecheck(inspected.target, operationId, evaluateFixPrecheck(population, run));
-            })(),
-          ).catch((err) => {
-            console.error(`[release:repair-queue] detached pre-check ${operationId} failed to settle`, err);
-          });
-          return json({
-            ...base,
-            ok: true,
-            admitted: false,
-            pending: true,
-            dryRun: false,
-            verdict: 'precheck-running',
-            judgedSha: queue.repairHead,
-            builtCommit,
-            precheckOperation: operation,
-            completionReceipt: {
-              status: 'recorded',
-              effectRef: `release:repair-queue:admit-precheck:${operationId}`,
-            },
-            currentQueueIdentity: {
-              candidate: pendingQueue.candidate,
-              repairHead: pendingQueue.repairHead,
-              updatedAtMs: pendingQueue.updatedAtMs,
-            },
-            note:
-              'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
-              (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${operation.sourceCommit}'` : '') +
-              '.',
-          });
+          let launchFailure: string | null = null;
+          try {
+            const managed = await startAdmissionPrecheckWorker(workerInput);
+            if (!managed.confined) {
+              launchFailure =
+                `managed R6 runner was not placed in a host-independent task scope` +
+                (managed.confinementSkippedReason ? ` (${managed.confinementSkippedReason})` : '');
+            }
+          } catch (err) {
+            launchFailure = err instanceof Error ? err.message : String(err);
+          }
+          if (launchFailure) {
+            precheck = evaluateFixPrecheck(population, {
+              ran: false,
+              reason: 'runner-failed',
+              detail: `Could not launch host-independent managed R6 pre-check ${operationId}: ${launchFailure}`,
+            });
+            try {
+              await settleAdmissionPrecheck(inspected.target, operationId, precheck);
+            } catch (err) {
+              console.error(`[release:repair-queue] failed to persist managed pre-check launch failure ${operationId}`, err);
+            }
+          } else {
+            return json({
+              ...base,
+              ok: true,
+              admitted: false,
+              pending: true,
+              dryRun: false,
+              verdict: 'precheck-running',
+              judgedSha: queue.repairHead,
+              builtCommit,
+              precheckOperation: operation,
+              completionReceipt: {
+                status: 'recorded',
+                effectRef: `release:repair-queue:admit-precheck:${operationId}`,
+              },
+              currentQueueIdentity: {
+                candidate: pendingQueue.candidate,
+                repairHead: pendingQueue.repairHead,
+                updatedAtMs: pendingQueue.updatedAtMs,
+              },
+              note:
+                'R6 pre-check launched as a managed task after its durable marker was written. Its progress and verdict are persisted by operationId and survive serving-host replacement. NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
+                (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${operation.sourceCommit}'` : '') +
+                '.',
+            });
+          }
         }
         if (!precheck.ok) {
           return json({

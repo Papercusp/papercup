@@ -12,6 +12,7 @@ const { runWorkItemAdmissionBulkDedup: runBulkImpl } = await import('./work-item
 const { ADMISSION_MERGE_QUALITY_GOLD_CORPUS, admissionMergeQualityGoldJudgements } =
   await import('./work-items-admission-merge-quality');
 const { LEARNING_MODEL_SPEC } = await import('./learning/model-policy');
+const { runWorkItemAdmissionCensus } = await import('./work-items-admission-census');
 
 type BulkOptions = Parameters<typeof runBulkImpl>[0];
 const MERGE_QUALITY_SENTINEL = ADMISSION_MERGE_QUALITY_GOLD_CORPUS[0]!.pair.pairKey;
@@ -1256,7 +1257,10 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
   }, 60_000);
 
-  it('rolls back the complete stage and marks it failed when an injected post-judgement census rises', async () => {
+  // WI-10006491: the ratchet runs after the merge commit. A rise still fails the
+  // stage and stops the pass. The judged, guarded verdicts stay committed and the
+  // failure reports them; it no longer claims an unknown rollback.
+  it('marks the stage failed and reports its committed merges when the post-commit census rises', async () => {
     await seed();
     await expect(
       runBulk({
@@ -1278,21 +1282,161 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     ).rejects.toThrow(/admission census ratchet violated: 1 -> 2/);
 
     expect(
-      await db.sql<Array<{ count: number }>>`SELECT count(*)::int AS count FROM harness_shared.dedup_adjudications`,
-    ).toEqual([{ count: 0 }]);
-    expect(
-      await db.sql<Array<{ embedding: string }>>`
-        SELECT embedding::text AS embedding FROM harness_shared.work_items WHERE feature_id = 'c'`,
-    ).toEqual([{ embedding: '[0,1,0]' }]);
-    const stage = await db.sql<Array<{ state: string; error: string; unit: string; failure: string }>>`
+      await db.sql<Array<{ a: string; b: string }>>`SELECT a, b FROM harness_shared.dedup_adjudications`,
+    ).toEqual([{ a: 'a', b: 'b' }]);
+    const [stage] = await db.sql<
+      Array<{
+        state: string;
+        error: string;
+        unit: string;
+        failure: string;
+        successful: number;
+        rolled_back: number;
+        after_commit: boolean;
+        receipt_pairs: number;
+        receipt_census: string;
+      }>
+    >`
       SELECT detail->>'status' AS state, detail->>'error' AS error,
              detail #>> '{outcome,unit}' AS unit,
-             detail #>> '{outcome,failureReason}' AS failure
+             detail #>> '{outcome,failureReason}' AS failure,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail #>> '{outcome,rolledBack}')::int AS rolled_back,
+             (detail->>'failedAfterMergeCommit')::boolean AS after_commit,
+             (detail #>> '{mergeReceipt,pairs}')::int AS receipt_pairs,
+             detail #>> '{mergeReceipt,sourceCensusRunId}' AS receipt_census
         FROM harness_shared.admission_runs WHERE id = 'bulk-rise-stage-1'`;
-    expect(stage[0]?.state).toBe('failed');
-    expect(stage[0]?.error).toMatch(/ratchet violated/);
-    expect(stage[0]?.unit).toBe('pairs');
-    expect(stage[0]?.failure).toMatch(/ratchet violated/);
+    expect(stage).toEqual({
+      state: 'failed',
+      error: expect.stringMatching(/ratchet violated/),
+      unit: 'pairs',
+      failure: expect.stringMatching(/ratchet violated/),
+      successful: 1,
+      rolled_back: 0,
+      after_commit: true,
+      receipt_pairs: 1,
+      receipt_census: 'bulk-rise-census-0',
+    });
+  }, 60_000);
+
+  // WI-10006491 recurrence guard. Measured 2026-10-06: stage
+  // bulk-dedup-scheduled-1791260346916-a3ffb71a-stage-1 ran its full post-stage
+  // census INSIDE the serializable merge transaction. The fleet's concurrent
+  // writes failed every commit, and after 12 attempts (pg 40001, ~80 minutes)
+  // the stage lost all of its merges. The peer below forms the same
+  // read/write cycle on every census attempt: it reads the stage's adjudication
+  // table and writes a corpus row the census reads.
+  it('commits the merges before the post-stage census, so a concurrent serializable writer cannot fail the stage', async () => {
+    await seed();
+    const censusAfter: Array<{ withinTransaction: boolean; committedAdjudications: number }> = [];
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-concurrent-writer',
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '',
+        json: { judgements: [{ pairKey: 'a::b', verdict: 'distinct', reason: 'different remedy' }] },
+        inputTokens: 50,
+        outputTokens: 10,
+      }),
+      runCensus: async (censusOpts) => {
+        if (censusOpts.runId?.endsWith('-census-after')) {
+          await db.sql.begin(async (peer) => {
+            await peer`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`;
+            await peer`SELECT count(*) FROM harness_shared.dedup_adjudications`;
+            await peer`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 1 WHERE feature_id = 'c'`;
+          });
+          // Read on ANOTHER connection: only a committed merge is visible here.
+          const [row] = await db.sql<Array<{ n: number }>>`
+            SELECT count(*)::int AS n FROM harness_shared.dedup_adjudications`;
+          censusAfter.push({
+            withinTransaction: censusOpts.withinTransaction === true,
+            committedAdjudications: row?.n ?? -1,
+          });
+        }
+        return runWorkItemAdmissionCensus(censusOpts);
+      },
+    });
+
+    expect(censusAfter).toEqual([{ withinTransaction: false, committedAdjudications: 1 }]);
+    expect(result).toMatchObject({ converged: true, finalScopedPairs: 0 });
+    expect(result.stages[0]).toMatchObject({ pairs: 1, censusBefore: 1, censusAfter: 0, scopedPairsAfter: 0 });
+    const [ledger] = await db.sql<Array<{ status: string; attempts: number; successful: number; ratchet: unknown }>>`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{mergeReceipt,commitAttempts}')::int AS attempts,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             detail->'ratchet' AS ratchet
+        FROM harness_shared.admission_runs WHERE id = 'bulk-concurrent-writer-stage-1'`;
+    expect(ledger).toEqual({
+      status: 'complete',
+      attempts: 1,
+      successful: 1,
+      ratchet: { before: 1, after: 0, population: 'census-0-members', corpusAfter: 0, influxEdges: 0 },
+    });
+  }, 60_000);
+
+  // WI-10006491: once the merge transaction commits, its receipt is the only
+  // record of what the stage did. A rerun of the same stage after a post-commit
+  // failure must finish from the receipt. A fresh read finds the committed pairs
+  // adjudicated, so re-reading would either re-judge other pairs under this row
+  // or record an empty stage.
+  it('finishes a stage from its merge receipt after a post-commit failure, without another model call', async () => {
+    await seed();
+    let productionCalls = 0;
+    let failPostCommit = true;
+    const options = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-receipt-resume',
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => {
+        productionCalls += 1;
+        return {
+          text: '',
+          json: { judgements: [{ pairKey: 'a::b', verdict: 'distinct', reason: 'different remedy' }] },
+          inputTokens: 50,
+          outputTokens: 10,
+        };
+      },
+      beforePostStageCensus: async () => {
+        if (!failPostCommit) return;
+        failPostCommit = false;
+        throw new Error('injected post-commit failure');
+      },
+    } satisfies BulkOptions;
+
+    await expect(runBulk(options)).rejects.toThrow('injected post-commit failure');
+    const [failed] = await db.sql<Array<{ status: string; successful: number; after_commit: boolean }>>`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail->>'failedAfterMergeCommit')::boolean AS after_commit
+        FROM harness_shared.admission_runs WHERE id = 'bulk-receipt-resume-stage-1'`;
+    expect(failed).toEqual({ status: 'failed', successful: 1, after_commit: true });
+    expect(productionCalls).toBe(1);
+
+    const result = await runBulk(options);
+    expect(productionCalls).toBe(1);
+    expect(result).toMatchObject({ converged: true, finalScopedPairs: 0 });
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ pairs: 1, modelCalls: 1, scopedPairsAfter: 0 });
+    const [ledger] = await db.sql<
+      Array<{ status: string; successful: number; attempted: number; history: Array<{ message: string }> }>
+    >`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail #>> '{outcome,attempted}')::int AS attempted,
+             detail->'failureHistory' AS history
+        FROM harness_shared.admission_runs WHERE id = 'bulk-receipt-resume-stage-1'`;
+    expect(ledger).toMatchObject({ status: 'complete', successful: 1, attempted: 1 });
+    expect(ledger?.history.map((entry) => entry.message)).toEqual(['injected post-commit failure']);
+    expect(
+      await db.sql<Array<{ a: string; b: string }>>`SELECT a, b FROM harness_shared.dedup_adjudications`,
+    ).toEqual([{ a: 'a', b: 'b' }]);
   }, 60_000);
 
   // WI-10006336: the 10-05 scheduled stage failed "56606 -> 65264" because 39

@@ -48,6 +48,13 @@ import {
 } from "./cut-seed-cli";
 
 describe('D166 private row-drop plan transport', () => {
+  const execution = { sourceCommit: 'a'.repeat(40), gitDirty: false as const, nodeVersion: process.version,
+    packageLockSha256: 'b'.repeat(64), installedLockSha256: 'c'.repeat(64), dependencyGeneration: `v1-${'d'.repeat(64)}`,
+    directBlobs: ['packages/operator-core/lib/sync/hyperbee/read-merge.ts',
+      'packages/operator-core/lib/sync/hyperbee/log-snapshot.ts',
+      'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts', 'apps/operator/lib/release/cut-seed-cli.ts']
+      .map(path => ({ path, sha256: 'e'.repeat(64) })) };
+  const deps = { readFrozenExecution: async () => execution };
   it('exports the actual frozen manifest population read-only and refuses changed source identities', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'uuid-frozen-export-'));
     const store = new Corestore(join(dir, 'source'));
@@ -66,7 +73,8 @@ describe('D166 private row-drop plan transport', () => {
         manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
         epochKeysPath: join(dir, 'unused-private-keys.json'), epochKeysSha256: 'b'.repeat(64), outputDir: censusDir,
         redactValues: ['private-fixture-owner'] };
-      const configPath = await exportSeedUuidIdempotencyCensus(inputs);
+      // Real Hypercore/manifest path; only the checkout/dependency environment is a fixture.
+      const configPath = await exportSeedUuidIdempotencyCensus(inputs, deps);
       const config = JSON.parse(await readFile(configPath, 'utf8'));
       expect(config.potId).toBe('fixture-pot'); expect(config.sources).toHaveLength(1);
       expect(config.sources[0]).toMatchObject({ sourceKeyHex: own.keyHex, sourceLength: 2,
@@ -76,8 +84,25 @@ describe('D166 private row-drop plan transport', () => {
       expect(row).toMatchObject({ table: 'harness_plans', hbKey: 'row', author_pubkey: '', value: { public: 'unchanged' } });
       expect(rows[1]).toMatchObject({ hbKey: 'z-private', privacyProjection: { disposition: 'drop' } });
       expect(own.length).toBe(2);
-      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, manifestSha256: '0'.repeat(64) })).rejects.toThrow('binding changed');
-      await expect(exportSeedUuidIdempotencyCensus(inputs)).rejects.toThrow('EEXIST');
+      expect(config.sources[0].sourceInput.executionBinding).toEqual(execution);
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, manifestSha256: '0'.repeat(64) }, deps)).rejects.toThrow('binding changed');
+      await expect(exportSeedUuidIdempotencyCensus(inputs, deps)).rejects.toThrow('EEXIST');
+      const captureDir = join(dir, 'capture'); await mkdir(captureDir, { mode: 0o700 });
+      const capturedConfigPath = await exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: captureDir,
+        captureOriginalSpan: true }, deps);
+      const capturedConfig = JSON.parse(await readFile(capturedConfigPath, 'utf8'));
+      expect(capturedConfig.originalSpanReplicaDir).toBe(join(captureDir, 'original-signed-span'));
+      expect(capturedConfig.sources[0].sourceInput.sourceHead).toEqual(config.sources[0].sourceInput.sourceHead);
+      expect(capturedConfig.sources[0].sourceInput.proofInventorySha256).toBe(config.sources[0].sourceInput.proofInventorySha256);
+      const refusedDir = join(dir, 'refused'); await mkdir(refusedDir, { mode: 0o700 });
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir },
+        { readFrozenExecution: async () => { throw new Error('fixture clean execution refused'); } }))
+        .rejects.toThrow('clean execution refused');
+      expect(await readdir(refusedDir)).toEqual([]);
+      const drift = vi.fn().mockResolvedValueOnce(execution).mockResolvedValueOnce({ ...execution, sourceCommit: 'f'.repeat(40) });
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir }, { readFrozenExecution: drift }))
+        .rejects.toThrow('execution changed');
+      expect(await readdir(refusedDir)).not.toContain('uuid-census.private.json');
     } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
   });
 

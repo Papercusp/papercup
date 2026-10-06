@@ -1437,7 +1437,250 @@
      "authority": null,
      "reason": [
       "nonterminal"
-     ]
+     ],
+     "qualification": {
+      "cacheDetectorPrerequisiteQualification": {
+       "observedAt": "2026-10-06T07:15:06.945514+00:00",
+       "status": "source-qualified; acceptance-unresolved",
+       "sourcePlan": {
+        "slug": "cache-efficiency-and-accounting-2026-09-23",
+        "version": 143,
+        "contentHash": "ac8655cac46180007304c596e7dec9651533413116485af07769e1d10ae40bc1"
+       },
+       "rootIdentity": {
+        "ref": "WI-10002864",
+        "sourceItem": "P-009",
+        "state": "open",
+        "assignee": null,
+        "checkpointContentHash": "94fa6820489c",
+        "dependentFeature": "WI-10003179",
+        "dependentItem": "P-010"
+       },
+       "currentClause": {
+        "specId": "CACHE-DETECT-P009",
+        "revision": 1,
+        "contentHash": "a319abca2f63e664b67b7b8a70b6a34dd530998ed2b60f965f2b41c24d7690b5",
+        "lifecycleStatus": "active",
+        "requiredTestLayers": [
+         "unit"
+        ],
+        "mutationRequired": true
+       },
+       "selectedBinding": {
+        "id": 11530,
+        "bindingFingerprint": "03c55de84998bb7c9a7631160f56e38bd6c6615c02214818a557d6114420b738",
+        "evidenceRef": "packages/operator-core/lib/harness/routines/launch-cost-ceiling-action.test.ts",
+        "testRunId": 19295824,
+        "currentness": {
+         "overall": "stale",
+         "dimensions": {
+          "spec": "current",
+          "source": "stale",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "unknown"
+         },
+         "staleReasons": [
+          "source-stale"
+         ],
+         "unknownReasons": [
+          "test-run-worktree-not-clean"
+         ],
+         "comparisonSupplied": true,
+         "provenance": "server-measured"
+        },
+        "serverMeasurement": {
+         "status": "measured",
+         "measuredDimensions": [
+          "source",
+          "test"
+         ],
+         "current": {
+          "planSlug": "cache-efficiency-and-accounting-2026-09-23",
+          "specId": "CACHE-DETECT-P009",
+          "specRevision": 1,
+          "specFingerprint": "a319abca2f63e664b67b7b8a70b6a34dd530998ed2b60f965f2b41c24d7690b5",
+          "evidenceKind": "test",
+          "evidenceRef": "packages/operator-core/lib/harness/routines/launch-cost-ceiling-action.test.ts",
+          "sourceFingerprint": "sha256-file-set-v1:9f1b0991c06c8c875e3dff9b609c5ca3cff6b735443ac7e25002a8955e45b500",
+          "testFingerprint": "sha256-file-set-v1:52ed35a1beb4f869f5d224d241e7fbe74b07f64f701fffb2471ce64b02d6eb28"
+         },
+         "pinned": true,
+         "movedPaths": [
+          {
+           "path": "libs/generic/model-pricing/src/index.ts",
+           "dimension": "source",
+           "change": "changed"
+          },
+          {
+           "path": "packages/operator-core/lib/launch-cost/launch-cost-metrics.ts",
+           "dimension": "source",
+           "change": "changed"
+          }
+         ]
+        },
+        "disclosedGap": "Routine cohort/model-mix guard only; scoped SQL cold-fork/tier/model and runtime cross-plane parity proofs remain separately required.",
+        "bounded": {
+         "limit": 20,
+         "truncatedByLimit": false
+        }
+       },
+       "prerequisiteQualification": {
+        "P-005": {
+         "ref": "WI-10002839",
+         "state": "blocked",
+         "assignee": null,
+         "decisionRefs": [
+          "D-065",
+          "D-066",
+          "D-073"
+         ],
+         "finding": "The failed historical matched pair and all preparation/recovery charges remain retained. D-073 stops retry-2 before charge: candidate arm counted ten charged requests against cap eight. R-4 reductions and paired quality are unaccepted; no cap amendment, paid retry, or requirement retirement is authorized by this audit."
+        },
+        "P-006": {
+         "ref": "WI-10002840",
+         "state": "blocked",
+         "assignee": null,
+         "decisionRefs": [
+          "D-067",
+          "D-077",
+          "D-078"
+         ],
+         "activeBlockerRef": "cache-efficiency-and-accounting-2026-09-23/AUTO-BAR-R-10-P-006@3",
+         "finding": "D-067's zero-instruction-fingerprint snapshot is historical, not a present instrumentation absence. D-077 added stable-prefix cohort assessment; D-078 corrects its per-owner first-message premise. Ten comparable natural startups, bound L3 proof and independent grading remain unresolved. Historical mid-conversation cohort counts are not current startup counts."
+        }
+       },
+       "writerQualification": {
+        "units": "Model prices are USD per million tokens; calculated cost_usd is an API-equivalent estimate, not subscription billing.",
+        "provenance": "Known-tier estimates, unknown-tier lower floors and unavailable costs remain distinct. Ledger writers stamp the pricing version and persist usage_provenance.costBound='lower'; provider-reported cost takes precedence. The repricer updates cost provenance only when the bound changes and guards concurrent row changes.",
+        "launchDetectorScope": "evaluateLaunchScan compares complete prompt token volume within model/entrypoint cohorts with volume, coverage and freshness guards. It does not use cost_usd: a historical repricing step does not establish a regression in this detector.",
+        "usageDetectorScope": "readUsageHealth/evaluateUsageHealth and readCarryHealth retain tier/model contradictions and Codex ordinal/carry unknowns on the existing weekly report. SQL cohort extraction and effective gateway/default-proxy parity were inspected in source only, not executed or accepted here.",
+        "startupDetectorScope": "assessStartupPrefixCohorts keys stable system blocks plus scope/model/transport/tools, filters unsuccessful/tool-less/mid-conversation rows, and returns sharingVerified:false even when a cohort is present. No current runtime cohort was measured.",
+        "legacyRequirementPaths": "The two legacy cache-efficiency.ts/cache-efficiency.test.ts paths checked under packages/operator-core/lib/launch-cost were absent in this tree. Implemented detector code inspected here uses the existing metrics/routine surfaces; absence at those exact paths is not global absence."
+       },
+       "focusedLocalVerification": {
+        "command": "npm run test:file -- packages/operator-core/lib/harness/routines/launch-cost-ceiling-action.test.ts libs/generic/model-pricing/src/index.test.ts -- -t 'launch scan cohort and telemetry guards|unknownTier'",
+        "exitCode": 0,
+        "executedTests": 13,
+        "nameFilterDeselectedTests": 60,
+        "runs": [
+         {
+          "id": 20829319,
+          "filePath": "packages/operator-core/lib/harness/routines/launch-cost-ceiling-action.test.ts",
+          "status": "pass",
+          "harnessSlug": "papercusp",
+          "workspaceId": "papercusp-workspace",
+          "commitSha": "47a899a680fee3cce3b1a023ff52db9b43a24edb",
+          "worktreeDirty": true,
+          "startedAt": "2026-10-06T07:12:41.086Z",
+          "finishedAt": "2026-10-06T07:12:41.127Z",
+          "durationMs": 41,
+          "source": "local",
+          "runGroupId": null
+         },
+         {
+          "id": 20829321,
+          "filePath": "libs/generic/model-pricing/src/index.test.ts",
+          "status": "pass",
+          "harnessSlug": "papercusp",
+          "workspaceId": "papercusp-workspace",
+          "commitSha": "47a899a680fee3cce3b1a023ff52db9b43a24edb",
+          "worktreeDirty": true,
+          "startedAt": "2026-10-06T07:12:55.894Z",
+          "finishedAt": "2026-10-06T07:12:55.900Z",
+          "durationMs": 6,
+          "source": "local",
+          "runGroupId": null
+         }
+        ],
+        "limitation": "Scoped named test files were clean before and after; authoritative test ledger worktreeDirty=true for both runs. No mutation, SQL integration, full suite, runtime parity, independent scorecard, source-evidence rebind or acceptance verdict is claimed."
+       },
+       "inspectedPins": [
+        {
+         "path": "libs/generic/model-pricing/src/index.ts",
+         "sha256": "543d6c756c74873b3b8cb7cc0de2ab855bc282accf57a05cfc89657f4e9d6c5b",
+         "bytes": 15867,
+         "headBlob": "e20314162abf76704fceb0565aaeb885acb7bbd0",
+         "matchesHead": true
+        },
+        {
+         "path": "libs/generic/model-pricing/src/index.test.ts",
+         "sha256": "d5c3d74f7dc7f24313f1e15a6bb59aa171f7937347049a37d0bfe1513e454d67",
+         "bytes": 14613,
+         "headBlob": "a95362e751eefd10cc419dca93d32d62d7d780e1",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/harness/routines/launch-cost-ceiling-action.ts",
+         "sha256": "3f2595e037e87562af922096a0b208c9da1a10a775f4dc4d01c129361a2592a2",
+         "bytes": 19470,
+         "headBlob": "c029eb71bde0c4132199f32f3897bf2dccfa0ac6",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/harness/routines/launch-cost-ceiling-action.test.ts",
+         "sha256": "22bad10ab26650f02579b604b86f566d8e2724632c4b79551e034179247d3e3e",
+         "bytes": 10538,
+         "headBlob": "4bae42b4ca851c3d2b086efc3a8826fbba9ac6f4",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/launch-cost/launch-cost-metrics.ts",
+         "sha256": "e34c0429595e89eb5828b342cb1715b4e530f69276ab9a700fa5739e7433d16d",
+         "bytes": 77726,
+         "headBlob": "ab2f59d0b301becded30e75eb49b86dd84e23718",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/agent-usage-telemetry.ts",
+         "sha256": "560260501cfa30c41a32a5c4055b31650ffd48125d6784427abbf59fbd719e99",
+         "bytes": 13438,
+         "headBlob": "ab6eff33c784fb714cebe64fa53458dc55e66c12",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/interactive-usage/reprice-usage-samples.ts",
+         "sha256": "ce25bcaad04ac6314745d4068db58aa93ede9af174c0602df56429e3f5df3d07",
+         "bytes": 12960,
+         "headBlob": "d02118c1d8dbd53bf7ad999531a52e8e16ce1b5f",
+         "matchesHead": true
+        },
+        {
+         "path": "libs/papercusp/packages/orchestrator/src/usage-sample-pg.ts",
+         "sha256": "d9dda77e20bd09fe033660e6354852cd46d0567c7b6a779e9293743d338ec9d0",
+         "bytes": 7595,
+         "headBlob": "a7c176cfbf86f56df5693ab96647e0aa496e6427",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/inference-gateway/request-stage-telemetry.ts",
+         "sha256": "359da6c8c52ae21ad7a68824ac8cad1de491d71f27ec7ec017e5cd51b71bde83",
+         "bytes": 62864,
+         "headBlob": "e22fefa2a87b8f58bc32690ee9312242081e585b",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/harness/routines/token-report-action.ts",
+         "sha256": "d875583edb7ab987be6d6472929e40fb651164595ee57abb717403dbf139a6ae",
+         "bytes": 19279,
+         "headBlob": "e7b499975f2052625f4cf58a7e5d6fa3bc20a299",
+         "matchesHead": true
+        },
+        {
+         "path": "packages/operator-core/lib/harness/routines/token-report-action.test.ts",
+         "sha256": "1f0dfe324f87fb220b754ea9cae27efb88239942a5c18440f4ebbed532cb162c",
+         "bytes": 6850,
+         "headBlob": "a9dc954e020b7ba5e05e8e7c51d86456303a7121",
+         "matchesHead": true
+        }
+       ],
+       "disposition": "Retain the existing dependency and frozen feature disposition. This additive qualification does not settle P-009/P-010, close the root, upgrade the stale binding or satisfy final delivery.",
+       "next": "P-009 still needs qualified prerequisite outcomes plus current source-bound detector/mutation/SQL/parity evidence and independent acceptance; preserve D-073's cap and the current source requirements."
+      }
+     }
     }
    ],
    "externalConditions": [
@@ -1472,7 +1715,89 @@
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
-    "acceptanceWaived": false
+    "acceptanceWaived": false,
+    "sourcePreservationAndProofPrerequisiteQualification": {
+     "status": "source-bound-audit-only-not-acceptance",
+     "measuredAt": "2026-10-06T07:51:10Z",
+     "workItem": "WI-10003332",
+     "auditOwnerWorkItem": "WI-10005820",
+     "continuation": {
+      "plan": "finish-session-2893b033-residue-2026-09-26",
+      "revision": 21,
+      "contentHash": "1f12d44e42362d9b71ec0b1475c5f5300957f2ec2bddcde9f2745f8367844004",
+      "governingDecisions": ["D-001", "D-002", "D-003", "D-004", "D-005", "D-006"],
+      "goal": "carry-plan-finish-session-2893b033-residue-2026--e78df0",
+      "goalStatus": "killed",
+      "goalRevived": false,
+      "itemClaimed": false,
+      "itemCheckpointHash": "a2eb51b5163e",
+      "savedCheckpointRead": "complete; saved matrices and amendment history preserved without replay"
+     },
+     "sourcePreservation": {
+      "plan": "acceptance-runtime-plane-not-main-2026-09-23",
+      "revision": 23,
+      "contentHash": "5fbdcc3910ecb43835d17d046bd1bf52b8784b445aa0aec8dca462c7f0c4475f",
+      "status": "shipped",
+      "doneItems": 6,
+      "nonTerminalItems": 0,
+      "forcedPastCount": 1,
+      "historicalWaiverRewritten": false,
+      "rubric": "acceptance-acceptance-runtime-plane-not-main-2026-09-23",
+      "rubricRevision": 4,
+      "rubricStatus": "retired",
+      "scope": "live canonical source-plan preservation read; no fresh product-runtime or shipment measurement"
+     },
+     "currentAcceptance": {
+      "rubric": "acceptance-finish-session-2893b033-residue-2026-09-26",
+      "revision": 8,
+      "criteriaHash": "17d46a61fff173ca265644594170ec29e0d1825f9769b362130f61e5bcdce14b",
+      "vettingState": "unvetted",
+      "vettingReason": "missing-attestation",
+      "R1": {
+       "spec": "AUTO-BAR-R-1-P-001",
+       "revision": 4,
+       "contentHash": "463e566777795287cce1726b09355358a33af79db8914be1c3d9bc047853de83",
+       "plane": "live",
+       "qualifiedScope": "source preservation only; lifecycle suites are mechanism controls",
+       "selectedCurrentRevisionBindings": 0,
+       "selectedHistoricalBindingIds": [13572, 13547, 13544, 13543]
+      },
+      "R2": {
+       "spec": "AUTO-BAR-R-2-P-001",
+       "revision": 3,
+       "contentHash": "c181373e6d1f43efe1fc75e9849c6a4b7d77fd82fdee2ebff334c6984021ca08",
+       "plane": "tree",
+       "currentClauseMutationBindingIds": [16118, 16119, 16120, 16121, 16122, 16123, 16124],
+       "bindingOriginalBars": ["R-1", "R-2", "R-3", "R-4", "R-5", "R-6", "R-7"],
+       "runIds": [19695340, 19695347, 19663617, 19695358, 19663623, 19663637, 19695352],
+       "sourceDimensions": "all seven stale under server remeasurement",
+       "testDimensions": "16123 current; other six stale",
+       "runDimensions": "all seven unknown: saved worktreeDirty=true",
+       "savedCounterexamples": "retained historical caught-mutant/restoration assertions; no current run or acceptance inferred",
+       "requiredHistoricalRubricRead": "revision 3 not found; current revision is 4",
+       "historicalMappingEstablished": false
+      }
+     },
+     "evidenceReadBoundary": {
+      "plan": "finish-session-2893b033-residue-2026-09-26",
+      "workItemIds": ["WI-10003332"],
+      "specIds": ["AUTO-BAR-R-1-P-001", "AUTO-BAR-R-2-P-001"],
+      "limit": 100,
+      "truncatedByLimit": false,
+      "returnedBindingIds": [16124, 16123, 16122, 16121, 16120, 16119, 16118, 14257, 14256, 14255, 14254, 13572, 13568, 13567, 13565, 13547, 13544, 13543, 13525, 13524, 13523, 13522],
+      "overall": "22 stale within this exact selected query; no global evidence-absence finding"
+     },
+     "remaining": [
+      "Replacement goal/budget authority before resuming the killed continuation execution contract.",
+      "Resolve the required immutable revision-3 mapping read without rewriting retired rubric or shipped waiver history.",
+      "Current source/test-bound clean-run mutation/counterexample and baseline/restoration proof for all seven original bars.",
+      "Current R-1 live evidence bindings, adequacy, independent revision-8 vetting and grading.",
+      "P-002/P-004 and whole-plan acceptance/shipment remain outside this audit."
+     ],
+     "acceptanceUpgraded": false,
+     "sourceBehaviorEdited": false,
+     "priorMatricesReplayed": false
+    }
    }
   },
   {
@@ -1494,7 +1819,77 @@
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
-    "acceptanceWaived": false
+    "acceptanceWaived": false,
+    "toolFailureAndReceiptProofQualification": {
+     "status": "retained-evidence-qualified-current-acceptance-open",
+     "measuredAt": "2026-10-06T08:20:28Z",
+     "nativeSession": "01a11041-e300-7d43-96c1-384bcde678b0",
+     "sourcePlan": {
+      "slug": "finish-session-2893b033-residue-2026-09-26",
+      "revision": 21,
+      "contentHash": "1f12d44e42362d9b71ec0b1475c5f5300957f2ec2bddcde9f2745f8367844004",
+      "decisionsRead": ["D-002", "D-003", "D-006"],
+      "specId": "AUTO-BAR-R-3-P-002",
+      "specRevision": 5,
+      "specContentHash": "d9bf223dae4ee8e4e90f354ea52e0adbd6fed0438e9f37a80100bd9d9b86d0ca",
+      "rubricRevision": 8,
+      "rubricCriteriaHash": "17d46a61fff173ca265644594170ec29e0d1825f9769b362130f61e5bcdce14b",
+      "rubricVetting": "unvetted:missing-attestation",
+      "requiredMutation": "R-3 verification and rubric method still require current L4 proof, including the named cancellation-after-nested-commit case red on the decisive mutant; the compiled mutationRequired:false field does not waive that method."
+     },
+     "itemState": "blocked",
+     "itemAssignee": null,
+     "retainedCheckpointHash": "e746d9aca8e1",
+     "canonicalPopulation": [
+      {"id": "EI-24024110114675288", "state": "done", "authority": "committed", "storedDistinction": "caller used undeclared plans:get modes raw/content; full succeeded on the same build", "invocationRefs": [28974000, 28974001, 28974007]},
+      {"id": "EI-24027195232324656", "state": "done", "authority": "committed", "storedDistinction": "caller sent learnings as a string; omitting it succeeded on the same build", "invocationRefs": [28993960, 28994039, 28994078]},
+      {"id": "EI-24027364590856331", "state": "done", "authority": "committed", "storedDistinction": "caller sent walls.wall/owner instead of walls.claim; corrected shape succeeded on the same build", "invocationRefs": [28994741, 28994801]},
+      {"id": "EI-24027387064282095", "state": "done", "authority": "committed", "storedDistinction": "caller sent undeclared options/context; question/body succeeded on the same build", "invocationRefs": [28994856, 28994905]},
+      {"id": "EI-24027182760840685", "state": "dropped", "authority": "committed", "canonicalOwner": "EI-24054635524770728", "storedDistinction": "nested scorecard write committed before the outer aborted caller returned timeout", "invocationRefs": [28993880]},
+      {"id": "EI-24054635524770728", "state": "done", "authority": "committed", "storedDistinction": "post-handler abort dispatch lacked an explicit attempt-bound nested-write receipt", "retainedEvidenceRefs": ["testRun:20165602", "testRun:19721302", "EI-24400710375589362", "EI-24426676573121692"]}
+     ],
+     "canonicalReceiptScope": "Current authoritative terminal receipts were read, including structured root-cause distinctions. Invocation refs and old test/audit refs are stored historical evidence; no current reproduction or independent acceptance grade was performed by this audit.",
+     "detectorsInspected": {
+      "emitter": "Production scorecardEmitTool.abortCompletionReceipt calls scorecardAbortCompletionReceipt; explicit recorded/not-recorded/recovery-incomplete receipts retain durable effect identity and fail closed when serialized receipts are missing.",
+      "raceTestTitle": "preserves distinct force-write receipts when outer cancellation follows the nested commit",
+      "raceTestScope": "Real dispatchProjectedTool plus production receipt hook; fixture writes two distinct effects, aborts after each commit, and checks distinct attempt IDs. This is a fixture composition guard, not an actual provider/runtime emission.",
+      "missingReceiptTestTitle": "fails closed through the dispatcher when a committed write lacks its scorecard receipt",
+      "callerReplayTestTitle": "accepts the declared owner question and refuses the legacy options/context payload",
+      "committedSourcePins": {
+       "packages/operator-core/lib/agent-tools/scorecards/emit.ts": "d9df3313cce4024048f4c240834daa86839cd7df6b6b6b431638833abdf6a70c",
+       "packages/operator-core/lib/agent-tools/scorecards/emit.test.ts": "e6d34c805f3cf08af3c09d6ce1a5b8feccfc5f816607b3543bd8e02aa1b1a380",
+       "libs/generic/tooldef/src/dispatch-stack.ts": "a5961989c57cfa0c604523e92beee3b11623e674e3279391dff1d32e13bdb789",
+       "packages/operator-core/lib/coord-ops/agent-tools.ts": "48e104c2f28dd857c44397a7f5e5dd56bfc025a2a9131cdae016b3a578710275",
+       "packages/operator-core/lib/coord-ops/agent-tools.test.ts": "70c6eaab986caec545c38b0683efb411d1dea1562877ae02a9e073387485b3f1"
+      },
+      "pinScope": "Each listed working file matched its own repository HEAD blob at inspection; this neither cleans nor requalifies a historical dirty test run."
+     },
+     "boundEvidence": {
+      "queryScope": "Named work item WI-10003333 and AUTO-BAR-R-3-P-002 only; limit100, truncatedByLimit:false. This is not a global absence claim.",
+      "returnedBindingIds": [17460, 17458, 17453, 17452, 17451, 17450, 16126, 16117, 16116, 14357, 14145, 14144, 14121, 13574, 13550, 13549, 13546, 13466],
+      "serverCurrentness": {"current": 0, "stale": 16, "unknown": 2},
+      "revision5Bindings": [17460, 17458, 17453, 17452, 17451, 17450],
+      "revision5SourceAndTestCurrentRunUnknown": [17453, 17451],
+      "revision5SourceStale": [17460, 17458, 17452, 17450],
+      "revision5RunProvenance": "All six selected revision5 testRun dimensions are unknown:test-run-worktree-not-clean, even where declared source/test fingerprints match.",
+      "retainedMutationBindings": [16126, 13574],
+      "retainedMutationQualification": "Both selected mutations are older clause revisions and source/test-stale; their testRun dimension is unknown because worktreeDirty:true. Neither proves the current named race test red on its decisive mutant.",
+      "callerCheckKindQualification": "Selected binding14357 is check-kind at revision4 and spec-stale. The revision5 caller-control binding17451 is test-kind; no revision5 check-kind row appears in this bounded selection.",
+      "currentnessWriter": "spec-evidence-store.ts classifySpecEvidenceCurrentness compares declared fingerprints and canonical clause revision; a dirty ledger run remains unknown. get-spec-evidence.ts counts these returned-row overall verdicts."
+     },
+     "goal": {"id": "carry-plan-finish-session-2893b033-residue-2026--e78df0", "status": "killed", "actionable": false, "revived": false},
+     "remaining": [
+      "Resolve current rubric8 independent vetting and attestation without treating old card audits as revision5 acceptance.",
+      "Establish current clean per-mechanism valid/invalid proof, including the declared check-kind caller replay.",
+      "Establish current caught L4 proof for the named cancellation-after-nested-commit case and byte-identical restoration.",
+      "Obtain current adequacy card, independent grading audit and terminal completion evidence for P-002.",
+      "Respect the killed goal and obtain replacement goal/budget authority before reviving its execution; prior mutation snapshot liveness was not measured in this audit."
+     ],
+     "acceptanceGranted": false,
+     "sourceBehaviorEdited": false,
+     "priorProbesOrSuitesReplayed": false,
+     "otherFrozenRowsChanged": false
+    }
    }
   },
   {

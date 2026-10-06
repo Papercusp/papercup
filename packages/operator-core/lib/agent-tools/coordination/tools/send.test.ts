@@ -754,6 +754,26 @@ describe('coord:send handler (bulk keyed-array)', () => {
     }
   });
 
+  it('does not append a message when the coord:send request aborts during pre-persist work', async () => {
+    const controller = new AbortController();
+    basedOnM.mockImplementationOnce(async () => {
+      controller.abort(new Error('caller stopped waiting'));
+      return [];
+    });
+
+    const b = await bodyWithCtx(
+      { to: ['bee-1'], summary: 'must not arrive after cancellation' },
+      { signal: controller.signal },
+    );
+
+    expect(sendM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      counts: { ok: 0, failed: 1 },
+      results: [{ ok: false, to: ['bee-1'], error: 'request_aborted' }],
+    });
+  });
+
   it("wake:'required' miss on a DEAD recipient → recipient_dead + truthful black-hole note (WI-574)", async () => {
     wakeM.mockResolvedValueOnce({ targets: ['dead-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: ['dead-bee'] } as never);

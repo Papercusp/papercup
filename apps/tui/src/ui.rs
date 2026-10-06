@@ -4029,23 +4029,25 @@ fn card_block_height(app: &App, area: Rect) -> u16 {
     let approval = app.card_state.focused().is_some_and(|c| c.approval.is_some());
     let border = if approval { 1 } else { 2 };
     let inner_w = area.width.saturating_sub(if approval { 0 } else { 2 }).max(1) as usize;
-    let lines = card_lines(app, inner_w);
+    let cap = ((area.height as f32 * 0.6) as u16).max(4);
+    let lines = card_lines(app, inner_w, cap.saturating_sub(border) as usize);
     let content = lines.len() as u16;
     let want = content.saturating_add(border);
-    let cap = (area.height as f32 * 0.6) as u16;
-    want.min(cap.max(4)).max(4)
+    want.min(cap).max(4)
 }
 
 /// Build the rendered lines of the focused card (prompt · optional report ·
 /// the presentation-specific body: radio/checkbox rows, text/date/slider input).
-fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
+/// `max_rows` is the strip's inner height; a tool approval shortens its body
+/// to fit it so the question and the answers are always on screen.
+fn card_lines(app: &App, inner_w: usize, max_rows: usize) -> Vec<Line<'static>> {
     use crate::card_view::CardPresentation;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let Some(card) = app.card_state.focused() else {
         return lines;
     };
     if let Some(approval) = &card.approval {
-        return approval_card_lines(app, card, approval, inner_w);
+        return approval_card_lines(app, card, approval, inner_w, max_rows);
     }
     // Prompt (wrapped). P-020: a first line promoted to the border title is not
     // repeated here; a tool approval's `- old` / `+ new` lines read as a diff.
@@ -4213,11 +4215,16 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
 /// permission prompt (stock 2.1.289 frame): the call's title, the change once
 /// between dashed rules, the question, the numbered answers with their keys,
 /// and a one-line footer. The strip's top rule is the full-width line above it.
+/// When the change and the Ctrl+R arguments do not fit in `max_rows` with the
+/// question and answers, the change is cut short with a `… +N lines` row:
+/// the answers must stay on screen (a long command once pushed them out of the
+/// strip, so the prompt could not be seen or answered).
 fn approval_card_lines(
     app: &App,
     card: &crate::card_view::OpenCard,
     approval: &crate::card_view::CardApproval,
     inner_w: usize,
+    max_rows: usize,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let text_w = inner_w.saturating_sub(2).max(8);
@@ -4227,33 +4234,32 @@ fn approval_card_lines(
         }
     };
     indented(&approval.title, Theme::header(), &mut lines);
-    if !approval.body.is_empty() {
-        let rule = Line::from(Span::styled("╌".repeat(inner_w.max(1)), Theme::dim()));
-        lines.push(rule.clone());
-        for raw in &approval.body {
-            let style = if raw.starts_with("+ ") {
-                Theme::success()
-            } else if raw.starts_with("- ") {
-                Theme::danger()
-            } else {
-                Style::default()
-            };
-            indented(raw, style, &mut lines);
-        }
-        lines.push(rule);
+    // The change between dashed rules, then (Ctrl+R) the raw arguments.
+    let mut change: Vec<Line<'static>> = Vec::new();
+    for raw in &approval.body {
+        let style = if raw.starts_with("+ ") {
+            Theme::success()
+        } else if raw.starts_with("- ") {
+            Theme::danger()
+        } else {
+            Style::default()
+        };
+        indented(raw, style, &mut change);
     }
     // P-008: the raw arguments stay behind Ctrl+R.
+    let mut details: Vec<Line<'static>> = Vec::new();
     if app.chat_tools_expanded {
-        if let Some(details) = card.details() {
-            for raw in details.lines() {
-                indented(raw, Theme::dim(), &mut lines);
+        if let Some(raw_details) = card.details() {
+            for raw in raw_details.lines() {
+                indented(raw, Theme::dim(), &mut details);
             }
         }
     }
+    let mut tail: Vec<Line<'static>> = Vec::new();
     indented(
         &approval.question,
         Style::default().add_modifier(ratatui::style::Modifier::BOLD),
-        &mut lines,
+        &mut tail,
     );
     for (i, opt) in card.presentation.options().iter().enumerate() {
         let selected = i == app.card_state.sel;
@@ -4268,13 +4274,49 @@ fn approval_card_lines(
         let style = if selected { Theme::selected() } else { Style::default() };
         for (li, wl) in wrap_text(&row, inner_w).into_iter().enumerate() {
             let text = if li == 0 { wl } else { format!("      {wl}") };
-            lines.push(Line::from(Span::styled(text, style)));
+            tail.push(Line::from(Span::styled(text, style)));
         }
     }
-    lines.push(Line::from(Span::styled(
+    tail.push(Line::from(Span::styled(
         " Enter to select · ↑↓ to move · Esc to cancel",
         Theme::dim(),
     )));
+    // Rows left for the change, the two dashed rules around it included.
+    let budget = max_rows.saturating_sub(lines.len() + tail.len());
+    let rule = Line::from(Span::styled("╌".repeat(inner_w.max(1)), Theme::dim()));
+    let rules = if change.is_empty() { 0 } else { 2 };
+    if change.len() + details.len() + rules <= budget {
+        if !change.is_empty() {
+            lines.push(rule.clone());
+            lines.extend(change);
+            lines.push(rule);
+        }
+        lines.extend(details);
+    } else if budget > rules {
+        // Cut it short: as much as fits, then one `… +N lines` row.
+        let room = budget - rules - 1;
+        let mut kept: Vec<Line<'static>> = change.into_iter().chain(details).collect();
+        let hidden = kept.len() - room;
+        kept.truncate(room);
+        let hint = if app.chat_tools_expanded {
+            ""
+        } else {
+            " (Ctrl+R to expand)"
+        };
+        kept.push(Line::from(Span::styled(
+            format!(" … +{hidden} lines{hint}"),
+            Theme::dim(),
+        )));
+        if rules > 0 {
+            lines.push(rule.clone());
+        }
+        lines.extend(kept);
+        if rules > 0 {
+            lines.push(rule);
+        }
+    }
+    // (No room for any of the change: the question and the answers alone.)
+    lines.extend(tail);
     lines
 }
 
@@ -4362,7 +4404,11 @@ fn draw_card(f: &mut Frame, app: &App, area: Rect) {
     if card.approval.is_some() {
         // D-028: Claude Code's permission prompt sits under one full-width
         // rule, no box; a queued approval behind it is counted on the rule.
-        let lines = card_lines(app, area.width.max(1) as usize);
+        let lines = card_lines(
+            app,
+            area.width.max(1) as usize,
+            area.height.saturating_sub(1) as usize,
+        );
         let mut block = Block::default()
             .borders(Borders::TOP)
             .border_style(Theme::notify());
@@ -4377,7 +4423,7 @@ fn draw_card(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let inner_w = area.width.saturating_sub(2).max(1) as usize;
-    let lines = card_lines(app, inner_w);
+    let lines = card_lines(app, inner_w, area.height.saturating_sub(2) as usize);
     // Say what the card asks, not which Papercusp component raised it
     // ("Operator" is jargon to someone who launched `pui` to chat, WI-10004211)
     // and without a status banner (P-020): the card's own question heads it, as
@@ -11809,6 +11855,86 @@ mod tests {
         );
         assert!(text.contains("old_string"));
         assert!(text.contains("Ctrl+R hide details"));
+    }
+
+    /// pui-chat-first-ux P-028 (WI-10006466): a long command must not push the
+    /// question and the answers out of the card strip. Observed in the Codex
+    /// leg (/tmp/pui-p028g-codex): a 20-line `python3 - <<'PY'` script filled
+    /// the strip, so '1. Yes' was never on screen and nothing could answer it.
+    #[test]
+    fn approval_card_keeps_answers_visible_under_a_long_command() {
+        let script: Vec<String> = (1..=40).map(|i| format!("line_{i} = {i}")).collect();
+        let mut body = vec!["$ /bin/bash -lc \"python3 - <<'PY'".to_string()];
+        body.extend(script.iter().cloned());
+        body.push("PY\"".to_string());
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        let snap = serde_json::json!({
+            "runId": "run-1",
+            "workspaceId": "ws-1",
+            "version": 1,
+            "snapshot": { "openCards": [{
+                "correlationId": "corr-1",
+                "prompt": "Do you want to run this command?",
+                "approval": { "title": "Bash(python3 - <<'PY' …)",
+                    "question": "Do you want to run this command?", "body": body },
+                "details": "Raw arguments (Bash):\n{\"command\": \"python3 - <<'PY'\"}",
+                "presentation": { "kind": "radio", "options": [
+                    { "id": "yes", "label": "Yes" },
+                    { "id": "always", "label": "Yes, and don't ask again for this command this session" },
+                    { "id": "no", "label": "No, and tell Codex what to do instead" }] },
+                "allowDecline": true,
+                "createdAt": 1.0
+            }]}
+        })
+        .to_string();
+        app.card_state
+            .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snap).unwrap());
+        for expanded in [false, true] {
+            app.chat_tools_expanded = expanded;
+            let text = render(&app, 120, 40);
+            assert!(text.contains("Do you want to run this command?"), "question shown: {text}");
+            assert!(text.contains("1. Yes"), "first answer shown: {text}");
+            assert!(text.contains("3. No, and tell Codex"), "last answer shown: {text}");
+            assert!(text.contains("Enter to select"), "footer shown: {text}");
+            assert!(text.contains("line_1 = 1"), "the command's head is kept: {text}");
+            assert!(!text.contains("line_40 = 40"), "the command is cut short: {text}");
+            assert!(text.contains(" lines"), "a … +N lines row says so: {text}");
+            assert_eq!(
+                text.contains("(Ctrl+R to expand)"),
+                !expanded,
+                "the expand hint shows only while collapsed: {text}"
+            );
+        }
+        // A short change is not cut, and gets no cut-short row.
+        let short = tool_approval_lines_for(&["- a", "+ b"], 120, 40);
+        assert!(short.contains("+ b") && !short.contains(" lines (Ctrl+R"), "{short}");
+    }
+
+    /// Render a D-028 approval card with `body` and return the frame text.
+    fn tool_approval_lines_for(body: &[&str], w: u16, h: u16) -> String {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        let snap = serde_json::json!({
+            "runId": "run-1",
+            "workspaceId": "ws-1",
+            "version": 1,
+            "snapshot": { "openCards": [{
+                "correlationId": "corr-1",
+                "prompt": "Do you want to make this edit to calc.js?",
+                "approval": { "title": "Update(calc.js)",
+                    "question": "Do you want to make this edit to calc.js?", "body": body },
+                "presentation": { "kind": "radio", "options": [
+                    { "id": "yes", "label": "Yes" },
+                    { "id": "no", "label": "No" }] },
+                "allowDecline": true,
+                "createdAt": 1.0
+            }]}
+        })
+        .to_string();
+        app.card_state
+            .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snap).unwrap());
+        render(&app, w, h)
     }
 
     #[test]

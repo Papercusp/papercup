@@ -19,6 +19,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_items (
       workspace_id text, harness_slug text, feature_id text, status text DEFAULT 'open',
       origin text DEFAULT 'local', taken_by text, admission text DEFAULT 'pending', payload jsonb,
+      author_pubkey text,
       PRIMARY KEY(workspace_id, harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.routines (
@@ -260,6 +261,37 @@ describe('original-item durable admission recovery', () => {
     expect(d.dispatch).not.toHaveBeenCalled();
     const rows = await db.sql`SELECT payload->'_admissionRecovery'->>'reason' AS reason FROM harness_shared.work_items`;
     expect(rows.every((r) => r.reason.includes('provenance is invalid'))).toBe(true);
+  });
+
+  // WI-10006515: origin records how a row ARRIVED, not who wrote it (WI-10003565).
+  async function strandAsRemote(authorKey: string) {
+    // A key this workspace has written locally is one of OUR own-node keys.
+    await db.sql`
+      INSERT INTO harness_shared.work_items(workspace_id,harness_slug,feature_id,author_pubkey)
+      VALUES (${scope.workspaceId}, ${scope.harnessSlug}, 'WI-own-key-witness', 'own-key')`;
+    await db.sql`UPDATE harness_shared.work_items SET origin = 'remote', author_pubkey = ${authorKey}
+      WHERE feature_id = ${scope.workItemId}`;
+  }
+
+  it('heals an own-node row stranded at origin=remote and recovers it instead of refusing', async () => {
+    await strandAsRemote('own-key');
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    expect(first.ok).toBe(true);
+    const row = await current();
+    expect(row.origin).toBe('local');
+    expect(row.payload).toMatchObject({ keep: 'original', _admissionRecovery: { state: 'queued' } });
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+    expect((await current()).taken_by).toBe('reviewer');
+  });
+
+  it('still refuses a true peer row at origin=remote and leaves it untouched', async () => {
+    await strandAsRemote('peer-key');
+    await expect(requestAdmissionRecovery(input, { authorize }, db.sql)).rejects.toThrow('originating actor');
+    const row = await current();
+    expect(row.origin).toBe('remote');
+    expect(row.payload).toEqual({ keep: 'original' });
   });
 
   it('rechecks authority after screening latency and stops before admission persistence', async () => {

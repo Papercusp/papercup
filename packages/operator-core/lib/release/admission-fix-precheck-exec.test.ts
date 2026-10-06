@@ -1,6 +1,9 @@
+import * as childProcess from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { clearTimeout as realClearTimeout, setTimeout as realTimer } from 'node:timers';
+import { setTimeout as realSetTimeout } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createHeadTailCapture,
@@ -111,6 +114,87 @@ describe('admission pre-check defaultExec subtree handling', () => {
     await new Promise((res) => setTimeout(res, 200));
     expect(alive(grandchild)).toBe(false);
   }, 15_000);
+
+  it.each(['wall', 'idle', 'idle-after-output'] as const)(
+    'preserves a direct-child exit while stdio cleanup crosses the %s deadline', async (watchdog) => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'precheck-exit-grace-'));
+      const pidFile = path.join(dir, 'direct.pid');
+      let directPid = 0;
+      let holder = 0;
+      let pending: ReturnType<typeof defaultExec> | undefined;
+      let notify: (() => void) | undefined;
+      const nextOutput = () => new Promise<void>((resolve) => { notify = resolve; });
+      let observedExit!: () => void;
+      const exited = new Promise<void>((resolve) => { observedExit = resolve; });
+      const originalEmit = childProcess.ChildProcess.prototype.emit;
+      const exitWitness = vi.spyOn(childProcess.ChildProcess.prototype, 'emit').mockImplementation(
+        function (this: childProcess.ChildProcess, event, ...args) {
+          const emitted = originalEmit.call(this, event, ...args);
+          if (event === 'exit' && this.pid === directPid) observedExit();
+          return emitted;
+        },
+      );
+      let backstop!: NodeJS.Timeout;
+      const expired = new Promise<never>((_, reject) => {
+        backstop = realTimer(() => reject(new Error('real subprocess fixture exceeded 10s')), 10_000);
+      });
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      try {
+        const ready = nextOutput();
+        pending = defaultExec([process.execPath, '-e', `
+          const child = require('node:child_process').spawn(process.execPath, ['-e', \`
+            setInterval(() => {}, 30_000);
+            process.on('SIGUSR1', () => process.stdout.write('late-output\\\\n'));
+            process.send('ready');
+          \`], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+          require('node:fs').writeFileSync(process.argv[1], String(process.pid));
+          process.on('SIGUSR2', () => process.exit(0));
+          child.once('message', () => process.stdout.write('HOLDER=' + child.pid + String.fromCharCode(10)));
+        `, pidFile], {
+          cwd: process.cwd(), timeoutMs: 10_000,
+          ...(watchdog === 'wall' ? {} : { idleTimeoutMs: 1_000 }),
+          onOutput: () => { const resolve = notify; notify = undefined; resolve?.(); },
+        });
+        // The transparent witness resolves AFTER the executor's exit handlers
+        // ran, even when /proc disappears before libuv dispatches the event.
+        await Promise.race([ready, expired]);
+        directPid = Number(readFileSync(pidFile, 'utf8'));
+        expect(alive(directPid)).toBe(true);
+        await vi.advanceTimersByTimeAsync(watchdog === 'wall' ? 9_500 : 750);
+        process.kill(directPid, 'SIGUSR2');
+        await Promise.race([exited, expired]);
+        expect(alive(directPid), 'the direct child exited before its execution deadline').toBe(false);
+        if (watchdog === 'idle-after-output') {
+          // The holder's pid is available through the real child's process group.
+          const output = nextOutput();
+          process.kill(-directPid, 'SIGUSR1');
+          await Promise.race([output, expired]);
+        }
+        await vi.advanceTimersByTimeAsync(EXEC_STDIO_CLOSE_GRACE_MS);
+        const result = await Promise.race([pending, expired]);
+        holder = Number(/HOLDER=(\d+)/.exec(result.output)?.[1]);
+        expect(result, JSON.stringify(result)).toMatchObject({ exitCode: 0, timedOut: false });
+        expect(result.idleTimedOut).toBeUndefined();
+        expect(Number.isInteger(holder) && holder > 0).toBe(true);
+        const killedDeadline = performance.now() + 5_000;
+        while (alive(holder) && performance.now() < killedDeadline) await realSetTimeout(10);
+        expect(alive(holder), 'stdio cleanup still kills the inherited-pipe holder').toBe(false);
+        if (watchdog === 'idle-after-output') expect(result.output).toContain('late-output');
+      } finally {
+        realClearTimeout(backstop);
+        if (!directPid) {
+          try { directPid = Number(readFileSync(pidFile, 'utf8')); } catch { /* no child started */ }
+        }
+        if (directPid) {
+          try { process.kill(-directPid, 'SIGKILL'); } catch { /* group already gone */ }
+        }
+        vi.useRealTimers();
+        exitWitness.mockRestore();
+        if (pending) await pending;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 15_000,
+  );
 
   it('calibration: an ordinary command still resolves with its exit code and output', async () => {
     const r = await defaultExec(['bash', '-c', 'echo hi; exit 3'], { cwd: process.cwd(), timeoutMs: 10_000 });

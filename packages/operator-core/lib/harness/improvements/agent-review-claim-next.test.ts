@@ -72,9 +72,48 @@ function build(ledger: Record<string, AgentReviewLedgerGrade | null>) {
     commentWorkItem,
     readLedgerGrade: vi.fn(async (ideaId: string) => ledger[ideaId] ?? null),
     deliverRevision: vi.fn(async () => ({ woken: 0 })),
+    healOwnNodeOrigin: vi.fn(async () => false),
   } as unknown as AgentReviewDeps;
   return { items, deps, claimWorkItem, mergeWorkItemPayload, releaseWorkItem };
 }
+
+// WI-10006314 — `origin` records how a row ARRIVED, not who wrote it. The pickup selector does not
+// filter on origin, so an own-node pending row stranded at 'remote' used to be selected and then
+// silently skipped as 'remote-owned'. It must be healed and handed out; a foreign one stays skipped.
+describe('claimNextAgentReview heals own-node rows stranded at origin=remote', () => {
+  beforeEach(() => {
+    h.rows = [{ feature_id: 'WI-A' }, { feature_id: 'WI-B' }];
+  });
+
+  function withRemoteA(ownNode: boolean) {
+    const t = build({});
+    t.items.set('WI-A', { ...t.items.get('WI-A')!, origin: 'remote' } as WorkItem);
+    const healOwnNodeOrigin = vi.fn(async (_workspaceId: string, id: string) => {
+      const current = t.items.get(id)!;
+      if (!ownNode || current.origin !== 'remote') return false;
+      t.items.set(id, { ...current, origin: 'local' } as WorkItem);
+      return true;
+    });
+    (t.deps as unknown as { healOwnNodeOrigin: typeof healOwnNodeOrigin }).healOwnNodeOrigin = healOwnNodeOrigin;
+    return { t, healOwnNodeOrigin };
+  }
+
+  it('hands out the own-node row instead of skipping it', async () => {
+    const { t, healOwnNodeOrigin } = withRemoteA(true);
+    const claimed = await claimNextAgentReview({ reviewer: 'su-reviewer', harnessSlug: 'papercusp' }, t.deps);
+    expect(claimed?.id).toBe('WI-A');
+    expect(healOwnNodeOrigin).toHaveBeenCalledWith(expect.any(String), 'WI-A', 'papercusp');
+    expect(t.items.get('WI-A')!.origin).toBe('local');
+  });
+
+  it('still skips a FOREIGN remote row and claims the next one', async () => {
+    const { t } = withRemoteA(false);
+    const claimed = await claimNextAgentReview({ reviewer: 'su-reviewer', harnessSlug: 'papercusp' }, t.deps);
+    expect(claimed?.id).toBe('WI-B');
+    expect(t.claimWorkItem.mock.calls.map((c) => c[0])).toEqual(['WI-B']);
+    expect(t.items.get('WI-A')!.origin).toBe('remote');
+  });
+});
 
 describe('claimNextAgentReview skips and converges rows the ledger already settled', () => {
   beforeEach(() => {

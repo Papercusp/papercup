@@ -451,12 +451,12 @@ export function validateChecksConfig(value: unknown): string[] {
         if (!isNonEmptyString(value.seam[f]))
           errors.push(`seam.${f}: required non-empty string`);
       }
-      if (value.seam.rootBlueprint !== undefined && !isNonEmptyString(value.seam.rootBlueprint))
-        errors.push("seam.rootBlueprint: must be a non-empty string when present");
       for (const f of ["validInput", "validOutput", "invalidOutput"] as const) {
         if (!isRecord(value.seam[f]))
           errors.push(`seam.${f}: required object fixture`);
       }
+      if (value.seam.rootBlueprint !== undefined && !isNonEmptyString(value.seam.rootBlueprint))
+        errors.push("seam.rootBlueprint: must be a non-empty string when present");
       if (!isRecord(value.seam.operation))
         errors.push("seam.operation: required object");
       else {

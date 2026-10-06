@@ -191,6 +191,28 @@ function startReplayRuntime(options) {
         signal: null, error: String(error) }));
       child.once('exit', (code, signal) => emit({ kind: 'control-exit', launchId: launch.launchId, code, signal }));
     } else {
+      const stderr = child.stderr;
+      let totalBytes = 0;
+      let tail = Buffer.alloc(0);
+      if (stderr) {
+        const originalPush = stderr.push;
+        // Observe raw input before Readable decodes it. Adding a data listener
+        // would switch the stream to flowing mode and could steal consumer data.
+        stderr.push = function (chunk, encoding) {
+          if (chunk !== null) {
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+            totalBytes += bytes.length;
+            // Copy the retained suffix so a small tail cannot pin a large chunk.
+            tail = bytes.length >= 8192 ? Buffer.from(bytes.subarray(-8192)) :
+              Buffer.concat([tail.subarray(Math.max(0, tail.length + bytes.length - 8192)), bytes]);
+          }
+          return originalPush.apply(this, arguments);
+        };
+      }
+      // close follows terminal events and stdio drain. Exit alone may precede
+      // the last diagnostic bytes; inherited/ignored stderr is explicit.
+      child.once('close', () => emit({ kind: 'child-stderr', ...childSubject, atMs: Date.now(),
+        piped: Boolean(stderr), totalBytes, tailBase64: tail.toString('base64'), sha256: hash(tail) }));
       // Capture the original child's terminal event, not a later /proc lookup
       // whose PID may already have disappeared or been reused. These receipts
       // diagnose termination; they do not certify a successful query.
