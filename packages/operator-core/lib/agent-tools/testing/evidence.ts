@@ -1,7 +1,8 @@
 /** Test-time provenance uses existing immutable spec bindings, including pending executions. */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { relative, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import {
   bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot, measureAndPinRepoFilesEvidenceAtRoot, retractSpecEvidence,
   ADHOC_WORK_ITEM_SPEC_SCOPE, MEASUREMENT_PIN_DETAILS_KEY, repoFilesEvidenceMeasurementSchema,
@@ -253,7 +254,7 @@ export function testEvidenceOutcome(
   result?: TestFilesCoreResult,
 ): { outcome: string; collected: boolean; executed: boolean; skipped?: boolean; filteredSkipped?: number } {
   if (!result || result.error) return { outcome: result?.error ?? 'unknown', collected: false, executed: false };
-  const counts = result.byFile[binding.testPath];
+  const counts = byFileCountsFor(result, binding.testPath);
   if (!counts) return { outcome: 'unknown', collected: false, executed: false };
   const executed = !counts.collectionFailed && counts.passed + counts.failed > 0;
   // Vitest reports every non-matching assertion as `skipped` when an explicit

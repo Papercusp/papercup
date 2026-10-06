@@ -26,6 +26,9 @@ use std::sync::{Arc, Mutex};
 const NOTIF_HISTORY_CAP: usize = 50;
 /// Submitted command-palette lines retained for Up/Down recall this process.
 const PALETTE_HISTORY_CAP: usize = 50;
+/// pui-chat-first-ux D-029: from this share of the context window used, the
+/// footer's context field turns into a warning.
+pub const CONTEXT_WARN_USED_PERCENT: u8 = 80;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingSuTurn {
@@ -7276,12 +7279,22 @@ impl App {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".into());
         let cost = self
-            .agent_chat_usage
-            .cost_usd_cents
-            .map(|value| format!("${:.4}", value / 100.0))
+            .chat_session_cost_usd()
+            .map(|value| format!("${value:.4}"))
             .unwrap_or_else(|| "unknown".into());
+        // P-029 / D-029: context used/window once the engine measured it.
+        let context = self
+            .su_usage()
+            .and_then(|u| Some((u.context_tokens?, u.context_window?, u.context_left_percent()?)))
+            .map(|(used, window, left)| format!("context {used}/{window} ({left}% left)"))
+            .or_else(|| {
+                self.su_usage()
+                    .and_then(|u| u.context_tokens)
+                    .map(|used| format!("context {used}/unknown"))
+            })
+            .unwrap_or_else(|| "context unknown".into());
         Some(format!(
-            "usage in {input} / out {output} / cost {cost} / context unknown"
+            "usage in {input} / out {output} / cost {cost} / {context}"
         ))
     }
 
@@ -7300,13 +7313,72 @@ impl App {
         if self.backend_identity_error.is_some() {
             return "Not connected · send a message to set up PUI".to_string();
         }
-        let mut fields = vec![self.chat_model_label(), self.chat_directory_label()];
-        // The Agent Chat contract has no context-consumption measurement yet,
-        // so context use is left out rather than printed as "unknown".
-        if let Some(cents) = self.agent_chat_usage.cost_usd_cents {
-            fields.push(format!("${:.2}", cents / 100.0));
+        // P-029 / D-029: model · approvals · directory · context left · cost.
+        // Context and cost appear only once the engine measured them; they are
+        // never inferred from transcript length or model defaults.
+        let mut fields = vec![self.chat_model_label()];
+        if let Some(approvals) = self.current_approvals() {
+            fields.push(approvals);
+        }
+        fields.push(self.chat_directory_label());
+        if let Some(warning) = self.chat_context_warning() {
+            fields.push(warning);
+        } else if let Some(left) = self.su_usage().and_then(|u| u.context_left_percent()) {
+            fields.push(format!("{left}% context left"));
+        }
+        if let Some(cost) = self.chat_session_cost_usd() {
+            fields.push(format!("${cost:.2}"));
         }
         fields.join(" · ")
+    }
+
+    /// D-029/D-031: what the engine measured for the open conversation.
+    pub(crate) fn su_usage(&self) -> Option<&crate::su_session::SuSessionUsage> {
+        self.su_session
+            .as_ref()
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.usage.as_ref())
+    }
+
+    /// Running session cost: the engine's own figure first, then the Agent
+    /// Chat ledger's. `None` when neither measured it (Codex reports none).
+    fn chat_session_cost_usd(&self) -> Option<f64> {
+        self.su_usage()
+            .and_then(|u| u.cost_usd)
+            .or_else(|| self.agent_chat_usage.cost_usd_cents.map(|cents| cents / 100.0))
+    }
+
+    /// D-029: from 80% of the context window used, the footer's context field
+    /// becomes a warning. Only Claude compacts on request (P-027 G-4), so only
+    /// its warning names /compact; Codex and OMP compact on their own.
+    pub fn chat_context_warning(&self) -> Option<String> {
+        let left = self.su_usage()?.context_left_percent()?;
+        let used = 100u8.saturating_sub(left);
+        if used < CONTEXT_WARN_USED_PERCENT {
+            return None;
+        }
+        let claude = self.su_session.as_ref().map(|s| s.backend())
+            == Some(crate::su_session::SuSessionBackend::Claude);
+        Some(if claude {
+            format!("Context {used}% full: /compact")
+        } else {
+            format!("Context {used}% full")
+        })
+    }
+
+    /// D-029/D-031: the agent's todo/plan list to show above the message box.
+    /// Hidden when there is none, and once every item is done and the turn
+    /// has ended.
+    pub fn chat_plan_checklist(&self) -> Option<&[crate::su_session::SuPlanItem]> {
+        let plan = self
+            .su_session
+            .as_ref()
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.plan.as_deref())?;
+        if plan.is_empty() || (!self.chat_streaming && plan.iter().all(|i| i.is_completed())) {
+            return None;
+        }
+        Some(plan)
     }
 
     /// pui-chat-first-ux P-021: the dim text an empty message box shows.

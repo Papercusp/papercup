@@ -20,17 +20,28 @@ describe('reviewableMiss (WI-10004358)', () => {
         args: { harness: 'papercusp', spec: 'goal-drain-x', breakdownOnly: true, sampleExcluded: REVIEWABLE_MISS_SAMPLE },
         idsAt: 'excludedSample.queueControl.agentReview[].id',
       },
-      claim: { tool: 'improvements:agent-review', args: { mode: 'claim', harness: 'papercusp' } },
+      claim: {
+        tool: 'improvements:agent-review',
+        mode: 'claim',
+        idFrom: 'excludedSample.queueControl.agentReview[].id',
+        harness: 'papercusp',
+      },
       grade: { tool: 'blender:grade-idea', ideaIdFrom: 'ledgerIdeaId' },
     });
+    expect(r!.route.claim.idFrom).toBe(r!.route.list.idsAt);
     expect(r!.advice).toContain("work_items:claimable { harness:'papercusp', spec:'goal-drain-x', breakdownOnly:true");
-    expect(r!.advice).toContain("improvements:agent-review { mode:'claim', id, harness:'papercusp' }");
+    expect(r!.advice).toContain("improvements:agent-review { mode:'claim', id:<listed id>, harness:'papercusp' }");
   });
 
   it('omits absent scope keys instead of emitting empty strings', () => {
     const r = reviewableMiss({ pendingAgentReview: 1 }, { harness: '  ', spec: null });
     expect(r!.route.list.args).toEqual({ breakdownOnly: true, sampleExcluded: REVIEWABLE_MISS_SAMPLE });
-    expect(r!.route.claim.args).toEqual({ mode: 'claim' });
+    expect(r!.route.claim).toEqual({
+      tool: 'improvements:agent-review',
+      mode: 'claim',
+      idFrom: 'excludedSample.queueControl.agentReview[].id',
+    });
+    expect(r!.route.claim).not.toHaveProperty('args');
     expect(r!.advice).not.toContain("harness:''");
   });
 

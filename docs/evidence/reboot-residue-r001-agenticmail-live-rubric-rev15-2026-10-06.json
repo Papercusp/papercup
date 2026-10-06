@@ -20,7 +20,7 @@
     "evidencePlane": "live"
   },
   "oracle": "Independent of the repair: systemd unit properties, the unit's own exec script, the exec'd node's npm root -g, /proc/<MainPID>/cmdline and an HTTP GET against the configured API host:port.",
-  "redaction": "The operator's home directory is rendered as ~ in the retained log.",
+  "redaction": "The operator's home directory is rendered as ~ in the retained log (one unit_execstart line was redacted by hand at 10:31Z after git-sync quarantined the raw capture for an identity leak; no other byte changed).",
   "sourceFiles": [
     {
       "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.sh",
@@ -30,7 +30,7 @@
   "rawEvidence": [
     {
       "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt",
-      "sha256": "32c07ec4d95c83fb48279bce0191f14b0d78d826ce52d450732410bd3e2c81d9"
+      "sha256": "19833de89354c45fc2e8726b926138157fd330b97835b6f59ef69ac279aff1f7"
     }
   ],
   "hostObservations": {

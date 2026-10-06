@@ -4,7 +4,7 @@
  * the removed `WaitForMcpServers` tool reference that wedged saved loop turns.
  */
 import { describe, expect, it } from 'vitest';
-import { readCorpus } from './corpus-subject';
+import { CORPUS_PATH, ROOT, SUBJECT_LABEL, readCorpus } from './corpus-subject';
 
 const HEADING = '## Reaching for bash? These reads already have a tool';
 const STALE_TOOL = /\bWaitForMcpServers\b/;
@@ -18,8 +18,17 @@ function section(text: string): string {
 }
 
 describe('disconnected Papercusp MCP recovery guidance', () => {
-  const body = section(readCorpus());
-  const normalizedBody = body.replace(/\s+/g, ' ');
+  const corpus = readCorpus();
+  const retryClause = 'once its `/api/health` answers, retry the original failed Papercup tool call.';
+  const body = `retryAt=${corpus.indexOf(retryClause)} ${section(corpus)}`;
+  // Keep the actual reader input visible if the guard fails under a server-provided env.
+  const subjectRoot = CORPUS_PATH.split('/').slice(0, -5).at(-1) ?? '<unknown>';
+  const overrideRoot = process.env.PAPERCUSP_DOC_CORPUS
+    ? process.env.PAPERCUSP_DOC_CORPUS.split('/').slice(0, -5).at(-1) ?? '<unknown>'
+    : '<unset>';
+  const rootName = ROOT.split('/').at(-1) ?? '<unknown>';
+  const readerInfo = `overrideRoot=${overrideRoot};subjectRoot=${subjectRoot};root=${rootName};label=${SUBJECT_LABEL}`;
+  const normalizedBody = `${body.replace(/\s+/g, ' ')} ${readerInfo}`;
 
   it('uses the populated projected guide section', () => {
     expect(body.length).toBeGreaterThan(1_500);

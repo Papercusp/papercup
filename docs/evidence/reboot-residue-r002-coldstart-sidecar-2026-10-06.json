@@ -20,6 +20,7 @@
     "evidencePlane": "live"
   },
   "oracle": "Independent of the fix under test: systemd unit properties read before and after, the gateway's HTTP answer and journal, nvidia-smi, and an external /embed sampler.",
+  "redaction": "In the retained log the operator's home directory is rendered as ~ and the box hostname as <host> (redacted by hand at 10:31Z after git-sync quarantined the raw capture for an identity leak); no other byte changed.",
   "sourceFiles": [
     {
       "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-coldstart-sidecar-probe.sh",
@@ -29,7 +30,7 @@
   "rawEvidence": [
     {
       "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-coldstart-sidecar-probe.txt",
-      "sha256": "c144a0509fc6abe9a52262834f2a2b302fd0f4b0b27c1a7f02dda1274dcfa70b"
+      "sha256": "0ee5253cfdf1709824da5c2d6f86d1c5d5109f66fd67d2d9cbb96b388116efab"
     },
     {
       "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-coldstart-embed-samples.tsv",

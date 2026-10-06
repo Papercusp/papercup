@@ -36,6 +36,8 @@ export interface ReviewQueueCounts {
   pendingAgentReview: number;
 }
 
+export const REVIEWABLE_MISS_IDS_AT = 'excludedSample.queueControl.agentReview[].id';
+
 export interface ReviewableMissRoute {
   /** Spec-matched rows whose peer review is pending — work a non-submitter can do now. */
   pendingAgentReview: number;
@@ -44,10 +46,15 @@ export interface ReviewableMissRoute {
   list: {
     tool: 'work_items:claimable';
     args: { harness?: string; spec?: string; breakdownOnly: true; sampleExcluded: number };
-    idsAt: 'excludedSample.queueControl.agentReview[].id';
+    idsAt: typeof REVIEWABLE_MISS_IDS_AT;
   };
-  /** Step 2: claim one listed id for review. */
-  claim: { tool: 'improvements:agent-review'; args: { mode: 'claim'; harness?: string } };
+  /** Step 2: bind one listed id to the required `id` argument before calling the review tool. */
+  claim: {
+    tool: 'improvements:agent-review';
+    mode: 'claim';
+    idFrom: typeof REVIEWABLE_MISS_IDS_AT;
+    harness?: string;
+  };
   /** Step 3: record the peer grade — this is what clears the review floor. */
   grade: { tool: 'blender:grade-idea'; ideaIdFrom: 'ledgerIdeaId' };
 }
@@ -89,9 +96,14 @@ export function reviewableMiss(
         breakdownOnly: true,
         sampleExcluded: REVIEWABLE_MISS_SAMPLE,
       },
-      idsAt: 'excludedSample.queueControl.agentReview[].id',
+      idsAt: REVIEWABLE_MISS_IDS_AT,
     },
-    claim: { tool: 'improvements:agent-review', args: { mode: 'claim', ...(harness ? { harness } : {}) } },
+    claim: {
+      tool: 'improvements:agent-review',
+      mode: 'claim',
+      idFrom: REVIEWABLE_MISS_IDS_AT,
+      ...(harness ? { harness } : {}),
+    },
     grade: { tool: 'blender:grade-idea', ideaIdFrom: 'ledgerIdeaId' },
   };
   const listCall =
@@ -104,7 +116,7 @@ export function reviewableMiss(
   const advice =
     `DO NOT STAND DOWN YET: review the ${pending} pending row(s) in your own spec. ` +
     `1) ${listCall} → ids at excludedSample.queueControl.agentReview[].id; ` +
-    `2) improvements:agent-review { mode:'claim', id${harness ? `, harness:'${harness}'` : ''} } on one you did not submit; ` +
+    `2) For one listed id you did not submit, call improvements:agent-review { mode:'claim', id:<listed id>${harness ? `, harness:'${harness}'` : ''} }; ` +
     '3) read the item, then blender:grade-idea { ideaId: <its ledgerIdeaId>, grade, feedback } — 4+ approves it into the ' +
     'claimable pool, 3 or lower sends it back for revision. Then pull again. ' +
     `If improvements:agent-review returns claimed:false for every id in that scoped read, no review is available ` +

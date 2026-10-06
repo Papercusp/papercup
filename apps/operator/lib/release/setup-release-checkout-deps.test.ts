@@ -2197,13 +2197,18 @@ exec "$REGRESSION_REAL_GIT" "$@"
       '--node-modules', 'force', '--node-modules-copy', 'copy',
       '--node-modules-generation', 'required', '--node-modules-generation-id', identity!,
       '--dependency-generation-root', generationRoot,
-    ], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+    ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(generationRoot, 'fixture-copy.lock'),
       REGRESSION_REAL_GIT: realGit, REGRESSION_GENERATION_ROOT: generationRoot,
       REGRESSION_GENERATION_ID: identity, REGRESSION_LEASE_OBSERVED: observed } });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(readFileSync(observed, 'utf8').trim().split('\n')).toHaveLength(1);
-    expect(readdirSync(join(generationRoot, '.leases')).filter(name => name.startsWith('selector-'))).toEqual([]);
+    const observedLeases = readFileSync(observed, 'utf8').trim();
+    expect(observedLeases).toContain('/.leases/selector-');
+    expect(observedLeases.split('\n')).toHaveLength(1);
+    const leaseDir = join(generationRoot, '.leases');
+    expect(existsSync(leaseDir)
+      ? readdirSync(leaseDir).filter(name => name.startsWith('selector-')) : []).toEqual([]);
     expect(existsSync(join(releaseRoot, 'node_modules/lease-fixture/package.json'))).toBe(true);
   });
 

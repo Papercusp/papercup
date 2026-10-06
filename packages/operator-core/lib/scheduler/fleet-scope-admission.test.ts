@@ -1147,7 +1147,12 @@ describe('fleet scope assignment admission (P-016)', () => {
           args: { harness: 'papercusp', spec: issueScope.fleetSlug, breakdownOnly: true },
           idsAt: 'excludedSample.queueControl.agentReview[].id',
         },
-        claim: { tool: 'improvements:agent-review', args: { mode: 'claim', harness: 'papercusp' } },
+        claim: {
+          tool: 'improvements:agent-review',
+          mode: 'claim',
+          idFrom: 'excludedSample.queueControl.agentReview[].id',
+          harness: 'papercusp',
+        },
         grade: { tool: 'blender:grade-idea' },
       });
       expect(miss.error).toMatch(/^REVIEWABLE, NOT IDLE \(WI-10004358\): 24 spec-matched row\(s\)/);

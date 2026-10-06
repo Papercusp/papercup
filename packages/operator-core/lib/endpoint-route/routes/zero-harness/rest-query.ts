@@ -191,7 +191,7 @@ export default defineTool({
               staleOperator: true,
             }
           : { error: msg, name },
-        { status: 500 },
+        { status: 500, headers: { 'x-papercusp-request-id': requestId } },
       );
     }
     });

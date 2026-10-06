@@ -141,7 +141,7 @@ export async function resolveBashTaskProvenance(
       if (held && !held.some((h) => h.id === explicit)) {
         throw new BashProvenanceRefusal(
           'work_item_not_held',
-          `work_item_id '${explicit}' is not one of your held work-items; claim it first or omit work_item_id.`,
+          `work_item_id '${explicit}' is not one of your currently held, non-terminal work-items. A direct by-id claim of a terminal item does not create an active hold; choose a held item or omit work_item_id.`,
         );
       }
     }

@@ -163,6 +163,31 @@ describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
     expect(body.error).toContain('Restart the operator process');
   });
 
+  it('returns the server request ID on resolver failures so PG diagnostics remain joinable', async () => {
+    const hooks = createPgDiagnosticHooks('org-app');
+    resolveNamedQueryMock.mockImplementationOnce(async () => {
+      hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null,
+        query: 'select * from harness_shared.work_items', rowCount: 0, wireBytes: 0,
+        status: 'error', errorCode: '57014', context: hooks.onquerycontext() });
+      throw new Error('workItems.byHarness rows exceeded the read budget');
+    });
+
+    const response = await (await route()).handler(new Request(
+      'http://localhost:3170/api/zero-harness/rest-query?name=workItems.byHarness&args=%7B%7D',
+    ));
+    const requestId = response.headers.get('x-papercusp-request-id');
+    const body = await response.json();
+    const [diagnostic] = pgResultDiagnosticSnapshot('org-app').results;
+
+    expect(response.status).toBe(500);
+    expect(requestId).toMatch(/^[a-f0-9-]{36}$/i);
+    expect(diagnostic.correlation).toMatchObject({
+      operation: 'workItems.byHarness',
+      requestId,
+    });
+    expect(body).toEqual({ error: 'workItems.byHarness rows exceeded the read budget', name: 'workItems.byHarness' });
+  });
+
   it('keeps ordinary resolver failures as ordinary 500 responses', async () => {
     resolveNamedQueryMock.mockRejectedValueOnce(new Error('database connection refused'));
 
