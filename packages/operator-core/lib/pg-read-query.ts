@@ -552,10 +552,12 @@ const CORPUS_NAMESPACED_TABLES = new Set([
  * clean-looking empty result, indistinguishable from "no failures". `source`/`commit_sha` are the
  * columns that actually discriminate a gate row, so `test_runs` is excluded from the
  * generic/override checks below and gets its own advisory ({@link buildTestRunsAdvisory}). An
- * exact run_group_id, bounded row-id group, or bounded exact file_path read fenced by BOTH
- * explicit tenant predicates is the separate safe case: it is an intentional per-run/local
- * evidence read, so it must not be rejected as an unscoped query. A local evidence lookup may
- * instead carry only `harness_slug` when it also fixes BOTH `run_group_id` and `file_path` exactly;
+ * exact primary-key id equality/finite literal IN-list is also safe on its own: the globally
+ * unique id selects only the named run rows, including CI/mutation-probe rows with NULL tenant
+ * columns. A bounded row-id range/group, exact run_group_id, or bounded exact file_path read fenced
+ * by BOTH explicit tenant predicates remains the separate safe local-evidence case. A local
+ * evidence lookup may instead carry only `harness_slug` when it also fixes BOTH `run_group_id` and
+ * `file_path` exactly;
  * that three-part identity is the narrow local reporter shape filed in EI-22641981769449390.
  * Broad/partial tenant filters retain the CI warning.
  */
@@ -601,12 +603,13 @@ function extractTestRunsReferences(strippedSql: string): TestRunsReference[] {
  * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
  * mentioned"; here workspace_id/harness_slug mentioned is not enough for a broad CI read).
  * Fires whenever `test_runs` is referenced with a WHERE clause and neither `source` nor
- * `commit_sha` is used as a predicate, unless the query has an exact run_group_id, bounded row-id, or
- * bounded exact file_path predicate alongside both workspace_id and harness_slug predicates.
- * The latter are explicit per-run/local-evidence tenant fences and are safe to execute without
- * allowUnscoped; broad/partial tenant filters retain the CI warning.
+ * `commit_sha` is used as a predicate, unless the query has an exact test_runs primary-key id
+ * predicate, an exact run_group_id, a bounded row-id group, or a bounded exact file_path predicate
+ * alongside both workspace_id and harness_slug predicates. The latter are explicit per-run/local-
+ * evidence tenant fences and are safe to execute without allowUnscoped; broad/partial tenant filters
+ * retain the CI warning.
  */
-function buildTestRunsAdvisory(stripped: string, tables: string[]): string | null {
+function buildTestRunsAdvisory(stripped: string, tables: string[], rawSql: string): string | null {
   if (!tables.some((t) => bareTableName(t) === TEST_RUNS_TABLE)) return null;
   // A SELECT-list mention is not an identity fence. The old `mentions` check
   // treated `SELECT source` / `SELECT commit_sha` as if the query filtered on
@@ -631,6 +634,13 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
   const boundedLocalGroup =
     tables.length === 1 &&
     (hasBoundedPredicate(stripped, 'run_group_id') || hasBoundedPredicate(stripped, 'id'));
+  // A single exact PK lookup cannot accidentally discard the NULL-tenant CI
+  // rows: it names the rows directly. Keep this separate from the bounded id
+  // range exception above, which still needs the explicit local tenant fence.
+  const exactPrimaryKeyRead =
+    tables.length === 1 &&
+    testRunsReferences.length === 1 &&
+    hasExactTestRunsIdPredicate(rawSql, testRunsReferences[0]!);
   // An exact file path is a local reporter identity fence when the result is
   // explicitly bounded. Without LIMIT/FETCH, the same path can span every
   // historical run and must retain the CI-row warning.
@@ -657,6 +667,7 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
       stripped,
     );
   if (
+    exactPrimaryKeyRead ||
     harnessScopedLocalEvidenceFence ||
     (explicitTenantFence && (boundedLocalGroup || boundedLocalFileRead)) ||
     joinedBoundedLocalGroup ||
@@ -3226,6 +3237,61 @@ function hasBoundedPredicate(strippedSql: string, column: string): boolean {
 }
 
 /**
+ * Recognize only a direct, positive primary-key equality or finite scalar IN
+ * list in the test_runs relation's own WHERE clause. This is narrower than a
+ * bounded id range: ranges still need explicit tenant fences because they can
+ * span an arbitrary part of the CI ledger. Comments and strings are masked
+ * without moving offsets so an OR or nested subquery cannot borrow an id
+ * predicate that does not constrain test_runs itself.
+ */
+function hasExactTestRunsIdPredicate(rawSql: string, reference: TestRunsReference): boolean {
+  const masked = maskSqlNoise(rawSql);
+  const where = locateWhereClause(masked);
+  if (!where) return false;
+  const whereBody = masked.slice(where.start, where.end);
+  // A top-level OR can select arbitrary rows outside the id set. An OR inside
+  // a separate AND-conjunct remains bounded by the exact id predicate.
+  const orRe = /\bor\b/gi;
+  for (let match = orRe.exec(whereBody); match; match = orRe.exec(whereBody)) {
+    if (where.depth[where.start + match.index] === where.base) return false;
+  }
+
+  // The table reference must belong to the same query block as this WHERE and
+  // precede it. Otherwise an id predicate in a parent/child CTE could be
+  // mistaken for a fence on test_runs.
+  const tableRe =
+    /\b(?:from|join)\s+(?:only\s+)?(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?test_runs\b/gi;
+  let tableMatch: RegExpExecArray | null;
+  let sameBlockSource = false;
+  while ((tableMatch = tableRe.exec(masked))) {
+    if (where.depth[tableMatch.index] === where.base && tableMatch.index < where.start) {
+      sameBlockSource = true;
+      break;
+    }
+  }
+  if (!sameBlockSource) return false;
+
+  const qualifier = reference.qualifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const column = `(?:\\b${qualifier}\\s*\\.\\s*)?\\bid\\b`;
+  const cast = String.raw`(?:\s*::\s*[A-Za-z_][A-Za-z0-9_.]*)*`;
+  const value = String.raw`[+-]?\d+${cast}`;
+  const predicate = new RegExp(
+    `${column}${cast}\\s*(?:=\\s*${value}|\\bIN\\s*\\(\\s*${value}(?:\\s*,\\s*${value})*\\s*\\))`,
+    'gi',
+  );
+  for (let match = predicate.exec(whereBody); match; match = predicate.exec(whereBody)) {
+    const absoluteStart = where.start + match.index;
+    // Only accept a predicate at this WHERE's own depth, never one buried in a
+    // scalar/EXISTS subquery. Parenthesized predicates conservatively stay on
+    // the advisory path until their shape is explicitly supported.
+    if (where.depth[absoluteStart] !== where.base) continue;
+    if (/\bnot\s*(?:\(\s*)?$/i.test(whereBody.slice(0, match.index))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * An exact identity predicate is deliberately narrower than a bounded value/range predicate:
  * `IN (...)` and `BETWEEN` can name several historical rows, while a local run/file lookup must
  * fix one harness, one run group, and one file path before it may omit workspace_id.
@@ -3261,7 +3327,7 @@ export async function buildTenantScopeAdvisory(
   // every downstream `suggest`/predicate builder only ever sees a real id or undefined.
   const resolvedOpts = { ...opts, workspaceId: realScopeValue(opts.workspaceId), harnessSlug: realScopeValue(opts.harnessSlug) };
 
-  const testRunsAdvisory = buildTestRunsAdvisory(stripped, tables);
+  const testRunsAdvisory = buildTestRunsAdvisory(stripped, tables, rawSql);
   // P-003: the SEMANTIC advisory — guards what a column MEANS, not which rows
   // belong to you. Independent of the tenancy checks below (a scout_routed_ideas
   // query can be perfectly tenant-scoped and still count the wrong population).
