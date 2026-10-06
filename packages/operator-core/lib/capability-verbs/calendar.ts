@@ -8,7 +8,7 @@
  * picks the owner's connected calendar source and the provider that serves it,
  * refusing by name when the choice is ambiguous or the provider lacks the
  * capability. The provider receives `calendar.write` with
- * `{ operation: 'create' | 'update', … }`; Google Calendar is the bundled
+ * `{ operation: 'create' | 'update' | 'delete', … }`; Google Calendar is the bundled
  * `gcal` provider plugin (P-009, D-021), with no host-side Google path.
  *
  * Calendar is where D-020's create-shaped rail earns its keep. `calendar:propose`
@@ -81,7 +81,7 @@ function presentFields(fields: CalendarEventFields): Record<string, unknown> {
 async function writeViaProvider(
   sql: postgres.Sql,
   target: OutboundTarget,
-  operation: { operation: 'create' } | { operation: 'update'; eventId: string },
+  operation: { operation: 'create' } | { operation: 'update' | 'delete'; eventId: string },
   fields: CalendarEventFields,
   deps: CalendarDeps,
 ): Promise<CalendarWriteResult> {
@@ -266,4 +266,72 @@ export async function updateCalendarEvent(
     deps,
   );
   return { ...updated, invited, summary };
+}
+
+export interface CalendarDeleteResult extends CalendarWriteResult {
+  summary: string;
+  /** Everyone on the event, who receives the provider's cancellation notice. */
+  notified: string[];
+}
+
+/**
+ * `calendar:delete` — cancel an event the owner already has in their vault.
+ *
+ * Like `calendar:update`, the event must resolve as a canonical
+ * `calendar-event` the owner holds, so an event id read out of a message cannot
+ * be cancelled, and the delete goes out through the source that holds it. A
+ * cancellation notifies everyone on the event, so they are the audience the
+ * disclosure ledger is asked about.
+ */
+export async function deleteCalendarEvent(
+  sql: postgres.Sql,
+  params: {
+    workspaceId: string;
+    userId: string;
+    eventId: string;
+    calendarId?: string;
+    /** The source holding the event; required only when the same event id is stored under several. */
+    sourceId?: string | null;
+    /** See `proposeCalendarEvent`. */
+    agentOwnerId: string | null;
+  },
+  deps: CalendarDeps = {},
+): Promise<CalendarDeleteResult> {
+  const doc = await resolveCanonicalDocument(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    source: CANONICAL_SOURCE_BY_DATATYPE['calendar-event'],
+    externalId: params.eventId,
+    sourceId: params.sourceId,
+  });
+  const notified = [...new Set(doc.participants)];
+  if (notified.length) {
+    await assertDisclosurePermits(sql, {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      agentOwnerId: params.agentOwnerId,
+      recipients: notified,
+      sink: 'calendar:delete',
+    });
+  }
+
+  const target = await resolveCapabilitySource(
+    sql,
+    {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      datatype: 'calendar-event',
+      capabilities: [OUTBOUND_CAPABILITIES.calendarWrite],
+      sourceId: doc.sourceId ?? params.sourceId,
+    },
+    deps,
+  );
+  const deleted = await writeViaProvider(
+    sql,
+    target,
+    { operation: 'delete', eventId: doc.externalId },
+    { calendarId: params.calendarId },
+    deps,
+  );
+  return { ...deleted, summary: string(doc.payload.summary), notified };
 }

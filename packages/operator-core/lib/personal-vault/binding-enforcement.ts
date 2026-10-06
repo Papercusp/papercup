@@ -58,6 +58,7 @@ export const GATED_OUTBOUND_VERBS = [
   'mail:send-draft',
   'calendar:propose',
   'calendar:update',
+  'calendar:delete',
   'chat:post',
   'chat:reply',
   'social:post',
