@@ -37,6 +37,7 @@ const {
   fleetMock,
   findLiveHostMock,
   endedSessionsMock,
+  endedOwnerIdsMock,
 } = vi.hoisted(() => ({
   listPresenceMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   federatedMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
@@ -50,6 +51,8 @@ const {
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
   // EI-21488009366204518: the targeted-miss session-log death leg.
   endedSessionsMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  // WI-10006738: the oracle's positive ended-session leg (latest adv_session ended).
+  endedOwnerIdsMock: vi.fn(async (..._a: unknown[]) => new Set<string>()),
 }));
 // importOriginal spread (not a bare factory): real presence-wakeability — kept
 // real below via its own importOriginal — imports PRESENCE_STALE_MS from
@@ -68,6 +71,7 @@ vi.mock('../../adv-sessions', async (orig) => ({
   recordedLiveOwnerIds: vi.fn(async () => new Set<string>()),
   // EI-21488009366204518: the targeted-miss session-log death leg.
   listEndedAdvSessionsByOwners: endedSessionsMock,
+  endedRecordedOwnerIds: endedOwnerIdsMock,
 }));
 // Pass-through reconcile: the test rows below are already RosterRow-shaped.
 // importOriginal keeps the REAL synthesizeEndedRosterRows so the
@@ -134,6 +138,8 @@ beforeEach(() => {
   // defaults explicitly so the EI-21488009366204518 tests cannot leak their
   // fixtures into each other (order-dependent false positives).
   endedSessionsMock.mockResolvedValue([]);
+  endedOwnerIdsMock.mockResolvedValue(new Set<string>());
+  findLiveHostMock.mockImplementation(() => null);
   listPresenceMock.mockResolvedValue([row('su-aaa', false), row('su-bbb', false), row('su-ccc', true)]);
   federatedMock.mockResolvedValue([]);
   recordedLiveSessionsMock.mockResolvedValue([]);
@@ -216,6 +222,43 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
 
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
     expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('recorded');
+  });
+
+  // WI-10006738: coord:presence used to omit the oracle's positive ended-session
+  // leg, so a session whose latest adv_session had ENDED (here: a launch that
+  // never booted, closed as 'cleanup') read `parked`/wakeable for as long as its
+  // heartbeat stayed warm — while resolveSessionStates (fleet:status,
+  // fleet:assignments, send-miss) said `ended` for the same owner.
+  it('a warm, wakeable row whose latest adv_session ENDED reads ended, matching resolveSessionStates', async () => {
+    const owner = 'su-ended-warm';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'omp-hook-session' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    endedOwnerIdsMock.mockResolvedValue(new Set([owner]));
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    expect(endedOwnerIdsMock).toHaveBeenCalledWith([owner]);
+    expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('ended');
+  });
+
+  it('ended-session evidence does NOT override a live psu host (process-free parking stays parked)', async () => {
+    const owner = 'su-parked-hosted';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    endedOwnerIdsMock.mockResolvedValue(new Set([owner]));
+    findLiveHostMock.mockImplementation((id: string) => (id === owner ? { ownerId: id } : null));
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('parked');
+  });
+
+  it('a failed ended-session read degrades to the prior verdict, never to a death claim', async () => {
+    const owner = 'su-ended-leg-down';
+    listPresenceMock.mockResolvedValue([row(owner, false)]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    endedOwnerIdsMock.mockRejectedValue(new Error('pg down'));
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('parked');
   });
 
   it('emits parked + selfWake:none so a healthy-looking member is visibly stranded', async () => {
