@@ -672,9 +672,11 @@ describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
     const res = await applyTriageDecision({ id: 'unknown-1', decision: 'place', reason: 'code-bug' }, deps);
     expect(res.decision).toBe('place');
     expect(res.deploymentStaleness).toMatchObject({ state: 'unknown', unknownReason: 'git-unreadable' });
+    // P-008 / D-038: no separate freshness hold — the row waits in the one review stage,
+    // and the deployment evidence tells the reviewer what could not be answered.
     expect(res.implementationReadiness).toMatchObject({
       status: 'unknown',
-      reason: 'deployment-freshness-unknown',
+      reason: 'awaiting-agent-review',
       evidence: { deployment: { state: 'unknown', unknownReason: 'git-unreadable' } },
     });
     // P-002 / EI-25176539351759672: that stamp keeps the row out of ordinary self-select
@@ -703,8 +705,26 @@ describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
     );
     const res = await applyTriageDecision({ id: 'current-1', decision: 'place', reason: 'code-bug' }, deps);
     expect(res.decision).toBe('place');
-    expect(res.implementationReadiness?.reason).not.toBe('deployment-freshness-unknown');
+    expect(res.implementationReadiness?.reason).not.toBe('awaiting-agent-review');
     expect(deps.enterAgentReview).not.toHaveBeenCalled();
+  });
+
+  it('a PLACE whose deployment screen was UNAVAILABLE waits in review too (P-008 / D-038)', async () => {
+    const issue = issueOf({ id: 'unavailable-1', kind: 'bug' });
+    const deps = depsOf(
+      issue,
+      {},
+      {
+        deploymentStalenessScreen: vi.fn(
+          async () => ({ screened: false, divert: false, skipReason: 'screen-unavailable' }) as const,
+        ),
+      },
+    );
+    const res = await applyTriageDecision({ id: 'unavailable-1', decision: 'place', reason: 'code-bug' }, deps);
+    expect(res.decision).toBe('place');
+    expect(res.implementationReadiness).toMatchObject({ status: 'unknown', reason: 'awaiting-agent-review' });
+    expect(deps.enterAgentReview).toHaveBeenCalledTimes(1);
+    expect(deps.enterAgentReview).toHaveBeenCalledWith({ id: 'unavailable-1', submittedBy: 'improvement-triage' });
   });
 
   it('does not pay for the screen on reject or gym — neither routes anyone at a code fix', async () => {

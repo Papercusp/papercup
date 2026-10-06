@@ -346,6 +346,18 @@ function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
     : null;
 }
 
+/**
+ * The deployment screen could not answer: it ran and returned `unknown`, or it was
+ * unavailable. An unknown is never evidence the bug is gone, so such a row waits for a
+ * reviewer rather than being placed as ready.
+ */
+function deploymentFreshnessUnknown(deployment: DeploymentStalenessScreen | undefined): boolean {
+  return Boolean(
+    (deployment?.screened && deployment.state === 'unknown') ||
+      (!deployment?.screened && deployment?.skipReason === 'screen-unavailable'),
+  );
+}
+
 function triageImplementationReadiness(input: {
   issue: EngineerIssue;
   decision: TriageDecision;
@@ -415,14 +427,14 @@ function triageImplementationReadiness(input: {
       ...withEvidence,
     });
   }
-  if (
-    (input.deployment?.screened && input.deployment.state === 'unknown') ||
-    (!input.deployment?.screened && input.deployment?.skipReason === 'screen-unavailable')
-  ) {
+  if (deploymentFreshnessUnknown(input.deployment)) {
+    // P-008 / D-038: no separate freshness hold. The open freshness question waits in the
+    // one review stage, under its one reason; evidence.deployment (when the screen ran)
+    // tells the reviewer what could not be answered, and applyTriageDecision enrols it.
     return createImplementationReadiness({
       status: 'unknown',
       source: 'triage-freshness',
-      reason: 'deployment-freshness-unknown',
+      reason: 'awaiting-agent-review',
       ...withEvidence,
     });
   }
@@ -600,15 +612,16 @@ export async function applyTriageDecision(
   // Generic gates enter harness-bound agent review. Owner escalations follow the
   // coordinator's owner-action path and operator-scoped rows have no harness to review.
   //
-  // A PLACE whose deployment screen could not answer is stamped
-  // unknown/'deployment-freshness-unknown', which keeps it out of ordinary self-select,
-  // and nothing ever re-screens it: 217 open bugs sat in that dead zone on 2026-10-05
-  // (P-002 / EI-25176539351759672). Until verification is a lane of its own (P-008),
-  // it enters agent review too, so the existing reviewer lane owns the open question.
+  // A PLACE whose deployment screen could not answer waits in the review stage, and
+  // nothing ever re-screens it: 217 open bugs sat in that dead zone on 2026-10-05
+  // (P-002 / EI-25176539351759672). P-008 / D-038: it carries the one stage reason,
+  // awaiting-agent-review, and enters agent review here so the reviewer lane owns the
+  // open question. Keyed off the screen itself, not off a hold reason.
   const freshnessUnknownPlace =
     decision === 'place' &&
     implementationReadiness.status === 'unknown' &&
-    implementationReadiness.reason === 'deployment-freshness-unknown';
+    implementationReadiness.reason === 'awaiting-agent-review' &&
+    deploymentFreshnessUnknown(deploymentStaleness);
   if ((decision === 'gate' && routeTarget !== 'owner-escalation') || freshnessUnknownPlace) {
     await deps.enterAgentReview({ id: input.id, submittedBy: by });
   }
