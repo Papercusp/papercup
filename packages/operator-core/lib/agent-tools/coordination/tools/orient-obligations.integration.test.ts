@@ -621,7 +621,15 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
   it('preserves a failed portfolio read as unknown and recovers through the same scoped tool', async () => {
     const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const failure = `P007 controlled portfolio read failure ${RUN}`;
-    const portfolio = vi.spyOn(goalSettings, 'readGoalPortfolioBrief').mockRejectedValueOnce(new Error(failure));
+    // orient reads the portfolio ONCE through the staged reader and hands the obligation
+    // fold its uncounted snapshot (EI-25191349922959563), so the failure is injected there.
+    // Spying on the exported readGoalPortfolioBrief measured nothing: orient never calls it
+    // (WI-10006747). The rejection is pre-handled so it cannot surface as an unhandled one.
+    const rejected = Promise.reject(new Error(failure));
+    rejected.catch(() => undefined);
+    const portfolio = vi
+      .spyOn(goalSettings, 'readGoalPortfolioBriefStaged')
+      .mockReturnValueOnce({ snapshot: rejected, counted: rejected });
     const failed = await readOrientation();
     expect(portfolio).toHaveBeenCalledWith({ workspaceId: WS, goalId: GOAL, attestOwnerId: OWNER });
     const placement = failed.obligations.evaluations.find((entry) => entry.ruleId === 'goal-plan-placement');
