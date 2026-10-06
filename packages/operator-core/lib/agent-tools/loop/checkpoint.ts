@@ -1382,7 +1382,9 @@ export default defineTool({
     })();
     // P-016 / EI-212678: persist owner-attribution caveats in the carry note so
     // a later cold wake cannot mistake the response-only lint for authority.
-    const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId);
+    const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId, {
+      currentTurnStamp: sentinelTurn ?? undefined,
+    });
     const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
     const enforcedBaseNote = ownerEnforcement.unverified
       ? markUnverifiedOwnerAttribution(anchoredBaseNote)
@@ -1997,9 +1999,10 @@ export default defineTool({
         // Re-wake guarantee (turn-end-tracking.isRewakeGuaranteed): is ending
         // THIS turn safe, or would an autonomous session silently halt? A CLOSED
         // gate that says "settle" is FALSE COMFORT when no re-wake exists — it
-        // must escalate to self-compact / arm-a-wake. Excludes the always-armed
-        // coord:inbox-wake keepalive (liveness, not a deliberate wake for this
-        // work). Best-effort; unknown ⇒ null → base guidance (non-breaking).
+        // must escalate to self-compact / arm-a-wake. Use the turn-end predicate
+        // to exclude unbounded/silently-expiring waits and the standing inbox
+        // keepalive while retaining explicit bounded inbox waits. Best-effort;
+        // unknown ⇒ null → base guidance (non-breaking).
         let rewakeGuaranteed: boolean | null = null;
         let activeInboxWakeAwait: boolean | null = null;
         let nextWakeFresh: boolean | null = null;
@@ -2007,7 +2010,7 @@ export default defineTool({
         let activeLoopGoal: string | null = null;
         let activeLoopRewakeBlockedReason: ActiveLoopRewakeBlockedReason | null = null;
         try {
-          const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] = await Promise.all(
+          const [{ isRewakeGuaranteed, awaitGuaranteesRewake }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] = await Promise.all(
             [import('../../turn-end-tracking'), import('../../events/await/store'), import('../../modes/store')],
           );
           const [loop, awaits, modes] = await Promise.all([
@@ -2023,19 +2026,22 @@ export default defineTool({
             loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
           activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
           const activeNonInboxAwaitCount = awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length;
+          const guaranteedAwaitCount = awaits.filter((a) => awaitGuaranteesRewake(a, INBOX_WAKE_KEY_PREFIX)).length;
           rewakeGuaranteed = isRewakeGuaranteed({
             autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
             machineTurn: currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface',
             loopActive: loopWake.guaranteed,
-            activeAwaitCount: activeNonInboxAwaitCount,
+            activeAwaitCount: guaranteedAwaitCount,
           });
           // A loop can guarantee another turn without guaranteeing a fresh
           // context. A deliberate await can wake the same session before a cold
           // loop fires, so cold carry proves freshness only when it is the sole
-          // non-inbox wake source; otherwise the next wake's freshness is unknown.
+          // wake source; otherwise the next wake's freshness is unknown. An
+          // unbounded non-inbox wait can still preempt it, as can a bounded inbox
+          // wait, even though only the latter guarantees a continuation itself.
           nextWakeFresh = loopWake.guaranteed
             ? loop?.carry === 'cold'
-              ? activeNonInboxAwaitCount === 0
+              ? activeNonInboxAwaitCount === 0 && guaranteedAwaitCount === 0
                 ? true
                 : null
               : false

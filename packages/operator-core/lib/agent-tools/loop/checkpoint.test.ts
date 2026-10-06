@@ -75,6 +75,8 @@ const withBoundedTimeout = vi.fn(
 const listVerifiedWaitTakeoversForSubscribers = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());
+const resolveCurrentTurnStamp = vi.hoisted(() => vi.fn());
+const verifyTurnRefs = vi.hoisted(() => vi.fn());
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -222,6 +224,11 @@ vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
   readFrozenRepairMarker,
 }));
+vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveCurrentTurnStamp: (...a: unknown[]) => resolveCurrentTurnStamp(...a),
+  verifyTurnRefs: (...a: unknown[]) => verifyTurnRefs(...a),
+}));
 // P-005 / D-030 (7). The suite-wide withBoundedTimeout double never runs the guard's
 // work, so this spy is reached only by tests that route its label through for real.
 const checkFleetZeroWorkers = vi.fn(
@@ -265,6 +272,8 @@ beforeEach(() => {
   setLoopCarryNote.mockResolvedValue('stored-note');
   getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
+  resolveCurrentTurnStamp.mockResolvedValue(null);
+  verifyTurnRefs.mockResolvedValue([]);
   getSessionBrief.mockResolvedValue(null); // default: no durable coord:orient scope found
   getPresence.mockResolvedValue(null);
   readInbox.mockResolvedValue([]);
@@ -1942,7 +1951,37 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b.continuation.guidance).not.toContain('no registered await');
   });
 
-  it('runtime wiring: does not promise a fresh next turn when an active await can preempt a cold loop', async () => {
+  it.each([
+    { label: 'unbounded event', eventKey: 'work-item:claimable', expiresTs: null, timeoutBehavior: 'wake', expected: false },
+    { label: 'silent expiry', eventKey: 'work-item:claimable', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'expire', expected: false },
+    { label: 'bounded event wake', eventKey: 'work-item:claimable', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'wake', expected: true },
+    { label: 'bounded inbox wake', eventKey: 'coord:inbox-wake:su-caller', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'wake', expected: true },
+    { label: 'unbounded inbox wake', eventKey: 'coord:inbox-wake:su-caller', expiresTs: null, timeoutBehavior: 'wake', expected: false },
+  ])('runtime wiring: $label has the correct continuation guarantee', async ({ eventKey, expiresTs, timeoutBehavior, expected }) => {
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getModes.mockResolvedValue([{ mode: 'auto' }]);
+    resolveCurrentTurnStamp.mockResolvedValue({ verdict: 'agent-injected' });
+    getPresence.mockResolvedValue({ contextTokens: 80, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(80);
+    listActiveAwaits.mockResolvedValue([{ eventKey, expiresTs, timeoutBehavior, once: true }]);
+
+    const b = body(await call({ next: 'settle only with a bounded wake' }));
+
+    expect(b.continuation).toMatchObject({
+      rewakeGuaranteed: expected,
+      activeInboxWakeAwait: eventKey.startsWith('coord:inbox-wake:'),
+      nextWakeFresh: null,
+    });
+  });
+
+  it.each([
+    { label: 'unbounded event', awaitRow: { eventKey: 'work-item:claimable' } },
+    { label: 'bounded inbox wake', awaitRow: { eventKey: 'coord:inbox-wake:su-caller', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'wake', once: true } },
+  ])('runtime wiring: $label can preempt a cold loop without promising fresh context', async ({ awaitRow }) => {
     withBoundedTimeout.mockImplementation(async (work: unknown) => ({
       value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
       degraded: false,
@@ -1960,7 +1999,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     currentContextTokensForOwner.mockResolvedValue(95);
     readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-25T04:00:00.000Z' });
     readInbox.mockResolvedValue([]);
-    listActiveAwaits.mockResolvedValue([{ eventKey: 'work-item:claimable' }]);
+    listActiveAwaits.mockResolvedValue([awaitRow]);
     selfCompactionAvailability.mockReturnValue({ available: false });
     readFleetWindDownLoopEndAuthorization.mockResolvedValue(false);
 
@@ -1968,7 +2007,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
     expect(b.continuation).toMatchObject({
       rewakeGuaranteed: true,
-      activeInboxWakeAwait: false,
+      activeInboxWakeAwait: awaitRow.eventKey.startsWith('coord:inbox-wake:'),
       nextWakeFresh: null,
     });
     expect(b.continuation.guidance).not.toContain('configured for COLD carry');
@@ -2372,6 +2411,55 @@ describe('loop:checkpoint — current-vs-retained provenance (EI-211652356424970
       true,
     );
     expect(result.turnProvenance?.refs?.[0]).toMatchObject({ ref, found: false, checked: false });
+  });
+});
+
+describe('loop:checkpoint — current-turn sentinel reuses its resolved transcript stamp (EI-25234674994072047)', () => {
+  it('does not turn a just-resolved [turn:self] anchor into an unchecked miss on a second read', async () => {
+    const currentTurn = {
+      ref: '[turn:claude:a@2026-10-06T12:54:21.287Z]',
+      verdict: 'agent-injected' as const,
+      origin: 'loop-fire',
+    };
+    resolveCurrentTurnStamp.mockResolvedValueOnce(currentTurn).mockResolvedValueOnce(null);
+    verifyTurnRefs.mockResolvedValueOnce([
+      {
+        ref: currentTurn.ref,
+        found: false,
+        verdict: null,
+        origin: null,
+        snippet: null,
+        quote: null,
+        quoteMatch: null,
+        checked: false,
+        scope: 'cross-session',
+      },
+    ]);
+    withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+      if ((options as { label?: string }).label === 'carry-provenance-stamp') {
+        return { value: await (work as Promise<unknown>), degraded: false, elapsedMs: 0 };
+      }
+      if ((options as { label?: string }).label === 'loop:checkpoint decision-ref advisory') {
+        try {
+          return { value: await (work as Promise<unknown>), degraded: false, elapsedMs: 0 };
+        } catch {
+          return { value: undefined, degraded: true, elapsedMs: 0 };
+        }
+      }
+      return { value: undefined, degraded: false, elapsedMs: 0 };
+    });
+
+    const result = body(await call({ note: 'The current turn is [turn:self].' }));
+
+    expect(resolveCurrentTurnStamp).toHaveBeenCalledTimes(1);
+    expect(verifyTurnRefs).not.toHaveBeenCalled();
+    expect(result.turnProvenance?.refs).toMatchObject([
+      { ref: currentTurn.ref, found: true, checked: true, verdict: 'agent-injected', origin: 'loop-fire' },
+    ]);
+    expect(result.provenanceLint?.matches?.map((match: { kind: string }) => match.kind) ?? []).not.toContain(
+      'unresolved-turn-ref',
+    );
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toContain(currentTurn.ref);
   });
 });
 
