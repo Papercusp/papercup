@@ -281,11 +281,14 @@ async function llmCallViaCodexGateway(
  * `buildSystemParam`, you MUST prepend `CLAUDE_CODE_IDENTIFIER` yourself or it will opus-429.
  */
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
+  if (opts.requireOutputTokenLimit) {
+    opts = { ...opts, messages: opts.messages.map(message => ({ ...message })) };
+  }
   const backend = backendForLlmCall(opts.model);
   if (opts.requireOutputTokenLimit && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens! <= 0)) {
     throw Object.assign(new RangeError('Required output token limit needs a positive integer maxTokens'), { costUsd: 0 });
   }
-  if (opts.requireOutputTokenLimit && backend !== 'codex') {
+  if (opts.requireOutputTokenLimit && backend !== 'codex' && backend !== 'anthropic-direct') {
     throw Object.assign(new Error(`Required output token limit is not implemented for backend '${backend}'`), { costUsd: 0 });
   }
   let model = modelForLlmCall(opts.model, backend);
@@ -335,6 +338,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       messages: opts.messages,
       promptText,
       maxTokens: opts.maxTokens,
+      requireOutputTokenLimit: opts.requireOutputTokenLimit,
       temperature: opts.temperature,
       thinkingBudgetTokens: opts.thinkingBudgetTokens,
       signal: opts.signal,
