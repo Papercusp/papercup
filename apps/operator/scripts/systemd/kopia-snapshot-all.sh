@@ -85,9 +85,72 @@ run_kopia_snapshot() {
   sudo_pid=$!
   wait "$sudo_pid"
   rc=$?
+  record_sweep_progress "$output_file"
   cat "$output_file"
   rm -f -- "$output_file" "$PID_FILE"
   return "$rc"
+}
+
+# ── SWEEP ROTATION: resume a stopped sweep instead of restarting it ──────────
+# The DB-dump waiters (papercusp-db-backup, workspace dumps) may stop this sweep
+# mid-run by design (the guard's priority-waiter handoff). Kopia keeps every
+# source it FINISHED, but discovery order was fixed, so the next sweep re-walked
+# the same leading sources and the ones after the slowest never got a turn.
+# Measured 2026-10-06 (EI-25211496463956189): the sweep stopped at 16:52 EDT had
+# landed only /mnt/backup/db-dumps, and Restart, storewolf-*, .papercusp-workspaces
+# and .papercusp were 19-20h stale. The last snapshot TIME cannot rank staleness
+# here: the global policy sets "ignore identical snapshots", so an unchanged source
+# keeps an old timestamp. So record, per source, when a sweep last reached it, from
+# Kopia's own per-source output: "Snapshotting <user@host:/path> ..." starts a
+# source; "Created snapshot ..." or "Not saving snapshot because no files have been
+# changed ..." finishes it. A source that started but did not finish is stamped one
+# second before the finished ones, so it runs ahead of them but after the sources
+# the stopped sweep never reached.
+SWEEP_STATE="${KOPIA_SNAPSHOT_SWEEP_STATE:-$LOG_DIR/snapshot-all.sweep-state}"
+
+# Merge the per-source progress in Kopia output file $1 into $SWEEP_STATE, stamped
+# with the file's mtime (when Kopia last wrote to it). Keeps the newest stamp.
+record_sweep_progress() {
+  local output_file="$1" stamp tmp
+  [ -s "$output_file" ] || return 0
+  stamp=$(stat -c %Y -- "$output_file" 2>/dev/null) || return 0
+  tmp="$SWEEP_STATE.tmp.$$"
+  {
+    if [ -r "$SWEEP_STATE" ]; then cat -- "$SWEEP_STATE"; fi
+    tr '\r' '\n' <"$output_file" | awk -v done_at="$stamp" '
+      function flush(at) { if (cur != "") printf "%d\t%s\n", at, cur; cur = "" }
+      /^Snapshotting [^ ]*@[^ ]*:\// {
+        flush(done_at - 1)
+        cur = $0
+        sub(/^Snapshotting [^@]*@[^:]*:/, "", cur)
+        sub(/ \.\.\.$/, "", cur)
+        next
+      }
+      /^Created snapshot with root / || /Not saving snapshot because no files have been changed/ { flush(done_at) }
+      END { flush(done_at - 1) }
+    '
+  } | awk -F'\t' '
+    NF >= 2 && $1 ~ /^[0-9]+$/ {
+      src = substr($0, index($0, "\t") + 1)
+      if (!(src in at) || $1 + 0 > at[src] + 0) at[src] = $1
+    }
+    END { for (s in at) printf "%s\t%s\n", at[s], s }
+  ' >"$tmp" 2>/dev/null && mv -f -- "$tmp" "$SWEEP_STATE" || rm -f -- "$tmp"
+}
+
+# A stopped sweep is killed before run_kopia_snapshot can record its output, which
+# is why ~/.cache/kopia held 105 leftover output files on 2026-10-06. Fold in every
+# leftover from a process that is gone, oldest first, then delete it.
+ingest_stopped_sweep_outputs() {
+  local f pid
+  while IFS= read -r f; do
+    pid=${f##*.}
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [ "$pid" != "$$" ] || continue
+    [ ! -d "$PROC_ROOT/$pid" ] || continue
+    record_sweep_progress "$f"
+    rm -f -- "$f"
+  done < <(ls -1tr -- "$LOG_DIR"/snapshot-all-output.* 2>/dev/null)
 }
 
 trap cleanup_kopia_pid EXIT
@@ -209,6 +272,21 @@ trap cleanup_kopia_pid EXIT
     printf '%s\n' ${PRIORITY[@]+"${PRIORITY[@]}"} | grep -qxF "$d" && continue
     TAIL+=("$d")
   done
+  # Least-recently-swept first (SWEEP ROTATION above); ties keep discovery order.
+  ingest_stopped_sweep_outputs
+  if [ "${#TAIL[@]}" -gt 1 ] && [ -s "$SWEEP_STATE" ]; then
+    mapfile -t TAIL < <(
+      printf '%s\n' "${TAIL[@]}" | awk -v state="$SWEEP_STATE" '
+        BEGIN {
+          while ((getline line < state) > 0) {
+            tab = index(line, "\t")
+            if (tab > 1) at[substr(line, tab + 1)] = substr(line, 1, tab - 1) + 0
+          }
+        }
+        { printf "%d\t%d\t%s\n", ($0 in at ? at[$0] : 0), NR, $0 }
+      ' | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2n | cut -f3-)
+    echo "ROTATION: least-recently-swept first: ${TAIL[*]}"
+  fi
   if [ "${#PRIORITY[@]}" -gt 0 ]; then
     echo "PRIORITY: ${#PRIORITY[@]} required source(s) ordered first: ${PRIORITY[*]}"
   fi
