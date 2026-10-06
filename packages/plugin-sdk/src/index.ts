@@ -1731,6 +1731,7 @@ export {
   validateProviderDeclaration,
   isProviderAdapter,
   PROVIDER_DAEMON_METHODS,
+  PROVIDER_SYNC_WAKE_CAPABILITY,
 } from './provider';
 export type {
   ProviderDaemonCallParams,
@@ -1744,6 +1745,9 @@ export type {
   ProviderSyncPage,
   ProviderSyncError,
   ProviderInvokeRequest,
+  ProviderServiceCredential,
+  ProviderServices,
+  ProviderWakeResult,
   HostFetchRequest,
   HostFetchResponse,
   HostFetch,

@@ -66,7 +66,34 @@ export interface ProviderDescriptor {
   egressHosts: string[];
   /** JSON Schema for per-source configuration (account/calendar choices etc.). */
   configSchema?: Record<string, unknown>;
+  /**
+   * Host-held service credentials, by reference (D-018.1). A request to one of
+   * `hosts` carries the credential the host registered under `ref` instead of
+   * the source account's token. Every host must also be in `egressHosts`. The
+   * provider never sees either credential; it receives the credential's
+   * non-secret parameters on `services[ref]` of each sync and invoke request.
+   */
+  serviceCredentials?: ProviderServiceCredential[];
 }
+
+export interface ProviderServiceCredential {
+  ref: string;
+  hosts: string[];
+}
+
+/** Non-secret parameters of each configured service credential, keyed by ref. Unconfigured refs are absent. */
+export type ProviderServices = Record<string, Record<string, string>>;
+
+/** Result of `invoke({ capability: 'sync.wake', args: { state } })` (D-018.2). */
+export interface ProviderWakeResult {
+  /** True when the source has new remote changes and should sync soon. */
+  wake: boolean;
+  /** Opaque wake state the host stores and passes back as `args.state` next time. */
+  state?: string | null;
+}
+
+/** Capability a provider declares to be asked, on each driver tick, whether a source should sync now. */
+export const PROVIDER_SYNC_WAKE_CAPABILITY = 'sync.wake';
 
 /** Sync request issued by the host-owned connector driver. */
 export interface ProviderSyncRequest {
@@ -77,6 +104,8 @@ export interface ProviderSyncRequest {
   mode: 'backfill' | 'incremental';
   /** Per-source configuration validated against the descriptor's configSchema. */
   config?: Record<string, unknown>;
+  /** Parameters of the descriptor's configured service credentials (D-018.1). */
+  services?: ProviderServices;
 }
 
 export interface ProviderRecord {
@@ -92,6 +121,14 @@ export interface ProviderRecord {
   occurredAt?: string;
   /** True when the remote object was deleted. */
   deleted?: boolean;
+  /**
+   * Delivery identity of this record (D-017.3). When present the host dedupes
+   * on it instead of a hash of the payload, so a once-only event (e.g. a mail
+   * `message.received`) is never re-delivered when the payload changes (a label
+   * edit) or the cursor replays. Omit it for version-scoped objects whose edits
+   * are new deliveries.
+   */
+  version?: string;
 }
 
 export interface ProviderSyncPage {
@@ -113,6 +150,8 @@ export interface ProviderInvokeRequest {
   source: string;
   capability: string;
   args: Record<string, unknown>;
+  /** Parameters of the descriptor's configured service credentials (D-018.1). */
+  services?: ProviderServices;
 }
 
 export interface HostFetchRequest {
@@ -277,6 +316,29 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   }
   if (d.configSchema !== undefined && (typeof d.configSchema !== 'object' || d.configSchema === null || Array.isArray(d.configSchema))) {
     issues.push('provider.configSchema must be a JSON Schema object');
+  }
+  if (d.serviceCredentials !== undefined) {
+    if (!Array.isArray(d.serviceCredentials)) {
+      issues.push('provider.serviceCredentials must be a list of { ref, hosts }');
+    } else {
+      for (const [index, entry] of d.serviceCredentials.entries()) {
+        const credential = (entry ?? {}) as Partial<ProviderServiceCredential>;
+        if (!isNonEmptyString(credential.ref) || !PROVIDER_ID_PATTERN.test(credential.ref)) {
+          issues.push(`provider.serviceCredentials[${index}].ref must be a lowercase credential reference`);
+        }
+        if (!Array.isArray(credential.hosts) || credential.hosts.length === 0) {
+          issues.push(`provider.serviceCredentials[${index}].hosts must list at least one host`);
+          continue;
+        }
+        for (const host of credential.hosts) {
+          if (!isNonEmptyString(host) || !PROVIDER_EGRESS_HOST_PATTERN.test(host)) {
+            issues.push(`provider.serviceCredentials[${index}].hosts entry '${String(host)}' is not a hostname`);
+          } else if (!egress.includes(host)) {
+            issues.push(`provider.serviceCredentials[${index}] host '${host}' is not in provider.egressHosts`);
+          }
+        }
+      }
+    }
   }
   return issues;
 }
