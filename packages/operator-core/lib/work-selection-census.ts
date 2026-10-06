@@ -354,14 +354,16 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
   {
     id: 'composition-rig',
     role: 'auxiliary',
-    surface: 'shared-pot-loop composition rig (test DDL mirror)',
+    surface: 'shared-pot-loop composition rig (test cells on the real migration chain)',
     file: 'packages/operator-core/lib/shared-pot-loop/composition-rig.ts',
-    anchor: "item_kind           TEXT NOT NULL DEFAULT 'feature',",
-    admits: 'mirrors claimFloorsWhereSql incl. frontierPlacementKindClause',
+    anchor: 'const wi = await claimNextWorkItem({',
+    admits: 'the real claimNextWorkItem (claimFloorsWhereSql incl. frontierPlacementKindClause); no mirrored SQL',
     reachesNonWork: 'no-by-convention',
     discriminators: ['claim floors'],
     evidence: 'code',
-    note: 'D-008: the nature column lands here and in HFC_DDL in the same change.',
+    note:
+      'D-008. WI-10005142 replaced the hand-rolled DDL mirror with cells cloned from the real ' +
+      'migration chain, so the nature column and claim floors are the production ones (WI-10006869).',
   },
   {
     id: 'spec-enforcement-latency',
