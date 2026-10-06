@@ -24,8 +24,7 @@
  * stamp the SAME header or the fixture reads/writes a different workspace's
  * config than the page (the dock.spec.ts workspace-resolution lesson).
  */
-import { test, expect, assertMounted, type APIRequestContext, type Page } from './_egress';
-import { learnPageWorkspaceHeaders, type WorkspaceHeaders } from './_page-workspace';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -119,7 +118,7 @@ test.describe('/settings/agent auto-save validation', () => {
     }
   });
 
-  test('mid-typing never persists (commit is blur-gated)', async ({ page, request }) => {
+  test('mid-typing never persists (commit is blur-gated)', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     const input = page.locator(SPEC_INPUT);
     await input.waitFor({ state: 'visible', timeout: 10_000 });
@@ -132,22 +131,22 @@ test.describe('/settings/agent auto-save validation', () => {
     await input.click();
     await input.pressSequentially('fab'); // mid-word, still focused — no blur
     await page.waitForTimeout(SAVE_WINDOW_MS);
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     expect(cfg.tiers).toEqual([]); // still the untouched default menu
     await page.keyboard.press('Escape'); // revert the draft
     await expect(input).toHaveValue(baseline);
   });
 
-  test('an invalid spec is flagged inline and never persisted', async ({ page, request }) => {
+  test('an invalid spec is flagged inline and never persisted', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     await editSpecAndBlur(page, 'opush'); // bare unknown alias — the typo class
     await expect(page.getByRole('alert').filter({ hasText: 'not a known model alias' })).toBeVisible();
     await page.waitForTimeout(SAVE_WINDOW_MS);
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     expect(cfg.tiers).toEqual([]); // nothing persisted, nothing wiped
   });
 
-  test('a valid edit commits on blur and survives reload', async ({ page, request }) => {
+  test('a valid edit commits on blur and survives reload', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     const saved = page.waitForResponse(
       (r) => r.url().includes('/api/agent-config') && r.request().method() === 'POST' && r.status() === 200,
@@ -157,20 +156,20 @@ test.describe('/settings/agent auto-save validation', () => {
     await saved;
     await page.reload({ waitUntil: 'load' });
     await expect(page.locator(SPEC_INPUT)).toHaveValue('fable:max', { timeout: 15_000 });
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     const tiers = cfg.tiers as Array<{ name: string; spec: string }>;
     expect(tiers).toHaveLength(5);
     expect(tiers[4]).toMatchObject({ name: 'max', spec: 'fable:max' });
   });
 
-  test('WIPE REGRESSION: an invalid edit holds the stored value across reload', async ({ page, request }) => {
+  test('WIPE REGRESSION: an invalid edit holds the stored value across reload', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     await expect(page.locator(SPEC_INPUT)).toHaveValue('fable:max', { timeout: 15_000 });
     await editSpecAndBlur(page, 'opus:'); // mid-typed effort suffix — invalid
     await expect(page.getByRole('alert').filter({ hasText: 'invalid spec' })).toBeVisible();
     await page.waitForTimeout(SAVE_WINDOW_MS);
     // The store kept the last valid menu — the row was NOT deleted…
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     const tiers = cfg.tiers as Array<{ spec: string }>;
     expect(tiers).toHaveLength(5);
     expect(tiers[4].spec).toBe('fable:max');

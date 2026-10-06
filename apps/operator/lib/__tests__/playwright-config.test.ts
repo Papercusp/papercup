@@ -146,6 +146,19 @@ describe('default Playwright run never collects a profile-owned spec (WI-1000673
     expect(names(hardCoded)).toEqual([]);
   });
 
+  it('warms the dev server in globalSetup, and the warm-up is never collected as a spec (WI-10006792)', async () => {
+    const { default: config } = await import('../../playwright.config');
+    const setup = config.globalSetup;
+    expect(typeof setup).toBe('string');
+    const setupPath = resolve(OPERATOR_DIR, setup as string);
+    expect(setupPath).toBe(join(E2E_DIR, '_warm-dev-server.ts'));
+    const mod = await import(setupPath);
+    expect(typeof mod.default).toBe('function');
+    expect(mod.WARMUP_PATHS).toContain('/adv');
+    const testMatch = config.testMatch as RegExp;
+    expect(testMatch.test(setupPath)).toBe(false);
+  });
+
   it('still collects ordinary specs (the ignore list is not over-broad)', async () => {
     const { default: config } = await import('../../playwright.config');
     const testMatch = config.testMatch as RegExp;

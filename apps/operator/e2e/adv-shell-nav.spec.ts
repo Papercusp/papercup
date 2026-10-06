@@ -419,10 +419,40 @@ test.describe('/adv shell tab navigation (P-011)', () => {
       }),
     );
 
+    // Self-diagnosing failure (WI-10006979): the header's box, its right lane,
+    // the docked-rail CSS vars and the body reservation are what decide where
+    // the right-side controls land, so a red names its cause, not just a pixel.
+    const geometry = await page.evaluate(() => {
+      const box = (el: Element | null) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width) };
+      };
+      const header = document.querySelector('.pc-header');
+      const rootStyle = getComputedStyle(document.documentElement);
+      const bodyStyle = getComputedStyle(document.body);
+      const headerStyle = header ? getComputedStyle(header) : null;
+      return {
+        innerWidth: window.innerWidth,
+        clientWidth: document.documentElement.clientWidth,
+        bodyClass: document.body.className,
+        bodyPadding: `${bodyStyle.paddingLeft} / ${bodyStyle.paddingRight}`,
+        vars: ['--op-chat-w', '--left-sidebar-w', '--dev-rail-w'].map((v) => `${v}=${rootStyle.getPropertyValue(v).trim() || 'unset'}`).join(' '),
+        header: box(header),
+        headerWidthStyle: headerStyle?.width,
+        headerColumns: headerStyle?.gridTemplateColumns,
+        headerClass: header?.className,
+        left: box(document.querySelector('.pc-header-left')),
+        center: box(document.querySelector('.pc-header-center')),
+        right: box(document.querySelector('.pc-header-right')),
+      };
+    });
+    const geometryNote = `header geometry: ${JSON.stringify(geometry)}`;
+
     expect(controls.length).toBeGreaterThan(0);
     for (const control of controls) {
-      expect(control.left, `${control.name} starts outside the viewport`).toBeGreaterThanOrEqual(0);
-      expect(control.right, `${control.name} ends outside the viewport`).toBeLessThanOrEqual(1280);
+      expect(control.left, `${control.name} starts outside the viewport; ${geometryNote}`).toBeGreaterThanOrEqual(0);
+      expect(control.right, `${control.name} ends outside the viewport; ${geometryNote}`).toBeLessThanOrEqual(1280);
       expect(control.top, `${control.name} is above the viewport`).toBeGreaterThanOrEqual(0);
       expect(control.bottom, `${control.name} is below the viewport`).toBeLessThanOrEqual(720);
     }

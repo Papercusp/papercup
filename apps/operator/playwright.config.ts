@@ -20,6 +20,9 @@ export default defineConfig({
   testDir: './e2e',
   testMatch: /.*\.spec\.ts$/,
   testIgnore: PROFILE_OWNED_SPECS,
+  // Warm the cold Vite dev server once before any worker starts, so no
+  // worker's first test races dependency optimization (WI-10006792).
+  globalSetup: './e2e/_warm-dev-server.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
