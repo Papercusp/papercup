@@ -136,6 +136,37 @@ describe('su-session client lease', () => {
     expect(onExpired).toHaveBeenCalledTimes(1);
   });
 
+  // WI-10006906 follow-up: the sweep's renew is fire-and-forget. Awaited, it held
+  // the reaper's re-entrancy guard for >1s in the real-PTY suite (a 1196ms tick
+  // against a 500ms interval), where before the fix a tick was one read.
+  it('a slow sweep renew neither holds the sweep nor is re-issued while it is in flight', async () => {
+    const renewCalls: number[][] = [];
+    let finishRenew: () => void = () => undefined;
+    _resetSuClientLeaseForTest({
+      ...mem.store,
+      renew: (ids) => {
+        renewCalls.push([...ids]);
+        return new Promise<void>((resolve) => { finishRenew = resolve; });
+      },
+    });
+    const onExpired = vi.fn();
+    superviseSuClientLease(15, onExpired);
+    trackSuClientStream(15);
+    mem.advance(suClientLeaseConfig().ttlMs + 1);
+
+    await _sweepSuClientLeasesForTest(); // resolves although its renew has not
+    await _sweepSuClientLeasesForTest(); // a later tick while that renew is in flight
+    expect(renewCalls).toEqual([[15]]);
+    expect(onExpired).not.toHaveBeenCalled();
+
+    finishRenew();
+    await new Promise((resolve) => setImmediate(resolve));
+    // No longer in flight, and this store's renew healed nothing: renew again.
+    await _sweepSuClientLeasesForTest();
+    expect(renewCalls).toEqual([[15], [15]]);
+    expect(onExpired).not.toHaveBeenCalled();
+  });
+
   it('a session with no lease granted yet is never ended', async () => {
     const onExpired = vi.fn();
     superviseSuClientLease(13, onExpired);
