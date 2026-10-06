@@ -25,6 +25,7 @@ import type {
   ReserveLearningSpendResult,
   SettleLearningSpendResult,
 } from './store';
+import { cycleReservationRunRef } from './store';
 
 const SQL = {} as Sql;
 
@@ -122,7 +123,7 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
       const receipt = await reserve(sql, input);
       if (!receipt.ok) throw new Error('fixture must grant');
       Object.assign(receipt.reservation, { id: cycleReservationId,
-        runRef: `cycle:${cycleRunId}/cap:10000000/attempt:${cycleReservationId}` });
+        runRef: cycleReservationRunRef(input.cycle ?? { runId: cycleRunId, budgetUsd: 10 }, cycleReservationId) });
       return receipt;
     };
     return { ...fixture, requests };
@@ -189,6 +190,63 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
       id: 'res-1', requestedUsd: 1, reservedUsd: 1, usedUsd: 0.4, status: 'settled', settledAt: 123,
     } } });
     expect(settlements).toEqual([{ disposition: 'used', usedUsd: 0.4 }]);
+  });
+
+  it.each(['missing', 'arm', 'input', 'output', 'unexpected'] as const)(
+    'refuses a substituted cycle resource receipt (%s) before dispatch or settlement', async mismatch => {
+      const { deps, settlements } = cycleDeps();
+      const resources = { armId: 'judge', inputTokens: 12, outputTokens: 4 };
+      const reserve = deps.reserve!;
+      deps.reserve = async (sql, input) => {
+        const receipt = await reserve(sql, input);
+        if (!receipt.ok) throw new Error('fixture must grant');
+        if (mismatch !== 'missing') receipt.reservation.resources = { ...resources };
+        if (mismatch === 'arm') receipt.reservation.resources!.armId = 'proposer';
+        if (mismatch === 'input') receipt.reservation.resources!.inputTokens++;
+        if (mismatch === 'output') receipt.reservation.resources!.outputTokens++;
+        return receipt;
+      };
+      const cycle = { runId: cycleRunId, budgetUsd: 10,
+        ...(mismatch === 'unexpected' ? {} : { resources,
+          expectedResourceBudget: { inputTokens: 24, outputTokens: 8, requestsPerArm: 2, armIds: ['judge'] } }) };
+      let dispatched = false;
+      const out = await runGovernedSpendAttempt({ ...attempt(async () => {
+        dispatched = true; return { costUsd: 0, value: null };
+      }), cycle }, deps);
+      expect(out).toMatchObject({ ok: false, reason: 'failed', reservationId: null });
+      expect(dispatched).toBe(false);
+      expect(settlements).toEqual([]);
+    },
+  );
+
+  it('snapshots configured cycle resources before admission and dispatches immutable admitted bounds', async () => {
+    const { deps, requests } = cycleDeps();
+    const reserve = deps.reserve!;
+    deps.reserve = async (sql, input) => {
+      const receipt = await reserve(sql, input);
+      if (!receipt.ok) throw new Error('fixture must grant');
+      receipt.reservation.resources = { armId: 'judge', inputTokens: 12, outputTokens: 4 };
+      return receipt;
+    };
+    let resume!: () => void;
+    deps.enabled = () => new Promise(resolve => { resume = () => resolve(true); });
+    const cycle = { runId: cycleRunId, budgetUsd: 10,
+      resources: { armId: 'judge', inputTokens: 12, outputTokens: 4 },
+      expectedResourceBudget: { inputTokens: 24, outputTokens: 8, requestsPerArm: 2, armIds: ['judge'] } };
+    const pending = runGovernedSpendAttempt({ ...attempt(async grant => {
+      expect(grant.resources).toEqual({ armId: 'judge', inputTokens: 12, outputTokens: 4 });
+      expect(Object.isFrozen(grant.resources)).toBe(true);
+      return { costUsd: 0, value: 'judge result' };
+    }), cycle, accumulate: false }, deps);
+    cycle.resources.outputTokens = 999;
+    cycle.expectedResourceBudget.outputTokens = 999;
+    cycle.expectedResourceBudget.armIds.push('invented');
+    resume();
+    expect(await pending).toMatchObject({ ok: true, value: 'judge result' });
+    expect(requests[0]).toMatchObject({ cycle: {
+      resources: { armId: 'judge', inputTokens: 12, outputTokens: 4 },
+      expectedResourceBudget: { inputTokens: 24, outputTokens: 8, requestsPerArm: 2, armIds: ['judge'] },
+    } });
   });
 
   it.each([1, 0.25, 0])('gives work an immutable reservation identity with the actual $%s grant', async reservedUsd => {
