@@ -86,7 +86,49 @@ export interface ProviderDescriptor {
    * non-secret parameters on `services[ref]` of each sync and invoke request.
    */
   serviceCredentials?: ProviderServiceCredential[];
+  /**
+   * How the provider's own webhooks reach the host and are verified (D-016). Pure data: the HOST
+   * checks the handshake and the signature, so the ingress never branches on a provider name. A
+   * verified delivery only wakes the source's next sync; it is never a data path.
+   */
+  push?: ProviderPushDescriptor;
 }
+
+/**
+ * Push-wake scheme (plan linear-asana-task-sync-2026-10-05, D-016).
+ *
+ * `handshake`: the provider's service sends a new subscription's secret in this header while the
+ * subscription is being created (Asana `X-Hook-Secret`); the host stores it and echoes the header.
+ * The host accepts a handshake only inside a window it opens around `push.subscribe`.
+ *
+ * `signature`: each delivery carries `hex(HMAC-SHA256(secret, raw body))` in this header.
+ */
+export interface ProviderPushDescriptor {
+  handshake?: { header: string };
+  signature: { header: string; algorithm: 'hmac-sha256'; encoding: 'hex' };
+}
+
+/** One remote webhook the provider holds for a source. `resource` is the provider's own id for what it watches. */
+export interface ProviderPushSubscription {
+  id: string;
+  resource: string;
+}
+
+/**
+ * `invoke({ capability: 'push.subscribe', args: { targetUrl, subscriptions } })` (D-016): make the
+ * remote webhooks match the source config and point at `targetUrl`, given the set the host stored
+ * last time; return the resulting set. Creating, keeping and deleting are the provider's business.
+ */
+export interface ProviderPushSubscribeResult {
+  subscriptions: ProviderPushSubscription[];
+}
+
+/** Capability that reconciles a source's remote webhooks (D-016). */
+export const PROVIDER_PUSH_SUBSCRIBE_CAPABILITY = 'push.subscribe';
+/** Capability that deletes every remote webhook in `args.subscriptions` (D-016). Returns nothing. */
+export const PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY = 'push.unsubscribe';
+/** HTTP header names a push scheme may name: lowercase token characters. */
+export const PROVIDER_PUSH_HEADER_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export interface ProviderServiceCredential {
   ref: string;
@@ -389,6 +431,30 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
           }
         }
       }
+    }
+  }
+  if (d.push !== undefined) issues.push(...pushDescriptorIssues(d.push, capabilities.filter(isNonEmptyString)));
+  return issues;
+}
+
+function pushDescriptorIssues(push: unknown, capabilities: string[]): string[] {
+  if (!push || typeof push !== 'object' || Array.isArray(push)) return ['provider.push must be an object'];
+  const p = push as Partial<ProviderPushDescriptor>;
+  const issues: string[] = [];
+  const header = (value: unknown) => isNonEmptyString(value) && PROVIDER_PUSH_HEADER_PATTERN.test(value);
+  const signature = (p.signature ?? {}) as Partial<ProviderPushDescriptor['signature']>;
+  if (!header(signature.header)) issues.push('provider.push.signature.header must be a lowercase header name');
+  if (signature.algorithm !== 'hmac-sha256') issues.push('provider.push.signature.algorithm must be hmac-sha256');
+  if (signature.encoding !== 'hex') issues.push('provider.push.signature.encoding must be hex');
+  if (p.handshake !== undefined) {
+    if (!header((p.handshake as { header?: unknown } | null)?.header)) {
+      issues.push('provider.push.handshake.header must be a lowercase header name');
+    } else if (p.handshake.header === signature.header) {
+      issues.push('provider.push.handshake.header must differ from provider.push.signature.header');
+    }
+    // A handshake secret only ever arrives while the host is creating a subscription.
+    for (const required of [PROVIDER_PUSH_SUBSCRIBE_CAPABILITY, PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY]) {
+      if (!capabilities.includes(required)) issues.push(`provider.push.handshake needs capability ${required}`);
     }
   }
   return issues;
