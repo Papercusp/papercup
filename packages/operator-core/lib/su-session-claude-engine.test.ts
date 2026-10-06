@@ -424,6 +424,19 @@ describe('structured Claude SU engine', () => {
     expect(servedAccountReader).toHaveBeenCalledWith('su-test');
   });
 
+  it('does not report the owner interrupting a turn as a failed turn (P-032)', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
+    expect(p.interrupt).toHaveBeenCalled();
+    // Claude Code 2.1.289 ends an interrupted turn this way; pui printed the raw diagnostic.
+    p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId, is_error: true,
+      stop_reason: 'api_error', errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'] });
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor()).toMatchObject({ lifecycle: 'waiting-for-owner' }));
+    const errors = engine.adapter.host.recent.map(({ event }) => event).filter((event) => event.type === 'error');
+    expect(errors).toEqual([]);
+  });
+
   it('reports an API error carried on a success result instead of reading it as a reply', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;
