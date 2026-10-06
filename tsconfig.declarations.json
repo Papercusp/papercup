@@ -100,6 +100,8 @@
     // red'd on the un-baselined offender and lint:tsc reported the matching TS7016 on
     // the same import, one defect surfacing at two gates.
     "scripts/lib/related-tests.mjs",
+    // WI-10006650: imported directly by e2e-fixture-specs-selection.test.ts.
+    "scripts/lib/e2e-fixture-specs.mjs",
     "scripts/lib/retry-failure-shape.mjs",
     // gate-latency-selection-and-retry-policy-2026-09-06 P-002 — the runner side of the
     // executed-source map (loader + git drift seam). Registered for the same reason as
