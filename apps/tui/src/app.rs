@@ -31417,7 +31417,11 @@ mod mouse_tests {
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Drag(MouseButton::Left),
         ] {
-            let at = if matches!(kind, MouseEventKind::Down(_)) { col } else { end };
+            let at = if matches!(kind, MouseEventKind::Down(_)) {
+                col
+            } else {
+                end
+            };
             assert_eq!(a.update(mouse(kind, at, row)), Action::Render);
             // More of the burst is queued (queue_empty = false).
             if a.draw_now(false) {
