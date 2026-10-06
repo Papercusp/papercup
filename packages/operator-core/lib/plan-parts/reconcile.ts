@@ -36,6 +36,14 @@ export interface PlanContentRow {
    * is older than the edit's capture and the store's LWW guard rejects it.
    */
   content_ts: number;
+  /**
+   * harness_plans.origin. 'remote' means the per-part recompose (or the bootstrap
+   * whole-blob insert) wrote this body, so it is DERIVED from the parts. Its updated_at is
+   * the LOCAL recompose time, which can be later than the authoring time of newer parts
+   * that arrived but are not recomposed yet, so content_ts cannot protect it. Such a body
+   * is never re-captured over existing parts (WI-10006276). Absent = treated as local.
+   */
+  origin?: string | null;
 }
 
 export interface ReconcilePlanPartsDeps {
@@ -54,8 +62,8 @@ export interface ReconcilePlanPartsResult {
 }
 
 async function defaultLoadPlans(sql: Sql, workspaceId: string): Promise<PlanContentRow[]> {
-  const rows = await sql<Array<{ harness_slug: string; plan_slug: string; content: string; content_ts: string }>>`
-    SELECT harness_slug, plan_slug, content,
+  const rows = await sql<Array<{ harness_slug: string; plan_slug: string; content: string; content_ts: string; origin: string | null }>>`
+    SELECT harness_slug, plan_slug, content, origin,
            (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS content_ts
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND archived = false
@@ -85,6 +93,9 @@ export async function reconcilePlanParts(deps: ReconcilePlanPartsDeps): Promise<
     result.plansScanned++;
     try {
       const store = storeFor(sql, deps.workspaceId, p.harness_slug);
+      // A recompose-derived body is already represented in its parts; the parts are the
+      // authority. Only a body with no parts yet (backfill) is captured (WI-10006276).
+      if (p.origin === 'remote' && (await store.getParts(p.plan_slug)).size > 0) continue;
       const ops = await capturePlanParts(store, p.plan_slug, p.content, p.content_ts, 'local');
       result.partsWritten += ops.length;
     } catch {

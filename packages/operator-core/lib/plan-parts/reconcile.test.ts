@@ -85,6 +85,33 @@ describe('reconcilePlanParts (P-005 capture / P-007 backfill)', () => {
     expect(joinFederatedParts(await store.getParts('a'))).toBe(PLAN_A);
   });
 
+  // WI-10006276: a body the per-part recompose wrote (origin='remote') is DERIVED from the
+  // parts, so the parts are authoritative. Its updated_at is the LOCAL recompose time, which
+  // can be later than the authoring time of newer parts that arrived but are not recomposed
+  // yet (a node catching up after being offline). Re-capturing it published the old body as
+  // the newest parts — the same rollback as WI-10004610, through a later stamp.
+  it('never re-captures a recompose-derived (origin=remote) body over existing parts', async () => {
+    const edited = PLAN_A.replace('`todo` one', '`done` ONE');
+    const { stores, deps } = rig([{ harness_slug: 'h', plan_slug: 'a', content: PLAN_A, content_ts: 1000 }]);
+    await reconcilePlanParts(deps);
+    const store = stores.get('h')!;
+    // The newer version arrives from a peer (authored at 2000) and is not recomposed yet.
+    await capturePlanParts(store, 'a', edited, 2000, 'peer');
+    // The row still holds the old body, which a local recompose wrote at 5000.
+    (deps.loadPlans as unknown) = async () => [
+      { harness_slug: 'h', plan_slug: 'a', content: PLAN_A, content_ts: 5000, origin: 'remote' },
+    ];
+    const r = await reconcilePlanParts(deps);
+    expect(r.partsWritten).toBe(0);
+    expect(joinFederatedParts(await store.getParts('a'))).toBe(edited);
+
+    // Positive control: a remote-origin row with NO parts yet is still backfilled, so the
+    // skip is scoped to bodies already represented in parts.
+    const fresh = rig([{ harness_slug: 'h', plan_slug: 'b', content: PLAN_B, content_ts: 5000, origin: 'remote' }]);
+    await reconcilePlanParts(fresh.deps);
+    expect(joinFederatedParts(await fresh.stores.get('h')!.getParts('b'))).toBe(PLAN_B);
+  });
+
   it('isolates a per-plan failure (loadPlans throw → errors, never throws)', async () => {
     const r = await reconcilePlanParts({
       workspaceId: 'ws',
