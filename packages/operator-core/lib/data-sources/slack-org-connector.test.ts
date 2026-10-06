@@ -104,6 +104,32 @@ describe('Slack report facts (P-005)', () => {
     expect(facts.attachments).toHaveLength(1);
   });
 
+  it('treats an unreachable Slack as a refused call, leaving out only that fact', async () => {
+    const slack = fakeSlack();
+    // Node's fetch rejects with a TypeError when the host cannot be reached.
+    const unreachable = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes('/api/users.info')) throw new TypeError('fetch failed');
+      return slack.fetch(input, init);
+    }) as typeof fetch;
+    const facts = await adapterFor(slack, { fetch: unreachable }).reportFacts!({ subject: SUBJECT, reporterExternalId: 'UREPORTER' });
+    expect(facts.reporterDisplayName).toBeUndefined();
+    expect(facts.channelName).toBe('bugs');
+    expect(facts.permalink).toBe('https://acme.slack.com/archives/CBUGS/p1790000000000100');
+  });
+
+  it('never passes a bug inside a Slack call off as a refused fact (EI-25270704981198981)', async () => {
+    const slack = fakeSlack();
+    // users.info answered with no Response at all: reading its status is a TypeError in this
+    // file's own code, not a Slack refusal, so the facts read must fail instead of dropping a fact.
+    const broken = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes('/api/users.info')) return undefined as unknown as Response;
+      return slack.fetch(input, init);
+    }) as typeof fetch;
+    await expect(
+      adapterFor(slack, { fetch: broken }).reportFacts!({ subject: SUBJECT, reporterExternalId: 'UREPORTER' }),
+    ).rejects.toThrow(TypeError);
+  });
+
   it('asks nothing about a reporter it does not know', async () => {
     const slack = fakeSlack();
     const facts = await adapterFor(slack).reportFacts!({ subject: SUBJECT, reporterExternalId: null });

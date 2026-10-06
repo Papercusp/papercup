@@ -743,6 +743,37 @@ defineTool({
   agentRoles: ['scoper'],
   handler: async (input) => {
     invokeProbeSeen.push(input);
+    if (input.probe === 'deep') {
+      return {
+        data: {
+          results: [
+            {
+              threadWindow: {
+                posts: [
+                  {
+                    body: `selected-body-${'x'.repeat(7_000)}`,
+                    author_id: 'agent-1',
+                    created_ts: '2026-10-06T00:00:00.000Z',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      };
+    }
+    if (input.probe === 'observation') {
+      return {
+        data: {
+          payload: {
+            observation: {
+              ratings: [{ clarity: 5, comments: `selected-rating-${'r'.repeat(7_000)}` }],
+              subject: `selected-subject-${'s'.repeat(7_000)}`,
+            },
+          },
+        },
+      };
+    }
     return { data: { lines: ['alpha', 'beta', 'gamma'] } };
   },
 });
@@ -2550,6 +2581,59 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     // joining the whole thing (textOf) would concatenate two JSON-adjacent
     // texts into invalid JSON.
     expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+  });
+
+  it('preserves outer projection pick paths through the final result door', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'deep' },
+        projection: {
+          pick: [
+            'results[].threadWindow.posts[].body',
+            'results[].threadWindow.posts[].author_id',
+            'results[].threadWindow.posts[].created_ts',
+          ],
+        },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{
+        threadWindow: { posts: Array<{ body?: string; author_id?: string; created_ts?: string }> };
+      }>;
+    };
+    const post = payload.results[0]?.threadWindow.posts[0];
+    expect(post).toMatchObject({ author_id: 'agent-1', created_ts: '2026-10-06T00:00:00.000Z' });
+    expect(post?.body).toMatch(/^selected-body-/);
+  });
+
+  it('preserves selected payload.observation leaves through the final result door', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'observation' },
+        projection: { pick: ['payload.observation.ratings', 'payload.observation.subject'] },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      payload: { observation?: { ratings?: Array<{ clarity?: number; comments?: string }>; subject?: string } };
+    };
+    const observation = payload.payload.observation;
+    expect(observation?.ratings?.[0]).toMatchObject({ clarity: 5 });
+    expect(observation?.ratings?.[0]?.comments).toMatch(/^selected-rating-/);
+    expect(observation?.subject).toMatch(/^selected-subject-/);
   });
 
   it('materializes an implicit compact nested result as JSON before structured pick', async () => {

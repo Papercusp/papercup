@@ -116,6 +116,49 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     },
   );
 
+  it('authorizes a deny-all worker identity\'s PLATFORM requiredTools under the role ceiling, and nothing else (WI-10007010)', async () => {
+    // The blueprint-operation-worker identity grants no class, so the grant envelope
+    // reaches nothing; before WI-10007010 every required platform tool was refused.
+    const f = fixture({ requires: [], optional: [] });
+    const policy: IdentityGrantPolicy = {
+      ...f.policy,
+      ceilings: [{}, { allowCapabilities: ['work_items:read', 'work_items:write', 'memory:read', 'coord:write', 'mail:send'] }],
+      tools: new Map([
+        ...f.policy.tools,
+        ['work_items:claim', ['work_items:write']],
+        ['work_items:checkpoint', ['work_items:write']],
+        ['plans:set-status', ['plans:write']],
+        ['coord:send', ['coord:write']],
+      ]),
+    };
+    const read = vi.fn(async () => policy);
+    const acceptedOperation = {
+      kind: 'blueprint-operation-worker', workItemId: 'WI-1',
+      operationId: 'prep', specificationRevision: 'b'.repeat(64),
+      requiredTools: ['mail:send', 'plans:set-status', 'work_items:checkpoint', 'work_items:claim'],
+      pin: { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'prep',
+        specificationRevision: 'b'.repeat(64), operationVersion: '1.0.0', input: {} },
+    };
+    const record = { ...f.record, acceptedOperation };
+    const call = (toolName: string, capabilities: string[], claimed = true) => checkIdentityGrantKernel(
+      { ...f.request, toolName, capabilities }, f.state, record, read, async () => claimed);
+    const refused = (toolName: string) => ({ decision: 'deny',
+      obligations: { capabilityUnsatisfied: { cause: 'outside-ceiling', toolName } } });
+
+    // Required platform tools inside the role ceiling: the claim door, then a claimed write.
+    expect(await call('work_items:claim', ['work_items:write'])).toMatchObject({ decision: 'allow', applied: true });
+    expect(await call('work_items:checkpoint', ['work_items:write'])).toMatchObject({ decision: 'allow', applied: true });
+    // The receipt's live-claim rule still binds the platform path.
+    expect(await call('work_items:checkpoint', ['work_items:write'], false))
+      .toMatchObject({ decision: 'deny', code: 'operation-claim-stale' });
+    // Required, but outside the role ceiling.
+    expect(await call('plans:set-status', ['plans:write'])).toMatchObject(refused('plans:set-status'));
+    // Inside the role ceiling, but not required by the operation.
+    expect(await call('coord:send', ['coord:write'])).toMatchObject(refused('coord:send'));
+    // Required and inside the ceiling, but provider-reachable: it still needs a grant.
+    expect(await call('mail:send', ['mail:send'])).toMatchObject(refused('mail:send'));
+  });
+
   it.each(['dispatch', 'indirect-dispatch', 'reaction', 'native', 'shell'] as const)(
     'denies tools outside the exact provider set at %s, including superusers',
     async (boundary) => {

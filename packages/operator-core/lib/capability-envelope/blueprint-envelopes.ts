@@ -25,6 +25,8 @@ import { identityRefusalContract, type RefusalContract } from './identity-refusa
 interface CacheEntry {
   mtimeMs: number;
   envelopes: Partial<Record<string, RoleEnvelope>> | undefined;
+  /** WI-10007010: ONLY the roles this blueprint declares — never merged global envelopes. */
+  declared: ReadonlyMap<string, readonly string[]>;
 }
 const cache = new Map<string, CacheEntry>();
 
@@ -48,8 +50,12 @@ export function blueprintRoleEnvelopes(
   if (hit && hit.mtimeMs === mtimeMs) return hit.envelopes;
 
   let envelopes: Partial<Record<string, RoleEnvelope>> | undefined;
+  const declared = new Map<string, readonly string[]>();
   try {
     const workerRoles = loadBlueprintFromFile(f).blueprint.fleet?.workerRoles ?? [];
+    for (const wr of workerRoles) {
+      if (wr.capabilities && wr.capabilities.length > 0) declared.set(wr.id, [...wr.capabilities]);
+    }
     if (workerRoles.length === 0) {
       envelopes = undefined;
     } else {
@@ -65,9 +71,26 @@ export function blueprintRoleEnvelopes(
     }
   } catch {
     envelopes = undefined; // fail-safe: a bad blueprint never strands capability checks
+    declared.clear();
   }
-  cache.set(stateDir, { mtimeMs, envelopes });
+  cache.set(stateDir, { mtimeMs, envelopes, declared });
   return envelopes;
+}
+
+/**
+ * WI-10007010: the capabilities a pot blueprint DECLARES for one of its own
+ * `fleet.workerRoles`, or undefined when that blueprint does not declare the role.
+ * Shares the mtime cache above and deliberately never answers from the merged
+ * global ROLE_ENVELOPES: unioning one of those into a principal would widen a
+ * platform role.
+ */
+export function blueprintWorkerRoleCapabilities(
+  stateDir: string,
+  role: string,
+): readonly string[] | undefined {
+  if (!existsSync(join(stateDir, 'blueprint.yaml'))) return undefined;
+  blueprintRoleEnvelopes(stateDir);
+  return cache.get(stateDir)?.declared.get(role);
 }
 
 /**

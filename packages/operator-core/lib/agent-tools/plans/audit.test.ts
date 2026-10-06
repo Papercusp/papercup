@@ -434,7 +434,10 @@ describe('plans:audit D-008 writer contract', () => {
     expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
-  it('refuses a citation whose current bytes do not exist at the explicit auditedSha', async () => {
+  // proof-freshness-pinned-candidate-2026-10-06 P-019: a peer's uncommitted edit to a
+  // cited file used to refuse the whole item (citation_audited_sha_mismatch). The audit
+  // now records the COMMITTED blob at auditedSha and reports the working-tree drift.
+  it('records the blob at auditedSha, not the working-tree blob, and notes the drift', async () => {
     const currentBlobSha = '0'.repeat(40);
     const auditedBlobSha = '1'.repeat(40);
     mockContext.mockResolvedValue({
@@ -454,9 +457,60 @@ describe('plans:audit D-008 writer contract', () => {
       { auditedSha: 'a'.repeat(40) },
     );
 
+    expect(result).toMatchObject({ ok: true });
+    expect(result.problems).toBeUndefined();
+    expect(result.note).toContain('1 cited file(s) differ in the working tree');
+    expect(result.note).toContain('src/gate.ts');
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({
+        itemId: 'P-001',
+        citations: [expect.objectContaining({ path: 'src/gate.ts', blobSha: auditedBlobSha })],
+      })],
+    }));
+  });
+
+  it('adds no drift note when the working tree matches auditedSha', async () => {
+    const blob = '2'.repeat(40);
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => (path === 'src/gate.ts' ? blob : null),
+        blobShaAt: (path) => (path === 'src/gate.ts' ? blob : null),
+      },
+    });
+
+    const result = await body(
+      [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result.note ?? '').not.toContain('differ in the working tree');
+  });
+
+  it('still refuses a cited file that is absent at auditedSha (uncommitted is not evidence)', async () => {
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => (path === 'src/gate.ts' ? '3'.repeat(40) : null),
+        blobShaAt: () => null,
+      },
+    });
+
+    const result = await body(
+      [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
     expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
     expect(result.problems).toEqual(expect.arrayContaining([
-      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_mismatch' }),
+      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_unresolvable' }),
     ]));
     expect(mockRecord).not.toHaveBeenCalled();
   });

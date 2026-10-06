@@ -266,6 +266,7 @@ function listingRegistryRevision(listing: unknown): string {
 // at the outer tools/call boundary. This preserves machine-readable target
 // results such as dev:pg_query without weakening the door for ordinary targets.
 const NESTED_RESULT_DOOR_SKIP_META = '__papercusp_nested_result_door_skip';
+const NESTED_RESULT_DOOR_PRESERVE_PATHS_META = '__papercusp_nested_result_door_preserve_paths';
 
 function isResultDoorSkipReason(value: unknown): value is ResultDoorSkipReason {
   return value === 'programmatic-caller' || value === 'oversize-by-design';
@@ -276,6 +277,32 @@ function nestedResultDoorSkipReason(result: McpCallResult): ResultDoorSkipReason
   return isResultDoorSkipReason(reason) ? reason : undefined;
 }
 
+function nestedResultDoorPreservePaths(result: McpCallResult): readonly string[] | undefined {
+  const paths = result._meta?.[NESTED_RESULT_DOOR_PRESERVE_PATHS_META];
+  return Array.isArray(paths) && paths.length <= MAX_PICK_PATHS && paths.every((path) => typeof path === 'string')
+    ? (paths as string[])
+    : undefined;
+}
+
+function carryNestedResultDoorPreservePaths(
+  result: McpCallResult,
+  paths: readonly string[] | undefined,
+): McpCallResult {
+  if (!paths?.length) return result;
+  return {
+    ...result,
+    _meta: { ...(result._meta ?? {}), [NESTED_RESULT_DOOR_PRESERVE_PATHS_META]: [...paths] },
+  };
+}
+
+function resultDoorPreservePaths(
+  result: McpCallResult,
+  directPaths: readonly string[] | undefined,
+): readonly string[] | undefined {
+  const paths = [...new Set([...(directPaths ?? []), ...(nestedResultDoorPreservePaths(result) ?? [])])];
+  return paths.length > 0 ? paths : undefined;
+}
+
 function carryNestedResultDoorSkip(result: McpCallResult, reason: ResultDoorSkipReason | undefined): McpCallResult {
   if (!reason) return result;
   return {
@@ -284,9 +311,17 @@ function carryNestedResultDoorSkip(result: McpCallResult, reason: ResultDoorSkip
   };
 }
 
-function stripNestedResultDoorSkip(result: McpCallResult): McpCallResult {
-  if (!result._meta || !(NESTED_RESULT_DOOR_SKIP_META in result._meta)) return result;
-  const { [NESTED_RESULT_DOOR_SKIP_META]: _reason, ...meta } = result._meta;
+function stripNestedResultDoorControls(result: McpCallResult): McpCallResult {
+  if (
+    !result._meta ||
+    (!(NESTED_RESULT_DOOR_SKIP_META in result._meta) &&
+      !(NESTED_RESULT_DOOR_PRESERVE_PATHS_META in result._meta))
+  ) {
+    return result;
+  }
+  const meta = { ...result._meta };
+  delete meta[NESTED_RESULT_DOOR_SKIP_META];
+  delete meta[NESTED_RESULT_DOOR_PRESERVE_PATHS_META];
   return { ...result, _meta: Object.keys(meta).length > 0 ? meta : undefined };
 }
 
@@ -2779,13 +2814,16 @@ async function buildMcpToolContext(
     // Do not carry the target's door exemption across that seam: a successful
     // projection is already small so the outer door is a no-op, while a
     // fail-open/miss must be bounded instead of leaking the full promoted body.
-    return carryNestedResultDoorSkip(
-      doorInput,
-      // A NAMED VIEW is promoted to full source exactly like a projection, so it
-      // must drop the exemption on the same terms: a successful view is already
-      // budget-bounded (the door is a no-op), and a fail-open must be bounded
-      // rather than leak the full promoted body.
-      projectionSpec || namedView ? undefined : target.skipResultDoor,
+    return carryNestedResultDoorPreservePaths(
+      carryNestedResultDoorSkip(
+        doorInput,
+        // A NAMED VIEW is promoted to full source exactly like a projection, so it
+        // must drop the exemption on the same terms: a successful view is already
+        // budget-bounded (the door is a no-op), and a fail-open must be bounded
+        // rather than leak the full promoted body.
+        projectionSpec || namedView ? undefined : target.skipResultDoor,
+      ),
+      projectionSpec?.pick,
     );
   };
   // Fuzzy tool-name recovery for the tools:invoke re-dispatch seam (P-007 / D-008). Exact and
@@ -4359,6 +4397,7 @@ export function registerMcpHost(server: McpServer): void {
               // outcomes were already per-result-doored before persistence,
               // but this request must consume the CURRENT aggregate cohort or
               // retry fan-out can bypass the one-budget invariant entirely.
+              const preservePaths = resultDoorPreservePaths(storedResult, projectionSpec?.pick);
               const replayedResult = projected.skipResultDoor
                 ? storedResult
               : await applyResultDoorAsync(storedResult, {
@@ -4383,9 +4422,9 @@ export function registerMcpHost(server: McpServer): void {
                       }
                     })(),
                     aggregateScope,
-                    ...(projectionSpec?.pick ? { preservePaths: projectionSpec.pick } : {}),
+                    ...(preservePaths ? { preservePaths } : {}),
                   });
-              return withMcpDiagnosticWarnings(replayedResult, dispatchSpawnCtx);
+              return withMcpDiagnosticWarnings(stripNestedResultDoorControls(replayedResult), dispatchSpawnCtx);
             }
           } catch (err) {
             console.warn(
@@ -4541,6 +4580,7 @@ export function registerMcpHost(server: McpServer): void {
             // door's fixed policy rather than racing it.
             const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
             const doorInput = stripImplicitProjectionFullRequest(viewedResult, projectionNeedsFullSource, ctx);
+            const preservePaths = resultDoorPreservePaths(doorInput, projectionSpec?.pick);
             // EI-19386201256023240: a tool whose documented/near-exclusive
             // caller is a programmatic client (a shell hook `json.loads`-ing
             // the raw body — e.g. activity:report's hook_bundle fold — see
@@ -4588,7 +4628,7 @@ export function registerMcpHost(server: McpServer): void {
                     }
                   })(),
                   aggregateScope,
-                  ...(projectionSpec?.pick ? { preservePaths: projectionSpec.pick } : {}),
+                  ...(preservePaths ? { preservePaths } : {}),
                 });
             // EI-19415249247575123: a `not_found` returned while this process is KNOWN to
             // have talked to a DIFFERENT Postgres cluster is a confidently wrong answer —
@@ -4608,7 +4648,7 @@ export function registerMcpHost(server: McpServer): void {
             // may be from the WRONG database" is exactly the warning a bootstrap read must
             // not lose. Only `'programmatic-caller'` needs a byte-clean body.
             const result = annotateStoreIdentitySuspectResult(
-              stripNestedResultDoorSkip(doored),
+              stripNestedResultDoorControls(doored),
               mayAnnotateResultText(resultDoorSkipReason),
             );
             // EI-19389431406847252: the door spills to scratch but the telemetry

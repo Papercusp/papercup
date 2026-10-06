@@ -138,6 +138,42 @@ describe('withMcpDiagnosticWarnings', () => {
   });
 
   it.each([
+    ['scorecards:list', { ok: true, count: 1, scorecards: [{ issueId: 'EI-1' }] }],
+    ['plans:get-specs', { ok: true, count: 1, specs: [{ specId: 'SPEC-001' }] }],
+    ['plans:get-spec-evidence', { ok: true, count: 1, evidence: [{ bindingId: 1 }] }],
+    ['plans:evaluate-spec-test-adequacy', { ok: true, count: 1, rows: [{ specId: 'SPEC-001' }] }],
+  ])('does not warn for populated %s data arrays', (_tool, body) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T21:21:10.000Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it.each([
+    ['scorecards:list', { ok: true, count: 0, scorecards: [] }],
+    ['plans:get-specs', { ok: true, count: 0, specs: [] }],
+    ['plans:get-spec-evidence', { ok: true, count: 0, evidence: [] }],
+    ['plans:evaluate-spec-test-adequacy', { ok: true, count: 0, rows: [] }],
+  ])('keeps the warning for empty %s data arrays', (_tool, body) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T21:21:10.000Z') }),
+    );
+    const annotatedBody = JSON.parse((annotated.content[0] as { text: string }).text);
+
+    expect(annotatedBody._dataPlaneMayBeDegraded).toContain('DATA PLANE MAY BE DEGRADED');
+  });
+
+  it.each([
     ['improvements:capture', {
       ok: true,
       created: false,

@@ -19,6 +19,12 @@ async function pair(overrides: {
   const clientFrames: Record<string, unknown>[] = [];
   const hostFrames: Record<string, unknown>[] = [];
   const errors: Error[] = [];
+  // A held relay queues client→host packets; release() hands the whole queue to the host
+  // in ONE synchronous loop, the way a relay that batches a websocket read delivers them.
+  let holding = false;
+  const held: ByocSealedPacket[] = [];
+  let holdingToClient = false;
+  const heldToClient: ByocSealedPacket[] = [];
   let client!: ByocSealedChannel;
   let host!: ByocSealedChannel;
   client = new ByocSealedChannel({
@@ -27,7 +33,9 @@ async function pair(overrides: {
     expectedRemotePublicKey: overrides.clientExpected ?? hostKey.publicKey,
     sendPacket(packet) {
       clientPackets.push(packet);
-      queueMicrotask(() => host.receive(overrides.clientPacket?.(packet) ?? packet));
+      const relayed = overrides.clientPacket?.(packet) ?? packet;
+      if (holding) held.push(relayed);
+      else queueMicrotask(() => host.receive(relayed));
     },
     onFrame: (frame) => clientFrames.push(frame),
     onError: (error) => errors.push(error),
@@ -40,12 +48,29 @@ async function pair(overrides: {
       : { expectedRemotePublicKey: overrides.hostExpected ?? clientKey.publicKey }),
     sendPacket(packet) {
       hostPackets.push(packet);
-      queueMicrotask(() => client.receive(packet));
+      if (holdingToClient) heldToClient.push(packet);
+      else queueMicrotask(() => client.receive(packet));
     },
     onFrame: (frame) => hostFrames.push(frame),
     onError: (error) => errors.push(error),
   });
-  return { client, host, clientPackets, hostPackets, clientFrames, hostFrames, errors, clientKey, hostKey };
+  const relay = {
+    hold() { holding = true; },
+    release() {
+      holding = false;
+      for (const packet of held.splice(0)) host.receive(packet);
+    },
+    holdToClient() { holdingToClient = true; },
+    releaseToClient() {
+      holdingToClient = false;
+      for (const packet of heldToClient.splice(0)) client.receive(packet);
+    },
+  };
+  return { client, host, clientPackets, hostPackets, clientFrames, hostFrames, errors, clientKey, hostKey, relay };
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 3; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 describe('BYOC sealed relay channel', () => {
@@ -112,6 +137,81 @@ describe('BYOC sealed relay channel', () => {
     await Promise.all([p.client.opened, p.host.opened]);
     await p.client.send({ type: 'pty.input', data: 'opaque' });
     await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(p.errors.some((error) => /content type mismatch/.test(error.message))).toBe(true);
+    p.client.close();
+    p.host.close();
+  });
+
+  // WI-10007006: one shared pendingType slot meant a burst of packets delivered in one
+  // tick checked every decrypted frame against the LAST packet's type.
+  it('delivers a same-tick burst of differently-typed frames in order without a type mismatch', async () => {
+    const p = await pair();
+    await Promise.all([p.client.opened, p.host.opened]);
+    p.relay.hold();
+    const frames = [
+      { type: 'pty.input', data: 'a' },
+      { type: 'http.request', id: 'r1' },
+      { type: 'pty.resize', cols: 80, rows: 24 },
+      { type: 'pty.input', data: 'b' },
+    ];
+    await Promise.all(frames.map((frame) => p.client.send(frame)));
+    p.relay.release();
+    await settle();
+    expect(p.errors).toEqual([]);
+    expect(p.hostFrames).toEqual(frames);
+    p.client.close();
+    p.host.close();
+  });
+
+  // WI-10007006: send() wrote its outbound type into the same slot receive() checks, so a
+  // frame arriving while a local send was flushing was judged against the local type.
+  it('keeps inbound type checks independent of concurrent outbound sends', async () => {
+    const p = await pair();
+    await Promise.all([p.client.opened, p.host.opened]);
+    // Sweep the gap between an inbound packet landing and a local send starting, so some
+    // round puts the local flush window over the inbound decrypt whatever the hop count is.
+    const rounds = 9;
+    for (let gap = 0; gap < rounds; gap += 1) {
+      p.relay.holdToClient();
+      await p.host.send({ type: 'pty.data', gap });
+      p.relay.releaseToClient();
+      for (let hop = 0; hop < gap; hop += 1) await Promise.resolve();
+      await p.client.send({ type: 'pty.input', gap });
+      await settle();
+    }
+    expect(p.errors).toEqual([]);
+    expect(p.clientFrames.map((frame) => frame.gap)).toEqual(Array.from({ length: rounds }, (_, gap) => gap));
+    expect(p.hostFrames.map((frame) => frame.gap)).toEqual(Array.from({ length: rounds }, (_, gap) => gap));
+    p.client.close();
+    p.host.close();
+  });
+
+  it('detects relabelling inside a same-tick burst', async () => {
+    const p = await pair({
+      clientPacket: (packet) => packet.contentType === 'http.request'
+        ? { ...packet, contentType: 'pty.input' }
+        : packet,
+    });
+    await Promise.all([p.client.opened, p.host.opened]);
+    p.relay.hold();
+    await p.client.send({ type: 'pty.input', data: 'a' });
+    await p.client.send({ type: 'http.request', id: 'r1' });
+    p.relay.release();
+    await settle();
+    expect(p.hostFrames).toEqual([{ type: 'pty.input', data: 'a' }]);
+    expect(p.errors.some((error) => /content type mismatch/.test(error.message))).toBe(true);
+    p.client.close();
+    p.host.close();
+  });
+
+  it('refuses application content whose relay label was stripped to the handshake null type', async () => {
+    const p = await pair({
+      clientPacket: (packet) => packet.contentType === 'pty.input' ? { ...packet, contentType: null } : packet,
+    });
+    await Promise.all([p.client.opened, p.host.opened]);
+    await p.client.send({ type: 'pty.input', data: 'opaque' });
+    await settle();
+    expect(p.hostFrames).toEqual([]);
     expect(p.errors.some((error) => /content type mismatch/.test(error.message))).toBe(true);
     p.client.close();
     p.host.close();

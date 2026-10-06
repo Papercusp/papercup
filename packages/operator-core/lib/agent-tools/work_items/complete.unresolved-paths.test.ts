@@ -50,6 +50,7 @@ import {
 
 const ROOT = '/repo';
 const SIDESTAGE_ROOT = '/hives/sidestage';
+const PORTAL_ROOT = '/hives/portal';
 
 /** The pretend tree — absolute paths, mirroring the real ones from the measured incident. */
 const TREE = new Set<string>([
@@ -59,10 +60,12 @@ const TREE = new Set<string>([
   '/repo/packages/operator-core/lib/scheduler/claim-spec.ts',
   '/repo/packages/operator-core/lib/agent-tools/work_items',
   '/repo/packages/operator-core/lib/agent-tools/work_items/create.test.ts',
+  '/repo/packages/operator-core/lib/voice-engines/elevenlabs-conv.ts',
   '/repo/libs/papercusp/libs/db/sql',
   '/repo/libs/papercusp/libs/db/sql/790-expose-goal-id-on-engineer-issues-view.sql',
   `${SIDESTAGE_ROOT}/apps/api/src/auction/auction.service.ts`,
   `${SIDESTAGE_ROOT}/apps/api/src/app.module.ts`,
+  `${PORTAL_ROOT}/apps/host/src/papercup-chat.ts`,
   '/another-repo/only-there.ts',
 ]);
 
@@ -278,6 +281,17 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
 });
 
 describe('unresolvedPathsInCompletion — multiple checkout integrity', () => {
+  it('resolves bare primary paths alongside explicitly sibling-qualified paths', () => {
+    const got = unresolvedPathsInCompletion(
+      ev([
+        'packages/operator-core/lib/voice-engines/elevenlabs-conv.ts',
+        'portal/apps/host/src/papercup-chat.ts',
+      ]),
+      { ...probe, repoRoots: [ROOT, PORTAL_ROOT] },
+    );
+    expect(got).toBeUndefined();
+  });
+
   it('does not combine partial matches from different repositories into one false green', () => {
     const got = unresolvedPathsInCompletion(ev(['packages/operator-core/lib/issues-engineer.ts', 'only-there.ts']), {
       ...probe,

@@ -3,6 +3,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import type { Principal } from '@papercusp/agent-mcp';
 import { SUPERUSER_FALLBACK_CLIENT_ID } from '../../../agent-tools/coordination/identity';
+import { ROLE_ENVELOPES } from '../../../capability-envelope/policy';
 
 /**
  * Capabilities granted to **blueprint-declared roles** — agents a blueprint spawns
@@ -410,6 +411,8 @@ export async function loadRoleCapabilities(
   tx: Sql,
   workspaceId: string,
   roleName: string,
+  /** The caller's harness; lets an APP-declared worker role resolve its pot blueprint grant. */
+  harnessSlug?: string,
 ): Promise<Set<string>> {
   const rows = await tx<Array<{ capabilities: unknown }>>`
     SELECT capabilities
@@ -424,6 +427,17 @@ export async function loadRoleCapabilities(
   // tools their blueprint role uses (e.g. coord:thread-post / improvements:capture →
   // coord:write).
   for (const c of BLUEPRINT_ROLE_CAPS[roleName] ?? []) caps.add(c);
+  // WI-10007010: an APP harness declares its own worker roles (e.g. calendar's
+  // calendar-prep-worker) in its pot blueprint's fleet.workerRoles. They have no
+  // system_principals row and no static entry above, so without this their
+  // principal lacks every capability their own blueprint grants (memory:read,
+  // work_items:write, ...). This is the SAME declared list the identity kernel
+  // reads as the role ceiling. Only a role the platform does not know contributes,
+  // so a harness blueprint can never widen a provisioned or platform role.
+  if (harnessSlug && harnessSlug !== '*' && raw === undefined &&
+      !BLUEPRINT_ROLE_CAPS[roleName] && !Object.hasOwn(ROLE_ENVELOPES, roleName)) {
+    for (const c of await declaredPotWorkerRoleCapabilities(workspaceId, harnessSlug, roleName)) caps.add(c);
+  }
   // B-18 cutover parity: these roles can have Bash/Edit/Write/WebFetch removed
   // from their native CLI surface. Give their signed MCP principal the exact
   // replacement capability grants so the cutover never strands them. This is
@@ -564,11 +578,35 @@ export function effectiveDispatchWorkspace(
  * capabilities (least-privilege) and the capability gate enforces normally.
  * `tx` must already be workspace-scoped.
  */
+/**
+ * WI-10007010: the capabilities the caller harness's POT blueprint declares for an
+ * app worker role. Additive only: any resolution failure yields none rather than
+ * blocking capability resolution.
+ */
+async function declaredPotWorkerRoleCapabilities(
+  workspaceId: string,
+  harnessSlug: string,
+  roleName: string,
+): Promise<readonly string[]> {
+  try {
+    const { potHomeSlugForHarness } = await import('../../../hive-federation');
+    const { resolveHarnessPaths } = await import('../../../resolve-harness-paths');
+    const { blueprintWorkerRoleCapabilities } = await import('../../../capability-envelope/blueprint-envelopes');
+    const potSlug = (await potHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
+    const { stateDir } = await resolveHarnessPaths(potSlug, workspaceId);
+    return blueprintWorkerRoleCapabilities(stateDir, roleName) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function synthesizeDispatchPrincipal(
   tx: Sql,
   spawnCtx: {
     workspaceId: string;
     role: string;
+    /** The caller's harness (BuiltSpawnContext carries it); see loadRoleCapabilities. */
+    harnessSlug?: string;
     isSuperuser?: boolean;
     authenticatedPrincipal?: Principal;
     /** Explicitly false only for an accepted unsigned legacy spawn URL. */
@@ -578,7 +616,7 @@ export async function synthesizeDispatchPrincipal(
   if (spawnCtx.authenticatedPrincipal) return spawnCtx.authenticatedPrincipal;
   const capabilities = spawnCtx.isSuperuser
     ? new Set<string>()
-    : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role);
+    : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role, spawnCtx.harnessSlug);
   // Keep the legacy capability/role behavior above, but carry the transport's
   // resolved provenance into telemetry. `sigVerifiedSpawn` is supplied by the
   // MCP adapter for URL calls; omitted by older nested-dispatch callers, which
