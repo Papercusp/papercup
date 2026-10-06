@@ -20,7 +20,8 @@ This is the hosted Cloud lesson, version 1 (`first-cloud-agent`); the desktop
 installation tutorial is a separate flow. Sign in and select an authorized
 workspace. Have a Google Cloud project, the permissions/APIs needed by the
 connection form, an injected credential reference and the requested runtime
-service account. Keep secrets in that form, never in lesson Help.
+service account. Use only an injected credential reference in that form. Never
+paste API keys, service-account JSON or tokens into the form or lesson Help.
 
 The guide uses these headings and controls:
 

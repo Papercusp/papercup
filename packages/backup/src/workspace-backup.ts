@@ -539,6 +539,7 @@ export class WorkspaceBackup {
           runPreSnapshotHook({
             workspaceId: this.workspaceId,
             workspaceRoot: this.workspaceRoot,
+            triggerReason: reason,
           }).then(async (result) => {
             await this.event(snapshotRowId!, 'hook_pg_dump', { ...result });
             return { ok: result.ok, error: result.error ?? null };

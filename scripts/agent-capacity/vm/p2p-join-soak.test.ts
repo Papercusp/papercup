@@ -30,16 +30,22 @@ case "$cmd" in
     esac ;;
   *read-routine-metadata*) printf 'ROUTINE_META slug=hello-world-3-pot routine=git-sync key=worktree_divergence rows=1 value={"paths":["d055-conflict.txt"]}\nJDIVLOG=1\n' ;;
   *"tar -C"*) printf 'TGZ' ;;
-  # S8: a joiner marker write "federates" into the tower's repo when sync works (FAKE_S8_* knobs).
-  *"tee "*"s8-joiner-before-revoke.txt"*)
-    [ "$((FAKE_S8_CONTROL_FAIL + 0))" = 1 ] || (cd "$HIVE" && echo x > s8-joiner-before-revoke.txt && git add s8-joiner-before-revoke.txt && git -c user.email=t@t -c user.name=t commit -qm before >/dev/null) ;;
-  *"tee "*"s8-joiner-after-revoke.txt"*)
-    [ "$((FAKE_S8_PUSH_AFTER + 0))" = 1 ] && (cd "$HIVE" && echo x > s8-joiner-after-revoke.txt && git add s8-joiner-after-revoke.txt && git -c user.email=t@t -c user.name=t commit -qm after >/dev/null) ;;
+  # S8: the joiner's COMMIT of its marker "federates" into the tower's repo when sync works
+  # (FAKE_S8_* knobs); FAKE_S8_JOINER_COMMIT_FAIL makes the joiner-side commit itself fail.
+  *JOINER_COMMIT_RC*)
+    [ "$((FAKE_S8_JOINER_COMMIT_FAIL + 0))" = 1 ] && { echo JOINER_COMMIT_RC=1; exit 0; }
+    echo JOINER_COMMIT_RC=0
+    f=$(printf '%s' "$cmd" | grep -oE 's8-[A-Za-z0-9_.-]+-joiner-(before|after)-revoke\.txt' | head -1)
+    cross=0
+    case "$f" in *before-revoke*) [ "$((FAKE_S8_CONTROL_FAIL + 0))" = 1 ] || cross=1 ;; *after-revoke*) cross=$((FAKE_S8_PUSH_AFTER + 0)) ;; esac
+    [ "$cross" = 1 ] && (cd "$HIVE" && echo x > "$f" && git add "$f" && git -c user.email=t@t -c user.name=t commit -qm "$f" >/dev/null) ;;
   # The tower's marker reaches the joiner's FETCHED refs, never its worktree HEAD: that is what c1010r
-  # measured (refs/hive/staging held it, HEAD did not). So only a read across all refs sees it.
-  *"log --all "*"-- s8-tower-before-revoke.txt"*) [ "$((FAKE_S8_CONTROL_FAIL + 0))" = 1 ] && echo 0 || echo 1 ;;
-  *"log --all "*"-- s8-tower-after-revoke.txt"*) echo "$((FAKE_S8_PULL_AFTER + 0))" ;;
-  *"-- s8-tower-"*) echo 0 ;;
+  # measured (refs/hive/staging held it, HEAD did not). So only a read across all refs sees it. Any
+  # S8 file NOT of this run (RUN=p2pjoin) is already in the joiner's history, as a real clone that
+  # fetched earlier runs' commits is (c1011s, WI-10006907): only run-unique names can tell them apart.
+  *"log --all "*"-- s8-p2pjoin-tower-before-revoke.txt"*) [ "$((FAKE_S8_CONTROL_FAIL + 0))" = 1 ] && echo 0 || echo 1 ;;
+  *"log --all "*"-- s8-p2pjoin-tower-after-revoke.txt"*) echo "$((FAKE_S8_PULL_AFTER + 0))" ;;
+  *"log --all "*"-- s8-"*) echo 1 ;;
 esac
 exit 0
 `;
@@ -249,12 +255,23 @@ describe('vm/p2p-join-soak.sh (faked gcloud, gcp-rails, mcp-call)', () => {
   // S8 (WI-10004393): revoke ONLY the joiner's device, then prove it can no longer push or pull.
   describe('REVOKE=1 (S8)', () => {
     const s8 = (env: Record<string, string> = {}) =>
-      run({ REVOKE: '1', OBS_LIMIT: '1', REVOKE_WAIT_SEC: '1', S8_POLL_SEC: '0', ...env });
+      run({ REVOKE: '1', OBS_LIMIT: '1', REVOKE_WAIT_SEC: '1', S8_POLL_SEC: '0', S8_COMMIT_RETRY_SEC: '0', ...env });
     const nodeCalls = () => calls().split('\n').filter((l) => l.startsWith('node '));
+    const commitInHive = (file: string) => {
+      writeFileSync(path.join(hive(), file), 'earlier run\n');
+      spawnSync('git', ['-C', hive(), 'add', file]);
+      spawnSync('git', ['-C', hive(), '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', file]);
+    };
+    const hiveHas = (file: string) =>
+      spawnSync('git', ['-C', hive(), 'log', '--oneline', '-1', '--', file], { encoding: 'utf8' }).stdout.trim() !== '';
 
     it('control crosses, the joiner device alone is revoked on the given operator, nothing crosses after: revoked', () => {
       const r = s8();
       expect(r.code).toBe(0);
+      // Both sides COMMIT their own run-unique file before the crossing window opens.
+      expect(r.out).toMatch(/S8_COMMITTED tag=before-revoke tower=1 joiner=1/);
+      expect(hiveHas('s8-p2pjoin-tower-before-revoke.txt')).toBe(true);
+      expect(ssh().some((l) => l.includes('commit -qm') && l.includes('s8-p2pjoin-joiner-before-revoke.txt'))).toBe(true);
       expect(r.out).toMatch(/S8_EXCHANGE tag=before-revoke waited=0s joinerPushed=1 joinerPulled=1/);
       const revoke = nodeCalls().filter((l) => l.includes('revoke_contributor'));
       expect(revoke).toHaveLength(1);
@@ -289,6 +306,34 @@ describe('vm/p2p-join-soak.sh (faked gcloud, gcp-rails, mcp-call)', () => {
       expect(r.out).toMatch(/S8_EXCHANGE tag=before-revoke waited=0s joinerPushed=0 joinerPulled=0/);
       expect(r.out).toMatch(/S8_RESULT verdict=inconclusive control=failed/);
       expect(r.out).not.toMatch(/verdict=revoked/);
+    });
+
+    it("an EARLIER run's S8 files in both histories never count as a crossing (c1011s, WI-10006907)", () => {
+      // The tower hive holds the fixed-name and another run's files, as it did after c1010r; the
+      // fake joiner holds every non-p2pjoin S8 path in its fetched history. Nothing of THIS run
+      // crosses, so the only honest verdict is inconclusive, never revoked or NOT-REVOKED.
+      for (const f of ['s8-joiner-before-revoke.txt', 's8-joiner-after-revoke.txt', 's8-c1010r-joiner-before-revoke.txt']) {
+        commitInHive(f);
+      }
+      const r = s8({ FAKE_S8_CONTROL_FAIL: '1' });
+      expect(r.out).toMatch(/S8_EXCHANGE tag=before-revoke waited=0s joinerPushed=0 joinerPulled=0/);
+      expect(r.out).toMatch(/S8_RESULT verdict=inconclusive control=failed pushBlocked=1 pullBlocked=1/);
+    });
+
+    it('a joiner-side commit that fails is not measured: inconclusive control=not-committed', () => {
+      const r = s8({ FAKE_S8_JOINER_COMMIT_FAIL: '1' });
+      expect(r.out).toMatch(/S8_COMMITTED tag=before-revoke tower=1 joiner=0/);
+      expect(r.out).toMatch(/S8_EXCHANGE tag=before-revoke waited=0s joinerPushed=0 joinerPulled=0 not-measured=commit-failed/);
+      expect(r.out).toMatch(/S8_RESULT verdict=inconclusive control=not-committed/);
+      expect(r.out).not.toMatch(/verdict=(revoked|NOT-REVOKED)/);
+    });
+
+    it('a reused RUN name is refused before anything is revoked', () => {
+      commitInHive('s8-p2pjoin-tower-before-revoke.txt');
+      const r = s8();
+      expect(r.out).toMatch(/S8_RESULT verdict=not-run reason=run-name-reused/);
+      expect(nodeCalls().some((l) => l.includes('revoke_contributor'))).toBe(false);
+      expect(calls()).toMatch(/gcp-rails\.ts teardown/);
     });
 
     it('a refused revoke stops S8 before the after-revoke exchange', () => {

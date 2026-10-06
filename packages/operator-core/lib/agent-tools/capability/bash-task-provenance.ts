@@ -193,3 +193,20 @@ export async function resolveBashTaskProvenance(
     goalRef,
   };
 }
+
+/**
+ * `capability:bash` is the common arbitrary-command launcher, so a declared goal
+ * is not enough to pick between multiple held items. Require the caller to name
+ * the item whose cost and slow-attempt history this command belongs to.
+ */
+export function resolveCapabilityBashTaskProvenance(
+  ctx: ResolveIdentityCtx,
+  harnessSlug: string | null,
+  deps: BashTaskProvenanceDeps = DEFAULT_BASH_PROVENANCE_DEPS,
+  options: BashTaskProvenanceOptions = {},
+): Promise<BashTaskProvenance> {
+  return resolveBashTaskProvenance(ctx, harnessSlug, deps, {
+    ...options,
+    requireExplicitForMultipleHeldItems: true,
+  });
+}

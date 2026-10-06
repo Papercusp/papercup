@@ -41,9 +41,18 @@ test.describe('workspace registry + user surfaces', () => {
     expect(ids).toContain(body.current);
   });
 
-  test('GET /api/operator/state-snapshot requires auth', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/operator/state-snapshot`);
-    expect([200, 401, 403]).toContain(res.status());
+  test('GET /api/operator/state-snapshot requires auth', async () => {
+    // The route is a long-lived SSE stream (`timeoutSec: null`). Playwright's
+    // APIRequestContext buffers the WHOLE body, so `request.get` never resolves
+    // and the test timed out at 10s on every run (WI-10006791). Native fetch
+    // resolves on HEADERS; read the status, then close the stream.
+    const ac = new AbortController();
+    const res = await fetch(`${baseURL}/api/operator/state-snapshot`, { signal: ac.signal });
+    try {
+      expect([200, 401, 403]).toContain(res.status);
+    } finally {
+      ac.abort();
+    }
   });
 
   test('GET /api/user/preferences requires auth', async ({ request }) => {
@@ -61,15 +70,20 @@ test.describe('workspace registry + user surfaces', () => {
     expect([200, 401, 403]).toContain(res.status());
   });
 
-  test('POST /api/user/memory requires auth (create route, P-010)', async ({ request }) => {
-    // POST is the settings-page create route (P-010, 2026-06-09) — it
-    // session-gates inside the handler, so an unauthenticated POST is 401,
-    // never an unhandled 5xx.
+  test('POST /api/user/memory validates before writing (create route, P-010)', async ({ request }) => {
+    // The create route is `auth: 'loopback'` + getSessionUserOrDefault: a loopback
+    // caller with no session IS the single-user install's default user, so a
+    // well-formed POST here CREATES a real memory (it returned 200 and wrote a row
+    // on :3070, 2026-10-06 — WI-10006791). The old "unauthenticated POST is 401"
+    // premise was stale, and the old body polluted whichever store it ran against.
+    // Exercise the route with an invalid body instead: validation runs before
+    // journaling, so this is a 400 with no write.
     const res = await request.post(`${baseURL}/api/user/memory`, {
-      data: { text: 'test', kind: 'preference' },
+      data: { text: '   ', kind: 'preference' },
       headers: { 'Content-Type': 'application/json' },
     });
-    expect(res.status()).toBe(401);
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toBe('text_required');
   });
 
   test('PATCH /api/user/memory requires auth + body', async ({ request }) => {

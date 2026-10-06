@@ -4354,8 +4354,10 @@ async function publishPrivateIndexCommit(
  *   3. `write-tree` + `commit-tree -p <base>`, so the commit is exactly what the guard saw;
  *   4. `update-ref HEAD <new> <base>`: if anything moved HEAD meanwhile the CAS refuses,
  *      nothing lands, and the files stay dirty for the catch-all / next tick;
- *   5. reset the shared index's entries for the committed paths to the new commit, so it
- *      does not hold the pre-commit blobs (a later commit would otherwise revert them).
+ *   5. BEFORE that CAS (WI-10006850), reset the shared index's entries for the committed
+ *      paths to the new commit, so it never holds the pre-commit blobs under the new HEAD
+ *      (they read as staged reverts). A refresh that fails (a live index.lock) publishes
+ *      nothing and aborts the phase.
  * The runner must forward `GitRunOptions.env`; it is probed once and the phase refuses
  * (the caller falls through to the catch-all) rather than ever touching the shared index.
  */
@@ -4409,6 +4411,48 @@ export async function commitAttributedGroups(
         if (!guard.ok) return { committedAny, committedCount, error: guard.error };
       }
 
+      // 5 (runs inside step 4, before the CAS). WI-10006850: bring the SHARED index's entries
+      //    for exactly the committed paths up to the commit BEFORE it is published, as the
+      //    catch-all's refreshSharedIndex does (WI-10006725). Refreshing after the CAS left a
+      //    window: a live writer's index.lock failed the refresh with the commit already on
+      //    HEAD, and the shared index kept the pre-commit blobs, which read as staged reverts.
+      //    Now that lock fails the refresh and so the phase, nothing is published, and the
+      //    caller falls through to the catch-all. If the CAS then refuses, the refreshed
+      //    entries match the working tree, which is benign. Paths are read literally
+      //    (GIT_LITERAL_PATHSPECS), so a `[id]` segment is not a glob.
+      const refreshSharedIndex = async (
+        commit: string,
+        tree: string,
+      ): Promise<{ ok: true } | { ok: false; error: string }> => {
+        const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', baseTree, tree], repoPath);
+        if (changed.code !== 0) {
+          return {
+            ok: false,
+            error: `attributed commit for ${g.agent} not published: could not list its paths: ${gitFailureDetail(changed)}`,
+          };
+        }
+        const committedPaths = changed.stdout.split('\0').filter(Boolean);
+        // ⚠ never reset with an EMPTY pathspec: that resets the whole shared index.
+        if (committedPaths.length === 0) return { ok: true };
+        const resetArgs = ['reset', '-q', commit, '--', ...committedPaths];
+        const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
+        const refresh = await recoverIndexLockContention(
+          await runGit(resetArgs, repoPath, literal),
+          () => runGit(resetArgs, repoPath, literal),
+          runGit,
+          repoPath,
+          'attributed shared-index refresh',
+          log,
+        );
+        if (refresh.code === 0) return { ok: true };
+        return {
+          ok: false,
+          error:
+            `attributed commit for ${g.agent} not published: the shared index could not be refreshed for ` +
+            `${committedPaths.length} path(s): ${gitFailureDetail(refresh)}`,
+        };
+      };
+
       // 3-4. Commit the tree the guard checked (equal to the base tree = nothing left to
       //      commit) and publish it only if HEAD is still the base it was built on.
       //      WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the subject describes the DIFF (what
@@ -4421,6 +4465,7 @@ export async function commitAttributedGroups(
         baseTree,
         label: 'attributed commit',
         reflogMessage: `git-sync: attributed commit for ${g.agent}`,
+        beforePublish: refreshSharedIndex,
         messageArgs: async () => {
           let subject = g.subject;
           let intentBody: string | null = null;
@@ -4442,32 +4487,8 @@ export async function commitAttributedGroups(
         );
         continue;
       }
-      const { commit, tree } = published;
       committedAny = true;
       committedCount += 1;
-
-      // 5. Bring the shared index's entries for the committed paths up to the commit.
-      const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', baseTree, tree], repoPath);
-      const committedPaths = changed.code === 0 ? changed.stdout.split('\0').filter(Boolean) : g.files;
-      // ⚠ never reset with an EMPTY pathspec: that resets the whole shared index.
-      if (committedPaths.length === 0) continue;
-      const resetArgs = ['reset', '-q', commit, '--', ...committedPaths];
-      const refresh = await recoverIndexLockContention(
-        await runGit(resetArgs, repoPath),
-        () => runGit(resetArgs, repoPath),
-        runGit,
-        repoPath,
-        'attributed shared-index refresh',
-        log,
-      );
-      if (refresh.code !== 0) {
-        // The commit landed. A stale shared entry reads as staged-vs-HEAD and as drift
-        // to the catch-all's post-stage guard, which unstages it before that commit.
-        log(
-          `[git-sync] ${repoPath}: attributed commit ${commit.slice(0, 10)} landed but the shared index could not be ` +
-            `refreshed for ${committedPaths.length} path(s): ${gitFailureDetail(refresh)}`,
-        );
-      }
     } finally {
       await rm(indexFile, { force: true }).catch(() => {});
       await rm(`${indexFile}.lock`, { force: true }).catch(() => {});

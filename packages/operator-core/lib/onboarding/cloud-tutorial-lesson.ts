@@ -24,7 +24,7 @@ const actions: readonly GuideAction[] = ['show-target', 'check-again', 'help', '
 export const CLOUD_TUTORIAL_STEPS: readonly LessonStep[] = [
   { id: 'connection', title: 'Connect Google Cloud', target: '[data-tutorial-target="cloud-connection"]', prerequisites: [], actions,
     brief: 'Connect your Google Cloud project using the app’s connection form.',
-    details: 'You need permission to manage the project and enable the required Google Cloud APIs. Credentials stay in the product connection form; do not paste them into Help.',
+    details: 'You need permission to manage the project and enable the required Google Cloud APIs. Use an injected credential reference in the connection form. Never paste API keys, service-account JSON or tokens into the form or Help.',
     recovery: 'Review the connection’s validation details, fix the indicated permission or project setting, then validate again in the app.' },
   { id: 'configuration', title: 'Review configuration and cost', target: '[data-tutorial-target="cloud-configuration"]', prerequisites: ['connection'], actions,
     brief: 'Choose a region, machine size and disk, then review the estimated cost before provisioning.',

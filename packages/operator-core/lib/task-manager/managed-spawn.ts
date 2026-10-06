@@ -22,6 +22,7 @@
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 import { readProcessIdentity } from '../process-identity';
 import { redactSensitiveText } from '../sensitive-text';
 import {
@@ -92,6 +93,8 @@ export interface ManagedSpawnResult {
  */
 type ManagedSpawnHandle = Pick<ChildProcess, 'kill'>;
 const intentionalTeardownChildren = new WeakSet<ManagedSpawnHandle>();
+/** Explicit taskId kill signal, captured before systemd-run's client can exit. */
+const requestedKillSignals = new WeakMap<ManagedSpawnHandle, NodeJS.Signals>();
 
 /**
  * Mark a managed-spawn client before its owning task scope is intentionally
@@ -628,18 +631,26 @@ function wireExit(
   // mark its own kill: su-session-stdio-peer's close() did not, and a real omp
   // that outlived the 5s stdin-EOF grace turned its deliberate SIGKILL into an
   // "abnormal client exit" warning that failed the exact-resume acceptance.
-  const stopKillNotify = onTaskKillRequested((killedTaskId) => {
-    if (killedTaskId === taskId) intentionalTeardownChildren.add(child);
+  const stopKillNotify = onTaskKillRequested((killedTaskId, requestedSignal) => {
+    if (killedTaskId === taskId) {
+      intentionalTeardownChildren.add(child);
+      requestedKillSignals.set(child, requestedSignal);
+    }
   });
   child.once('exit', stopKillNotify);
   child.once('error', stopKillNotify);
-  const close = (state: 'exited' | 'killed', code: number | null, reason: string | null): void => {
+  const close = (
+    state: 'exited' | 'killed',
+    code: number | null,
+    reason: string | null,
+    preserveKillIntent = false,
+  ): void => {
     if (closed) return;
     closed = true;
     void (async () => {
       const abnormal = state !== 'exited' || code !== 0 || Boolean(reason);
       const candidate =
-        abnormal && confined && scopeUnit
+        abnormal && !preserveKillIntent && confined && scopeUnit
           ? ((await inspectTaskUnitTerminals([scopeUnit])).get(scopeUnit) ?? null)
           : null;
       const terminal =
@@ -723,7 +734,19 @@ function wireExit(
     timer.unref?.();
   };
 
-  const closeAfterExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+  const closeAfterExit = (
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    requestedSignal: NodeJS.Signals | null,
+  ): void => {
+    if (requestedSignal) {
+      // For confined tasks the observed child is systemd-run's client. Its exit
+      // (and the unit's later exit-code result) can be clean or unrelated to the
+      // signal that processes:kill deliberately sent. Preserve kill intent as a
+      // cancelled attempt instead of fingerprinting the client's verdict.
+      close('killed', 128 + osConstants.signals[requestedSignal], `processes:kill requested ${requestedSignal}`, true);
+      return;
+    }
     if (signal) {
       close('killed', code, `signal ${signal}`);
     } else if (confined && code !== 0) {
@@ -754,6 +777,8 @@ function wireExit(
 
   child.on('exit', (code, signal) => {
     const intentionalTeardown = intentionalTeardownChildren.delete(child);
+    const requestedSignal = requestedKillSignals.get(child) ?? null;
+    requestedKillSignals.delete(child);
     if (confined && scopeCgroupPath) {
       // A populated scope at the instant the client exits is not yet proof that
       // the payload outlived it. Normal payload teardown can leave a short-lived
@@ -766,15 +791,16 @@ function wireExit(
           reportPayloadOutlivedClient(code, signal, true, intentionalTeardown);
           return;
         }
-        closeAfterExit(code, signal);
+        closeAfterExit(code, signal, requestedSignal);
       });
       return;
     }
-    closeAfterExit(code, signal);
+    closeAfterExit(code, signal, requestedSignal);
   });
 
   child.on('error', (e) => {
     intentionalTeardownChildren.delete(child);
+    requestedKillSignals.delete(child);
     const msg = e.message ?? String(e);
     // A scope that could not start is NOT a payload failure — record it as such
     // so a box that has quietly lost its user bus is diagnosable from the ledger.

@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import {
   dispatchProjectedTool,
@@ -7,6 +10,15 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 
+const harnessRoot = vi.hoisted(() => ({ path: '' }));
+
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: async () => ({
+    projects: [{ slug: 'papercusp', path: harnessRoot.path }],
+  }),
+  resolveHarnessContentPath: (registry: { projects: Array<{ slug: string; path: string }> }, slug: string) =>
+    registry.projects.find((project) => project.slug === slug)?.path,
+}));
 vi.mock('../_harness-scope', async (original) => ({
   ...(await original<typeof import('../_harness-scope')>()),
   harnessScopedCtx: vi.fn((_harness: unknown, ctx: unknown) => ctx),
@@ -37,8 +49,8 @@ const listEvidence = vi.mocked(listSpecEvidence);
 
 type ToolOutput = { data: Record<string, any> };
 
-const call = async (args: Record<string, unknown>) =>
-  ((await tool.handler(args as never, {} as never)) as ToolOutput).data;
+const call = async (args: Record<string, unknown>, context: Record<string, unknown> = {}) =>
+  ((await tool.handler(args as never, { workspaceId: 'workspace-test', ...context } as never)) as ToolOutput).data;
 
 const makeDispatchContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -354,6 +366,86 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       evaluatorBuild: { sha: 'live-evaluator-sha', version: '1.2.3' },
     });
     expect(result).not.toHaveProperty('evaluatorBuildDrift');
+  });
+
+  it('fails disclosed-gap when a current measured operational artifact has structured disclosures', async () => {
+    harnessRoot.path = await mkdtemp(path.join(tmpdir(), 'spec-adequacy-artifact-'));
+    const evidenceRef = 'docs/evidence/current-operational.json';
+    const evidencePath = path.join(harnessRoot.path, evidenceRef);
+    await mkdir(path.dirname(evidencePath), { recursive: true });
+    await writeFile(evidencePath, JSON.stringify({
+      kind: 'operational-test-evidence',
+      disclosures: ['The live push was not executed in-process.'],
+      couldNotDetermine: ['A live in-place restore was not executed.'],
+    }));
+    const currentness = {
+      overall: 'current',
+      provenance: 'server-measured',
+      comparisonSupplied: true,
+      dimensions: { spec: 'current', source: 'current', test: 'not-applicable' },
+      staleReasons: [],
+      unknownReasons: [],
+    };
+    listEvidence.mockResolvedValue([{
+      id: 27065,
+      workItemId: 'WI-10006070',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'operational',
+      evidenceRef,
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: null,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: 20846684,
+      testRunProvenance: null,
+      details: {
+        currentMeasurement: {
+          schemaVersion: 1,
+          kind: 'repo-files',
+          sourcePaths: [evidenceRef],
+        },
+        adequacy: {
+          outcome: 'passed',
+          skipped: false,
+          executed: true,
+          targeted: 'spec-001',
+          collected: true,
+          testLayer: 'operational',
+          pathReachable: true,
+          oracleIndependent: true,
+        },
+      },
+      serverMeasurement: { status: 'measured', current: {} },
+      currentness,
+    } as never]);
+    try {
+      const result = await call({
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        includeDraft: true,
+        detail: 'full',
+      });
+
+      expect(result.rows[0].ratings['disclosed-gap']).toMatchObject({
+        rating: 'fail',
+        evidence: expect.stringContaining('The live push was not executed in-process.'),
+      });
+      expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain('A live in-place restore was not executed.');
+      expect(result.rows[0].wouldBlock).toContain('disclosed-gap');
+      expect(result.rows[0].verdict).toBe('fail');
+    } finally {
+      await rm(harnessRoot.path, { recursive: true, force: true });
+      harnessRoot.path = '';
+    }
   });
 
   // review-system-rework-reduction-2026-09-23 P-007, clause RSR-P-007-A: a verdict table

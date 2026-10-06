@@ -28,7 +28,8 @@
 # CONFLICT_FILE (d055-conflict.txt) · RIG_LOCK (a held hive-git-physical-rig lock id: heartbeated
 # every 6 observations, released at teardown) · SU (mcp-call client, default $PAPERCUSP_SID) ·
 # REVOKE (0) · REVOKE_PORT (3170: an operator that carries WI-10006415) · REVOKE_WAIT_SEC (1200) ·
-# S8_POLL_SEC (60) · WS (papercusp-workspace, the pot's workspace id) ·
+# S8_POLL_SEC (60) · S8_COMMIT_TRIES (10) x S8_COMMIT_RETRY_SEC (15): each side commits its own
+# s8-$RUN-* file, retrying while that side's git-sync holds the index · WS (papercusp-workspace) ·
 # AGENT_CAPACITY_OUT (~/.cache/agent-capacity/$RUN). GitHub identity: the tower's gh login, sent
 # over ssh STDIN (owner #1174). Always tears the VM down, including on failure and SIGTERM.
 # Exit: 0 observed · 2 usage · 3 create failed · 4 ssh/scp failed · 5 install failed (server .deb or
@@ -51,6 +52,7 @@ CONFLICT_AT_OBS=${CONFLICT_AT_OBS:-}; CONFLICT_FILE=${CONFLICT_FILE:-d055-confli
 RIG_LOCK=${RIG_LOCK:-}; SU=${SU:-${PAPERCUSP_SID:-}}
 REVOKE=${REVOKE:-0}; REVOKE_PORT=${REVOKE_PORT:-3170}; REVOKE_WAIT_SEC=${REVOKE_WAIT_SEC:-1200}
 S8_POLL_SEC=${S8_POLL_SEC:-60}; WS=${WS:-papercusp-workspace}
+S8_COMMIT_TRIES=${S8_COMMIT_TRIES:-10}; S8_COMMIT_RETRY_SEC=${S8_COMMIT_RETRY_SEC:-15}
 DEB=${DEB:-}; SHA=${SHA:-}; JOIN_BODY=${JOIN_BODY:-}
 for v in DEB SHA JOIN_BODY; do
   [ -n "${!v}" ] || { echo "USAGE: $v is required (see the header of $0)" >&2; exit 2; }
@@ -87,17 +89,44 @@ rig() { # heartbeat | release
 # file, and hid that the tower served the revoked device after the revoke (WI-10006827).
 on_tower() { git -C "$HIVE" log --oneline -1 -- "$1" 2>/dev/null | grep -c .; }
 on_joiner() { ssh_vm "sudo -u $JUSER git -C $JCLONE log --all --oneline -1 -- $1 2>/dev/null | grep -c ." 2>/dev/null | tail -1; }
-# exchange <tag>: each side writes s8-<side>-<tag>.txt, then poll until both crossed or the wait ends.
-# Sets PUSHED (joiner's file reached the tower) and PULLED (tower's file reached the joiner).
+# Both checks read a path ANYWHERE in history, so every exchange file name carries $RUN: c1011s used
+# fixed names and was decided by c1010r's commits of the same paths, already in the tower head the
+# joiner fetched before its revoke (WI-10006907). A rerun with a reused RUN is refused below for the
+# same reason.
+# commit_tower <file> / commit_joiner <file>: commit ONE file on that side, retrying while the side's
+# own git-sync holds the index (S8_COMMIT_TRIES x S8_COMMIT_RETRY_SEC). S8 measures whether the p2p
+# push/pull paths carry a commit after the revoke, so each side commits its file itself: waiting for
+# the tower's git-sync to sweep it took 24 min in c1011s, past the whole window.
+commit_tower() {
+  local i
+  for ((i = 1; i <= S8_COMMIT_TRIES; i++)); do
+    git -C "$HIVE" add -- "$1" 2>/dev/null &&
+      git -C "$HIVE" -c user.name=s8-soak -c user.email=s8-soak@papercusp.invalid commit -qm "s8 $RUN tower $1" -- "$1" >/dev/null 2>&1 &&
+      return 0
+    [ "$i" -lt "$S8_COMMIT_TRIES" ] && sleep "$S8_COMMIT_RETRY_SEC"
+  done
+  return 1
+}
+commit_joiner() {
+  ssh_vm "for i in \$(seq 1 $S8_COMMIT_TRIES); do sudo -u $JUSER git -C $JCLONE add -- $1 2>/dev/null && sudo -u $JUSER git -C $JCLONE -c user.name=s8-soak -c user.email=s8-soak@papercusp.invalid commit -qm 's8 $RUN joiner $1' -- $1 >/dev/null 2>&1 && { echo JOINER_COMMIT_RC=0; exit 0; }; sleep $S8_COMMIT_RETRY_SEC; done; echo JOINER_COMMIT_RC=1" 2>/dev/null |
+    grep -q '^JOINER_COMMIT_RC=0'
+}
+# exchange <tag>: each side writes AND commits s8-$RUN-<side>-<tag>.txt, then poll until both crossed
+# or the wait ends. Sets COMMITTED (both sides' commits exist, so a crossing is measurable at all),
+# PUSHED (joiner's file reached the tower) and PULLED (tower's file reached the joiner).
 exchange() {
-  local waited=0
-  echo "$RUN tower $1 $(ts)" > "$HIVE/s8-tower-$1.txt"
-  ssh_vm "echo '$RUN joiner $1 $(ts)' | sudo -u $JUSER tee $JCLONE/s8-joiner-$1.txt >/dev/null"
-  PUSHED=0; PULLED=0
+  local waited=0 tf="s8-$RUN-tower-$1.txt" jf="s8-$RUN-joiner-$1.txt" trc=0 jrc=0
+  echo "$RUN tower $1 $(ts)" > "$HIVE/$tf"
+  ssh_vm "echo '$RUN joiner $1 $(ts)' | sudo -u $JUSER tee $JCLONE/$jf >/dev/null"
+  commit_tower "$tf" || trc=1
+  commit_joiner "$jf" || jrc=1
+  log "S8_COMMITTED tag=$1 tower=$((1 - trc)) joiner=$((1 - jrc))"
+  PUSHED=0; PULLED=0; COMMITTED=$([ "$trc$jrc" = 00 ] && echo 1 || echo 0)
+  [ "$COMMITTED" = 1 ] || { log "S8_EXCHANGE tag=$1 waited=0s joinerPushed=0 joinerPulled=0 not-measured=commit-failed"; return; }
   while [ "$waited" -lt "$REVOKE_WAIT_SEC" ]; do
     sleep "$S8_POLL_SEC"; waited=$((waited + S8_POLL_SEC))
-    [ "$(on_tower "s8-joiner-$1.txt")" = 1 ] && PUSHED=1
-    [ "$(on_joiner "s8-tower-$1.txt")" = 1 ] && PULLED=1
+    [ "$(on_tower "$jf")" = 1 ] && PUSHED=1
+    [ "$(on_joiner "$tf")" = 1 ] && PULLED=1
     [ "$PUSHED$PULLED" = 11 ] && break
     [ "$S8_POLL_SEC" -gt 0 ] || break
   done
@@ -107,8 +136,11 @@ s8() {
   local dev ghid rc control
   dev=$(grep -oE '"pubkeyBase64":"[^"]+"' "$OUT/join.out" 2>/dev/null | head -1 | cut -d'"' -f4)
   [ -n "$dev" ] || { log "S8_RESULT verdict=not-run reason=no-joiner-device"; return; }
+  # A reused RUN would read its own earlier files as crossings (the c1011s defect, WI-10006907).
+  [ "$(on_tower "s8-$RUN-tower-before-revoke.txt")" = 0 ] || { log "S8_RESULT verdict=not-run reason=run-name-reused"; return; }
   exchange before-revoke
-  control=$([ "$PUSHED$PULLED" = 11 ] && echo ok || echo failed)
+  if [ "$COMMITTED" != 1 ]; then control=not-committed
+  else control=$([ "$PUSHED$PULLED" = 11 ] && echo ok || echo failed); fi
   ghid=$(gh api user --jq .id 2>/dev/null)
   case "$ghid" in '' | *[!0-9]*) log "S8_RESULT verdict=revoke-failed control=$control reason=no-numeric-gh-id"; return ;; esac
   mcp substrate:revoke_contributor \
@@ -118,7 +150,9 @@ s8() {
   grep -qE '"ok": *true' "$OUT/revoke.out" || { log "S8_RESULT verdict=revoke-failed control=$control"; return; }
   exchange after-revoke
   if [ "$control" != ok ]; then
-    log "S8_RESULT verdict=inconclusive control=failed pushBlocked=$((1 - PUSHED)) pullBlocked=$((1 - PULLED))"
+    log "S8_RESULT verdict=inconclusive control=$control pushBlocked=$((1 - PUSHED)) pullBlocked=$((1 - PULLED))"
+  elif [ "$COMMITTED" != 1 ]; then
+    log "S8_RESULT verdict=inconclusive control=ok reason=after-revoke-not-committed"
   elif [ "$PUSHED$PULLED" = 00 ]; then
     log "S8_RESULT verdict=revoked control=ok pushBlocked=1 pullBlocked=1"
   else

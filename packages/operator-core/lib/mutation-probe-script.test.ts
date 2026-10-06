@@ -25,7 +25,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createTextCollector } from './child-output';
@@ -2169,6 +2169,61 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
       // read-only bind meant it could not remove it. Without the sandbox this
       // assertion is the one that fails.
       expect(readFileSync(outside, 'utf8')).toBe('still here\n');
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
+    'EI-25217198562906119: a sandboxed guard that WRITES outside the sandbox gets the read-only cause + direct-router route, not a bare BASELINE FAILED',
+    () => {
+      writeFileSync(subject, '#!/usr/bin/env bash\nrm -f "$1" 2>/dev/null\necho ok\n');
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      // Stands in for pc-heavy's /run/user/$UID/pc-heavy-slots and npm-install-safe's
+      // /tmp/pcv/fs-mutex-locks: host state outside both writable binds.
+      const hostState = join(dir, 'host-state');
+      mkdirSync(hostState);
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', subject,
+        '--mutate', 's/ok/OK/',
+        '--test', `touch "${hostState}/slot.pid" && [ "$(bash {} /nonexistent | tail -1)" = ok ]`,
+      ]);
+      expect(code, out).toBe(2);
+      expect(out).toMatch(/BASELINE FAILED/);
+      expect(out).toMatch(/verdict=harness-error/);
+      expect(out).toMatch(/SANDBOX READ-ONLY WRITE/);
+      expect(out).toMatch(/Read-only file system/); // the refused write is quoted, not paraphrased
+      expect(out).toMatch(/scripts\/test-files\.mjs/);
+      expect(existsSync(join(hostState, 'slot.pid'))).toBe(false);
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
+    'EI-25217198562906119: a sandboxed guard can write its vite config temp dir (private tmpfs) and still reach a genuine verdict',
+    () => {
+      // vitest bundles <config> into <nearest node_modules>/.vite-temp before collecting
+      // any test; under the read-only / that write died with EROFS in every baseline.
+      const repo = join(dir, 'vite-repo');
+      mkdirSync(join(repo, 'node_modules'), { recursive: true });
+      git(repo, ['init', '-q']);
+      writeFileSync(join(repo, 'vitest.config.ts'), 'export default {};\n');
+      git(repo, ['add', 'vitest.config.ts']);
+      const sub = join(repo, 'subject.sh');
+      writeFileSync(sub, '#!/usr/bin/env bash\nrm -f "$1" 2>/dev/null\necho ok\n');
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      const viteTemp = join(repo, 'node_modules', '.vite-temp');
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', sub,
+        '--mutate', 's/ok/OK/',
+        '--test', `echo bundled > "${viteTemp}/vitest.config.ts.timestamp-1.mjs" && [ "$(bash {} /nonexistent | tail -1)" = ok ]`,
+      ]);
+      expect(out).toMatch(/private tmpfs over \d+ vite config temp dir/);
+      expect(out).not.toMatch(/SANDBOX READ-ONLY WRITE/);
+      expect(code, out).toBe(0); // the mutant was CAUGHT: both baselines ran and passed
+      // Private: the bundler's write never reached the host directory.
+      expect(readdirSync(viteTemp)).toEqual([]);
     },
   );
 

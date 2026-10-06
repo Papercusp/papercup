@@ -97,9 +97,10 @@ import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeG
 import { readDiskPressure } from './compute';
 import { PUSH_BACKLOG_DEADLINE_MS } from './push-backlog-reader';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
+import { GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS } from '../harness/git-sync/missing-checkout';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
-import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPanels } from './types';
+import type { DeployHealth, HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPanels } from './types';
 
 /** A real (minimal) ImprovementCandidate — id/kind/scope/title are the only required
  *  fields, so these tests need no cast and stay honest if the shape changes. */
@@ -1048,6 +1049,59 @@ describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
       gitSyncPushBacklog: null,
     });
     expect(panel.error).toBeUndefined();
+  });
+
+  it('WI-10006867: a vanished checkout (skipped no_path) is reported as checkout-missing, never as missed intervals', async () => {
+    // Both rows went quiet 2h ago on a 3-minute cadence, so each derives ~40 missed
+    // intervals. Only the no_path row's silence is explained by a vanished checkout;
+    // the locked-path control proves the exclusion keys on the skip REASON, not on
+    // last_status alone, and that a real starvation reading still gets through.
+    const since = now - 2 * 60 * 60_000;
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({
+          last_status: 'skipped',
+          last_skip_reason: 'no_path',
+          last_synced_at: since,
+          missing_checkout: { since, path: '/gone/checkout' },
+        }),
+        install_slug: 'vanished-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'locked-path', last_synced_at: since }),
+        install_slug: 'starved-install',
+      },
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    const data = panel.data as DeployHealth;
+    expect(data.gitSyncCheckoutMissingByInstall).toEqual([
+      {
+        installSlug: 'vanished-install',
+        path: '/gone/checkout',
+        sinceMs: since,
+        retireAtMs: since + GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS,
+      },
+    ]);
+    expect(data.gitSyncMissedIntervalsByInstall.map((entry) => entry.installSlug)).toEqual(['starved-install']);
+    expect(data.gitSyncMissedIntervalsInstallSlug).toBe('starved-install');
+    expect(data.gitSyncMaxMissedIntervals).toBe(40);
+  });
+
+  it('WI-10006867: a no_path row with no recorded missing_checkout still leaves the starvation measure', async () => {
+    // Rows skipped by a host that predates the recorder carry no missing_checkout key.
+    // They must still be kept out of missed intervals, reported with unknown since/path.
+    sqlMock.mockResolvedValue([
+      routine({ last_status: 'skipped', last_skip_reason: 'no_path', last_synced_at: now - 2 * 60 * 60_000 }),
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    const data = panel.data as DeployHealth;
+    expect(data.gitSyncCheckoutMissingByInstall).toEqual([
+      { installSlug: 'home-harness', path: null, sinceMs: null, retireAtMs: null },
+    ]);
+    expect(data.gitSyncMissedIntervalsByInstall).toEqual([]);
+    expect(data.gitSyncMaxMissedIntervals).toBeNull();
   });
 
   it('WI-10006803: a hung push-backlog probe never holds the deploy leg past the reader deadline', async () => {

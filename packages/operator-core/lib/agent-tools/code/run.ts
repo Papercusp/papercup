@@ -1084,6 +1084,8 @@ const CODE_RUN_SUMMARY_PROJECTION_STEPS = [
 ] as const;
 const CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS = 80;
 const CODE_RUN_SUMMARY_PATH_LIMIT = 16;
+const CODE_RUN_SUMMARY_INLINE_ARRAY_OMISSION_LIMIT = 128;
+const CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT = '[omitted]';
 
 // EI-22572881407380085: release:trace is a deliberately wide diagnostic envelope. A common
 // code:run summary is `Promise.all([...release:trace])`, where every row carries a distinct target
@@ -1137,6 +1139,7 @@ export interface CodeRunSummaryNotice {
   originalChars: number;
   returnedChars: number;
   arraysTruncated: number;
+  arrayOriginalLengths: Record<string, number>;
   stringsTruncated: number;
   valuesTruncated: number;
   omittedItems: number;
@@ -1146,6 +1149,7 @@ export interface CodeRunSummaryNotice {
 
 interface CodeRunSummaryProjectionStats {
   arraysTruncated: number;
+  arrayOriginalLengths: Record<string, number>;
   stringsTruncated: number;
   valuesTruncated: number;
   omittedItems: number;
@@ -1340,7 +1344,7 @@ function projectCodeRunReleaseTraceArray(
   path: string,
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
-): unknown[] | undefined {
+): unknown | undefined {
   const rows = value.map(codeRunReleaseTraceRow);
   if (value.length === 0 || rows.some((row) => row === undefined)) return undefined;
 
@@ -1351,18 +1355,58 @@ function projectCodeRunReleaseTraceArray(
   const projected = indices.map((index) =>
     projectCodeRunReleaseTraceRow(rows[index] as Record<string, unknown>, `${path}[${index}]`, options, stats),
   );
-  if (value.length > limit) {
-    stats.arraysTruncated++;
-    stats.omittedItems += value.length - limit;
-    noteCodeRunSummaryPath(stats, path);
-  }
-  return projected;
+  return projectCodeRunSummaryArray(value.length, path, indices, projected, stats);
 }
 
 function noteCodeRunSummaryPath(stats: CodeRunSummaryProjectionStats, path: string): void {
   if (stats.paths.length < CODE_RUN_SUMMARY_PATH_LIMIT && !stats.paths.includes(path)) {
     stats.paths.push(path);
   }
+}
+
+function makeCodeRunSummaryTruncatedArrayWrapper(
+  originalLength: number,
+  indices: number[],
+  items: unknown[],
+): Record<string, unknown> {
+  return { __truncatedArray: true, originalLength, shownIndices: indices, items };
+}
+
+/**
+ * Keep the original array cardinality visible when bounded projection omits elements. TOON's
+ * `[N]` header is derived from the projected array, so returning only the retained prefix makes
+ * that header look like the source count. Small omissions use explicit slots; large omissions use
+ * a compact wrapper carrying the true source length and retained indices.
+ */
+function projectCodeRunSummaryArray(
+  originalLength: number,
+  path: string,
+  indices: number[],
+  items: unknown[],
+  stats: CodeRunSummaryProjectionStats,
+  forceWrapper = false,
+): unknown {
+  if (originalLength <= indices.length) return items;
+
+  const omitted = originalLength - indices.length;
+  stats.arraysTruncated++;
+  stats.omittedItems += omitted;
+  noteCodeRunSummaryPath(stats, path);
+  if (
+    Object.keys(stats.arrayOriginalLengths).length < CODE_RUN_SUMMARY_PATH_LIMIT ||
+    path in stats.arrayOriginalLengths
+  ) {
+    stats.arrayOriginalLengths[path] = originalLength;
+  }
+
+  if (forceWrapper || omitted > CODE_RUN_SUMMARY_INLINE_ARRAY_OMISSION_LIMIT) {
+    return makeCodeRunSummaryTruncatedArrayWrapper(originalLength, indices, items);
+  }
+
+  const retainedByIndex = new Map(indices.map((index, itemIndex) => [index, items[itemIndex]]));
+  return Array.from({ length: originalLength }, (_, index) =>
+    retainedByIndex.has(index) ? retainedByIndex.get(index) : CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT,
+  );
 }
 
 /**
@@ -1417,28 +1461,35 @@ function projectCodeRunSummaryTextContent(
   path: string,
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
-): unknown[] | undefined {
+): unknown | undefined {
   if (!Array.isArray(value)) return undefined;
 
   const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
-  const projected: unknown[] = [];
+  const projectedByIndex = new Map<number, unknown>();
   let hasText = false;
   for (const index of indices) {
     const entry = value[index];
-    if (!isCodeRunSummaryRecord(entry) || typeof entry.text !== 'string') continue;
+    if (!isCodeRunSummaryRecord(entry) || typeof entry.text !== 'string') {
+      projectedByIndex.set(index, CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT);
+      stats.valuesTruncated++;
+      stats.omittedItems++;
+      noteCodeRunSummaryPath(stats, `${path}[${index}]`);
+      continue;
+    }
     hasText = true;
     const text = clipCodeRunSummaryString(entry.text, `${path}[${index}].text`, options.stringChars, stats);
     const item: Record<string, unknown> = { text };
     if (typeof entry.type === 'string') item.type = entry.type;
-    projected.push(item);
+    projectedByIndex.set(index, item);
   }
   if (!hasText) return undefined;
-  if (value.length > options.arrayLimit) {
-    stats.arraysTruncated++;
-    stats.omittedItems += value.length - options.arrayLimit;
-    noteCodeRunSummaryPath(stats, path);
-  }
-  return projected;
+  return projectCodeRunSummaryArray(
+    value.length,
+    path,
+    indices,
+    indices.map((index) => projectedByIndex.get(index) ?? CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT),
+    stats,
+  );
 }
 
 function projectCodeRunSummaryDepthBoundary(
@@ -1503,7 +1554,7 @@ function projectCodeRunSummaryBoundaryArray(
   path: string,
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
-): unknown[] {
+): unknown {
   const content = projectCodeRunSummaryTextContent(value, path, options, stats);
   if (content !== undefined) {
     stats.valuesTruncated++;
@@ -1517,10 +1568,12 @@ function projectCodeRunSummaryBoundaryArray(
 
   const projected: unknown[] = [];
   const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
+  const projectedIndices: number[] = [];
   for (const index of indices) {
     const entry = value[index];
     const entryPath = `${path}[${index}]`;
     if (isCodeRunSummaryScalar(entry)) {
+      projectedIndices.push(index);
       projected.push(
         typeof entry === 'string' ? clipCodeRunSummaryString(entry, entryPath, options.stringChars, stats) : entry,
       );
@@ -1529,6 +1582,7 @@ function projectCodeRunSummaryBoundaryArray(
 
     const boundaryProjection = projectCodeRunSummaryDepthBoundary(entry, entryPath, options, stats);
     if (boundaryProjection !== undefined) {
+      projectedIndices.push(index);
       projected.push(boundaryProjection);
       continue;
     }
@@ -1536,17 +1590,13 @@ function projectCodeRunSummaryBoundaryArray(
     // Preserve the fact that this array had an element even when that element's
     // shape contains no boundary-safe scalar fields. The notice/path remains the
     // authoritative disclosure of what was omitted.
+    projectedIndices.push(index);
     projected.push(Array.isArray(entry) ? [null] : codeRunSummaryOmittedValue());
     stats.valuesTruncated++;
     stats.omittedItems++;
     noteCodeRunSummaryPath(stats, entryPath);
   }
-  if (value.length > options.arrayLimit) {
-    stats.arraysTruncated++;
-    stats.omittedItems += value.length - options.arrayLimit;
-    noteCodeRunSummaryPath(stats, path);
-  }
-  return projected;
+  return projectCodeRunSummaryArray(value.length, path, projectedIndices, projected, stats);
 }
 
 function projectCodeRunSummaryValue(
@@ -1576,15 +1626,11 @@ function projectCodeRunSummaryValue(
   }
 
   if (Array.isArray(value)) {
-    const shown = codeRunSummaryArrayIndices(value, path, options.arrayLimit).map((index) =>
+    const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
+    const shown = indices.map((index) =>
       projectCodeRunSummaryValue(value[index], `${path}[${index}]`, depth + 1, options, stats),
     );
-    if (value.length > options.arrayLimit) {
-      stats.arraysTruncated++;
-      stats.omittedItems += value.length - options.arrayLimit;
-      noteCodeRunSummaryPath(stats, path);
-    }
-    return shown;
+    return projectCodeRunSummaryArray(value.length, path, indices, shown, stats);
   }
 
   if (isCodeRunSummaryRecord(value)) {
@@ -1625,23 +1671,34 @@ function minimalCodeRunSummaryProjection(
       // truncation counters must not leak into the disclosure for entries we actually kept.
       const scratch = newCodeRunSummaryProjectionStats();
       const candidate = projectCodeRunSummaryValue(entry, `summary[${projected.length}]`, 0, entryOptions, scratch);
-      if (codeRunSummarySerializedChars([...projected, candidate]) > budget) break;
+      const next = [...projected, candidate];
+      const nextBody =
+        next.length < value.length
+          ? makeCodeRunSummaryTruncatedArrayWrapper(
+              value.length,
+              Array.from({ length: next.length }, (_, index) => index),
+              next,
+            )
+          : next;
+      if (codeRunSummarySerializedChars(nextBody) > budget) break;
       projected.push(candidate);
       entryStats.push(scratch);
-    }
-    const dropped = value.length - projected.length;
-    if (dropped > 0) {
-      stats.arraysTruncated++;
-      stats.omittedItems += dropped;
-      noteCodeRunSummaryPath(stats, 'summary');
     }
     // Keep the baseline prefix, then spend spare budget growing strings inside its retained
     // entries. This preserves array breadth while avoiding the fixed 80-character cap when it
     // would leave useful output space unused.
+    const currentBody = () =>
+      projected.length < value.length
+        ? makeCodeRunSummaryTruncatedArrayWrapper(
+            value.length,
+            Array.from({ length: projected.length }, (_, index) => index),
+            projected,
+          )
+        : projected;
     for (let index = 0; index < projected.length; index++) {
       if (
         entryStats[index]?.stringsTruncated === 0 ||
-        codeRunSummarySerializedChars(projected) >= budget * 0.9
+        codeRunSummarySerializedChars(currentBody()) >= budget * 0.9
       ) {
         continue;
       }
@@ -1650,15 +1707,40 @@ function minimalCodeRunSummaryProjection(
         entryOptions,
         budget,
         `summary[${index}]`,
-        (candidate) => projected.map((entry, entryIndex) => (entryIndex === index ? candidate : entry)),
+        (candidate) =>
+          projected.length < value.length
+            ? makeCodeRunSummaryTruncatedArrayWrapper(
+                value.length,
+                Array.from({ length: projected.length }, (_, shownIndex) => shownIndex),
+                projected.map((entry, entryIndex) => (entryIndex === index ? candidate : entry)),
+              )
+            : projected.map((entry, entryIndex) => (entryIndex === index ? candidate : entry)),
       );
       if (grown) {
         projected[index] = grown.value;
         entryStats[index] = grown.stats;
       }
     }
+
+    // This is the last-resort byte-budget path, so use a compact wrapper instead of one marker
+    // slot per omitted row. Reserve the wrapper overhead and trim retained rows until it fits.
+    while (
+      projected.length > 0 &&
+      codeRunSummarySerializedChars(currentBody()) > budget
+    ) {
+      projected.pop();
+      entryStats.pop();
+    }
+    const result = projectCodeRunSummaryArray(
+      value.length,
+      'summary',
+      Array.from({ length: projected.length }, (_, index) => index),
+      projected,
+      stats,
+      true,
+    );
     for (const scratch of entryStats) mergeCodeRunSummaryStats(stats, scratch);
-    return projected;
+    return result;
   }
   if (!isCodeRunSummaryRecord(value)) return String(value);
 
@@ -1699,6 +1781,7 @@ function minimalCodeRunSummaryProjection(
       projected[key] = candidate;
       retainedEntries.push({ key, value: entry, stats: scratch });
     } else {
+      mergeCodeRunSummaryArrayLengths(stats, scratch);
       stats.valuesTruncated++;
       stats.omittedItems++;
       noteCodeRunSummaryPath(stats, `summary.${key}`);
@@ -1735,7 +1818,29 @@ function minimalCodeRunSummaryProjection(
 }
 
 function newCodeRunSummaryProjectionStats(): CodeRunSummaryProjectionStats {
-  return { arraysTruncated: 0, stringsTruncated: 0, valuesTruncated: 0, omittedItems: 0, paths: [] };
+  return {
+    arraysTruncated: 0,
+    arrayOriginalLengths: {},
+    stringsTruncated: 0,
+    valuesTruncated: 0,
+    omittedItems: 0,
+    paths: [],
+  };
+}
+
+function mergeCodeRunSummaryArrayLengths(
+  target: CodeRunSummaryProjectionStats,
+  source: CodeRunSummaryProjectionStats,
+): void {
+  for (const [path, length] of Object.entries(source.arrayOriginalLengths)) {
+    if (
+      Object.keys(target.arrayOriginalLengths).length >= CODE_RUN_SUMMARY_PATH_LIMIT &&
+      !(path in target.arrayOriginalLengths)
+    ) {
+      break;
+    }
+    target.arrayOriginalLengths[path] = length;
+  }
 }
 
 /** Fold a trial projection's disclosure counters into the surviving ones once it is kept. */
@@ -1744,6 +1849,7 @@ function mergeCodeRunSummaryStats(
   source: CodeRunSummaryProjectionStats,
 ): void {
   target.arraysTruncated += source.arraysTruncated;
+  mergeCodeRunSummaryArrayLengths(target, source);
   target.stringsTruncated += source.stringsTruncated;
   target.valuesTruncated += source.valuesTruncated;
   target.omittedItems += source.omittedItems;
@@ -1840,6 +1946,7 @@ export function shapeCodeRunSummary<T extends { summary?: unknown } | Record<str
       originalChars,
       returnedChars,
       arraysTruncated: stats.arraysTruncated,
+      arrayOriginalLengths: stats.arrayOriginalLengths,
       stringsTruncated: stats.stringsTruncated,
       valuesTruncated: stats.valuesTruncated,
       omittedItems: stats.omittedItems,

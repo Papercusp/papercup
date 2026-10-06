@@ -84,7 +84,11 @@ describe('Guide output-only voice lifecycle', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Replay speech' })); await waitFor(() => expect(audio.length).toBe(2));
     fireEvent.click(screen.getByRole('button', { name: 'Mute guide' })); expect(audio[1].pause).toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Replay speech' })).toHaveProperty('disabled', true);
-    expect(screen.getByText(/Credentials stay in the product connection form/)).toBeTruthy();
+    expect(screen.getAllByText(/Use an injected credential reference in the connection form/).map(node => node.textContent))
+      .toHaveLength(2);
+    for (const node of screen.getAllByText(/Use an injected credential reference in the connection form/)) {
+      expect(node.textContent).toContain('Never paste API keys, service-account JSON or tokens into the form or Help.');
+    }
   });
   it.each(['Pause', 'Close guide', 'Skip lesson'])('cancels current audio on %s', async action => {
     render(<Fixture />); await waitFor(() => expect(audio.length).toBe(1));

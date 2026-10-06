@@ -17,8 +17,10 @@
  *   1. RECORD — each `no_path` skip stamps `metadata.missing_checkout { since, path }`,
  *      preserving the FIRST-seen `since` across ticks (atomic, in SQL), so the
  *      condition has an age and a real cause readers can name.
- *   2. CLEAR  — an eligible fire removes the key, so a checkout that comes back is
- *      treated as healthy again with no residue.
+ *   2. CLEAR  — git-sync-action's `recordOutcome` writes `missing_checkout: null` in its
+ *      existing outcome UPDATE (an outcome means the gate passed, so the checkout exists),
+ *      so a checkout that comes back starts a FRESH clock if it ever vanishes again. A
+ *      JSON null reads as absent here and in the RECORD step's CASE.
  *   3. RETIRE — once the checkout has been missing for
  *      `GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS`, the routine is paused with a recorded
  *      `metadata.pause { reason, pausedBy, pausedAtMs }` — the same record
@@ -89,24 +91,31 @@ export interface MissingCheckoutSql {
  * ONE UPDATE writes the skip fields and `missing_checkout`, keeping the stored `since`
  * when one is present (so concurrent or repeated skips never reset the clock); a second,
  * guarded UPDATE retires only a row that is still active. Returns what was stored.
+ *
+ * Params follow git-sync's routine-UPDATE convention (`$1` slug, `$2` workspaceId, `$3`
+ * the jsonb patch — EI-18799539619330782), so this write carries the same skip-field
+ * patch every other skip reason writes and reads identically to every patch consumer.
  */
 export async function recordMissingCheckoutSkip(
   sql: MissingCheckoutSql,
   args: { slug: string; workspaceId: string; path: string | null; nowMs: number; graceMs?: number },
 ): Promise<{ since: number; retired: boolean } | null> {
   const graceMs = args.graceMs ?? GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS;
+  const skipPatch = {
+    last_status: 'skipped',
+    local_sync_status: 'skipped',
+    last_skip_reason: 'no_path',
+    last_skipped_at: args.nowMs,
+  };
   const rows = await sql.unsafe(
+    // $3 is bound as TEXT and parsed here (see the retire UPDATE below for why).
     `UPDATE harness_shared.routines
-        SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
-              'last_status', 'skipped',
-              'local_sync_status', 'skipped',
-              'last_skip_reason', 'no_path',
-              'last_skipped_at', $3::bigint,
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::text::jsonb || jsonb_build_object(
               'missing_checkout', jsonb_build_object(
                 'since', CASE
                            WHEN jsonb_typeof(metadata->'missing_checkout'->'since') = 'number'
                              THEN metadata->'missing_checkout'->'since'
-                           ELSE to_jsonb($3::bigint)
+                           ELSE $3::text::jsonb->'last_skipped_at'
                          END,
                 'path', to_jsonb($4::text)
               )
@@ -114,7 +123,7 @@ export async function recordMissingCheckoutSkip(
             updated_at = now()
       WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:git-sync'
       RETURNING (metadata->'missing_checkout'->>'since')::bigint AS since, active`,
-    [args.slug, args.workspaceId, args.nowMs, args.path],
+    [args.slug, args.workspaceId, JSON.stringify(skipPatch), args.path],
   );
   const row = rows[0];
   if (!row) return null;
@@ -131,26 +140,13 @@ export async function recordMissingCheckoutSkip(
   const retired = await sql.unsafe(
     `UPDATE harness_shared.routines
         SET active = false,
-            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('pause', $3::jsonb),
+            -- $3 is bound as TEXT and parsed here: binding a JSON string straight to a jsonb
+            -- parameter lets the driver JSON-encode it a second time, storing pause as a string.
+            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('pause', $3::text::jsonb),
             updated_at = now()
       WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:git-sync' AND active = true
       RETURNING install_slug`,
     [args.slug, args.workspaceId, JSON.stringify(pause)],
   );
   return { since, retired: retired.length > 0 };
-}
-
-/** Remove `missing_checkout` after an eligible fire. Matches (and writes) only a row
- *  that carries the key, so a healthy install pays one indexed no-op query. */
-export async function clearMissingCheckout(
-  sql: MissingCheckoutSql,
-  args: { slug: string; workspaceId: string },
-): Promise<void> {
-  await sql.unsafe(
-    `UPDATE harness_shared.routines
-        SET metadata = metadata - 'missing_checkout', updated_at = now()
-      WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:git-sync'
-        AND metadata ? 'missing_checkout'`,
-    [args.slug, args.workspaceId],
-  );
 }

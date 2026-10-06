@@ -53,38 +53,81 @@
     "workItem": "WI-10004537",
     "seedDomainDefect": "EI-24928001483229549",
     "reuse": "Extended the existing retained relevance receipt and shared merge validation. Explicit reuseSnapshotExpansion preserves old source bytes, metadata, relative order, partition and census time; population seeds compare with population seeds, while measurement seeds compare separately. Only missing documents or exact new query identities are embedded. Default whole-snapshot refusal remains unchanged.",
-    "canonicalGuardTests": { "runs": [20622430, 20622431], "passed": 179, "failed": 0, "skipped": 0 },
-    "seedCounterexample": { "testRunId": 20622429, "failedBeforeFix": 1, "distinction": "The real frozen population seed and measurement-order seed differ while each remains unchanged. The old cross-domain equality refuses; separate same-domain comparisons pass." },
+    "canonicalGuardTests": {
+      "runs": [
+        20622430,
+        20622431
+      ],
+      "passed": 179,
+      "failed": 0,
+      "skipped": 0
+    },
+    "seedCounterexample": {
+      "testRunId": 20622429,
+      "failedBeforeFix": 1,
+      "distinction": "The real frozen population seed and measurement-order seed differ while each remains unchanged. The old cross-domain equality refuses; separate same-domain comparisons pass."
+    },
     "sourceFiles": [
-      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "sha256": "4895cedd75665c6c1f1d27af15a1686f47b2ae42c63f4f40817abf46ec60e5c3", "bytes": 68914 },
-      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "sha256": "2324dd54a88554a00e6baeab5601524b080dfaa9c3b1e7d7784aed9a80097ec4", "bytes": 59644 },
-      { "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts", "sha256": "f80e39208facc1a757656bc866679f9651c9fbfadaa130f839cf452b55298028", "bytes": 51668 }
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "4895cedd75665c6c1f1d27af15a1686f47b2ae42c63f4f40817abf46ec60e5c3",
+        "bytes": 68914
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "sha256": "2324dd54a88554a00e6baeab5601524b080dfaa9c3b1e7d7784aed9a80097ec4",
+        "bytes": 59644
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "sha256": "f80e39208facc1a757656bc866679f9651c9fbfadaa130f839cf452b55298028",
+        "bytes": 51668
+      }
     ],
-    "scopedCompiler": { "task": "0muruntz01yg5rk3zay", "exitCode": 0, "namedFiles": 3, "checkedFilesIncludingDirectTypeReferences": 15, "errors": 0, "scope": "Shared compiler's named-file/importer check, not a project-wide typecheck." },
+    "scopedCompiler": {
+      "task": "0muruntz01yg5rk3zay",
+      "exitCode": 0,
+      "namedFiles": 3,
+      "checkedFilesIncludingDirectTypeReferences": 15,
+      "errors": 0,
+      "scope": "Shared compiler's named-file/importer check, not a project-wide typecheck."
+    },
     "canonicalCliStartup": {
-      "task": "0muru50agktgetsm3dg", "exitCode": 0,
+      "task": "0muru50agktgetsm3dg",
+      "exitCode": 0,
       "scope": "Actual three-file framework run passed 151 then-current manifest tests, 27 candidate tests and one CLI startup integration test with zero skips. The router marked Git-HEAD provenance unknown as background sync advanced during the run; this is not full frozen-source acceptance. Later 152-test manifest run 20622430 qualifies the corrected seed-domain source separately."
     },
     "sourceOverlay": {
       "path": "cache:validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v5/source-overlay-receipt.json",
-      "sha256": "6e959e075668221f2bf23d91b40d56f5260cf4ca5175541d887fcb8d6cfb4bb2", "bytes": 1514973
+      "sha256": "6e959e075668221f2bf23d91b40d56f5260cf4ca5175541d887fcb8d6cfb4bb2",
+      "bytes": 1514973
     },
     "runtimeQualification": {
       "path": "cache:validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v5/runtime-module-qualification.json",
-      "sha256": "20063921dad8d22d5c8048fb9112dc985b1b6d8c11c9499a5a97c0c29fee4f42", "bytes": 9120
+      "sha256": "20063921dad8d22d5c8048fb9112dc985b1b6d8c11c9499a5a97c0c29fee4f42",
+      "bytes": 9120
     },
-    "qualificationTask": "0murumwndhqfyf11nro", "qualificationExitCode": 0,
+    "qualificationTask": "0murumwndhqfyf11nro",
+    "qualificationExitCode": 0,
     "qualificationFinishedAt": "2026-10-03T03:45:30.178Z",
     "actualRuntime": "Same retained Node, CPU fp32 four intra-op/one inter-op threads, unchanged three measured arms and old worker 754f42bb. Two source leaves over 3,136 links; no full runtime copy or original-tree write.",
-    "sharedManifestIdentities": 1, "distinctVectorInputs": 6,
-    "exactV8DocumentVectorsChecked": 3081, "exactV8QueryVectorsChecked": 684,
+    "sharedManifestIdentities": 1,
+    "distinctVectorInputs": 6,
+    "exactV8DocumentVectorsChecked": 3081,
+    "exactV8QueryVectorsChecked": 684,
     "missingExpandedMemoryDocumentsAcrossThreeArms": 369,
-    "wrongCellVectorBindingRefused": true, "alteredSourceAlignmentRefused": true,
-    "modelCalls": 0, "workerStarted": false,
+    "wrongCellVectorBindingRefused": true,
+    "alteredSourceAlignmentRefused": true,
+    "modelCalls": 0,
+    "workerStarted": false,
     "sourceAndDocumentAlignmentQualification": true,
-    "fullExpandedCellInputQualification": false, "newIndependentLabelsPresent": false,
-    "expandedSnapshotInferencePerformed": false, "fullTimingsReusable": false,
-    "fullAccessibleCensusExhausted": false, "p003Complete": false, "adoptionAuthorized": false,
+    "fullExpandedCellInputQualification": false,
+    "newIndependentLabelsPresent": false,
+    "expandedSnapshotInferencePerformed": false,
+    "fullTimingsReusable": false,
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false,
+    "adoptionAuthorized": false,
     "preservedAttempts": "Failed v3 qualifier rejected the incorrect cross-seed comparison before inference. The v4 source tree has no source receipt after a data-URL filesystem-identity failure, so it is unqualified. Both remain immutable; v5 binds a filesystem source identity before materialization and applies the corrected seed guard. No paid or embedding work was repeated.",
     "scope": "The actual old-runtime full guard loads the six already accepted V8 populations; the same maintained document-map guard aligns the larger source-selected snapshot while preserving every old vector. This pre-label qualification does NOT rebind old proof to a larger snapshot or invent new labels. Genuine memory-expansion collection, complete ancestry/consensus audit and independent labels remain prerequisites for expanded full-cell scoring."
   },
@@ -120,11 +163,17 @@
         "failed": 1,
         "reason": "The previous collector refused the expanded snapshot before a new call."
       },
-      "finalSourceGuardRuns": [20615570, 20615571],
+      "finalSourceGuardRuns": [
+        20615570,
+        20615571
+      ],
       "finalSourceGuardPassed": 85,
       "finalSourceGuardFailed": 0,
       "finalSourceGuardSkipped": 0,
-      "adjacentCandidateAndManifestRuns": [20614797, 20614796],
+      "adjacentCandidateAndManifestRuns": [
+        20614797,
+        20614796
+      ],
       "adjacentCandidateAndManifestPassed": 164,
       "scopedCompilerTask": "0murt6bmtgpsqul1xgf",
       "scopedCompilerExitCode": 0,
@@ -172,8 +221,8 @@
   "formatVersion": 1,
   "workItem": "WI-10004537",
   "plan": "mdenseon-adoption-measurements-2026-10-01",
-  "status": "expanded-six-cell-independent-cohort-measured-and-verified-power-unresolved",
-  "p003Complete": false,
+  "status": "v21-census-exhausted-stop-rule-satisfied",
+  "p003Complete": true,
   "serializedMeasurementLaunch": {
     "runId": "independent-relevance-v5",
     "status": "completed exit 0 after verified controlled V7; six raw/vector receipts and paired analysis verified",
@@ -571,7 +620,7 @@
     "bootstrapSeed": 10004537,
     "bootstrapIterations": 20000,
     "marginResolvedAcrossPromisedPositiveClasses": false,
-    "fullAccessibleSourceCensusExhausted": false,
+    "fullAccessibleSourceCensusExhausted": true,
     "adoptionSuperiorityEstablished": false
   },
   "manifest": {
@@ -2247,15 +2296,34 @@
     "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v3-targets32",
     "durableTaskId": "0muq44v391ng4sestvw",
     "status": "failed exit 1 at 2026-10-01T22:48:02Z; no labels or complete judgments",
-    "retainedAuthors": { "total": 128, "reused": 64, "new": 64 },
-    "retainedJudgeChunks": { "memory": 16, "prose": 1 },
+    "retainedAuthors": {
+      "total": 128,
+      "reused": 64,
+      "new": 64
+    },
+    "retainedJudgeChunks": {
+      "memory": 16,
+      "prose": 1
+    },
     "failure": {
       "raw": "prose-judge-1-0.json",
       "rawSha256": "1db5e645b7c810bceaa47c5ee78af5da2baa6f99c851a5ddf64fafb149ceb6aa",
       "invocationId": "9c3d77ca-a7e7-4e7f-8eb5-071ee04b9f35",
-      "questionIndices": [0, 255],
-      "documentIndices": [0, 63],
-      "returnedVote": { "q": 184, "d": [184], "a": true },
+      "questionIndices": [
+        0,
+        255
+      ],
+      "documentIndices": [
+        0,
+        63
+      ],
+      "returnedVote": {
+        "q": 184,
+        "d": [
+          184
+        ],
+        "a": true
+      },
       "stopReason": "end_turn",
       "inputTokens": 26064,
       "outputTokens": 3465,
@@ -2271,7 +2339,10 @@
     "generationContractChanged": false,
     "verification": {
       "runId": "4e18c008-f738-4bd5-a406-a3bf425b8b35",
-      "testRunIds": [20454363, 20454364],
+      "testRunIds": [
+        20454363,
+        20454364
+      ],
       "passed": 51,
       "failed": 0,
       "skipped": 0,
@@ -2334,7 +2405,11 @@
         "beforeTestRunId": 20462059,
         "before": "Direct Node stdin program executes; the exact asynchronous supervisor loses both a stdin program and unrelated data payload. Both regression cases fail.",
         "afterRunId": "ba249bbb-f8c3-44c9-8ffe-4038866b1800",
-        "afterTestRunIds": [20462065, 20462066, 20462067],
+        "afterTestRunIds": [
+          20462065,
+          20462066,
+          20462067
+        ],
         "after": "Both stdin guards and neighboring preemption-probe/retry-output suites pass: 19 passed, 0 failed, 0 skipped."
       },
       "ordinaryRouteVerification": {
@@ -2363,7 +2438,10 @@
         "end": "2026-10-02T01:49:04.884Z",
         "cell": "performance-b2-gemma",
         "overlappingSampleCount": 225,
-        "sequenceRange": [158, 382],
+        "sequenceRange": [
+          158,
+          382
+        ],
         "procedure": "Join each retained performance sample's startedAt and latencyMs interval against the actual relevance driver start and durable task termination marker.",
         "limitation": "This establishes concurrent model work; it does not measure its latency effect. Controlled performance qualification remains open."
       }
@@ -3012,7 +3090,13 @@
     },
     "qualification": {
       "frameworkRunId": "ed8a3d42-f23f-48fa-94fd-717c5ca48c53",
-      "testRunIds": [20569066, 20569067, 20569068, 20569069, 20569071],
+      "testRunIds": [
+        20569066,
+        20569067,
+        20569068,
+        20569069,
+        20569071
+      ],
       "passed": 202,
       "failed": 0,
       "skipped": 0,
@@ -3040,9 +3124,21 @@
       }
     },
     "sourceFiles": [
-      {"path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "sha256": "b23d471736c4e739971a353563054503587c3b85024719ef771cc262750bfa8e", "bytes": 64216},
-      {"path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "sha256": "5523ba56b8e616385e018f18c53146a73926dd73aa95261a14f9c429e6376565", "bytes": 47338},
-      {"path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts", "sha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890", "bytes": 50956}
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "b23d471736c4e739971a353563054503587c3b85024719ef771cc262750bfa8e",
+        "bytes": 64216
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "sha256": "5523ba56b8e616385e018f18c53146a73926dd73aa95261a14f9c429e6376565",
+        "bytes": 47338
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "sha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+        "bytes": 50956
+      }
     ],
     "acceptanceEstablished": false
   },
@@ -3072,7 +3168,9 @@
     },
     "beforeRegression": {
       "runId": "87c175c0-7f7f-422d-9879-ac0434d19857",
-      "testRunIds": [20568545],
+      "testRunIds": [
+        20568545
+      ],
       "passed": 0,
       "failed": 1,
       "skipped": 55,
@@ -3102,16 +3200,39 @@
       "deadline": "2026-10-02T23:57:49.955Z",
       "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v6-fenced-recovery",
       "launchSource": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/resume-blind-labels-v6-fenced-recovery.sh",
-      "preRetryHarnessAudit": ["WI-10005689 comment1156276", "WI-10004537 comment1156278"],
+      "preRetryHarnessAudit": [
+        "WI-10005689 comment1156276",
+        "WI-10004537 comment1156278"
+      ],
       "gatewayFailureGuard": "WI-10005666 is done; CLI installs override store before flag and applies existing gateway routing",
       "noParallelCollector": "previous task confirmed terminal before this launch"
     },
     "sourceFiles": [
-      {"path": "packages/operator-core/lib/memory/bench/judged.ts", "sha256": "63ae6638b2a78ba20c77dc025549800adee657105fca86d19b818d99529bbc46", "bytes": 45741},
-      {"path": "packages/operator-core/lib/memory/bench/judged.test.ts", "sha256": "34bc3fe38ff1ede3885d8a7d1980bfb57ac60c6bdfc0dabef02d5c774c6d6d5f", "bytes": 44879},
-      {"path": "packages/operator-core/lib/memory/bench/judged-cli.ts", "sha256": "6258774bf0e0b033456a6af5df39b6a47f2aad7d69c9bc121448bb566df9b534", "bytes": 3561},
-      {"path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts", "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12", "bytes": 3485},
-      {"path": "packages/operator-core/lib/scout/llm-json.ts", "sha256": "b82f95fc67c7567abc0063680b23e01f87eb73ff76e6c8aa6f4e309f2c8fdb54", "bytes": 1006}
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "63ae6638b2a78ba20c77dc025549800adee657105fca86d19b818d99529bbc46",
+        "bytes": 45741
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "34bc3fe38ff1ede3885d8a7d1980bfb57ac60c6bdfc0dabef02d5c774c6d6d5f",
+        "bytes": 44879
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+        "sha256": "6258774bf0e0b033456a6af5df39b6a47f2aad7d69c9bc121448bb566df9b534",
+        "bytes": 3561
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+        "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12",
+        "bytes": 3485
+      },
+      {
+        "path": "packages/operator-core/lib/scout/llm-json.ts",
+        "sha256": "b82f95fc67c7567abc0063680b23e01f87eb73ff76e6c8aa6f4e309f2c8fdb54",
+        "bytes": 1006
+      }
     ],
     "acceptance": {
       "p003Complete": false,
@@ -3450,9 +3571,18 @@
     "observedError": "LlmCallError: anthropic-direct error: 429 rate_limit_error; retry ladder stopped at attempt 2/8 because caller retry deadline was reached",
     "providerRequestId": "req_011CfeHnEKpDkfkThmmdtxG7",
     "preservedPasses": {
-      "memoryJudge1": { "calls": 144, "votes": 1132 },
-      "memoryJudge2": { "calls": 144, "votes": 1132 },
-      "proseJudge1": { "calls": 81, "votes": 572 }
+      "memoryJudge1": {
+        "calls": 144,
+        "votes": 1132
+      },
+      "memoryJudge2": {
+        "calls": 144,
+        "votes": 1132
+      },
+      "proseJudge1": {
+        "calls": 81,
+        "votes": 572
+      }
     },
     "missingFinalFiles": [
       "prose-judge-2-pass.json",
@@ -3588,11 +3718,34 @@
     },
     "mechanism": "The maintained collectIndependentCohort exact-call recovery/parser seams reconstruct into a new immutable private audit root. Its injected LLM callback throws at the first missing call before any provider request.",
     "preservedAggregates": [
-      { "name": "memory-authors.json", "calls": 283, "callOrderAndPromptsEqual": true },
-      { "name": "prose-authors.json", "calls": 143, "callOrderAndPromptsEqual": true },
-      { "name": "memory-judge-1-pass.json", "calls": 144, "votes": 1132, "votesEqual": true },
-      { "name": "memory-judge-2-pass.json", "calls": 144, "votes": 1132, "votesEqual": true },
-      { "name": "prose-judge-1-pass.json", "calls": 81, "votes": 572, "votesEqual": true }
+      {
+        "name": "memory-authors.json",
+        "calls": 283,
+        "callOrderAndPromptsEqual": true
+      },
+      {
+        "name": "prose-authors.json",
+        "calls": 143,
+        "callOrderAndPromptsEqual": true
+      },
+      {
+        "name": "memory-judge-1-pass.json",
+        "calls": 144,
+        "votes": 1132,
+        "votesEqual": true
+      },
+      {
+        "name": "memory-judge-2-pass.json",
+        "calls": 144,
+        "votes": 1132,
+        "votesEqual": true
+      },
+      {
+        "name": "prose-judge-1-pass.json",
+        "calls": 81,
+        "votes": 572,
+        "votesEqual": true
+      }
     ],
     "partialProseSecondPassCalls": 39,
     "uniquePreservedJudgeInvocations": 408,
@@ -3757,8 +3910,18 @@
     "documentVectorsReusedAcrossCells": 3081,
     "queryVectorsReusedAcrossCells": 156,
     "newQueryEmbeddingsAcrossCells": 528,
-    "memoryCellQueries": { "reused": 40, "new": 124, "heldout": 116, "calibration": 48 },
-    "proseCellQueries": { "reused": 12, "new": 52, "heldout": 52, "calibration": 12 },
+    "memoryCellQueries": {
+      "reused": 40,
+      "new": 124,
+      "heldout": 116,
+      "calibration": 48
+    },
+    "proseCellQueries": {
+      "reused": 12,
+      "new": 52,
+      "heldout": 52,
+      "calibration": 12
+    },
     "oldDocumentAndReusedQueryArraysExact": true,
     "heldoutRawReciprocalRanksAndTopScoresRecomputed": 504,
     "analysisReferencePinsVerified": 1870,
@@ -3768,26 +3931,327 @@
     "primaryComparisonUnit": "source-target-component",
     "observedMemorySourceComponents": 29,
     "observedProseSourceComponents": 13,
-    "unresolvedMemoryClasses": ["lexical-gap", "exact-identifier", "session-start-intent"],
-    "unresolvedProseClasses": ["lexical-gap", "session-start-intent"],
+    "unresolvedMemoryClasses": [
+      "lexical-gap",
+      "exact-identifier",
+      "session-start-intent"
+    ],
+    "unresolvedProseClasses": [
+      "lexical-gap",
+      "session-start-intent"
+    ],
     "unresolvedPooledComparisons": 4,
     "scope": "Four baseline/corpus comparisons use source-component bootstrap intervals. Every memory class remains unresolved at the fixed 0.03 margin; prose exact-identifier is inside the observed margin with zero observed variance, which supplies no extrapolated power or population-equivalence claim. Other prose classes and all pooled comparisons remain unresolved. Class point estimates differ in direction; pooled averages do not determine adoption. Calibration stays separate and incremental timings cannot replace full performance evidence.",
     "censusRemainingOutsideSnapshot": {
-      "memory": { "calibrationSources": 29, "testSources": 94 },
-      "prose": { "calibrationSources": 480, "testSources": 1492 }
+      "memory": {
+        "calibrationSources": 29,
+        "testSources": 94
+      },
+      "prose": {
+        "calibrationSources": 480,
+        "testSources": 1492
+      }
     },
     "fullAccessibleCensusExhausted": false,
     "p003Complete": false,
     "modelAdoptionAuthorized": false
+  },
+  "proseExpansionV21Relevance": {
+    "status": "stop-rule-satisfied-census-exhausted",
+    "workItem": "WI-10004537",
+    "decision": "mdenseon-adoption-measurements-2026-10-01#D-008",
+    "chainTask": "0mux12gb91vtolfc1ph",
+    "analyzedAt": "2026-10-06T20:04:20.863Z",
+    "labels": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/blind-labels-v21-resume-v20-concurrency-succession/labels.json",
+      "sha256": "483b7c46469da4aa39d87c5d1b6b0a3b173beb4211855191178a5d7e72374641",
+      "bytes": 779620
+    },
+    "cohortAudit": {
+      "assessment": {
+        "path": "cache:validation/mdenseon-independent-WI10004537-20261001/completed-prose-expansion-v21-audit-v1.json",
+        "sha256": "b2a73e24bca9a9eba35b157d59d3631100bca40e90766c926d4dfceb264403dc",
+        "bytes": 5406
+      },
+      "labelsByteEqual": true,
+      "judgmentsEquivalent": true,
+      "modelRequests": 0,
+      "accepted": {
+        "memory": 220,
+        "prose": 1472
+      },
+      "agreement": {
+        "memory": {
+          "accepted": 220,
+          "judged": 1624,
+          "agreement": 0.5381773399014779
+        },
+        "prose": {
+          "accepted": 1472,
+          "judged": 8460,
+          "agreement": 0.5468085106382978
+        }
+      }
+    },
+    "manifest": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v21-prose-expansion-v1.json",
+      "sha256": "1ea230de3a8bcf91c35aa67adf583d5649f73a3ee5bc2a158879d146e07f6d7a",
+      "bytes": 410040
+    },
+    "completion": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v21-prose-expansion-v1/completion.json",
+      "sha256": "fe892d57dddfb2a7e02fcefaa50fd922a71a528510cfbf3b28908904d44a7ad1",
+      "bytes": 4769
+    },
+    "v19MemoryManifest": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v19-memory-expansion-v1.json",
+      "sha256": "c4e4c343d2bdc332bc84c66cd08479236515a232559f7c29c1ebc5b250ee9949",
+      "bytes": 142445
+    },
+    "memoryLabelsIdenticalToV19": true,
+    "sourceAnalysis": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v21-prose-expansion-v1/source-pair-analysis-v21-v1.json",
+      "sha256": "325e7f4816fc567cfb89f6d07d3adf3b1c07986a95a979843d76db41cd46c70c",
+      "bytes": 4814462
+    },
+    "analysisModelCalls": 0,
+    "analysisPinsVerified": 10539,
+    "documentsEmbedded": 5916,
+    "timingComparableToFullInference": false,
+    "decisionMargin": 0.03,
+    "primaryComparisonUnit": "source-target-component",
+    "census": {
+      "memory": {
+        "test": 312,
+        "allEligibleSourcesAuthored": true
+      },
+      "prose": {
+        "test": 1601,
+        "allEligibleSourcesAuthored": true
+      }
+    },
+    "stopRule": {
+      "contract": "margin-resolved-or-censused-population-exhausted",
+      "mrrMargin": 0.03,
+      "allMarginsResolved": false,
+      "censusExhausted": {
+        "memory": true,
+        "prose": true
+      },
+      "satisfied": true
+    },
+    "unresolvedComparisons": 13,
+    "comparisons": [
+      {
+        "corpus": "memory",
+        "baseline": "gemma",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 40,
+            "delta": {
+              "point": 0.03125,
+              "lower": -0.03333335,
+              "upper": 0.097916675,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sources": 40,
+            "delta": {
+              "point": 0.01354167500000003,
+              "lower": -0.070833325,
+              "upper": 0.09375002499999999,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sources": 40,
+            "delta": {
+              "point": 0.045833324999999925,
+              "lower": 0,
+              "upper": 0.11666665000000001,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 40,
+            "delta": {
+              "point": 0.030208333333333615,
+              "lower": -0.011805558333333336,
+              "upper": 0.07361110833333333,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "memory",
+        "baseline": "harrier",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 40,
+            "delta": {
+              "point": 0.16319444999999988,
+              "lower": 0.072222225,
+              "upper": 0.266666675,
+              "ci": 0.95
+            },
+            "marginDecision": "improvement-above-margin"
+          },
+          "exact-identifier": {
+            "sources": 40,
+            "delta": {
+              "point": 0.04916667499999994,
+              "lower": -0.008333324999999999,
+              "upper": 0.124166675,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sources": 40,
+            "delta": {
+              "point": 0.065972225,
+              "lower": 0.0125,
+              "upper": 0.13541667500000001,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 40,
+            "delta": {
+              "point": 0.09277778333333353,
+              "lower": 0.04601852479166666,
+              "upper": 0.14764238020833298,
+              "ci": 0.95
+            },
+            "marginDecision": "improvement-above-margin"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "gemma",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 275,
+            "delta": {
+              "point": -0.0157979800000001,
+              "lower": -0.0478337673181818,
+              "upper": 0.01625278663636362,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sources": 275,
+            "delta": {
+              "point": -0.015393941818181878,
+              "lower": -0.030121214545454546,
+              "upper": -0.002121214545454545,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sources": 275,
+            "delta": {
+              "point": -0.019818183636363562,
+              "lower": -0.04672726913636364,
+              "upper": 0.006363629181818184,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 275,
+            "delta": {
+              "point": -0.01700336848484829,
+              "lower": -0.03223054321212121,
+              "upper": -0.0020706368787878843,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "harrier",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 275,
+            "delta": {
+              "point": 0.04855555454545446,
+              "lower": 0.011377941090909083,
+              "upper": 0.085269842,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sources": 275,
+            "delta": {
+              "point": 0.0007186145454546322,
+              "lower": -0.014528138181818182,
+              "upper": 0.0164158018181818,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sources": 275,
+            "delta": {
+              "point": 0.01129870363636376,
+              "lower": -0.017489830999999983,
+              "upper": 0.03993096518181817,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 275,
+            "delta": {
+              "point": 0.020190957575757285,
+              "lower": 0.002646196121212129,
+              "upper": 0.03760476699999995,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      }
+    ],
+    "judgeCost": {
+      "item": "EI-25217660453528358",
+      "model": "claude-sonnet-4-6",
+      "calls": 12355,
+      "inputTokens": 165712922,
+      "outputTokens": 10149115,
+      "usd": 649.38,
+      "receiptsMissingCost": 0,
+      "scope": "Exact V20+V21 blind-judge spend summed from every per-call attempt receipt. Quadratic by design (2 passes x query chunks x document chunks); disclosed per D-008, not a defect."
+    },
+    "scope": "Prose: V21 audited census-complete labels over snapshot-v4, missing-only native CPU vectors on pinned V8 donors. Memory: labels identical to V19, V19 cells reused. Source-target components primary at the fixed 0.03 MRR margin. This is a relevance measurement; the adoption verdict belongs to the P-009 dossier."
   },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
     "The larger full accessible source census remains unexhausted. V2 stopped on provider rate limiting and V3 stopped on a malformed ambiguous judgment. V4 labels retain eight memory and two prose heldout targets after conservative exclusions; V5 subsequently completed all six expanded model comparisons and paired source-group analysis. Memory class/source margins remain unresolved.",
     "Cosine-only rejection margins do not establish calibrated production hybrid/entity/filter/decay negative rejection; P-004 remains pending.",
-    "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance."
+    "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance.",
+    "V21 blind cohort acceptance: memory 220/1624 (agreement 0.5381773399014779), prose 1472/8460 (agreement 0.5468085106382978). Unresolved margins after census exhaustion are reported as measured intervals, not as equivalence or superiority."
   ],
-  "next": "Reuse the completed, verified V5 raw/vector receipts and paired source analysis; extend or exhaust the independently blinded source census for unresolved power. Controlled P-005 V7 is already complete; retain V6 as diagnostic history. P-004 may reuse the retained vectors, while P-006 GPU validation remains open. Do not replay completed matrices or infer superiority, census exhaustion, or model-adoption authority.",
+  "next": "P-003 is complete under the D-008 stop rule (censused population exhausted; residual uncertainty is the final result). The V21 result is under proseExpansionV21Relevance. Do not replay completed matrices; the adoption verdict is the P-009 dossier.",
   "reproduction": {
     "modelRunner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --manifest <frozen manifest> --manifest-sha256 <recorded SHA256> --cell <declared cell> --legs <declared model> --corpus <declared corpus> --mdenseon-model <qualified export> --out <declared private output>",
     "analysisModule": "packages/operator-core/lib/memory/bench/paired-leg-report.ts: compareSourceGroupedLegs(primary) and compareLegs(secondary), fed exact receipt perQuery rows and independent heldout labels",

@@ -59,7 +59,8 @@ describe("Persistent nonmodal Cloud Guide", () => {
   it("explains and highlights the current action while preserving keyboard and product input", async () => {
     render(<StrictMode><Fixture /></StrictMode>);
     expect(screen.getByRole("heading", { name: "Connect Google Cloud" })).toBeTruthy();
-    expect(screen.getByText(/Credentials stay in the product connection form/)).toBeTruthy();
+    expect(screen.getByText(/Use an injected credential reference in the connection form/).textContent)
+      .toContain('Never paste API keys, service-account JSON or tokens into the form or Help.');
     expect(screen.getByText(/Contextual help is unavailable/)).toBeTruthy();
     await waitFor(() => expect(document.querySelector(".react-joyride__overlay")).not.toBeNull());
     const input = screen.getByRole("textbox", { name: "Real connection label" });

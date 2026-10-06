@@ -6460,7 +6460,7 @@
           "POST"
         ]
       },
-      "description": "Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation's subscribers.",
+      "description": "Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation's subscribers. Consult threads require typed verbs: use consult:reply to respond, consult:decline to decline, or consult:close to close; conversations:post is refused for consult threads.",
       "capabilities": [
         "coord:write"
       ],

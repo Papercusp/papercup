@@ -487,10 +487,32 @@ export function isGitSyncMissedIntervalsSignature(sig: string): boolean {
   return sig === GIT_SYNC_MISSED_INTERVALS_SIGNATURE || sig.startsWith(`${GIT_SYNC_MISSED_INTERVALS_SIGNATURE}:`);
 }
 
-/** Unobservable this tick? The bare family key in the set covers every per-install signature. */
+/**
+ * WI-10006867: the vanished-checkout signature FAMILY, one signal per install keyed
+ * `git-sync-checkout-missing:<installSlug>`. An install whose checkout is gone skips every fire
+ * with `no_path` under a frozen last_synced_at; compute.ts now keeps it OUT of the missed-intervals
+ * list, and this family names the real cause instead. Advisory, because missing-checkout.ts retires
+ * the routine once its grace elapses, so the condition ends on its own. It is read by the SAME
+ * fail-soft git-sync read as missed-intervals, so that read failing makes this family unobservable too.
+ */
+export const GIT_SYNC_CHECKOUT_MISSING_SIGNATURE = 'git-sync-checkout-missing';
+
+export function gitSyncCheckoutMissingSignature(installSlug: string): string {
+  return `${GIT_SYNC_CHECKOUT_MISSING_SIGNATURE}:${installSlug}`;
+}
+
+export function isGitSyncCheckoutMissingSignature(sig: string): boolean {
+  return sig === GIT_SYNC_CHECKOUT_MISSING_SIGNATURE || sig.startsWith(`${GIT_SYNC_CHECKOUT_MISSING_SIGNATURE}:`);
+}
+
+/** Unobservable this tick? The bare missed-intervals family key marks the whole git-sync routine
+ *  read unobserved, which covers every per-install signature of BOTH families it feeds. */
 export function isUnobservableLivenessSignature(unobservable: ReadonlySet<string>, sig: string): boolean {
   if (unobservable.has(sig)) return true;
-  return isGitSyncMissedIntervalsSignature(sig) && unobservable.has(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
+  return (
+    (isGitSyncMissedIntervalsSignature(sig) || isGitSyncCheckoutMissingSignature(sig)) &&
+    unobservable.has(GIT_SYNC_MISSED_INTERVALS_SIGNATURE)
+  );
 }
 
 export function evaluateLivenessAlarm(
@@ -569,6 +591,24 @@ export function evaluateLivenessAlarm(
         `nothing written there is being committed. Read routines:list { name:'git-sync'` +
         `${slug ? `, installSlug:'${slug}'` : ''} } health.git_sync_freshness (the scheduler leg vs the ` +
         `execution leg, and safe_to_restart) before restarting anything.`,
+    });
+  }
+  // WI-10006867: an install whose checkout VANISHED — reported under its real cause, never as
+  // starvation (compute.ts excludes these rows from the missed-intervals list above).
+  for (const missing of deployData?.gitSyncCheckoutMissingByInstall ?? []) {
+    if (!missing?.installSlug) continue;
+    const since = typeof missing.sinceMs === 'number' ? ` since ${new Date(missing.sinceMs).toISOString()}` : '';
+    const retire =
+      typeof missing.retireAtMs === 'number'
+        ? ` It is retired automatically (paused with a recorded reason) at ${new Date(missing.retireAtMs).toISOString()}.`
+        : ' It is retired automatically once it has been missing for the grace period.';
+    signals.push({
+      key: gitSyncCheckoutMissingSignature(missing.installSlug),
+      severity: 'advisory',
+      summary:
+        `git-sync on ${missing.installSlug} is skipping every fire because its checkout is missing` +
+        `${missing.path ? ` (${missing.path})` : ' (no harness registry entry)'}${since} — the scheduler is firing; ` +
+        `there is nothing on disk to commit.${retire} Restore the checkout, or delete the install.`,
     });
   }
   const wf = health.panels.workFeed?.data;
@@ -1056,6 +1096,14 @@ export function resolveEvidenceFor(
     }
     // Absent ≠ clear — the panel we would have judged was not in the snapshot at all.
     return `observed panel ${key} status=panel-absent${gate}`;
+  }
+  if (isGitSyncCheckoutMissingSignature(sig)) {
+    const dp = health.panels.deploy;
+    const slug = sig.slice(GIT_SYNC_CHECKOUT_MISSING_SIGNATURE.length + 1);
+    const list = dp?.data?.gitSyncCheckoutMissingByInstall;
+    return `observed deploy status=${dp?.status ?? 'panel-absent'} ${slug} checkoutMissing=${
+      Array.isArray(list) ? list.some((e) => e.installSlug === slug) : 'unreadable'
+    } (the install's last fire was eligible, it was retired, or it is no longer active)`;
   }
   if (isGitSyncMissedIntervalsSignature(sig)) {
     const dp = health.panels.deploy;

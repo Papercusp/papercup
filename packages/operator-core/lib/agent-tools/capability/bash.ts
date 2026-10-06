@@ -53,7 +53,7 @@ import { maskIntegrationKey, readIntegrationKey } from '../../integration-creden
 import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { findProviderEgressTargets } from '../../personal-vault/provider-egress.mjs';
-import { BashProvenanceRefusal, resolveBashTaskProvenance } from './bash-task-provenance';
+import { BashProvenanceRefusal, resolveCapabilityBashTaskProvenance } from './bash-task-provenance';
 import { listLiveTasks } from '../../task-manager/store';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
@@ -766,9 +766,9 @@ export default defineTool({
       integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
     const processNotice = processTableNotice(command);
 
-    let provenance: Awaited<ReturnType<typeof resolveBashTaskProvenance>>;
+    let provenance: Awaited<ReturnType<typeof resolveCapabilityBashTaskProvenance>>;
     try {
-      provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
+      provenance = await resolveCapabilityBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
         explicitWorkItemId: args.work_item_id ?? null,
       });
     } catch (error) {

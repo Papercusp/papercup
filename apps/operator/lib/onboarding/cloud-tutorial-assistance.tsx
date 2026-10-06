@@ -75,7 +75,7 @@ export function CloudTutorialAssistance({ scope, version = 1, step, status, onSh
       {onShowStep && <Button onClick={onShowStep}>Show current step</Button>}
     </div>
     <p role="status" data-tutorial-speech-status={speechStatus}>{muted ? 'Guide speech is muted.' : speechStatus === 'loading' ? 'Preparing speech…' : speechStatus === 'playing' ? 'Speaking the lesson.' : speechStatus === 'unavailable' ? 'Speech could not be played. The text remains available; use Replay speech to try again.' : 'Speech is ready.'}</p>
-    <p>Ask about this step. Keep credentials in the app’s connection form.</p>
+    <p>Ask about this step. Use an injected credential reference in the connection form. Never paste API keys, service-account JSON or tokens into the form or Help.</p>
     <div style={{ height: 320,
       // Bind the existing shared-chat theme seam in this dark host, including
       // empty-state text that otherwise inherits the light-host fallback.

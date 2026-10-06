@@ -60,7 +60,9 @@ priority_on_contention=0
 # overdue sweep that is still making progress (has_live_priority_waiter). With it,
 # the earliest-deadline-first hold and the I/O-progress check apply exactly as they
 # do to a scheduled waiter's .due, so the overdue sweep finishes first unless it
-# stalls (EI-25211496463956189). The per-workspace DB hook passes it. Measured
+# stalls (EI-25211496463956189). The per-workspace DB hook passes it for ROUTINE
+# interval dumps only; its pre_destructive / pre-deploy safety dumps omit it and stay
+# due-now (WI-10004871, below). Measured
 # 2026-10-06 09:57 EDT: a hook dump stopped the overdue hot sweep (no snapshot since
 # 00:09 EDT) 3s after it began waiting, then was itself killed at its own 900s
 # budget, so the sweep was lost for a dump that never completed. Default 0 keeps
@@ -329,6 +331,8 @@ take_handoff_note() {
 # after KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC (900s in packages/backup's hook),
 # which then abandons the dump (resolves ok:false). Holding an overdue sweep against
 # one for up to the EDF extension would cost that safety dump for sweep progress.
+# The exception is opt-in: --deadline-at-arrival, which that hook passes only for its
+# routine interval dumps (EI-25211496463956189), never for a safety dump.
 # Its guard lines reach the host's journal via the hook's stderr forwarder, so
 # each such preemption is attributable.
 register_priority_request() {

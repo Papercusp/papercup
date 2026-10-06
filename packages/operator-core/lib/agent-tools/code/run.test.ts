@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { encode } from '@papercusp/result-encoding';
 import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
@@ -677,6 +678,36 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(shapeCodeRunSummary(result)).toBe(result);
   });
 
+  it('preserves source array counts in TOON while marking omitted entries (EI-24966800800754357)', () => {
+    const summary = {
+      union: Array.from({ length: 16 }, (_, index) => `D-${String(index + 1).padStart(3, '0')}`),
+      rows: Array.from({ length: 40 }, (_, index) => ({
+        id: `row-${index + 1}`,
+        detail: `row-${index + 1}-${'x'.repeat(500)}`,
+      })),
+    };
+    const shaped = shapeCodeRunSummary({ summary }) as {
+      summary: { union: unknown[]; rows: unknown[] };
+      summaryNotice: {
+        arraysTruncated: number;
+        arrayOriginalLengths: Record<string, number>;
+      };
+    };
+    const toon = encode(shaped.summary, 'toon');
+
+    expect(shaped.summaryNotice.arraysTruncated).toBe(2);
+    expect(shaped.summaryNotice.arrayOriginalLengths).toMatchObject({
+      'summary.union': 16,
+      'summary.rows': 40,
+    });
+    expect(shaped.summary.union).toHaveLength(16);
+    expect(shaped.summary.rows).toHaveLength(40);
+    expect(shaped.summary.union).toContain('[omitted]');
+    expect(shaped.summary.rows).toContain('[omitted]');
+    expect(toon).toMatch(/union\[16\]/);
+    expect(toon).toMatch(/rows\[40\]/);
+  });
+
   it('bounds nested strings and arrays while preserving scalar marker fields', async () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');
@@ -704,7 +735,8 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.summary).toMatchObject({ markerCount: 1, lineCount: 81, returnedChars: 54822 });
-    expect(payload.summary.lines.length).toBeLessThan(81);
+    expect(payload.summary.lines).toHaveLength(81);
+    expect(payload.summary.lines).toContain('[omitted]');
     // EI-21254588525256811: this used to assert `line.length <= 360` — the projection ladder's
     // internal rung CONSTANT, not a contract. Pinning it is what hid the defect: the ladder
     // stopped at the first rung that fit, so it returned ~11% of the budget it was entitled to
@@ -785,25 +817,27 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
         ),
       );
 
-    it('keeps a bounded prefix instead of collapsing to an empty result', () => {
-      const shaped = shapeCodeRunSummary({ summary: rows() }) as {
-        summary: unknown[];
+    it('keeps retained rows in a count-bearing wrapper instead of collapsing to an empty result', () => {
+      const shaped = shapeCodeRunSummary({ summary: rows() }) as unknown as {
+        summary: { __truncatedArray: true; originalLength: number; items: unknown[] };
         summaryNotice: { omittedItems: number };
       };
 
-      expect(Array.isArray(shaped.summary)).toBe(true);
-      expect(shaped.summary.length).toBeGreaterThan(0);
+      expect(shaped.summary).toMatchObject({ __truncatedArray: true, originalLength: 200 });
+      expect(shaped.summary.items.length).toBeGreaterThan(0);
       expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
     });
 
-    it('discloses the dropped rows instead of reporting nothing was omitted', () => {
-      const shaped = shapeCodeRunSummary({ summary: rows() }) as {
-        summary: unknown[];
+    it('discloses the original row count and dropped rows instead of reporting nothing was omitted', () => {
+      const shaped = shapeCodeRunSummary({ summary: rows() }) as unknown as {
+        summary: { originalLength: number; items: unknown[] };
         summaryNotice: { omittedItems: number };
       };
 
-      // The old envelope said 0 — indistinguishable from a complete result.
-      expect(shaped.summaryNotice.omittedItems).toBeGreaterThanOrEqual(200 - shaped.summary.length);
+      expect(shaped.summary.originalLength).toBe(200);
+      expect(shaped.summaryNotice.omittedItems).toBeGreaterThanOrEqual(
+        shaped.summary.originalLength - shaped.summary.items.length,
+      );
     });
 
     // CONTROL. Both assertions above must be able to fail. The pre-fix value is literally `[]`
@@ -989,9 +1023,14 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     };
 
     expect(shaped.summaryNotice).toMatchObject({ truncated: true });
-    expect(shaped.summary.launched.length).toBeLessThan(launched.length);
-    expect(shaped.summary.launched.length).toBeGreaterThan(0);
-    for (const [index, row] of shaped.summary.launched.entries()) {
+    expect(shaped.summary.launched).toHaveLength(launched.length);
+    expect(shaped.summary.launched.some((row) => typeof row === 'string')).toBe(true);
+    const retained = shaped.summary.launched.filter(
+      (row): row is { result: { content: Array<{ text: string }> } } =>
+        typeof row === 'object' && row !== null && 'result' in row,
+    );
+    expect(retained.length).toBeGreaterThan(0);
+    for (const [index, row] of retained.entries()) {
       expect(row.result.content[0]?.text).toContain(`"bash_id":"bash-${index}"`);
       expect(row.result.content[0]?.text).toContain(`"task_id":"task-${index}"`);
     }
@@ -1023,7 +1062,8 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     };
 
     expect(shaped.summary.invocations.rows.length).toBeGreaterThan(0);
-    expect(shaped.summary.invocations.rows.length).toBeLessThan(rows.length);
+    expect(shaped.summary.invocations.rows).toHaveLength(rows.length);
+    expect(shaped.summary.invocations.rows.some((row) => typeof row === 'string')).toBe(true);
     expect(shaped.summary.invocations.rows[0]).toMatchObject({
       id: 'id-0',
       invoked_at: 0,
@@ -1067,7 +1107,8 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
           'P305_VERDICT verdict=fail',
         ]),
       );
-      expect(shaped.summary.evidence.length).toBeLessThan(lines.length);
+      expect(shaped.summary.evidence).toHaveLength(lines.length);
+      expect(shaped.summary.evidence).toContain('[omitted]');
       expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
       expect(shaped.summaryNotice.paths).toContain('summary.evidence');
     });

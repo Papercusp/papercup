@@ -140,12 +140,16 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(commit).toContain('sync(root): a.ts, b.ts (2 files, +15/-3) [skip ci]');
     expect(commit).toContain('fix a'); // demoted to the body, not lost
     expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
-    // published with a CAS on the base, then the shared index refreshed for the committed paths
-    const cas = calls.find((c) => c[0] === 'update-ref')!;
-    expect(cas.slice(-3)).toEqual(['HEAD', 'new-commit', 'base-commit']);
+    // WI-10006850: the shared index is refreshed for the committed paths (literally, on the
+    // SHARED index) BEFORE the commit is published with a CAS on the base
+    const casIdx = calls.findIndex((c) => c[0] === 'update-ref');
+    expect(calls[casIdx]!.slice(-3)).toEqual(['HEAD', 'new-commit', 'base-commit']);
     const resetIdx = calls.findIndex((c) => c[0] === 'reset');
     expect(calls[resetIdx]).toEqual(['reset', '-q', 'new-commit', '--', 'a.ts']);
     expect(envs[resetIdx]?.GIT_INDEX_FILE).toBeUndefined();
+    expect(envs[resetIdx]?.GIT_LITERAL_PATHSPECS).toBe('1');
+    expect(resetIdx).toBeGreaterThan(-1);
+    expect(resetIdx).toBeLessThan(casIdx);
     // exactly ONE attributed commit (c.ts is the catch-all, left for the caller's add -A)
     expect(calls.filter((c) => c.includes('commit-tree'))).toHaveLength(1);
     // no `git commit` of the shared index at all
@@ -170,10 +174,13 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(calls.some((c) => c[0] === 'add' || c.includes('commit-tree') || c[0] === 'read-tree')).toBe(false);
   });
 
-  it('commits through the private index while the SHARED index.lock is fresh, and never removes that lock', async () => {
+  it('publishes nothing while the SHARED index.lock is fresh, and never removes that lock', async () => {
     // WI-10006519 + WI-10006705: a fresh lock is a live writer's. The private-index add and
     // commit do not need it; only the shared-index refresh does, and that retries a bounded
-    // number of times, then logs (the commit stands) without ever unlinking the lock.
+    // number of times without ever unlinking the lock. WI-10006850: the refresh runs BEFORE
+    // the CAS, so when it fails nothing is published and the phase errors (the caller falls
+    // through to the catch-all). Before, the commit landed and the shared index kept the
+    // pre-commit blobs under the new HEAD.
     const gitDir = await mkdtemp(join(tmpdir(), 'gs-attr-fresh-'));
     tmpDirs.push(gitDir);
     await writeFile(join(gitDir, 'index.lock'), '');
@@ -188,12 +195,39 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
 
     const res = await commitAttributedGroups(runGit, '/repo', attribution, [], MSG, { log: (m) => logs.push(m) });
 
-    expect(res).toEqual({ committedAny: true, committedCount: 1 });
+    expect(res.committedAny).toBe(false);
+    expect(res.committedCount).toBe(0);
+    expect(res.error).toMatch(/attributed commit for ag1 not published: the shared index could not be refreshed/);
     expect(calls.filter((c) => c[0] === 'add')).toEqual([['add', '--', 'a.ts']]);
     expect(calls.filter((c) => c[0] === 'reset')).toHaveLength(4); // first try + 3 bounded retries
+    expect(calls.some((c) => c[0] === 'update-ref')).toBe(false); // nothing published
     expect(existsSync(join(gitDir, 'index.lock'))).toBe(true);
     expect(logs.some((m) => m.includes('FRESH'))).toBe(true);
-    expect(logs.some((m) => m.includes('shared index could not be refreshed'))).toBe(true);
+  });
+
+  it('a live index.lock leaves HEAD, the lock and the shared index untouched (WI-10006850, real git)', async () => {
+    // The recurrence guard on a real repository: a live writer holds the SHARED index.lock
+    // while an attributed group commits. Its private index needs no shared lock, so the
+    // commit object is built, but the shared-index refresh cannot run and nothing is
+    // published.
+    const repo = await seededRepo('gs-attr-live-lock-');
+    await writeFile(join(repo, 'base.ts'), 'export const base = 1;\n');
+    const head = await git(repo, 'rev-parse', 'HEAD');
+    const lockPath = join(repo, '.git', 'index.lock');
+    await writeFile(lockPath, '');
+    const attribution = new Map<string, FileAttribution>([['base.ts', { agent: 'ag1', intent: 'bump base' }]]);
+    const logs: string[] = [];
+
+    const res = await commitAttributedGroups(realRunGit, repo, attribution, [], MSG, { log: (m) => logs.push(m) });
+
+    expect(res.committedAny).toBe(false);
+    expect(res.error).toMatch(/not published: the shared index could not be refreshed/);
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(head);
+    expect(existsSync(lockPath)).toBe(true);
+    await rm(lockPath);
+    // The shared index still holds HEAD's blob: the edit is an UNSTAGED change, never a staged revert.
+    expect(await git(repo, 'diff', '--cached', '--name-only')).toBe('');
+    expect(await git(repo, 'status', '--porcelain', '--', 'base.ts')).toBe('M base.ts');
   });
 
   it('skips excluded (oversized/content) files even when attributed', async () => {

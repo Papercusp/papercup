@@ -774,10 +774,13 @@ function RulesPanel({
         workKind,
       });
       const admitted = result.backfill?.admitted ?? 0;
+      // A bug the intake recognised as already filed is admitted onto that bug, not as a new one.
+      const folded = result.backfill?.folded ?? 0;
       toast.success(
-        admitted === 0
+        admitted + folded === 0
           ? 'Rule added. No synced ticket matches it yet.'
-          : `Rule added. ${count(admitted, 'synced ticket')} admitted as work.`,
+          : `Rule added. ${count(admitted + folded, 'synced ticket')} admitted as work` +
+              (folded > 0 ? ` (${folded} attached to a bug that was already filed).` : '.'),
       );
       setValue('');
     } catch (err) {

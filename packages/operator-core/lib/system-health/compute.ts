@@ -86,6 +86,7 @@ import { getPanelRefreshCoalescer } from './refresh-coalescer';
 // EI-19275994927087666: ONE classifier shared by the escalation broadcast and this
 // panel — they told the same lie independently, so they must now agree by construction.
 import { classifyGitSyncFailingLeg, gitSyncLegPhrase } from '../harness/git-sync/git-sync-escalation';
+import { GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS, readMissingCheckout } from '../harness/git-sync/missing-checkout';
 import { isOperationalEscalation } from '../attention/adapters';
 import {
   queenStatus,
@@ -1736,6 +1737,7 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
     let gitSyncMaxMissedIntervals: number | null = null;
     let gitSyncMissedIntervalsInstallSlug: string | null = null;
     const gitSyncMissedIntervalsByInstall: Array<{ installSlug: string; missedIntervals: number }> = [];
+    const gitSyncCheckoutMissingByInstall: NonNullable<DeployHealth['gitSyncCheckoutMissingByInstall']> = [];
     let gitSyncMissedIntervalsUnreadable = false;
     try {
       const { sql } = getOrgPg();
@@ -1785,6 +1787,19 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         // the push-failure escalation already owns it; this measure is for 'not firing at all'.
         const missed = typeof derived.freshness.missed_intervals === 'number' ? derived.freshness.missed_intervals : null;
         const lastStatus = typeof md.last_status === 'string' ? md.last_status : null;
+        // WI-10006867: a vanished checkout skips every fire with `no_path` while last_synced_at
+        // stays frozen, so its missed-interval count grows forever without the scheduler being
+        // at fault. Report it under its real cause and keep it OUT of the starvation measure.
+        if (lastStatus === 'skipped' && md.last_skip_reason === 'no_path') {
+          const mc = readMissingCheckout(md);
+          gitSyncCheckoutMissingByInstall.push({
+            installSlug: r.install_slug,
+            path: mc?.path ?? null,
+            sinceMs: mc?.since ?? null,
+            retireAtMs: mc ? mc.since + GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS : null,
+          });
+          continue;
+        }
         if (missed !== null && lastStatus !== 'error' && lastStatus !== 'conflict') {
           // WI-10006786: keep every install's reading, not only the max — the alarm keys one
           // signal per install, so a long-dead install cannot mask another install's starvation.
@@ -1835,6 +1850,7 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
       gitSyncMaxMissedIntervals,
       gitSyncMissedIntervalsInstallSlug,
       gitSyncMissedIntervalsByInstall,
+      gitSyncCheckoutMissingByInstall,
       gitSyncMissedIntervalsUnreadable,
       bgHostStartedAtMs,
       bgHostCodeStale,

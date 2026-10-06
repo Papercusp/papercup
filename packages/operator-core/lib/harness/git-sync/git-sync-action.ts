@@ -176,7 +176,7 @@ import {
   type GitSyncRoutineMetadataPatch,
   type RefAnnounceRoutineState,
 } from './routine-metadata-state';
-import { clearMissingCheckout, recordMissingCheckoutSkip } from './missing-checkout';
+import { recordMissingCheckoutSkip } from './missing-checkout';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import {
   signedProtocolContextMatches,
@@ -2555,6 +2555,10 @@ async function recordOutcome(
       // since the last completed fire" (the git-sync-stall-watchdog's persistent-reap
       // signal), never a forever-growing total.
       reaped_count: 0,
+      // WI-10006867: an outcome means the runtime gate passed, so the checkout exists. Null
+      // the vanished-checkout marker in this same write (no extra round-trip per fire), so a
+      // checkout that comes back and later vanishes again starts a fresh retirement clock.
+      missing_checkout: null,
       ...(outcome.status === 'synced' ? { head_sha: outcome.headSha, local_sync_head_sha: outcome.headSha } : {}),
     },
     {
@@ -3309,7 +3313,6 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         });
         return g;
       }
-      if (workspaceId) await clearMissingCheckout(getOrgPg().sql, { slug, workspaceId });
       // github-bridge P-003 (S-5, run-time half): re-consult the hive's git mode
       // EVERY tick — a hive flipped legacy→bridged must stop origin-pushing without
       // a routine re-seed (the seeded trigger_config.push predates the flip). Only

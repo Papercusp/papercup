@@ -14,7 +14,11 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { BashProvenanceRefusal, resolveBashTaskProvenance } from './bash-task-provenance';
+import {
+  BashProvenanceRefusal,
+  resolveBashTaskProvenance,
+  resolveCapabilityBashTaskProvenance,
+} from './bash-task-provenance';
 
 const OWNER = 'su-b5f45c90-be2b-4ad6-b9fc-a03353f6b3bb';
 
@@ -133,6 +137,26 @@ describe('bash task provenance — a caller-named work_item_id (WI-10004202)', (
       explicitWorkItemId: '  ',
     });
     expect(p.workItemId).toBe('WI-1');
+  });
+});
+
+describe('capability:bash requires explicit attribution when multiple claims are held', () => {
+  it('refuses to use a matching goal ref to guess which held item owns the command', async () => {
+    await expect(resolveCapabilityBashTaskProvenance(
+      CTX,
+      'papercusp',
+      deps({ goalRef: 'EI-goal', held: [{ id: 'EI-goal' }, { id: 'WI-other' }] }),
+    )).rejects.toMatchObject({ code: 'work_item_id_required' });
+  });
+
+  it('attributes to the caller-named held item even when the goal ref names another held item', async () => {
+    const p = await resolveCapabilityBashTaskProvenance(
+      CTX,
+      'papercusp',
+      deps({ goalRef: 'EI-goal', held: [{ id: 'EI-goal' }, { id: 'WI-command' }] }),
+      { explicitWorkItemId: 'WI-command' },
+    );
+    expect(p.workItemId).toBe('WI-command');
   });
 });
 

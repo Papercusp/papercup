@@ -30,7 +30,7 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 
 const L = vi.hoisted(() => ({
-  closed: [] as { taskId: string; state: string; exitReason: string | null }[],
+  closed: [] as { taskId: string; state: string; exitCode: number | null; exitReason: string | null }[],
   marked: [] as { cgroupPath: string | null; confined: boolean }[],
   terminal: [] as unknown[],
   // Rest-typed so the pass-through mocks below can spread their `unknown[]` args in:
@@ -54,8 +54,8 @@ vi.mock('./store', () => ({
   markSpawned: async (_id: string, v: { cgroupPath: string | null; confined: boolean }) => {
     L.marked.push(v);
   },
-  closeTask: async (taskId: string, v: { state: string; exitReason: string | null }) => {
-    L.closed.push({ taskId, state: v.state, exitReason: v.exitReason });
+  closeTask: async (taskId: string, v: { state: string; exitCode?: number | null; exitReason: string | null }) => {
+    L.closed.push({ taskId, state: v.state, exitCode: v.exitCode ?? null, exitReason: v.exitReason });
     L.terminal.push((v as { terminalProvenance?: unknown }).terminalProvenance ?? null);
   },
 }));
@@ -247,6 +247,27 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toMatch(/Intentional teardown/);
     expect(String(info.mock.calls[0]![0])).toMatch(/signal SIGKILL/);
+  });
+
+  it('records an explicit kill request as cancelled even when the client exits with code 2', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter, result } = await spawnConfined(null);
+
+    notifyTaskKillRequested(result.taskId, 'SIGTERM');
+    // systemd-run's client exit is not the verdict for the task; the task may
+    // have exited with a designed non-zero code after the kill request arrived.
+    emitter.emit('exit', 2, null);
+    await flushAfterHandoff();
+
+    expect(L.closed).toEqual([
+      {
+        taskId: result.taskId,
+        state: 'killed',
+        exitCode: 143,
+        exitReason: 'processes:kill requested SIGTERM',
+      },
+    ]);
+    expect(L.terminal).toEqual([null]);
   });
 
   it('keeps an unannounced signal loud when only a different task was killed', async () => {

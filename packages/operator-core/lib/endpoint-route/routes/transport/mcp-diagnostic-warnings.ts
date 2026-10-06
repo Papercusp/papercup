@@ -124,9 +124,10 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   let hasPopulatedField = false;
   // Some successful tools return a single domain object or collection instead of a generic
   // results/items envelope (for example improvements:capture -> `issue`, locks:acquire -> `held`,
-  // loop:status -> `loop`, scheduler:get_next -> `workItem`, and events:status -> `event_inspection`).
+  // loop:status -> `loop`, scheduler:get_claim_spec -> `spec`, scheduler:get_next -> `workItem`,
+  // and events:status -> `event_inspection`).
   // Keep these explicit so control metadata alone does not suppress warnings for true empties.
-  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'agents', 'issue', 'held', 'scorecard', 'loop', 'workItem', 'event_inspection']) {
+  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'agents', 'issue', 'held', 'scorecard', 'loop', 'spec', 'workItem', 'event_inspection']) {
     if (!(key in body)) continue;
     sawResultField = true;
     const value = body[key];

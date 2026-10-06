@@ -23,6 +23,8 @@ import {
   GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
   isGitSyncMissedIntervalsSignature,
   isUnobservableLivenessSignature,
+  gitSyncCheckoutMissingSignature,
+  isGitSyncCheckoutMissingSignature,
 } from './liveness-alarm';
 import type { SystemHealth, HealthPanel, PanelKey, PanelStatus } from './types';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
@@ -159,6 +161,43 @@ describe('git-sync missed-interval alarm', () => {
     expect(resolveEvidenceFor('git-sync-missed-intervals:papercusp', h)).toBe(
       `observed deploy status=ok gitSyncMaxMissedIntervals=40 papercusp missedIntervals=0 (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`,
     );
+  });
+
+  // WI-10006867: a VANISHED checkout is reported under its real cause, never as starvation.
+  it('raises an advisory checkout-missing signal per install, naming the path and the retire time', () => {
+    const sinceMs = Date.parse('2026-10-05T12:00:00Z');
+    const retireAtMs = sinceMs + 24 * 3_600_000;
+    const sigs = evaluateLivenessAlarm(
+      withDeploy({
+        gitSyncMissedIntervalsByInstall: [],
+        gitSyncCheckoutMissingByInstall: [
+          { installSlug: DEAD, path: '/home/x/thornbury-iphone', sinceMs, retireAtMs },
+          { installSlug: 'gone-entry', path: null, sinceMs: null, retireAtMs: null },
+        ],
+      }),
+      null,
+    );
+    expect(sigs.some((x) => isGitSyncMissedIntervalsSignature(x.key))).toBe(false);
+    const missing = sigs.filter((x) => isGitSyncCheckoutMissingSignature(x.key));
+    expect(missing.map((x) => x.key)).toEqual([gitSyncCheckoutMissingSignature(DEAD), 'git-sync-checkout-missing:gone-entry']);
+    expect(missing.every((x) => x.severity === 'advisory')).toBe(true);
+    expect(missing[0]?.summary).toContain('checkout is missing (/home/x/thornbury-iphone) since 2026-10-05T12:00:00.000Z');
+    expect(missing[0]?.summary).toContain('retired automatically (paused with a recorded reason) at 2026-10-06T12:00:00.000Z');
+    expect(missing[0]?.summary).not.toContain('missed');
+    expect(missing[1]?.summary).toContain('(no harness registry entry)');
+  });
+
+  it('a failed git-sync read makes the checkout-missing family unobservable too, and only that family', () => {
+    const marker = new Set([GIT_SYNC_MISSED_INTERVALS_SIGNATURE]);
+    expect(isUnobservableLivenessSignature(marker, gitSyncCheckoutMissingSignature('papercusp'))).toBe(true);
+    expect(isUnobservableLivenessSignature(new Set(), gitSyncCheckoutMissingSignature('papercusp'))).toBe(false);
+    expect(isGitSyncMissedIntervalsSignature(gitSyncCheckoutMissingSignature('papercusp'))).toBe(false);
+  });
+
+  it('resolve evidence for a checkout-missing signature says whether the install is still listed', () => {
+    const h = withDeploy({ gitSyncCheckoutMissingByInstall: [] });
+    expect(resolveEvidenceFor(gitSyncCheckoutMissingSignature(DEAD), h)).toContain(`${DEAD} checkoutMissing=false`);
+    expect(resolveEvidenceFor(gitSyncCheckoutMissingSignature(DEAD), withDeploy({}))).toContain('checkoutMissing=unreadable');
   });
 
   it('end to end: an open dead-install row neither absorbs a fresh starvation nor falsely resolves', async () => {

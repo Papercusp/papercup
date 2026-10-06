@@ -707,7 +707,7 @@ describe('admission presets turn matching Linear issues into work (P-006, R-6)',
     lin.issues[1] = { ...lin.issues[1]!, delegate: LOOKALIKE };
     const sourceId = await createSource();
     const { rule, backfill } = await preset(sourceId, 'delegated-to-papercusp');
-    expect(backfill).toEqual({ scanned: 0, admitted: 0, existing: 0, refused: [], truncated: false }); // nothing held yet
+    expect(backfill).toEqual({ scanned: 0, admitted: 0, folded: 0, existing: 0, refused: [], truncated: false }); // nothing held yet
 
     await syncOne(sourceId);
     const rows1 = await admitted(sourceId);

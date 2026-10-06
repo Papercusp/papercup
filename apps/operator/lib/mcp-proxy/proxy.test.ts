@@ -3380,6 +3380,21 @@ describe("EI-19294517824914302: cheap repeating beats fail fast instead of ampli
     ).toBe(500);
   });
 
+  it("caps fail-closed egress preflight retries without marking them as soft beats", () => {
+    const path = "/api/agent-mcp/restricted-egress-check";
+
+    // The hook refuses the native tool when this check is unavailable, so a missing route
+    // must surface quickly instead of spending the restart-sized proxy window. Its failures
+    // remain hard in the health ledger because this is not a soft, scheduled heartbeat.
+    expect(isCheapRepeatingBeat(path)).toBe(false);
+    expect(effectiveRetryWindowMs(path, 45_000)).toBe(
+      CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
+    );
+    expect(effectiveRetryWindowMs(`${path}?status=true`, 45_000)).toBe(
+      CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
+    );
+  });
+
   it("end-to-end: gives up on a refused upstream in ~2s instead of burning a 30s window", async () => {
     // Bind a port, then close it so connections are REFUSED — the exact shape that produced
     // the observed attempts:30 storm (kind:"upstream_error"/"exhausted_refused").
