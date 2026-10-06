@@ -3183,6 +3183,81 @@ describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
 describe('findNativeTranscriptMarker (fresh row provenance)', () => {
   const scratch = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'kickoff-marker-freshness-'));
   afterAll(() => nodeFs.rmSync(scratch, { recursive: true, force: true }));
+  const environmentContext = [
+    '<environment_context>',
+    '  <current_date>2026-10-05</current_date>',
+    '  <timezone>America/New_York</timezone>',
+    '</environment_context>',
+  ].join('\n');
+
+  it.each(['fleet-kickoff', 'carry-respawn'])('verifies a resumed Codex %s after standalone environment context', async (origin) => {
+    const codexHome = pathJoin(scratch, `codex-environment-${origin}`);
+    const sessions = pathJoin(codexHome, 'sessions');
+    const transcript = pathJoin(sessions, `rollout-${origin}.jsonl`);
+    nodeFs.mkdirSync(sessions, { recursive: true });
+    const marker = `⟦turn-origin:${origin} nonce:cc8df713d16e055a⟧`;
+    const sinceMs = Date.now() - 1_000;
+    const userRow = (text: string, atMs = Date.now()) => ({
+      type: 'response_item', timestamp: new Date(atMs).toISOString(),
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+    });
+    nodeFs.writeFileSync(transcript, [
+      userRow('Previous owner task', sinceMs - 60_000),
+      userRow('# AGENTS.md instructions\nLaunch context'),
+      userRow(environmentContext.replace(/\n/g, '\r\n')),
+      userRow(`${marker}\nResume the registered work.`),
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+    const writeCr = vi.fn();
+
+    // Exercise the proof consumed by the host's kill-or-keep decision, rather
+    // than accepting PTY activity or a marker quoted elsewhere in the file.
+    await expect(verifyNativeTurnStartWithRetry({
+      agent: 'codex', env: { CODEX_HOME: codexHome },
+      text: `${marker}\nResume the registered work.`, sinceMs,
+      nativeId: origin, home: scratch, timeoutMs: 0, writeCr,
+    })).resolves.toMatchObject({ persisted: true, nativeRef: transcript, retried: false });
+    expect(writeCr).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'Unrelated owner task',
+    `Use this context for another task:\n${environmentContext}`,
+    `${environmentContext}\nDo another task first.`,
+    '<environment_context>\n  <current_date>2026-10-05</current_date>',
+  ])('keeps a real or non-standalone first prompt as a kickoff proof barrier: %s', (firstPrompt) => {
+    const codexHome = pathJoin(scratch, 'codex-environment-barrier');
+    const sessions = pathJoin(codexHome, 'sessions');
+    const transcript = pathJoin(sessions, 'rollout-barrier.jsonl');
+    nodeFs.mkdirSync(sessions, { recursive: true });
+    const marker = '⟦turn-origin:fleet-kickoff nonce:cc8df713d16e055a⟧';
+    const sinceMs = Date.now() - 1_000;
+    const rows = ['# AGENTS.md instructions\nLaunch context', environmentContext, firstPrompt, marker]
+      .map((text) => JSON.stringify({
+        type: 'response_item', timestamp: new Date().toISOString(),
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+      }));
+    nodeFs.writeFileSync(transcript, rows.join('\n') + '\n');
+    expect(findNativeTranscriptMarker({
+      agent: 'codex', env: { CODEX_HOME: codexHome }, marker,
+      sinceMs, nativeId: 'barrier', home: scratch,
+    })).toBeNull();
+  });
+
+  it('does not treat a Claude owner prompt in environment tags as Codex launch context', () => {
+    const claudeConfig = pathJoin(scratch, 'claude-environment-barrier');
+    const projects = pathJoin(claudeConfig, 'projects');
+    nodeFs.mkdirSync(projects, { recursive: true });
+    const transcript = pathJoin(projects, 'environment-native.jsonl');
+    const marker = '⟦turn-origin:fleet-kickoff nonce:cc8df713d16e055a⟧';
+    const rows = [environmentContext, marker].map((content) => JSON.stringify({
+      type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content },
+    }));
+    nodeFs.writeFileSync(transcript, rows.join('\n') + '\n');
+    expect(findNativeTranscriptMarker({
+      agent: 'claude', env: { CLAUDE_CONFIG_DIR: claudeConfig }, marker,
+      sinceMs: Date.now() - 1_000, nativeId: 'environment-native', home: scratch,
+    })).toBeNull();
+  });
 
   it('proves a managed checksum only as an exact line of the first fresh native user prompt', () => {
     const codexHome = pathJoin(scratch, 'codex-port-home');
