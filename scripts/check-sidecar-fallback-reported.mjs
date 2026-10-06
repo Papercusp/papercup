@@ -126,6 +126,35 @@ export function findUnreportedFallbacks(text) {
     return false;
   }
 
+  /**
+   * Which sidecar entrypoint does this CALLEE reach, if any? (WI-10006774)
+   *
+   * An injected seam with a sidecar default reaches the sidecar through an indirect callee:
+   * `(seams.viaSidecar ?? runGitViaSpawnerSidecar)(...)`, a ternary branch, a type assertion,
+   * or a const alias of any of those. Matching only a bare identifier left every such site
+   * unpoliced, so a catch that dropped the reporter still passed. Mirrors `reporter()`:
+   * follow only CONST bindings in lexical scope (a `let` or a parameter can be rebound to
+   * anything, so treating it as a sidecar call would be a guess, not a finding).
+   */
+  function sidecarCallee(expression, seen = new Set()) {
+    expression = unwrap(expression);
+    if (ts.isIdentifier(expression)) {
+      if (SIDECAR_CALLS.includes(expression.text)) return expression.text;
+      const initializer = binding(expression.text, expression);
+      if (!initializer || seen.has(initializer)) return null;
+      return sidecarCallee(initializer, new Set([...seen, initializer]));
+    }
+    if (ts.isBinaryExpression(expression) && (
+      expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      return sidecarCallee(expression.left, seen) ?? sidecarCallee(expression.right, seen);
+    }
+    if (ts.isConditionalExpression(expression)) {
+      return sidecarCallee(expression.whenTrue, seen) ?? sidecarCallee(expression.whenFalse, seen);
+    }
+    return null;
+  }
+
   function catchReports(block) {
     let found = false;
     function visit(node) {
@@ -139,12 +168,13 @@ export function findUnreportedFallbacks(text) {
   }
 
   function visit(node) {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && SIDECAR_CALLS.includes(node.expression.text)) {
+    const call = ts.isCallExpression(node) ? sidecarCallee(node.expression) : null;
+    if (call) {
       for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
         if (!ts.isTryStatement(ancestor)) continue;
         if (node.pos >= ancestor.tryBlock.pos && node.end <= ancestor.tryBlock.end &&
           ancestor.catchClause && !catchReports(ancestor.catchClause.block)) {
-          offenders.push({ call: node.expression.text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
+          offenders.push({ call, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
         }
         break;
       }
