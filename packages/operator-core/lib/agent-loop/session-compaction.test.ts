@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ModelMessage, ModelPort, ModelStreamEvent } from './model-port';
+import { MODEL_PROVIDER_REQUEST_CAPTURE } from './model-port';
 import type { LoopProviderRequestInfo } from './loop';
 import {
   findCompactionCut,
@@ -179,6 +180,17 @@ describe('compaction provider obligations', () => {
   const observation: ModelStreamEvent = { type: 'provider_request',
     request: { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-summary' } },
     servedAccount: 'local-account' };
+
+  it('propagates a private server capture failure rather than accepting a degraded summary', async () => {
+    const failure = new Error('private binding failed'); let pulled = false;
+    const port: ModelPort = { async *stream() {
+      yield { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model' },
+        [MODEL_PROVIDER_REQUEST_CAPTURE]: async () => { throw failure; } };
+      pulled = true; yield { type: 'text_delta', text: 'must not summarize' };
+    } };
+    await expect(maybeCompactSession({ ...base, port })).rejects.toBe(failure);
+    expect(pulled).toBe(false);
+  });
 
   it('awaits capture before the next provider pull and retains an independent snapshot on failure', async () => {
     let release!: () => void;

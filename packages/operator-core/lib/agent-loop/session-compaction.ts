@@ -18,7 +18,8 @@
  * Wire-silent by design: compaction is server-side housekeeping; the D-011
  * v0 event vocabulary is not extended (the session row records the state).
  */
-import type { ModelMessage, ModelPort, ModelProviderResponse, ModelUsage } from './model-port';
+import { captureModelProviderRequest, type ModelMessage, type ModelPort, type ModelProviderResponse,
+  type ModelStreamEvent, type ModelUsage } from './model-port';
 import { copyProviderRequest, type LoopProviderRequestInfo } from './loop';
 
 /** Compact when the serialized working set exceeds this many JSON chars
@@ -149,7 +150,7 @@ async function summarize(args: {
   priority?: string;
   account?: string;
   ownerId?: string;
-  onProviderRequest(info: Omit<LoopProviderRequestInfo, 'stepIndex' | 'purpose'>): Promise<void>;
+  onProviderRequest(info: Extract<ModelStreamEvent, { type: 'provider_request' }>): Promise<void>;
 }): Promise<{ text: string; usage?: ModelUsage; providerResponse?: ModelProviderResponse }> {
   const sections: string[] = [];
   if (args.priorSummary) {
@@ -244,6 +245,7 @@ export async function maybeCompactSession(args: CompactSessionArgs): Promise<Com
         const info = copyProviderRequest({ ...observation, stepIndex: args.stepIndex ?? 0, purpose: 'compaction' });
         providerRequests.push(info);
         try {
+          await captureModelProviderRequest(observation);
           await args.onProviderRequest?.(copyProviderRequest(info));
         } catch (error) {
           captureFailed = true;
