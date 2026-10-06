@@ -1092,6 +1092,9 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
         testRunId: null, ledgerRunGroupId: null, phase: 'abandoned' as const, outcome: 'unknown' as const,
         bindingStatus: failures.length === 0 ? 'abandoned' as const : 'retirement-incomplete' as const })),
       total: prepared.length, omitted: Math.max(0, prepared.length - 6),
+      // An abandoned attempt has no settled row, so it can never contribute a fingerprint
+      // (same rule as the deferred bundle). Kept explicit so the recovery union stays uniform.
+      verificationFingerprint: null,
       readRef: { tool: 'plans:get-spec-evidence', args: { harness: scope.harnessSlug,
         slug: recovery.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE, workItemIds: [recovery.workItemId],
         evidenceRefs: prepared.map(row => row.input.evidenceRef) } },
