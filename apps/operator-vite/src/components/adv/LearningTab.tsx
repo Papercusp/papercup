@@ -2871,7 +2871,9 @@ function ImproveGrid({
     {
       key: "lens",
       header: "Lens",
-      width: 1.1,
+      // Floor (WI-10006513): the idea/source chip is up to 80px wide + 20px
+      // padding; the bare 1.1fr track was 60px at 1024px and cut it.
+      width: "minmax(104px, 1.1fr)",
       toCopyText: (r) => r.idea?.lens ?? "",
       render: ({ row: r }) =>
         r.idea ? (
@@ -2890,7 +2892,9 @@ function ImproveGrid({
     {
       key: "severity",
       header: "Severity",
-      width: 0.9,
+      // Floor (WI-10006513): 0.9fr fell to 49px at 1024px, under a 46px chip
+      // plus 20px padding.
+      width: "minmax(72px, 0.9fr)",
       toCopyText: (r) => r.item?.severity ?? "",
       render: ({ row: r }) => {
         if (!r.item) return null;
@@ -2908,7 +2912,11 @@ function ImproveGrid({
     {
       key: "stage",
       header: "Stage",
-      width: 1.1,
+      // A floor under the fr share (WI-10006513, measured on the deployed
+      // portal at 1024x650): the bare 1.1fr track was 60px while the widest
+      // single-line stage chip is 81px + 20px cell padding, so the cell cut
+      // "approved" mid-word. The grid's own scroller takes any overflow.
+      width: "minmax(104px, 1.1fr)",
       toCopyText: (r) => PIPELINE_STATES[pipelineState(r)].label,
       render: ({ row: r }) => {
         const stage = pipelineState(r);

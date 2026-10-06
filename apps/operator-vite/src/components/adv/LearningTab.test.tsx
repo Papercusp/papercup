@@ -2721,6 +2721,27 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
     expect(chip?.getAttribute("title")).toContain(longId);
   });
 
+  it("10c. the chip columns carry px floors so a narrow window never cuts a chip (WI-10006513)", () => {
+    // Measured on the deployed cloud portal at 1024x650: the bare fr tracks
+    // shrank to 49-60px while the lens/severity/stage chips need up to 80px +
+    // 20px cell padding, and the overflow:hidden cells cut them mid-word.
+    render(<LearningTab />);
+    const templates = Array.from(document.querySelectorAll<HTMLElement>("*"))
+      .map((el) => el.style.gridTemplateColumns)
+      .filter(Boolean);
+    // Positive control: the items grid (identified by its Age floor) rendered.
+    const itemsGrid = templates.filter((t) => t.includes("minmax(64px, 0.7fr)"));
+    expect(itemsGrid.length).toBeGreaterThan(0);
+    for (const t of itemsGrid) {
+      // lens + stage
+      expect(t.split("minmax(104px, 1.1fr)").length - 1).toBe(2);
+      // severity
+      expect(t).toContain("minmax(72px, 0.9fr)");
+      // the pre-fix bare tracks are gone
+      expect(t.split(" ").filter((track) => track === "1.1fr" || track === "0.9fr")).toHaveLength(0);
+    }
+  });
+
   it("11. renders lens weights as shares, sorted descending", () => {
     scoutResult = {
       ...scoutResult,
