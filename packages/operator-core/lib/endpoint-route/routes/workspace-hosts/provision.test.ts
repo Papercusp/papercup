@@ -7,8 +7,10 @@ import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-
 import {
   WORKSPACE_HOST_FENCE_REFUSED_CODE,
   WorkspaceHostControllerFenceError,
+  WorkspaceHostIdSpentError,
 } from '../../../workspace-host/observability-store';
 import {
+  WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
 } from '../../../workspace-host/provisioning-runner';
@@ -66,14 +68,18 @@ function harness() {
   const listLiveHostIds = vi.fn<NonNullable<WorkspaceHostProvisionRouteDependencies['listLiveHostIds']>>(
     async () => [],
   );
+  const readSpentHostId = vi.fn<NonNullable<WorkspaceHostProvisionRouteDependencies['readSpentHostId']>>(
+    async () => null,
+  );
   const dependencies: WorkspaceHostProvisionRouteDependencies = {
     activeWorkspaceId: () => 'ws-1',
     provisioningAvailable: () => true,
     readConnection,
     listLiveHostIds,
+    readSpentHostId,
     startProvisioning,
   };
-  return { dependencies, readConnection, listLiveHostIds, startProvisioning };
+  return { dependencies, readConnection, listLiveHostIds, readSpentHostId, startProvisioning };
 }
 
 /** A hosted (one-per-sign-up) AWS connection: its `delegation://` ref is what makes it capped. */
@@ -468,6 +474,47 @@ describe('POST /workspace-hosts/provision', () => {
       error: 'workspace-host provision refused: a newer operation or controller holds this host',
       reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
       hostId: 'host-1',
+    });
+  });
+
+  // WI-10006929: a spent host id was refused only inside the workflow, so the caller got 202 and
+  // the refusal surfaced minutes later as a failed operation. It is now a synchronous 422.
+  it('refuses a spent host id with a synchronous 422 before anything is enqueued', async () => {
+    const h = harness();
+    h.readSpentHostId.mockResolvedValueOnce(new WorkspaceHostIdSpentError('host-1', 2, 'op-destroy-1'));
+
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Host', desired });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host provisioning request rejected',
+      reason: 'host_id_spent',
+      problems: ["workspace host id 'host-1' is already used (revision 2, operation op-destroy-1); a new host needs a new id"],
+      hostId: 'host-1',
+    });
+    expect(h.startProvisioning).not.toHaveBeenCalled();
+    expect(h.listLiveHostIds).not.toHaveBeenCalled();
+  });
+
+  it('asks the spent-id check with the caller operationId and the runner default revision', async () => {
+    const h = harness();
+    const response = await post(h.dependencies, {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+      operationId: 'op-replay-1',
+    });
+    expect(response.status).toBe(201);
+    expect(h.readSpentHostId).toHaveBeenCalledWith('ws-1', 'host-1', {
+      operationId: 'op-replay-1',
+      desiredRevision: WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
+    });
+    expect(h.startProvisioning).toHaveBeenCalledTimes(1);
+
+    const fresh = harness();
+    await post(fresh.dependencies, { connectionId: 'connection-1', name: 'Host', desired });
+    expect(fresh.readSpentHostId).toHaveBeenCalledWith('ws-1', 'host-1', {
+      desiredRevision: WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
     });
   });
 });

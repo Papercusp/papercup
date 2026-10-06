@@ -32,6 +32,7 @@ const {
   readWorkspaceHostControl,
   WORKSPACE_HOST_FENCE_REFUSED_CODE,
   readWorkspaceHostDestroyTarget,
+  readWorkspaceHostIdSpent,
   recordWorkspaceHostObservation,
   recordWorkspaceHostHealth,
   updateWorkspaceHostLifecycleState,
@@ -440,6 +441,52 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
         observed_state: 'provisioning',
         desired_revision: 1,
       });
+    });
+
+    // WI-10006929: the provision route reads the same decision at admission so a spent id is a
+    // synchronous 422, not 202 followed by a failed operation. It must agree with the upsert guard
+    // on every state, and must let a replay of an existing operation through to the workflow.
+    it('admission read agrees with the upsert guard and passes a replay through', async () => {
+      const ask = (workspaceId: string, hostId: string, operationId?: string) =>
+        readWorkspaceHostIdSpent(workspaceId, hostId, {
+          ...(operationId ? { operationId } : {}),
+          desiredRevision: 1,
+        });
+
+      // Destroyed host (stored revision 2): spent, with or without a caller operation id.
+      const destroyed = await seedFirstProvision('host-admission-destroyed');
+      await destroyed.finish('prov-1', 'succeeded');
+      await beginWorkspaceHostOperation({
+        workspaceId: destroyed.workspaceId,
+        operationId: 'destroy-1',
+        hostId: 'host-admission-destroyed',
+        action: 'destroy',
+        desiredRevision: 2,
+        controllerAuthority: authority,
+      });
+      await destroyed.finish('destroy-1', 'succeeded');
+      const spentAfterDestroy = await ask(destroyed.workspaceId, 'host-admission-destroyed');
+      expect(spentAfterDestroy).toBeInstanceOf(WorkspaceHostIdSpentError);
+      expect(spentAfterDestroy?.desiredRevision).toBe(2);
+      expect(await ask(destroyed.workspaceId, 'host-admission-destroyed', 'prov-2')).toBeInstanceOf(
+        WorkspaceHostIdSpentError,
+      );
+      // ...and a replay of the operation that ran is the workflow's to answer, not admission's.
+      expect(await ask(destroyed.workspaceId, 'host-admission-destroyed', 'prov-1')).toBeNull();
+
+      // Same revision, already ran: spent; the guard agrees.
+      const ran = await seedFirstProvision('host-admission-ran');
+      await ran.finish('prov-1', 'succeeded');
+      expect(await ask(ran.workspaceId, 'host-admission-ran', 'prov-again')).toBeInstanceOf(WorkspaceHostIdSpentError);
+
+      // Failed first provision: its retry is admissible at admission exactly as at the guard.
+      const failed = await seedFirstProvision('host-admission-failed-first');
+      await failed.finish('prov-1', 'failed');
+      expect(await ask(failed.workspaceId, 'host-admission-failed-first', 'prov-1-r2')).toBeNull();
+      expect(await ask(failed.workspaceId, 'host-admission-failed-first')).toBeNull();
+
+      // A host id with no row at all is admissible.
+      expect(await ask(freshWorkspace(), 'host-admission-never-seen')).toBeNull();
     });
   });
 

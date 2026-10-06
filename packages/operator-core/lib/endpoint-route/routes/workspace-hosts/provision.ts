@@ -19,15 +19,18 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   listLiveWorkspaceHostIdsOnConnection,
   readWorkspaceHostConnection,
+  readWorkspaceHostIdSpent,
   WORKSPACE_HOST_FENCE_REFUSED_CODE,
   WorkspaceHostControllerFenceError,
   type StoredWorkspaceHostConnection,
+  type WorkspaceHostIdSpentError,
 } from '../../../workspace-host/observability-store';
 import {
   decideWorkspaceHostInstanceCap,
   workspaceHostConnectionInstanceCap,
 } from '../../../workspace-host/instance-cap';
 import {
+  WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
   validateWorkspaceHostCanaryAdmission,
@@ -69,6 +72,16 @@ export interface WorkspaceHostProvisionRouteDependencies {
    * Absent = the store read; a tenant surface supplies its RLS-wrapped equivalent.
    */
   listLiveHostIds?: (workspaceId: string, connectionId: string) => Promise<string[]>;
+  /**
+   * WI-10006929: the spent-host-id refusal the provision workflow would raise, read before the
+   * workflow is enqueued so the caller gets a synchronous 422 instead of 202 plus a failed
+   * operation. Absent = the store read; a tenant surface supplies its RLS-wrapped equivalent.
+   */
+  readSpentHostId?: (
+    workspaceId: string,
+    hostId: string,
+    request: { operationId?: string; desiredRevision: number },
+  ) => Promise<WorkspaceHostIdSpentError | null>;
   startProvisioning: (
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
@@ -212,6 +225,30 @@ export function createWorkspaceHostProvisionRoute(
             target: requestedDesired.target,
           },
           { status: 501 },
+        );
+      }
+      // One host id is one replaceable host: an id that already ran, or is being destroyed or
+      // retired, is refused HERE with a synchronous 422 (WI-10006929). The workflow's own guard
+      // (WI-10006863) remains the race-safe backstop; a replayed operationId passes through to it.
+      const spent = await (dependencies.readSpentHostId ?? readWorkspaceHostIdSpent)(
+        workspaceId,
+        requestedDesired.hostId,
+        {
+          ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
+          desiredRevision: WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
+        },
+      );
+      if (spent) {
+        return Response.json(
+          {
+            ok: false,
+            error: 'workspace-host provisioning request rejected',
+            reason: 'host_id_spent',
+            problems: [spent.message],
+            hostId: spent.hostId,
+            auditUrl: workspaceHostAuditUrl(spent.hostId),
+          },
+          { status: 422 },
         );
       }
       // One live host per hosted sign-up, on every cloud (D-397 / aws-byoc-gcp-parity D-001).

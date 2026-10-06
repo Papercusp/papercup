@@ -90,6 +90,57 @@ function priorCountingOperation(
 }
 
 /**
+ * The ONE decision "this first operation would be refused because its host id is spent", shared by
+ * the upsert guard (inside the provision workflow) and the admission read (before the workflow is
+ * enqueued), so the synchronous 422 and the race-safe backstop can never disagree.
+ */
+function workspaceHostIdSpent(
+  stored: { desiredRevision: number; priorOperationId: string | null },
+  desiredRevision: number,
+): boolean {
+  return (
+    desiredRevision < stored.desiredRevision ||
+    (desiredRevision === stored.desiredRevision && stored.priorOperationId !== null)
+  );
+}
+
+/**
+ * WI-10006929: the WI-10006863 spent-id guard, evaluated at ADMISSION so the provision route can
+ * answer a synchronous 422 instead of 202 followed by a failed operation on the host timeline.
+ * Returns the refusal the in-workflow guard would raise, or null when the id is admissible.
+ *
+ * A request whose `operationId` already names an operation on this host is a REPLAY, not a first
+ * operation: it returns null so the workflow layer answers it idempotently (DBOS returns the
+ * recorded result). The in-workflow guard stays as the race-safe backstop; this read takes no lock.
+ */
+export async function readWorkspaceHostIdSpent(
+  workspaceId: string,
+  hostId: string,
+  request: { operationId?: string; desiredRevision: number },
+  tx?: Sql,
+): Promise<WorkspaceHostIdSpentError | null> {
+  const asking = request.operationId ?? null;
+  return inWorkspace(workspaceId, tx, async (query) => {
+    const rows = await query<Array<{ desired_revision: number; prior_id: string | null; replay: boolean }>>`
+      SELECT host.desired_revision,
+             (${priorCountingOperation(query, workspaceId, hostId, asking)} LIMIT 1) AS prior_id,
+             EXISTS (
+               SELECT 1 FROM harness_shared.workspace_host_operations self
+               WHERE self.workspace_id = ${workspaceId} AND self.host_id = ${hostId} AND self.id = ${asking}::text
+             ) AS replay
+      FROM harness_shared.workspace_hosts AS host
+      WHERE host.workspace_id = ${workspaceId} AND host.id = ${hostId}
+    `;
+    const row = rows[0];
+    if (!row || row.replay) return null;
+    const stored = { desiredRevision: Number(row.desired_revision), priorOperationId: row.prior_id };
+    return workspaceHostIdSpent(stored, request.desiredRevision)
+      ? new WorkspaceHostIdSpentError(hostId, stored.desiredRevision, stored.priorOperationId)
+      : null;
+  });
+}
+
+/**
  * WI-10005312: `error.code` of the terminal row recorded when the fence refuses an operation
  * before it began. Without it, a request already answered 202 had no row at all, so the
  * timeline it was pointed at could never show the failure. A refused row never ran on the
@@ -472,8 +523,7 @@ export async function upsertWorkspaceHost(input: WorkspaceHostInput): Promise<vo
       const row = existing[0];
       if (
         row &&
-        (desiredRevision < Number(row.desired_revision) ||
-          (desiredRevision === Number(row.desired_revision) && row.prior_id !== null))
+        workspaceHostIdSpent({ desiredRevision: Number(row.desired_revision), priorOperationId: row.prior_id }, desiredRevision)
       ) {
         throw new WorkspaceHostIdSpentError(input.id, Number(row.desired_revision), row.prior_id);
       }

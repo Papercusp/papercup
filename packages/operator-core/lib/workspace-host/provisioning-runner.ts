@@ -169,6 +169,12 @@ export async function renderControllerWorkspaceHostBootstrap(hostId: string): Pr
   return (await resolveControllerWorkspaceHostBootstrap(hostId)).script;
 }
 
+/**
+ * The desired revision a provision runs at when its input names none. Exported so the provision
+ * route's admission-time spent-id check (WI-10006929) evaluates the same revision the workflow will.
+ */
+export const WORKSPACE_HOST_PROVISION_DEFAULT_REVISION = 1;
+
 export class WorkspaceHostProvisioningRequestError extends Error {
   readonly problems: readonly string[];
 
@@ -989,7 +995,7 @@ export async function runWorkspaceHostProvisioning(
   const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
   const hostId = nonEmpty(input.desired.hostId, 'desired.hostId');
   const controllerAuthority = input.controllerAuthority ?? DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY;
-  const desiredRevision = input.desiredRevision ?? 1;
+  const desiredRevision = input.desiredRevision ?? WORKSPACE_HOST_PROVISION_DEFAULT_REVISION;
   const store = controllerStore(input.store ?? DEFAULT_STORE, controllerAuthority, operationId);
 
   const requestProblems: string[] = [];

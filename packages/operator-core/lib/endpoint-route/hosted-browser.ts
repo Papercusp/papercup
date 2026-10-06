@@ -19,6 +19,7 @@ import type { HostedTenantContextRunner } from '../auth/hosted/service-adapters'
 import {
   listLiveWorkspaceHostIdsOnConnection,
   readWorkspaceHostConnection,
+  readWorkspaceHostIdSpent,
   readWorkspaceHostControl,
   readWorkspaceHostDestroyTarget,
   upsertWorkspaceHostConnection,
@@ -161,6 +162,8 @@ export interface HostedBrowserRouteDependencies {
   ) => Promise<string | null>;
   /** Live hosts on one connection, for the per-connection instance cap, read under tenant RLS. */
   readonly listLiveHostIds?: (workspaceId: string, connectionId: string, tx?: Sql) => Promise<string[]>;
+  /** The spent-host-id admission refusal (WI-10006929), read under tenant RLS. */
+  readonly readSpentHostId?: typeof readWorkspaceHostIdSpent;
   readonly startProvisioning?: (
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
@@ -428,6 +431,11 @@ function localProvisionRoute(
     listLiveHostIds: (workspaceId, connectionId) =>
       wrapTenantRead(principal, runTenant, (tx) =>
         (deps.listLiveHostIds ?? listLiveWorkspaceHostIdsOnConnection)(workspaceId, connectionId, tx)),
+    // The spent-id admission check reads the host's operation history under the same tenant
+    // transaction, so it can only ever see the host this tenant is bound to.
+    readSpentHostId: (workspaceId, hostId, request) =>
+      wrapTenantRead(principal, runTenant, (tx) =>
+        (deps.readSpentHostId ?? readWorkspaceHostIdSpent)(workspaceId, hostId, request, tx)),
     startProvisioning: async (input) => {
       const readState = deps.readBoundWorkspaceState ?? readCustomerWorkspaceState;
       const bringUp = await hostedProvisionBringUp(input, principal.selectedWorkspaceId ?? undefined, (customerWorkspaceId) =>

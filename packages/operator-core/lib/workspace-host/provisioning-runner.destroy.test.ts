@@ -1449,6 +1449,8 @@ describe('canary identity survives provision → destroy (WI-2144027)', () => {
         status: 'connected' as const,
         connection: { target: 'gcp', cloudCredentialRef: { kind: 'cloud' as const, ref: 'adc://controller' } },
       }),
+      // WI-10006929: the admission-time spent-id read; host-1 is fresh in this fixture.
+      readSpentHostId: async () => null,
       startProvisioning: async (input) => {
         persisted = input.desired;
         return {

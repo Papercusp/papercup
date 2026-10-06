@@ -386,6 +386,7 @@ describe('hosted browser route boundary', () => {
             },
           }) as never,
           listLiveHostIds: async () => [],
+          readSpentHostId: async () => null,
           provisioning: provisioning as never,
         },
       }).routes, '/hosted/browser/workspace-hosts/provision')(
