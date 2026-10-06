@@ -68,6 +68,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       await stamp(candidate('outside-window'), { submitted_at: new Date(now.getTime() - 120001) });
       await stamp(candidate('expired'), { expires_at: new Date(now.getTime() - 1) });
       await stamp(candidate('injected', 'codex', { text: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\nkeep going' }));
+      await stamp(candidate('torn-wake', 'codex', { text: '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work' }));
       // WI-10006568: ingest that runs after the stamp's TTL. The turn was typed
       // 15 min ago while its stamp was valid; it expired 5 min ago, before this
       // insert. Expiry is judged against the TURN, so this must still promote.
@@ -89,7 +90,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
         const stored = rows.find(row => row.session_id === c.row.session_id);
         const expected = ['claude', 'codex', 'omp', 'codex-history', 'late-ingest'].includes(c.label) ? 'owner-typed'
           : c.label === 'injected' ? 'agent-injected'
-          : c.label === 'new-machine-rule' ? 'machine-surface' : 'unenrolled-origin';
+          : ['new-machine-rule', 'torn-wake'].includes(c.label) ? 'machine-surface' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
       }
       // Re-correlation of already-stored rows: no stamp existed at insert, so
@@ -122,7 +123,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
         WHERE workspace_id = \${workspace} AND session_id = 'origin-legacy-residual'\`;
       await sql\`UPDATE harness_shared.session_turns
         SET turn_origin = 'hook-authenticated-prompt', turn_origin_verdict = 'owner-typed'
-        WHERE workspace_id = \${workspace} AND session_id IN ('origin-new-machine-rule', 'origin-assistant')\`;
+        WHERE workspace_id = \${workspace} AND session_id IN ('origin-new-machine-rule', 'origin-assistant', 'origin-torn-wake')\`;
       await sql\`UPDATE harness_shared.session_turns SET speaker = 'assistant'
         WHERE workspace_id = \${workspace} AND session_id = 'origin-assistant'\`;
       const repaired = await backfillTurnProvenanceOnce(sql, 100);
@@ -135,7 +136,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
         const stored = after.find(row => row.session_id === c.row.session_id);
         const positive = ['claude', 'codex', 'omp', 'codex-history', 'late-ingest', 'late-stamp'].includes(c.label);
         const expected = positive ? 'owner-typed' : c.label === 'injected' ? 'agent-injected'
-          : c.label === 'new-machine-rule' ? 'machine-surface'
+          : ['new-machine-rule', 'torn-wake'].includes(c.label) ? 'machine-surface'
           : c.label === 'assistant' ? 'not-user-turn' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
         assert.equal(stored.turn_origin_classifier_version, MACHINE_SURFACE_CATALOGUE_VERSION);
