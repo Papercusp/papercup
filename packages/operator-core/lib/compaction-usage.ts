@@ -891,10 +891,29 @@ async function servedRouteBoundToRef(
 }
 
 /** The hard window of a served route: 1M when the beta was forwarded, else the 200k default.
- *  Null when the route is unknown or its gateway predates the `context1m` field (never guess). */
+ *  Null when the route is unknown or its gateway predates the `context1m` field (never guess).
+ *
+ *  WI-10006049: OBSERVED USAGE OUTRANKS THE FLAG. A request whose real input (exact
+ *  `inputTotal`, or the prompt floor) exceeded 200k was by construction served by a window
+ *  larger than 200k — whatever the `context1m` flag of the latest request says. Without this,
+ *  one 200k-flagged request (a bare `/model` menu pick on Claude Code 2.1.289, or a CLI
+ *  rate-limit fallback) re-seeded a session that was already holding >200k at 158k, below its
+ *  own fixed-prompt floor, and the watchdog respawned it on every turn (8 respawns in an hour,
+ *  2026-10-05). Usage can only RAISE the window, never lower it.
+ *
+ *  Only a reading taken ON THE REQUEST THE FLAG DESCRIBES counts (`usage.at >= route.at`: the
+ *  gateway stamps the route on response headers and the usage on that response's
+ *  `message_start`). A reading carried over from an EARLIER request proves nothing about the
+ *  current one: the da701a71 death (2026-09-02) was a 248,703-token session whose CLI fell back
+ *  to a bare 200k model, so the window really was 200k and every later request failed — that
+ *  session must still read 200k so the watchdog rescues it. */
 export function servedWindowForRoute(route: GatewayServedRoute | null | undefined): number | null {
   if (!route?.model || route.context1m == null) return null;
-  return route.context1m ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
+  if (route.context1m) return MODEL_WINDOW_1M;
+  const usage = route.usage;
+  const sameRequest = usage != null && route.at != null && usage.at >= route.at;
+  const observed = sameRequest ? usage.inputTotal : 0;
+  return Number.isFinite(observed) && observed > MODEL_WINDOW_DEFAULT ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
 }
 
 /**

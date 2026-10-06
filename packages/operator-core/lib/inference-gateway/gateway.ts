@@ -792,7 +792,39 @@ export function hasContext1mBeta(betaHeader: string | null | undefined): boolean
  *  downgrade target — a beta the model rejects is a 400, no better than the overflow it would prevent. */
 export function supportsContext1m(model: string, priorContext1mModel?: string | null): boolean {
   if (priorContext1mModel && model === priorContext1mModel) return true;
-  return Object.values(ONE_MILLION_MODEL_ALIASES).includes(model);
+  return Object.values(ONE_MILLION_MODEL_ALIASES).includes(model) || isDefaultContext1mModel(model);
+}
+
+/** WI-10006049: API model ids of the Claude families papercusp serves at 1M BY DEFAULT —
+ *  generation-5+ opus, sonnet and fable (the API-id side of agent-config-constants
+ *  DEFAULT_1M_FAMILY_RE, which covers launch SPECS like `opus`/`sonnet-5`). Measured against the
+ *  2.1.289 CLI: its 1M aliases are exactly opus/sonnet/fable/opusplan `[1m]`, and their API ids
+ *  are dated point releases (`claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5`) that the
+ *  ONE_MILLION_MODEL_ALIASES table (the bare `-5` ids) does not list. Deliberately NOT haiku and NOT
+ *  the 4.x generations: a 1M beta the model rejects is a 400. */
+export function isDefaultContext1mModel(model: string | null | undefined): boolean {
+  return /^claude-(?:opus|sonnet|fable)-(?:[5-9]|[1-9]\d+)(?:[-.][0-9a-z.-]*)?$/i.test(String(model ?? '').trim());
+}
+
+/** WI-10006049 (owner Avi 2026-10-05 #1369/#1371: "if the default is 1m that sounds good" ·
+ *  "make sure this works for all claude models too not just opus"): a papercusp-managed caller
+ *  (it carries the owner header) asking for a 1M-capable family WITHOUT the 1M beta is served at
+ *  1M anyway. This is what makes the default survive Claude Code's bare `/model` menu: on 2.1.289
+ *  the menu saves the 200k `opus`/`sonnet`/`fable` pick and the CLI then sends no beta, which
+ *  re-seeded sessions at a 158k limit below their own ~130-165k fixed prompt (a respawn storm).
+ *  Below 200k input tokens the beta changes nothing about price or limits; above it, it is the
+ *  difference between a served request and "Prompt is too long". Un-owned callers are untouched.
+ *  Pure; the request handler applies it. */
+export function shouldDefaultContext1m(args: {
+  owner: string | null | undefined;
+  url: string;
+  model: string;
+  context1m: boolean;
+  clientHas1m: boolean;
+}): boolean {
+  if (!args.owner || args.context1m || args.clientHas1m) return false;
+  if (!args.url.startsWith('/v1/messages')) return false;
+  return isDefaultContext1mModel(args.model);
 }
 
 /** Below this many (bytes/4-estimated) input tokens a 200k window is not in danger, so a caller that
@@ -5532,6 +5564,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // window in the beta header before it reaches us. The header is therefore
     // part of the effective request window even when body normalization did not
     // see the marker.
+    // WI-10006049: the 1M DEFAULT for papercusp-managed callers on a 1M-capable family — decided
+    // HERE, before the window is read, so account/model alternates are chosen for the window the
+    // request will actually be served at (see shouldDefaultContext1m).
+    if (
+      shouldDefaultContext1m({
+        owner: wantOwner,
+        url,
+        model,
+        context1m,
+        clientHas1m: hasContext1mBeta(req.headers['anthropic-beta'] as string | undefined),
+      })
+    ) {
+      context1m = true;
+    }
     const requestedWindow1m = context1m || hasContext1mBeta(req.headers['anthropic-beta'] as string | undefined);
     if (operationModelPolicy.status === 'bound' && pool.healthyCount) {
       const policy = operationModelPolicy.policy;
