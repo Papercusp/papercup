@@ -100,6 +100,24 @@ MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
 
+# Keep each completed phase's next phase bounded by the existing 15-minute
+# startup budget. Extending only at milestones avoids both a whole-workflow
+# timeout during real progress and a heartbeat that hides a stalled phase.
+staging_sync_checkpoint() {
+  [[ -n "${NOTIFY_SOCKET:-}" ]] || return 0
+  systemd-notify --status="staging-sync: $1" EXTEND_TIMEOUT_USEC=900000000
+}
+
+finish_staging_sync() {
+  local status=$?
+  trap - EXIT
+  cleanup_staging_candidate || true
+  if [[ "$status" -eq 0 && -n "${NOTIFY_SOCKET:-}" ]]; then
+    systemd-notify --ready --status="staging-sync complete" || status=$?
+  fi
+  exit "$status"
+}
+
 # Lock diagnostics are fail-open. The helper writes bounded records to stderr
 # (captured by journald); a missing helper must not change sync admission.
 STAGING_LOCK_ATTRIBUTION_HELPER="$INTEGRATION_ROOT/apps/operator/scripts/systemd/staging-lock-attribution.sh"
@@ -286,7 +304,7 @@ mark_staging_candidate_ready() {
   fi
 }
 
-trap cleanup_staging_candidate EXIT
+trap finish_staging_sync EXIT
 
 # A sidecar's reviewBy is intentionally fail-closed in the restart preflight,
 # but that only runs when server code needs a restart. This advisory scan runs on
@@ -808,6 +826,7 @@ staging_alias_bootstrap || { log "FATAL: could not bootstrap the stable staging 
 # failed despite serving the exact target. Newly superseded generations are
 # collected on the next timer tick through this same maintained GC path.
 prune_staging_generations
+staging_sync_checkpoint "generation cleanup complete"
 
 forward_compat_review_warnings
 
@@ -886,6 +905,7 @@ SYNC_ROOT="$(realpath -e "$STAGING_ROOT" 2>/dev/null || printf '%s' "$STAGING_RO
 if [ "$checkout_needs_advance" = 1 ]; then
   log "preparing isolated staging candidate for ${target:0:10}"
   prepare_staging_candidate "$target"
+  staging_sync_checkpoint "candidate checkout and SPA prepared"
   SYNC_ROOT="$STAGING_CANDIDATE_ROOT"
 else
   log "isolated checkout already at ${target:0:10}; repairing only the stale running generation"
@@ -893,6 +913,7 @@ fi
 
 if [ "$restart_required" = 1 ]; then
   preflight_staging_migrations "$SYNC_ROOT"
+  staging_sync_checkpoint "migration safety checks complete"
   bundle_script="$STAGING_BUNDLE_SCRIPT"
   if [[ -n "$STAGING_CANDIDATE_ROOT" ]]; then
     bundle_script="$STAGING_CANDIDATE_ROOT/apps/operator/bin/bundle-host.sh"
@@ -903,7 +924,9 @@ if [ "$restart_required" = 1 ]; then
   fi
   log "prebuilding proof-bound host bundle before publishing or stopping $UNIT"
   PAPERCUSP_INTEGRATION_ROOT="$SYNC_ROOT" PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$bundle_script"
+  staging_sync_checkpoint "host bundle prebuilt"
   prepare_staging_schema "$SYNC_ROOT"
+  staging_sync_checkpoint "target schema prepared"
 fi
 
 if [ "$checkout_needs_advance" = 1 ]; then
@@ -913,6 +936,7 @@ if [ "$checkout_needs_advance" = 1 ]; then
     require_host_bundle=1
   fi
   publish_staging_generation "$STAGING_CANDIDATE_ROOT" "$STAGING_CANDIDATE_HOME" "$target" "$require_host_bundle"
+  staging_sync_checkpoint "generation published"
 fi
 
 # WI-5710 — SPA-only advance: the stable alias now points at the complete
