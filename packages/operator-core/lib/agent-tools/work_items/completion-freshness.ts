@@ -203,7 +203,84 @@ export async function completionHeadBlobMap(
   paths: readonly string[],
   opts: GitSpawnOptions = {},
 ): Promise<ReadonlyMap<string, HeadBlobResolution> | undefined> {
-  if (opts.signal?.aborted) return Promise.resolve(undefined);
+  return (await readCompletionHeadBlobMap(repoRoot, headSha, paths, opts)).map;
+}
+
+/** Default deadline for one head-blob `git ls-tree` (and its failure-only presence probe). */
+export const HEAD_BLOB_LS_TREE_TIMEOUT_MS = 5000;
+
+/**
+ * Why a head-blob read produced no map. `timeout` / `failed` are the git outcome
+ * ({@link streamGitFields}); `error` is a thrown exception; `aborted` is the caller's signal.
+ */
+export type HeadBlobReadFailure = 'timeout' | 'failed' | 'aborted' | 'error';
+
+type HeadBlobMapRead =
+  | { map: ReadonlyMap<string, HeadBlobResolution>; failure?: undefined }
+  | { map: undefined; failure: HeadBlobReadFailure };
+
+/**
+ * EI-25261145211539591: an unreadable submodule's reason must name the MEASURED cause.
+ * The old text said "(not initialized in this checkout, or its object store is
+ * unreadable)" for EVERY non-complete read, including a 5 s ls-tree timeout and a
+ * failed sidecar read, so a transient failure in the canonical tree (whose object store
+ * held the commit) read as a missing object. That misdirected two investigations to a
+ * nonexistent "serving checkout" mechanism. A timeout says so; any other failure is
+ * followed by a `cat-file -e` presence probe, paid ONLY on this failure path, that
+ * separates "the commit is absent" from "the read failed although the commit is present".
+ * The `submodule '<prefix>' could not be read at <sha12> ` prefix is kept on purpose:
+ * complete.ts keys its registered-root retry on it.
+ */
+export async function submoduleUnreadableReason(
+  prefix: string,
+  submoduleRoot: string,
+  sha: string,
+  failure: HeadBlobReadFailure,
+  opts: GitSpawnOptions = {},
+): Promise<string> {
+  const head = `submodule '${prefix}' could not be read at ${sha.slice(0, 12)} `;
+  const timeoutMs = opts.timeoutMs ?? HEAD_BLOB_LS_TREE_TIMEOUT_MS;
+  if (failure === 'timeout') {
+    return (
+      head +
+      `(git ls-tree timed out after ${timeoutMs}ms: a transient read failure, NOT evidence ` +
+      `that the submodule is uninitialized or lacks the commit)`
+    );
+  }
+  const presence = opts.signal?.aborted
+    ? 'skipped'
+    : await streamGitFields(['-C', submoduleRoot, 'cat-file', '-e', `${sha}^{commit}`], () => undefined, {
+        ...opts,
+        timeoutMs,
+        preferSidecar: true,
+      });
+  if (presence === 'failed') {
+    return head + `(the commit is not in this checkout's submodule object store: not initialized, or not yet fetched)`;
+  }
+  if (presence === 'complete') {
+    return (
+      head +
+      `(git ls-tree ${failure === 'error' ? 'threw' : 'failed'} although the commit IS present in ` +
+      `the submodule object store: a read failure, not a missing object)`
+    );
+  }
+  return (
+    head +
+    `(git ls-tree ${failure === 'error' ? 'threw' : 'failed'} and the object-presence probe ` +
+    `${presence === 'timeout' ? 'timed out' : 'did not run'}, so whether the commit is present is unknown)`
+  );
+}
+
+async function readCompletionHeadBlobMap(
+  repoRoot: string,
+  headSha: string,
+  paths: readonly string[],
+  opts: GitSpawnOptions = {},
+): Promise<HeadBlobMapRead> {
+  const aborted: HeadBlobMapRead = { map: undefined, failure: 'aborted' };
+  if (opts.signal?.aborted) return aborted;
+  // The outcome of the most recent non-complete ls-tree, reported when the read yields nothing.
+  let failure: HeadBlobReadFailure = 'failed';
   try {
     const runLsTree = async (
       root: string,
@@ -230,8 +307,9 @@ export async function completionHeadBlobMap(
         // blocked bg-host's main thread ~86 ms per call (178 of ~236 forks in a 300 s
         // trace). The read never stops early and already keeps every field, so the
         // sidecar's buffered stdout changes nothing about what is returned.
-        { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
+        { ...opts, timeoutMs: opts.timeoutMs ?? HEAD_BLOB_LS_TREE_TIMEOUT_MS, preferSidecar: true },
       );
+      if (outcome !== 'complete') failure = outcome;
       return outcome === 'complete' ? fields : undefined;
     };
     const parseTree = (records: readonly string[]) => {
@@ -249,9 +327,10 @@ export async function completionHeadBlobMap(
       return { blobs, gitlinks };
     };
 
-    if (paths.length === 0) return new Map();
+    if (paths.length === 0) return { map: new Map() };
     const directTree = await runLsTree(repoRoot, headSha, paths);
-    if (!directTree || opts.signal?.aborted) return undefined;
+    if (opts.signal?.aborted) return aborted;
+    if (!directTree) return { map: undefined, failure };
     const direct = parseTree(directTree);
     const result = new Map<string, HeadBlobResolution>();
     for (const [path, sha] of direct.blobs) result.set(path, { status: 'resolved', sha });
@@ -276,7 +355,8 @@ export async function completionHeadBlobMap(
         ),
       ];
       const gitlinkTree = await runLsTree(repoRoot, headSha, gitlinkPrefixes, false);
-      if (!gitlinkTree || opts.signal?.aborted) return undefined;
+      if (opts.signal?.aborted) return aborted;
+      if (!gitlinkTree) return { map: undefined, failure };
       const allGitlinks = parseTree(gitlinkTree).gitlinks;
       const grouped = new Map<string, { sha: string; paths: string[] }>();
       for (const path of missing) {
@@ -289,22 +369,23 @@ export async function completionHeadBlobMap(
         grouped.set(prefix, group);
       }
       for (const [prefix, group] of grouped) {
-        const nested = await completionHeadBlobMap(nodePath.join(repoRoot, prefix), group.sha, group.paths, opts);
-        if (opts.signal?.aborted) return undefined;
+        const submoduleRoot = nodePath.join(repoRoot, prefix);
+        const nested = await readCompletionHeadBlobMap(submoduleRoot, group.sha, group.paths, opts);
+        if (opts.signal?.aborted) return aborted;
+        const nestedMap = nested.map;
+        const reason = nestedMap
+          ? undefined
+          : await submoduleUnreadableReason(prefix, submoduleRoot, group.sha, nested.failure, opts);
+        if (opts.signal?.aborted) return aborted;
         for (const path of group.paths) {
           // A submodule we could not read answers NOTHING about the commit's contents.
           // Reporting it as absent is the WI-42441 conflation: it blames the closer for
           // a path the server merely failed to resolve.
           result.set(
             `${prefix}/${path}`,
-            nested
-              ? (nested.get(path) ?? { status: 'absent' })
-              : {
-                  status: 'unresolvable',
-                  reason:
-                    `submodule '${prefix}' could not be read at ${group.sha.slice(0, 12)} ` +
-                    `(not initialized in this checkout, or its object store is unreadable)`,
-                },
+            nestedMap
+              ? (nestedMap.get(path) ?? { status: 'absent' })
+              : { status: 'unresolvable', reason: reason ?? '' },
           );
         }
       }
@@ -312,9 +393,9 @@ export async function completionHeadBlobMap(
       // carry it — the one case that IS a definitive negative.
       for (const path of missing) if (!result.has(path)) result.set(path, { status: 'absent' });
     }
-    return result;
+    return { map: result };
   } catch {
-    return undefined;
+    return { map: undefined, failure: 'error' };
   }
 }
 
