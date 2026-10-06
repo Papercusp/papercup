@@ -432,6 +432,19 @@ vi.mock('../../blueprint/launch-blueprint', () => ({
   resolveLaunchTargetForEvent: (...a: unknown[]) =>
     resolveLaunchTargetForEventMock(a[0] as string, a[1] as Record<string, unknown>),
 }));
+// WI-10006848: the agent-CLI preflight reads the host PATH; pin it so the suite does not
+// depend on whether `claude` is installed where it runs. Default: the CLI is present.
+const probeRoleRuntimeMock = vi.fn(
+  (_role: string): { ok: boolean; bin: string; resolved?: string } => ({
+    ok: true,
+    bin: 'claude',
+    resolved: '/usr/local/bin/claude',
+  }),
+);
+vi.mock('../../harness-invoke-once', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness-invoke-once')>()),
+  probeRoleRuntime: (role: string) => probeRoleRuntimeMock(role),
+}));
 
 type FakeResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
 const loopbackFetchMock = vi.fn(
@@ -1009,6 +1022,7 @@ beforeEach(() => {
   bridgePreviousEgressHead = null;
   fetchRepoPushPermissionMock.mockReset().mockResolvedValue(true);
   resolveLaunchTargetForEventMock.mockReset();
+  probeRoleRuntimeMock.mockReset();
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
   readEditAttributionRosterMock.mockReset().mockResolvedValue([]);
@@ -4047,6 +4061,47 @@ describe('P-010/P-012 merge-conflict path', () => {
     expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
   });
 
+  // WI-10006848: a host without the resolver role's agent CLI (a Server install ships none)
+  // died `spawn claude ENOENT` on every conflict tick, and the escalation still claimed
+  // "merge-resolver dispatched". The resolver is withheld and the row says why.
+  it('withholds the merge-resolver when its agent CLI is missing and says so on the escalation', async () => {
+    runGitSyncMock.mockResolvedValue(conflictOutcome);
+    probeRoleRuntimeMock.mockReturnValue({ ok: false, bin: 'claude' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(probeRoleRuntimeMock).toHaveBeenCalledWith('merge-resolver');
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('merge-resolver NOT dispatched — runtime missing: claude'));
+    // The row a human reads is the LAST write, and it no longer claims a dispatch.
+    const ups = escalationUpserts();
+    const last = ups.at(-1)!.body as Record<string, unknown>;
+    expect(last).toMatchObject({
+      kind: 'git-sync-conflict',
+      scope: 'libs/generic/sync',
+      resolver_unavailable: { runtime: 'claude', reason: 'runtime-missing' },
+    });
+    expect(last.detail).toContain('merge-resolver runtime missing: claude');
+    expect(last.detail).not.toContain('merge-resolver dispatched');
+    warn.mockRestore();
+  });
+
+  it('keeps the dispatched wording and no resolver_unavailable field when the CLI is present', async () => {
+    runGitSyncMock.mockResolvedValue(conflictOutcome);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const ups = escalationUpserts();
+    expect(ups).toHaveLength(1);
+    expect(ups[0].body).not.toHaveProperty('resolver_unavailable');
+    expect((ups[0].body as Record<string, unknown>).detail).toContain('merge-resolver dispatched');
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('RE-dispatches when the previous resolver already SETTLED (failed) — a settled dispatch never suppresses retry', async () => {
     runGitSyncMock.mockResolvedValue(conflictOutcome);
     resolverRows = [{ lr: { status: 'failed', at: Date.now() - 60_000 } }];
@@ -4321,6 +4376,24 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     expect(routinePatches()).toContainEqual({
       last_content_fixer: expect.objectContaining({ status: 'ok', httpStatus: 200 }),
     });
+    warn.mockRestore();
+  });
+
+  // WI-10006848: the content-fixer is an agent too; on a host without its CLI the quarantine
+  // still holds but no fixer is spawned to die `spawn <cli> ENOENT`.
+  it('withholds the content-fixer when its agent CLI is missing (quarantine still escalated)', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    probeRoleRuntimeMock.mockReturnValue({ ok: false, bin: 'codex' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(contentUpserts()).toHaveLength(1);
+    expect(probeRoleRuntimeMock).toHaveBeenCalledWith('content-fixer');
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(routinePatches().some((p) => 'last_content_fixer' in p)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('content-fixer NOT dispatched — runtime missing: codex'));
     warn.mockRestore();
   });
 

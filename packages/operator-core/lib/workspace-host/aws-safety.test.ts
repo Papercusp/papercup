@@ -13,7 +13,12 @@ import {
   createAwsWorkspaceHostAmbiguousOperationRecoveryRecord,
   type AwsWorkspaceHostResourceCensusInput,
 } from './aws-safety';
-import { createAwsSdkWorkspaceHostClient, type AwsSdkClientConfig, type AwsSdkClientSet } from './aws-sdk-client';
+import {
+  AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG,
+  createAwsSdkWorkspaceHostClient,
+  type AwsSdkClientConfig,
+  type AwsSdkClientSet,
+} from './aws-sdk-client';
 import { createAwsWorkspaceHostProvider } from './aws-provider';
 import type { ManagedWorkspaceHostResourceObservation, WorkspaceHostAmbiguousOperationRecoveryInput } from './gcp-safety';
 
@@ -242,6 +247,55 @@ describe('censusAwsWorkspaceHostResources', () => {
     expect(census.inventoryEvidence.map((entry) => entry.kind)).toEqual(['vm', 'disk', 'snapshot', 'spot-request']);
   });
 
+  it('accepts resources carrying the papercusp:client-token idempotency tag and keeps only the managed tags (WI-10006843)', () => {
+    // EBS volumes and snapshots carry Papercusp's own idempotency tag, and a customer may put any
+    // tag on a managed resource. The public-metadata secret guard rejects '-token' keys, so raw
+    // provider tags in the census input used to fail every AWS teardown's terminal evidence.
+    const managedKeys = [
+      AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed,
+      AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId,
+      AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId,
+    ].sort();
+    const extraTagged = (entry: ManagedWorkspaceHostResourceObservation): ManagedWorkspaceHostResourceObservation => ({
+      ...entry,
+      labels: { ...entry.labels, [AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG]: 'op-provision-1', 'customer-api-token': 'x' },
+    });
+    const census = censusAwsWorkspaceHostResources(
+      censusInput({
+        observed: [
+          extraTagged(observation('vm', 'i-live')),
+          extraTagged(observation('disk', 'vol-live')),
+          extraTagged(observation('snapshot', 'snap-stray')),
+        ],
+      }),
+    );
+    expect(census.untracked.map((entry) => entry.resource.providerId)).toEqual(['snap-stray']);
+    for (const entry of [...census.managed, ...census.untracked]) {
+      expect(Object.keys(entry.labels).sort()).toEqual(managedKeys);
+    }
+    expect(JSON.stringify(census)).not.toContain('token');
+  });
+
+  it('still refuses secret material in a managed tag value after dropping the other tags (WI-10006843)', () => {
+    // The source never spells the PEM header (the secrets and pot-git publish guards match it);
+    // the runtime string is exactly what the census guard matches.
+    const keyWords = ['PRIVATE', 'KEY'].join(' ');
+    const leaked = observation('disk', 'vol-live');
+    const census = () =>
+      censusAwsWorkspaceHostResources(
+        censusInput({
+          observed: [
+            observation('vm', 'i-live'),
+            {
+              ...leaked,
+              labels: { ...leaked.labels, [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId]: `-----BEGIN ${keyWords}-----` },
+            },
+          ],
+        }),
+      );
+    expect(census).toThrow(/Secret material is forbidden/);
+  });
+
   it('is not clean after a teardown while the host still has a live spot request (WI-10005454)', () => {
     // The post-delete census expects nothing to survive. A persistent request left open would
     // relaunch the host, so it must read as an untracked survivor, not pass silently.
@@ -344,6 +398,14 @@ describe('createAwsWorkspaceHostAmbiguousOperationRecoveryRecord (P-007)', () =>
     });
     expect(AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK.ref).toBe(AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF);
     expect(AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK.steps.join(' ')).toContain('ClientToken');
+  });
+
+  it('accepts an EC2 read that also carries the papercusp:client-token tag and records only the managed tags (WI-10006843)', () => {
+    const record = createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(
+      recoveryInput({}, { labels: { ...tags, [AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG]: 'client-token-1' } }),
+    );
+    expect(record.closesOperation).toBe(true);
+    expect(record.providerRead.labels).toEqual(tags);
   });
 
   it('closes a delete only when EC2 reads the resource absent, and resumes with the same token otherwise', () => {

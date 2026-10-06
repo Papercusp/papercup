@@ -534,6 +534,12 @@ export interface DeployHealth {
   gitSyncMaxMissedIntervals?: number | null;
   /** The install that holds `gitSyncMaxMissedIntervals`. */
   gitSyncMissedIntervalsInstallSlug?: string | null;
+  /** WI-10006786: EVERY non-failing active install with missed_intervals > 0, worst first. The
+   *  liveness alarm raises one signal PER install from this list. Keying a single signal on the max
+   *  alone let a long-dead install (every fire `skipped` for weeks) hold the max and one open
+   *  escalation forever, so a fresh starvation on any other install deduped onto that row unnamed.
+   *  Optional: absent = a snapshot written before this field existed (the alarm falls back to the max). */
+  gitSyncMissedIntervalsByInstall?: Array<{ installSlug: string; missedIntervals: number }>;
   /** True when the git-sync routine read FAILED (the fail-soft catch fired), so a null
    *  `gitSyncMaxMissedIntervals` means "not observed", never "recovered". */
   gitSyncMissedIntervalsUnreadable?: boolean;

@@ -22,6 +22,18 @@ const bash = (root: string, code: string, ...args: string[]) => execFileSync('ba
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe('D177 installed dependency census', () => {
+  it('excludes hidden tooling names inside scopes and still refuses unlocked installed packages', async () => {
+    const root = temp();
+    pkg(root, 'node_modules/.npm-stage-a', 'a');
+    pkg(root, 'node_modules/@scope/.npm-stage-b', '@scope/b');
+    pkg(root, 'node_modules/@scope/b', '@scope/b');
+    const locks = [{ path: 'package-lock.json', packages: {
+      'node_modules/@scope/b': { version: '1.0.0' } } }];
+    expect((await readSeedInstalledPackages(root, ['node_modules'], locks)).map(row => row.path))
+      .toEqual(['node_modules/@scope/b']);
+    pkg(root, 'node_modules/@scope/unlocked', '@scope/unlocked');
+    await expect(readSeedInstalledPackages(root, ['node_modules'], locks)).rejects.toThrow('no committed lock entry');
+  });
   it('uses the root workspace lock instead of a subsumed stale local lock and still refuses drift', async () => {
     const root = temp(); const path = 'packages/workspace/node_modules/@types/node';
     pkg(root, path, '@types/node', '2.0.0');
@@ -104,6 +116,8 @@ async function frozen() {
     const bytes = archive(root, name); const url = `https://registry.npmjs.org/${name}/-/fixture.tgz`;
     archives.set(url, bytes); packages[`node_modules/${name}`] = { version: '1.0.0', resolved: url, integrity: sha512(bytes) };
   }
+  // Tooling directories stay in the generation fingerprint, outside the npm package namespace.
+  pkg(join(generation, 'tree'), 'node_modules/@fixture/.npm-stage-x', '@fixture/x');
   write(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages }));
   write(join(root, '.gitignore'), 'node_modules/\n');
   mkdirSync(dirname(join(root, 'apps/operator/bin/release/dependency-generation.sh')), { recursive: true });
@@ -150,6 +164,14 @@ describe('D177 maintained publication binding', () => {
   it('refuses a selector for another generation', async () => {
     const f = await frozen(); write(f.selector, readFileSync(f.selector, 'utf8').replace(f.generationId, 'v1-' + 'f'.repeat(64)));
     await expect(bindSeedFrozenDependencies(f.root, f.commit)).rejects.toThrow('input/generation mismatch');
+  });
+  it('refuses scoped tooling byte drift even though tooling is not an installed package', async () => {
+    const f = await frozen();
+    await expect(bindSeedFrozenDependencies(f.root, f.commit)).resolves.toMatchObject({
+      dependencyGeneration: f.generationId });
+    const file = join(f.root, 'node_modules/@fixture/.npm-stage-x/index.js');
+    chmodSync(file, 0o644); write(file, 'tooling copy changed');
+    await expect(bindSeedFrozenDependencies(f.root, f.commit)).rejects.toThrow('materialized dependency tree drift');
   });
   it('refuses published tree mutation and a materialized copy with changed bytes', async () => {
     const f = await frozen(); chmodSync(join(f.generation, 'tree/node_modules/hypercore/index.js'), 0o644);

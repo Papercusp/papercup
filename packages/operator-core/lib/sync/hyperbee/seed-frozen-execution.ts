@@ -94,7 +94,11 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
   const scan = async (nm: string) => {
     for (const name of (await readdir(join(root, nm))).sort()) {
       if (name.startsWith('.')) continue;
-      const names = name.startsWith('@') ? (await readdir(join(root, nm, name))).sort().map(n => `${name}/${n}`) : [name];
+      // Match the maintained installed-package walk: dot-prefixed npm tooling
+      // entries are outside the package namespace, also inside a scope. Their
+      // bytes remain covered by the complete generation/tree fingerprints.
+      const names = name.startsWith('@') ? (await readdir(join(root, nm, name)))
+        .filter(n => !n.startsWith('.')).sort().map(n => `${name}/${n}`) : [name];
       for (const name of names) {
         const path = `${nm}/${name}`;
         const found = expected.get(path);

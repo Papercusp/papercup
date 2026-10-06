@@ -1735,6 +1735,7 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
     let gitSyncFailingLeg: DeployHealth['gitSyncFailingLeg'] = null;
     let gitSyncMaxMissedIntervals: number | null = null;
     let gitSyncMissedIntervalsInstallSlug: string | null = null;
+    const gitSyncMissedIntervalsByInstall: Array<{ installSlug: string; missedIntervals: number }> = [];
     let gitSyncMissedIntervalsUnreadable = false;
     try {
       const { sql } = getOrgPg();

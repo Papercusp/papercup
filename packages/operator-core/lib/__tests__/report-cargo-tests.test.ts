@@ -44,13 +44,16 @@ import {
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
-  resolveCargoExecutionDetails,
+  buildCargoExecutionDetails,
+  resolveCargoMutationPhase,
   resolveCargoTestRunScope,
   resolveCargoTestRunSource,
   shouldRunAffectedCargoSuite,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/cargo-result.mjs';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { mutationFailureLines } from '../agent-tools/plans/spec-evidence-store';
 
 const GIB = 1024 ** 3;
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -122,7 +125,7 @@ describe('cargo test_runs rows are attributed to a harness/workspace (WI-1000682
     // The probe phase rides in execution_details, and the row source comes from the shared rule.
     expect(columns).toContain('execution_details');
     expect(valueSlots[columns.indexOf('execution_details')]).toContain('executionDetails');
-    expect(REPORTER_SOURCE).toMatch(/const executionDetails = resolveCargoExecutionDetails\(\)/);
+    expect(REPORTER_SOURCE).toMatch(/const executionDetails = buildCargoExecutionDetails\(\{ \.\.\.row\.execution,/);
     expect(REPORTER_SOURCE).toMatch(/const source = resolveCargoTestRunSource\(\)/);
   });
 
@@ -140,12 +143,51 @@ describe('cargo test_runs rows are attributed to a harness/workspace (WI-1000682
       .toBe('mutation-probe');
   });
 
-  it('records the probe phase in execution_details, and nothing outside a probe', () => {
-    expect(resolveCargoExecutionDetails({})).toBeNull();
-    expect(resolveCargoExecutionDetails({ PAPERCUSP_MUTATION_PHASE: 'mutant' })).toBeNull();
-    expect(resolveCargoExecutionDetails({ PAPERCUSP_MUTATION_PROBE: '1' })).toBeNull();
-    expect(resolveCargoExecutionDetails({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: ' mutant ' }))
-      .toEqual({ mutationPhase: 'mutant' });
+  it('records the probe phase, and no phase outside a probe', () => {
+    expect(resolveCargoMutationPhase({})).toBeNull();
+    expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PHASE: 'mutant' })).toBeNull();
+    expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PROBE: '1' })).toBeNull();
+    expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: ' mutant ' }))
+      .toBe('mutant');
+  });
+
+  // WI-10006849: the contract parser is strict, and the spec evaluator reads failed-case
+  // identity ONLY from a record it accepts — a partial record silently erased every cargo
+  // mutant's failing case, so no cargo clause could ever prove falsifiability.
+  it('writes execution_details the shared contract parser accepts, naming the failed cargo case', () => {
+    const probe = { PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: 'mutant' };
+    const failedRow = buildCargoExecutionDetails({
+      root: '/repo', filePath: 'papercusp-desktop/src-tauri::tests::tracker_measures', failed: 1,
+      failedCaseTitles: ['tests::tracker_measures'], harnessSlug: 'papercusp', workspaceId: 'ws', env: probe,
+    });
+    expect(parseTestRunExecutionDetails(failedRow)).toMatchObject({
+      failed: 1, failedCaseTitles: ['tests::tracker_measures'], mutationPhase: 'mutant', harnessSlug: 'papercusp',
+    });
+    // The evaluator's own line derivation turns that identity into a declarable case prefix.
+    expect(mutationFailureLines('thread panicked at src/main.rs:1:1:', failedRow))
+      .toEqual(['tests::tracker_measures: (recorded failed assertion)']);
+
+    const passRow = buildCargoExecutionDetails({ root: '/repo', filePath: 'c::tests::ok', passed: 1, env: {} });
+    expect(parseTestRunExecutionDetails(passRow)).toMatchObject({ passed: 1, failed: 0, mutationPhase: null });
+    expect(passRow).not.toHaveProperty('failedCaseTitles');
+
+    // A crashed binary is a collection failure: it may name no failed case.
+    const crashed = buildCargoExecutionDetails({
+      root: '/repo', filePath: 'c (cargo aggregate)', collectionFailed: true, failed: 0, failedCaseTitles: ['x'], env: {},
+    });
+    expect(parseTestRunExecutionDetails(crashed)).toBeDefined();
+    expect(crashed).not.toHaveProperty('failedCaseTitles');
+
+    // Titles beyond the failed count, duplicates and control characters are never recorded.
+    const aggregate = buildCargoExecutionDetails({
+      root: '/repo', filePath: 'c (cargo aggregate)', failed: 2,
+      failedCaseTitles: ['tests::a', 'tests::a', 'bad\ntitle', 'tests::b', 'tests::c'], env: {},
+    });
+    expect(aggregate.failedCaseTitles).toEqual(['tests::a', 'tests::b']);
+    expect(parseTestRunExecutionDetails(aggregate)).toBeDefined();
+
+    // The partial record this replaces is exactly what the parser rejects.
+    expect(parseTestRunExecutionDetails({ mutationPhase: 'mutant' })).toBeUndefined();
   });
 });
 

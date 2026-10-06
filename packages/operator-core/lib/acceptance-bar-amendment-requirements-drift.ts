@@ -62,6 +62,12 @@ export interface RequirementsDrift {
   entries: RequirementsDriftEntry[];
   /** What to do about the drift; null when in sync. */
   action: string | null;
+  /**
+   * WI-10006835: BARs whose drift the APPLY resolves on its own. An amended BAR with an explicit
+   * ```requirement block is re-rendered from the amended criterion in the same transaction as the
+   * rubric revision (`rerenderAmendedRequirementBlocks`). Present only when out of sync.
+   */
+  rerenderedOnApply?: string[];
 }
 
 /** Whitespace-insensitive, since the canonical writer trims and collapses BAR text. */
