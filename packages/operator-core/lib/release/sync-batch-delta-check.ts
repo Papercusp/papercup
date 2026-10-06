@@ -1,11 +1,23 @@
 /**
- * ⚠ STATUS 2026-08-31 — UNWIRED, PARKED MID-BUILD (owner pause order on P-012).
+ * STATUS 2026-10-06 — WIRED AND RUNNING (gate-throughput-shift-left-2026-10-06, P-001).
  *
- *   This file: `packages/operator-core/lib/release/sync-batch-delta-check.ts`.
- *   It is PURE LOGIC ONLY and is imported by NOTHING. There is deliberately no
- *   `system:sync-batch-delta-check` action, no `register-system-actions.ts` import,
- *   no `TARGET_ROLE_SPEND` entry, no `BESPOKE_ACTIVE_SEEDS` entry and no seed
- *   script — so nothing can schedule or fire it. It is tsc-clean and inert.
+ *   This file is the PURE logic; the IO seams are `sync-batch-delta-check-deps.ts`, the
+ *   action is `../harness/routines/sync-batch-delta-check-action.ts`, and the durable
+ *   5-minute row is seeded by `seed-sync-batch-delta-check-routine.ts`. The old
+ *   "UNWIRED, PARKED MID-BUILD" banner that stood here was stale: every step of the
+ *   successor list below has landed. The list is kept as the wiring map.
+ *
+ *   What changed in P-001: the check no longer SKIPS under ordinary host load or
+ *   while a green-checkpoint suite runs — that skip silently dropped most batches on
+ *   this box, where load sits above 1.2x cores for most of the day. It now runs every
+ *   heavy leg at idle CPU/IO priority (`idlePriorityArgv`) and, under load or during a
+ *   gate run, with a REDUCED confirm/attribution budget (`evaluateCapacity`). It skips
+ *   only above a hard ceiling or when load is unreadable, and records per-tick
+ *   coverage with an alarm when coverage drops (`recordCoverageTick` /
+ *   `evaluateCoverage`). P-002: a confirmed red is ROUTED to the editing agent
+ *   (`pickRedAuthor`).
+ *
+ *   Wiring map (all landed):
  *
  *   STILL TO DO for a successor (in this order — steps 2-5 must land in ONE change,
  *   because `routine-classification.registry.test.ts` cross-checks the registry
