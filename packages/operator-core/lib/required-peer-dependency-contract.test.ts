@@ -80,4 +80,43 @@ describe('required transitive peer dependency contracts', () => {
       await module.close();
     }
   });
+
+  describe('Stagehand browser and model dependencies', () => {
+    const consumerRequire = createRequire(resolve(root, 'apps/operator/package.json'));
+
+    it('resolves its selected Puppeteer client within the Stagehand peer range', () => {
+      const stagehand = installedManifest(consumerRequire, '@browserbasehq/stagehand');
+      const range = stagehand.peerDependencies?.['puppeteer-core'];
+      expect(range).toBeTruthy();
+      const stagehandRequire = createRequire(consumerRequire.resolve('@browserbasehq/stagehand'));
+      const browser = installedManifest(stagehandRequire, 'puppeteer-core');
+      expect(satisfies(browser.version, range!), `Puppeteer ${browser.version} must satisfy ${range}`).toBe(true);
+    });
+
+    it('keeps any transitive LangChain adapter compatible with its actual core', () => {
+      const stagehand = installedManifest(consumerRequire, '@browserbasehq/stagehand');
+      // Current Stagehand uses the AI SDK directly. Older releases brought a
+      // LangChain adapter; if one returns, verify the peer where it resolves.
+      expect(stagehand.dependencies?.ai).toBeTruthy();
+      if (!stagehand.dependencies?.['@langchain/openai']) return;
+      const stagehandRequire = createRequire(consumerRequire.resolve('@browserbasehq/stagehand'));
+      const adapter = installedManifest(stagehandRequire, '@langchain/openai');
+      const range = adapter.peerDependencies?.['@langchain/core'];
+      expect(range).toBeTruthy();
+      const adapterRequire = createRequire(stagehandRequire.resolve('@langchain/openai'));
+      const core = installedManifest(adapterRequire, '@langchain/core');
+      expect(satisfies(core.version, range!), `LangChain core ${core.version} must satisfy ${range}`).toBe(true);
+    });
+
+    it('loads the real Stagehand and Puppeteer entrypoints used by browser exploration', () => {
+      const { Stagehand } = consumerRequire('@browserbasehq/stagehand');
+      const stagehandRequire = createRequire(consumerRequire.resolve('@browserbasehq/stagehand'));
+      const browser = stagehandRequire('puppeteer-core');
+      expect(typeof Stagehand).toBe('function');
+      expect(typeof Stagehand.prototype.init).toBe('function');
+      expect(typeof Stagehand.prototype.agent).toBe('function');
+      expect(typeof Stagehand.prototype.close).toBe('function');
+      expect(typeof browser.launch).toBe('function');
+    });
+  });
 });
