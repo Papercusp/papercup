@@ -211,13 +211,16 @@ async function sync(sourceId: string, hostFetch: HostFetch = githubFetch): Promi
   expect(result.sources).toEqual([expect.objectContaining({ sourceId, outcome: 'synced', rejected: 0 })]);
 }
 
+/** The data source's config; write-back hands it to the provider as `syncPage` gets it. */
+const SOURCE_CONFIG = { owner: OWNER, repo: REPO, harnessSlug: HARNESS };
+
 async function connect(kind = GITHUB): Promise<string> {
   const [row] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
        destination_policy, permission_mapping)
     VALUES (${WS}, ${kind}, ${alice}, ${`${kind}-account-${Date.now()}`}, 'connected',
-            ${sql.json({ owner: OWNER, repo: REPO, harnessSlug: HARNESS })}, 'organization',
+            ${sql.json(SOURCE_CONFIG)}, 'organization',
             ${sql.json({ ticket: ['record'], 'ticket-status-change': ['event'], 'ticket-comment': ['document'] })},
             ${sql.json({ mode: 'source-acl' })})
     RETURNING id::text`;
@@ -466,7 +469,8 @@ describe('record write-back dispatches by provider capability (D-015.5)', () => 
     expect(result).toEqual({ posted: true, externalRef: 'comment-77', updateId: 'comment:77' });
     expect(bound).toEqual([{ workspaceId: WS, providerId: WRITABLE, sourceId, harness: HARNESS }]);
     expect(invoked).toEqual([{
-      request: { source: sourceId, capability: 'ticket.comment', args: { externalId: 'TIX-9', text: 'triaged' } },
+      // The source's config rides along, as syncPage gets it (linear-asana-task-sync P-005).
+      request: { source: sourceId, capability: 'ticket.comment', args: { externalId: 'TIX-9', text: 'triaged' }, config: SOURCE_CONFIG },
       fetched: `posted:${JSON.stringify({ externalId: 'TIX-9', text: 'triaged' })}`,
     }]);
   });
@@ -513,7 +517,7 @@ describe('ticket write-back requested by work-item id (linear-asana-task-sync P-
     // Resolved from the record's data source, invoked through a host.fetch bound to it alone.
     expect(bound).toEqual([{ workspaceId: WS, providerId: WRITABLE, sourceId, harness: HARNESS }]);
     expect(invoked.map((i) => i.request)).toEqual([
-      { source: sourceId, capability: 'ticket.comment', args: { externalId: 'TIX-9', text: 'picked up by Papercusp' } },
+      { source: sourceId, capability: 'ticket.comment', args: { externalId: 'TIX-9', text: 'picked up by Papercusp' }, config: SOURCE_CONFIG },
     ]);
     expect(await writeBacksForWorkItem(sql, WS, workItemId)).toEqual([
       expect.objectContaining({ workItemId, dataSourceId: sourceId, action: 'comment', updateId: 'comment:77', externalRef: 'comment-77', detail: {} }),
@@ -552,7 +556,7 @@ describe('ticket write-back requested by work-item id (linear-asana-task-sync P-
     });
     // Field authority (D-004): title, description and assignee never travel; only the category does.
     expect(invoked.map((i) => i.request)).toEqual([
-      { source: sourceId, capability: 'ticket.transition', args: { externalId: 'TIX-9', toCategory: 'in-progress' } },
+      { source: sourceId, capability: 'ticket.transition', args: { externalId: 'TIX-9', toCategory: 'in-progress' }, config: SOURCE_CONFIG },
     ]);
 
     // Already there: the provider changes nothing, and nothing is ledgered for it.

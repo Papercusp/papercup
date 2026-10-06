@@ -730,7 +730,13 @@ describe('the host writes back to Linear by capability (D-008)', () => {
 
 // ── Provider-neutrality drift detectors ─────────────────────────────────────
 
-const LINEAR_TOKEN = /(?<![A-Za-z0-9])linear(?![A-Za-z0-9])|(?<=[a-z0-9])Linear/i;
+/**
+ * The provider's name as code spells it: `linear` at a word start not running on into a lower-case
+ * word (`linear`, `linear-sync`, `linearSink`), `Linear` at a word start or camel hump
+ * (`LinearClient`, `makeLinearClient`), or `LINEAR`. Case-sensitive on purpose: the English word
+ * inside `nonlinear` / `bilinear` is not the provider.
+ */
+const LINEAR_TOKEN = /(?<![A-Za-z0-9])linear(?![a-z])|Linear(?![a-z])|(?<![A-Z])LINEAR(?![A-Z])/;
 const MODULE_SPECIFIER = /\b(?:require|import)\s*\(\s*['"`]([^'"`]+)['"`]|\bfrom\s+['"`]([^'"`]+)['"`]/g;
 
 /** Lines of CODE (comments stripped) naming Linear. */
@@ -763,6 +769,7 @@ describe('Linear stays a package, not host code', () => {
     expect(linearLines("if (source.kind === 'linear') return linearSink;", 'p.ts')).toHaveLength(1);
     expect(linearLines('const client = new LinearClient({ apiKey });', 'p.ts')).toHaveLength(1);
     expect(linearLines('const client = makeLinearClient(token);', 'p.ts')).toHaveLength(1);
+    expect(linearLines("const LINEAR_API = 'https://api.example.com';", 'p.ts')).toHaveLength(1);
     expect(linearLines('// a comma joins scopes for Linear\nconst sep = descriptor.scopeSeparator;', 'c.ts')).toEqual([]);
     expect(linearLines('const nonlinearBackoff = curve(); const bilinear = 1;', 'c.ts')).toEqual([]);
     expect(foreignImports("const { LinearClient } = require('@linear/sdk');", 'p.cjs')).toEqual(['@linear/sdk']);
