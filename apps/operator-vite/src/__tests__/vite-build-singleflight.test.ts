@@ -245,6 +245,34 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
     process.kill(holder.pid!, 'SIGKILL');
     await holderRes.exited;
   }, 15_000);
+
+  // EI-24961470606265468: an unattended build sets ONE knob for every lock wait in
+  // its chain. Here it alone sets the wait (1s), and an explicit
+  // VITE_BUILD_WAIT_SECS still beats a large umbrella value.
+  it('the unattended lock-wait knob sets the wait, and the specific knob still wins', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const holder = launch({ VITE_BUILD_CMD: 'sleep 30' });
+    const holderRes = collect(holder);
+    await sleep(200);
+    try {
+      const umbrellaOnly = collect(launch({
+        VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '',
+        PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '1',
+      }));
+      expect(await umbrellaOnly.exited).toBe(1);
+      expect(umbrellaOnly.stderr()).toContain('TIMED OUT after 1s');
+
+      const specificWins = collect(launch({
+        VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '1',
+        PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '600',
+      }));
+      expect(await specificWins.exited).toBe(1);
+      expect(specificWins.stderr()).toContain('TIMED OUT after 1s');
+    } finally {
+      process.kill(holder.pid!, 'SIGKILL');
+      await holderRes.exited;
+    }
+  }, 15_000);
 });
 
 describe('vite-build-singleflight — Node heap contract (EI-22614955223428270)', () => {

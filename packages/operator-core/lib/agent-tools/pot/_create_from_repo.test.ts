@@ -33,6 +33,9 @@ function fakes(over: Partial<CreatePotFromRepoDeps> = {}) {
   };
   const deps: CreatePotFromRepoDeps = {
     lookup: async () => NONE_LOOKUP,
+    // P-018: no GitHub in unit tests — unknown facts, no workspace default.
+    fetchIntegrationFacts: async () => null,
+    integrationModePolicyDefault: () => null,
     clone: async (url: string, opts?: Record<string, unknown>) => {
       calls.cloned.push({ url, opts: opts ?? {} });
       return {
@@ -726,5 +729,75 @@ describe('defaultCreateMember translates `hive` to harness:create’s real `pot`
     expect(capturedArgs?.pot).toBe('hello-world-pot');
     expect(capturedArgs?.hive).toBeUndefined();
     expect(capturedArgs?.slug).toBe('hello-world');
+  });
+});
+
+describe('P-018: recommend and lock the integration answer from checkable repo facts', () => {
+  const NO_WRITE = { canWrite: false, isPrivate: false, defaultBranch: 'main', mainRequiresPr: null, otherCommitters: null, hasCi: null };
+
+  function withFacts(facts: Record<string, unknown> | null, policyDefault: 'direct' | 'review' | null = null) {
+    const chooses: Record<string, unknown>[] = [];
+    const probed: Array<{ owner: string; repo: string }> = [];
+    const { deps, calls } = fakes({
+      fetchIntegrationFacts: async (owner, repo) => {
+        probed.push({ owner, repo });
+        return facts as never;
+      },
+      integrationModePolicyDefault: () => policyDefault,
+      resolveSuiteCommand: async () => 'npm test',
+      chooseIntegrationMode: (async (i: Record<string, unknown>) => {
+        chooses.push(i);
+        return { ok: true, mode: 'review', fork: { url: 'https://github.com/bot/shop.git', created: true } };
+      }) as never,
+    });
+    return { deps, calls, chooses, probed };
+  }
+
+  it('no write access + answer "direct" → refused before any side effect, with the one-line reason', async () => {
+    const { deps, calls, chooses, probed } = withFacts(NO_WRITE);
+    const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', integrationMode: 'direct' }, deps);
+    expect(r).toMatchObject({ ok: false, error: 'integration_mode_locked' });
+    expect(!r.ok && r.message).toContain("You can't push to acme/shop");
+    expect(probed).toEqual([{ owner: 'acme', repo: 'shop' }]);
+    expect(calls.cloned).toEqual([]);
+    expect(calls.potCreated).toEqual([]);
+    expect(chooses).toEqual([]);
+  });
+
+  it('no write access + no answer → the working copy is applied (locked), and the recommendation is reported', async () => {
+    const { deps, chooses } = withFacts(NO_WRITE);
+    const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(chooses).toHaveLength(1);
+    expect(chooses[0]).toMatchObject({ mode: 'review' });
+    expect(r.integrationRecommendation).toMatchObject({ recommended: 'review', locked: true, rule: 'no-write-access' });
+  });
+
+  it('an unlocked recommendation never overrides the answer: other committers recommend review, "direct" stays direct', async () => {
+    const { deps, chooses } = withFacts({ ...NO_WRITE, canWrite: true, otherCommitters: true });
+    const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', integrationMode: 'direct' }, deps);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(chooses).toEqual([]);
+    expect(r.integrationRecommendation).toMatchObject({ recommended: 'review', locked: false, rule: 'other-committers' });
+  });
+
+  it("the workspace default (PotControlPolicy.newPotIntegrationMode) applies only when the creator didn't answer", async () => {
+    const unanswered = withFacts(null, 'review');
+    const r1 = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws' }, unanswered.deps);
+    expect(r1.ok).toBe(true);
+    expect(unanswered.chooses).toHaveLength(1);
+
+    const answered = withFacts(null, 'review');
+    const r2 = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', integrationMode: 'direct' }, answered.deps);
+    expect(r2.ok).toBe(true);
+    expect(answered.chooses).toEqual([]);
+  });
+
+  it('into-pot adds never probe (the existing pot keeps its answer)', async () => {
+    const { deps, probed, calls } = withFacts(NO_WRITE);
+    calls.registry.push({ slug: 'home-pot', path: '/hives/home-pot', harness_kind: 'hive' });
+    const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', intoPot: 'home-pot', integrationMode: 'direct' }, deps);
+    expect(r.ok).toBe(true);
+    expect(probed).toEqual([]);
   });
 });

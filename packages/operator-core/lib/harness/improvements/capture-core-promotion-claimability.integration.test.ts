@@ -184,11 +184,13 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     if (!stored) throw new Error(`promoted row ${id} was not persisted`);
     expect(stored.workspace_id).not.toBe('');
     expect(Object.keys(stored.payload)).not.toContain('lane');
+    // Promotion stamps corroborated-tool-failure-awaiting-review, then enrolment
+    // (EI-25176539351759672) replaces it with the review lifecycle's own stamp.
     expect(stored.payload).toMatchObject({
       implementationReadiness: {
         schemaVersion: 'implementation-readiness-v1',
         status: 'unknown',
-        reason: 'corroborated-tool-failure-awaiting-review',
+        reason: 'awaiting-agent-review',
       },
     });
 

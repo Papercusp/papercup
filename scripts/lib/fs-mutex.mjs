@@ -47,6 +47,24 @@ const DEFAULT_RETRY_MS = 250;
  */
 export const PACKAGE_CACHE_MUTEX_NAME = "package-manager-cache";
 
+/**
+ * Default wait budget for both lease kinds. PAPERCUSP_FS_MUTEX_TIMEOUT_MS wins;
+ * otherwise PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC (EI-24961470606265468), the one
+ * knob an unattended desktop build sets so this wait (like the sidecar and vite
+ * build locks) can queue behind a peer instead of failing after 180 s.
+ */
+export function resolveFsMutexTimeoutMs(env = process.env) {
+  const explicit = Number(env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS);
+  if (env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const unattendedSec = Number(env.PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC);
+  if (env.PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC && Number.isFinite(unattendedSec) && unattendedSec > 0) {
+    return unattendedSec * 1000;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
+
 function intEnv(name, fallback) {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -397,9 +415,7 @@ export async function withFsMutex(name, fn, opts = {}) {
   const root = lockRoot();
   const lockDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
-  const timeoutMs =
-    opts.timeoutMs ??
-    intEnv("PAPERCUSP_FS_MUTEX_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
   const staleMs =
     opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
   const retryMs =
@@ -574,9 +590,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   const root = lockRoot();
   const writerDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
-  const timeoutMs =
-    opts.timeoutMs ??
-    intEnv("PAPERCUSP_FS_MUTEX_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
   const staleMs =
     opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
   const retryMs =

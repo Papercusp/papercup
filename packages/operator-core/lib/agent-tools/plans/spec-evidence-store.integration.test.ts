@@ -194,6 +194,8 @@ beforeAll(async () => {
       harness_slug text,
       file_path text,
       status text,
+      -- bind-from-test-run also reads the run's measurement lower bound.
+      started_at timestamptz NOT NULL DEFAULT now(),
       finished_at timestamptz,
       run_group_id text,
       commit_sha text,

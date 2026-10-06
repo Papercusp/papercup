@@ -507,6 +507,9 @@ export function acceptanceCanaryProbes(): Array<{
     reason: 'trusted tool-failure promotion receipt',
     source: { kind: 'bug', title, summary },
     acceptedAt: updatedAt,
+    // P-006 (D-019): a bug's acceptance carries its reproduction receipt, so the
+    // fast-path probe must too or the floor reads it as incomplete.
+    reproduction: { kind: 'current-build-observation', ref: 'acceptance canary fixture (synthetic, never written)', buildSha: '0000000' },
   });
   if (!policy.ok) throw new Error('canary policy receipt must seal');
   const bareReady = createImplementationReadiness({ status: 'ready', source: 'capture-policy', reason: 'immediate capture', updatedAt });

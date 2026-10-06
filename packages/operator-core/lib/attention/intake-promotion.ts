@@ -51,6 +51,7 @@ import {
   type IntakeReproductionSource,
 } from './bulk-dispositions';
 import {
+  bugReproductionMissingText,
   readBornVerifiedReproduction,
   type BugReproductionReceipt,
   type ReproductionLedgerDeps,
@@ -72,6 +73,7 @@ import {
   sealImplementationAcceptance,
   type ImplementationAcceptanceContract,
   type ImplementationAcceptanceProposal,
+  type SealImplementationAcceptanceResult,
 } from '../harness/improvements/agent-review-policy';
 import { neutralizeToolCallTags, sanitizePersistedText } from '../text-safety';
 

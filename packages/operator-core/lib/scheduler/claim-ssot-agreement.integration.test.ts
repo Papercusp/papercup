@@ -413,6 +413,8 @@ beforeAll(async () => {
   // view through the 12-argument work_item_claim_floors overload. Seeds default to created_ts 0,
   // i.e. before the enforcement cutover, so every earlier case keeps its legacy admission.
   await db.sql.unsafe(readMigration('1301-acceptance-claim-floor.sql')).simple();
+  // P-006 / WI-10006220: the same function re-rendered with the kind-specific verification check.
+  await db.sql.unsafe(readMigration('1368-acceptance-claim-floor-kind-verification.sql')).simple();
   await db.sql.unsafe(readMigration('1364-solo-decision-execution-reservation.sql')).simple();
 }, 180_000);
 afterAll(async () => {

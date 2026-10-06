@@ -2,6 +2,13 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/fs-mutex.mjs and regenerate.
 /**
+ * Default wait budget for both lease kinds. PAPERCUSP_FS_MUTEX_TIMEOUT_MS wins;
+ * otherwise PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC (EI-24961470606265468), the one
+ * knob an unattended desktop build sets so this wait (like the sidecar and vite
+ * build locks) can queue behind a peer instead of failing after 180 s.
+ */
+export function resolveFsMutexTimeoutMs(env?: NodeJS.ProcessEnv): number;
+/**
  * Resolve one host-stable mutex root.
  *
  * `os.tmpdir()` is intentionally NOT used here. It follows each process's

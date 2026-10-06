@@ -33,7 +33,27 @@ import {
   verifyNpmCache,
   verifyNpmCacheExclusive,
 } from "./npm-install-safe.mjs";
-import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from "./lib/fs-mutex.mjs";
+import {
+  PACKAGE_CACHE_MUTEX_NAME,
+  resolveFsMutexTimeoutMs,
+  withFsMutex,
+} from "./lib/fs-mutex.mjs";
+
+// EI-24961470606265468: the P-532f capacity build died after the interactive
+// 180 s fs-mutex wait behind a peer's install. The unattended lock-wait knob
+// (seconds) now sets it, and the explicit ms knob still wins.
+test("fs-mutex wait budget honours the unattended knob below the explicit one", () => {
+  assert.equal(resolveFsMutexTimeoutMs({}), 180_000);
+  assert.equal(resolveFsMutexTimeoutMs({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: "3600" }), 3_600_000);
+  assert.equal(
+    resolveFsMutexTimeoutMs({
+      PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: "3600",
+      PAPERCUSP_FS_MUTEX_TIMEOUT_MS: "25",
+    }),
+    25,
+  );
+  assert.equal(resolveFsMutexTimeoutMs({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: "junk" }), 180_000);
+});
 
 // WI-10003114 fixture: the measured shape of the 2026-09-29 flip. An unscoped
 // install wrote `devOptional`; the desktop build's scoped install wrote `dev`

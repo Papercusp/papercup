@@ -23,6 +23,7 @@ import {
 import { parseProjection } from './parse';
 import { nestedProjectionContext } from './nested-dispatch';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
+import { senderBodyDeliveryDiagnostics } from '../agent-tools/coordination/tools/inbox-content-bounds';
 
 const textResult = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 
@@ -56,6 +57,23 @@ const reportOf = (r: { content?: unknown; _meta?: Record<string, unknown> }) =>
     linesOut: number;
     regexFlavor?: string;
   };
+
+describe('EI-25185987580518406 coordination send receipts', () => {
+  it.each([421, 700])('does not label a complete %i-character delivery receipt as omitted output', (chars) => {
+    const receipt = { results: [{ msg_id: 'already-persisted', ...senderBodyDeliveryDiagnostics('x'.repeat(chars)) }] };
+    const out = applyResultProjection(textResult(JSON.stringify(receipt)), spec({ pick: ['results[].msg_id'] }), { toolName: 'coord:send' });
+    expect(JSON.parse(bodyText(out))).toEqual({ results: [{ msg_id: 'already-persisted' }] });
+    expect(reportOf(out).notes.join('\n')).not.toContain('partial-result metadata');
+  });
+
+  it('keeps genuine partial receipt recovery read-only', () => {
+    const receipt = { results: [{ msg_id: 'already-persisted', _partial: true }] };
+    const out = applyResultProjection(textResult(JSON.stringify(receipt)), spec({ pick: ['results[].msg_id'] }), { toolName: 'coord:send' });
+    expect(reportOf(out).notes.join('\n')).toContain('coord:read');
+    expect(reportOf(out).notes.join('\n')).toContain('Do not repeat coord:send');
+    expect(reportOf(out).notes.join('\n')).not.toMatch(/re-call coord:send/i);
+  });
+});
 
 describe('projection materialization format', () => {
   it('keeps implicit TOON for line projections but uses JSON for structured picks', () => {

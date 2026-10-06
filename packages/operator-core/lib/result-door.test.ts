@@ -27,6 +27,7 @@ import {
 import { applyResultProjection } from './result-projection/apply';
 import { parseProjection } from './result-projection/parse';
 import { parseScratchReference } from './scratch-reference';
+import { senderBodyDeliveryDiagnostics } from './agent-tools/coordination/tools/inbox-content-bounds';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
@@ -98,6 +99,45 @@ function boundedBody(result: DoorableResult): {
 }
 
 describe('applyResultDoor', () => {
+  describe('EI-25185987580518406 coordination send receipts', () => {
+    it.each([421, 700])('keeps a complete %i-character delivery receipt inline', (chars) => {
+      const diagnostics = senderBodyDeliveryDiagnostics('x'.repeat(chars))!;
+      const receipt = {
+        ok: !diagnostics.bodyTruncated,
+        results: [{ ok: true, msg_id: 'already-persisted', ...diagnostics,
+          bodyReadRef: { tool: 'coord:read', msg_id: 'already-persisted' } }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const result = { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
+      expect(applyResultDoor(result, { toolName: 'coord:send', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+
+    it.each(['field', 'upstream'] as const)('recovers genuinely %s-partial receipts by reading without repeating the send', (kind) => {
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true, results: [{ msg_id: 'already-persisted', _partial: true }],
+        }) }],
+        ...(kind === 'upstream' ? { _meta: { payloadProjection: {
+          truncated: true, tier: 'trimmed', originalChars: 9_000, returnedChars: 500, omittedCount: 1,
+        } } } : {}),
+      };
+      const out = applyResultDoor(result, { toolName: 'coord:send', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((out.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({ reason: 'under-budget-partial-result', recoverable: false });
+      expect(envelope.incomplete.note).toContain('coord:read');
+      expect(envelope.incomplete.note).toContain('Do not repeat coord:send');
+      expect(envelope.incomplete.note).not.toMatch(/re-call|re-send/i);
+    });
+
+    it('does not treat inbox output clipping as a complete send receipt', () => {
+      const result = { content: [{ type: 'text' as const, text: JSON.stringify({
+        entries: [{ msg_id: 'already-persisted', body_truncated: true }],
+      }) }] };
+      const out = applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID });
+      expect(JSON.parse((out.content[0] as { text: string }).text).incomplete.recoverable).toBe(false);
+    });
+  });
+
   it('a result within the budget passes through as the SAME object (no copy, no spill)', () => {
     const result = { content: [{ type: 'text' as const, text: 'small result' }] };
     expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);

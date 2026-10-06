@@ -148,6 +148,8 @@ export type CreatePotFromRepoResult =
        *  'direct' and into-pot. Best-effort — a refusal never fails the create;
        *  the pot stays 'direct' and the refusal says what to fix. */
       integrationMode?: import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeResult;
+      /** P-018: what the repo's facts recommended (and whether they locked it). Absent for into-pot. */
+      integrationRecommendation?: import('../../harness/git-sync/integration-mode-recommendation').IntegrationModeRecommendation;
     };
 
 // ── Injectable seams (tests pass fakes; production uses the defaults) ─────────

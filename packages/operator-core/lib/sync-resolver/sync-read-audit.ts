@@ -210,6 +210,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'featureNotes.byHarness': null,
   'goals.detail': null, // a specific goalId (from goals.list)
   'hiveFromRepo.progress': null,
+  // P-018: needs a pasted GitHub URL and reads GitHub live — an audit sample
+  // would measure a network call, not a sync read.
+  'potIntegration.createQuestion': null,
   'operatorTurns.page': null,
   // Requires a concrete canonical work-item id. A fabricated id would measure
   // an empty miss rather than the persisted discussion identity payload.

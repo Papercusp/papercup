@@ -81,6 +81,13 @@ import {
   implementationReadinessIsLegacyEquivalent,
   type ImplementationReadinessState,
 } from './agent-review-policy';
+import {
+  BUG_REPRODUCTION_SCHEMA_VERSION,
+  readBornVerifiedReproduction,
+  readStoredBugReproduction,
+  verifyBugReproductionReceipt,
+  type StoredBugReproduction,
+} from '../../attention/bug-reproduction';
 import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
@@ -653,6 +660,20 @@ export interface CaptureDeps {
   setWorkItemStateWithAliasInfo?: CaptureLifecycleStateWriter;
   /** Release the submitter claim when the review lifecycle cannot complete. */
   releaseIssue?: (id: string, opts?: { expectedAssignee?: string }) => Promise<EngineerIssue | null>;
+  /**
+   * EI-25176539351759672: enrol a promoted, peer-corroborated tool failure in agent
+   * review so the reviewer lane (which selects agentReview.status = pending) can see
+   * it. Without it the row carried an awaiting-review readiness stamp nobody cleared.
+   * Deliberately NOT defaulted at the call site: production goes through
+   * `defaultDeps` (lazy-loaded below); a caller that injects its own deps and omits
+   * this seam keeps the PG-free promotion it asked for.
+   */
+  enterAgentReview?: (input: {
+    id: string;
+    submittedBy: string;
+    harnessSlug?: string;
+    workspaceId?: string;
+  }) => Promise<{ entered: boolean; state?: { status?: string } | null; reason?: string }>;
   /** Resolve a probation observation after migration-865 promotion reconciliation. */
   setIssueState?: (
     id: string,
@@ -721,6 +742,12 @@ const defaultDeps: CaptureDeps = {
     return getWorkItem(id, harness);
   },
   setWorkItemStateWithAliasInfo: defaultSetWorkItemStateWithAliasInfo,
+  // Lazy for the same reason as linkIssues: agent-review.ts reaches the org pool,
+  // the routed-idea ledger and the coordination modules.
+  enterAgentReview: async (input) => {
+    const { enterAgentReview } = await import('./agent-review');
+    return enterAgentReview(input);
+  },
   // Lazy for the same reason as linkIssues: the stamp reaches the org pool and
   // the mode store, and this core is imported by pure/vitest paths.
   stampGoalProvenance: async (item, workspaceId, ownerId) => {
@@ -1124,6 +1151,9 @@ function initialImplementationReadiness(reviewRequired: boolean): Implementation
   );
 }
 
+/** The readiness reason a promoted tool failure carries while it awaits a reviewer. */
+export const TOOL_FAILURE_AWAITING_REVIEW_REASON = 'corroborated-tool-failure-awaiting-review';
+
 function promotedProbationReadiness(
   input: CaptureImprovementInput,
   probation: ToolFailureProbationPayload,
@@ -1132,19 +1162,89 @@ function promotedProbationReadiness(
     probation.directEvidence === true ||
     input.sourceRole === 'system' ||
     input.createdBy?.startsWith('system:') === true;
-  return createImplementationReadiness(
-    trustedPromotion
-      ? {
-          status: 'ready',
-          source: 'capture-policy',
-          reason: 'trusted-tool-failure-promotion',
-        }
-      : {
-          status: 'unknown',
-          source: 'capture-policy',
-          reason: 'corroborated-tool-failure-awaiting-review',
-        },
+  if (trustedPromotion) {
+    return createImplementationReadiness({
+      status: 'ready',
+      source: 'capture-policy',
+      reason: 'trusted-tool-failure-promotion',
+    });
+  }
+  // D-024 / plan unified-bug-pipeline D-011: the promoting report carries the failing
+  // call itself (a ledger-resolved or attested encounter receipt). That is direct
+  // evidence of the failure, so the bug is born verified. The receipt's verdict is
+  // computed server-side (capture.ts / captureToolInvocationFriction) and a
+  // caller-classified failure is stamped not-eligible there, so it never lands here.
+  if (readBornVerifiedReproduction(input.payloadExtra)) {
+    return createImplementationReadiness({
+      status: 'ready',
+      source: 'capture-policy',
+      reason: 'born-verified-tool-failure-promotion',
+    });
+  }
+  return createImplementationReadiness({
+    status: 'unknown',
+    source: 'capture-policy',
+    reason: TOOL_FAILURE_AWAITING_REVIEW_REASON,
+  });
+}
+
+/** The receipt a promotion persists, when the incoming filing carried a valid one. */
+function promotionReproductionPatch(input: CaptureImprovementInput): { reproduction?: StoredBugReproduction } {
+  const stored = readStoredBugReproduction(input.payloadExtra);
+  return stored ? { reproduction: stored } : {};
+}
+
+/**
+ * EI-25176539351759672: a row whose readiness says it awaits review but which has no
+ * agentReview record is invisible to every lane — the claim floor holds it as
+ * in-review and the reviewer lane selects only agentReview.status = pending.
+ */
+export function isStrandedToolFailureReview(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const value = payload as Record<string, unknown>;
+  const readiness = value.implementationReadiness as Record<string, unknown> | null | undefined;
+  return (
+    readiness?.status === 'unknown' &&
+    readiness.reason === TOOL_FAILURE_AWAITING_REVIEW_REASON &&
+    (value.agentReview === undefined || value.agentReview === null)
   );
+}
+
+/**
+ * Enrol a promoted, awaiting-review tool failure in agent review (plan
+ * unified-bug-pipeline-and-honest-queue P-002; replaced by the one verification stage
+ * at P-008). Fail-open for the PROMOTION — losing enrolment must not lose the
+ * corroborated report — but never silent: a failure is stamped on the row with the
+ * same `agentReviewFailure` shape the capture review path uses, so the P-003 sweep
+ * and leader triage can see and retry it.
+ */
+export async function enrolPromotedToolFailureReview(
+  issue: EngineerIssue,
+  opts: { submittedBy: string; workspaceId?: string; fallbackScope?: string },
+  deps: CaptureDeps,
+): Promise<{ enrolled: boolean; failure?: AgentReviewFailure }> {
+  if (!deps.enterAgentReview || !isStrandedToolFailureReview(issue.payload)) return { enrolled: false };
+  const harnessSlug = harnessFromScope(issue.scope) ?? harnessFromScope(opts.fallbackScope) ?? undefined;
+  try {
+    const result = await deps.enterAgentReview({
+      id: issue.id,
+      submittedBy: opts.submittedBy,
+      ...(harnessSlug ? { harnessSlug } : {}),
+      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+    });
+    if (result.entered || result.state?.status === 'pending' || result.reason === 'already-approved') {
+      return { enrolled: true };
+    }
+    throw new Error(`agent-review enrollment was not entered${result.reason ? `: ${result.reason}` : ''}`);
+  } catch (error) {
+    const failure: AgentReviewFailure = {
+      phase: 'enrollment',
+      message: reviewFailureMessage(error),
+      at: new Date().toISOString(),
+    };
+    await recordCaptureReviewFailure(issue.id, failure, {}, deps).catch(() => undefined);
+    return { enrolled: false, failure };
+  }
 }
 
 const PROMOTION_RECONCILIATION_OWNER = 'improvement-promotion-reconciler';
@@ -1231,6 +1331,7 @@ async function reconcileToolFailurePromotionCollision(
     ...(!canonicalPayload.implementationReadiness || implementationReadinessIsLegacyEquivalent(canonicalPayload)
       ? { implementationReadiness: promotedProbationReadiness(input, incomingProbation) }
       : {}),
+    ...promotionReproductionPatch(input),
     promotionReconciledFrom: prior.id,
     promotionReconciledAt: reconciledAt,
   }).catch(() => null);
@@ -1254,7 +1355,7 @@ async function reconcileToolFailurePromotionCollision(
 
   await (deps.tagIssue ?? tagIssue)(canonical.id, IMPROVEMENT_TOPIC, input.createdBy).catch(() => {});
   await (deps.untagIssue ?? untagIssue)(prior.id, OBSERVATION_TOPIC).catch(() => {});
-  return merged;
+  return withPromotionReviewEnrolment(merged, input, deps);
 }
 
 /** Promote one exact-key probation row in place, preserving its history/id. */
@@ -1319,6 +1420,7 @@ async function promoteToolFailureProbation(
         promotedBy: input.createdBy ?? 'system:improvement-watchdog',
       },
       implementationReadiness: promotedProbationReadiness(input, incomingProbation),
+      ...promotionReproductionPatch(input),
       ideaLifecycle: initializeIdeaLifecycle(),
     },
     { unset: ['lane'] },
@@ -1339,7 +1441,28 @@ async function promoteToolFailureProbation(
   if (!merged) return null;
   await (deps.tagIssue ?? tagIssue)(prior.id, IMPROVEMENT_TOPIC, input.createdBy).catch(() => {});
   await (deps.untagIssue ?? untagIssue)(prior.id, OBSERVATION_TOPIC).catch(() => {});
-  return merged;
+  return withPromotionReviewEnrolment(merged, input, deps);
+}
+
+/** Enrol a just-promoted row when it awaits review; return the freshest row we can read. */
+async function withPromotionReviewEnrolment(
+  promoted: EngineerIssue,
+  input: CaptureImprovementInput,
+  deps: CaptureDeps,
+): Promise<EngineerIssue> {
+  const enrolment = await enrolPromotedToolFailureReview(
+    promoted,
+    {
+      submittedBy: input.createdBy ?? 'system:improvement-watchdog',
+      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      fallbackScope: input.scope,
+    },
+    deps,
+  );
+  if (!enrolment.enrolled && !enrolment.failure) return promoted;
+  // enterAgentReview / the failure stamp wrote the payload after `promoted` was read.
+  const reread = deps.getIssue ? await deps.getIssue(promoted.id).catch(() => null) : null;
+  return reread ?? promoted;
 }
 
 /**
@@ -1681,6 +1804,36 @@ export interface ToolInvocationFriction {
   ownerId: string;
   invokedAt: string;
   failure: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'status' | 'message' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>;
+  /** The `harness_shared.tool_invocations` row this report was read from (D-011). */
+  invocationId?: string;
+  /** That row's `serving_build_sha`: the build the failing call actually ran on. */
+  servingBuildSha?: string | null;
+}
+
+/**
+ * Plan unified-bug-pipeline D-011 (extends D-024): a watchdog report that carries the
+ * failing tool_invocations row is a reproduction on the build that served it. The
+ * receipt is verified against the row already in hand (no second read), through the
+ * same verifier a filed encounter uses. Bug-class failures only: caller and
+ * rate-limit classes file as `change` and never skip review (D-024 §4).
+ */
+export async function frictionReproduction(
+  invocation: ToolInvocationFriction,
+  kind: 'bug' | 'change',
+): Promise<StoredBugReproduction | null> {
+  const { invocationId, servingBuildSha, failure, ownerId } = invocation;
+  if (kind !== 'bug' || !invocationId || !servingBuildSha || !/^[0-9a-f]{7,40}$/i.test(servingBuildSha)) return null;
+  const receipt = {
+    kind: 'encounter' as const,
+    ref: `tool_invocations:${invocationId}`,
+    buildSha: servingBuildSha.toLowerCase(),
+  };
+  const verification = await verifyBugReproductionReceipt(receipt, {
+    readToolInvocation: async () => ({ status: failure.status ?? null, servingBuildSha }),
+    readTestRun: async () => null,
+    now: () => new Date(),
+  });
+  return { schemaVersion: BUG_REPRODUCTION_SCHEMA_VERSION, receipt, filedBy: ownerId, verification };
 }
 
 /** R-7: reuse the ordinary probation door without agent-authored incident fields. */
@@ -1731,6 +1884,7 @@ export async function captureToolInvocationFriction(
     ? `harness:${resolvedPotScope}`
     : sourceIsWorkspaceScope ? 'operator' : `harness:${concreteHarness}`;
   const toolInvocation = { workspaceId, harnessSlug, ownerId, invokedAt };
+  const reproduction = await frictionReproduction(invocation, kind);
   const incomingProbation = {
     ...normalized, watchdogKey: rowKey, signatureKey, state: 'probation' as const, intendedKind: kind,
     reporters: [ownerId], firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
@@ -1773,7 +1927,10 @@ export async function captureToolInvocationFriction(
     // mints, coalesces or corroborates exactly as it did before D-010.
     return captureImprovement({
       ...base,
-      payloadExtra: { toolFailureProbation: incomingProbation, toolFailureSignature: tally, toolInvocation },
+      payloadExtra: {
+        toolFailureProbation: incomingProbation, toolFailureSignature: tally, toolInvocation,
+        ...(reproduction ? { reproduction } : {}),
+      },
     }, deps);
   }
   const identity = admissionIdentity(base.title, rowKey);
@@ -1791,7 +1948,10 @@ export async function captureToolInvocationFriction(
     const classView: EngineerIssue = { ...signatureRow, payload: { ...priorPayload,
       toolFailureProbation: { ...rowProbation, ...normalized, watchdogKey: rowKey, signatureKey,
         reporters: earlierReporters } } };
-    const input = { ...base, payloadExtra: { toolFailureProbation: incomingProbation, toolInvocation } };
+    const input = {
+      ...base,
+      payloadExtra: { toolFailureProbation: incomingProbation, toolInvocation, ...(reproduction ? { reproduction } : {}) },
+    };
     const promoted = await promoteToolFailureProbation(classView, input, deps, signatureHits, true);
     if (promoted) {
       const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(promoted.id,

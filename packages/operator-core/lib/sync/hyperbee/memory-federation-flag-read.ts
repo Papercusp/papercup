@@ -34,7 +34,32 @@ export function memoryFederationFlagReadDegradation(
   attestation: Pick<FlagAttestation, 'source' | 'overrideRead'>,
 ): string | null {
   if (attestation.overrideRead.kind !== 'store-error') return null;
-  return `override store unreadable with no cached map (value came from ${attestation.source})`;
+  // WI-10006242: quote the load error. It is the only thing that tells a store that
+  // timed out from one that refused, and under the unit-layer no-real-PG rail it is the
+  // rail's own text, which the shared test console filter already recognises.
+  return (
+    `override store unreadable with no cached map (value came from ${attestation.source}; ` +
+    `load error: ${attestation.overrideRead.loadError ?? 'not reported'})`
+  );
+}
+
+/**
+ * The console line boot.ts emits for a degraded read. Kept here, beside the read, so
+ * the unit-rail guard test asserts on the exact text production writes.
+ */
+export function formatMemoryFederationDegradedWarn(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  when: 'boot' | 'pass';
+  read: Pick<MemoryFederationFlagRead, 'degraded' | 'elapsedMs'>;
+  degradedReadsThisBoot: number;
+  outcome: string;
+}): string {
+  return (
+    `[read-merge] [${input.workspaceId}/${input.harnessSlug}] WI-10005919: mem0-federation flag ` +
+    `${input.when} read degraded (${input.read.degraded}, ${input.read.elapsedMs}ms; degraded reads this boot: ` +
+    `${input.degradedReadsThisBoot}) — ${input.outcome}`
+  );
 }
 
 export async function readMemoryFederationFlagOnce(

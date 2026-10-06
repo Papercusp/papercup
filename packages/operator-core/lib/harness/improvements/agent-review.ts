@@ -66,6 +66,7 @@ import {
   type AgentReviewState,
   type ImplementationReadinessState,
 } from './agent-review-policy';
+import { readBornVerifiedReproduction } from '../../attention/bug-reproduction';
 // The canonical "this session can still act" set, IMPORTED rather than re-derived.
 // Deliberately not a delegation to `rebindIdentity` itself: that migrates ~16 ownerId-keyed
 // surfaces (loop, presence, fleet membership, claims, facts, watermarks) from one sid to
@@ -454,8 +455,20 @@ export function approvalAcceptance(
     authority,
     reason,
     source,
+    // P-006 (D-019): the seal is the one verification stage. A bug is accepted only
+    // with its reproduction receipt — the born-verified filing receipt (D-024) or the
+    // one recorded at intake (D-023); without one the approval stays a bare `ready`.
+    reproduction: workItem.kind === 'bug' ? approvalReproduction(workItem.payload) : undefined,
   });
   return sealed.ok ? sealed.contract : undefined;
+}
+
+function approvalReproduction(payload: unknown): unknown {
+  const bornVerified = readBornVerifiedReproduction(payload);
+  if (bornVerified) return bornVerified;
+  if (!payload || typeof payload !== 'object') return undefined;
+  const intake = (payload as Record<string, unknown>).intakeReproduction;
+  return intake && typeof intake === 'object' ? (intake as Record<string, unknown>).receipt : undefined;
 }
 
 export interface EnterAgentReviewInput {

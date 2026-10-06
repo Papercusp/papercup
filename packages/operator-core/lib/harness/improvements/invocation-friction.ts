@@ -73,6 +73,8 @@ export async function captureInvocationFriction(
       failure: { toolName: row.tool_name, status: row.status, errorCode: row.error_code ?? undefined,
         message: (row.error_message ?? '').split(String.fromCharCode(0)).join('').slice(0, 8192),
         schemaRevision, runtimeVersion: row.serving_build_sha ?? undefined },
+      // D-011: the ledger row itself is the reproduction receipt for a bug-class failure.
+      invocationId: row.id, servingBuildSha: row.serving_build_sha,
     };
     const result = await runWithWorkspace(row.workspace_id,
       () => (deps.capture ?? captureToolInvocationFriction)(input));
