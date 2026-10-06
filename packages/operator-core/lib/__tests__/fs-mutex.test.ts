@@ -1,7 +1,22 @@
 import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const fileWrites = vi.hoisted(() => ({
+  beforeWrite: null as null | ((path: string) => Promise<void>),
+}));
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      await fileWrites.beforeWrite?.(String(args[0]));
+      return actual.writeFile(...args);
+    },
+  };
+});
 // The production entrypoint deliberately stays executable by plain Node (no build step —
 // consumed directly by `node scripts/npm-install-safe.mjs`). Mirrors the suppression-comment
 // convention test-file-router.test.ts already uses for the sibling .mjs CLI import.
@@ -15,6 +30,7 @@ import {
 const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
 
 afterEach(async () => {
+  fileWrites.beforeWrite = null;
   process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
   delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
 });
@@ -163,6 +179,46 @@ describe('withFsMutexRead wait observations', () => {
 });
 
 describe('withFsMutex', () => {
+  it('does not publish tentative reader markers while a writer has reserved admission', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-reservation-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const writerDir = join(dir, 'npm-install.lock');
+    const readersDir = join(dir, 'npm-install.readers');
+    await mkdir(writerDir);
+    await writeFile(join(writerDir, 'owner.json'), JSON.stringify({
+      pid: process.pid, host: hostname(), phase: 'draining-readers',
+    }));
+    let observeAttempt!: () => void;
+    const attempted = new Promise<void>(resolve => { observeAttempt = resolve; });
+    let finishPublication!: () => void;
+    const publicationAllowed = new Promise<void>(resolve => { finishPublication = resolve; });
+    // Pause any tentative publication so the assertion observes the race directly,
+    // without relying on how many polling readers happen to arrive at once.
+    fileWrites.beforeWrite = async path => {
+      if (path.startsWith(readersDir)) {
+        observeAttempt();
+        await publicationAllowed;
+      }
+    };
+    let readerEntered = false;
+    const reader = withFsMutexRead('npm-install', async () => { readerEntered = true; }, {
+      timeoutMs: 2_000, retryMs: 5, onWaiting: observeAttempt,
+    });
+    try {
+      await attempted;
+      expect(readerEntered).toBe(false);
+      expect(await readdir(readersDir)).toEqual([]);
+      expect(peekFsMutexSync('npm-install').owner).toMatchObject({ phase: 'draining-readers' });
+    } finally {
+      fileWrites.beforeWrite = null;
+      finishPublication();
+      await rm(writerDir, { recursive: true, force: true });
+      await reader;
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(readerEntered).toBe(true);
+  });
+
   it('distinguishes a reader-drain reservation from the running writer callback', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-phases-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
@@ -199,6 +255,43 @@ describe('withFsMutex', () => {
       await Promise.allSettled([reader, writer]);
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('backs out when a writer reserves between reader preflight and publication', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-race-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const writerDir = join(dir, 'npm-install.lock');
+    const readersDir = join(dir, 'npm-install.readers');
+    let reserved = false;
+    fileWrites.beforeWrite = async path => {
+      if (path.startsWith(readersDir) && !reserved) {
+        reserved = true;
+        await mkdir(writerDir);
+        await writeFile(join(writerDir, 'owner.json'), JSON.stringify({
+          pid: process.pid, host: hostname(), phase: 'draining-readers',
+        }));
+      }
+    };
+    let observeAttempt!: () => void;
+    const attempted = new Promise<void>(resolve => { observeAttempt = resolve; });
+    let readerEntered = false;
+    const reader = withFsMutexRead('npm-install', async () => {
+      readerEntered = true;
+      observeAttempt();
+    }, { timeoutMs: 2_000, retryMs: 5, onWaiting: observeAttempt });
+    try {
+      await attempted;
+      expect(reserved).toBe(true);
+      expect(readerEntered).toBe(false);
+      expect(await readdir(readersDir)).toEqual([]);
+      expect(peekFsMutexSync('npm-install').held).toBe(true);
+    } finally {
+      fileWrites.beforeWrite = null;
+      await rm(writerDir, { recursive: true, force: true });
+      await reader;
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(readerEntered).toBe(true);
   });
 
   it('serializes concurrent callers under the same lock name', async () => {
