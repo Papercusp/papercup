@@ -1060,6 +1060,41 @@ console.log('CLONE_PREREQUISITES_OK');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
 
+  it('preserves deep package-local dependency versions in the committed clone', () => {
+    const f = fixture('node build.cjs');
+    const packagePath = 'libs/generic/deep/local/package';
+    try {
+      snapshot(f.root, {
+        'package.json': JSON.stringify({ private: true, scripts: { 'lint:probe': 'node probe.cjs' },
+          dependencies: { '@fixture/runtime': 'file:libs/runtime', '@fixture/deep': `file:${packagePath}`, 'graph-leaf': '2.0.0' } }),
+        [`${packagePath}/package.json`]: JSON.stringify({ name: '@fixture/deep', version: '1.0.0',
+          main: 'index.cjs', dependencies: { 'graph-leaf': '1.0.0' } }),
+        [`${packagePath}/index.cjs`]: 'module.exports = require("graph-leaf/package.json").version;\n',
+        'probe.cjs': `const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+assert.equal(require('@fixture/deep'), '1.0.0');
+assert.equal(require('graph-leaf/package.json').version, '2.0.0');
+const result = spawnSync('npm', ['ls', 'graph-leaf', '--omit=dev', '--all', '--json'], { encoding: 'utf8', timeout: 15000 });
+assert.ifError(result.error);
+assert.equal(result.status, 0, result.stdout + result.stderr);
+assert.deepEqual(JSON.parse(result.stdout).problems ?? [], []);
+console.log('DEEP_LOCAL_GRAPH_OK');\n`,
+      }, f.head);
+      symlinkSync(`../../${packagePath}`, join(f.root, 'node_modules/@fixture/deep'));
+      for (const [dir, version] of [
+        ['node_modules/graph-leaf', '2.0.0'],
+        [`${packagePath}/node_modules/graph-leaf`, '1.0.0'],
+      ]) {
+        mkdirSync(join(f.root, dir), { recursive: true });
+        writeFileSync(join(f.root, dir, 'package.json'), JSON.stringify({ name: 'graph-leaf', version }));
+      }
+      expect(createRequire(join(f.root, 'package.json'))('@fixture/deep')).toBe('1.0.0');
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain('DEEP_LOCAL_GRAPH_OK');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
   it.each(['string', 'map'])('builds a bin-only package and its companion native assets from the pinned tree (%s)', (shape) => {
     const f = fixture('node build.cjs');
     try {
