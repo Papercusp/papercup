@@ -2888,6 +2888,18 @@ pub fn turn_error_text(raw: &str) -> String {
     }
 }
 
+/// WI-10006626 (parity row 23): whether a failed turn is the provider's usage
+/// or rate limit, which waiting or another engine gets past. Claude: "You've
+/// hit your weekly limit · resets 1pm", "5-hour limit reached ∙ resets 3pm",
+/// "Claude AI usage limit reached"; Codex: "You've hit your usage limit. … try
+/// again at …"; API: "Rate limit reached for requests".
+pub fn is_usage_limit(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("usage limit")
+        || text.contains("limit reached")
+        || (text.contains("hit your") && text.contains("limit"))
+}
+
 impl ChatMessage {
     pub fn user(text: &str) -> Self {
         Self {
@@ -3680,6 +3692,27 @@ mod tests {
         ChatMessage::push_turn_error(&mut messages, wrapped);
         let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, ["user", "assistant", "error"]);
+    }
+
+    #[test]
+    fn is_usage_limit_knows_each_engines_limit_sentence_and_nothing_else() {
+        // WI-10006626: the sentences Claude and Codex print at a usage limit.
+        for limit in [
+            "You've hit your weekly limit · resets 1pm (America/New_York)",
+            "5-hour limit reached ∙ resets 3pm",
+            "Claude AI usage limit reached|1791300000",
+            "You've hit your usage limit. Upgrade to Pro or try again at 4:02 PM.",
+            "API Error 429: Rate limit reached for requests",
+        ] {
+            assert!(is_usage_limit(limit), "{limit}");
+        }
+        for other in [
+            "API Error 400: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+            "The turn failed without a reply.",
+            "Output token limit exceeded",
+        ] {
+            assert!(!is_usage_limit(other), "{other}");
+        }
     }
 
     #[test]
