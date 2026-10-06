@@ -1002,6 +1002,46 @@ describe('dispatchConsultResponder — the walk', () => {
       });
       const r = await dispatchConsultResponder(OPTS, CTX, deps);
       expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      // WI-10006676: the dispatch stands, but its record must say the first reply
+      // was never judged — a silent record reads like a fork judged clean.
+      const dispatched = r.attempts.find((a) => a.outcome === 'dispatched');
+      expect(dispatched?.detail).toContain(
+        'First reply not checked for a provider rejection: its transcript /native/answer.jsonl could not be read.',
+      );
+    });
+
+    it('a Claude fork whose kickoff proof names no native transcript says its first reply was not checked', async () => {
+      const { deps } = makeFakes();
+      const realSpawn = deps.spawnHeadless!;
+      deps.spawnHeadless = (async (o: Parameters<typeof realSpawn>[0]) => {
+        const res = await realSpawn(o);
+        return res.status === 'ok'
+          ? { ...res, kickoffProof: { persisted: true, nativeRef: null, reason: null } }
+          : res;
+      }) as typeof realSpawn;
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      const dispatched = r.attempts.find((a) => a.outcome === 'dispatched');
+      expect(dispatched?.detail).toContain(
+        'First reply not checked for a provider rejection: the kickoff proof named no native transcript.',
+      );
+    });
+
+    it('a readable, clean first reply leaves the record without an unchecked note (control)', async () => {
+      const { deps } = makeFakes({
+        analyzeClaudeTranscript: () => ({
+          trailingMissingToolReferenceTurns: 0,
+          lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 1,
+          trailingContextLimitTurns: 0,
+          lastContextLimitEvidence: null,
+        }),
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      const dispatched = r.attempts.find((a) => a.outcome === 'dispatched');
+      expect(dispatched?.detail).toBeDefined();
+      expect(dispatched?.detail).not.toContain('First reply not');
     });
   });
 
