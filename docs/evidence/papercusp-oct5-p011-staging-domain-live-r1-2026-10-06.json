@@ -92,8 +92,9 @@
       "declaredKind": null,
       "leased": false,
       "cleanupItem": "EI-25186634079278490",
-      "assignee": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
-      "status": "open-owned; no supported registry-removal verb found"
+      "assignee": null,
+      "status": "open-pending-review; ordinary claim refused not_claimable; no supported registry-removal verb found",
+      "accountability": "Self-owned root incident EI-25181611831349662 carries cleanup as unresolved residue. Initial capture assignment was cleared by review; corrected in comment1158404."
     }
   },
   "sourceProof": {
@@ -111,7 +112,7 @@
     "No distinct-owner live negative restart contender, legacy bg-host synchronous restart cache validation, or whole-fleet exclusion census was exercised.",
     "No native agent, profiler, GC, private-PG fixture or R5 cohort was launched.",
     "Original R3 unknown joins, R4 failure and all broader P011/D021/nativephysical/worker/fullgraph/ship requirements remain open.",
-    "Unused accidental registration has an owned cleanup item and is not disposed.",
+    "Unused accidental registration has a pending-review cleanup item whose assignee was cleared; the self-owned root incident carries unresolved cleanup. It is not disposed.",
     "LIVE_GATE_OPS remains peer-owned and stopped for this session."
   ]
 }

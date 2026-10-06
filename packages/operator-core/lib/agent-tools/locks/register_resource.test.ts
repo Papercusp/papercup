@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('./identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -97,7 +98,19 @@ describe('locks:register_resource', () => {
   });
 
   it('refuses declaration while any legacy-domain owner, including the caller, holds the resource', async () => {
-    conflictsM.mockResolvedValue([{ owner: 'me', coordination_domain: '/legacy', mode: 'shared' }] as never);
+    mockResolvedTyped(conflictsM, [
+      {
+        coordination_domain: '/legacy',
+        resource: 'staging-server',
+        owner: 'me',
+        owner_label: 'Me',
+        mode: 'shared',
+        status: 'held',
+        reason: 'test fixture',
+        acquired_ts: '2026-10-05T00:00:00.000Z',
+        expires_ts: '2026-10-06T00:00:00.000Z',
+      },
+    ]);
     const result = body(await (tool.handler({ resource: 'staging-server' } as never, {} as never) as Promise<Out>));
     expect(result).toMatchObject({ ok: false, reason: 'held_in_other_domain' });
     expect(conflictsM).toHaveBeenCalledWith({ resource: 'staging-server', targetDomain: 'papercusp-host-global',
