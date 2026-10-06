@@ -253,12 +253,28 @@ for (const scenario of scenarios) {
           clippedGroupToggles: toggles.filter(
             (toggle) => toggle.scrollWidth > toggle.clientWidth + 1,
           ).length,
+          // Self-diagnosis for an overflow red: the elements whose right edge
+          // sticks out past the report's content box, widest first, so the
+          // failure names the culprit instead of only a pixel count.
+          overflowCulprits: (() => {
+            const edge = reportNode.getBoundingClientRect().right + 1;
+            return (Array.from(reportNode.querySelectorAll("*")) as HTMLElement[])
+              .map((el) => ({ el, right: el.getBoundingClientRect().right }))
+              .filter(({ right }) => right > edge)
+              .sort((a, b) => b.right - a.right)
+              .slice(0, 6)
+              .map(({ el, right }) =>
+                `${el.tagName.toLowerCase()}${el.className ? "." + String(el.className).trim().split(/\s+/).join(".") : ""}` +
+                ` +${Math.round(right - edge + 1)}px "${(el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40)}"`,
+              );
+          })(),
         };
       });
 
-      expect(geometry.documentOverflow).toBeLessThanOrEqual(1);
-      expect(geometry.takeoverOverflow).toBeLessThanOrEqual(1);
-      expect(geometry.reportOverflow).toBeLessThanOrEqual(1);
+      const culprits = "overflowing elements: " + JSON.stringify(geometry.overflowCulprits);
+      expect(geometry.documentOverflow, culprits).toBeLessThanOrEqual(1);
+      expect(geometry.takeoverOverflow, culprits).toBeLessThanOrEqual(1);
+      expect(geometry.reportOverflow, culprits).toBeLessThanOrEqual(1);
       expect(geometry.scrollRange).toBeGreaterThan(300);
       expect(geometry.headerPosition).toBe("sticky");
       expect(geometry.actions.map((action) => action.text)).toEqual([

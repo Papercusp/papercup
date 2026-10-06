@@ -25,6 +25,7 @@
  * config than the page (the dock.spec.ts workspace-resolution lesson).
  */
 import { test, expect, assertMounted, type APIRequestContext, type Page } from './_egress';
+import { learnPageWorkspaceHeaders, type WorkspaceHeaders } from './_page-workspace';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -41,18 +42,7 @@ const SKIP_MSG_BLANK =
 // different workspace than the page wrote (0 tiers after a committed save —
 // WI-10006792). No stamp ⇒ the backend resolves the page against its global
 // workspace, so the fixture then sends no header either.
-let WS_HEADERS: Record<string, string> = { 'x-papercusp-workspace': 'default' };
-
-async function learnPageWorkspaceHeaders(page: Page): Promise<Record<string, string>> {
-  const req = page
-    .waitForRequest((r) => r.url().includes('/api/agent-config') && r.method() === 'GET', { timeout: 30_000 })
-    .catch(() => null);
-  await page.goto(`${baseURL}/settings/agent`, { waitUntil: 'load', timeout: 30_000 });
-  const seen = await req;
-  if (!seen) return WS_HEADERS; // page never fetched — keep the documented default
-  const ws = seen.headers()['x-papercusp-workspace'];
-  return ws ? { 'x-papercusp-workspace': ws } : {};
-}
+let WS_HEADERS: WorkspaceHeaders = { 'x-papercusp-workspace': 'default' };
 
 // Debounce in page.tsx is 600ms — anything still unsaved after this window
 // was (correctly) never scheduled.
@@ -91,7 +81,9 @@ test.describe.configure({ mode: 'serial' });
 test.describe('/settings/agent auto-save validation', () => {
   test.beforeAll(async ({ request, browser }) => {
     const probe = await browser.newPage();
-    WS_HEADERS = await learnPageWorkspaceHeaders(probe).catch(() => WS_HEADERS);
+    WS_HEADERS = await learnPageWorkspaceHeaders(probe, `${baseURL}/settings/agent`, { fallback: WS_HEADERS }).catch(
+      () => WS_HEADERS,
+    );
     await probe.close();
     originalConfig = await getStoredConfig(request).catch(() => null);
     test.skip(originalConfig == null, 'agent-config API unreachable');

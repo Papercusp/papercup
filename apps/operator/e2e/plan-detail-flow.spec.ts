@@ -30,6 +30,7 @@
  * blank #root, so tests skip rather than fail when the shell never mounts.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { learnPageWorkspaceHeaders } from './_page-workspace';
 
 // Mirror playwright.config.ts's BASE_URL derivation — honoring
 // OPERATOR_E2E_PORT keeps this spec on the SAME server the config's
@@ -54,9 +55,15 @@ interface PlanRow {
 let listReachable = false;
 let plans: PlanRow[] = [];
 
-test.beforeAll(async ({ request }) => {
+test.beforeAll(async ({ request, browser }) => {
   try {
-    const r = await request.get(`${baseURL}/api/admin/plans/list`, { timeout: 20_000 });
+    // Resolve fixtures in the SAME workspace the page's rail lists: a bare
+    // request fixture resolves against the backend's global workspace, which
+    // on a fresh isolated rig is not the page's (WI-10006792).
+    const probe = await browser.newPage();
+    const headers = await learnPageWorkspaceHeaders(probe, `${baseURL}/admin/plans`).catch(() => ({}));
+    await probe.close();
+    const r = await request.get(`${baseURL}/api/admin/plans/list`, { timeout: 20_000, headers });
     if (!r.ok()) return;
     const body = (await r.json()) as { plans?: PlanRow[] };
     // Mirror the UI's default rail contents: non-archived plans.
