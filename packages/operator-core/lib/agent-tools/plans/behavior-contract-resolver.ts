@@ -249,9 +249,24 @@ export async function resolveWorkItemBehaviorContract(
         ...new Map([...itemClauses, ...edgeClauses].map((clause) => [clause.specId, clause])).values(),
       ];
       const currentBySpec = new Map(clauses.map((clause) => [clause.specId, clause]));
-      const staleEdges = planEdges.flatMap((edge) => {
+      // ONE verdict per spec, never one per edge. Edges are append-only (an immutability
+      // trigger rejects DELETE/UPDATE), so a work item re-bound to a clause's current
+      // revision still carries every superseded edge as a row. Judging each row reported
+      // those superseded rows as "pinned to a superseded revision" even though the item
+      // IS bound to the current one (measured 2026-10-06: 2,494 of 5,438 item/spec pairs,
+      // vs 255 genuinely stale — EI-25255610125482108). A spec is stale only when NO edge
+      // reaches the current revision, and then it is reported once, at its newest edge.
+      const newestEdgeBySpec = new Map<string, WorkItemSpecRevisionEdge>();
+      const boundAtCurrent = new Set<string>();
+      for (const edge of planEdges) {
         const clause = currentBySpec.get(edge.specId);
-        if (!clause || clause.revision === edge.specRevision) return [];
+        if (clause && clause.revision === edge.specRevision) boundAtCurrent.add(edge.specId);
+        const prior = newestEdgeBySpec.get(edge.specId);
+        if (!prior || edge.specRevision > prior.specRevision) newestEdgeBySpec.set(edge.specId, edge);
+      }
+      const staleEdges = [...newestEdgeBySpec.values()].flatMap((edge) => {
+        const clause = currentBySpec.get(edge.specId);
+        if (!clause || boundAtCurrent.has(edge.specId)) return [];
         return [{ specId: edge.specId, edgeRevision: edge.specRevision, currentRevision: clause.revision }];
       });
 

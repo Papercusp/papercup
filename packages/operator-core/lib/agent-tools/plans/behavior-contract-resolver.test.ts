@@ -157,6 +157,27 @@ describe('resolveWorkItemBehaviorContract — D-013 applicability', () => {
     expect(out.groups[0].staleEdges).toEqual([{ specId: 'SPEC-1', edgeRevision: 1, currentRevision: 3 }]);
   });
 
+  // EI-25255610125482108: edges are append-only, so an item re-bound to the current
+  // revision keeps every superseded edge as a row. Judging rows instead of specs reported
+  // those as stale although the item IS bound to the current revision.
+  it('does not report a superseded edge when the same spec also has an edge at the current revision', async () => {
+    const deps = readers({
+      edges: [edge({ specRevision: 1 }), edge({ specRevision: 2 }), edge({ specRevision: 3 })],
+      clauses: [clause({ revision: 3, currentRevision: 3 })],
+    });
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, deps);
+    expect(out.groups[0].staleEdges).toEqual([]);
+  });
+
+  it('reports a genuinely stale spec once, at its newest edge, regardless of edge order', async () => {
+    const deps = readers({
+      edges: [edge({ specRevision: 2 }), edge({ specRevision: 1 })],
+      clauses: [clause({ revision: 3, currentRevision: 3 })],
+    });
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, deps);
+    expect(out.groups[0].staleEdges).toEqual([{ specId: 'SPEC-1', edgeRevision: 2, currentRevision: 3 }]);
+  });
+
   it('counts only accepted/active clauses as enforceable', async () => {
     const deps = readers({
       edges: [edge({ specId: 'SPEC-D' })],
