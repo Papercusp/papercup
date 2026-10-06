@@ -1573,7 +1573,7 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect((d.created[0].payload as Record<string, unknown> | undefined)?.dedupVerdict).toBeUndefined();
   });
 
-  it('checkDuplicatesOnly never creates', async () => {
+  it('checkDuplicatesOnly never creates and warns that a non-empty title-only match list may be incomplete', async () => {
     const d = deps({ found: [dup] });
     const res = await captureImprovement(
       { title: 'presence list dumps stale rows', kind: 'bug', checkDuplicatesOnly: true },
@@ -1581,8 +1581,35 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     );
     expect(res.created).toBe(false);
     expect(d.created).toHaveLength(0);
+    expect(res.possibleDuplicates).toHaveLength(1);
     expect(res.hint).toContain('title-only pre-check');
-    expect(res.hint).toContain('final body');
+    expect(res.hint).toContain('match list can be incomplete even when it contains matches');
+    expect(res.hint).toContain('Rerun checkDuplicatesOnly with the final body');
+  });
+
+  it('uses the same candidates as capture when check-only receives the final body', async () => {
+    const prior = existing({
+      id: 'EI-CHECK-ONLY-SEMANTIC',
+      title: 'the related persisted issue',
+    });
+    const d = deps({ found: [] });
+    d.findSemanticDupes = async () => ({
+      hard: [{ id: prior.id, similarity: 0.96 }],
+      soft: [],
+      thresholds: { hard: 0.9, soft: 0.8 },
+    });
+    d.getIssue = async () => prior;
+    const input = {
+      title: 'the symptom query before diagnosis',
+      body: 'the final report body',
+      kind: 'bug' as const,
+    };
+
+    const checked = await captureImprovement({ ...input, checkDuplicatesOnly: true }, d);
+    const captured = await captureImprovement(input, d);
+
+    expect(checked.possibleDuplicates).toEqual(captured.possibleDuplicates);
+    expect(checked.possibleDuplicates).toMatchObject([{ id: prior.id, semantic: 'hard' }]);
   });
 
   it('checkDuplicatesOnly does not coalesce or refresh an exact-key prior', async () => {

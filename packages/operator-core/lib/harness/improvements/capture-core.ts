@@ -2690,7 +2690,7 @@ export async function captureImprovement(
       admissionIdentity: identity,
       hint: input.body
         ? 'Dedup results apply to this exact title and body. If the body will change before filing, rerun checkDuplicatesOnly with the final body because semantic matches can change.'
-        : 'This was a title-only pre-check. A final body can surface additional semantic duplicates, so rerun checkDuplicatesOnly with the final body before treating an empty result as clean.',
+        : 'This was a title-only pre-check. The match list can be incomplete even when it contains matches because a final body can surface additional semantic duplicates. Rerun checkDuplicatesOnly with the final body before relying on the match list.',
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
     };
   }
