@@ -92,6 +92,7 @@ vi.mock('@papercusp/flags/server', async () => {
 const wi = await import('./work-items');
 const issues = await import('./issues-engineer');
 const { readWorkItemReadinessProjection } = await import('./work-items-admission-promoter');
+const { claimNextVerificationTask, claimNextVerificationWork } = await import('./harness/improvements/agent-review');
 
 const H = 'papercup';
 const WS = 'default';
@@ -378,6 +379,24 @@ describe('P-007 a verification task skips its parties and serves a verifier', ()
   it('a row with no verification block is served to the same agents (the filter is not a blanket refusal)', async () => {
     await seed('WI-P7-PLAIN', { createdTs: POST, payload: qualifying() });
     expect(await byIdClaims('WI-P7-PLAIN', 'su-reporter')).toBe(true);
+  });
+
+  // Phase B (D-027): the verifier lane's task door. It self-selects only rows carrying a
+  // verification block, skips the task's own parties in SQL, and claims through the by-id writer.
+  it('the verifier-lane task door skips the parties, serves an independent verifier, and never serves plain work', async () => {
+    await seed('WI-P7-TASK', { createdTs: POST, payload: { ...qualifying(), verification } });
+    await seed('WI-P7-PLAIN', { createdTs: POST, payload: qualifying() });
+    for (const party of ['su-reporter', 'su-builder']) {
+      expect([party, (await claimNextVerificationTask({ verifier: party, harnessSlug: H }))?.id ?? null]).toEqual([party, null]);
+    }
+    expect(await holder('WI-P7-TASK')).toBeNull();
+    const served = await claimNextVerificationWork({ verifier: 'su-verifier', harnessSlug: H });
+    expect(served?.kind).toBe('verification-task');
+    expect(served?.workItem.id).toBe('WI-P7-TASK');
+    expect(await holder('WI-P7-TASK')).toBe('su-verifier');
+    // The implementation pool row is never reached through the verifier lane.
+    expect(await claimNextVerificationTask({ verifier: 'su-verifier-2', harnessSlug: H })).toBeNull();
+    expect(await holder('WI-P7-PLAIN')).toBeNull();
   });
 });
 

@@ -109,6 +109,44 @@ describe('withFsMutexRead wait observations', () => {
 });
 
 describe('withFsMutex', () => {
+  it('distinguishes a reader-drain reservation from the running writer callback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-phases-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    let releaseReader!: () => void;
+    const readerReleased = new Promise<void>((resolve) => { releaseReader = resolve; });
+    let readerStarted!: () => void;
+    const readerReady = new Promise<void>((resolve) => { readerStarted = resolve; });
+    const reader = withFsMutexRead('npm-install', async () => {
+      readerStarted();
+      await readerReleased;
+    }, { timeoutMs: 2_000, retryMs: 5 });
+    await readerReady;
+    let writerDraining!: () => void;
+    const drainReady = new Promise<void>((resolve) => { writerDraining = resolve; });
+    let writerEntered = false;
+    const writer = withFsMutex('npm-install', async () => {
+      writerEntered = true;
+      return peekFsMutexSync('npm-install').owner;
+    }, { timeoutMs: 2_000, retryMs: 5, onWaiting: writerDraining });
+    try {
+      await drainReady;
+      const reserved = peekFsMutexSync('npm-install');
+      expect(reserved.held).toBe(true);
+      expect(writerEntered).toBe(false);
+      expect(reserved.owner).toMatchObject({ phase: 'draining-readers' });
+      expect(reserved.owner).not.toHaveProperty('runningAt');
+      releaseReader();
+      const running = await writer;
+      expect(running).toMatchObject({ phase: 'running', acquiredAt: reserved.owner?.acquiredAt });
+      expect(Date.parse(running!.runningAt!)).toBeGreaterThanOrEqual(Date.parse(running!.acquiredAt!));
+      expect(peekFsMutexSync('npm-install').held).toBe(false);
+    } finally {
+      releaseReader();
+      await Promise.allSettled([reader, writer]);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('serializes concurrent callers under the same lock name', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

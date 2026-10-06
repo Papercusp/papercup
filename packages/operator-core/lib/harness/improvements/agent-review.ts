@@ -1097,7 +1097,7 @@ export async function claimNextVerificationTask(
        ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
        AND ${depsBlockedExclusionSql(sql)}
        AND NOT ${verificationTaskConflictSql(sql, verifier, 'wi.payload')}
-     ORDER BY created_at ASC, feature_id ASC
+     ORDER BY created_ts ASC, feature_id ASC
      LIMIT 20`;
   for (const row of rows) {
     const claimed = await deps.claimWorkItem(row.feature_id, verifier, row.harness_slug ? { harness: row.harness_slug } : {});

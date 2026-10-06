@@ -502,8 +502,12 @@ export function cloneWorkspaceTarget(realTarget, repoRoot, workRoot) {
 
 /**
  * Build `cloneNm` as a REAL directory mirroring `sharedNm` entry by entry (EI-24790229053787032).
- * Every entry is a symlink to the shared one (nothing is installed or copied), except a
- * workspace-package link, which points at the extracted tree's own package when that package
+ * Installed packages have real directory shells with linked contents (nothing is installed or
+ * copied). npm's graph reader cannot resolve a hoisted dependency of a package whose directory
+ * is linked outside the tree, even though Node can: it reports that dependency missing and its
+ * installed copy extraneous. Preserve package and nested node_modules directories for npm,
+ * while runtime files still resolve to the shared install. A workspace-package link points at
+ * the extracted tree's own package when that package
  * exists there (has a package.json). A workspace package absent from the extracted tree (an
  * uninitialised submodule) falls back to the shared target and is COUNTED, so the fallback is
  * visible rather than silent. Scope directories (`@x`) are mirrored one level down.
@@ -511,6 +515,16 @@ export function cloneWorkspaceTarget(realTarget, repoRoot, workRoot) {
  */
 export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, workspacePaths = new Set()) {
   const stats = { entries: 0, remapped: 0, fallback: 0 };
+  const moduleAncestors = new Set();
+  const linkPackage = (sharedPath, clonePath) => {
+    mkdirSync(clonePath, { recursive: true });
+    for (const child of readdirSync(sharedPath)) {
+      const source = join(sharedPath, child);
+      const target = join(clonePath, child);
+      if (child === 'node_modules' && statSync(source).isDirectory()) mirrorModules(source, target);
+      else symlinkSync(source, target);
+    }
+  };
   const linkEntry = (sharedPath, clonePath) => {
     let real = null;
     try {
@@ -525,21 +539,37 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, wor
       workspacePaths.add(remap);
     } else {
       if (remap) stats.fallback += 1;
-      symlinkSync(sharedPath, clonePath);
+      if (!remap && existsSync(join(sharedPath, 'package.json')) && statSync(sharedPath).isDirectory()) {
+        linkPackage(sharedPath, clonePath);
+      } else {
+        symlinkSync(sharedPath, clonePath);
+      }
     }
     stats.entries += 1;
   };
-  mkdirSync(cloneNm, { recursive: true });
-  for (const ent of readdirSync(sharedNm, { withFileTypes: true })) {
-    const sharedPath = join(sharedNm, ent.name);
-    const clonePath = join(cloneNm, ent.name);
-    if (ent.name.startsWith('@') && ent.isDirectory()) {
-      mkdirSync(clonePath, { recursive: true });
-      for (const sub of readdirSync(sharedPath)) linkEntry(join(sharedPath, sub), join(clonePath, sub));
-    } else {
-      linkEntry(sharedPath, clonePath);
+  const mirrorModules = (source, target) => {
+    const identity = realpathSync(source);
+    if (moduleAncestors.has(identity)) throw new Error(`cyclic installed node_modules: ${source}`);
+    moduleAncestors.add(identity);
+    try {
+      mkdirSync(target, { recursive: true });
+      for (const ent of readdirSync(source, { withFileTypes: true })) {
+        // npm's mutable install cache describes the physical source topology, not this shadow.
+        if (ent.name === '.package-lock.json') continue;
+        const sharedPath = join(source, ent.name);
+        const clonePath = join(target, ent.name);
+        if (ent.name.startsWith('@') && statSync(sharedPath).isDirectory()) {
+          mkdirSync(clonePath, { recursive: true });
+          for (const sub of readdirSync(sharedPath)) linkEntry(join(sharedPath, sub), join(clonePath, sub));
+        } else {
+          linkEntry(sharedPath, clonePath);
+        }
+      }
+    } finally {
+      moduleAncestors.delete(identity);
     }
-  }
+  };
+  mirrorModules(sharedNm, cloneNm);
   return stats;
 }
 

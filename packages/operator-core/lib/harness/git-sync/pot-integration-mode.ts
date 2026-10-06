@@ -151,6 +151,34 @@ export function resolveIntegrationPushRemote(input: ResolveIntegrationPushInput)
   };
 }
 
+/** The registry fields {@link integrationModeGovernsHarness} reads. */
+export interface IntegrationModeHarnessEntry {
+  slug: string;
+  hive_slug?: string | null;
+  self_repo?: boolean | null;
+  fork_remote?: string | null;
+}
+
+/**
+ * PURE (WI-10006333): does the pot's working-copy mode govern THIS harness's push?
+ *
+ * Working-copy mode protects the pot's SUBJECT repository — the one a working copy
+ * (fork) stands in for. A pot member is always governed, fail-closed without a fork.
+ * A self_repo pot HOME is governed only when it is itself the subject: when it carries
+ * no fork of its own while a member of its pot does, the working copy lives on that
+ * member and the home's repo is the pot's own metadata repository, which pushes as
+ * usual. Any other home stays governed (fail-closed), so a self-hosted pot whose home
+ * IS the subject repo can never leak into it while its fork is missing.
+ */
+export function integrationModeGovernsHarness(
+  entry: IntegrationModeHarnessEntry,
+  projects: readonly IntegrationModeHarnessEntry[],
+): boolean {
+  if (entry.hive_slug) return true;
+  if (entry.fork_remote) return true;
+  return !projects.some((p) => p.slug !== entry.slug && p.hive_slug === entry.slug && Boolean(p.fork_remote));
+}
+
 export type RunGit = (args: string[], cwd: string) => Promise<{ stdout: string }>;
 
 const defaultRunGit: RunGit = async (args, cwd) => {

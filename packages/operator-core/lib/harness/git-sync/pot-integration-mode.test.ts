@@ -30,6 +30,7 @@ import {
   WORKING_COPY_INTEGRATION_BRANCH,
   setPotIntegrationMode,
   choosePotIntegrationMode,
+  integrationModeGovernsHarness,
   type ApplyIntegrationPushDeps,
   type ChoosePotIntegrationModeInput,
   type IntegrationPushConfig,
@@ -636,5 +637,37 @@ describe('choosePotIntegrationMode (P-019: leaving a working copy waits for its 
     const d = deps();
     expect(await choosePotIntegrationMode(input({ upstreamRemote: null }), d)).toMatchObject({ ok: true, mode: 'direct' });
     expect(d.findOpenStandingPr).not.toHaveBeenCalled();
+  });
+});
+
+describe('integrationModeGovernsHarness (WI-10006333)', () => {
+  const fork = 'https://github.com/papercupai/pilot.git';
+  const home = { slug: 'pilot-pot', self_repo: true };
+  const member = { slug: 'pilot', hive_slug: 'pilot-pot', fork_remote: fork };
+
+  it("does not govern a repo pot's home once a member holds the working copy", () => {
+    expect(integrationModeGovernsHarness(home, [home, member])).toBe(false);
+  });
+
+  it('governs every member, with or without a fork (fail-closed)', () => {
+    expect(integrationModeGovernsHarness(member, [home, member])).toBe(true);
+    const forkless = { slug: 'pilot', hive_slug: 'pilot-pot' };
+    expect(integrationModeGovernsHarness(forkless, [home, forkless])).toBe(true);
+  });
+
+  it('keeps a self-hosted home governed when no member holds a fork', () => {
+    // Its home IS the subject repo: a missing fork must never push to it.
+    const memberWithoutFork = { slug: 'side', hive_slug: 'pilot-pot' };
+    expect(integrationModeGovernsHarness(home, [home, memberWithoutFork])).toBe(true);
+    expect(integrationModeGovernsHarness(home, [home])).toBe(true);
+  });
+
+  it("ignores another pot's forked members", () => {
+    const foreign = { slug: 'other', hive_slug: 'other-pot', fork_remote: fork };
+    expect(integrationModeGovernsHarness(home, [home, foreign])).toBe(true);
+  });
+
+  it('governs a home that carries its own fork', () => {
+    expect(integrationModeGovernsHarness({ ...home, fork_remote: fork }, [home, member])).toBe(true);
   });
 });

@@ -159,6 +159,71 @@ export function renderDiagnostics(diagnostics: ApiDiagnostic[], { root, textFor 
  */
 export function importsAnyModule(content: string, importerAbs: string, namedKeys: Set<string>, namedTails: Set<string>): boolean;
 /**
+ * Compare a loaded project's root files with a fresh parse of its tsconfig.
+ * `invalidateAll` refreshes contents and imports but does not re-evaluate include globs, so the
+ * service must tell the native API about both new and removed roots explicitly.
+ *
+ * @param {readonly string[]} knownRootFiles
+ * @param {readonly string[]} configuredRootFiles
+ * @returns {{ created: string[], deleted: string[] }}
+ */
+export function projectRootFileChanges(knownRootFiles: readonly string[], configuredRootFiles: readonly string[]): {
+    created: string[];
+    deleted: string[];
+};
+/**
+ * Reconcile a loaded snapshot's root files with the current tsconfig include set.
+ *
+ * @param {{
+ *   api: {
+ *     parseConfigFile(config: string): Promise<{ fileNames?: string[] }>,
+ *     updateSnapshot(params: { fileChanges: { created?: string[], deleted?: string[] } }): Promise<{
+ *       getProject(config: string): { rootFiles?: string[] } | undefined,
+ *       dispose(): void,
+ *     }>,
+ *   },
+ *   snapshot: {
+ *     getProject(config: string): { rootFiles?: string[] } | undefined,
+ *     dispose(): void,
+ *   },
+ *   projects: string[],
+ * }} opts
+ * @returns {Promise<{
+ *   getProject(config: string): { rootFiles?: string[] } | undefined,
+ *   dispose(): void,
+ * }>}
+ */
+export function refreshProjectRootFiles({ api, snapshot, projects }: {
+    api: {
+        parseConfigFile(config: string): Promise<{
+            fileNames?: string[];
+        }>;
+        updateSnapshot(params: {
+            fileChanges: {
+                created?: string[];
+                deleted?: string[];
+            };
+        }): Promise<{
+            getProject(config: string): {
+                rootFiles?: string[];
+            } | undefined;
+            dispose(): void;
+        }>;
+    };
+    snapshot: {
+        getProject(config: string): {
+            rootFiles?: string[];
+        } | undefined;
+        dispose(): void;
+    };
+    projects: string[];
+}): Promise<{
+    getProject(config: string): {
+        rootFiles?: string[];
+    } | undefined;
+    dispose(): void;
+}>;
+/**
  * The files a scoped verdict about `named` depends on, drawn from the project's program:
  *
  *   - the named files themselves;

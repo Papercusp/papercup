@@ -309,6 +309,14 @@ describe('sessions:list historical bounded census', () => {
 
     const sql = queries[0];
     expect(sql).toContain('FROM harness_shared.session_turns');
+    // Preserve the COALESCE(ts, ingested_at) semantics without hiding both
+    // indexed timestamp columns from PostgreSQL's bounded-window planner.
+    expect(sql).toContain('ts AS event_at');
+    expect(sql).toContain('ts IS NULL');
+    expect(sql).toContain('ingested_at AS event_at');
+    expect(sql).toMatch(/ts\s*>=/);
+    expect(sql).toMatch(/ingested_at\s*>=/);
+    expect(sql).not.toMatch(/COALESCE\(ts,\s*ingested_at\)\s*>=/i);
     expect(sql).toContain('FROM harness_shared.agent_activity');
     expect(sql).toContain('FROM harness_shared.tool_invocations');
     expect(sql).toContain('coord_owner_id AS owner_id');

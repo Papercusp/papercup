@@ -70,6 +70,7 @@ import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibil
 import { getPotGitMode, type PotGitMode } from './hive-git-mode';
 import {
   applyIntegrationPushTarget,
+  integrationModeGovernsHarness,
   readPotIntegrationMode,
   resolveIntegrationPushRemote,
   type IntegrationPushDecision,
@@ -3095,10 +3096,24 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // orthogonal to hiveGit.mode and re-read EVERY tick, so flipping a pot into
         // working-copy mode stops main-repo pushes on the next tick. Unlike the git
         // mode it fails CLOSED: an unreadable or malformed setting means commit-only.
-        const integration = resolveIntegrationPushRemote({
-          read: await readPotIntegrationMode(workspaceId, potHomeSlug),
-          ...(entry?.fork_remote ? { forkRemote: entry.fork_remote } : {}),
-        });
+        const integrationRead = await readPotIntegrationMode(workspaceId, potHomeSlug);
+        // WI-10006333: a repo pot's HOME is the pot's own metadata repository, not the
+        // subject a working copy protects, once a member holds the fork. Only that case
+        // needs the full registry; a failed read stays governed (fail-closed).
+        let governed = true;
+        if (integrationRead.mode === 'review' && entry && !entry.hive_slug && !entry.fork_remote) {
+          try {
+            governed = integrationModeGovernsHarness(entry, (await loadHarnessRegistry(workspaceId)).projects);
+          } catch {
+            governed = true;
+          }
+        }
+        const integration: IntegrationPushDecision = governed
+          ? resolveIntegrationPushRemote({
+              read: integrationRead,
+              ...(entry?.fork_remote ? { forkRemote: entry.fork_remote } : {}),
+            })
+          : { kind: 'unchanged', reason: 'pot home repository — the working copy lives on a member (WI-10006333)' };
         const withIntegration = integration.kind === 'unchanged' ? {} : { integration };
         if (mode !== 'legacy' && entry)
           return {

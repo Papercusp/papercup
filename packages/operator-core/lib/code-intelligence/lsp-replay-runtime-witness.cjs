@@ -37,7 +37,7 @@ function startReplayRuntime(options) {
     node: process.version, entry: resolve(options.entry), entryCanonical: fs.realpathSync(options.entry),
     nodeOptions: process.env.NODE_OPTIONS || '',
     execArgv: process.execArgv, parent: options.parent || null,
-    ppid: process.ppid, parentIdentity: identity(process.ppid) };
+    ppid: process.ppid, parentIdentity: identity(process.ppid), controlPurpose: options.controlPurpose || null };
   fs.writeFileSync(target, '', { flag: 'wx', mode: 0o600 });
   emit(startup);
   if (startup.nodeOptions || evalIndex < 0 || process.execArgv.length !== evalIndex + 2 ||
@@ -46,11 +46,47 @@ function startReplayRuntime(options) {
     emit({ kind: 'unknown', reason: 'unsupported-loader-or-preload' });
     throw new Error('replay-runtime requires plain Node with no preloads or other loaders');
   }
+  if (options.controlPurpose) {
+    if (options.controlPurpose !== 'systemd-scope-availability' || !options.parent)
+      throw new Error('unsupported replay control purpose');
+    // Replace only the maintained `true` availability payload. No subject
+    // source is imported, and terminal control evidence stays separate from
+    // the running service's load/native census.
+    const ancestry = [];
+    let current = process.pid;
+    while (ancestry.length < 16 && current !== options.parent.pid) {
+      const stat = readFile(`/proc/${current}/stat`, 'utf8');
+      const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+      ancestry.push({ pid: current, identity: identity(current), ppid });
+      if (!Number.isSafeInteger(ppid) || ppid < 1 || ppid === current) throw Error('unanchored control ancestry');
+      current = ppid;
+    }
+    if (current !== options.parent.pid || identity(current) !== options.parent.identity)
+      throw new Error('unanchored control parent');
+    emit({ kind: 'control-complete', purpose: options.controlPurpose,
+      executableSha256: hash(readFile('/proc/self/exe')), ancestry });
+    return;
+  }
   const receipt = (kind, file, bytes, extra = {}) => {
     if (typeof file !== 'string' && !(file instanceof URL)) {
       emit({ kind: 'unknown', reason: 'unidentified-file-read' }); return;
     }
     const path = file instanceof URL ? fileURLToPath(file) : resolve(file);
+    // These exact kernel control inputs are volatile, not frozen source files.
+    // Preserve consumed bytes and process epochs; the evaluator rechecks them.
+    const metadata = /^\/proc\/(self|[1-9]\d*)\/(stat|cgroup)$/.exec(path);
+    if (kind === 'file-read' && (metadata || path === '/proc/sys/kernel/random/boot_id')) {
+      const subjectPid = metadata ? (metadata[1] === 'self' ? process.pid : Number(metadata[1])) : process.pid;
+      try {
+        const before = identity(subjectPid);
+        const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : bytes;
+        if (typeof text !== 'string' || identity(subjectPid) !== before) throw Error('unstable metadata identity');
+        emit({ kind: 'kernel-metadata', path, text, sha256: hash(bytes), subjectPid, subjectIdentity: before });
+      } catch {
+        emit({ kind: 'unknown', reason: `unwitnessed-kernel-metadata:${path}` });
+      }
+      return;
+    }
     emit({ kind, path, sha256: hash(bytes), byteLength: Buffer.byteLength(bytes), ...extra });
   };
   const originalSpawn = children.spawn;
@@ -67,6 +103,20 @@ function startReplayRuntime(options) {
     if (spawnOptions.shell) { emit({ kind: 'unknown', reason: 'unsupported-child-shell' }); return null; }
     const env = spawnOptions.env || process.env;
     const cwd = resolve(String(spawnOptions.cwd || process.cwd()));
+    const scopeProbe = basename(command) === 'systemd-run' && JSON.stringify(args) ===
+      JSON.stringify(['--user', '--scope', '--quiet', '--collect', '--', 'true']);
+    if (scopeProbe) {
+      const launchId = `${process.pid}:${++launchSequence}`;
+      const controlOptions = { entry: options.entry, directory: options.directory, runId: options.runId,
+        controlPurpose: 'systemd-scope-availability',
+        parent: { pid: process.pid, identity: processIdentity, evalSha256, launchId } };
+      const code = `(${recorder})(${JSON.stringify(controlOptions)});`;
+      const nodeArgv = ['--eval', code];
+      const argv = [...args.slice(0, -1), process.execPath, ...nodeArgv];
+      emit({ kind: 'child-launch', launchId, route: 'systemd-scope', controlPurpose: controlOptions.controlPurpose,
+        entry: options.entry, evalSha256: hash(code), command, originalArgv: args, argv, node: process.execPath, nodeArgv });
+      return { command, args: argv, launchId, controlPurpose: controlOptions.controlPurpose };
+    }
     let prefix = [];
     let payload = command;
     let payloadArgs = [...args];
@@ -131,6 +181,11 @@ function startReplayRuntime(options) {
     if (child.pid) { try { childIdentity = identity(child.pid); } catch { /* refusal below */ } }
     emit({ kind: 'child-started', launchId: launch.launchId, childPid: child.pid || null, childIdentity });
     if (!child.pid || !childIdentity) emit({ kind: 'unknown', reason: 'child-process-identity-unavailable' });
+    if (launch.controlPurpose) {
+      child.once('error', error => emit({ kind: 'control-exit', launchId: launch.launchId, code: null,
+        signal: null, error: String(error) }));
+      child.once('exit', (code, signal) => emit({ kind: 'control-exit', launchId: launch.launchId, code, signal }));
+    }
     return child;
   };
   children.spawn = function (command, args, spawnOptions) {

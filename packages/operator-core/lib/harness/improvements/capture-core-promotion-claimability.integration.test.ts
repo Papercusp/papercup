@@ -39,12 +39,19 @@ afterAll(async () => {
 describe('tool-failure probation promotion → scheduler admission', () => {
   it('stores file-time duplicate evidence while keeping the new bug behind admission', async () => {
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const first = await captureImprovement({
-      title: `duplicate handshake admission failure ${suffix}`,
-      kind: 'bug',
-      scope: 'harness:papercusp',
-      createdBy: 'su-test',
-    });
+    // This row only seeds the real database write. The lexical query is not part
+    // of this test's claimability contract; a slow query can legitimately hit
+    // captureImprovement's bounded fallback and its warning, which Vitest treats
+    // as a failure. The second capture below supplies its duplicate candidate.
+    const first = await captureImprovement(
+      {
+        title: `duplicate handshake admission failure ${suffix}`,
+        kind: 'bug',
+        scope: 'harness:papercusp',
+        createdBy: 'su-test',
+      },
+      { searchIssues: async () => [], createIssue },
+    );
     const second = await captureImprovement(
       {
         title: `duplicate handshake admission failures ${suffix}`,

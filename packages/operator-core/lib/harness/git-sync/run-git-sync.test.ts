@@ -65,8 +65,10 @@ import {
   isNpmManifestPath,
   runGitBounded,
   censusStrandedSubmodules,
+  DEPENDENCY_GENERATION_ROOT_RECORD,
   type RunGit,
 } from './run-git-sync';
+import { dependencyGenerationRootRecord } from '../../release/dependency-generation-prebuild';
 import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
@@ -1518,6 +1520,75 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs.join('\n')).toContain(
       'legacy tracked dependency-generation runtime path(s) from the index',
     );
+  });
+
+  describe('WI-10006277: the host-local dependency-generation root record never reaches a user repo', () => {
+    const record = DEPENDENCY_GENERATION_ROOT_RECORD;
+    // A host-local absolute store path, as dependency-generation.sh records it.
+    const storeLine = `${join(tmpdir(), 'pc-dependency-generations')}\n`;
+    const excludeFile = () => git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude');
+
+    it('names the same path dependency-generation-prebuild writes', () => {
+      const root = join(tmpdir(), 'integration-root');
+      expect(join(root, record)).toBe(dependencyGenerationRootRecord(root));
+    });
+
+    it('untracks an already-committed record privately and keeps the file on disk', async () => {
+      const recordPath = join(repo, record);
+      mkdirSync(join(recordPath, '..'), { recursive: true });
+      writeFileSync(recordPath, storeLine);
+      git(repo, 'add', record);
+      git(repo, 'commit', '--no-verify', '-m', 'git-sync committed the record (pre-fix)');
+      git(repo, 'push', 'origin', 'main');
+      writeFileSync(join(repo, 'normal.txt'), 'agent work\n');
+      const logs: string[] = [];
+
+      const out = await runGitSync('test', { repoPath: repo, config: cfg, log: (m) => logs.push(m) });
+
+      expect(out.status).toBe('synced');
+      const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+      expect(originFiles).not.toContain(record);
+      expect(originFiles).toContain('normal.txt');
+      // The repair is private: no tracked .gitignore appears in the user's repository.
+      expect(originFiles).not.toContain('.gitignore');
+      expect(readFileSync(recordPath, 'utf8')).toBe(storeLine);
+      expect(git(repo, 'check-ignore', '-v', '--no-index', record)).toContain('info/exclude');
+      expect(git(repo, 'status', '--porcelain')).toBe('');
+      expect(logs.join('\n')).toContain(`removed legacy tracked ${record} from the index`);
+    });
+
+    it('never commits a freshly written record, and writes the exclude rule once', async () => {
+      mkdirSync(join(repo, '.papercusp'), { recursive: true });
+      writeFileSync(join(repo, record), storeLine);
+      writeFileSync(join(repo, 'normal.txt'), 'agent work\n');
+
+      expect((await runGitSync('test', { repoPath: repo, config: cfg })).status).toBe('synced');
+      writeFileSync(join(repo, 'normal.txt'), 'more agent work\n');
+      expect((await runGitSync('test', { repoPath: repo, config: cfg })).status).toBe('synced');
+
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(record);
+      expect(git(originDir, 'show', 'main:normal.txt')).toBe('more agent work');
+      const rules = readFileSync(excludeFile(), 'utf8').split('\n').filter((l) => l === `/${record}`);
+      expect(rules).toHaveLength(1);
+    });
+
+    it("leaves info/exclude alone when the repo's own .gitignore already ignores the record", async () => {
+      // Papercusp's own tree: its root .gitignore names the record (WI-10005159).
+      writeFileSync(join(repo, '.gitignore'), readFileSync(join(REPO_ROOT, '.gitignore')));
+      mkdirSync(join(repo, '.papercusp'), { recursive: true });
+      writeFileSync(join(repo, record), storeLine);
+
+      expect((await runGitSync('test', { repoPath: repo, config: cfg })).status).toBe('synced');
+
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(record);
+      let exclude = '';
+      try {
+        exclude = readFileSync(excludeFile(), 'utf8');
+      } catch {
+        exclude = '';
+      }
+      expect(exclude).not.toContain(`/${record}`);
+    });
   });
 
   it('WI-40770: a live-held dirty path stays excluded while the unlocked remainder syncs', async () => {

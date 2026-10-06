@@ -501,6 +501,8 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       expect(f.sent.find((frame) => frame.method === 'turn/start')?.params)
         .toMatchObject({ approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly' } });
       expect(f.engine.adapter.host.descriptor().approvals).toBe('read-only');
+      // Finish the first turn so the second one is delivered, not queued.
+      f.emit({ method: 'turn/completed', params: { threadId: 'native-codex', turn: { id: 'native-turn', status: 'completed' } } });
       // The same mode again does not resend the override.
       await f.engine.adapter.host.startCommand(turnWithApprovals(f.engine, 'ro-again', 'read-only')).terminal;
       const starts = f.sent.filter((frame) => frame.method === 'turn/start').map((frame) => frame.params as Record<string, unknown>);

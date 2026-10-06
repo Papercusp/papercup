@@ -15,6 +15,7 @@ import { NON_FLOOR_LABELS, STRUCTURAL_CLAIM_FLOORS, TRANSIENT_CLAIM_FLOORS } fro
 import { EXTERNAL_BLOCKER_CAPABILITIES, externalBlockerCapabilityPolicy } from './external-blockers';
 import { AGENT_REVIEW_STATUSES, createImplementationReadiness } from './harness/improvements/agent-review-policy';
 import {
+  HOLD_PAYLOAD_KEYS,
   HOLD_REGISTRY,
   LEGACY_ACCEPTANCE_ADOPTION_REASON_PREFIX,
   OWNER_CAPABILITIES,
@@ -213,5 +214,43 @@ describe('classifyHolds', () => {
   it('an unregistered stored reason is reported as UNMAPPED, not dropped', () => {
     const [h] = classifyHolds({ status: 'open', payload: { implementationReadiness: { status: 'unknown', reason: 'legacy-free-text' } } });
     expect(h).toEqual({ domain: 'readiness', key: 'legacy-free-text', entry: null });
+  });
+});
+
+describe('HOLD_PAYLOAD_KEYS: the census projection classifies exactly like the whole payload', () => {
+  const ask = { status: 'active', kind: 'human', capability: 'product-decision', defaultIfUnanswered: 'ship it' };
+  const noise = { title: 'x', toolFailureProbation: { class: 'caller' }, lane: 'bugs', summary: 'y' };
+  const fixtures = [
+    {
+      status: 'open',
+      payload: {
+        ...noise,
+        implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' },
+        agentReview: { status: 'revision-requested' },
+        externalBlockers: [{ status: 'active', capability: 'credential' }],
+        _claimHold: true,
+        held_open_by: 'su-1',
+      },
+    },
+    { status: 'needs-human', payload: { ...noise, externalBlockers: [ask] } },
+    { status: 'blocked', payload: { ...noise, implementationReadiness: { status: 'not-ready', reason: 'legacy-free-text' } } },
+    { status: 'wip', payload: { ...noise, _claimHold: true } },
+  ];
+  const project = (payload: Record<string, unknown>, keys: readonly string[]) =>
+    Object.fromEntries(Object.entries(payload).filter(([key]) => keys.includes(key)));
+  const classify = (keys: readonly string[]) =>
+    fixtures.map((row) => classifyHolds({ status: row.status, payload: project(row.payload, keys) }));
+
+  it('projected and whole payloads give identical holds', () => {
+    const whole = fixtures.map((row) => classifyHolds(row));
+    expect(whole.flat().length).toBeGreaterThanOrEqual(7);
+    expect(classify(HOLD_PAYLOAD_KEYS)).toEqual(whole);
+  });
+
+  it('CALIBRATION: dropping any listed key changes some classification, so a missing key cannot pass unseen', () => {
+    const whole = classify(HOLD_PAYLOAD_KEYS);
+    for (const key of HOLD_PAYLOAD_KEYS) {
+      expect(classify(HOLD_PAYLOAD_KEYS.filter((k) => k !== key)), key).not.toEqual(whole);
+    }
   });
 });

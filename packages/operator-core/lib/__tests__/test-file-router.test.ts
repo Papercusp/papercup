@@ -1857,14 +1857,16 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('prints the TEST_FILE_MID_INSTALL_SUSPECTED hint, naming the pid and the caller label, when the mutex IS held', () => {
+  it('prints the TEST_FILE_MID_INSTALL_SUSPECTED hint for a running writer using callback start time', () => {
     // Mirror withFsMutex's own on-disk shape exactly (mkdir + owner.json) —
     // repoLockName()'s digest is already alnum+hyphen, so no safeName() rewrite applies.
     const lockDir = join(tmpLockRootDir, `${repoLockName()}.lock`);
     mkdirSync(lockDir, { recursive: true });
     writeFileSync(
       join(lockDir, 'owner.json'),
-      JSON.stringify({ pid: 424242, host: 'test-host', startedAt: '2026-08-02T00:00:00.000Z' }),
+      JSON.stringify({ pid: 424242, host: 'test-host', phase: 'running',
+        startedAt: '2026-08-02T00:00:00.000Z', acquiredAt: '2026-08-02T00:01:00.000Z',
+        runningAt: '2026-08-02T00:02:00.000Z' }),
     );
 
     warnIfInstallInFlight('`vitest list` (group cwd=y)');
@@ -1875,6 +1877,35 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
     expect(msg).toContain('pid 424242');
     expect(msg).toContain('`vitest list` (group cwd=y)');
     expect(msg).toMatch(/may HANG \(not fail\)/);
+    expect(msg).toContain('since 2026-08-02T00:02:00.000Z');
+    expect(msg).not.toContain('since 2026-08-02T00:00:00.000Z');
+  });
+
+  it('reports a draining writer without claiming the install callback is running', () => {
+    const lockDir = join(tmpLockRootDir, `${repoLockName()}.lock`);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 424242,
+      phase: 'draining-readers', acquiredAt: '2026-08-02T00:01:00.000Z' }));
+    warnIfInstallInFlight('reader-backed test');
+    const [msg] = errorSpy.mock.calls[0] as [string];
+    expect(msg).toContain('TEST_FILE_INSTALL_DRAINING_READERS');
+    expect(msg).toContain('since 2026-08-02T00:01:00.000Z');
+    expect(msg).toContain('admitted readers can continue');
+    expect(msg).not.toContain('TEST_FILE_MID_INSTALL_SUSPECTED');
+    expect(msg).not.toContain('may HANG');
+  });
+
+  it.each([undefined, 'future-phase'])('keeps an unknown writer phase honest (%s)', (phase) => {
+    const lockDir = join(tmpLockRootDir, `${repoLockName()}.lock`);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 424242, phase,
+      startedAt: '2026-08-02T00:00:00.000Z' }));
+    warnIfInstallInFlight('legacy writer');
+    const [msg] = errorSpy.mock.calls[0] as [string];
+    expect(msg).toContain('TEST_FILE_INSTALL_MUTEX_HELD');
+    expect(msg).toContain('phase is unknown');
+    expect(msg).not.toContain('TEST_FILE_MID_INSTALL_SUSPECTED');
+    expect(msg).not.toContain('since 2026-08-02T00:00:00.000Z');
   });
 
   it('never throws even if the peek itself would be inconclusive (fail-open, per peekFsMutexSync)', () => {

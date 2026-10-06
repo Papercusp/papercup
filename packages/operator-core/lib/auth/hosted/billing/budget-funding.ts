@@ -14,7 +14,7 @@ import type { StoredPaymentReceipt } from '../../../cupboard/payment-receipt-sto
 import { createHash } from 'node:crypto';
 import { journalVerdictForStripeBalanceTransaction, validatePolicy,
   type CustomerPaymentPolicy } from '../../../cupboard/money-journal-producers';
-import type { StripeAccountCashEvidence, StripeAccountPaymentSourceEvidence,
+import type { StripeBillingClient, StripePaymentLineagePin, StripeAccountCashEvidence, StripeAccountPaymentSourceEvidence,
   StripeAccountTransactionEvidence, StripePaymentLineageEvidence,
   StripeObservedBalanceTransaction } from './stripe-billing-client';
 
@@ -181,6 +181,121 @@ export type HostedStripeFundingResult = { readonly ok: false; readonly reason: S
   | { readonly ok: true; readonly snapshot: HostedPrepaidFundingInput['snapshot'];
     readonly payments: readonly Payment[]; readonly reversals: readonly Reversal[];
     readonly evidenceRef: string };
+
+/** Server collection inputs, read from the complete locked local population.
+ * The caller keeps the account/allocation and journal population locked until
+ * reservation commit. This collector does not create that SQL authority, bank
+ * backing, provider finality, or permission to execute paid work. */
+export interface HostedStripeFundingCollection {
+  readonly scope: HostedPrepaidFundingInput['scope'];
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly maximumAgeMs: number;
+  readonly policy: CustomerPaymentPolicy;
+  readonly entries: readonly JournalEntry[];
+  readonly receipts: readonly StoredPaymentReceipt[];
+  /** Persisted customer bindings, including other customers sharing the pool.
+   * Each binding is independently checked by the authenticated lineage read. */
+  readonly customers: readonly { readonly stripeCustomerId: string; readonly organizationId: string; readonly livemode: boolean }[];
+}
+export type HostedStripeFundingCollectorClient = Pick<StripeBillingClient, 'livemode' | 'readAccountCash'
+  | 'readAccountPaymentSources' | 'readAccountTransactions' | 'readPaymentLineage'>;
+
+/** Collect actual client evidence in the order required by the existing
+ * reconciler. The completion clock, rather than a request's earlier timestamp,
+ * bounds the observations. Unchanged brackets prove observed consistency only;
+ * an external withdrawal after the last read is still possible. */
+export async function collectHostedStripeFunding(input: HostedStripeFundingCollection, dependencies: {
+  readonly client: HostedStripeFundingCollectorClient;
+  readonly now?: () => number;
+  /** A bound refuses the whole collection, never a truncated population. */
+  readonly maximumLineages?: number;
+}): Promise<HostedStripeFundingResult> {
+  input = structuredClone(input);
+  const client = dependencies.client;
+  const now = dependencies.now ?? Date.now;
+  const maximumLineages = dependencies.maximumLineages ?? 1000;
+  if (!id(input.scope.controlWorkspaceId) || !id(input.scope.organizationId) || !id(input.scope.customerWorkspaceId)
+      || !/^acct_[A-Za-z0-9]+$/.test(input.accountId) || !/^cus_[A-Za-z0-9]+$/.test(input.customerId)
+      || !safe(input.maximumAgeMs) || validatePolicy(input.policy) || !safe(maximumLineages) || maximumLineages < 1
+      || !Array.isArray(input.entries) || !Array.isArray(input.receipts) || !Array.isArray(input.customers)) {
+    throw new Error('invalid Stripe funding collection');
+  }
+  const reject = (reason: StripeFundingRefusal): HostedStripeFundingResult => ({ ok: false, reason });
+  if (client.livemode !== true) return reject('unverified-stripe-read');
+  const customers = new Map<string, string>();
+  for (const c of input.customers) {
+    if (!/^cus_[A-Za-z0-9]+$/.test(c.stripeCustomerId) || !id(c.organizationId)
+        || c.livemode !== true || customers.has(c.stripeCustomerId)) return reject('unverified-stripe-read');
+    customers.set(c.stripeCustomerId, c.organizationId);
+  }
+  if (customers.get(input.customerId) !== input.scope.organizationId) return reject('unverified-stripe-read');
+  try {
+    // Detach every response before the next await: an adapter must not change a
+    // prior bracket in place and make observed provider drift disappear.
+    const cashPin = { accountId: input.accountId, customerId: input.customerId, organizationId: input.scope.organizationId };
+    const cash1 = await client.readAccountCash({ ...cashPin });
+    if (!cash1.ok) return reject('unverified-stripe-read');
+    const cashBefore = structuredClone(cash1.evidence);
+    const sources1 = await client.readAccountPaymentSources({ accountId: input.accountId });
+    if (!sources1.ok) return reject('unverified-stripe-read');
+    const sourcesBefore = structuredClone(sources1.evidence);
+    const tx1 = await client.readAccountTransactions({ accountId: input.accountId });
+    if (!tx1.ok) return reject('unverified-stripe-read');
+    const transactionsBefore = structuredClone(tx1.evidence);
+    const charges = new Map(sourcesBefore.charges.map(c => [c.id, c]));
+    const receipts = new Map(input.receipts.map(r => [r.transaction.id, r]));
+    if (charges.size !== sourcesBefore.charges.length || receipts.size !== input.receipts.length) {
+      return reject('unreconciled-stripe-source');
+    }
+    const pins: StripePaymentLineagePin[] = [];
+    function pin(kind: StripePaymentLineagePin['source']['kind'], sourceId: string, chargeId: string): boolean {
+      const charge = charges.get(chargeId);
+      if (!charge?.customerId || !charge.balanceTransactionId) return false;
+      const organizationId = customers.get(charge.customerId);
+      const receipt = receipts.get(charge.balanceTransactionId);
+      // Original pins come from the local immutable receipt, never from a
+      // provider list alone, a caller amount, or another customer's request.
+      if (!organizationId || !receipt || receipt.sourceId !== chargeId || receipt.sourceCustomer !== charge.customerId) return false;
+      pins.push({ accountId: input.accountId, customerId: receipt.sourceCustomer, organizationId,
+        chargeId: receipt.sourceId, chargeBalanceTransactionId: receipt.transaction.id,
+        source: { kind, id: sourceId } });
+      return pins.length <= maximumLineages;
+    }
+    for (const charge of sourcesBefore.charges) {
+      if (charge.balanceTransactionId === null && charge.capturedCents === 0 && charge.refundedCents === 0
+          && charge.failureBalanceTransactionId === null && !charge.paid && !charge.captured) continue;
+      if (!pin('charge', charge.id, charge.id)) return reject('unreconciled-stripe-source');
+    }
+    for (const refund of sourcesBefore.refunds) {
+      if (['failed', 'canceled'].includes(refund.status) && refund.balanceTransactionId === null
+          && refund.failureBalanceTransactionId === null) continue;
+      if (!pin('refund', refund.id, refund.chargeId)) return reject('unreconciled-stripe-source');
+    }
+    // The accounting mapper deliberately has no dispute restoration authority.
+    if (sourcesBefore.disputes.length) return reject('unreconciled-stripe-source');
+    const lineages: StripePaymentLineageEvidence[] = [];
+    for (const p of pins) {
+      const result = await client.readPaymentLineage(p);
+      if (!result.ok) return reject('unverified-stripe-read');
+      lineages.push(structuredClone(result.evidence));
+    }
+    const tx2 = await client.readAccountTransactions({ accountId: input.accountId });
+    if (!tx2.ok) return reject('unverified-stripe-read');
+    const transactionsAfter = structuredClone(tx2.evidence);
+    const sources2 = await client.readAccountPaymentSources({ accountId: input.accountId });
+    if (!sources2.ok) return reject('unverified-stripe-read');
+    const sourcesAfter = structuredClone(sources2.evidence);
+    const cash2 = await client.readAccountCash({ ...cashPin });
+    if (!cash2.ok) return reject('unverified-stripe-read');
+    const cashAfter = structuredClone(cash2.evidence);
+    return reconcileHostedStripeFunding({ ...input, cashBefore, sourcesBefore, transactionsBefore,
+      lineages, transactionsAfter, sourcesAfter, cashAfter, asOfMs: now() });
+  } catch {
+    // Provider failures cannot echo secrets or certify a partial collection.
+    return reject('unverified-stripe-read');
+  }
+}
 
 export function reconcileHostedStripeFunding(input: HostedStripeFundingRead): HostedStripeFundingResult {
   const reject = (reason: StripeFundingRefusal): HostedStripeFundingResult => ({ ok: false, reason });

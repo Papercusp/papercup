@@ -99,7 +99,7 @@ export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
  * fail-open error handling).
  *
  * @param {string} name
- * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
+ * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, acquiredAt?: string, runningAt?: string, phase?: 'draining-readers' | 'running', name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
  */
 export function peekFsMutexSync(name: string): {
     held: boolean;
@@ -107,6 +107,9 @@ export function peekFsMutexSync(name: string): {
         pid?: number;
         host?: string;
         startedAt?: string;
+        acquiredAt?: string;
+        runningAt?: string;
+        phase?: "draining-readers" | "running";
         name?: string;
         intent?: Record<string, string | number | boolean>;
     };

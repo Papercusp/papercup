@@ -344,6 +344,68 @@ export function importsAnyModule(content, importerAbs, namedKeys, namedTails) {
 }
 
 /**
+ * Compare a loaded project's root files with a fresh parse of its tsconfig.
+ * `invalidateAll` refreshes contents and imports but does not re-evaluate include globs, so the
+ * service must tell the native API about both new and removed roots explicitly.
+ *
+ * @param {readonly string[]} knownRootFiles
+ * @param {readonly string[]} configuredRootFiles
+ * @returns {{ created: string[], deleted: string[] }}
+ */
+export function projectRootFileChanges(knownRootFiles, configuredRootFiles) {
+  const known = new Set(knownRootFiles);
+  const configured = new Set(configuredRootFiles);
+  return {
+    created: [...configured].filter((file) => !known.has(file)),
+    deleted: [...known].filter((file) => !configured.has(file)),
+  };
+}
+
+/**
+ * Reconcile a loaded snapshot's root files with the current tsconfig include set.
+ *
+ * @param {{
+ *   api: {
+ *     parseConfigFile(config: string): Promise<{ fileNames?: string[] }>,
+ *     updateSnapshot(params: { fileChanges: { created?: string[], deleted?: string[] } }): Promise<{
+ *       getProject(config: string): { rootFiles?: string[] } | undefined,
+ *       dispose(): void,
+ *     }>,
+ *   },
+ *   snapshot: {
+ *     getProject(config: string): { rootFiles?: string[] } | undefined,
+ *     dispose(): void,
+ *   },
+ *   projects: string[],
+ * }} opts
+ * @returns {Promise<{
+ *   getProject(config: string): { rootFiles?: string[] } | undefined,
+ *   dispose(): void,
+ * }>}
+ */
+export async function refreshProjectRootFiles({ api, snapshot, projects }) {
+  const created = new Set();
+  const deleted = new Set();
+  for (const config of projects) {
+    const project = snapshot.getProject(config);
+    if (!project) continue;
+    const parsed = await api.parseConfigFile(config);
+    const changes = projectRootFileChanges(project.rootFiles ?? [], parsed.fileNames ?? []);
+    for (const file of changes.created) created.add(file);
+    for (const file of changes.deleted) deleted.add(file);
+  }
+  if (created.size === 0 && deleted.size === 0) return snapshot;
+
+  const fileChanges = {
+    ...(created.size > 0 ? { created: [...created] } : {}),
+    ...(deleted.size > 0 ? { deleted: [...deleted] } : {}),
+  };
+  const nextSnapshot = await api.updateSnapshot({ fileChanges });
+  snapshot.dispose();
+  return nextSnapshot;
+}
+
+/**
  * The files a scoped verdict about `named` depends on, drawn from the project's program:
  *
  *   - the named files themselves;

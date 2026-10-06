@@ -143,6 +143,13 @@ describe('scenario registry', () => {
       'su-S35-completion-residue',
       // S36 drain claims only agent work (enterprise-data-sources-2026-10-01 P-012, R-6)
       'su-S36-drain-claims-only-agent-work',
+      // S37 / W01 code-search discipline (gitnexus-deterministic-integration-2026-10-05 P-015)
+      'su-S37a-absence-claim',
+      'su-S37b-signature-impact',
+      'su-S37c-definition-lookup',
+      'worker-W01a-absence-claim',
+      'worker-W01b-signature-impact',
+      'worker-W01c-definition-lookup',
       // pui-loop — the owned loop's su-derived prompt profile (D-034)
       'pui-loop-P01-owned-door-read',
       // onboarding-tutor scenario suite (onboarding-tutor target)

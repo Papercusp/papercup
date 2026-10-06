@@ -264,6 +264,21 @@ export function hasActiveStrictHumanAsk(payload: unknown): boolean {
  * is not held by any registered vocabulary (it may still be refused by a claim floor; those are
  * read through `explainIssueClaimFloors`, whose labels are the claim-floor domain).
  */
+/**
+ * The payload keys `classifyHolds` reads — and ONLY those. A reader that projects payloads before
+ * classifying (the hold census pages every non-terminal row, so it cannot ship whole payloads)
+ * selects exactly these. hold-registry.test.ts pins it: classifying a fixture through the
+ * projection must equal classifying the whole payload, so a new key read here without being
+ * listed fails the build instead of silently reading as "not held".
+ */
+export const HOLD_PAYLOAD_KEYS = [
+  'implementationReadiness',
+  'agentReview',
+  'externalBlockers',
+  '_claimHold',
+  'held_open_by',
+] as const;
+
 export function classifyHolds(row: HoldClassifiableRow): HoldMatch[] {
   if (!NON_TERMINAL_STATUSES.has(row.status) || row.lane === 'observation') return [];
   const payload = obj(row.payload) ?? {};

@@ -646,8 +646,9 @@ describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link
       expect(realpathSync(req.resolve('@papercusp/foo'))).toBe(realpathSync(join(clone, 'libs', 'foo', 'index.js')));
       // absent in the extracted tree: falls back to the shared package (counted above, not silent)
       expect(req('@papercusp/gone')).toBe('shared-gone');
-      // a real dependency is linked, never copied or installed
-      expect(lstatSync(join(clone, 'node_modules', 'leftpad')).isSymbolicLink()).toBe(true);
+      // npm traverses a real package shell; runtime contents remain linked to the install.
+      expect(lstatSync(join(clone, 'node_modules', 'leftpad')).isSymbolicLink()).toBe(false);
+      expect(lstatSync(join(clone, 'node_modules', 'leftpad', 'index.js')).isSymbolicLink()).toBe(true);
       expect(req('leftpad')).toBe('leftpad');
       expect(req.resolve('leftpad')).toBe(realpathSync(join(shared, 'node_modules', 'leftpad', 'index.js')));
       expect(req.resolve('@papercusp/foo')).toBe(realpathSync(join(clone, 'libs', 'foo', 'index.js')));
@@ -666,6 +667,82 @@ describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('preserves npm hoisted and nested graph edges while linking installed runtime bytes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-npm-graph-'));
+    const shared = join(root, 'shared');
+    const clone = join(root, 'clone');
+    const broken = join(root, 'broken');
+    const put = (dir: string, manifest: Record<string, unknown>) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
+    };
+    const measure = (cwd: string) => {
+      const run = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json'], {
+        cwd, encoding: 'utf8', timeout: 15_000,
+      });
+      expect(run.error).toBeUndefined();
+      return { status: run.status, tree: JSON.parse(run.stdout) };
+    };
+    try {
+      for (const dir of [shared, clone, broken]) {
+        put(dir, { name: 'graph-root', version: '1.0.0', dependencies: { parent: '1.0.0' } });
+      }
+      put(join(shared, 'node_modules/parent'), {
+        name: 'parent', version: '1.0.0', dependencies: { leaf: '1.0.0', nested: '1.0.0' },
+      });
+      put(join(shared, 'node_modules/leaf'), { name: 'leaf', version: '1.0.0' });
+      put(join(shared, 'node_modules/parent/node_modules/nested'), {
+        name: 'nested', version: '1.0.0', dependencies: { leaf: '1.0.0' },
+      });
+      writeFileSync(join(shared, 'node_modules/leaf/index.js'), "module.exports = 'installed-leaf';\n");
+      writeFileSync(join(shared, 'node_modules/.package-lock.json'), JSON.stringify({
+        name: 'graph-root', version: '1.0.0', lockfileVersion: 3, requires: true,
+        packages: {
+          'node_modules/parent': { version: '1.0.0', dependencies: { leaf: '1.0.0', nested: '1.0.0' } },
+          'node_modules/leaf': { version: '1.0.0' },
+          'node_modules/parent/node_modules/nested': { version: '1.0.0', dependencies: { leaf: '1.0.0' } },
+        },
+      }));
+      mkdirSync(join(broken, 'node_modules'));
+      for (const name of ['parent', 'leaf']) {
+        symlinkSync(join(shared, 'node_modules', name), join(broken, 'node_modules', name));
+      }
+      const control = measure(broken);
+      expect(control.status).toBe(1);
+      expect(control.tree.problems).toEqual(expect.arrayContaining([
+        expect.stringContaining('missing: leaf@1.0.0'),
+        expect.stringContaining('extraneous: leaf@1.0.0'),
+      ]));
+      const physical = measure(shared);
+      expect(physical.tree.problems ?? []).toEqual([]);
+      expect(physical.status).toBe(0);
+
+      linkNodeModulesShadow(join(shared, 'node_modules'), join(clone, 'node_modules'), shared, clone);
+      const result = measure(clone);
+      expect(result.status).toBe(0);
+      expect(result.tree.problems ?? []).toEqual([]);
+      const parent = result.tree.dependencies.parent;
+      expect(parent.dependencies.leaf.version).toBe('1.0.0');
+      expect(parent.dependencies.nested.dependencies.leaf.version).toBe('1.0.0');
+      expect(existsSync(join(clone, 'node_modules/.package-lock.json'))).toBe(false);
+      expect(createRequire(join(clone, 'entry.js'))('leaf')).toBe('installed-leaf');
+      expect(realpathSync(join(clone, 'node_modules/leaf/index.js')))
+        .toBe(join(shared, 'node_modules/leaf/index.js'));
+
+      // A real unsatisfied edge must remain an error; shells fix topology, not integrity.
+      put(join(shared, 'node_modules/parent'), {
+        name: 'parent', version: '1.0.0', dependencies: { leaf: '2.0.0', nested: '1.0.0' },
+      });
+      const invalid = measure(clone);
+      expect(invalid.status).toBe(1);
+      expect(invalid.tree.problems).toEqual(expect.arrayContaining([
+        expect.stringContaining('invalid: leaf@1.0.0'),
+      ]));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe('showAtRef (WI-10004908 — submodule test operands were refused as absent at the ref)', () => {

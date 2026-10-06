@@ -16,6 +16,7 @@ import {
   checkedSetFor,
   lineAndCharacter,
   lineStarts,
+  refreshProjectRootFiles,
   readTextOrNull,
   renderDiagnostics,
   serviceProjectFromTscCommand,
@@ -229,6 +230,47 @@ describe('renderDiagnostics', () => {
       { root, textFor },
     );
     expect(parseTscErrors(out)).toEqual([{ file: 'src/a.ts', code: 'TS2322' }]);
+  });
+});
+
+describe('refreshProjectRootFiles', () => {
+  it('reports files newly included and deleted from a loaded project program', async () => {
+    const currentSnapshot = {
+      getProject: () => ({ rootFiles: ['/repo/lib/kept.ts', '/repo/lib/deleted.ts'] }),
+      dispose: () => { disposed = true; },
+    };
+    const nextSnapshot = { getProject: () => ({ rootFiles: ['/repo/lib/kept.ts', '/repo/lib/created.ts'] }), dispose: () => {} };
+    const calls: unknown[] = [];
+    let disposed = false;
+    const api = {
+      parseConfigFile: async () => ({ fileNames: ['/repo/lib/kept.ts', '/repo/lib/created.ts'] }),
+      updateSnapshot: async (params: unknown) => { calls.push(params); return nextSnapshot; },
+    };
+
+    const result = await refreshProjectRootFiles({ api, snapshot: currentSnapshot, projects: ['/repo/tsconfig.json'] });
+
+    expect(calls).toEqual([{ fileChanges: { created: ['/repo/lib/created.ts'], deleted: ['/repo/lib/deleted.ts'] } }]);
+    expect(disposed).toBe(true);
+    expect(result).toBe(nextSnapshot);
+  });
+
+  it('leaves the snapshot alone when the include set is unchanged', async () => {
+    const currentSnapshot = {
+      getProject: () => ({ rootFiles: ['/repo/lib/a.ts', '/repo/lib/b.ts'] }),
+      dispose: () => { disposed = true; },
+    };
+    let disposed = false;
+    let updated = false;
+    const api = {
+      parseConfigFile: async () => ({ fileNames: ['/repo/lib/b.ts', '/repo/lib/a.ts'] }),
+      updateSnapshot: async () => { updated = true; return currentSnapshot; },
+    };
+
+    const result = await refreshProjectRootFiles({ api, snapshot: currentSnapshot, projects: ['/repo/tsconfig.json'] });
+
+    expect(result).toBe(currentSnapshot);
+    expect(disposed).toBe(false);
+    expect(updated).toBe(false);
   });
 });
 

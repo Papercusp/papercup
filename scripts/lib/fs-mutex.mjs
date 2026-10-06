@@ -25,6 +25,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   writeFile,
@@ -445,6 +446,7 @@ export async function withFsMutex(name, fn, opts = {}) {
   const ticketsDir = queueRoot(root, name);
   const myTicketDir = join(ticketsDir, `${ticketId(startedAt)}.ticket`);
   let ticketRegistered = false;
+  let writerOwner;
   try {
     await mkdir(ticketsDir, { recursive: true });
     await mkdir(myTicketDir);
@@ -508,9 +510,10 @@ export async function withFsMutex(name, fn, opts = {}) {
         // produced a wrong, confidently-reported measurement during this very investigation.
         // The mkdir above IS the grant, so stamp the grant instant here and make it
         // answerable instead of inviting the same misreading again.
+        writerOwner = { ...owner, acquiredAt: new Date().toISOString(), phase: "draining-readers" };
         await writeFile(
           join(lockDir, "owner.json"),
-          `${JSON.stringify({ ...owner, acquiredAt: new Date().toISOString() }, null, 2)}\n`,
+          `${JSON.stringify(writerOwner, null, 2)}\n`,
         );
         break;
       } catch (error) {
@@ -563,6 +566,13 @@ export async function withFsMutex(name, fn, opts = {}) {
     // `timeoutMs` restarts from zero, so an N-shard run's real worst case is N × timeoutMs.
     // Fires inside the try so a throwing callback still releases the lock.
     if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
+    // A reserved writer can spend its entire wait draining existing readers.
+    // Publish the callback phase only after that drain, atomically so a peek
+    // cannot mistake a partially rewritten owner record for an absent lock.
+    const runningOwner = { ...writerOwner, phase: "running", runningAt: new Date().toISOString() };
+    const nextOwnerPath = join(lockDir, "owner.next.json");
+    await writeFile(nextOwnerPath, `${JSON.stringify(runningOwner, null, 2)}\n`);
+    await rename(nextOwnerPath, join(lockDir, "owner.json"));
     return await fn({
       hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs)) != null,
     });
@@ -682,7 +692,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
  * fail-open error handling).
  *
  * @param {string} name
- * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
+ * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, acquiredAt?: string, runningAt?: string, phase?: 'draining-readers' | 'running', name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
  */
 export function peekFsMutexSync(name) {
   const lockDir = join(lockRoot(), `${safeName(name)}.lock`);

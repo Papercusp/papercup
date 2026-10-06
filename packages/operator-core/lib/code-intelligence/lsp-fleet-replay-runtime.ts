@@ -13,7 +13,7 @@ import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { lspEvidenceNow } from './lsp-query-evidence';
 import { taskIdFromScopeUnit } from '../task-manager/types';
 import { absCgroupDir, parseProcCgroup, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
-import { readProcessIdentity } from '../process-identity';
+import { linuxPpidFromProcStat, linuxProcessIdentityFromStat, readProcessIdentity } from '../process-identity';
 import ts from 'typescript';
 
 export interface ReplayCorpus {
@@ -637,10 +637,82 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
       !witness.files[bootstrap.entry] || witness.files[canonicalEntry] !== witness.files[bootstrap.entry])
     unknown.push('unfrozen-runtime-entry-alias');
   if (!loads.length || !loads.some(row => row.path === canonicalEntry)) unknown.push('runtime-entry-not-loaded');
+  for (const launch of receipts.filter(row => row.kind === 'child-launch' && row.controlPurpose)) {
+    try {
+      if (launch.controlPurpose !== 'systemd-scope-availability' || launch.route !== 'systemd-scope' ||
+          receipts.filter(row => row.kind === 'child-launch' && row.launchId === launch.launchId).length !== 1 ||
+          JSON.stringify(launch.originalArgv) !== JSON.stringify(['--user', '--scope', '--quiet', '--collect', '--', 'true']) ||
+          typeof launch.command !== 'string' || basename(launch.command) !== 'systemd-run' ||
+          typeof launch.node !== 'string' || !witness.files[launch.node] || !Array.isArray(launch.nodeArgv) || launch.nodeArgv.length !== 2 ||
+          launch.nodeArgv[0] !== '--eval' || typeof launch.nodeArgv[1] !== 'string' ||
+          replayHash(launch.nodeArgv[1]) !== launch.evalSha256 ||
+          JSON.stringify(launch.argv) !== JSON.stringify(['--user', '--scope', '--quiet', '--collect', '--', launch.node, ...launch.nodeArgv]))
+        throw Error('unsupported control launch');
+      const starts = receipts.filter(row => row.kind === 'child-started' && row.launchId === launch.launchId);
+      const exits = receipts.filter(row => row.kind === 'control-exit' && row.launchId === launch.launchId);
+      if (starts.length !== 1 || exits.length !== 1 || exits[0].code !== 0 || exits[0].signal !== null || exits[0].error ||
+          !Number.isSafeInteger(starts[0].childPid) || typeof starts[0].childIdentity !== 'string')
+        throw Error('control probe incomplete or failed');
+      // Short-lived control children are qualified from their recorded kernel
+      // ancestry and terminal result, never from a reused PID after exit.
+      let matching = 0;
+      for (const file of readdirSync(witness.directory).filter(file => /^\d+\.jsonl$/.test(file))) {
+        const text = reader.text(join(witness.directory, file));
+        if (!text.endsWith('\n')) continue;
+        const rows: Record<string, unknown>[] = text.trim().split('\n').map(line => JSON.parse(line));
+        const boot = rows[0];
+        const parent = boot?.parent as Record<string, unknown> | undefined;
+        if (!parent || parent.launchId !== launch.launchId || parent.pid !== pid) continue;
+        matching++;
+        const complete = rows.filter(row => row.kind === 'control-complete');
+        if (boot.kind !== 'bootstrap' || boot.controlPurpose !== launch.controlPurpose || boot.nodeOptions !== '' ||
+            boot.entry !== launch.entry || typeof complete[0]?.executableSha256 !== 'string' ||
+            boot.evalSha256 !== launch.evalSha256 || parent.identity !== identity || parent.evalSha256 !== evalSha256 ||
+            JSON.stringify(boot.execArgv) !== JSON.stringify(launch.nodeArgv) || complete.length !== 1 ||
+            rows.length !== 2 || rows.some(row => row.schemaVersion !== 'lsp-replay-runtime-receipt-v1' ||
+              row.pid !== boot.pid || row.identity !== boot.identity || row.runId !== witness.runId) ||
+            complete[0].purpose !== launch.controlPurpose || complete[0].executableSha256 !== witness.files[launch.node])
+          throw Error('unwitnessed control completion');
+        const ancestry = complete[0].ancestry as { pid: number; identity: string; ppid: number }[];
+        if (!Array.isArray(ancestry) || !ancestry.length || ancestry.length > 16 || ancestry[0].pid !== boot.pid ||
+            ancestry[0].identity !== boot.identity || ancestry[0].ppid !== boot.ppid ||
+            boot.parentIdentity !== (ancestry[1]?.identity ?? identity) ||
+            ancestry.some((row, index) => !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) ||
+              typeof row.identity !== 'string' || row.ppid !== (ancestry[index + 1]?.pid ?? pid)) ||
+            new Set(ancestry.map(row => row.pid)).size !== ancestry.length ||
+            !ancestry.some(row => row.pid === starts[0].childPid && row.identity === starts[0].childIdentity))
+          throw Error('unanchored control ancestry');
+      }
+      if (matching !== 1) throw Error('missing or ambiguous control receipt');
+    } catch (error) { unknown.push(`unqualified-control-probe:${String(launch.launchId)}:${String(error)}`); }
+  }
   for (const row of receipts) {
     if (row.schemaVersion !== 'lsp-replay-runtime-receipt-v1' || row.pid !== pid || !identity ||
         row.identity !== identity || row.runId !== witness.runId) unknown.push('runtime-receipt-identity-mismatch');
     if (row.kind === 'unknown') unknown.push(String(row.reason));
+    if (row.kind === 'kernel-metadata') {
+      try {
+        const path = String(row.path);
+        const match = /^\/proc\/(self|[1-9]\d*)\/(stat|cgroup)$/.exec(path);
+        const subjectPid = match ? (match[1] === 'self' ? pid : Number(match[1])) : pid;
+        const subjectIdentity = reader.identity(subjectPid);
+        if ((!match && path !== '/proc/sys/kernel/random/boot_id') ||
+            row.subjectPid !== subjectPid || !subjectIdentity || row.subjectIdentity !== subjectIdentity ||
+            typeof row.text !== 'string' || replayHash(row.text) !== row.sha256)
+          throw Error('metadata identity or bytes mismatch');
+        if (match?.[2] === 'stat') {
+          const current = reader.text(`/proc/${subjectPid}/stat`);
+          const boot = reader.text('/proc/sys/kernel/random/boot_id');
+          if (!row.text.startsWith(`${subjectPid} (`) || linuxProcessIdentityFromStat(boot, row.text) !== subjectIdentity ||
+              linuxPpidFromProcStat(row.text) === null || linuxPpidFromProcStat(row.text) !== linuxPpidFromProcStat(current))
+            throw Error('stat epoch or parent mismatch');
+        } else if (reader.text(match ? `/proc/${subjectPid}/cgroup` : path) !== row.text) {
+          throw Error('kernel control input changed');
+        }
+        if (reader.identity(subjectPid) !== subjectIdentity) throw Error('process changed during metadata validation');
+      } catch (error) { unknown.push(`unqualified-kernel-metadata:${String(row.path)}:${String(error)}`); }
+      continue;
+    }
     if (row.kind === 'commonjs-load-pending') {
       // A default load hook can defer the format decision until _compile.
       // Qualification requires that actual compile, with matching source
@@ -656,6 +728,9 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
     if (['esm-load-return', 'commonjs-compile', 'json-load', 'file-read'].includes(String(row.kind))) {
       if (typeof row.path !== 'string' || witness.files[row.path] !== row.sha256)
         unknown.push(`unfrozen-loaded-bytes:${String(row.path)}`);
+    } else if (row.kind === 'control-exit') {
+      if (!receipts.some(launch => launch.kind === 'child-launch' && launch.launchId === row.launchId && launch.controlPurpose))
+        unknown.push('orphan-control-exit');
     } else if (!['bootstrap', 'ready', 'native-load', 'unknown', 'child-launch', 'child-started'].includes(String(row.kind))) unknown.push('unsupported-runtime-receipt');
   }
   // Kernel map_files names the mapped inode even after disk replacement/unlink.

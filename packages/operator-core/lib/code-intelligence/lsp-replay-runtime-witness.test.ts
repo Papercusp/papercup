@@ -90,6 +90,50 @@ describe('actual replay load-byte witness', () => {
       expect(replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown).toEqual([]);
     });
   });
+  it('records and validates exact kernel metadata reads without freezing volatile proc files', async () => {
+    const f = fixture('mjs', `import {readFileSync,readFile} from 'node:fs';import {readFile as readPromise} from 'node:fs/promises';
+      readFileSync('/proc/sys/kernel/random/boot_id','utf8');
+      await readPromise('/proc/self/cgroup','utf8');
+      await new Promise((resolve,reject)=>readFile('/proc/'+process.pid+'/stat','utf8',error=>error?reject(error):resolve()));
+      readFileSync('/proc/version','utf8');console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);`);
+    await withLiveRuntime(f, pids => {
+      const pid = pids[0];
+      const { witness, reader } = liveWitness(f, [f.entry]);
+      const command = reader.text(`/proc/${pid}/cmdline`).split('\0').filter(Boolean);
+      const qualify = (r = reader) => replayLoadedRuntime(pid, reader.identity(pid), command, witness, r).unknown;
+      expect(receipts(f.root).filter(row => row.kind === 'kernel-metadata')).toHaveLength(3);
+      expect(qualify()).toEqual(['unfrozen-loaded-bytes:/proc/version']);
+      const changed = { ...reader, text: (path: string) => path.endsWith('/cgroup') ? '0::/different\n' : reader.text(path) };
+      expect(qualify(changed).some(reason => reason.startsWith('unqualified-kernel-metadata:/proc/self/cgroup:'))).toBe(true);
+      const receiptPath = join(f.root, `${pid}.jsonl`);
+      const rows = receipts(f.root);
+      const stat = rows.find(row => row.kind === 'kernel-metadata' && row.path.endsWith('/stat'));
+      stat.subjectIdentity = 'different-process-epoch';
+      writeFileSync(receiptPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify().some(reason => reason.startsWith(`unqualified-kernel-metadata:/proc/${pid}/stat:`))).toBe(true);
+    });
+  });
+  it('refuses altered metadata bytes and stat identity even when a receipt hash is recomputed', async () => {
+    const f = fixture('mjs', `import {readFileSync} from 'node:fs';readFileSync('/proc/'+process.pid+'/stat','utf8');
+      console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);`);
+    await withLiveRuntime(f, pids => {
+      const pid = pids[0];
+      const { witness, reader } = liveWitness(f, [f.entry]);
+      const command = reader.text(`/proc/${pid}/cmdline`).split('\0').filter(Boolean);
+      const qualify = () => replayLoadedRuntime(pid, reader.identity(pid), command, witness, reader).unknown;
+      expect(qualify()).toEqual([]);
+      const rows = receipts(f.root);
+      const stat = rows.find(row => row.kind === 'kernel-metadata');
+      const path = join(f.root, `${pid}.jsonl`);
+      stat.sha256 = replayHash('altered bytes');
+      writeFileSync(path, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify().some(reason => reason.startsWith('unqualified-kernel-metadata:'))).toBe(true);
+      const fields = stat.text.slice(stat.text.lastIndexOf(')') + 2).split(' '); fields[19] = '0';
+      stat.text = stat.text.slice(0, stat.text.lastIndexOf(')') + 2) + fields.join(' '); stat.sha256 = replayHash(stat.text);
+      writeFileSync(path, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify().some(reason => reason.includes('stat epoch or parent mismatch'))).toBe(true);
+    });
+  });
   it('qualifies a declared symlink launcher through its recorded canonical loaded entry', async () => {
     const f = fixture();
     const entry = join(f.root, 'launcher.mjs'); symlinkSync('entry.mjs', entry);
@@ -199,6 +243,51 @@ describe('actual replay load-byte witness', () => {
       });
     } finally { launch.transport?.release(); }
   }, 20_000);
+  it('witnesses the exact managed availability probe as terminal control evidence and rejects incomplete or altered proof', async () => {
+    const f = fixture('mjs', `import {spawn} from 'node:child_process';
+      const c=spawn('systemd-run',['--user','--scope','--quiet','--collect','--','true'],{stdio:['ignore','ignore','pipe']});
+      let errors='';c.stderr.on('data',chunk=>errors+=chunk);c.on('exit',code=>{if(code!==0)throw Error(errors);
+      console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);});`);
+    await withLiveRuntime(f, pids => {
+      const pid = pids[0];
+      const { witness, reader } = liveWitness(f, [f.entry, process.execPath]);
+      const command = reader.text(`/proc/${pid}/cmdline`).split('\0').filter(Boolean);
+      const qualify = () => replayLoadedRuntime(pid, reader.identity(pid), command, witness, reader).unknown;
+      expect(qualify()).toEqual([]);
+      const rows = receipts(f.root).filter(row => row.pid === pid);
+      const launch = rows.find(row => row.kind === 'child-launch');
+      expect(launch).toMatchObject({ controlPurpose: 'systemd-scope-availability', originalArgv: ['--user','--scope','--quiet','--collect','--','true'] });
+      expect(receipts(f.root).filter(row => row.pid !== pid).map(row => row.kind)).toEqual(['bootstrap','control-complete']);
+      const rootPath = join(f.root, `${pid}.jsonl`);
+      const original = readFileSync(rootPath, 'utf8');
+      const unfrozen = { ...witness, files: { ...witness.files } }; delete unfrozen.files[process.execPath];
+      expect(replayLoadedRuntime(pid, reader.identity(pid), command, unfrozen, reader).unknown
+        .some(reason => reason.startsWith('unqualified-control-probe:'))).toBe(true);
+      writeFileSync(rootPath, rows.filter(row => row.kind !== 'control-exit').map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify().some(reason => reason.startsWith('unqualified-control-probe:'))).toBe(true);
+      writeFileSync(rootPath, original);
+      const control = receipts(f.root).find(row => row.kind === 'control-complete');
+      const controlPath = join(f.root, `${control.pid}.jsonl`);
+      const controlRows = receipts(f.root).filter(row => row.pid === control.pid);
+      const originalControl = readFileSync(controlPath, 'utf8');
+      controlRows[1].ancestry[0].identity = 'reused-process-epoch';
+      writeFileSync(controlPath, controlRows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify().some(reason => reason.includes('unanchored control ancestry'))).toBe(true);
+      writeFileSync(controlPath, originalControl);
+      controlRows[1].ancestry[0].identity = controlRows[0].identity;
+      controlRows[1].executableSha256 = replayHash('unfrozen executable');
+      writeFileSync(controlPath, controlRows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      expect(qualify().some(reason => reason.includes('unwitnessed control completion'))).toBe(true);
+    });
+  }, 20_000);
+  it('keeps near-match native availability commands unqualified', () => {
+    const f = fixture('mjs', `import {spawn} from 'node:child_process';
+      const c=spawn('systemd-run',['--user','--scope','--quiet','--collect','--','true','extra'],{stdio:'ignore'});
+      await new Promise(resolve=>c.on('exit',resolve));`);
+    execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
+    expect(receipts(f.root)).toContainEqual(expect.objectContaining({ kind: 'unknown', reason: 'unsupported-child-launch:true' }));
+    expect(receipts(f.root).some(row => row.controlPurpose)).toBe(false);
+  });
 });
 
 describe('fail-closed runtime qualification', () => {

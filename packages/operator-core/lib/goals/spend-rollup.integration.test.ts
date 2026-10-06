@@ -157,6 +157,15 @@ beforeAll(async () => {
       owner_id text PRIMARY KEY, heartbeat_at timestamptz, fleet_slug text,
       host text NOT NULL DEFAULT '', pid integer, source text NOT NULL DEFAULT ''
     )`);
+  // goalHeadcount's pending_launches CTE counts leased goal reservations from
+  // work_items (WI-10006337). Without this table the launch resolver degrades to
+  // "ceiling not enforced — headcount failed", and the under-ceiling admission
+  // cases below fail for a reason unrelated to spend. Same shape as
+  // goal-headcount-census.integration.test.ts.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.work_items (
+      feature_id text PRIMARY KEY, workspace_id text NOT NULL, payload jsonb NOT NULL
+    )`);
 }, 90_000);
 
 afterAll(async () => {
@@ -170,7 +179,7 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.goals, harness_shared.goal_pots,
                 harness_shared.agent_usage_samples, harness_shared.adv_sessions,
                 harness_shared.agent_modes, harness_shared.session_briefs,
-                harness_shared.consult_state`;
+                harness_shared.consult_state, harness_shared.work_items`;
 });
 
 async function seedGoal(

@@ -118,8 +118,18 @@ export async function readHistoricalShipmentWitness(
            WHERE r.workspace_id = p.workspace_id AND r.harness_slug = p.harness_slug
              AND r.plan_slug = p.plan_slug ORDER BY r.seq DESC LIMIT 1
         ) head ON true
-        JOIN harness_shared.plan_revisions prior ON prior.workspace_id = p.workspace_id
-          AND prior.harness_slug = p.harness_slug AND prior.plan_slug = p.plan_slug AND prior.seq = head.seq - 1
+        -- The body a rollback reinstates is the last PRE-SHIPMENT revision: the latest one
+        -- before the head whose hash differs from the shipped head. Not head.seq - 1: a
+        -- successful restore writes a revision that duplicates the shipped body, so after a
+        -- REPEAT rollback head.seq - 1 is itself the shipped body and could never match
+        -- (WI-10006328). The content === predecessor guard below is otherwise unchanged.
+        JOIN LATERAL (
+          SELECT r.content_snapshot FROM harness_shared.plan_revisions r
+           WHERE r.workspace_id = p.workspace_id AND r.harness_slug = p.harness_slug
+             AND r.plan_slug = p.plan_slug AND r.seq < head.seq
+             AND r.content_hash <> head.content_hash
+           ORDER BY r.seq DESC LIMIT 1
+        ) prior ON true
        WHERE p.workspace_id = ${scope.workspaceId} AND p.harness_slug = ${scope.harnessSlug}
          AND p.plan_slug = ${slug}
     `;

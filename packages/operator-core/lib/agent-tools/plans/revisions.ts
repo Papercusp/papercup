@@ -176,6 +176,11 @@ export async function recordPlanRevisionInTransaction(
 export const FEDERATED_RECOMPOSE_REVISION_AUTHOR = 'plan-parts:federated-recompose';
 /** System author of the revision a remote whole-blob BOOTSTRAP insert records (WI-10006275). */
 export const FEDERATED_BOOTSTRAP_REVISION_AUTHOR = 'plan-federation:whole-blob-bootstrap';
+/**
+ * System author of the revision a whole-blob UPDATE records when it changes an existing
+ * plan's bytes (WI-10006313: the flag-OFF `ON CONFLICT DO UPDATE` federation apply).
+ */
+export const FEDERATED_WHOLE_BLOB_REVISION_AUTHOR = 'plan-federation:whole-blob-apply';
 
 /**
  * Append one SYSTEM-attributed revision using an already-open transaction, for a

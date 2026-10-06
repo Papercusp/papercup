@@ -43,6 +43,7 @@ import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import {
   FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
   FEDERATED_RECOMPOSE_REVISION_AUTHOR,
+  FEDERATED_WHOLE_BLOB_REVISION_AUTHOR,
 } from '../../../agent-tools/plans/revisions';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -504,6 +505,7 @@ describe('plan-part federation cutover — flag-OFF control (whole-blob path byt
   });
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.harness_plans`;
+    await db.sql`DELETE FROM harness_shared.plan_revisions`;
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
   });
 
@@ -512,6 +514,48 @@ describe('plan-part federation cutover — flag-OFF control (whole-blob path byt
     await p.recvWholeBlob(c0, 100); // full upsert (insert)
     await p.recvWholeBlob(planMarkdown('one-NEW', 'two-NEW'), 200); // newer → applies
     expect((await p.getPlan())!.content).toBe(planMarkdown('one-NEW', 'two-NEW')); // whole-doc LWW (the legacy behavior)
+  });
+
+  it('WI-10006313: flag OFF: the whole-blob upsert records a revision exactly when it writes new bytes', async () => {
+    // A remote INSERT is this node's first copy of the plan: one bootstrap revision.
+    const c0 = planMarkdown('one', 'two');
+    await p.recvWholeBlob(c0, 100);
+    let revs = await p.revisions();
+    expect(revs).toHaveLength(1);
+    expect(revs[0]!.content_snapshot).toBe(c0);
+    expect(revs[0]!.content_hash).toBe(hashPlanContent(c0));
+    expect(revs[0]!.author_kind).toBe('system');
+    expect(revs[0]!.author_id).toBe(FEDERATED_BOOTSTRAP_REVISION_AUTHOR);
+
+    // A newer remote blob with different bytes overwrites content (DO UPDATE): one
+    // revision describing exactly the bytes now live, so plans:revisions / plans:audit
+    // can see a federated overwrite (a rollback included) and a restore can target it.
+    const c1 = planMarkdown('one-NEW', 'two-NEW');
+    await p.recvWholeBlob(c1, 200);
+    expect((await p.getPlan())!.content).toBe(c1);
+    revs = await p.revisions();
+    expect(revs).toHaveLength(2);
+    expect(revs[1]!.content_snapshot).toBe(c1);
+    expect(revs[1]!.content_hash).toBe(hashPlanContent(c1));
+    expect(revs[1]!.author_kind).toBe('system');
+    expect(revs[1]!.author_id).toBe(FEDERATED_WHOLE_BLOB_REVISION_AUTHOR);
+    expect(revs[1]!.rationale).toContain('federated whole-blob apply');
+
+    // Equal bytes again: a remote re-delivery, then the local echo of an own write.
+    // Both still pass the LWW guard and fire the DO UPDATE, but no content changed.
+    await p.recvWholeBlob(c1, 300);
+    await p.plans.writeToPg(planRow(c1), { authorPubkey: 'LOCAL', origin: 'local', ts: 400 });
+    // A stale blob loses the LWW guard and writes nothing.
+    await p.recvWholeBlob(c0, 50);
+    expect((await p.getPlan())!.content).toBe(c1);
+    expect(await p.revisions()).toHaveLength(2);
+  });
+
+  it('WI-10006313: flag OFF: a local-origin INSERT records no revision (as with flag ON, only a remote bootstrap does)', async () => {
+    const c0 = planMarkdown('one', 'two');
+    await p.plans.writeToPg(planRow(c0), { authorPubkey: 'LOCAL', origin: 'local', ts: 100 });
+    expect((await p.getPlan())!.content).toBe(c0);
+    expect(await p.revisions()).toHaveLength(0);
   });
 
   it('P-009: whole-blob import rejects a newly cyclic candidate without changing the live row', async () => {

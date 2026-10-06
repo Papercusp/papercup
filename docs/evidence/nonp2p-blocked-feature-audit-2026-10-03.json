@@ -9,6 +9,667 @@
   "count": 172,
   "scope": "Frozen non-P2P selector cohort; not the whole live backlog or original200 cohort"
  },
+ "originalOpenCohortEnvelopeQualification": {
+  "status": "native-command-events-qualified-full-id-envelope-unrecovered",
+  "proofWorkItem": "WI-10005820",
+  "sourceNativeSession": "01a10017-3f0b-7013-92cd-fbaf80c0bde6",
+  "sourceFile": "$HOME/.papercusp/su-codex-homes/session-32446/sessions/2026/10/03/rollout-2026-10-03T00-48-05-01a10017-3f0b-7013-92cd-fbaf80c0bde6.jsonl",
+  "producer": {
+   "line": 248,
+   "callId": "call_SPDHJPgfisvmsVdFO8sPaX9Z",
+   "recordSha256": "6ca6ce9189e4c80a39abee44f770ee6294cb4de92c7f9e224d92c705798beaeb",
+   "observedAt": "2026-10-03T04:59:45.076Z",
+   "queryScope": "Papercusp feature rows with status=open, ordered by feature_id; maxRows=500. Selector and claimability floors are not part of this SQL.",
+   "capture": "Response redirected to a temporary JSON; the native command result records launcher output, not query rows."
+  },
+  "producerCompletion": {
+   "line": 250,
+   "callId": "call_SPDHJPgfisvmsVdFO8sPaX9Z",
+   "recordSha256": "1424186daac6ce871932ecd3ca3d5a605065cbc8a68fad2fa2613afd8546eda9",
+   "exitCode": 0
+  },
+  "metadataPrintCompletion": {
+   "line": 258,
+   "callId": "call_3lMQXUvEZTMKFFfOy77FDPbZ",
+   "recordSha256": "75f564e75f99325e334ad75da20a78edf13de849357968225d6d73e246f6757d",
+   "stdoutSha256": "3b419fe5372ce298d5ccad8a3dc5c82dfe2911d71873de0a5db8c3a8ce2bfc2a",
+   "exitCode": 0,
+   "printedRowCount": 40,
+   "printedTruncated": false,
+   "printedFields": ["advisory", "mode", "rowCount", "truncated", "fields", "elapsedMs", "rows"],
+   "qualification": "Producer line256 prints query count and root keys only. Command-event stdout and native response260 do not contain the full query-row envelope."
+  },
+  "filteredPrintCompletion": {
+   "line": 266,
+   "callId": "call_4B5P5DpO1BofdSEfa349EC69",
+   "recordSha256": "eca89ed9577453276c51a28eadfb2bf89bc300716ca453a9fe740004c24351fc",
+   "stdoutSha256": "66385115d740916af7038b1be140cc6734e51ca5fb1d8724bf53e1421a7d5c07",
+   "exitCode": 0,
+   "printedMatchingCount": 28,
+   "qualification": "Line264 applies its Python selector before printing IDs. The resulting28 cannot reconstruct the twelve other original rows or prove executed canonical claimability floors."
+  },
+  "boundedRecovery": {
+   "originalTemporaryFiles": "Both named query JSON captures are currently absent.",
+   "scratchWindow": {
+    "startMs": 1791003498981,
+    "endMs": 1791003678981,
+    "roots": ["tools:invoke", "dev:pg_query", "code:run"],
+    "qualification": "No named-window file with this SELF owner manifest was recovered in these roots. Timing alone cannot attribute another owner's capture to this invocation."
+   },
+   "notEstablished": ["Complete original40 IDs and excluded-row contents", "Loaded original selector and claimability-floor execution", "Original approximately200 ID baseline and per-ID terminal reconciliation", "Global archive absence or the cause of temporary-file disappearance"]
+  },
+  "acceptance": "Dated source qualification only; no current population, completion, rubric acceptance, runtime or shipment verdict."
+ },
+ "historicalPopulationQualification": {
+  "status": "historical-count-source-recovered-id-cohort-unqualified",
+  "qualifiedAt": "2026-10-06T03:09:14.970Z",
+  "proofWorkItem": "WI-10005820",
+  "baselineLabel": "Earlier reported approximately200; recovered dated188 aggregate is not a sealed original-ID manifest",
+  "selector": {
+   "revision": 5,
+   "observedAt": "2026-09-30T21:37:37.527Z",
+   "sourceNativeSession": "01a0f3f1-0fe1-74e0-8748-fee6438a6455",
+   "sourceLine": 1779,
+   "sourceCallId": "call_pir7tDW1d8oqakbE7byFM5zk",
+   "sourceRecordSha256": "967468640908675c7f8b0c01f8a691614e34b119e6fee3ba3c93514c4df39338",
+   "filterCanonicalSha256": "f0116aa8f14ba2be275319301f83d19a3306e5c808ad272f2e6d7fe6fadb4778",
+   "filter": {
+    "all": [
+     {
+      "op": "in",
+      "field": "kind",
+      "value": [
+       "feature"
+      ]
+     },
+     {
+      "not": {
+       "any": [
+        {
+         "op": "word",
+         "field": "title",
+         "value": "p2p"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "p2p"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "p2p"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "shared-hive"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "shared-hive"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "shared-hive"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "federation"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "federation"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "federation"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "federated"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "federated"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "federated"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "federate"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "federate"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "federate"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "federates"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "federates"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "federates"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "federating"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "federating"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "federating"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "holepunch"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "holepunch"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "holepunch"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "steering lease"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "steering lease"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "steering lease"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "replication"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "replication"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "replication"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "swarm"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "swarm"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "swarm"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "hyperswarm"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "hyperswarm"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "hyperswarm"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "hyperdht"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "hyperdht"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "hyperdht"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "hyperbee"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "hyperbee"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "hyperbee"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "dht"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "dht"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "dht"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "udx"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "udx"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "udx"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "relay"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "relay"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "relay"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "pot-git"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "pot-git"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "pot-git"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "ref-announce"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "ref-announce"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "ref-announce"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "duplex"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "duplex"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "duplex"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "hypercore"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "hypercore"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "hypercore"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "hyperblobs"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "hyperblobs"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "hyperblobs"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "hyperdrive"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "hyperdrive"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "hyperdrive"
+        },
+        {
+         "op": "word",
+         "field": "title",
+         "value": "autobase"
+        },
+        {
+         "op": "word",
+         "field": "summary",
+         "value": "autobase"
+        },
+        {
+         "op": "word",
+         "field": "plan",
+         "value": "autobase"
+        }
+       ]
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "coordination-metadata-friction-reduction-2026-09-07"
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "backend-audit-diagnosis-before-repair-2026-09-13"
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "cupboard-release-pipeline-content-trust-2026-09-16"
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "portable-identity-packages-2026-09-26"
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "hud-orders-instant-load-2026-09-13"
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "pui-first-party-public-release-2026-09-07"
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "gitnexus-selective-hardening-and-comparison-2026-09-13"
+      }
+     },
+     {
+      "not": {
+       "op": "in",
+       "field": "id",
+       "value": [
+        "WI-10002995",
+        "WI-10002996",
+        "WI-10003251"
+       ]
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "goal-brief-to-claimed-plan-work-2026-09-23"
+      }
+     },
+     {
+      "not": {
+       "op": "glob",
+       "field": "plan",
+       "value": "review-verification-efficiency-2026-09-09"
+      }
+     }
+    ]
+   },
+   "atomicWithAggregate": false
+  },
+  "aggregate": {
+   "measuredAt": "2026-09-30T22:10:17.343Z",
+   "specRevision": 5,
+   "rows": [
+    {
+     "status": "blocked",
+     "authority": "invalid",
+     "n": 3,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "blocked",
+     "authority": null,
+     "n": 124,
+     "fleet_closed": 0,
+     "fleet_claimed": 1
+    },
+    {
+     "status": "deprecated",
+     "authority": null,
+     "n": 25,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "done",
+     "authority": "committed",
+     "n": 1433,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "done",
+     "authority": "proposed",
+     "n": 278,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "done",
+     "authority": null,
+     "n": 654,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "dropped",
+     "authority": "committed",
+     "n": 30,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "dropped",
+     "authority": "proposed",
+     "n": 65,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "dropped",
+     "authority": null,
+     "n": 220,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "needs-human",
+     "authority": "invalid",
+     "n": 1,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "needs-human",
+     "authority": null,
+     "n": 5,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    },
+    {
+     "status": "open",
+     "authority": null,
+     "n": 55,
+     "fleet_closed": 0,
+     "fleet_claimed": 4
+    },
+    {
+     "status": "passed",
+     "authority": null,
+     "n": 354,
+     "fleet_closed": 0,
+     "fleet_claimed": 0
+    }
+   ],
+   "sourceNativeSession": "01a0f444-246f-7813-b8c2-43c9288b3c39",
+   "sourceCallId": "call_iDml2h1fhhRveGChUous5v6v",
+   "callLine": 615,
+   "resultLine": 621,
+   "callRecordSha256": "c986f2791e9f7080cd4e6d811a3104078cbd2d655b642779dfffb611ebee2cb2",
+   "resultRecordSha256": "8e2fa37c6aded8ac85a36a3bc55c43056d17e9b093b33a8c56a2cec89fa311bf",
+   "shellExitCode": 0,
+   "writer": "compileFilter(view.filter) over harness_shared.work_items; GROUP BY status,authority; no LIMIT and no ID projection",
+   "unfinishedPartition": {
+    "blocked": 127,
+    "open": 55,
+    "needsHuman": 6,
+    "total": 188
+   },
+   "claimabilityFloorsApplied": false,
+   "historicalLoadedWriterFingerprint": "unknown",
+   "historicalRuntimeFingerprint": "unknown"
+  },
+  "reportRefs": [
+   "session_turn:codex:01a0f444-246f-7813-b8c2-43c9288b3c39:22",
+   "session_turn:codex:01a0f444-246f-7813-b8c2-43c9288b3c39:25",
+   "session_turn:codex:01a10034-22fd-7f91-b37d-a0d85c743945:11",
+   "session_turn:codex:01a10034-22fd-7f91-b37d-a0d85c743945:12"
+  ],
+  "limitations": [
+   "This recovered aggregate stores counts, not the188 feature IDs; it cannot support per-ID survival, disposition or completion reconciliation.",
+   "The revision5 selector is an earlier separate observation; this receipt does not prove a transactionally frozen selector/population union or parity with revision6.",
+   "A selector match and unfinished status do not establish claimability; this query omits holds, leases, plan admission and acceptance floors.",
+   "No current census, runtime, acceptance or shipment claim follows from this historical receipt."
+  ],
+  "identityRedaction": {
+   "reason": "2026-10-06 git-sync identity-leak quarantine; maintained redactIdentityLeaks applied only to string values",
+   "detector": "scripts/lib/identity-leak-patterns.mjs",
+   "sourceMessage": "muw3g2yt-0000-7b79ed0924aa43a2aea4788cc13a7a39",
+   "changedPaths": [
+    ".rows[5].reason",
+    ".rows[13].reason",
+    ".rows[42].reason",
+    ".rows[61].externalConditions[1].summary",
+    ".rows[66].qualification.currentSourceIdentity.appRoot",
+    ".rows[66].qualification.retainedEvidenceArtifacts[0].repositoryRoot",
+    ".rows[66].qualification.retainedEvidenceArtifacts[1].repositoryRoot",
+    ".rows[97].reason",
+    ".rows[139].holdReason"
+   ],
+   "privateProvenance": "Original native records and canonical thread proofs retain unsanitized evidence. Redacted host-root strings are display placeholders, not executable paths."
+  }
+ },
  "predecessorHistoryQualification": {
  "status": "partial-local-evidence-live-outcomes-unqualified",
  "rootWorkItem": "WI-10000248",
@@ -587,7 +1248,7 @@
    "id": "WI-10002216",
    "state": "dropped",
    "disposition": "obsolete-terminal-source-mirror-dropped",
-   "reason": "Canonical source P006 is DONE with this exact WI completion annotation and source plan SHIPPED@249/hashb435f504. NEW canonical forced_past and orders:get473 recover the terminal provenance: Avi explicitly directed plans with no real work left to be marked shipped; the disposition names this plan and records the direct status write plus waived acceptance checks. The obsolete blocking R2 clause is RETIRED@11; provider R8 remains active/accepted@7, with historical evidence9871 stale today. Normal claim, evidence comment1157425, lifecycle DROP and fresh terminal readback succeeded. DROPPED/PROPOSED removes the obsolete queue mirror; it does not claim committed feature acceptance, new clean current tests, or a newly verified shipment. Historical source waiver remains disclosed.",
+   "reason": "Canonical source P006 is DONE with this exact WI completion annotation and source plan SHIPPED@249/hashb435f504. NEW canonical forced_past and orders:get473 recover the terminal provenance: owner explicitly directed plans with no real work left to be marked shipped; the disposition names this plan and records the direct status write plus waived acceptance checks. The obsolete blocking R2 clause is RETIRED@11; provider R8 remains active/accepted@7, with historical evidence9871 stale today. Normal claim, evidence comment1157425, lifecycle DROP and fresh terminal readback succeeded. DROPPED/PROPOSED removes the obsolete queue mirror; it does not claim committed feature acceptance, new clean current tests, or a newly verified shipment. Historical source waiver remains disclosed.",
    "source": {
     "plan": "turn-start-memory-two-class-2026-09-21",
     "item": "P-006",
@@ -862,7 +1523,7 @@
    "id": "WI-10003659",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Source P-005 explicitly requires Avi to review the private papercusp-preview contents and approve them or name removals. This owner decision precedes invitations. Generic AUTO permission is not evidence that this review occurred.",
+   "reason": "Source P-005 explicitly requires owner to review the private papercusp-preview contents and approve them or name removals. This owner decision precedes invitations. Generic AUTO permission is not evidence that this review occurred.",
    "source": {
     "plan": "dhh-source-preview-2026-09-28",
     "item": "P-005",
@@ -1981,7 +2642,7 @@
    "id": "WI-10004757",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "Remaining release-population proof depends on Avi's Portal-access decision and an authorized current source. Provider, physical-microphone and final-artifact acceptance remain separate. Qualify the precise current source/access condition rather than repeating stale credential prose.",
+   "reason": "Remaining release-population proof depends on owner's Portal-access decision and an authorized current source. Provider, physical-microphone and final-artifact acceptance remain separate. Qualify the precise current source/access condition rather than repeating stale credential prose.",
    "source": {
     "plan": "voice-final-public-release-2026-10-01",
     "item": "P-001",
@@ -2737,7 +3398,7 @@
     },
     {
      "ref": "TELNYX_API_KEY",
-     "summary": "Carrier account/secure credential reference, provider/KYC/number authority and hard pilot/monthly spend limits are pending Avi inputs."
+     "summary": "Carrier account/secure credential reference, provider/KYC/number authority and hard pilot/monthly spend limits are pending owner inputs."
     }
    ],
    "claimHold": false
@@ -2910,6 +3571,94 @@
   },
   {
    "id": "WI-10004995",
+   "qualification": {
+    "reviewedAt": "2026-10-06T02:49:24Z",
+    "status": "retained-proposed-predecessor-needs-current-source-verification",
+    "scope": "Dated source and stored-receipt qualification of WI-10004993/P-008 only; not a fresh scenario run, atomic dependency census, outcome grade or shipment verdict.",
+    "sourcePlan": {
+     "slug": "phone-public-telephone-service-2026-10-01",
+     "revision": 52,
+     "contentHash": "8c70949b64a08e2b6ad9f623bbc737c2a8842f2663b3f3127c582d3f448c3dd6",
+     "governingDecision": "D-010",
+     "boundary": "P-008 owns isolated worker software hardening; P-013/P-015 retain real PSTN and public-host acceptance. Specification acceptance is not an outcome PASS."
+    },
+    "predecessorAtRead": {
+     "id": "WI-10004993",
+     "state": "done",
+     "completionAuthority": "proposed",
+     "completionFreshness": "stale",
+     "assignee": null,
+     "storedAppHead": "91ce76b6f51e521e3c9046d398a2c19111ef1629",
+     "currentAppHead": "16723163f3fab6724021a3f5f9cb5bdd6871bd02",
+     "settlementResidue": [
+      "docs/evidence/phone-p008-negative-controls-2026-10-02.json: historical missing-from-commit",
+      "docs/evidence/phone-p008-worker-suite-2026-10-02.json: historical missing-from-commit",
+      "worker/src/agent.ts: superseded-before-commit"
+     ]
+    },
+    "currentSourceIdentity": {
+     "appRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app",
+     "changed": [
+      {
+       "path": "worker/src/call-recovery.integration.test.ts",
+       "storedWorkingBlob": "2a520821f4975365b487128966dad7479439418e",
+       "currentWorkingAndHeadBlob": "68aa7318a55986fef4a1b25a269b3f1f16f64b45"
+      },
+      {
+       "path": "worker/src/agent.ts",
+       "storedWorkingBlob": "ccfb35badc2af4bb6813fc4a73827c6a493621fe",
+       "currentWorkingAndHeadBlob": "a75ed710425d6c9d55b60c0cd3a81b59d35c7fe8"
+      }
+     ],
+     "unchangedAppPaths": [
+      "worker/src/call-recovery.ts",
+      "worker/src/call-recovery.test.ts",
+      "worker/src/call-recovery.e2e.test.ts"
+     ],
+     "interpretation": "Measured content drift invalidates reuse of the saved completion as current-source proof; it does not demonstrate a runtime regression."
+    },
+    "retainedEvidenceArtifacts": [
+     {
+      "path": "docs/evidence/phone-p008-worker-suite-2026-10-02.json",
+      "repositoryRoot": "/home/builduser/papercupai-workspace/papercusp",
+      "sha256": "811f424bbf7664b03e5deab957b3b0a9abbbccd4e844da285b7a3386fc62131b",
+      "recordedAndCurrentBlob": "914c6566d592f7be4619be32f8522329f8aa9c17"
+     },
+     {
+      "path": "docs/evidence/phone-p008-negative-controls-2026-10-02.json",
+      "repositoryRoot": "/home/builduser/papercupai-workspace/papercusp",
+      "sha256": "c6da3c42ed2a856bcf3bcc4e718a8c7ba4703ec3addecc4b4e9e7003ffe039e4",
+      "recordedAndCurrentBlob": "3e1efb020e4304372bd8d333a8312dcb50cbd225"
+     }
+    ],
+    "receiptLimits": "The retained 2026-10-02 worker-suite receipt reports 291 passes and four skips; the six negative controls are historical. No current unfiltered suite, current grading-audit qualification or actual PSTN evidence was obtained in this review. The artifacts exist at their separately recorded canonical root; missing-at-app-root is not evidence they are absent from that canonical root.",
+    "currentP008AcceptedSpecs": [
+     "AUTO-BAR-R-12-P-008@4",
+     "AUTO-BAR-R-74-P-008@4",
+     "PHONE-P-008-CAPACITY@1",
+     "PHONE-P-008-INTERRUPTION@1",
+     "PHONE-P-008-NO-INBOUND@1",
+     "PHONE-P-008-OUTCOME@3",
+     "PHONE-P-008-RECOVERY-AUTHORITY@1",
+     "PHONE-P-008-RESPONSE-DEADLINE@1"
+    ],
+    "supersededP008LiveSpecs": [
+     "AUTO-BAR-R-8-P-008@6",
+     "AUTO-BAR-R-48-P-008@5",
+     "AUTO-BAR-R-49-P-008@5",
+     "AUTO-BAR-R-50-P-008@5",
+     "AUTO-BAR-R-51-P-008@5"
+    ],
+    "readP013AcceptedLiveSpecs": [
+     "AUTO-BAR-R-8-P-013@3",
+     "AUTO-BAR-R-48-P-013@2",
+     "AUTO-BAR-R-49-P-013@2",
+     "AUTO-BAR-R-50-P-013@2",
+     "AUTO-BAR-R-51-P-013@2"
+    ],
+    "dependencyContract": "Fresh incoming links read retains seven settled prerequisites, including WI-10004993. P-008's source-plan done label does not replace committed canonical settlement. Other prerequisites were not re-qualified in this unit.",
+    "next": "Qualify the exact current worker source, required unfiltered suite and current independent acceptance evidence before a canonical settlement repair; keep P-013 blocked until all its separate prerequisites and mandatory live/provider/policy evidence are satisfied."
+   },
    "state": "blocked",
    "disposition": "retained-current-dependency",
    "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",
@@ -4226,7 +4975,7 @@
    "id": "WI-1439",
    "state": "blocked",
    "disposition": "requires-further-qualification",
-   "reason": "The criterion explicitly requires Avi speaking at the physical microphone for desktop and TUI v/V acceptance. Preserve that owner action. The saved ElevenLabs convai_write failure is dated and must not be presented as today's credential state without a current read.",
+   "reason": "The criterion explicitly requires owner speaking at the physical microphone for desktop and TUI v/V acceptance. Preserve that owner action. The saved ElevenLabs convai_write failure is dated and must not be presented as today's credential state without a current read.",
    "source": {
     "plan": "voice-unified-sentinel-pipeline-2026-07-01",
     "item": "P-016",
@@ -5682,7 +6431,7 @@
     }
    ],
    "claimHold": true,
-   "holdReason": "UNPARK CONDITION: both :3270 AND :3274 return zero listeners (dev:listening_ports), or Avi authorizes a route. Blocked on D-008, which forbids the only three agent-available escapes — port substitution, operator reuse, and stopping Avi's live desktop — while PID 2067090 (the operator backing that desktop) holds both ports. Re-verified 04:0xZ. This item churned through 6+ agents in sequence, each re-deriving the same block and releasing it back into the pool; the plan-item `blocked` flip alone do"
+   "holdReason": "UNPARK CONDITION: both :3270 AND :3274 return zero listeners (dev:listening_ports), or owner authorizes a route. Blocked on D-008, which forbids the only three agent-available escapes — port substitution, operator reuse, and stopping owner's live desktop — while PID 2067090 (the operator backing that desktop) holds both ports. Re-verified 04:0xZ. This item churned through 6+ agents in sequence, each re-deriving the same block and releasing it back into the pool; the plan-item `blocked` flip alone do"
   },
   {
    "id": "WI-38604",

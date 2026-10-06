@@ -128,14 +128,31 @@ async function readHistoricalCensus(
              source_kind,
              harness_slug,
              cwd,
-             COALESCE(ts, ingested_at) AS event_at,
+             ts AS event_at,
              'session_turns'::text AS event_source
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${options.workspaceId} OR workspace_id = 'default')
          AND owner IS NOT NULL
          AND session_id IS NOT NULL
-         AND COALESCE(ts, ingested_at) >= ${options.since}::timestamptz
-         AND COALESCE(ts, ingested_at) < ${options.until}::timestamptz
+         AND ts >= ${options.since}::timestamptz
+         AND ts < ${options.until}::timestamptz
+      UNION ALL
+      -- Keep the fallback timestamp disjoint from the indexed ts range above:
+      -- wrapping both columns in COALESCE forced a full scan for bounded history.
+      SELECT owner AS owner_id,
+             session_id,
+             source_kind,
+             harness_slug,
+             cwd,
+             ingested_at AS event_at,
+             'session_turns'::text AS event_source
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${options.workspaceId} OR workspace_id = 'default')
+         AND owner IS NOT NULL
+         AND session_id IS NOT NULL
+         AND ts IS NULL
+         AND ingested_at >= ${options.since}::timestamptz
+         AND ingested_at < ${options.until}::timestamptz
       UNION ALL
       SELECT owner_id,
              session_id,

@@ -772,7 +772,9 @@ const MID_INSTALL_HINT =
  * Widen the TRIGGER rather than write a new detector (the fix `install:safe`
  * already holds is `scripts/lib/fs-mutex.mjs`'s named mutex): peek it — a
  * non-blocking read, never an acquire — immediately BEFORE each vitest spawn
- * point, and print a hint UP FRONT when it is held. This turns a silent hang
+ * point, and print a phase-aware hint UP FRONT when it is held. A writer first
+ * reserves the lock while draining admitted readers; that reservation alone
+ * does not mean its install callback has started. This turns a silent hang
  * into a stated wait: the message is already flushed to stdout the moment the
  * (possibly-hanging) spawnSync call begins, so it survives even if the outer
  * caller kills this process on its own timeout.
@@ -786,10 +788,26 @@ export function warnIfInstallInFlight(label) {
   }
   if (!peek.held) return;
   const owner = peek.owner ?? {};
-  const heldSince = owner.startedAt ? ` since ${owner.startedAt}` : '';
   const pidInfo = owner.pid ? ` (pid ${owner.pid}${owner.host ? `@${owner.host}` : ''})` : '';
+  if (owner.phase === 'draining-readers') {
+    const reservedSince = owner.acquiredAt ? ` since ${owner.acquiredAt}` : '';
+    console.error(
+      `TEST_FILE_INSTALL_DRAINING_READERS install writer${pidInfo} reserved${reservedSince} — ` +
+        `${label}: admitted readers can continue; the install callback has not started.`,
+    );
+    return;
+  }
+  if (owner.phase !== 'running') {
+    const reservedSince = owner.acquiredAt ? ` since ${owner.acquiredAt}` : '';
+    console.error(
+      `TEST_FILE_INSTALL_MUTEX_HELD install writer${pidInfo} reserved${reservedSince} — ` +
+        `${label}: writer phase is unknown; lock presence does not establish an active install.`,
+    );
+    return;
+  }
+  const runningSince = owner.runningAt ? ` since ${owner.runningAt}` : '';
   console.error(
-    `TEST_FILE_MID_INSTALL_SUSPECTED an \`npm install\` is in flight${pidInfo}${heldSince} — ` +
+    `TEST_FILE_MID_INSTALL_SUSPECTED an \`npm install\` is in flight${pidInfo}${runningSince} — ` +
       `${label} may HANG (not fail) until it completes — see EI-19304880034803985 / EI-18662389554660036. ` +
       'Check locks:list / `ps aux | grep "npm install"`, then retry once it finishes.',
   );
