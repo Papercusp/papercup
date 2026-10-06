@@ -56,6 +56,7 @@ import {
   classifySpecEvidenceCurrentness,
   evidenceMeasurementSchema,
   listSpecEvidence,
+  measureRepoFilesEvidenceDetailedAtRoot,
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
 } from './spec-evidence-store';
@@ -119,7 +120,14 @@ describe('repo-backed server measurement', () => {
       testPaths: ['test/feature.test.ts'],
     };
 
-    const initial = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    const initialDetailed = await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe);
+    expect(initialDetailed.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'dynamic/plugins/linear-sync/papercusp.json', dimension: 'source' }),
+    ]));
+    const initial = {
+      sourceFingerprint: initialDetailed.sourceFingerprint,
+      testFingerprint: initialDetailed.testFingerprint,
+    };
     await writeFile(manifest, '{"enabled":true}\n');
     const changed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
     expect(changed.sourceFingerprint).not.toBe(initial.sourceFingerprint);

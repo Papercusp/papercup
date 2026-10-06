@@ -2,10 +2,13 @@
 import { test, afterEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
+import type { GatewayCarryTrialAttempt } from './gateway';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
 import type { GatewayPayloadSpool } from './payload-spool';
 import * as burnAlert from './burn-alert';
@@ -29,17 +32,105 @@ afterEach(async () => {
   delete process.env.OPENAI_BASE_URL_UPSTREAM;
 });
 
-async function startUpstream(): Promise<{ base: string; lastAuth: () => string | undefined }> {
+async function startUpstream(): Promise<{ base: string; lastAuth: () => string | undefined; requests: () => number }> {
   let lastAuth: string | undefined;
+  let requests = 0;
   upstream = http.createServer((req, res) => {
+    requests++;
     lastAuth = req.headers['authorization'] as string | undefined;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
   });
   await new Promise<void>((r) => upstream!.listen(0, '127.0.0.1', () => r()));
   const port = (upstream!.address() as { port: number }).port;
-  return { base: `http://127.0.0.1:${port}`, lastAuth: () => lastAuth };
+  return { base: `http://127.0.0.1:${port}`, lastAuth: () => lastAuth, requests: () => requests };
 }
+
+const bindingDigest = (s: string) => createHash('sha256').update(s).digest('hex');
+const scopedGatewayToken = 'PRIVATE_NATIVE_GATEWAY_TOKEN';
+const sendScopedMessage = (port: number, token = scopedGatewayToken) => fetch(`http://127.0.0.1:${port}/v1/messages`, {
+  method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+  body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 4, messages: [{ role: 'user', content: 'PRIVATE_NATIVE_TASK' }] }),
+});
+const scopedBinding = (authorizeAttempt: (attempt: GatewayCarryTrialAttempt) => Promise<{
+  attemptId: string; reservationRef: string; clockId: string; validUntilMonotonicMs: number;
+  validateAuthorization?: () => void;
+} | null>) => ({ manifestSha256: bindingDigest('native fixture'), armId: 'native-judge',
+  requestTokenSha256: bindingDigest(scopedGatewayToken), protocols: ['anthropic-messages'] as Array<'anthropic-messages' | 'openai-responses'>,
+  authorizeAttempt });
+const nativeFixtureReceipt = (attempt: GatewayCarryTrialAttempt) => ({ attemptId: attempt.attemptId,
+  reservationRef: `native-fixture:${attempt.attemptId}`, clockId: attempt.clockId,
+  validUntilMonotonicMs: processMonotonicClock.now() + 5_000 });
+
+test.each(['authorized', 'revoked'] as const)('startGatewayService carries trial authority to the final provider send (%s)', async state => {
+  const up = await startUpstream();
+  let checks = 0;
+  const authorize = vi.fn(async (attempt: GatewayCarryTrialAttempt) => ({ ...nativeFixtureReceipt(attempt),
+    validateAuthorization: () => {
+      checks++;
+      assert.equal(up.requests(), 0, 'controller runs before any upstream write');
+      assert.equal(attempt.accountId, 'native-account');
+      assert.equal(attempt.credentialSha256, bindingDigest('Bearer PRIVATE_SELECTED_TOKEN'));
+      assert.equal(attempt.bodySha256, bindingDigest(attempt.body));
+      assert.equal(attempt.manifestSha256, bindingDigest('native fixture'));
+      assert.equal(attempt.armId, 'native-judge');
+      if (state === 'revoked') throw new Error('PRIVATE_REVOKED_AUTHORITY');
+    },
+  }));
+  svc = await startGatewayService({ port: 0, upstreamBase: up.base, log: () => {},
+    carryTrial: scopedBinding(authorize),
+    resolveAccount: async () => ({ accountId: 'native-account', credentialRef: 'token:/dev/null', source: 'env' }),
+    makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'PRIVATE_SELECTED_TOKEN', invalidate: () => {} }),
+    observePool: () => () => {}, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+  });
+  const unauthenticated = await sendScopedMessage(svc.port, 'wrong-token');
+  assert.equal(unauthenticated.status, 403); await unauthenticated.text();
+  assert.equal(up.requests(), 0); assert.equal(authorize.mock.calls.length, 0);
+  const response = await sendScopedMessage(svc.port);
+  assert.equal(response.status, state === 'authorized' ? 200 : 403);
+  assert.doesNotMatch(await response.text(), /PRIVATE_/);
+  assert.equal(checks, 1); assert.equal(authorize.mock.calls.length, 1);
+  assert.equal(up.requests(), state === 'authorized' ? 1 : 0);
+});
+
+test('startGatewayService snapshots trial binding before asynchronous account resolution', async () => {
+  const up = await startUpstream();
+  let entered!: () => void, resume!: () => void;
+  const resolving = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const authorize = vi.fn(async (attempt: GatewayCarryTrialAttempt) => nativeFixtureReceipt(attempt));
+  const binding = scopedBinding(authorize);
+  const options = { port: 0, upstreamBase: up.base, log: () => {}, carryTrial: binding,
+    resolveAccount: async () => { entered(); await gate; return { accountId: 'native-account', credentialRef: 'token:/dev/null', source: 'env' as const }; },
+    makeResolver: () => ({ kind: 'token' as const, authMode: 'oauth' as const, current: async () => 'PRIVATE_SELECTED_TOKEN', invalidate: () => {} }),
+    observePool: () => () => {}, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+  };
+  const pending = startGatewayService(options);
+  await resolving;
+  binding.armId = 'substituted'; binding.manifestSha256 = bindingDigest('substituted');
+  binding.requestTokenSha256 = bindingDigest('wrong-token'); binding.protocols.push('openai-responses');
+  binding.authorizeAttempt = async () => null;
+  resume();
+  svc = await pending;
+  const response = await sendScopedMessage(svc.port);
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(authorize.mock.calls.length, 1);
+  assert.equal(authorize.mock.calls[0][0].armId, 'native-judge');
+  assert.equal(authorize.mock.calls[0][0].manifestSha256, bindingDigest('native fixture'));
+  const otherProtocol = await fetch(`http://127.0.0.1:${svc.port}/v1/responses`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${scopedGatewayToken}` },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }),
+  });
+  assert.equal(otherProtocol.status, 403); await otherProtocol.text();
+  assert.equal(up.requests(), 1);
+});
+
+test.each([null, false, []])('startGatewayService refuses an invalid trial binding (%j) before resolving accounts', async binding => {
+  const resolveAccount = vi.fn();
+  await assert.rejects(startGatewayService({ carryTrial: binding as never, resolveAccount, log: () => {} }),
+    /invalid carry trial binding/);
+  assert.equal(resolveAccount.mock.calls.length, 0);
+});
 
 test('startGatewayService composes account → resolver → proxy; /healthz + a proxied request work', async () => {
   const up = await startUpstream();

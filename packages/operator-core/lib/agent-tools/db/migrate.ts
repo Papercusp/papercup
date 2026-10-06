@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
@@ -43,6 +44,7 @@ import {
   requiresPreDestructiveSnapshotAdmission,
 } from '@papercusp/backup/snapshot-admission';
 import { migrationTransactionChunks } from '@papercusp/embedded-postgres-server/src/migration-runner.js';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 60;
@@ -465,6 +467,81 @@ const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
 
+/**
+ * A migration can finish and commit after the dispatcher deadline has fired.
+ * Only surface that late return as success when this exact result confirms the
+ * schema_migrations write (or confirms an existing application); partial and
+ * malformed results stay explicitly unresolved.
+ */
+export function dbMigrateAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'db:migrate returned no parseable completion payload after abort',
+      failures: ['missing-result-payload'],
+    };
+  }
+
+  const request = asRecord(args);
+  const requestedFile = typeof request?.file === 'string' ? request.file : undefined;
+  const reportedFile = typeof payload.file === 'string' ? payload.file : undefined;
+  const filename = requestedFile ?? reportedFile;
+  const effectRef =
+    typeof payload.action_key === 'string'
+      ? payload.action_key
+      : filename
+        ? 'migrate:' + path.basename(filename)
+        : undefined;
+
+  if (payload.ok === false) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'db:migrate reported a failed attempt; breakpoint migrations may have committed earlier chunks',
+      failures: ['migration-not-confirmed'],
+    };
+  }
+  if (payload.ok !== true) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'db:migrate result did not report an explicit success state',
+      failures: ['missing-success-state'],
+    };
+  }
+  if (payload.already_applied === true) {
+    return effectRef
+      ? { status: 'recorded', effectRef, reason: 'migration was already recorded as applied' }
+      : {
+          status: 'recovery-incomplete',
+          reason: 'db:migrate confirmed already_applied without a migration identity',
+          failures: ['missing-migration-identity'],
+        };
+  }
+  if (payload.applied === true && payload.schema_migrations_recorded === true) {
+    return effectRef
+      ? { status: 'recorded', effectRef }
+      : {
+          status: 'recovery-incomplete',
+          reason: 'db:migrate confirmed application without a migration identity',
+          failures: ['missing-migration-identity'],
+        };
+  }
+  if (payload.dry_run === true || payload.applied === false) {
+    return {
+      status: 'not-recorded',
+      reason: typeof payload.note === 'string' ? payload.note : 'db:migrate completed without applying the migration',
+    };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'db:migrate success did not confirm either a recorded migration or a no-apply outcome',
+    failures: ['missing-migration-outcome'],
+  };
+}
+
 const holderJson = (h: ResourceHolder) => ({
   owner: h.owner,
   owner_label: h.owner_label,
@@ -503,6 +580,7 @@ export default defineTool({
   // whichever is larger — a real call almost never approaches this; it is
   // only the outer ceiling this tool's MCP transport enforces.
   timeoutSec: MAX_DRAIN_SEC + CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS * MAX_LOCK_TIMEOUT_SQL_SEC + 120,
+  abortCompletionReceipt: dbMigrateAbortCompletionReceipt,
   // EI-18733783500981433: this handler drains (up to MAX_DRAIN_SEC) then shells
   // out to psql — up to several minutes — and never reads ctx.tx. Without this,
   // the host's ambient workspace transaction sits idle for the whole drain+apply

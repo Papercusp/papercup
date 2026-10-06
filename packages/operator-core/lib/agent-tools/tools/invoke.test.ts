@@ -30,6 +30,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 
 import toolInvoke, { NestedToolRefusalError, summarizeNestedToolOutcome } from './invoke';
+import dbMigrateTool from '../db/migrate';
 
 const markEnabledMock = vi.mocked(dispatchWrapperMarkEnabled);
 
@@ -49,9 +50,11 @@ describe('tools:invoke registration', () => {
     expect(def.name).toBe('tools:invoke');
     expect(def.capability).toBe('agent_tools:read');
     expect(def.requirePrincipal).toBe(false);
-    // scorecards:emit declares a 900s target budget. Keep the meta-wrapper above
-    // that with a 60s margin instead of using defineTool's 60s default.
-    expect(def.timeoutSec).toBe(960);
+    // db:migrate's explicit target budget (1020s) is longer than scorecards:emit's
+    // 900s budget. Keep the meta-wrapper at least 60s above it, not merely above
+    // the previously longest known target.
+    const dbMigrateTimeoutSec = (dbMigrateTool as unknown as { timeoutSec: number }).timeoutSec;
+    expect(def.timeoutSec - dbMigrateTimeoutSec).toBeGreaterThanOrEqual(60);
     expect(def.args.safeParse({ name: 'flags:set', args: { key: 'x', value: true } }).success).toBe(true);
     expect(def.args.safeParse({ name: 'flags:set' }).success).toBe(true); // args optional
     expect(def.args.safeParse({}).success).toBe(false); // name required

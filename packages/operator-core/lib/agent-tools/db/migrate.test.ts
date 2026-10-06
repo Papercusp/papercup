@@ -106,6 +106,7 @@ vi.mock('../locks/resource-lock-guard', () => ({
 }));
 
 import migrateTool, {
+  dbMigrateAbortCompletionReceipt,
   isLockTimeoutFailure,
   isDeadlockFailure,
   isSerializationFailure,
@@ -1248,5 +1249,59 @@ describe('isTransientConnectionFailure / connectionRetryBackoffMs — pure helpe
     expect(connectionRetryBackoffMs(3)).toBe(4000);
     expect(connectionRetryBackoffMs(4)).toBe(8000); // would be 8000 anyway, but locks in the cap
     expect(connectionRetryBackoffMs(5)).toBe(8000); // would be 16000 uncapped
+  });
+});
+
+describe('db:migrate abort completion receipt (WI-10005670)', () => {
+  const result = (payload: Record<string, unknown>) =>
+    ({ content: [{ type: 'text', text: JSON.stringify(payload) }] }) as never;
+
+  it('reports a late successful apply as recorded only with the schema ledger receipt', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, applied: true, schema_migrations_recorded: true }),
+    )).toEqual({ status: 'recorded', effectRef: 'migrate:999-fake.sql' });
+  });
+
+  it('reports an already-applied migration as recorded using the resource idempotency key', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, already_applied: true, action_key: 'migrate:999-fake.sql' }),
+    )).toEqual({
+      status: 'recorded',
+      effectRef: 'migrate:999-fake.sql',
+      reason: 'migration was already recorded as applied',
+    });
+  });
+
+  it('reports dry runs and withheld applies as not recorded', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, dry_run: true }),
+    )).toMatchObject({ status: 'not-recorded' });
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, applied: false, note: 'apply withheld' }),
+    )).toEqual({ status: 'not-recorded', reason: 'apply withheld' });
+  });
+
+  it('fails closed when a successful result lacks a durable migration outcome', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      {},
+      result({ ok: true, applied: true }),
+    )).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-migration-outcome'],
+    });
+  });
+
+  it('does not claim a failed breakpoint migration had no partial effects', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: false, applied: false, stderr: 'chunk 2 failed' }),
+    )).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['migration-not-confirmed'],
+    });
   });
 });

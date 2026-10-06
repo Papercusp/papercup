@@ -15,12 +15,18 @@ import type { SpecClauseRevision } from './spec-clauses-store';
 import {
   evaluateSpecTestAdequacy,
   LEDGER_PROOF_HINT,
+  RETRACT_DRAGGING_SUGGESTION,
   supersedeEligibilityGaps,
   SUPERSEDE_DRAGGING_SUGGESTION,
   type SpecEvidenceForAdequacy,
 } from './spec-test-adequacy';
 
 const DRAG_SCENARIO = 'dragging-row-named';
+// Since 39ce2b4152 a mutation/counterexample establishes falsifiability only when its run's
+// canonical test file ALSO carries a successful current `test` binding to the clause
+// (clauseBoundMutationTest pairs them by testRunProvenance.filePath). Every fixture row shares
+// this path so the counterexample pairs with the fresh test row, as a real binding would.
+const DRAG_TEST_PATH = 'packages/operator-core/lib/agent-tools/plans/drag-fixture.test.ts';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
@@ -118,6 +124,7 @@ function row(
         ...adequacy,
       },
     },
+    testRunProvenance: { filePath: DRAG_TEST_PATH, commitSha: 'abc123', worktreeDirty: false },
     currentness: CURRENT,
     createdAt: `2026-09-23T00:00:${String(id).padStart(2, '0')}.000Z`,
     ...rest,
@@ -180,6 +187,51 @@ describe('any-drags adequacy names the dragging binding (P-019)', () => {
     expect(result.ratings.freshness.rating).toBe('fail');
     expect(result.draggingBindingIds.freshness).toEqual([7]);
     expect(result.ratings.freshness.suggestion).toBe(SUPERSEDE_DRAGGING_SUGGESTION);
+  });
+
+  // EI-25215634977268694: the measured case. Fresh live OPERATIONAL proof (no testRunId) was
+  // re-bound with supersedeAtRevision beside stale operational rows; every bind returned ok,
+  // supersession was refused, and freshness stayed failed until an explicit retract. The
+  // suggestion must name the remedy that works, not the one the verb will refuse.
+  it('names retract, not supersession, when the current sibling is not ledger-backed', () => {
+    // The store sets testRunProvenance only when test_run_id is set, so an unbacked row has none.
+    const unbacked = { evidenceKind: 'operational' as const, testRunId: null, testRunProvenance: undefined };
+    const staleOps = row(11, { ...unbacked, evidenceRef: 'operational:11', currentness: STALE });
+    const freshOps = row(12, { ...unbacked, evidenceRef: 'operational:12' });
+    // Calibration: the fresh row really is ineligible under the bind verb's own rule.
+    expect(supersedeEligibilityGaps(freshOps)).not.toEqual([]);
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [staleOps, freshOps],
+      classRef: 'plan-class-feature-ship',
+      current: [],
+    });
+    expect(result.ratings.freshness.rating).toBe('fail');
+    expect(result.draggingBindingIds.freshness).toEqual([11]);
+    expect(result.ratings.freshness.suggestion).toBe(RETRACT_DRAGGING_SUGGESTION);
+    expect(RETRACT_DRAGGING_SUGGESTION).toContain('retract:[{ bindingId, reason }]');
+  });
+
+  it('names retract when the only eligible current sibling is a different evidenceKind', () => {
+    // supersedeAtRevision retracts only rows of the superseding binding's own kind, so a
+    // ledger-backed current `test` row cannot clear a stale `operational` row.
+    const staleOps = row(13, {
+      evidenceKind: 'operational',
+      evidenceRef: 'operational:13',
+      testRunId: null,
+      testRunProvenance: undefined,
+      currentness: STALE,
+    });
+    const freshTest = row(14);
+    expect(supersedeEligibilityGaps(freshTest)).toEqual([]);
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [staleOps, freshTest],
+      classRef: 'plan-class-feature-ship',
+      current: [],
+    });
+    expect(result.draggingBindingIds.freshness).toEqual([13]);
+    expect(result.ratings.freshness.suggestion).toBe(RETRACT_DRAGGING_SUGGESTION);
   });
 
   it('names no binding for a criterion blocked by absence', () => {

@@ -247,6 +247,7 @@
   },
   "devDependencies": {
     "@linear/sdk": "^97.0.0",
+    "@microsoft/microsoft-graph-types": "^2.43.1",
     "@papercusp/test-config": "*",
     "@types/nodemailer": "^8.0.2",
     "@types/yauzl": "^3.4.0",

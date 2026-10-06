@@ -316,10 +316,29 @@ fn print_cli_version(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> 
     if matches!(subcommand, Some("-V") | Some("--version"))
         || matches!(subcommand_arg, Some("-V") | Some("--version"))
     {
-        println!("pui {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "{}",
+            cli_version_line(
+                install::BUILD_VERSION,
+                install::BUILD_SHA,
+                install::BUILD_DIRTY
+            )
+        );
         true
     } else {
         false
+    }
+}
+
+/// The `pui --version` line: the package version plus the source commit the
+/// binary was built from, so an installed `pui` can be checked against the tree
+/// (pui-chat-first-ux P-032). "uncommitted changes" means apps/tui differed from
+/// that commit at build time.
+fn cli_version_line(version: &str, sha: &str, dirty: &str) -> String {
+    let short = sha.get(..10).unwrap_or(sha);
+    match dirty {
+        "1" => format!("pui {version} ({short}, uncommitted changes)"),
+        _ => format!("pui {version} ({short})"),
     }
 }
 
@@ -894,8 +913,8 @@ static EXIT_TRANSCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new()
 #[cfg(test)]
 mod cli_help_tests {
     use super::{
-        bare_launch, chat_workbench_exit_text, own_chat_workbench_from, print_cli_help,
-        print_cli_version, BareLaunch, BareLaunchInputs, CliInvocation, CLI_HELP,
+        bare_launch, chat_workbench_exit_text, cli_version_line, own_chat_workbench_from,
+        print_cli_help, print_cli_version, BareLaunch, BareLaunchInputs, CliInvocation, CLI_HELP,
     };
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -923,6 +942,23 @@ mod cli_help_tests {
     fn top_level_version_is_recognized() {
         assert!(print_cli_version(Some("--version"), None));
         assert!(print_cli_version(Some("-V"), None));
+    }
+
+    #[test]
+    fn version_line_names_the_source_commit() {
+        let sha = "04e663cedf1fec7b1c4c266e361cabe467bbd2bd";
+        assert_eq!(
+            cli_version_line("0.1.0", sha, "0"),
+            "pui 0.1.0 (04e663cedf)"
+        );
+        assert_eq!(
+            cli_version_line("0.1.0", sha, "1"),
+            "pui 0.1.0 (04e663cedf, uncommitted changes)"
+        );
+        assert_eq!(
+            cli_version_line("0.1.0", "unknown", "unknown"),
+            "pui 0.1.0 (unknown)"
+        );
     }
 
     #[test]

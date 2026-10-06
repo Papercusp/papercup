@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { projectBoundedPayload } from '@papercusp/tooldef';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
@@ -98,6 +99,37 @@ function reviewerModelNotAllowedRefusal(error: unknown): {
 function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, unknown> {
   const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes'] as const;
   return Object.fromEntries(fields.filter((field) => args[field] !== undefined).map((field) => [field, args[field]]));
+}
+
+const AMEND_REVIEW_PRESERVE_PATHS = [
+  'review.state',
+  'review.conversationId',
+  'review.previewPostRef',
+  'review.next',
+  'ok',
+  'dryRun',
+  'preview.approval',
+] as const;
+
+function shapeAmendReviewPayload(
+  data: unknown,
+  { tier }: { tier: 'trimmed' | 'standard' },
+): unknown {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return data;
+  const record = data as Record<string, unknown>;
+  if (record.review === null || typeof record.review !== 'object' || Array.isArray(record.review)) return data;
+
+  const originalChars = JSON.stringify(data).length;
+  const targetChars = tier === 'trimmed' ? 12_000 : 24_000;
+  if (originalChars <= targetChars) return data;
+
+  return projectBoundedPayload(data, {
+    toolName: 'rubrics:amend',
+    tier,
+    originalChars,
+    targetChars,
+    preservePaths: AMEND_REVIEW_PRESERVE_PATHS,
+  });
 }
 
 const amendmentCriterionSchema = requirementCriterionInputSchema;
@@ -319,6 +351,10 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: rubricsAmendArgs,
+  shape: {
+    standard: shapeAmendReviewPayload,
+    trimmed: shapeAmendReviewPayload,
+  },
   // Structural shape behind `guidance.returns` (guidance-output-schema-live-guard).
   // OPEN on purpose: the dry-run, applied and receipt arms carry different fields.
   result: z
@@ -330,6 +366,16 @@ export default defineTool({
       dryRun: z.boolean().optional(),
       rubric: z.record(z.string(), z.unknown()).optional(),
       completeness: z.record(z.string(), z.unknown()).optional(),
+      preview: z.record(z.string(), z.unknown()).optional(),
+      review: z
+        .object({
+          state: z.string(),
+          conversationId: z.string().nullable().optional(),
+          previewPostRef: z.string().optional(),
+          next: z.string(),
+        })
+        .passthrough()
+        .optional(),
       replicationSqlCheck: z.unknown().optional(),
       methodLint: z.array(z.record(z.string(), z.unknown())).optional(),
       idempotencyKey: z.string().optional(),
@@ -455,7 +501,7 @@ export default defineTool({
               'The dry-run preview is still running after ' + Math.round(amendForegroundBudgetMs() / 1000) +
               's and continues server-side. Poll rubrics:amend-status with this receipt; dryRun applies no writes.',
           };
-      return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+      return { data: payload };
     }
     // RSR-P-008-C: hold a receipt BEFORE the work starts. An amend that outlives
     // the foreground budget returns that receipt instead of letting the transport
@@ -487,7 +533,7 @@ export default defineTool({
               `The amendment is still running after ${Math.round(amendForegroundBudgetMs() / 1000)}s and continues ` +
               'server-side. Poll rubrics:amend-status with this receipt; do not re-issue the amend while it reads running.',
           };
-    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+    return { data: payload };
   },
 });
 

@@ -1001,6 +1001,10 @@ export default defineTool({
       ));
     }
     const boundedInbox = !resolvedFrom && !unansweredOnly && !directedOnly;
+    // `unanswered_only` has a bounded candidate set from the shared unanswered
+    // reader. Window only when the inbox must include every candidate id before
+    // the display limit is applied, so summary.total/truncated remain exact.
+    const unansweredWindow = !resolvedFrom && unansweredOnly && !directedOnly;
     // Offline-member mailbox (shared-hive-collaboration P-016): before the read,
     // deliver any `@user:`-parked assignment waiting for THIS member into their
     // live inbox, so a returning member sees it in this very response. The drain
@@ -1012,6 +1016,20 @@ export default defineTool({
         drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
       )
       .catch(() => {});
+    // Resolve after mailbox delivery so newly delivered rows are included, as
+    // they were when this lookup ran after the old full inbox read.
+    const unansweredLookupPromise = unansweredOnly
+      ? fetchUnansweredDirected([identity.ownerId], {
+          perRecipientCap: UNANSWERED_FILTER_CAP,
+        })
+          .then((unansweredMap) => ({
+            msgIds: new Set(
+              (unansweredMap.get(identity.ownerId)?.newest ?? []).map((e) => e.msgId),
+            ),
+            failed: false,
+          }))
+          .catch(() => ({ msgIds: new Set<string>(), failed: true }))
+      : Promise.resolve(null);
     // Piggyback liveness: reading your inbox IS a heartbeat. Keeps a fresh
     // coord:presence row for every active agent (the read hook runs every
     // tool call) without clobbering a declared intent. Best-effort, and run
@@ -1023,10 +1041,17 @@ export default defineTool({
     // The watermark is read concurrently too — the P-010 re-bootstrap flag rides
     // it (snapshot_rebootstrap_pending), so the common no-flag path adds only one
     // cheap PK read and no extra latency.
+    const heartbeatPromise = inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
+      ? heartbeatPresence(identity).catch(() => {})
+      : Promise.resolve();
+    const watermarkPromise = readWatermark(identity.ownerId).catch(() => emptyWatermark());
+    const unansweredLookupState = await unansweredLookupPromise;
+    const unansweredMsgIds = unansweredLookupState?.msgIds;
+    const unansweredLookupFailed = unansweredLookupState?.failed ?? false;
+    const unansweredTargetIds = unansweredMsgIds ?? new Set<string>();
+    const unansweredWindowIds = [...unansweredTargetIds].sort();
     const [, ownInbox, wm] = await Promise.all([
-      inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
-        ? heartbeatPresence(identity).catch(() => {})
-        : Promise.resolve(),
+      heartbeatPromise,
       // Cache ONLY the pure derive (P-008). Keyed on the OWNER (principal-scoped — never
       // leak one agent's inbox to another), since_ts + kinds. The side effects above/below
       // run unconditionally. The VITEST bypass keeps existing coord:inbox tests unchanged.
@@ -1038,7 +1063,7 @@ export default defineTool({
             owner: identity.ownerId,
             since_ts: deliveryFloorTs ?? null,
             kinds: args.kinds ?? null,
-            bounded: boundedInbox,
+            bounded: boundedInbox || unansweredWindow,
             // Windowed reads depend on the stopping rule. Full reads depend only
             // on owner/floor/kinds: display limits and visibility filters run below.
             // Share that raw graph across selective callers rather than retaining
@@ -1048,6 +1073,7 @@ export default defineTool({
               ambient: includeAmbient,
               intents: !!args.include_intents,
             } : {}),
+            ...(unansweredWindow ? { unansweredMsgIds: unansweredWindowIds } : {}),
           },
           tags: ["coord_event_log"],
           softTtlMs: COORD_INBOX_SOFT_TTL_MS,
@@ -1077,25 +1103,24 @@ export default defineTool({
           // a live read here excludes 7,651 ambient rows and coalesces 11,564
           // repeats out of ~20k. A bare LIMIT would be probable, not sound.
           //
-          // `from` / `unanswered_only` / `directed` keep the FULL read: all are rare and
-          // far more selective than the default pipeline, so windowing them would page to
-          // exhaustion in many small queries instead of one large one. `directed` must be
-          // in this set for CORRECTNESS as well as cost (P-001): the paging stopping rule
-          // below counts entries the DEFAULT pipeline keeps, and it cannot see a filter
-          // applied after the read — so a bounded directed read would stop as soon as the
-          // window held `limit` mostly-BROADCAST rows and then filter nearly all of them
-          // away, silently under-returning rather than paging on.
+          // `from` and `directed` keep the FULL read: they are selective post-read filters,
+          // and the default stopping rule cannot see them. `directed` must stay here for
+          // correctness (P-001): otherwise the window could stop at `limit` mostly-broadcast
+          // rows and then filter nearly all of them away. `unanswered_only` has its own exact
+          // stop rule below: it continues until every candidate id from the shared unanswered
+          // set appears, or the normal 25k-row window is exhausted. Since/kinds filtering and
+          // retraction suppression happen inside readInboxWindow before that predicate, so
+          // a candidate excluded by those filters cannot make the read stop early.
           //
           // NOTE: `ambient_excluded` and the resolution scan consequently count over
-          // the window read, not all history — the intended trade, and it matches
-          // what the caller is actually shown (`truncated` reports the boundary).
+          // the window read, not all history — the intended trade on bounded reads. For
+          // unanswered reads, candidate-complete stopping keeps filtered totals exact;
+          // auxiliary exclusion counts still describe the scanned window.
           // Resolutions stay correct for the same reason retraction markers do: a
           // resolution is always NEWER than its alarm, so a newest-first window
           // containing the alarm also contains the resolution.
-          readInbox(
-            identity.ownerId,
-            { since_ts: deliveryFloorTs, kinds: args.kinds },
-            boundedInbox
+          (() => {
+            const window = boundedInbox
               ? {
                   enough: (entries) => {
                     const afterAmbient = includeAmbient
@@ -1113,10 +1138,31 @@ export default defineTool({
                     ).length >= limit;
                   },
                 }
-              : undefined,
-          ),
+              : unansweredWindow
+                ? {
+                    enough: (entries) => {
+                      if (unansweredTargetIds.size === 0) return true;
+                      const foundIds = new Set<string>();
+                      for (const entry of entries) {
+                        if (
+                          typeof entry.msg_id === "string" &&
+                          unansweredTargetIds.has(entry.msg_id)
+                        ) {
+                          foundIds.add(entry.msg_id);
+                        }
+                      }
+                      return foundIds.size === unansweredTargetIds.size;
+                    },
+                  }
+                : undefined;
+            return readInbox(
+              identity.ownerId,
+              { since_ts: deliveryFloorTs, kinds: args.kinds },
+              window,
+            );
+          })(),
       ),
-      readWatermark(identity.ownerId).catch(() => emptyWatermark()),
+      watermarkPromise,
     ]);
     // WI-10005678: a verified spawn session (an acceptance judge) reads as
     // `system:<role>/<id>`, but peers, its inbox-wake and the ship recruiter all
@@ -1177,27 +1223,6 @@ export default defineTool({
       ? (directedInput.filter((e) => isDirectedDelivery(e)) as unknown as typeof bySender)
       : bySender;
 
-    // EI-13159: unanswered_only — narrow to exactly the msg_ids fleet:assignments'
-    // `unanswered_directed` counter / fleet:leader-brief flag, via the SAME shared
-    // primitive (unanswered-directed.ts) so coord:inbox can never disagree with what
-    // those surfaces already told the caller was outstanding. Fail-SAFE, not fail-open:
-    // a lookup failure filters to NOTHING (never silently falls back to the unfiltered
-    // inbox, which would look like "unanswered_only had no effect" and hide the failure).
-    let unansweredMsgIds: Set<string> | undefined;
-    let unansweredLookupFailed = false;
-    if (unansweredOnly) {
-      try {
-        const unansweredMap = await fetchUnansweredDirected([identity.ownerId], {
-          perRecipientCap: UNANSWERED_FILTER_CAP,
-        });
-        unansweredMsgIds = new Set(
-          (unansweredMap.get(identity.ownerId)?.newest ?? []).map((e) => e.msgId),
-        );
-      } catch {
-        unansweredMsgIds = new Set();
-        unansweredLookupFailed = true;
-      }
-    }
     const filtered = filterInboxByUnanswered(byDelivery, unansweredMsgIds);
 
     // EI-6144: fold repeated categorized broadcasts into one ×N row BEFORE the

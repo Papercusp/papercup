@@ -33740,7 +33740,7 @@
       "guidance": {
         "when": "A person promotes an ingested ticket, message or thread into work, writes a note back to its source, or sets a rule that admits matching records automatically.",
         "notWhen": "Filing work that has no data source (work_items:create), or editing an admitted item (title/description belong to the source; update it there).",
-        "chaining": "work_items:admit { op:'rules-set', rule:{ dataSourceId, title, match:{ assignee:{ eq:'papercusp-agents' } } }, harness } → op:'rules-apply' { ruleId } backfills existing records."
+        "chaining": "work_items:admit { op:'rules-set', rule:{ dataSourceId, title, preset:'delegated-to-papercusp' }, harness } admits matching held records now and new ones on sync; 'rules-apply' re-runs it."
       }
     },
     {

@@ -4,7 +4,84 @@
  * the rules admit real tickets; this file pins the matcher's semantics without a database.
  */
 import { describe, expect, it } from 'vitest';
-import { matchAdmissionRule, validateAdmissionMatch, type AdmissionMatch } from './admission-rules';
+import {
+  admittedKindFor,
+  matchAdmissionRule,
+  TICKET_RULE_PRESETS,
+  ticketRulePreset,
+  validateAdmissionMatch,
+  type AdmissionMatch,
+} from './admission-rules';
+
+/** Canonical tickets as the Linear and Asana packages emit them (D-010, D-011, D-012). */
+const LINEAR_DELEGATED = {
+  provider: 'linear', externalId: 'uuid-1', container: 'ENG', title: 'Fix login', state: 'open',
+  assignees: ['Avi'], delegates: ['Papercusp'], selfRoles: ['delegate'], labels: ['Bug', 'auth'], projects: ['Q4 Hardening'],
+};
+const LINEAR_OTHER_AGENT = { ...LINEAR_DELEGATED, externalId: 'uuid-2', delegates: ['Other Agent'], selfRoles: undefined, labels: ['auth'] };
+const ASANA_ASSIGNED = {
+  provider: 'asana', externalId: '1201', container: 'Launch', title: 'Draft checklist', state: 'open',
+  assignees: ['Papercusp'], selfRoles: ['assignee'], labels: ['docs'], projects: ['Launch', 'Marketing'],
+};
+const ASANA_SOMEONE_ELSES = { ...ASANA_ASSIGNED, externalId: '1202', assignees: ['Papercusp'], selfRoles: undefined };
+
+describe('ticket rule presets (D-012)', () => {
+  const matches = (preset: (typeof TICKET_RULE_PRESETS)[number], value: string | undefined, ticket: Record<string, unknown>) => {
+    const match = ticketRulePreset(preset, value);
+    validateAdmissionMatch(match);
+    return matchAdmissionRule(match, ticket);
+  };
+
+  it('delegated/assigned-to-papercusp match the connected account, never a display name', () => {
+    expect(matches('delegated-to-papercusp', undefined, LINEAR_DELEGATED)).toBe(true);
+    expect(matches('delegated-to-papercusp', undefined, LINEAR_OTHER_AGENT)).toBe(false);
+    expect(matches('assigned-to-papercusp', undefined, ASANA_ASSIGNED)).toBe(true);
+    // A person whose display name happens to be "Papercusp" is not the connected account.
+    expect(matches('assigned-to-papercusp', undefined, ASANA_SOMEONE_ELSES)).toBe(false);
+    // Delegation and assignment are different roles.
+    expect(matches('assigned-to-papercusp', undefined, LINEAR_DELEGATED)).toBe(false);
+    expect(matches('delegated-to-papercusp', undefined, ASANA_ASSIGNED)).toBe(false);
+  });
+
+  it('label, team and project match their canonical fields case-insensitively', () => {
+    expect(matches('label', 'bug', LINEAR_DELEGATED)).toBe(true);
+    expect(matches('label', 'DOCS', ASANA_ASSIGNED)).toBe(true); // an Asana tag
+    expect(matches('label', 'docs', LINEAR_DELEGATED)).toBe(false);
+    expect(matches('team', 'eng', LINEAR_DELEGATED)).toBe(true);
+    expect(matches('team', 'OPS', LINEAR_DELEGATED)).toBe(false);
+    expect(matches('project', 'marketing', ASANA_ASSIGNED)).toBe(true); // a multi-homed task
+    expect(matches('project', 'Q4 Hardening', LINEAR_DELEGATED)).toBe(true);
+    expect(matches('project', 'Launch', LINEAR_DELEGATED)).toBe(false);
+  });
+
+  it('refuses a missing value where one is needed and a value where none is', () => {
+    for (const preset of ['label', 'team', 'project'] as const) {
+      expect(() => ticketRulePreset(preset, '  ')).toThrow(/^admission_rule_invalid: preset '.*' needs a value/);
+    }
+    expect(() => ticketRulePreset('delegated-to-papercusp', 'Papercusp')).toThrow(/^admission_rule_invalid: .* takes no value/);
+  });
+
+  it('every preset produces a valid match (the vocabulary is closed)', () => {
+    for (const preset of TICKET_RULE_PRESETS) {
+      const value = preset === 'label' || preset === 'team' || preset === 'project' ? 'x' : undefined;
+      expect(() => validateAdmissionMatch(ticketRulePreset(preset, value))).not.toThrow();
+    }
+  });
+});
+
+describe('admittedKindFor (D-012)', () => {
+  it('a ticket the provider labels bug is a bug, whatever the rule says', () => {
+    expect(admittedKindFor('change', LINEAR_DELEGATED)).toBe('bug'); // "Bug"
+    expect(admittedKindFor('task', { labels: ['BUG'] })).toBe('bug');
+  });
+
+  it('otherwise the rule’s kind; a label merely containing "bug" does not count', () => {
+    expect(admittedKindFor('task', ASANA_ASSIGNED)).toBe('task');
+    expect(admittedKindFor('change', { labels: ['debugging', 'bugfix-later'] })).toBe('change');
+    expect(admittedKindFor('change', {})).toBe('change');
+    expect(admittedKindFor('change', { labels: 'bug' })).toBe('change');
+  });
+});
 
 const ticket = {
   state: 'open',

@@ -322,7 +322,8 @@ function requestWorkerSnapshot(requestIds: string[]) {
           !requestIds.includes(row.correlation.requestId)) continue;
       results.push({ pool, source: { processInstanceId: row.source.processInstanceId,
         buildSha: row.source.buildSha, poolInstanceId: row.source.poolInstanceId },
-      connectionId: row.connectionId, queryId: row.queryId, status: row.status,
+      connectionId: row.connectionId, queryId: row.queryId, queryFamily: row.queryFamily,
+      elapsedMs: row.elapsedMs, preBuildMs: row.preBuildMs, status: row.status, errorCode: row.errorCode,
       correlation: { processInstanceId: row.correlation.processInstanceId,
         buildSha: row.correlation.buildSha, requestId: row.correlation.requestId,
         operation: row.correlation.operation } });
@@ -345,7 +346,10 @@ function auditRequestWorkerAssignments(requestIds: (string | null)[], observatio
   if (requestIds.some(id => !uuid(id))) return { status: 'unknown', reason: 'Server HTTP request identity unavailable',
     requested: requestIds.length, assignments: [], unresolvedRequestIds: requestIds };
   if (new Set(requestIds).size !== requestIds.length) throw Error('Request-worker duplicate HTTP identity');
-  const matched = new Map<string, { pid: number; startTicks: string; processInstanceId: string; queryTuples: string[] }>();
+  const matched = new Map<string, { pid: number; startTicks: string; processInstanceId: string;
+    queryTuples: string[]; querySamples: Array<{ pool: string; poolInstanceId: string; connectionId: number;
+      queryId: number; queryFamily: string; elapsedMs: number | null; preBuildMs: number | null;
+      status: 'ok' | 'error'; errorCode: string | null }> }>();
   const processes = new Set<string>();
   const pids = new Set<number>();
   for (const observation of observations) {
@@ -364,9 +368,13 @@ function auditRequestWorkerAssignments(requestIds: (string | null)[], observatio
           row.source.processInstanceId !== snapshot.processInstanceId ||
           row.correlation.processInstanceId !== snapshot.processInstanceId ||
           row.source.buildSha !== expectedBuild || row.correlation.buildSha !== expectedBuild ||
-          !uuid(row.source.poolInstanceId) || typeof row.pool !== 'string' || !row.pool || row.status !== 'ok' ||
+          !uuid(row.source.poolInstanceId) || typeof row.pool !== 'string' || !row.pool ||
+          (row.status !== 'ok' && row.status !== 'error') ||
           !Number.isSafeInteger(row.connectionId) || row.connectionId < 0 ||
-          !Number.isSafeInteger(row.queryId) || row.queryId < 0) throw Error('Request-worker query identity');
+          !Number.isSafeInteger(row.queryId) || row.queryId < 0 || typeof row.queryFamily !== 'string' ||
+          !row.queryFamily || (row.elapsedMs !== null && (!Number.isFinite(row.elapsedMs) || row.elapsedMs < 0)) ||
+          (row.preBuildMs !== null && (!Number.isFinite(row.preBuildMs) || row.preBuildMs < 0)) ||
+          (row.errorCode !== null && typeof row.errorCode !== 'string')) throw Error('Request-worker query identity');
       const tuple = JSON.stringify([row.correlation.requestId, row.pool, row.source.processInstanceId,
         row.source.buildSha, row.source.poolInstanceId, row.connectionId, row.queryId]);
       if (tuples.has(tuple)) throw Error('Request-worker duplicate query tuple');
@@ -374,8 +382,12 @@ function auditRequestWorkerAssignments(requestIds: (string | null)[], observatio
       const prior = matched.get(row.correlation.requestId);
       if (prior && prior.processInstanceId !== snapshot.processInstanceId) throw Error('Request-worker cross-process assignment');
       const assignment = prior ?? { pid: before.pid, startTicks: before.startTicks,
-        processInstanceId: snapshot.processInstanceId, queryTuples: [] };
-      assignment.queryTuples.push(tuple); matched.set(row.correlation.requestId, assignment);
+        processInstanceId: snapshot.processInstanceId, queryTuples: [], querySamples: [] };
+      assignment.queryTuples.push(tuple);
+      assignment.querySamples.push({ pool: row.pool, poolInstanceId: row.source.poolInstanceId,
+        connectionId: row.connectionId, queryId: row.queryId, queryFamily: row.queryFamily,
+        elapsedMs: row.elapsedMs, preBuildMs: row.preBuildMs, status: row.status, errorCode: row.errorCode });
+      matched.set(row.correlation.requestId, assignment);
     }
   }
   const unresolvedRequestIds = requestIds.filter(id => !matched.has(id!));
@@ -830,7 +842,9 @@ describe('actual current-build operator memory baseline', () => {
             sidecarFlags: { substrate: false, spawner: false, gateway: false, embed: false, resourceHealth: false } } },
         snapshot: { status: 'observed', pid, processInstanceId, buildSha: build,
           results: requestIds.includes(requestId) ? [1, 2].map(queryId => ({ pool: 'test',
-            source: { processInstanceId, buildSha: build, poolInstanceId }, connectionId: 1, queryId, status: 'ok',
+            source: { processInstanceId, buildSha: build, poolInstanceId }, connectionId: 1, queryId,
+            queryFamily: 'select:harness_shared.work_items', elapsedMs: 100 + queryId,
+            preBuildMs: 50 + queryId, status: 'ok', errorCode: null,
             correlation: { requestId, processInstanceId, buildSha: build, operation: 'workItems.byHarness' } })) : [] } };
       };
       const reader = { census, read };
@@ -842,6 +856,11 @@ describe('actual current-build operator memory baseline', () => {
       expect(result.resources.map(row => [row.pid, row.allocatedBytes, row.pssChangeBytes])).toEqual([[11, 200, -25], [12, 200, 0]]);
       expect(result.assignment.status).toBe('observed');
       expect(result.assignment.assignments.map(row => [row.pid, row.queryTuples.length])).toEqual([[11, 2], [12, 2]]);
+      expect(result.assignment.assignments.map(row => row.querySamples.map(sample =>
+        [sample.queryFamily, sample.elapsedMs, sample.preBuildMs]))).toEqual([
+        [['select:harness_shared.work_items', 101, 51], ['select:harness_shared.work_items', 102, 52]],
+        [['select:harness_shared.work_items', 101, 51], ['select:harness_shared.work_items', 102, 52]],
+      ]);
       expect(result.after.coverage.unsampledPids).toEqual([10, 13]);
       expect(result.before.census.before.descendants.map(row => row.pid)).toEqual([11, 12, 13]);
       expect(result.before.census.after.descendants[0].pssBytes).toBe(1000);
@@ -920,15 +939,28 @@ describe('actual current-build operator memory baseline', () => {
       f.reader.read = async (pid, ids) => {
         const value = await read(pid, ids);
         if (value.snapshot.status === 'observed' && ids.length && pid === 11)
-          value.snapshot.results[0].status = 'error';
+          Object.assign(value.snapshot.results[0], { status: 'error', errorCode: '57014' });
         return value;
       };
-      await expect(collectRequestWorkerWindow(f.targets, build,
-        { ...f.reader, record: (stage, value) => { recorded.push({ stage, value }); } }, f.workload))
-        .rejects.toThrow('Request-worker query identity');
-      expect(recorded.map(row => row.stage)).toEqual(['before', 'requestIds', 'after', 'resources']);
+      const result = await collectRequestWorkerWindow(f.targets, build,
+        { ...f.reader, record: (stage, value) => { recorded.push({ stage, value }); } }, f.workload);
+      expect(recorded.map(row => row.stage)).toEqual(['before', 'requestIds', 'after', 'resources', 'assignment']);
       expect(recorded.find(row => row.stage === 'after')!.value.observations[0].snapshot.results[0].status)
         .toBe('error');
+      expect(recorded.find(row => row.stage === 'after')!.value.observations[0].snapshot.results[0])
+        .toMatchObject({ queryFamily: 'select:harness_shared.work_items', elapsedMs: 101,
+          preBuildMs: 51, status: 'error', errorCode: '57014' });
+      const failedSamples = result.assignment.assignments.flatMap(row => row.querySamples)
+        .filter(sample => sample.status === 'error');
+      expect(result.assignment.status).toBe('observed');
+      expect(failedSamples).toHaveLength(1);
+      expect(failedSamples[0]).toMatchObject({ queryFamily: 'select:harness_shared.work_items',
+        elapsedMs: 101, preBuildMs: 51, status: 'error', errorCode: '57014' });
+      const savedSamples = recorded.find(row => row.stage === 'assignment')!.value.assignments
+        .flatMap((row: any) => row.querySamples).filter((sample: any) => sample.status === 'error');
+      expect(savedSamples).toHaveLength(1);
+      expect(savedSamples[0]).toMatchObject({ queryFamily: 'select:harness_shared.work_items',
+        elapsedMs: 101, preBuildMs: 51, status: 'error', errorCode: '57014' });
       expect(recorded.find(row => row.stage === 'after')!.value.census.after.main.pid).toBe(10);
       expect(recorded.find(row => row.stage === 'resources')!.value).toHaveLength(2);
     });
@@ -1104,7 +1136,9 @@ describe('actual current-build operator memory baseline', () => {
         configuredSidecar: null, requestAssignment: 'unknown', allocationOwner: 'unknown' },
       snapshot: { status: 'observed' as const, pid: 71, processInstanceId: processId, buildSha: build,
         results: [1, 2].map(queryId => ({ pool: 'org-app', source: { processInstanceId: processId,
-          buildSha: build, poolInstanceId: poolId }, connectionId: 1, queryId, status: 'ok',
+          buildSha: build, poolInstanceId: poolId }, connectionId: 1, queryId,
+          queryFamily: 'select:harness_shared.work_items', elapsedMs: 200 + queryId,
+          preBuildMs: 75 + queryId, status: 'ok', errorCode: null,
           correlation: { processInstanceId: processId, buildSha: build, requestId: request, operation: 'workItems.byHarness' } })) } };
     };
     it('conserves one-to-many tuples and remains independent of observation and query order', () => {
@@ -1118,9 +1152,11 @@ describe('actual current-build operator memory baseline', () => {
       expect(result.status).toBe('observed'); expect(result.assignments.map(row => row.pid)).toEqual([71, 72]);
       expect(result.assignments.map(row => row.queryTuples.length)).toEqual([2, 2]);
       for (const row of [a, b]) row.snapshot.results.reverse();
-      expect(auditRequestWorkerAssignments([request, other], [b, a], build).assignments.map(row =>
-        ({ ...row, queryTuples: row.queryTuples.sort() }))).toEqual(result.assignments.map(row =>
-        ({ ...row, queryTuples: row.queryTuples.sort() })));
+      const normalize = (rows: any[]) => rows.map(row => ({ ...row,
+        queryTuples: [...row.queryTuples].sort(),
+        querySamples: [...row.querySamples].sort((left, right) => left.queryId - right.queryId) }));
+      expect(normalize(auditRequestWorkerAssignments([request, other], [b, a], build).assignments))
+        .toEqual(normalize(result.assignments));
     });
     it('marks evicted or unsampled requests partial rather than assigning them by count or time', () => {
       const result = auditRequestWorkerAssignments([request, other], [fixture()], build);
@@ -1143,11 +1179,23 @@ describe('actual current-build operator memory baseline', () => {
       ['invalid query ID', r => { r.snapshot.results[0].queryId = -1; }],
       ['changed executable', r => { r.after.executableSha256 = 'b'.repeat(64); }],
       ['sidecar role', r => { r.role.configuredSidecar = 'spawner' as any; }],
-      ['failed query', r => { r.snapshot.results[0].status = 'error'; }],
     ];
     it.each(corruptions)('rejects %s before attributing measured workload', (_name, corrupt) => {
       const value = fixture(); corrupt(value);
       expect(() => auditRequestWorkerAssignments([request], [value], build)).toThrow();
+    });
+    it('accepts failed terminal queries and retains bounded diagnostics without SQL text', () => {
+      const value = fixture();
+      Object.assign(value.snapshot.results[0], { status: 'error', elapsedMs: 201, preBuildMs: 76,
+        errorCode: '57014', query: 'SELECT private error query text' });
+      const result = auditRequestWorkerAssignments([request], [value], build);
+      expect(result.status).toBe('observed');
+      expect(result.assignments).toHaveLength(1);
+      expect(result.assignments[0].queryTuples).toHaveLength(2);
+      expect(result.assignments[0].querySamples[0]).toEqual({ pool: 'org-app', poolInstanceId: poolId,
+        connectionId: 1, queryId: 1, queryFamily: 'select:harness_shared.work_items', elapsedMs: 201,
+        preBuildMs: 76, status: 'error', errorCode: '57014' });
+      expect(JSON.stringify(result)).not.toContain('SELECT private error query text');
     });
     it('rejects the same HTTP UUID appearing under two independently observed processes', () => {
       const a = fixture(), b = fixture();
@@ -1165,6 +1213,7 @@ describe('actual current-build operator memory baseline', () => {
         const identity = pgDiagnosticIdentity();
         for (const queryId of [1, 2]) recordPgResult(pool, { connectionId: 1, queryId, backendPid: null,
           query: 'select * from harness_shared.spawned_agents', rowCount: 1, wireBytes: 1, status: 'ok',
+          elapsedMs: 100 + queryId, preBuildMs: 50 + queryId,
           result: [{ privateBody: 'must not cross the inspector boundary' }], context: { state: 'linked', correlation: {
             ...identity, attemptId: other, rowId: null, hopId: null, stage: null, boundary: 'await',
             requestId: request, operation: 'workItems.byHarness' } } }, { ...identity, poolInstanceId: poolId });
@@ -1173,8 +1222,12 @@ describe('actual current-build operator memory baseline', () => {
         if (snapshot.status !== 'observed') throw Error('Actual writer identity unavailable');
         expect(snapshot.pid).toBe(process.pid); expect(snapshot.processInstanceId).toBe(identity.processInstanceId);
         expect(snapshot.results.filter(row => row.pool === pool)).toHaveLength(2);
+        expect(snapshot.results.filter(row => row.pool === pool).map(({ queryFamily, elapsedMs, preBuildMs }) =>
+          [queryFamily, elapsedMs, preBuildMs])).toEqual([
+          ['select:harness_shared.spawned_agents', 101, 51], ['select:harness_shared.spawned_agents', 102, 52],
+        ]);
         expect(JSON.stringify(snapshot)).not.toContain('privateBody');
-        expect(JSON.stringify(snapshot)).not.toContain('spawned_agents');
+        expect(JSON.stringify(snapshot)).not.toContain('select * from harness_shared.spawned_agents');
         expect(requestWorkerSnapshot([other]).status).toBe('observed');
         expect((requestWorkerSnapshot([other]) as any).results).toEqual([]);
         // Exercise the real FIFO writer, rather than attributing a saved

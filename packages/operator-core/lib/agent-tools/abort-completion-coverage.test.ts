@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import launchAgent from './capability/launch-agent';
+import migrate from './db/migrate';
 import consultDecline from './consult/decline';
 import consultGetFeedback from './consult/get-feedback';
 import consultReply from './consult/reply';
@@ -33,6 +34,8 @@ const LATE_RETURN_MUTATORS = {
   'consult:decline': consultDecline,
   'fleet:launch-on-plan': fleetLaunchOnPlan,
   'capability:launch-agent': launchAgent,
+  // EI-25219048009184886: a late migration success must carry the schema ledger identity.
+  'db:migrate': migrate,
   // EI-25175620446966840: the write tool's p95 reached 82% of its dispatch budget.
   'release:repair-queue': repairQueue,
   'scorecards:emit': scorecardsEmit,

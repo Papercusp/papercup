@@ -75,6 +75,33 @@ describe('candidate semantic completion refusal boundary', () => {
     plugin.create({ session: f.session, languageService: service });
     expect(f.session.addProtocolHandler).toHaveBeenCalledTimes(1);
   });
+  it('registers once across separate project factories on the same native session', () => {
+    const f = fixture(); const firstService = {}; const secondService = {};
+    vi.mocked(f.session.addProtocolHandler).mockImplementationOnce(() => {})
+      .mockImplementation(() => { throw new Error('Protocol handler already exists'); });
+    const first = semanticCompletionPlugin({ typescript: { version: '6.0.3' } });
+    const second = semanticCompletionPlugin({ typescript: { version: '6.0.3' } });
+    expect(first.create({ session: f.session, languageService: firstService })).toBe(firstService);
+    expect(second.create({ session: f.session, languageService: secondService })).toBe(secondService);
+    expect(f.session.addProtocolHandler).toHaveBeenCalledTimes(1);
+  });
+  it('registers independently for distinct native sessions', () => {
+    const first = fixture(); const second = fixture(); const service = {};
+    const plugin = semanticCompletionPlugin({ typescript: { version: '6.0.3' } });
+    plugin.create({ session: first.session, languageService: service });
+    plugin.create({ session: second.session, languageService: service });
+    expect(first.session.addProtocolHandler).toHaveBeenCalledTimes(1);
+    expect(second.session.addProtocolHandler).toHaveBeenCalledTimes(1);
+  });
+  it('retries failed registration from a subsequent factory', () => {
+    const f = fixture(); const service = {};
+    vi.mocked(f.session.addProtocolHandler).mockImplementationOnce(() => { throw new Error('registration failed'); });
+    const first = semanticCompletionPlugin({ typescript: { version: '6.0.3' } });
+    const second = semanticCompletionPlugin({ typescript: { version: '6.0.3' } });
+    expect(() => first.create({ session: f.session, languageService: service })).toThrow('registration failed');
+    expect(second.create({ session: f.session, languageService: service })).toBe(service);
+    expect(f.session.addProtocolHandler).toHaveBeenCalledTimes(2);
+  });
   it.each(['before', 'after'] as const)('refuses outer cancellation %s the custom RPC', async when => {
     const token = { isCancellationRequested: when === 'before' };
     const send = vi.fn(async () => { token.isCancellationRequested = true; return {}; });

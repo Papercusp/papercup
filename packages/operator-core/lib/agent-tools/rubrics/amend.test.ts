@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { applyPayloadTier } from '@papercusp/tooldef';
 
 const rubricsMocks = vi.hoisted(() => ({
   amendRubric: vi.fn(),
@@ -80,10 +81,14 @@ vi.mock('../../detached-imports', () => ({
 import amendTool, { rubricsAmendArgs } from './amend';
 import amendStatusTool from './amend-status';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
+import type { RouteResult } from '../../consult/relevance-router';
 
 type ToolOutput = { content: Array<{ text: string }> };
-const body = async (args: unknown) =>
-  JSON.parse(((await amendTool.handler(args as never, {} as never)) as ToolOutput).content[0]!.text);
+const body = async (args: unknown) => {
+  const response = await amendTool.handler(args as never, {} as never);
+  if ('data' in response) return response.data as Record<string, any>;
+  return JSON.parse((response as ToolOutput).content[0]!.text);
+};
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -446,6 +451,87 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(call).toHaveProperty('launchCtx');
     expect(call.launchCtx).toEqual({});
     expect(Object.keys(call.patch)).toEqual(['criterion']);
+  });
+
+  it('D-034: the actual handler and local relevance-router preserve the actionable review ahead of a large preview', async () => {
+    const largePreview = {
+      ...approvalRequired,
+      changes: Array.from({ length: 180 }, (_, index) => ({
+        barKey: `R-${index}`,
+        kinds: ['bar-meaning'],
+        fields: ['falsifier'],
+        detail: `preview-${index} `.repeat(50),
+      })),
+    };
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(largePreview);
+
+    const actualReview = await vi.importActual<typeof import('../../consult/acceptance-bar-amendment-review')>(
+      '../../consult/acceptance-bar-amendment-review',
+    );
+    const candidates = [
+      { ownerId: 'related-member', score: 0.95 },
+      { ownerId: 'local-reviewer', score: 0.9 },
+    ];
+    const routeFixture = {
+      verdict: 'routed',
+      qualified: candidates,
+      snapshot: { candidates },
+    } as unknown as RouteResult;
+    let selectedOwners: string[] = [];
+    const feedback = async (
+      _request: unknown,
+      _identity: unknown,
+      options: { filterRoute: (route: RouteResult) => Promise<RouteResult> },
+    ) => {
+      const filtered = await options.filterRoute(routeFixture);
+      selectedOwners = filtered.qualified.map((candidate) => candidate.ownerId);
+      return {
+        verdict: 'routed',
+        conversation_id: 'conv-local-review',
+        responder: { ownerId: selectedOwners[0] },
+      };
+    };
+
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce((input) =>
+      actualReview.openAcceptanceBarAmendmentReview(input as never, {
+        verifyPreviewPost: async () => undefined,
+        route: (routeInput) => actualReview.routeAcceptanceBarAmendmentReview(routeInput, {
+          resolveScreen: async () => ({
+            check: async (ownerId) => ownerId === 'related-member'
+              ? { eligible: false, reason: 'related_to_plan_implementer' }
+              : { eligible: true, reason: 'eligible' },
+          }),
+          feedback: feedback as never,
+        }),
+      }),
+    );
+
+    const args = { ...patchArgs, reviewPreviewPost: 'thread-post:42' };
+    const response = await amendTool.handler(args as never, {} as never);
+    expect(response).toHaveProperty('data');
+    const tiered = applyPayloadTier({
+      toolName: 'rubrics:amend',
+      shape: amendTool.shape,
+      response: response as never,
+      tier: 'trimmed',
+      args,
+    });
+    const shaped = tiered.data as Record<string, any>;
+
+    expect(selectedOwners).toEqual(['local-reviewer']);
+    expect(shaped).toMatchObject({
+      ok: true,
+      dryRun: true,
+      review: {
+        state: 'routed',
+        conversationId: 'conv-local-review',
+        previewPostRef: 'thread-post:42',
+        next: expect.stringContaining("events:await { event:'consult:reply:conv-local-review' }"),
+      },
+    });
+    expect(shaped._projection).toMatchObject({ kind: 'bounded-payload', truncated: true });
+    expect(shaped.preview.changes.length).toBeLessThan(largePreview.changes.length);
+    expect(JSON.stringify(shaped).length).toBeLessThan(JSON.stringify((response as any).data).length);
   });
 
   it('returns a structured refusal when the requested reviewer model is outside the workspace allowlist', async () => {

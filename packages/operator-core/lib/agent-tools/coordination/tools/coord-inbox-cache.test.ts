@@ -186,7 +186,7 @@ async function read(args: Record<string, unknown>, owner = "owner-a", workspace 
 }
 
 describe("coord:inbox — share only equivalent full derives (P-011)", () => {
-  it("shares a nonempty full derive across sender, directed and unanswered filters without losing content", async () => {
+  it("shares full derives across sender/directed filters and keeps the unanswered window separate", async () => {
     const decoded: unknown[][] = [];
     M.readInbox.mockImplementation(async () => {
       const rows = rawRows();
@@ -202,16 +202,69 @@ describe("coord:inbox — share only equivalent full derives (P-011)", () => {
     expect(directed.entries.map(e => e.msg_id)).toEqual(["reply", "ask"]);
     expect(unanswered.entries.map(e => e.msg_id)).toEqual(["ask"]);
     expect(unanswered.entries[0].body).toBe(rawRows()[0].body);
-    expect(decoded).toHaveLength(1);
+    expect(decoded).toHaveLength(2);
     expect(decoded[0]).toEqual(rawRows()); // annotations/limits never mutate the cached graph
-    expect(M.readInbox.mock.calls[0][2]).toBeUndefined(); // actual full-read branch
+    expect(decoded[1]).toEqual(rawRows());
+    expect(M.readInbox.mock.calls[0][2]).toBeUndefined(); // sender/directed full-read branch
+    expect(typeof (M.readInbox.mock.calls[1][2] as { enough?: unknown })?.enough).toBe("function");
     expect(M.heartbeatPresence).toHaveBeenCalledTimes(3);
     expect(M.drain).toHaveBeenCalledTimes(3);
     expect(M.readWatermark).toHaveBeenCalledTimes(3);
     expect(M.unanswered).toHaveBeenCalledTimes(1);
     getOperatorCache().invalidateByTags("ws-inbox", ["coord_event_log"]);
     await read({ directed: true, limit: 2 });
-    expect(decoded).toHaveLength(2);
+    expect(decoded).toHaveLength(3);
+  });
+
+  it("windows unanswered reads until every candidate id, preserving since/kinds and display-limit semantics", async () => {
+    const candidates = [
+      { msg_id: "ask-old", kind: "message", from: "peer-a", to: ["owner-a"], ts: "2026-10-01T00:00:00Z" },
+      { msg_id: "ask-new", kind: "message", from: "peer-b", to: ["owner-a"], ts: "2026-10-01T00:00:01Z" },
+    ];
+    M.unanswered.mockResolvedValueOnce(new Map([
+      ["owner-a", { newest: [{ msgId: "ask-old" }, { msgId: "ask-new" }] }],
+    ]));
+    M.readInbox.mockImplementation(async (_owner, opts, window) => {
+      expect(opts).toEqual({ since_ts: "2026-10-01T00:00:00Z", kinds: ["message"] });
+      const enough = (window as { enough: (entries: typeof candidates) => boolean }).enough;
+      expect(enough([candidates[1]!])).toBe(false); // one row meets limit: 1, not all candidates
+      expect(enough(candidates)).toBe(true);
+      return candidates;
+    });
+
+    const result = await read({
+      unanswered_only: true,
+      kinds: ["message"],
+      limit: 1,
+      __deliveryFloorTs: "2026-10-01T00:00:00Z",
+      max_body_chars: 0,
+    });
+
+    expect(result.summary).toMatchObject({ total: 2, returned: 1, truncated: 1 });
+    expect(result.entries).toHaveLength(1);
+    expect(M.readInbox.mock.calls[0]?.[2]).toBeDefined();
+  });
+
+  it("does not reuse an unanswered window when the canonical candidate ids change", async () => {
+    const rows = rawRows();
+    M.unanswered
+      .mockResolvedValueOnce(new Map([["owner-a", { newest: [{ msgId: "ask" }] }]]))
+      .mockResolvedValueOnce(new Map([["owner-a", { newest: [{ msgId: "reply" }] }]]));
+    M.readInbox.mockImplementation(async (_owner, _opts, window) => {
+      const spec = window as { enough: (entries: typeof rows) => boolean };
+      for (let end = 1; end <= rows.length; end += 1) {
+        const page = rows.slice(0, end);
+        if (spec.enough(page)) return page;
+      }
+      return rows;
+    });
+
+    const first = await read({ unanswered_only: true, max_body_chars: 0 });
+    const second = await read({ unanswered_only: true, max_body_chars: 0 });
+
+    expect(first.entries.map((entry) => entry.msg_id)).toEqual(["ask"]);
+    expect(second.entries.map((entry) => entry.msg_id)).toEqual(["reply"]);
+    expect(M.readInbox).toHaveBeenCalledTimes(2);
   });
 
   it("keeps owner, workspace, delivery floor and kinds isolated for full reads", async () => {

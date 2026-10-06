@@ -992,6 +992,37 @@ export interface SiteScope {
   /** True when the caller narrowed the render with --only: a judged, audited FORCE. */
   forced: boolean;
   reason: string | null;
+  /**
+   * `--exclude-unpublished`: leave out the unpublished cuts recorded AFTER the newest published
+   * release — the tagged-but-not-yet-live head of the registry.
+   *
+   * The default render includes those cuts on purpose: the normal flow records a cut (published_at
+   * NULL), uploads it, publishes the site, and only THEN finalizes. But a re-render of an
+   * already-live page for an unrelated reason (withdrawing an artifact, a template fix) must not
+   * drag a never-uploaded cut onto the public page with dead links. Measured 2026-10-06
+   * (open-source-release D-030): the registry held 0.0.26 unpublished, so a plain regenerate made
+   * it the newest card of a page whose live newest was 0.0.25.
+   *
+   * NOT "every row with published_at NULL": releases from before the finalize step existed
+   * (0.0.7..0.0.17 here) shipped publicly yet carry NULL, and dropping them would delete real
+   * history from the page. Only rows cut after the newest finalized release are withheld.
+   */
+  excludeUnpublished?: boolean;
+}
+
+/**
+ * The registry rows a site render shows: every row by default; with `excludeUnpublished`, every
+ * row except unpublished cuts recorded after the newest published release.
+ */
+export function releasesToRender<T extends { publishedAt: Date | null; cutAt: Date }>(
+  rows: readonly T[],
+  siteScope: Pick<SiteScope, 'excludeUnpublished'>,
+): T[] {
+  if (!siteScope.excludeUnpublished) return [...rows];
+  const publishedCutTimes = rows.filter((row) => row.publishedAt !== null).map((row) => row.cutAt.getTime());
+  if (publishedCutTimes.length === 0) return [...rows];
+  const newestPublishedCut = Math.max(...publishedCutTimes);
+  return rows.filter((row) => row.publishedAt !== null || row.cutAt.getTime() <= newestPublishedCut);
 }
 
 export const FULL_SITE_SCOPE: SiteScope = {
@@ -1083,7 +1114,7 @@ export async function generateSite(
 
   // Every surface but `assets` renders registry content; an assets-only force skips the reads.
   const needsRegistry = [...siteScope.surfaces].some((surface) => surface !== 'assets');
-  const rows = needsRegistry ? await listReleases(sql, scope.workspaceId) : [];
+  const rows = needsRegistry ? releasesToRender(await listReleases(sql, scope.workspaceId), siteScope) : [];
   const hydratedAll: HydratedRelease[] = [];
   for (const row of rows) {
     const { items, plans, internalCount } = await hydrateRelease(sql, scope, row);
@@ -1531,6 +1562,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('record-release-cli: --only applies to --regenerate/--hold-page/--restore-page; recording a release renders the full site.');
     return 2;
   }
+  const excludeUnpublished = argv.includes('--exclude-unpublished');
+  if (excludeUnpublished && !regenerate) {
+    console.error('record-release-cli: --exclude-unpublished applies to --regenerate/--hold-page/--restore-page; recording a release must render the cut being recorded.');
+    return 2;
+  }
+  const renderScope: SiteScope = excludeUnpublished ? { ...siteScope, excludeUnpublished: true } : siteScope;
   if (!version && !regenerate) {
     console.error('usage: record-release-cli --version <x.y.z> [--channel alpha] [--git-sha <sha>]');
     console.error('       [--changelog-file <path>] [--no-changelog] [--cut-at <iso>] [--since <iso>]');
@@ -1540,6 +1577,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('              # writes a reviewable draft from the window and STOPS (records nothing)');
     console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
     console.error('       [--only index,changes,assets,plans,work-items --reason "<why>"]  # force: render just these (audited)');
+    console.error('       [--exclude-unpublished]  # omit unpublished cuts recorded after the newest published release');
     console.error('   or: record-release-cli --hold-page                  # swap index.html for "NEXT UPDATE COMING SOON"');
     console.error('   or: record-release-cli --restore-page               # put the real releases page back');
     console.error('       (both re-render; publish with papercusp-desktop/bin/publish-release-history.sh)');
@@ -1571,7 +1609,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         : '[record-release] hold LIFTED — regenerating the real releases page.',
     );
   }
-  if (regenerate) return regenerateOnly(opts.scope, opts.outDir, siteScope);
+  if (regenerate) return regenerateOnly(opts.scope, opts.outDir, renderScope);
   return run(opts);
 }
 

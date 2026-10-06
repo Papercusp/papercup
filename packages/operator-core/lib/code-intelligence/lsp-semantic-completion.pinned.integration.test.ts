@@ -218,11 +218,14 @@ describe('candidate completion through the pinned native plugin package', () => 
           .trim().split('\n').map(line => JSON.parse(line) as {
             factoryId: number; sessionId: number; projectName: string; registrations: number; ok: boolean; error?: string;
           });
-        expect(activations.map(row => row.projectName).sort()).toEqual(population.map(project => project.projectName).sort());
-        expect(new Set(activations.map(row => row.factoryId)).size).toBe(2);
+        // didOpen can activate a transient inferred project before assigning
+        // the file to its configured project. It shares this native session
+        // and must not cause later configured plugin activation to fail.
+        const configured = activations.filter(row => population.some(project => project.projectName === row.projectName));
+        expect(configured.map(row => row.projectName).sort(), JSON.stringify(activations))
+          .toEqual(population.map(project => project.projectName).sort());
+        expect(new Set(configured.map(row => row.factoryId)).size).toBe(2);
         expect(new Set(activations.map(row => row.sessionId)).size).toBe(1);
-        expect(activations, `actual native plugin activations: ${JSON.stringify(activations)}`)
-          .toEqual(expect.arrayContaining([expect.objectContaining({ ok: true }), expect.objectContaining({ ok: true })]));
         expect(activations.every(row => row.ok), JSON.stringify(activations)).toBe(true);
         expect(activations.reduce((sum, row) => sum + row.registrations, 0)).toBe(1);
       }

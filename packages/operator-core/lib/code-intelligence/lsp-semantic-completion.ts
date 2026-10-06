@@ -148,16 +148,19 @@ export async function requestSemanticCompletion(
   return raw.body;
 }
 
+// TypeScript creates a plugin factory for each project, while protocol handlers
+// belong to the shared session. Keep successful registration across factories.
+const installedSessions = new WeakSet<NativeSemanticSession>();
+
 /** Build as CommonJS for the maintained tsserver plugin/probe-path mechanism. */
 export default function semanticCompletionPlugin(modules: { typescript: { version: string } }): {
   create(info: { session?: NativeSemanticSession; languageService: unknown }): unknown;
 } {
-  const installed = new WeakSet<NativeSemanticSession>();
   return { create(info) {
     if (!info.session) refuse('missing-native-session');
-    if (!installed.has(info.session)) {
+    if (!installedSessions.has(info.session)) {
       registerNativeSemanticCompletion(info.session, modules.typescript.version);
-      installed.add(info.session);
+      installedSessions.add(info.session);
     }
     return info.languageService;
   } };

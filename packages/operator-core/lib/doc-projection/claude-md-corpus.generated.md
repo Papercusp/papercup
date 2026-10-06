@@ -463,13 +463,13 @@ decision, `coord:ask-owner`.)
 
 Interactive (human-present) PSU sessions can still take a fast redirect from the owner, but the default is resolve-don't-relay.The human-session specifics live in the PSU engineer playbook (EI-148).
 
-⛔ **Before you report an OWNER-GATED wall for a credential or permission, exhaust the privilege you already hold — on this box `sudo -n` is `NOPASSWD: ALL`.** The recurring failure is escalating "needs a superuser / needs credentials I don't have" after probing only the *unprivileged* path, which hands the owner a chore the agent could have done itself.
+⛔ **Before reporting an OWNER-GATED credential/permission wall, exhaust the privilege you hold — here `sudo -n` is `NOPASSWD: ALL`.** Escalating after probing only the *unprivileged* path hands the owner a chore you could have done.
 
 ```bash
 sudo -n -u postgres psql -d papercusp -c '<SQL>'
 ```
 
-A permission blocker is owner-gated only once **`sudo -n` has also failed**. When you do report one, name the privileged paths you actually tried — "no superuser is reachable" is a claim about YOUR probe set, not about the machine, and stating it the second way is how a five-second fix becomes an owner's task.
+⚠ Run it via `capability:bash` (host context), never a psu Claude session's native `Bash`: that sandbox sets `NoNewPrivs` and unshares the network, so `sudo` and `psql :5432` both fail falsely. A wall is owner-gated only once host-context `sudo -n` failed; name what you tried and where — "no superuser is reachable" describes YOUR probes, not the machine.
 Measured case behind the `sudo -n` rule (P-037 / WI-40505, 2026-08-27): an agent needed `GRANT hosted_app TO harness_app WITH INHERIT FALSE`, correctly established that `harness_admin` is not superuser and holds no ADMIN OPTION, then probed password auth, peer auth, `~/.pgpass` and the env — and declared an owner-gated wall. It never tried `sudo`. The Postgres superuser was one command away the whole time (`sudo -n -u postgres psql -d papercusp -c '<SQL>'`).
 
 The generalisable shape: the agent's probe set was thorough within one privilege level and never crossed to the next, and its escalation described the machine ("no superuser is reachable") when it could only honestly describe the probe set ("no superuser is reachable BY THE PATHS I TRIED").
