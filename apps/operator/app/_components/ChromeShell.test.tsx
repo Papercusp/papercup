@@ -192,13 +192,20 @@ describe('ChromeShell', () => {
     expect(header.classList.contains('pc-header--compact')).toBe(false);
   });
 
-  it('gives the measured compact class one-column, horizontal-scroll chrome', () => {
+  it('gives the measured compact class one column: CTAs scroll, the utility nav wraps', () => {
     expect(GLOBAL_CSS).toMatch(
       /\.pc-header\.pc-header--compact\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
     );
     expect(GLOBAL_CSS).toMatch(
-      /\.pc-header--compact \.pc-header-center,\s*\.pc-header--compact \.pc-header-right\s*\{[^}]*flex-wrap:\s*nowrap[^}]*overflow-x:\s*auto/s,
+      /\.pc-header--compact \.pc-header-center\s*\{[^}]*flex-wrap:\s*nowrap[^}]*overflow-x:\s*auto/s,
     );
+    // WI-10006979: a scrolling utility nav hid Theme / workspace switcher /
+    // account off-screen at 1280px with both rails docked. It must wrap.
+    const rightRules = [...GLOBAL_CSS.matchAll(/\.pc-header--compact \.pc-header-right\s*\{([^}]*)\}/g)].map((m) => m[1]);
+    expect(rightRules.length).toBeGreaterThan(0);
+    const last = rightRules[rightRules.length - 1];
+    expect(last).toMatch(/flex-wrap:\s*wrap/);
+    expect(last).not.toMatch(/overflow-x:\s*auto/);
   });
 
   it('types the header quote on the papercusp.com cadence, then settles', () => {

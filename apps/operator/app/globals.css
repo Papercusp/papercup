@@ -918,6 +918,9 @@ html[data-route-pending="true"] .pc-header::after {
 .pc-header--compact .pc-header-center,
 .pc-header--compact .pc-header-right {
   justify-content: flex-start;
+}
+
+.pc-header--compact .pc-header-center {
   flex-wrap: nowrap;
   overflow-x: auto;
   scrollbar-width: none;
@@ -927,9 +930,17 @@ html[data-route-pending="true"] .pc-header::after {
   gap: 8px;
 }
 
+/* The utility nav WRAPS in compact mode; it never scrolls. With the left
+   sidebar and the chat rail docked, a 1280px window leaves the header ~488px,
+   and a hidden-scrollbar strip put Theme, the workspace switcher and the
+   account menu at x~1340, off-screen with no visible way to reach them
+   (WI-10006979, adv-shell-nav.spec.ts "packaged 1280x720 header"). Wrapping
+   grows the header in normal flow, which is what this class exists for. */
 .pc-header--compact .pc-header-right {
+  flex-wrap: wrap;
+  overflow-x: visible;
   column-gap: 10px;
-  row-gap: 0;
+  row-gap: 6px;
 }
 
 .pc-header--compact .pc-header-center::-webkit-scrollbar,

@@ -155,7 +155,10 @@ const scenarios = [
     owner: "opcbr",
     runId: INBOX_RUN_ID,
     queryName: "plans.attentionBulkRun",
-    applyLabel: "Apply selected (12)",
+    // The commit button carries the selected verb's own label
+    // (ReviewReportShell VERBS["mark-done"].commit), not the generic
+    // "Apply selected (n)" fallback (WI-10006792).
+    applyLabel: "Mark 12 done",
   },
   {
     name: "Plans cleanup",
@@ -164,7 +167,10 @@ const scenarios = [
     owner: "opcln",
     runId: PLANS_RUN_ID,
     queryName: "plans.cleanupRun",
-    applyLabel: "Apply selected (12)",
+    // The commit button carries the selected verb's own label
+    // (ReviewReportShell VERBS["mark-done"].commit), not the generic
+    // "Apply selected (n)" fallback (WI-10006792).
+    applyLabel: "Mark 12 done",
   },
 ] as const;
 
