@@ -8,7 +8,10 @@
  *   - introspect a pasted token (paste-PAT scope verification)
  *
  * Substrate platform-owners register providers at boot via
- * `~/.papercusp/oauth-apps.json` (clientId + clientSecret + scopes).
+ * `oauth-apps.json` under {@link papercuspRoot} (clientId + clientSecret + scopes).
+ * That is the ACTIVE WORKSPACE's root (`~/.papercusp-workspaces/<id>/.papercusp/`)
+ * whenever that directory exists; legacy `~/.papercusp/` is only the last-resort
+ * fallback, so a file placed there is silently never read on a workspace install.
  *
  * Spec: /docs/snapshots/oauth-integration#substrate-level-provider-config.
  */
@@ -766,8 +769,8 @@ async function readClientSecret(entry: OAuthAppsFile[string]): Promise<string> {
 }
 
 /**
- * Load oauth-apps.json from `$PAPERCUSP_HOME` (or `~/.papercusp`) and
- * register each provider. Idempotent — calling again replaces existing
+ * Load oauth-apps.json from {@link papercuspRoot} (`$PAPERCUSP_HOME`, else the
+ * active workspace's `.papercusp/`, legacy `~/.papercusp` last) and register each provider. Idempotent — calling again replaces existing
  * registrations.
  */
 export async function loadAndRegisterProvidersFromDisk(
