@@ -20,6 +20,7 @@
 import type { RefusalContract } from '../../../capability-envelope/refusal-contract-types';
 import { createHash } from 'node:crypto';
 import { postStripeForm } from '../../../cupboard/payment-adapters/stripe';
+import type { StripeBalanceTransaction } from '../../../cupboard/money-journal-producers';
 
 export const STRIPE_API_BASE = 'https://api.stripe.com/v1';
 
@@ -45,6 +46,12 @@ export interface StripeBillingClient {
     readonly customerId: string;
     readonly organizationId: string;
   }): Promise<StripeBillingCallResult<{ evidence: StripeAccountCashEvidence }>>;
+  /** Exhaustive, unfiltered account history. Receipt/journal/reversal mapping
+   * and freshness reconciliation are still required before funding admission. */
+  readAccountTransactions(input: {
+    readonly accountId: string;
+    readonly maxPages?: number;
+  }): Promise<StripeBillingCallResult<{ evidence: StripeAccountTransactionEvidence }>>;
   createCustomer(input: {
     organizationId: string;
     email?: string | null;
@@ -77,6 +84,14 @@ export interface StripeAccountCashEvidence {
   readonly pendingUsdCents: number;
   readonly observedAtMs: number;
   readonly requestIds: readonly string[];
+  readonly evidenceRef: string;
+}
+
+export interface StripeAccountTransactionEvidence {
+  readonly accountId: string;
+  readonly observedAtMs: number;
+  readonly requestIds: readonly string[];
+  readonly transactions: readonly StripeBalanceTransaction[];
   readonly evidenceRef: string;
 }
 
@@ -178,6 +193,57 @@ export function createStripeBillingClient(input: {
         availableUsdCents: available, pendingUsdCents: pending, observedAtMs, requestIds };
       const evidenceRef = `stripe-cash:${createHash('sha256').update(JSON.stringify(selected)).digest('hex')}`;
       return { ok: true, evidence: Object.freeze({ ...selected, evidenceRef }) };
+    },
+
+    async readAccountTransactions(input) {
+      const { accountId, maxPages = 100 } = input;
+      if (!/^acct_[A-Za-z0-9]+$/.test(accountId) || !Number.isSafeInteger(maxPages) || maxPages < 1) {
+        return malformed(0, 'invalid pinned stripe census scope');
+      }
+      const account = await get('/account');
+      if (!account.ok) return account;
+      if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
+      const requestIds = [account.requestId];
+      const transactions: StripeBalanceTransaction[] = [];
+      const seen = new Set<string>();
+      let startingAfter: string | undefined;
+      for (let page = 0; page < maxPages; page += 1) {
+        const query = new URLSearchParams({ limit: '100' });
+        if (startingAfter) query.set('starting_after', startingAfter);
+        // Same expansions as the journal importer; no customer/date/type/
+        // currency filters can omit a refund or another pool obligation.
+        query.append('expand[]', 'data.source');
+        query.append('expand[]', 'data.source.invoice');
+        const result = await get(`/balance_transactions?${query}`);
+        if (!result.ok) return result;
+        const { data, has_more: more } = result.body;
+        if (result.body.object !== 'list' || !Array.isArray(data) || data.length > 100 || typeof more !== 'boolean'
+            || (more && data.length === 0)) return malformed(result.status, 'incomplete stripe transaction page');
+        requestIds.push(result.requestId);
+        for (const row of data) {
+          if (!object(row) || row.object !== 'balance_transaction' || typeof row.id !== 'string' || !/^txn_[A-Za-z0-9]+$/.test(row.id)
+              || seen.has(row.id) || typeof row.type !== 'string' || !row.type
+              || !Number.isSafeInteger(row.amount) || !Number.isSafeInteger(row.fee) || (row.fee as number) < 0
+              || !Number.isSafeInteger(row.net) || BigInt(row.net as number) !== BigInt(row.amount as number) - BigInt(row.fee as number)
+              || typeof row.currency !== 'string' || !/^[a-z]{3}$/.test(row.currency)
+              || !Number.isSafeInteger(row.created) || (row.created as number) < 0
+              || !Number.isSafeInteger(row.available_on) || (row.available_on as number) < 0
+              || !['available', 'pending'].includes(row.status as string)) return malformed(result.status, 'invalid or duplicate stripe transaction');
+          // Preserve unknown provider types and complete expanded sources for
+          // the journal/reversal verifier to refuse or reconcile explicitly.
+          seen.add(row.id);
+          transactions.push(row as unknown as StripeBalanceTransaction);
+        }
+        if (!more) {
+          const observedAtMs = Date.now();
+          const evidenceRef = `stripe-census:${createHash('sha256').update(JSON.stringify({ accountId, observedAtMs, requestIds, transactions })).digest('hex')}`;
+          return { ok: true, evidence: { accountId, observedAtMs, requestIds, transactions, evidenceRef } };
+        }
+        startingAfter = transactions.at(-1)!.id;
+      }
+      // A page budget is an operational bound, never proof of completeness.
+      // Discard partial history rather than returning a successful census.
+      return malformed(0, 'stripe transaction census exceeds page budget');
     },
 
     async createCustomer({ organizationId, email, name }) {

@@ -188,4 +188,54 @@ describe('authenticated account cash evidence', () => {
     expect(r.fetchImpl.mock.calls[1][0]).toBe('https://api.stripe.com/v1/customers/cus_A');
     for (const [, init] of r.fetchImpl.mock.calls) expect(init.headers.authorization).toBe('Bearer sk_live_key');
   });
+
+  const transaction = (id = 'txn_A', overrides: Record<string, unknown> = {}) => ({
+    object: 'balance_transaction', id, type: 'charge', amount: 100, fee: 3, net: 97,
+    currency: 'usd', created: 1, available_on: 2, status: 'available',
+    source: { id: 'ch_A', object: 'charge', customer: 'cus_A', metadata: { purpose: 'prepaid-credits' } }, ...overrides,
+  });
+  const page = (data: unknown[], has_more = false) => ({ object: 'list', data, has_more });
+
+  it('reads every page across all customers/types/currencies, preserving unknown obligations and provenance', async () => {
+    const first = transaction(); const second = transaction('txn_B', { type: 'new_provider_obligation', currency: 'eur' });
+    const r = reader([account, page([first], true), page([second])]);
+    const result = await r.client.readAccountTransactions({ accountId: 'acct_A' });
+    expect(result).toMatchObject({ ok: true, evidence: { accountId: 'acct_A', transactions: [first, second],
+      requestIds: ['req_Proof', 'req_Proof', 'req_Proof'], evidenceRef: expect.stringMatching(/^stripe-census:[a-f0-9]{64}$/) } });
+    const queries = r.fetchImpl.mock.calls.slice(1).map(([url]: [string]) => new URL(url).searchParams);
+    expect(queries[0].get('starting_after')).toBeNull();
+    expect(queries[1].get('starting_after')).toBe('txn_A');
+    for (const q of queries) {
+      expect([...q.keys()]).toEqual(expect.arrayContaining(['limit', 'expand[]']));
+      expect(q.getAll('expand[]')).toEqual(['data.source', 'data.source.invoice']);
+      for (const filter of ['customer', 'source', 'currency', 'type', 'created[gte]']) expect(q.has(filter)).toBe(false);
+    }
+  });
+
+  it('accepts an explicitly empty complete account but refuses an empty nonterminal page', async () => {
+    expect(await reader([account, page([])]).client.readAccountTransactions({ accountId: 'acct_A' }))
+      .toMatchObject({ ok: true, evidence: { transactions: [] } });
+    expect(await reader([account, page([], true)]).client.readAccountTransactions({ accountId: 'acct_A' }))
+      .toMatchObject({ ok: false, detail: 'incomplete stripe transaction page' });
+  });
+
+  it('refuses a repeated cursor/transaction and discards a truncated census', async () => {
+    expect(await reader([account, page([transaction()], true), page([transaction()])])
+      .client.readAccountTransactions({ accountId: 'acct_A' })).toMatchObject({ ok: false, detail: 'invalid or duplicate stripe transaction' });
+    expect(await reader([account, page([transaction()], true)]).client.readAccountTransactions({ accountId: 'acct_A', maxPages: 1 }))
+      .toMatchObject({ ok: false, detail: 'stripe transaction census exceeds page budget' });
+  });
+
+  it.each([
+    { id: 'txn_bad/path' }, { net: 98 }, { amount: '100' }, { fee: -1 }, { status: 'unknown' },
+    { currency: 'USD' }, { created: -1 }, { available_on: null }, { object: 'charge' },
+  ])('rejects malformed transaction accounting or availability', async change => {
+    expect(await reader([account, page([transaction('txn_A', change)])]).client.readAccountTransactions({ accountId: 'acct_A' }))
+      .toMatchObject({ ok: false, detail: 'invalid or duplicate stripe transaction' });
+  });
+
+  it('does not return partial evidence when a later page fails', async () => {
+    const r = reader([account, page([transaction()], true)]);
+    expect(await r.client.readAccountTransactions({ accountId: 'acct_A' })).toMatchObject({ ok: false });
+  });
 });
