@@ -373,10 +373,6 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Polls Google Calendar, advances provider cursors, and emits local trigger/vault deliveries',
   },
-  'system:google-gmail-poll': {
-    spend: 'none',
-    why: 'Renews Gmail watches, reconciles Pub/Sub doorbells through history, and emits local trigger/vault deliveries',
-  },
   'system:slack-org-sync': {
     spend: 'none',
     why: 'Syncs Slack channel membership into permission lists and writes paced backfill pages as chat messages; no agent or model call',

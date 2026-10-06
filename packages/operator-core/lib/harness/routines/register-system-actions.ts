@@ -276,7 +276,6 @@ import './goal-start-action';
 import './external-trigger-dispatch-action';
 import './facebook-personal-vault-poll-action';
 import './google-calendar-poll-action';
-import './google-gmail-poll-action';
 // enterprise-data-sources-2026-10-01 P-016 / D-026: Slack organization connector cadence
 // (membership sync + paced backfill); inert while papercusp-slack-org-connector is dark.
 import './slack-org-sync-action';
