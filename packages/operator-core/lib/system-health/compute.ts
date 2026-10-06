@@ -3304,58 +3304,7 @@ export async function computeSystemHealth(
   const L = opts.legs ?? NOOP_TICK_LEGS;
 
   // Resolve the hive (prefer a started one) + the shared best-effort reads.
-  let potSlug: string | null = null;
-  let started = false;
-  try {
-    const { listPots } = await import('../agent-tools/pot/_resolve');
-    const { getPotStarted } = await import('../pot/started');
-    const hives = await L.leg('list-pots', () => listPots(ws));
-    const startedSlug = await L.leg('pot-started', async () => {
-      for (const h of hives) {
-        if (await getPotStarted(ws, h.slug).catch(() => false)) return h.slug;
-      }
-      return null;
-    });
-    if (startedSlug) { potSlug = startedSlug; started = true; }
-    if (!potSlug && hives.length > 0) potSlug = hives[0].slug;
-  } catch { /* registry unreadable — queen/work-feed degrade to 'unknown' */ }
-
-  let openPlacements: HealthCtx['openPlacements'] = null;
-  if (potSlug) {
-    try {
-      const { summarizeOpenPlacements } = await import('../pot/placement-watchdog');
-      // K1 (workspace-scoped-coordination P-003 / D-006): the one workspace Queen
-      // drives placements across ALL the workspace's hives, so when
-      // WORKSPACE_COORDINATION is ON the open-placement panel SPANS every hive
-      // (summed) rather than just the representative one. OFF (the dark default) ⇒
-      // the single representative hive, byte-identical to today.
-      const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
-      // EI-25221129396992808: these two awaits sat outside any leg, so a 276s tick reported
-      // "unsettled legs: (none)" while it was blocked somewhere in here. Every await on the tick
-      // path is a named leg.
-      const on = await L.leg('coordination-flag', () => isWorkspaceCoordinationOn());
-      let scopeSlugs = [potSlug];
-      if (on) {
-        try {
-          const { listPots } = await import('../agent-tools/pot/_resolve');
-          const all = (await L.leg('list-pots-all', () => listPots(ws))).map((h) => h.slug);
-          if (all.length > 0) scopeSlugs = all;
-        } catch { /* registry unreadable → fall back to the representative hive */ }
-      }
-      const sums = await L.leg('open-placements', () =>
-        Promise.all(scopeSlugs.map((slug) => summarizeOpenPlacements(ws, slug))),
-      );
-      openPlacements = sums.reduce(
-        (acc, op) => ({
-          recovering: acc.recovering + op.recovering,
-          cursed: acc.cursed + op.cursed,
-          stranded: acc.stranded + op.stranded,
-          workingTracked: acc.workingTracked + op.workingTracked,
-        }),
-        { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0 },
-      );
-    } catch { /* leave null — queen.workingTracked + bees.placements degrade to 0 */ }
-  }
+  const { potSlug, started, openPlacements } = await resolveHealthPotScope(ws, L);
 
   let gatewayEnabled = false;
   let gatewayReachable: boolean | null = null;
