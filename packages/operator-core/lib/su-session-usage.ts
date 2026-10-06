@@ -88,26 +88,48 @@ export function claudeTodoPlan(toolName: string, input: unknown): SuPlanItem[] |
   });
 }
 
-/** Codex: `thread/tokenUsage/updated` params → usage (Codex reports no cost). */
-export function codexTokenUsage(params: unknown): SuSessionUsage | null {
-  const tokenUsage = rec(rec(params)?.tokenUsage);
-  if (!tokenUsage) return null;
-  const last = rec(tokenUsage.last);
+/**
+ * Codex: a rollout `event_msg` payload of type `token_count` → usage. Codex
+ * reports no cost. `info` is null until the first model call. The context
+ * figure is `last_token_usage.total_tokens`, what the model saw on its latest
+ * call (Codex's own context meter reads the same field).
+ */
+export function codexTokenUsage(payload: unknown): SuSessionUsage | null {
+  const p = rec(payload);
+  if (p?.type !== 'token_count') return null;
+  const info = rec(p.info);
+  const last = rec(info?.last_token_usage);
   return compact({
-    contextTokens: count(last?.totalTokens),
-    contextWindow: count(tokenUsage.modelContextWindow),
-    inputTokens: count(last?.inputTokens),
-    outputTokens: count(last?.outputTokens),
+    contextTokens: count(last?.total_tokens),
+    contextWindow: count(info?.model_context_window),
+    inputTokens: count(last?.input_tokens),
+    outputTokens: count(last?.output_tokens),
   });
 }
 
 const CODEX_STEP_STATUS: Record<string, SuPlanItemStatus> = {
   pending: 'pending',
+  in_progress: 'in_progress',
   inProgress: 'in_progress',
   completed: 'completed',
 };
 
-/** Codex: `turn/plan/updated` params → the plan list. */
+/**
+ * Codex: a rollout `response_item` `function_call` named `update_plan` → the
+ * plan list. Its `arguments` is a JSON string `{ explanation?, plan: [{ step,
+ * status }] }`; anything else yields null.
+ */
+export function codexPlanCall(payload: unknown): SuPlanItem[] | null {
+  const p = rec(payload);
+  if (p?.type !== 'function_call' || p.name !== 'update_plan') return null;
+  let args: unknown = p.arguments;
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { return null; }
+  }
+  return codexPlan(args);
+}
+
+/** Codex: the `update_plan` arguments object → the plan list. */
 export function codexPlan(params: unknown): SuPlanItem[] | null {
   const plan = rec(params)?.plan;
   if (!Array.isArray(plan)) return null;

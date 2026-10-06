@@ -372,10 +372,11 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
 
   /** D-029/D-031: replace the agent's todo/plan list. Emits only on change. */
   updatePlan(plan: readonly SuPlanItem[]): SuSessionEvent<B> | null {
-    if (JSON.stringify(this.descriptorValue.plan ?? null) === JSON.stringify(plan)) return null;
+    const next: readonly SuPlanItem[] = plan.map((item) => ({ text: item.text, status: item.status }));
+    if (JSON.stringify(this.descriptorValue.plan ?? null) === JSON.stringify(next)) return null;
     return this.emit({
       type: 'session',
-      descriptor: { ...this.descriptorValue, plan: plan.map((item) => ({ text: item.text, status: item.status })) },
+      descriptor: { ...this.descriptorValue, plan: next },
     } as SuSessionEventInput<B>);
   }
 

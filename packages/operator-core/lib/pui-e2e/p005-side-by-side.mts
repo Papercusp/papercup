@@ -266,14 +266,20 @@ function stockEnv(): Record<string, string> {
 }
 
 function start(argv: string[]) {
-  term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+  const ownTerm = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+  term = ownTerm;
   exited = false;
-  pty = spawn(argv[0], argv.slice(1), {
+  const ownPty = spawn(argv[0], argv.slice(1), {
     name: 'xterm-256color', cols, rows, cwd: proj,
     env: { ...stockEnv(), TERM: 'xterm-256color', COLORTERM: 'truecolor', ...(cli.env ?? {}) } as Record<string, string>,
   });
-  pty.onData((d) => term.write(d));
-  pty.onExit(() => { exited = true; });
+  pty = ownPty;
+  // Each launch's handlers touch only that launch. A killed CLI can take
+  // seconds to exit; before WI-10006423 its late onExit marked the NEXT
+  // launch as exited and its goodbye text was painted into the next screen,
+  // which read as "pui exits right after Starting PUI…".
+  ownPty.onData((d) => { if (pty === ownPty) ownTerm.write(d); });
+  ownPty.onExit(() => { if (pty === ownPty) exited = true; });
 }
 
 const puiInternalStateSeen = new Set<string>();
