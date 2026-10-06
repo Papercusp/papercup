@@ -412,6 +412,23 @@ describe('durable SU owner-turn acceptance', () => {
     expect(host.descriptor().plan).toEqual([]);
     expect(eventTypes(host).slice(before)).toEqual(['session', 'session', 'session']);
   });
+
+  it('WI-10006652: publishes the engine model catalog and emits only when it changed', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    const models = [
+      { id: 'sonnet', label: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks', efforts: ['low', 'high'] },
+      { id: ' ', label: 'Unnamed' },
+    ];
+    expect(host.updateModels(models)).not.toBeNull();
+    // A row with no id is not something a client could ever send back.
+    expect(host.descriptor().models).toEqual([models[0]]);
+    expect(host.updateModels([{ ...models[0] }])).toBeNull();
+    // An empty answer keeps the last catalog rather than blanking /model.
+    expect(host.updateModels([])).toBeNull();
+    expect(host.descriptor().models).toEqual([models[0]]);
+    expect(eventTypes(host).slice(before)).toEqual(['session']);
+  });
 });
 
 afterEach(() => {
