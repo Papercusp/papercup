@@ -23,6 +23,10 @@ const state = vi.hoisted(() => ({
   createDbosClient: vi.fn(),
   clientEnqueue: vi.fn(),
   scheduledTick: undefined as (() => Promise<void>) | undefined,
+  scheduledSweepTick: undefined as (() => Promise<void>) | undefined,
+  scheduledCrontabs: {} as Record<string, string | undefined>,
+  /** Every DBOS.runStep name invoked, including steps a fixture short-circuits. */
+  stepNames: [] as string[],
   poolShedFixture: false,
   probe: { rawMs: 3000, admissionMs: 2500, discountMs: 500 },
   recordPoolShedEvent: vi.fn(),
@@ -41,6 +45,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
     DBOS: {
       workflowID: 'test-routine-fire',
       runStep: async (fn: () => unknown, config?: { name?: string }) => {
+        state.stepNames.push(config?.name ?? '');
         // Execute the real registered scheduler up to its critical-probe return,
         // keeping database occupancy and loop-rebase effects private to this fixture.
         if (state.poolShedFixture && config?.name === 'routine-dispatch-feedback-epoch') {
@@ -52,8 +57,11 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
         return output;
       },
       registerWorkflow: (impl: unknown) => impl,
-      registerScheduled: (impl: () => Promise<void>) => {
-        state.scheduledTick = impl;
+      registerScheduled: (impl: () => Promise<void>, config?: { name?: string; crontab?: string }) => {
+        // WI-10000846: two scheduled ticks — keep each under its own name.
+        state.scheduledCrontabs[config?.name ?? ''] = config?.crontab;
+        if (config?.name === 'routinesSweepTick') state.scheduledSweepTick = impl;
+        else state.scheduledTick = impl;
       },
       startWorkflow: state.startWorkflow,
     },
@@ -159,6 +167,7 @@ import { CaplessAdaptiveController } from '../resource-governor/controller';
 
 beforeEach(() => {
   state.stepOutputs.length = 0;
+  state.stepNames.length = 0;
   state.sqlCalls.length = 0;
   vi.clearAllMocks();
   state.poolShedFixture = false;
@@ -502,6 +511,45 @@ describe('routinesTickImpl — probe evidence', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('WI-10000846 — dispatch is decoupled from the periodic sweeps', () => {
+  it('schedules the dispatch tick and the sweep tick separately, offset from each other', () => {
+    expect(state.scheduledTick).toBeTypeOf('function');
+    expect(state.scheduledSweepTick).toBeTypeOf('function');
+    expect(state.scheduledSweepTick).not.toBe(state.scheduledTick);
+    expect(state.scheduledCrontabs).toMatchObject({
+      routinesTick: '*/30 * * * * *',
+      routinesSweepTick: '15,45 * * * * *',
+    });
+  });
+
+  it('under a critical pool the dispatch tick runs no sweep; the sweep tick runs exactly the loop-rebase floor', async () => {
+    state.poolShedFixture = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      // Positive control: the dispatch tick really ran its dispatch steps in this fixture.
+      expect(state.stepNames).toContain('routine-dispatch-feedback-epoch');
+      expect(state.stepNames).not.toContain('loop-rebase-sweep');
+      state.stepNames.length = 0;
+      await state.scheduledSweepTick!();
+      expect(state.stepNames).toEqual(['loop-rebase-sweep']);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('every DBOS step in routinesTickImpl is a dispatch step', () => {
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const dispatch =
+      source.split('async function routinesTickImpl(): Promise<void> {')[1]?.split('async function routinesSweepTickImpl')[0] ?? '';
+    const stepNames = [...dispatch.matchAll(/\{\s*name:\s*'([^']+)'\s*\}/g)].map((m) => m[1]);
+    // Positive control so an extraction miss cannot pass vacuously.
+    expect(stepNames).toContain('claim-routine');
+    // A sweep added here delays every dispatch slot by its runtime: put it in routinesSweepTickImpl.
+    expect(new Set(stepNames)).toEqual(new Set(['list-due-routines', 'routine-dispatch-feedback-epoch', 'claim-routine']));
   });
 });
 
