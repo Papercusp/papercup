@@ -59,9 +59,22 @@ pub(crate) fn too_small(cols: u16, rows: u16) -> bool {
     cols < MIN_COLS || rows < MIN_ROWS
 }
 
+/// The smallest chat-workbench side pane the compact summary draws in
+/// (pui-chat-first-ux D-034). The side column is 35% of the terminal, so the
+/// HUD there is under the full minimum on any terminal below ~230 columns;
+/// between this and [`MIN_COLS`]×[`MIN_ROWS`] it shows [`draw_compact_hud`].
+pub(crate) const COMPACT_MIN_COLS: u16 = 28;
+pub(crate) const COMPACT_MIN_ROWS: u16 = 10;
+
+pub(crate) fn too_small_for_compact(cols: u16, rows: u16) -> bool {
+    cols < COMPACT_MIN_COLS || rows < COMPACT_MIN_ROWS
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     if app.too_small() {
-        draw_too_small(f);
+        draw_too_small(f, app);
+    } else if app.compact_side() {
+        draw_compact_hud(f, app, f.area());
     } else {
         draw_frame(f, app);
     }
@@ -86,12 +99,21 @@ pub fn draw(f: &mut Frame, app: &App) {
 /// of clipped controls. `App::on_key` holds every key but quit while it shows,
 /// so nothing the owner cannot see changes underneath it, and a resize back
 /// resumes the surface and draft exactly as they were.
-fn draw_too_small(f: &mut Frame) {
+fn draw_too_small(f: &mut Frame, app: &App) {
     let area = f.area();
-    let message = format!(
-        "Terminal too small — resize to at least {MIN_COLS}×{MIN_ROWS}. \
-         Your session and draft are safe."
-    );
+    let message = if app.side_pane {
+        // The chat workbench side pane (D-034) is sized by the layout, not
+        // the terminal: name its own floor and the key that enlarges it.
+        format!(
+            "Pane too small — needs {COMPACT_MIN_COLS}×{COMPACT_MIN_ROWS}. \
+             Alt+z shows the full board."
+        )
+    } else {
+        format!(
+            "Terminal too small — resize to at least {MIN_COLS}×{MIN_ROWS}. \
+             Your session and draft are safe."
+        )
+    };
     let height = area.height.min(4);
     let text_area = Rect {
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -105,6 +127,160 @@ fn draw_too_small(f: &mut Frame) {
             .wrap(Wrap { trim: true })
             .style(Theme::panel()),
         text_area,
+    );
+}
+
+/// The footer the compact side pane always shows: the key that turns the pane
+/// into the full board (zellij's focus-fullscreen, bound to Alt+z by the chat
+/// workbench layout).
+pub(crate) const COMPACT_HUD_FOOTER: &str = "Alt+z full board";
+
+/// One section of the compact side-pane summary: a heading and its rows.
+struct CompactSection<'a> {
+    heading: String,
+    empty: &'a str,
+    rows: Vec<Line<'a>>,
+}
+
+/// How many rows each compact section shows, in priority order. Every section
+/// that fits gets its heading; the rows left are dealt one at a time to each
+/// section that still has rows, so a long list cannot starve the next one.
+/// Sections that do not get a heading row are dropped, lowest priority first.
+fn compact_row_budget(available: usize, lengths: &[usize]) -> Vec<usize> {
+    let shown = lengths.len().min(available);
+    let mut left = available - shown;
+    let mut take = vec![0usize; shown];
+    while left > 0 {
+        let mut dealt = false;
+        for (i, rows) in take.iter_mut().enumerate() {
+            if left > 0 && *rows < lengths[i] {
+                *rows += 1;
+                left -= 1;
+                dealt = true;
+            }
+        }
+        if !dealt {
+            break;
+        }
+    }
+    take
+}
+
+/// The chat workbench side pane's compact summary (pui-chat-first-ux D-034).
+/// The side column is far narrower than the full board, so instead of
+/// "Terminal too small" the HUD shows the overview's four lists, one line per
+/// row and sized to the pane: what needs the owner, the live agents, the
+/// active plans and the latest activity. The last line names Alt+z, which
+/// makes the pane the full board.
+fn draw_compact_hud(f: &mut Frame, app: &App, area: Rect) {
+    let width = area.width as usize;
+    let needs: Vec<Line> = app_decisions(app)
+        .into_iter()
+        .map(|it| {
+            Line::from(vec![
+                Span::styled(crate::glyph::status::NEEDS_HUMAN, Theme::warn()),
+                Span::raw(format!(" {}", trunc(&it.title, width.saturating_sub(2)))),
+            ])
+        })
+        .collect();
+    let live: Vec<&crate::models::RosterEntry> = app
+        .visible_roster()
+        .into_iter()
+        .filter(|r| !r.stale)
+        .collect();
+    let agents: Vec<Line> = live
+        .iter()
+        .map(|r| {
+            let who = trunc(if r.label.is_empty() { &r.owner_id } else { &r.label }, 10);
+            let what = r.intent.clone().unwrap_or_default();
+            let rest = width.saturating_sub(3 + who.chars().count());
+            Line::from(vec![
+                Theme::liveness_marker(r.stale, &r.liveness),
+                Span::raw(format!(" {who} ")),
+                Span::styled(trunc(&what, rest), Theme::dim()),
+            ])
+        })
+        .collect();
+    let plans: Vec<Line> = app
+        .visible_plans()
+        .into_iter()
+        .filter(|p| !p.archived && p.status != "shipped" && p.status != "superseded")
+        .map(|p| {
+            let c = &p.item_counts;
+            let total = c.todo + c.wip + c.blocked + c.needs_human + c.done;
+            let count = format!(" {}/{total}", c.done);
+            let title = if p.title.is_empty() { &p.slug } else { &p.title };
+            let rest = width.saturating_sub(2 + count.chars().count());
+            Line::from(vec![
+                Theme::status_marker(&p.status),
+                Span::raw(format!(" {}", trunc(title, rest))),
+                Span::styled(count, Theme::dim()),
+            ])
+        })
+        .collect();
+    let activity: Vec<Line> = app
+        .visible_fleet_activity()
+        .into_iter()
+        .map(|a| {
+            let agent = trunc(&a.agent.clone().unwrap_or_default(), 6);
+            let what = a.summary.clone().unwrap_or_else(|| a.kind.clone());
+            let rest = width.saturating_sub(1 + agent.chars().count());
+            Line::from(vec![
+                Span::styled(format!("{agent} "), Theme::dim()),
+                Span::raw(trunc(&what, rest)),
+            ])
+        })
+        .collect();
+    let sections = [
+        CompactSection {
+            heading: format!("Needs you ({})", needs.len()),
+            empty: "nothing waiting",
+            rows: needs,
+        },
+        CompactSection {
+            heading: format!("Agents ({} live)", agents.len()),
+            empty: "none live",
+            rows: agents,
+        },
+        CompactSection {
+            heading: format!("Plans ({})", plans.len()),
+            empty: "none active",
+            rows: plans,
+        },
+        CompactSection {
+            heading: "Activity".to_string(),
+            empty: "none yet",
+            rows: activity,
+        },
+    ];
+
+    let footer_rows = 1;
+    let body = Rect {
+        height: area.height.saturating_sub(footer_rows),
+        ..area
+    };
+    let footer = Rect {
+        y: area.y + body.height,
+        height: area.height - body.height,
+        ..area
+    };
+    let lengths: Vec<usize> = sections.iter().map(|s| s.rows.len()).collect();
+    let budget = compact_row_budget(body.height as usize, &lengths);
+    let mut lines: Vec<Line> = Vec::with_capacity(body.height as usize);
+    for (section, take) in sections.into_iter().zip(budget) {
+        let mut heading = vec![Span::styled(section.heading, Theme::header())];
+        if section.rows.is_empty() {
+            heading.push(Span::styled(format!(" · {}", section.empty), Theme::dim()));
+        }
+        lines.push(Line::from(heading));
+        lines.extend(section.rows.into_iter().take(take));
+    }
+    f.render_widget(Block::default().style(Theme::panel()), area);
+    f.render_widget(Paragraph::new(lines).style(Theme::panel()), body);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(COMPACT_HUD_FOOTER, Theme::dim())))
+            .style(Theme::panel()),
+        footer,
     );
 }
 
