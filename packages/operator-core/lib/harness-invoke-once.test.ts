@@ -27,10 +27,43 @@ import {
   formatRoleBackendConflict,
   inferBackendFromModelSpec,
   isOmpBackendExplicitlyConfigured,
+  probeRoleRuntime,
   resolveSpawnBackendModel,
   roleBackendOverride,
   type InvokeOnceSpec,
 } from './harness-invoke-once';
+
+// WI-10006833: the merge-resolver preflight. A Server install ships no agent CLI, so the
+// resolver died `spawn claude ENOENT` on every dispatch. The probe must resolve the
+// command's binary on the given PATH exactly as the spawn would.
+describe('WI-10006833: probeRoleRuntime', () => {
+  const only = (hit: string) => (p: string) => p === hit;
+
+  it('resolves a bare binary on the first PATH dir that has it', () => {
+    const r = probeRoleRuntime('merge-resolver', {
+      command: 'claude -p --model opus',
+      path: '/nope:/opt/bin:/usr/bin',
+      exists: only('/opt/bin/claude'),
+    });
+    expect(r).toEqual({ ok: true, bin: 'claude', resolved: '/opt/bin/claude' });
+  });
+
+  it('reports the binary as missing when no PATH dir has it (the c1010k joiner)', () => {
+    const r = probeRoleRuntime('merge-resolver', { command: 'claude -p', path: '/usr/bin:/bin', exists: () => false });
+    expect(r).toEqual({ ok: false, bin: 'claude' });
+  });
+
+  it('checks an absolute command path directly instead of searching PATH', () => {
+    expect(
+      probeRoleRuntime('merge-resolver', { command: '/srv/claude -p', path: '/usr/bin', exists: only('/srv/claude') }),
+    ).toEqual({ ok: true, bin: '/srv/claude', resolved: '/srv/claude' });
+    expect(probeRoleRuntime('merge-resolver', { command: '/srv/claude -p', exists: () => false }).ok).toBe(false);
+  });
+
+  it('an empty command is never reported runnable', () => {
+    expect(probeRoleRuntime('merge-resolver', { command: '   ', exists: () => true }).ok).toBe(false);
+  });
+});
 import { codexContextConfigArgs } from './model-context-budget.mjs';
 
 // Fixture role is deliberately one with NO committed ROLE_MODEL_DEFAULTS entry

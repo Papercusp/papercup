@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   DIVERGENCE_REFRESH_MS,
+  applyResolverRuntimeProbe,
   describeDivergenceTransition,
+  describeResolverRuntimeChange,
+  divergenceAwaitsResolver,
   divergenceResolverDispatch,
   nextWorktreeDivergence,
   parseWorktreeDivergence,
+  resolverFailureDetail,
   type WorktreeDivergence,
 } from './worktree-divergence';
 
@@ -156,5 +160,84 @@ describe('describeDivergenceTransition', () => {
     const p = prior();
     const t = nextWorktreeDivergence(p, { kind: 'contained' }, T0 + 55 * 60_000);
     expect(describeDivergenceTransition('s', p, t, T0 + 55 * 60_000)).toContain('CLEARED after ~55m');
+  });
+});
+
+// WI-10006833: on c1010k (a GCP joiner with no agent CLI) D-055 step 2 dispatched the
+// merge-resolver, which died `spawn claude ENOENT` (rc 127, empty stderr) each time, and
+// nothing recorded why. These pin the preflight that withholds such a dispatch.
+describe('WI-10006833: resolver runtime preflight', () => {
+  const pending = (): WorktreeDivergence => ({
+    since: T0,
+    lastSeenAt: T0,
+    localHead: L1,
+    hiveSha: H1,
+    paths: ['d055-conflict.txt'],
+  });
+
+  it('a missing runtime is recorded and withholds the dispatch', () => {
+    const { next, change } = applyResolverRuntimeProbe(pending(), { ok: false, runtime: 'claude' }, T0 + 1);
+    expect(change).toBe('unavailable');
+    expect(next.resolverUnavailable).toEqual({ runtime: 'claude', reason: 'runtime-missing', since: T0 + 1 });
+    expect(divergenceResolverDispatch(next)).toBeNull();
+    expect(describeResolverRuntimeChange('s', next, change)).toContain("would exec 'claude'");
+  });
+
+  it('a runtime that stays missing is not rewritten, so since keeps its age', () => {
+    const first = applyResolverRuntimeProbe(pending(), { ok: false, runtime: 'claude' }, T0 + 1).next;
+    const again = applyResolverRuntimeProbe(first, { ok: false, runtime: 'claude' }, T0 + 99);
+    expect(again.change).toBeNull();
+    expect(again.next).toBe(first);
+  });
+
+  it('a runtime that appears re-enables the dispatch on the same tick', () => {
+    const missing = applyResolverRuntimeProbe(pending(), { ok: false, runtime: 'claude' }, T0 + 1).next;
+    const { next, change } = applyResolverRuntimeProbe(missing, { ok: true }, T0 + 2);
+    expect(change).toBe('available');
+    expect(next.resolverUnavailable).toBeUndefined();
+    expect(divergenceResolverDispatch(next)).toEqual({
+      conflicts: [{ scope: 'superproject', conflictedFiles: ['d055-conflict.txt'] }],
+      mergeRef: H1,
+    });
+  });
+
+  it('a present runtime on a clean record changes nothing', () => {
+    const d = pending();
+    expect(applyResolverRuntimeProbe(d, { ok: true }, T0 + 1)).toEqual({ next: d, change: null });
+  });
+
+  it('the unavailability is carried across a path-set change and survives a round-trip parse', () => {
+    const missing = applyResolverRuntimeProbe(pending(), { ok: false, runtime: 'claude' }, T0 + 1).next;
+    const t = nextWorktreeDivergence(
+      missing,
+      { kind: 'diverged', localHead: L2, hiveSha: H2, paths: ['other.txt'] },
+      T0 + 5,
+    );
+    expect(t.log).toBe('paths-changed');
+    expect(t.next?.resolverUnavailable?.runtime).toBe('claude');
+    expect(parseWorktreeDivergence(JSON.parse(JSON.stringify(t.next)))?.resolverUnavailable?.since).toBe(T0 + 1);
+  });
+
+  it('only a conflict still awaiting its dispatch is worth probing', () => {
+    expect(divergenceAwaitsResolver(pending())).toBe(true);
+    expect(divergenceAwaitsResolver({ ...pending(), resolverDispatchedAt: T0 })).toBe(false);
+    expect(divergenceAwaitsResolver(null)).toBe(false);
+  });
+});
+
+describe('WI-10006833: resolverFailureDetail keeps the cause of a resolver that never started', () => {
+  it('falls back to the stdout tail and names the missing runtime (c1010k shape)', () => {
+    const r = resolverFailureDetail({
+      decisionLine: '',
+      stderr: '',
+      rawStdoutTail: '[invoke-once] prompt budget ok\nspawn error: spawn claude ENOENT\n',
+    });
+    expect(r.detail).toContain('spawn claude ENOENT');
+    expect(r.unavailable).toEqual({ runtime: 'claude', reason: 'runtime-missing' });
+  });
+
+  it('prefers the decision line and reports no runtime problem for an ordinary failure', () => {
+    const r = resolverFailureDetail({ decisionLine: 'gave up: unresolvable', stderr: 'x', rawStdoutTail: 'y' });
+    expect(r).toEqual({ detail: 'gave up: unresolvable' });
   });
 });

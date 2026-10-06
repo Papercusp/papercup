@@ -211,6 +211,24 @@ export function applyResolverRuntimeProbe(
   };
 }
 
+/**
+ * WI-10006833: the `last_resolver.detail` for a failed resolver run (any dispatch, not
+ * only D-055). `decisionLine` and `stderr` are empty when the agent CLI never started
+ * (c1010k: rc 127, empty stderr, the cause only in stdout as
+ * `spawn error: spawn claude ENOENT`), so fall back to the stdout tail the /invoke route
+ * returns, and name a missing runtime explicitly.
+ */
+export function resolverFailureDetail(j: {
+  decisionLine?: string;
+  stderr?: string;
+  rawStdoutTail?: string;
+}): { detail: string; unavailable?: { runtime: string; reason: 'runtime-missing' } } {
+  const tail = (j.rawStdoutTail ?? '').trim();
+  const detail = (j.decisionLine?.trim() || j.stderr?.trim() || tail.slice(-400)).slice(0, 400);
+  const enoent = /spawn (\S+) ENOENT/.exec(`${j.stderr ?? ''}\n${tail}`);
+  return enoent ? { detail, unavailable: { runtime: enoent[1], reason: 'runtime-missing' } } : { detail };
+}
+
 /** The operator-facing line for a resolver-runtime change (null = nothing to log). */
 export function describeResolverRuntimeChange(
   slug: string,
