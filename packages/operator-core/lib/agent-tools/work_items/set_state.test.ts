@@ -5,6 +5,7 @@
  * not-found item fails only itself; the P-114 arm is evaluated per item.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // readNonAgentWorkCategory backs the D-035 agent-work door gate (work-nature/agent-work-door-gate);
@@ -247,6 +248,30 @@ describe('work_items:set_state — typed blocker guidance (WI-39529)', () => {
     expect(text).toContain('work_items:link');
     expect(text).toContain('active typed external blocker');
     expect(text).toContain('rel:"blocks"');
+  });
+
+  it('publishes the typed-blocker precondition on every schema state variant that accepts blocked', () => {
+    const schema = z.toJSONSchema(tool.args as never) as Record<string, unknown>;
+    const blockedStateSchemas: Array<Record<string, unknown>> = [];
+    const visit = (value: unknown) => {
+      if (typeof value !== 'object' || value === null) return;
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      const object = value as Record<string, unknown>;
+      const states = object.enum;
+      if (Array.isArray(states) && states.includes('blocked')) blockedStateSchemas.push(object);
+      Object.values(object).forEach(visit);
+    };
+    visit(schema);
+
+    expect(blockedStateSchemas.length).toBeGreaterThan(0);
+    for (const stateSchema of blockedStateSchemas) {
+      expect(stateSchema.description).toContain('active typed blocker');
+      expect(stateSchema.description).toContain('work_items:set_blocker');
+      expect(stateSchema.description).toContain('work_items:link');
+    }
   });
 });
 
