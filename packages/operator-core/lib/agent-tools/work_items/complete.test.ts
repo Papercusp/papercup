@@ -565,6 +565,47 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(String(missingCompletion.error)).toMatch(closeShape);
   });
 
+  // EI-25240542476501298: the union message is lifted from a NESTED unrecognized-key issue
+  // and the union node sits at the root, so without its path the refusal read like a stray
+  // top-level arg (and the dispatcher listed top-level keys the caller had right).
+  it('names WHERE a nested unrecognized key was rejected', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const entryKey = safeParse({
+      id: 'WI-nested',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'did it',
+        verification: {
+          requirementDisposition: [
+            { requirement: 'a verbatim requirement quote', disposition: 'implemented', citations: ['a.ts'], bogus: 1 },
+          ],
+        },
+      },
+    });
+    expect(entryKey.success).toBe(false);
+    expect(String(entryKey.error)).toContain('completion.verification.requirementDisposition.0: Unrecognized key: \\"bogus\\"');
+
+    const misplaced = safeParse({
+      id: 'WI-nested',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'did it',
+        requirementDisposition: [{ requirement: 'a verbatim requirement quote', disposition: 'implemented' }],
+      },
+    });
+    expect(misplaced.success).toBe(false);
+    expect(String(misplaced.error)).toContain('completion: Unrecognized key: \\"requirementDisposition\\"');
+
+    // Calibration: a stray TOP-LEVEL key keeps its pathless message.
+    const top = safeParse({ id: 'WI-nested', state: 'done', assumptions: 'none', completion: { summary: 's' }, strayTop: 1 });
+    expect(top.success).toBe(false);
+    expect(String(top.error)).toContain('"message": "Unrecognized key: \\"strayTop\\""');
+  });
+
   it('rejects a block whose structured predictions name the same observable', () => {
     const result = (
       complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
