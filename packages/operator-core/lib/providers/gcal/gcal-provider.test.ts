@@ -493,6 +493,34 @@ describe('outbound calendar verbs', () => {
     );
   });
 
+  it('calendar.write delete cancels the named event with sendUpdates=all; an already-cancelled event (410) is not a failure, a 404 is', async () => {
+    const { result, calls } = invoke(
+      'calendar.write',
+      { operation: 'delete', calendarId: 'team@x', eventId: 'ev/1' },
+      () => ({ status: 204 }),
+    );
+    await expect(result).resolves.toEqual({ id: 'ev/1', htmlLink: null, status: 'cancelled', attendees: [] });
+    const url = new URL(calls[0]!.url);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(calls[0]!.body).toBeUndefined();
+    expect(url.pathname).toBe('/calendar/v3/calendars/team%40x/events/ev%2F1');
+    expect(url.searchParams.get('sendUpdates')).toBe('all');
+
+    const gone = invoke('calendar.write', { operation: 'delete', eventId: 'e1' }, () => ({
+      status: 410,
+      json: { error: { code: 410, message: 'Resource has been deleted' } },
+    }));
+    await expect(gone.result).resolves.toMatchObject({ id: 'e1', status: 'cancelled' });
+    expect(new URL(gone.calls[0]!.url).pathname).toBe('/calendar/v3/calendars/primary/events/e1');
+
+    const missing = invoke('calendar.write', { operation: 'delete', eventId: 'e1' }, () => ({ status: 404 }));
+    await expect(missing.result).rejects.toMatchObject({ status: 404, notFound: true });
+    await expect(invoke('calendar.write', { operation: 'delete' }, () => undefined).result).rejects.toThrow(
+      'google_calendar_event_id_required',
+    );
+  });
+
   it('a write is not retried: a 5xx surfaces once', async () => {
     const { result, calls } = invoke('calendar.write', { operation: 'create', summary: 'x', start: '2026-10-09', end: '2026-10-10' }, () => ({
       status: 500,
