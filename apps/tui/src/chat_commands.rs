@@ -26,6 +26,7 @@ pub enum SlashKind {
     Resume,
     Model,
     Effort,
+    Status,
     Details,
     Expand,
     Copy,
@@ -56,6 +57,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "effort",
         summary: "Set the reasoning effort, from the next turn",
         kind: SlashKind::Effort,
+    },
+    SlashCommand {
+        name: "status",
+        summary: "Model, account and engine this conversation runs on",
+        kind: SlashKind::Status,
     },
     SlashCommand {
         name: "expand",

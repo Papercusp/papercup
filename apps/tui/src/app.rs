@@ -4846,6 +4846,11 @@ impl App {
                 self.open_effort_picker();
                 Action::Render
             }
+            SlashKind::Status => {
+                let line = self.chat_status_line();
+                self.chat_toast("info", line);
+                Action::Render
+            }
             SlashKind::Details => {
                 self.chat_details = Some(!self.chat_details_visible());
                 Action::Render
@@ -6977,6 +6982,51 @@ impl App {
 
     /// The model that last answered, else the one picked for the next turn,
     /// else the engine's own name (its configured default model).
+    /// `pui --model` / `--account` (P-026, D-023): what a new conversation
+    /// starts on, read exactly as the model and account pickers read it.
+    pub fn apply_chat_launch_choice(&mut self, model: Option<&str>, account: Option<&str>) {
+        if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+            self.chat_model = crate::session_config::model_pick(model);
+        }
+        if let Some(account) = account.map(str::trim).filter(|account| !account.is_empty()) {
+            self.chat_account = crate::session_config::chat_account_pick(account);
+        }
+    }
+
+    /// `/status` (P-026, D-023 G-14): the model, account and engine this
+    /// conversation RUNS on. A bound session reports its own descriptor, not
+    /// the launch picks it no longer reads.
+    pub fn chat_status_line(&self) -> String {
+        let session = self.su_session.as_ref();
+        let backend = session
+            .map(|s| s.backend())
+            .or(self.su_backend)
+            .or(self.configured_su_backend())
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        let account = session
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.account_route.as_deref())
+            .map(str::trim)
+            .filter(|route| !route.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                crate::session_config::account_label(self.chat_account.as_deref(), backend)
+            });
+        let state = match session {
+            Some(s) if s.is_live() => "running",
+            Some(_) => "not running",
+            None if self.agent_chat_id.is_some() => "not running",
+            None => "new",
+        };
+        format!(
+            "Model {} · account {} · engine {} · conversation {}",
+            self.chat_model_label(),
+            account,
+            backend.label(),
+            state
+        )
+    }
+
     fn chat_model_label(&self) -> String {
         let known = |model: &str| {
             let model = model.trim();
@@ -18403,6 +18453,39 @@ mod tests {
         assert_eq!(pending.content, "hi");
         assert_eq!(pending.model.as_deref(), Some("opus:high"));
         assert_eq!(a.su_next_model, None);
+    }
+
+    /// pui-chat-first-ux P-026 / D-023: `pui --model`/`--account` set what a new
+    /// conversation starts on; `/status` reports what a bound one RUNS on.
+    #[test]
+    fn launch_choice_and_status_report_the_model_and_account() {
+        let mut fresh = chat_first_app();
+        fresh.apply_chat_launch_choice(Some("opus:high"), Some("auto"));
+        assert_eq!(fresh.chat_model.as_deref(), Some("opus:high"));
+        assert_eq!(fresh.chat_account.as_deref(), Some("auto"));
+        fresh.apply_chat_launch_choice(None, Some("  "));
+        assert_eq!(fresh.chat_account.as_deref(), Some("auto"), "blank keeps the choice");
+        let status = fresh.chat_status_line();
+        assert!(status.starts_with("Model opus:high · account auto · engine "), "{status}");
+        assert!(status.ends_with("conversation new"), "{status}");
+
+        let mut live = chat_first_app_on_live_session("haiku");
+        live.chat_account = Some("default".into());
+        live.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().account_route =
+            Some("work".into());
+        live.su_next_model = Some("opus:high".into());
+        live.chat_input = "/status".into();
+        live.chat_cursor = live.chat_input.len();
+        assert!(matches!(
+            live.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
+        let toast = live.toast.as_ref().expect("/status shows a toast");
+        assert_eq!(
+            toast.message,
+            "Model haiku · next turn: opus:high · account work · engine Claude · conversation running"
+        );
+        assert!(live.su_pending_turn.is_none(), "nothing was sent");
     }
 
     /// pui-chat-first-ux P-012: Enter moves the message into the transcript

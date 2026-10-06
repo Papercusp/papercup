@@ -6,11 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { ackAndRead, stage, resetReadCursorStore } from './agent-tools/coordination/read-cursors';
+import { runWithWorkspace } from './workspace-als';
 import { createPgTelemetryStore } from './activity-pg-store';
 import { readVerbatimTail } from './turn-journal';
 import { AGENT_OBLIGATION_SCHEMA_VERSION, defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
 import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
 import { ORIENTATION_CURSOR_SURFACE } from './turn-start-orientation';
+import { drainDetached } from './detached-imports';
 import { recordVerifiedGoalPlacementEffects, readGoalPlacementProgress } from './goal-placement-progress-store';
 import { compileGoalPlanPlacement, type GoalPortfolioBrief } from './goal-launch-settings';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
@@ -18,7 +20,8 @@ import { confirmGoalPlacementDelivery, prepareGoalPlacementDelivery, GOAL_PLACEM
   settleGoalPlacementTurn, reconcileConfirmedGoalPlacementTurns, readGoalPlacementAdmissionAttempts,
   type GoalPlacementAdmissionObservation, type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
 
-const OWNER = `su-goal-receipt-${Date.now()}`;
+const OWNER_PREFIX = 'su-goal-receipt-';
+const OWNER = `${OWNER_PREFIX}${Date.now()}`;
 const WS = 'default';
 const SURFACE = ORIENTATION_CURSOR_SURFACE;
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 23, 0, minute)).toISOString();
@@ -39,11 +42,22 @@ let directory: string;
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
+  // The previous version's workspace-filtered cleanup could strand a cursor
+  // written under the process workspace when the test called the endpoint
+  // handler without request ALS. The fixture mutex makes this reserved-prefix
+  // sweep safe across test processes; remove only rows owned by this test.
+  const staleCursorOwners = await fx.admin<Array<{ owner_id: string }>>`
+    SELECT DISTINCT owner_id FROM harness_shared.coord_read_cursors
+     WHERE owner_id LIKE ${`${OWNER_PREFIX}%`} AND surface = ${SURFACE}`;
+  for (const stale of staleCursorOwners) {
+    await fx.admin`DELETE FROM harness_shared.coord_read_cursors
+     WHERE owner_id = ${stale.owner_id} AND surface = ${SURFACE}`;
+  }
   resetReadCursorStore();
   directory = await mkdtemp(join(tmpdir(), 'goal-receipt-pg-'));
 }, 150_000);
 afterEach(async () => {
-  await fx.admin`DELETE FROM harness_shared.coord_read_cursors WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
+  await fx.admin`DELETE FROM harness_shared.coord_read_cursors WHERE owner_id = ${OWNER} AND surface = ${SURFACE}`;
   await fx.admin`DELETE FROM harness_shared.agent_activity WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
   await fx.admin`DELETE FROM harness_shared.resource_governor_admissions
     WHERE workspace_id = ${WS} AND record->'metadata'->>'launchedBy' = ${OWNER}`;
@@ -75,13 +89,14 @@ async function fixture() {
   const candidate = await prepareGoalPlacementDelivery({ ownerId: OWNER, workspaceId: WS,
     token: 'exact-token', brief, block: formatAgentObligationLine(row, 'action') }, deps);
   expect(candidate).not.toBeNull();
-  await stage(OWNER, SURFACE, { [GOAL_PLACEMENT_DELIVERY_KEY]: candidate }, { deliveryToken: 'exact-token' });
+  await runWithWorkspace(WS, () => stage(OWNER, SURFACE,
+    { [GOAL_PLACEMENT_DELIVERY_KEY]: candidate }, { deliveryToken: 'exact-token' }));
   return { deps, candidate,
     finish: async (phase: 'commentary' | 'final_answer') => {
       await write([...prior, ...native('next', 3, phase)]); now = Date.parse(at(4));
     },
     confirm: async (token: string | null) => {
-      const ack = await ackAndRead(OWNER, SURFACE, { confirmedToken: token });
+      const ack = await runWithWorkspace(WS, () => ackAndRead(OWNER, SURFACE, { confirmedToken: token }));
       return confirmGoalPlacementDelivery({ ownerId: OWNER, workspaceId: WS, confirmedToken: token,
         candidate: ack?.committed?.[GOAL_PLACEMENT_DELIVERY_KEY], brief }, deps);
     },
@@ -302,5 +317,43 @@ describe('goal delivery receipt canonical persistence', () => {
     f.deps.lookup = async () => null;
     expect((await f.confirm('exact-token')).reason).toBe('native-session-unavailable');
     expect(await records()).toHaveLength(0);
+  });
+
+  it('records a mismatched ACK outcome through the operator turn-start endpoint without promoting the candidate', async () => {
+    await fixture();
+    const routes = (await import('./endpoint-route/routes/agent-mcp/turn-start-memory')).default;
+    const endpoint = routes[0] as unknown as { handler: (req: Request) => Promise<Response> };
+    const response = await runWithWorkspace(WS, () => endpoint.handler(new Request('http://localhost/agent-mcp/turn-start-memory', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, prompt: '', workspace: WS, harness: 'papercusp',
+        memoryEnabled: false, confirmedDelivery: 'wrong-token' }),
+    })));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true });
+    await drainDetached();
+
+    const outcomeRows = (await records()).filter((record) =>
+      (record.detail.goalPlacementDeliveryOutcome as { token?: string } | undefined)?.token === 'exact-token');
+    expect(outcomeRows).toHaveLength(1);
+    expect(outcomeRows[0]).toMatchObject({
+      owner_id: OWNER, workspace_id: WS, session_id: OWNER,
+      tool_use_id: expect.stringMatching(/^goal-placement-delivery-outcome:confirm:exact-token:/),
+      detail: { goalPlacementDeliveryOutcome: {
+        version: 1, stage: 'confirm', recorded: false, reason: 'confirmation-token-mismatch',
+        token: 'exact-token', unavailable: false, candidateReason: null, planSlugs: ['plan'],
+      } },
+    });
+
+    const cursorRows = await fx.admin<Array<{ workspace_id: string; committed_candidate: { token?: string } | null;
+      pending_candidate: { token?: string } | null }>>`
+      SELECT workspace_id,
+             committed->${GOAL_PLACEMENT_DELIVERY_KEY} AS committed_candidate,
+             pending->${GOAL_PLACEMENT_DELIVERY_KEY} AS pending_candidate
+        FROM harness_shared.coord_read_cursors
+       WHERE owner_id = ${OWNER} AND surface = ${SURFACE}`;
+    expect(cursorRows).toHaveLength(1);
+    expect(cursorRows[0]!.workspace_id).toBe(WS);
+    expect(cursorRows[0]!.committed_candidate?.token).not.toBe('exact-token');
+    expect(cursorRows[0]!.pending_candidate?.token).not.toBe('exact-token');
   });
 });

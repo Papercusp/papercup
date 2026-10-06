@@ -117,6 +117,9 @@ Options:
   --fleet=<slug>             Join fresh PUI SU sessions to an existing fleet
   --seat=<ref>               Consume that fleet's delegated seat (requires --fleet)
   --solo                     Open only the chat (no zellij, no side panes)
+  --model=<spec>             Model a new conversation starts on, e.g. opus or gpt-5.5:high
+                             (switch a running one with /model)
+  --account=<route>          Account a new conversation runs on: auto, default, or an account name
   -h, --help                Print this help text
   -V, --version              Print version information
 
@@ -129,6 +132,11 @@ Remote hosts (the same saved connections psu uses):
 
 const PUI_FLEET_ENV: &str = "PUI_FLEET";
 const PUI_SEAT_ENV: &str = "PUI_SEAT";
+/// `pui --model` / `--account` (P-026, D-023): the model and account route a
+/// NEW conversation starts on. Exported like the fleet so the workbench's chat
+/// pane, a child `pui --solo`, starts on the same choice.
+const PUI_MODEL_ENV: &str = "PUI_MODEL";
+const PUI_ACCOUNT_ENV: &str = "PUI_ACCOUNT";
 
 /// Process-wide launch context. The top-level workbench exports it before
 /// zellij starts, so every child `pui hud`/dock pane carries the same fleet and
@@ -143,6 +151,11 @@ struct CliInvocation {
     /// [`layout::CHAT_WORKBENCH_PANE_FLAG`]: this process is the chat pane of
     /// the chat workbench its launcher started (P-030). Undocumented.
     workbench_pane: bool,
+    /// `--model <spec>`: model[:effort] a new conversation starts on (P-026).
+    model: Option<String>,
+    /// `--account <auto|default|name>`: the account route a new conversation
+    /// starts on (D-023).
+    account: Option<String>,
 }
 
 impl CliInvocation {
@@ -190,6 +203,8 @@ impl CliInvocation {
         let mut seat = None;
         let mut solo = false;
         let mut workbench_pane = false;
+        let mut model = None;
+        let mut account = None;
         let mut pending: Option<&'static str> = None;
 
         for arg in args {
@@ -200,13 +215,17 @@ impl CliInvocation {
                 match name {
                     "--fleet" => set_cli_value(&mut fleet, name, &arg)?,
                     "--seat" => set_cli_value(&mut seat, name, &arg)?,
-                    _ => unreachable!("only fleet/seat can be pending"),
+                    "--model" => set_cli_value(&mut model, name, &arg)?,
+                    "--account" => set_cli_value(&mut account, name, &arg)?,
+                    _ => unreachable!("only value flags can be pending"),
                 }
                 continue;
             }
             match arg.as_str() {
                 "--fleet" => pending = Some("--fleet"),
                 "--seat" => pending = Some("--seat"),
+                "--model" => pending = Some("--model"),
+                "--account" => pending = Some("--account"),
                 "--solo" => solo = true,
                 layout::CHAT_WORKBENCH_PANE_FLAG => workbench_pane = true,
                 _ if arg.starts_with("--fleet=") => {
@@ -214,6 +233,12 @@ impl CliInvocation {
                 }
                 _ if arg.starts_with("--seat=") => {
                     set_cli_value(&mut seat, "--seat", &arg["--seat=".len()..])?
+                }
+                _ if arg.starts_with("--model=") => {
+                    set_cli_value(&mut model, "--model", &arg["--model=".len()..])?
+                }
+                _ if arg.starts_with("--account=") => {
+                    set_cli_value(&mut account, "--account", &arg["--account=".len()..])?
                 }
                 _ => positionals.push(arg),
             }
@@ -235,7 +260,24 @@ impl CliInvocation {
             seat,
             solo,
             workbench_pane,
+            model,
+            account,
         })
+    }
+
+    /// Fill `--model` / `--account` from the launching pui's exported choice.
+    /// An explicit flag wins: unlike a fleet, these are per-launch defaults,
+    /// not an identity two processes could disagree about.
+    fn inherit_chat_launch(mut self, model: Option<&str>, account: Option<&str>) -> Self {
+        let inherited = |value: Option<&str>| {
+            value
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        self.model = self.model.or_else(|| inherited(model));
+        self.account = self.account.or_else(|| inherited(account));
+        self
     }
 
     fn positional(&self, index: usize) -> Option<&str> {
@@ -248,6 +290,12 @@ impl CliInvocation {
         }
         if let Some(seat) = &self.seat {
             std::env::set_var(PUI_SEAT_ENV, seat);
+        }
+        if let Some(model) = &self.model {
+            std::env::set_var(PUI_MODEL_ENV, model);
+        }
+        if let Some(account) = &self.account {
+            std::env::set_var(PUI_ACCOUNT_ENV, account);
         }
     }
 }
@@ -316,7 +364,11 @@ async fn main() -> Result<()> {
         raw_args,
         inherited_fleet.as_deref(),
         inherited_seat.as_deref(),
-    )?;
+    )?
+    .inherit_chat_launch(
+        std::env::var(PUI_MODEL_ENV).ok().as_deref(),
+        std::env::var(PUI_ACCOUNT_ENV).ok().as_deref(),
+    );
     cli.export_launch_env();
     let subcommand = cli.positional(0).map(str::to_string);
     let subcommand_arg = cli.positional(1).map(str::to_string);
@@ -967,6 +1019,37 @@ mod cli_help_tests {
 
         let bare = CliInvocation::parse(args(&[]), None, None).unwrap();
         assert!(!bare.solo && !bare.workbench_pane);
+    }
+
+    /// P-026 / D-023: `--model` and `--account` take a value in either form,
+    /// leave no subcommand, and an explicit flag beats the inherited choice.
+    #[test]
+    fn model_and_account_flags_parse_and_beat_the_inherited_choice() {
+        let split = CliInvocation::parse(args(&["--model", "opus:high", "--account", "auto"]), None, None)
+            .unwrap();
+        assert_eq!(split.model.as_deref(), Some("opus:high"));
+        assert_eq!(split.account.as_deref(), Some("auto"));
+        assert!(split.positionals.is_empty());
+
+        let equals = CliInvocation::parse(args(&["--solo", "--model=haiku", "--account=work"]), None, None)
+            .unwrap();
+        assert!(equals.solo);
+        assert_eq!(equals.model.as_deref(), Some("haiku"));
+        assert_eq!(equals.account.as_deref(), Some("work"));
+
+        assert!(CliInvocation::parse(args(&["--model"]), None, None).is_err());
+        assert!(CliInvocation::parse(args(&["--model", "--solo"]), None, None).is_err());
+        assert!(CliInvocation::parse(args(&["--model=a", "--model=b"]), None, None).is_err());
+        assert!(CliInvocation::parse(args(&["--account="]), None, None).is_err());
+
+        let explicit = equals.clone().inherit_chat_launch(Some("sonnet"), Some("default"));
+        assert_eq!(explicit.model.as_deref(), Some("haiku"));
+        assert_eq!(explicit.account.as_deref(), Some("work"));
+        let pane = CliInvocation::parse(args(&["--solo"]), None, None)
+            .unwrap()
+            .inherit_chat_launch(Some(" sonnet "), Some(""));
+        assert_eq!(pane.model.as_deref(), Some("sonnet"));
+        assert_eq!(pane.account, None, "an empty inherited value is no choice");
     }
 
     fn inputs() -> BareLaunchInputs {
@@ -1811,6 +1894,12 @@ async fn run<B: Backend>(
     app.require_session_setup = true;
     app.su_launch_fleet = launch_fleet;
     app.su_launch_seat = launch_seat;
+    // P-026 / D-023: `pui --model` / `--account`, exported before zellij starts,
+    // so the chat pane's first conversation starts on them.
+    app.apply_chat_launch_choice(
+        std::env::var(PUI_MODEL_ENV).ok().as_deref(),
+        std::env::var(PUI_ACCOUNT_ENV).ok().as_deref(),
+    );
     // Resolve the same canonical record `pui doctor` prints. This is an
     // independent process inside zellij, but both endpoint variables were
     // normalized/inherited by the session launcher above.

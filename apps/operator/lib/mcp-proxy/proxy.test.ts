@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
 import net from "node:net";
+import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
 import {
   shouldRetry,
   createMcpProxy,
@@ -3084,15 +3085,12 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
           headers: { "content-type": "application/json" },
         },
         (res) => {
-          let body = "";
-          res.on("data", (chunk) => {
-            if (body.length === 0) signalFirstChunk();
-            body += String(chunk);
-          });
+          const body = createTextCollector(res);
+          res.once("data", signalFirstChunk);
           res.on("end", () =>
             resolveResponse({
               status: res.statusCode ?? 0,
-              body,
+              body: body.text(),
               headers: res.headers,
             }),
           );

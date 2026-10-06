@@ -2,9 +2,9 @@
  * SDK-free Stripe client for hosted subscription billing: one customer per
  * organization, subscription-mode Checkout, and customer-portal sessions.
  *
- * Every request goes through the cupboard adapter's `postStripeForm` (form
- * encoding, Idempotency-Key, error shaping) — this file adds only the request
- * shapes. The secret key is resolved by the caller from an injected reference;
+ * Writes use the cupboard adapter's `postStripeForm`; evidence reads use
+ * authenticated GETs with request provenance and redirects refused.
+ * The secret key is resolved by the caller from an injected reference;
  * it is never read from the tree.
  *
  * LIVE MODE IS AN OWNER-AUTHORITY ACTION. A live key (`sk_live_…`/`rk_live_…`)
@@ -52,6 +52,11 @@ export interface StripeBillingClient {
     readonly accountId: string;
     readonly maxPages?: number;
   }): Promise<StripeBillingCallResult<{ evidence: StripeAccountTransactionEvidence }>>;
+  /** Resolve one payment/reversal against the original receipt's charge and
+   * balance-transaction pins. This is evidence, not finality, completeness,
+   * journal reconciliation or permission to spend. Pins must come from the
+   * server's stored receipt/customer mapping, never a customer request body. */
+  readPaymentLineage(input: StripePaymentLineagePin): Promise<StripeBillingCallResult<{ evidence: StripePaymentLineageEvidence }>>;
   createCustomer(input: {
     organizationId: string;
     email?: string | null;
@@ -100,6 +105,54 @@ export interface StripeObservedBalanceTransaction extends StripeBalanceTransacti
   readonly status: 'available' | 'pending';
   readonly available_on: number;
   readonly net: number;
+}
+
+export interface StripePaymentLineagePin {
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly organizationId: string;
+  readonly chargeId: string;
+  readonly chargeBalanceTransactionId: string;
+  readonly source: { readonly kind: 'charge' | 'refund' | 'dispute'; readonly id: string };
+}
+
+export interface StripePaymentLineageEvidence {
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly organizationId: string;
+  /** Verified on the original charge/customer and, for disputes, the dispute.
+   * Refunds do not expose livemode; their mode is bound through their charge. */
+  readonly livemode: boolean;
+  readonly charge: {
+    readonly id: string;
+    readonly capturedUsdCents: number;
+    readonly refundedUsdCents: number;
+    readonly balanceTransaction: StripeObservedBalanceTransaction;
+  };
+  readonly source: {
+    readonly kind: 'charge' | 'refund' | 'dispute';
+    readonly id: string;
+    readonly status: string;
+    readonly amountUsdCents: number;
+    /** Includes both withdrawal and reinstatement/failure movements. Empty
+     * means no posted movement was returned, never that the obligation ended. */
+    readonly balanceTransactions: readonly StripeObservedBalanceTransaction[];
+  };
+  readonly observedAtMs: number;
+  readonly requestIds: readonly string[];
+  readonly evidenceRef: string;
+}
+
+const referenceId = (value: unknown): unknown => object(value) ? value.id : value;
+const wholeNonnegative = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+function validBalanceTransaction(row: unknown): row is StripeObject {
+  return object(row) && row.object === 'balance_transaction' && typeof row.id === 'string' && /^txn_[A-Za-z0-9]+$/.test(row.id)
+    && typeof row.type === 'string' && !!row.type && Number.isSafeInteger(row.amount)
+    && wholeNonnegative(row.fee) && Number.isSafeInteger(row.net)
+    && BigInt(row.net as number) === BigInt(row.amount as number) - BigInt(row.fee)
+    && typeof row.currency === 'string' && /^[a-z]{3}$/.test(row.currency)
+    && wholeNonnegative(row.created) && wholeNonnegative(row.available_on)
+    && ['available', 'pending'].includes(row.status as string);
 }
 
 function freezeEvidence<T>(value: T): T {
@@ -178,31 +231,51 @@ export function createStripeBillingClient(input: {
     }
   };
 
+  const readScope = async (accountId: string, customerId: string, organizationId: string): Promise<StripeBillingCallResult<{ requestIds: string[] }>> => {
+    if (!/^acct_[A-Za-z0-9]+$/.test(accountId) || !/^cus_[A-Za-z0-9]+$/.test(customerId)
+        || typeof organizationId !== 'string' || !organizationId.trim()) return malformed(0, 'invalid pinned stripe scope');
+    const account = await get('/account');
+    if (!account.ok) return account;
+    if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
+    const customer = await get(`/customers/${customerId}`);
+    if (!customer.ok) return customer;
+    if (customer.body.object !== 'customer' || customer.body.id !== customerId || customer.body.deleted === true
+        || customer.body.livemode !== (mode === 'live') || !object(customer.body.metadata)
+        || customer.body.metadata.organizationId !== organizationId) return malformed(customer.status, 'stripe customer pin mismatch');
+    return { ok: true, requestIds: [account.requestId, customer.requestId] };
+  };
+
+  const readMovement = async (id: string, sourceId: string): Promise<StripeBillingCallResult<{ transaction: StripeObservedBalanceTransaction; requestId: string }>> => {
+    const result = await get(`/balance_transactions/${id}`);
+    if (!result.ok) return result;
+    const row = result.body;
+    if (!validBalanceTransaction(row) || row.id !== id || row.currency !== 'usd' || referenceId(row.source) !== sourceId) {
+      return malformed(result.status, 'stripe payment movement pin mismatch');
+    }
+    // Select accounting fields only. Expanded source/customer/card/dispute
+    // evidence and arbitrary metadata must not escape into funding evidence.
+    const transaction = { id, object: 'balance_transaction' as const, source: sourceId,
+      type: row.type as string, amount: row.amount as number, fee: row.fee as number, net: row.net as number,
+      currency: 'usd', created: row.created as number, available_on: row.available_on as number,
+      status: row.status as 'available' | 'pending' };
+    return { ok: true, transaction, requestId: result.requestId };
+  };
+
   const client: StripeBillingClient = {
     livemode: mode === 'live',
 
     async readAccountCash(input) {
       const { accountId, customerId, organizationId } = input;
-      if (!/^acct_[A-Za-z0-9]+$/.test(accountId) || !/^cus_[A-Za-z0-9]+$/.test(customerId)
-          || typeof organizationId !== 'string' || !organizationId.trim()) {
-        return malformed(0, 'invalid pinned stripe scope');
-      }
       // /account identifies the credential's own account. Looking up an
       // arbitrary /accounts/:id could prove access rather than cash ownership.
-      const account = await get('/account');
-      if (!account.ok) return account;
-      if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
-      const customer = await get(`/customers/${customerId}`);
-      if (!customer.ok) return customer;
-      if (customer.body.object !== 'customer' || customer.body.id !== customerId || customer.body.deleted === true
-          || customer.body.livemode !== (mode === 'live') || !object(customer.body.metadata)
-          || customer.body.metadata.organizationId !== organizationId) return malformed(customer.status, 'stripe customer pin mismatch');
+      const scope = await readScope(accountId, customerId, organizationId);
+      if (!scope.ok) return scope;
       const balance = await get('/balance');
       if (!balance.ok) return balance;
       const available = usdBalance(balance.body.available); const pending = usdBalance(balance.body.pending);
       if (balance.body.object !== 'balance' || balance.body.livemode !== (mode === 'live')
           || available === null || pending === null) return malformed(balance.status, 'unverified stripe cash balance');
-      const requestIds = Object.freeze([account.requestId, customer.requestId, balance.requestId]);
+      const requestIds = Object.freeze([...scope.requestIds, balance.requestId]);
       const observedAtMs = Date.now();
       const selected = { accountId, customerId, organizationId, livemode: mode === 'live',
         availableUsdCents: available, pendingUsdCents: pending, observedAtMs, requestIds };
@@ -236,17 +309,10 @@ export function createStripeBillingClient(input: {
             || (more && data.length === 0)) return malformed(result.status, 'incomplete stripe transaction page');
         requestIds.push(result.requestId);
         for (const row of data) {
-          if (!object(row) || row.object !== 'balance_transaction' || typeof row.id !== 'string' || !/^txn_[A-Za-z0-9]+$/.test(row.id)
-              || seen.has(row.id) || typeof row.type !== 'string' || !row.type
-              || !Number.isSafeInteger(row.amount) || !Number.isSafeInteger(row.fee) || (row.fee as number) < 0
-              || !Number.isSafeInteger(row.net) || BigInt(row.net as number) !== BigInt(row.amount as number) - BigInt(row.fee as number)
-              || typeof row.currency !== 'string' || !/^[a-z]{3}$/.test(row.currency)
-              || !Number.isSafeInteger(row.created) || (row.created as number) < 0
-              || !Number.isSafeInteger(row.available_on) || (row.available_on as number) < 0
-              || !['available', 'pending'].includes(row.status as string)) return malformed(result.status, 'invalid or duplicate stripe transaction');
+          if (!validBalanceTransaction(row) || seen.has(row.id as string)) return malformed(result.status, 'invalid or duplicate stripe transaction');
           // Preserve unknown provider types and complete expanded sources for
           // the journal/reversal verifier to refuse or reconcile explicitly.
-          seen.add(row.id);
+          seen.add(row.id as string);
           // Detach provider JSON before handing it to other server readers.
           transactions.push(JSON.parse(JSON.stringify(row)) as StripeObservedBalanceTransaction);
         }
@@ -260,6 +326,92 @@ export function createStripeBillingClient(input: {
       // A page budget is an operational bound, never proof of completeness.
       // Discard partial history rather than returning a successful census.
       return malformed(0, 'stripe transaction census exceeds page budget');
+    },
+
+    async readPaymentLineage(input) {
+      // Snapshot nested caller pins too: an await must not permit changing the
+      // original receipt or the reversal whose provenance is being verified.
+      const { accountId, customerId, organizationId, chargeId, chargeBalanceTransactionId } = input;
+      const kind = input.source?.kind; const sourceId = input.source?.id;
+      const prefixes = { charge: 'ch', refund: 're', dispute: 'du' } as const;
+      if (!/^ch_[A-Za-z0-9]+$/.test(chargeId) || !/^txn_[A-Za-z0-9]+$/.test(chargeBalanceTransactionId)
+          || !Object.hasOwn(prefixes, kind) || typeof sourceId !== 'string'
+          || !new RegExp(`^${prefixes[kind]}_[A-Za-z0-9]+$`).test(sourceId)
+          || (kind === 'charge' && sourceId !== chargeId)) return malformed(0, 'invalid stripe payment lineage pins');
+      const scope = await readScope(accountId, customerId, organizationId);
+      if (!scope.ok) return scope;
+      const requestIds = [...scope.requestIds];
+      let reversal: StripeObject | null = null;
+      if (kind !== 'charge') {
+        const result = await get(`/${kind === 'refund' ? 'refunds' : 'disputes'}/${sourceId}`);
+        if (!result.ok) return result;
+        reversal = result.body; requestIds.push(result.requestId);
+        if (reversal.object !== kind || reversal.id !== sourceId || referenceId(reversal.charge) !== chargeId
+            || reversal.currency !== 'usd' || !wholeNonnegative(reversal.amount) || reversal.amount <= 0
+            || (kind === 'dispute' && reversal.livemode !== (mode === 'live'))
+            || (reversal.customer != null && referenceId(reversal.customer) !== customerId)) {
+          return malformed(result.status, 'stripe reversal charge pin mismatch');
+        }
+      }
+      const chargeResult = await get(`/charges/${chargeId}`);
+      if (!chargeResult.ok) return chargeResult;
+      const charge = chargeResult.body; requestIds.push(chargeResult.requestId);
+      if (charge.object !== 'charge' || charge.id !== chargeId || referenceId(charge.customer) !== customerId
+          || charge.livemode !== (mode === 'live') || charge.currency !== 'usd'
+          || charge.status !== 'succeeded' || charge.paid !== true || charge.captured !== true
+          || !wholeNonnegative(charge.amount) || !wholeNonnegative(charge.amount_captured) || charge.amount_captured <= 0
+          || charge.amount_captured > charge.amount || !wholeNonnegative(charge.amount_refunded)
+          || charge.amount_refunded > charge.amount_captured
+          || referenceId(charge.balance_transaction) !== chargeBalanceTransactionId) return malformed(chargeResult.status, 'stripe original charge pin mismatch');
+      const original = await readMovement(chargeBalanceTransactionId, chargeId);
+      if (!original.ok) return original;
+      requestIds.push(original.requestId);
+      if (!['charge', 'payment'].includes(original.transaction.type) || original.transaction.amount !== charge.amount_captured) {
+        return malformed(0, 'stripe original charge accounting mismatch');
+      }
+      const movements: StripeObservedBalanceTransaction[] = [];
+      let status = 'succeeded'; let amount = charge.amount_captured;
+      if (reversal) {
+        status = reversal.status as string; amount = reversal.amount as number;
+        let ids: string[];
+        if (kind === 'refund') {
+          if (!['pending', 'requires_action', 'succeeded', 'failed', 'canceled'].includes(status) || amount > charge.amount_captured) {
+            return malformed(0, 'invalid stripe refund state');
+          }
+          const debit = referenceId(reversal.balance_transaction); const failure = referenceId(reversal.failure_balance_transaction);
+          const terminalFailure = ['failed', 'canceled'].includes(status);
+          if ((debit != null && (typeof debit !== 'string' || !/^txn_[A-Za-z0-9]+$/.test(debit)))
+              || (failure != null && (typeof failure !== 'string' || !/^txn_[A-Za-z0-9]+$/.test(failure)))
+              || (status === 'succeeded' && debit == null)
+              || (failure != null && (!terminalFailure || debit == null))
+              || (terminalFailure && debit != null && failure == null)) return malformed(0, 'incomplete stripe refund movements');
+          ids = [debit, failure].filter((id): id is string => typeof id === 'string');
+        } else {
+          if (!['warning_needs_response', 'warning_under_review', 'warning_closed', 'needs_response', 'under_review', 'won', 'lost', 'prevented'].includes(status)
+              || !Array.isArray(reversal.balance_transactions) || reversal.balance_transactions.length > 2) return malformed(0, 'invalid stripe dispute state');
+          ids = reversal.balance_transactions.map(referenceId) as string[];
+        }
+        if (new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !/^txn_[A-Za-z0-9]+$/.test(id) || id === chargeBalanceTransactionId)) {
+          return malformed(0, 'invalid stripe reversal movement pins');
+        }
+        for (const [index, id] of ids.entries()) {
+          const movement = await readMovement(id, sourceId);
+          if (!movement.ok) return movement;
+          const bt = movement.transaction;
+          const correctAccounting = kind === 'refund'
+            ? (index === 0 ? ['refund', 'payment_refund'].includes(bt.type) && bt.amount === -amount
+              : bt.type === 'refund_failure' && bt.amount === amount)
+            : bt.type === 'adjustment' && (bt.amount === -amount || bt.amount === amount);
+          if (!correctAccounting) return malformed(0, 'stripe reversal accounting mismatch');
+          movements.push(bt); requestIds.push(movement.requestId);
+        }
+      }
+      const selected = { accountId, customerId, organizationId, livemode: mode === 'live',
+        charge: { id: chargeId, capturedUsdCents: charge.amount_captured, refundedUsdCents: charge.amount_refunded, balanceTransaction: original.transaction },
+        source: { kind, id: sourceId, status, amountUsdCents: amount, balanceTransactions: kind === 'charge' ? [original.transaction] : movements },
+        observedAtMs: Date.now(), requestIds };
+      const evidenceRef = `stripe-lineage:${createHash('sha256').update(JSON.stringify(selected)).digest('hex')}`;
+      return { ok: true, evidence: freezeEvidence({ ...selected, evidenceRef }) };
     },
 
     async createCustomer({ organizationId, email, name }) {
