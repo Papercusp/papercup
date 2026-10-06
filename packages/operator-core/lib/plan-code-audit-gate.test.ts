@@ -8,6 +8,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
@@ -22,6 +26,7 @@ import {
   gitBlobSha,
   planItemTextHash,
   repoCitationContextForHarness,
+  repoCitationDeps,
   type ActivationAuditMapping,
   type AuditItemEntry,
   type EffectiveItemAudit,
@@ -335,6 +340,48 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
 
     expect(verdict).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
     expect(verdict.message).toContain('P-001: src/p_001.ts changed since audit #1');
+  });
+
+  // proof-freshness-pinned-candidate-2026-10-06 P-019 (D-001): with a real repository the
+  // gate measures cited blobs at the committed HEAD (M), so a peer's uncommitted edit no
+  // longer stales a shipped audit, while committing that edit does.
+  it('measures cited blobs at the committed HEAD: uncommitted edits do not stale, commits do', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-gate-measure-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const cited = path.join(root, 'src', 'p_001.ts');
+    const audited = 'export const P_001 = true;\n';
+    try {
+      fs.mkdirSync(path.dirname(cited), { recursive: true });
+      fs.writeFileSync(cited, audited);
+      git('init', '-q');
+      git('config', 'user.email', 'gate-test@example.com');
+      git('config', 'user.name', 'Gate Test');
+      git('add', '--', 'src/p_001.ts');
+      git('commit', '-qm', 'audited bytes');
+      mockCitationContext.mockImplementation(async () => ({
+        repoRoot: root,
+        rootSource: 'registry' as const,
+        deps: repoCitationDeps(root),
+      }));
+      mockEffectiveAudits.mockResolvedValue([
+        effective({ itemId: 'P-001', itemText: 'first requirement', path: 'src/p_001.ts', body: audited }),
+      ]);
+      mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'first requirement' }]);
+
+      fs.writeFileSync(cited, 'export const P_001 = true; // peer, uncommitted\n');
+      const uncommitted = await evaluatePlanAcceptanceGate(PLAN);
+      expect(uncommitted.code).not.toBe('audit_coverage_stale');
+      expect(uncommitted).toMatchObject({ satisfied: true });
+
+      git('commit', '-qam', 'peer commits the edit');
+      const head = git('rev-parse', 'HEAD').trim();
+      const committed = await evaluatePlanAcceptanceGate(PLAN);
+      expect(committed).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
+      expect(committed.message).toContain(`P-001: src/p_001.ts changed since audit #1 at commit ${head.slice(0, 12)}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('keeps a deleted/broken path in audit_citations_unresolved rather than calling it blob drift', async () => {
