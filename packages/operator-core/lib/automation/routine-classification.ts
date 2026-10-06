@@ -407,6 +407,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Launches the operator Playwright suite in the isolated Tauri rig; no model call',
   },
+  'system:operator-e2e-red-filer': {
+    spend: 'none',
+    why: 'Reads the newest nightly e2e run group and files or assigns one work-item per red spec; no model call, no agent wake',
+  },
   'system:nightly-release-cut': {
     spend: 'none',
     why: 'Launches a managed Linux nightly desktop build; no model call',

@@ -103,6 +103,8 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // WI-10006805: registered in the SAME change as the action and its seed script, so the
   // "seed script nobody ever ran" guard covers the nightly operator e2e run from day one.
   { name: 'operator-e2e-isolated', seedScript: 'seed-operator-e2e-isolated-routine.ts' },
+  // WI-10006806: the red filer is seeded by the same script, one more row.
+  { name: 'operator-e2e-red-filer', seedScript: 'seed-operator-e2e-isolated-routine.ts' },
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
