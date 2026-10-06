@@ -120,6 +120,20 @@ report_status() {
   "$NODE_BIN" "$HERE/media-config.mjs" local-readiness
 }
 
+# Units restart together, and the sidecar's HTTP endpoint answers a few seconds
+# after systemd reports the unit active, so one read straight after a restart
+# can report a transient not-ready. Both 2026-10-06 hosted redeploys exited 1 on
+# sidecar-http while every component was ready seconds later. Retry quietly
+# within a bound, then report once; a component that never converges still fails.
+await_readiness() {
+  local attempts="${1:-30}" i
+  for ((i = 1; i < attempts; i++)); do
+    report_status >/dev/null 2>&1 && break
+    sleep "${PHONE_READINESS_RETRY_SEC:-1}"
+  done
+  report_status
+}
+
 # Pin the maintained Phone git tree and the exact executable/config bytes that
 # deploy.sh will use. Credentials and rendered configs are deliberately excluded.
 # The phone tree is a separate repo; a clean commit pins its complete tracked
@@ -527,5 +541,5 @@ else
   die "SIP gateway failed to stay active"
 fi
 
-report_status
+await_readiness 30
 printf '\n✓ media plane deployed. Acceptance: infra/phone-app/verify-media-plane.sh\n'
