@@ -173,6 +173,11 @@ describe('evaluatePlanSpecQuality', () => {
       const atomicity = result.ratings['atomic-observable-behavior'];
       expect(atomicity.rating).toBe('pass');
       expect(atomicity.evidence).toContain('3 independent item behavior clause(s) are structurally atomic.');
+      // WI-10006862: the rating states the population it covers, so a grader can tell the
+      // excluded projections were not judged atomic.
+      expect(atomicity.evidence).toContain(
+        'Coverage: 3 of 6 behavioral clause(s) evaluated; 3 sourceBar-pinned BAR projection(s) excluded',
+      );
       expect(atomicity.evidence).not.toContain('AUTO-BAR-');
       expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
       for (const bundle of bundles) {

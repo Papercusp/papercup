@@ -385,6 +385,17 @@ export function evaluatePlanSpecQuality(input: {
     if (diagnostic.disposition !== 'evaluated' || diagnostic.rating !== 'fail') return [];
     return [{ clause, reason: diagnostic.reason }];
   });
+  // State the evaluated population on the rating itself (WI-10006862): a grader reading
+  // only the evidence must be able to tell which share of the active behavioral clauses the
+  // verdict covers, and that sourceBar projections were excluded rather than judged atomic.
+  const atomicityEvaluatedCount = atomicityClauseDiagnostics.filter((d) => d.disposition === 'evaluated').length;
+  const atomicityExcludedCount = atomicityClauseDiagnostics.length - atomicityEvaluatedCount;
+  const atomicityCoverage =
+    ` Coverage: ${atomicityEvaluatedCount} of ${behavioral.length} behavioral clause(s) evaluated` +
+    (atomicityExcludedCount
+      ? `; ${atomicityExcludedCount} sourceBar-pinned BAR projection(s) excluded (their meaning is graded on the canonical acceptance rubric)`
+      : '') +
+    '; per-clause dispositions are in details.atomicityClauseDiagnostics.';
   ratings['atomic-observable-behavior'] =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
@@ -392,10 +403,10 @@ export function evaluatePlanSpecQuality(input: {
         ? notApplicable('Only AUTO-BAR projections are present; they are not independent item contracts.')
       : atomicityFailures.length
         ? fail(
-            atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+            atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; ') + '.' + atomicityCoverage,
             'Split compound outcomes into atomic clauses with one observable behavior each.',
           )
-        : pass(`${itemBehavioral.length} independent item behavior clause(s) are structurally atomic.${projectionEvidence}`);
+        : pass(`${itemBehavioral.length} independent item behavior clause(s) are structurally atomic.${projectionEvidence}${atomicityCoverage}`);
 
   const falsifiabilityFailures = itemBehavioral
     .map((clause) => ({ clause, reason: specBehaviorNonFalsifiableReason(clause.behavior) }))
