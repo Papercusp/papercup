@@ -1900,11 +1900,44 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('actual exit time remains unknown');
     });
 
-    it.each(['live', 'parked', 'recorded', 'draining', 'unknown', undefined])('refuses %s evidence without ending or spawning', async (sessionState) => {
+    it.each(['live', 'parked', 'recorded', 'draining', 'unknown', null, undefined])('refuses %s evidence without ending or spawning', async (sessionState) => {
       resolveSessionStatesMock.mockResolvedValue(new Map([[dead.ownerId, { sessionState }]]));
       const res = await launchAgent.handler(request, ctx);
       expect(isError(res)).toBe(true);
       expect(textOf(res)).toContain('positive terminal evidence is required');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+    });
+
+    it.each([null, dead.endedAt])('an active native Codex writer blocks a successor with endedAt=%s before terminal reconciliation', async (endedAt) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, agent: 'codex', endedAt });
+      codexThreadWriterHolderMock.mockReturnValue({
+        held: true, pid: 12345, lockPath: '/tmp/codex/thread-writer-locks/native.lock',
+        sessionId: stale.sessionId, reason: 'held',
+      });
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('source session is still LIVE');
+      expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it.each([1, 2])('refuses a native Codex writer appearing after %s clear checks during preparation', async (clearChecks) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, agent: 'codex' });
+      codexThreadWriterHolderMock.mockReturnValue({
+        held: true, pid: 12345, lockPath: '/tmp/codex/thread-writer-locks/native.lock',
+        sessionId: stale.sessionId, reason: 'held',
+      });
+      for (let i = 0; i < clearChecks; i++) {
+        codexThreadWriterHolderMock.mockReturnValueOnce({
+          held: false, pid: null, lockPath: null, sessionId: stale.sessionId, reason: 'no-lock-file',
+        });
+      }
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('active native Codex writer appeared');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
       expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
