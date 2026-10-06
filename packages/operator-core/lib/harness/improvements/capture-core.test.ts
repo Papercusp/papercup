@@ -1698,6 +1698,51 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
 });
 
 describe('captureImprovement — canonical occurrence recording (P-004)', () => {
+  it('runs the persistence hook before a delayed post-create occurrence write', async () => {
+    const d = deps();
+    let releaseOccurrence!: () => void;
+    let occurrenceStarted!: () => void;
+    const occurrenceGate = new Promise<void>((resolve) => {
+      releaseOccurrence = resolve;
+    });
+    const occurrenceStartedPromise = new Promise<void>((resolve) => {
+      occurrenceStarted = resolve;
+    });
+    const steps: string[] = [];
+    d.recordIssueOccurrence = async (input) => {
+      steps.push('occurrence-started');
+      occurrenceStarted();
+      await occurrenceGate;
+      return occurrenceReceipt(input, d.occurrences.length + 1);
+    };
+
+    const capture = captureImprovement(
+      {
+        title: 'scorecard persistence hook regression',
+        kind: 'change',
+        lane: 'observation',
+        initialState: 'done',
+        onIssuePersisted: async (issue) => {
+          expect(issue.id).toBe('EI-100');
+          steps.push('issue-persisted');
+        },
+      },
+      d,
+    );
+
+    await occurrenceStartedPromise;
+    expect(steps).toEqual(['issue-persisted', 'occurrence-started']);
+    let settled = false;
+    void capture.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseOccurrence();
+    await expect(capture).resolves.toMatchObject({ created: true, issue: { id: 'EI-100' } });
+  });
+
   it('records the newly created issue as the canonical occurrence with its evidence', async () => {
     const d = deps();
     const res = await captureImprovement(

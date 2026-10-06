@@ -351,6 +351,12 @@ export interface CaptureImprovementInput {
    */
   initialState?: 'done';
   /**
+   * Awaited immediately after `createIssue` returns the persisted row and before
+   * occurrence-ledger, rubric-ratification, or other post-create work. Callers
+   * that hold a lock only through the canonical insert can release it here.
+   */
+  onIssuePersisted?: (issue: EngineerIssue) => Promise<void> | void;
+  /**
    * The agent-facing wrapper sets this for a fresh local change/feature capture so the
    * durable row is parked before the post-create review enrollment can run. Watchdog and
    * observation callers omit it; review enrollment is intentionally not a core-wide rule.
@@ -3438,6 +3444,7 @@ export async function captureImprovement(
     }
     throw error;
   }
+  await input.onIssuePersisted?.(issue);
   let reviewState: 'blocked' | undefined;
   let agentReviewFailure: AgentReviewFailure | undefined;
   if (reviewRequired) {
