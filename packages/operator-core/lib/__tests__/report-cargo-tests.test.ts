@@ -44,6 +44,7 @@ import {
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
+  resolveCargoTestRunScope,
   shouldRunAffectedCargoSuite,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
@@ -68,6 +69,56 @@ error: could not compile \`papercusp-desktop\` (bin "papercusp-desktop" test)
 Caused by:
   process didn't exit successfully: \`/usr/bin/rustc --crate-name papercusp_desktop\` (signal: 9, SIGKILL: kill)
 `;
+
+describe('cargo test_runs rows are attributed to a harness/workspace (WI-10006828)', () => {
+  const VITEST_REPORTER_SOURCE = readFileSync(
+    resolve(TEST_DIR, '../../../../libs/test-config/src/admin-test-runs-reporter.ts'),
+    'utf8',
+  );
+
+  /** The `process.env.X ||` chain inside one named resolver in the vitest reporter. */
+  function vitestPrecedence(fnName: string): string[] {
+    const start = VITEST_REPORTER_SOURCE.indexOf(`export function ${fnName}(`);
+    expect(start, `${fnName} must exist in admin-test-runs-reporter.ts`).toBeGreaterThanOrEqual(0);
+    const body = VITEST_REPORTER_SOURCE.slice(start, VITEST_REPORTER_SOURCE.indexOf('\n}\n', start));
+    return [...body.matchAll(/process\.env\.([A-Z_]+)/g)].map((m) => m[1]);
+  }
+
+  it('resolves the harness and workspace with the same precedence as the vitest reporter', () => {
+    const harnessKeys = vitestPrecedence('resolveTestRunHarnessSlug');
+    const workspaceKeys = vitestPrecedence('resolveTestRunWorkspaceId');
+    // Calibration: an empty list would make every assertion below vacuous.
+    expect(harnessKeys.length).toBeGreaterThanOrEqual(2);
+    expect(workspaceKeys.length).toBeGreaterThanOrEqual(2);
+
+    for (const [field, keys] of [['harnessSlug', harnessKeys], ['workspaceId', workspaceKeys]] as const) {
+      expect(resolveCargoTestRunScope({})[field]).toBeNull();
+      // Each key alone resolves; and each key beats every key after it.
+      keys.forEach((key, i) => {
+        expect(resolveCargoTestRunScope({ [key]: `v-${key}` })[field]).toBe(`v-${key}`);
+        const env = Object.fromEntries(keys.slice(i).map((k) => [k, `v-${k}`]));
+        expect(resolveCargoTestRunScope(env)[field]).toBe(`v-${key}`);
+      });
+      // An empty string falls through, exactly like the `||` chain it mirrors.
+      expect(resolveCargoTestRunScope({ [keys[0]]: '', [keys[1]]: 'second' })[field]).toBe('second');
+    }
+  });
+
+  it('the reporter INSERT writes harness_slug and workspace_id from the resolved scope', () => {
+    const insert = REPORTER_SOURCE.slice(REPORTER_SOURCE.indexOf('INSERT INTO harness_shared.test_runs'));
+    const columns = insert.slice(insert.indexOf('(') + 1, insert.indexOf(')')).split(',').map((c) => c.trim());
+    expect(columns).toContain('harness_slug');
+    expect(columns).toContain('workspace_id');
+    const values = insert.slice(insert.indexOf('VALUES'));
+    const valueList = values.slice(values.indexOf('(') + 1, values.indexOf('\n        `')).trim();
+    // Column and value lists must stay aligned, with the scope values in the matching slots.
+    const valueSlots = valueList.replace(/\)\s*$/, '').split(',').map((v) => v.trim());
+    expect(valueSlots).toHaveLength(columns.length);
+    expect(valueSlots[columns.indexOf('harness_slug')]).toBe('${harnessSlug}');
+    expect(valueSlots[columns.indexOf('workspace_id')]).toBe('${workspaceId}');
+    expect(REPORTER_SOURCE).toMatch(/const \{ harnessSlug, workspaceId \} = resolveCargoTestRunScope\(\)/);
+  });
+});
 
 describe('cargo result classification (EI-20041922041407287)', () => {
   it('recognizes SIGTERM as an externally killed compiler, not a compile failure', () => {

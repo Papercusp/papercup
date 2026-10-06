@@ -44,6 +44,36 @@ export function shouldRunAffectedCargoSuite({
 }
 
 /**
+ * Resolve the harness/workspace a cargo test_runs row is attributed to (WI-10006828).
+ *
+ * The native reporter used to insert rows with NULL harness_slug and workspace_id, so no
+ * Rust test result could ever be bound as spec proof (`plans:bind-spec-evidence` matches a
+ * row by harness, and a NULL row is invisible to every workspace-scoped reader). This mirrors
+ * the vitest reporter's precedence EXACTLY — `resolveTestRunHarnessSlug` /
+ * `resolveTestRunWorkspaceId` in libs/test-config/src/admin-test-runs-reporter.ts — so a row
+ * from either framework lands in the same scope for the same env. It is a copy, not an import,
+ * because this file must stay dependency-free (see the header); the guard test pins the two
+ * precedence lists against each other.
+ *
+ * green-checkpoint rebuilds its children's env from an allowlist that keeps none of these
+ * keys, so gate rows stay unattributed by design — that exclusion is preserved, not undone.
+ */
+export function resolveCargoTestRunScope(env = process.env) {
+  return {
+    harnessSlug:
+      env.PAPERCUSP_TEST_RUN_HARNESS ||
+      env.HARNESS_SLUG ||
+      env.PAPERCUSP_HARNESS_SLUG ||
+      null,
+    workspaceId:
+      env.PAPERCUSP_TEST_RUN_WORKSPACE ||
+      env.PAPERCUSP_WORKSPACE_ID ||
+      env.PAPERCUSP_WORKSPACE ||
+      null,
+  };
+}
+
+/**
  * Resolve an actual `cargo` binary rather than trusting a bare spawn to find it on inherited
  * PATH. Service-managed and Vitest-worker environments can omit rustup's `~/.cargo/bin`; the
  * well-known fallbacks keep every native-test caller on the same resolution contract.

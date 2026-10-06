@@ -55,6 +55,7 @@ import {
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
+  resolveCargoTestRunScope,
 } from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -338,14 +339,16 @@ async function insertRows(sql, rows) {
   if (!sql) return 0;
   let inserted = 0;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
+  // WI-10006828: attribute rows like the vitest reporter does, or they can never be bound as proof.
+  const { harnessSlug, workspaceId } = resolveCargoTestRunScope();
   for (const row of rows) {
     try {
       await Promise.race([
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id)
           VALUES
-            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb})
+            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId})
         `,
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 2000)),
       ]);
