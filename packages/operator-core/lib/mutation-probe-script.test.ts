@@ -160,13 +160,32 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
 
   it('runs both baselines and the mutant guard after a valid preflight', () => {
     const marker = join(dir, 'guard-phases');
-    const { code, out } = runProbeIO([
+    const args = [
       '--file', subject, '--mutate', 's/beta/BETA/',
       '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
-    ]);
+    ];
+    const { code, out } = runProbeIO(args);
     expect(code, out).toBe(0);
     expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
     expect(read()).toBe(ORIGINAL);
+
+    const evidenceLine = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
+    expect(evidenceLine).toBeTruthy();
+    expect(JSON.parse(evidenceLine!)).toMatchObject({
+      schemaVersion: 1,
+      runnerPath: 'scripts/mutation-probe.sh',
+      runnerSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      runnerCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
+      cwd: 'packages/operator-core',
+      argv: args,
+      result: {
+        verdict: 'caught',
+        expected: 'caught',
+        target: 'copy-out',
+        baselineExit: 0,
+        guardExit: 1,
+      },
+    });
   });
 
   it('runs from a frozen source when the launched script is rewritten during baseline', async () => {

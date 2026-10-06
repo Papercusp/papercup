@@ -266,6 +266,29 @@ trap 'rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"' EXIT
 
 set -uo pipefail
 
+# Preserve the actual argv before option parsing normalizes or consumes it.
+# Operational evidence uses this machine-readable record to replay the exact
+# mutation, subject, guard command, and options rather than a mutable driver
+# script's prose description.
+ORIGINAL_ARGS=("$@")
+ORIGINAL_CWD="$(pwd -P)"
+RUNNER_SOURCE_ABSOLUTE="${MUTATION_PROBE_SOURCE_PATH:-$(realpath -e "$0")}"
+RUNNER_ROOT="$(git -C "$(dirname "$RUNNER_SOURCE_ABSOLUTE")" rev-parse --show-toplevel 2>/dev/null || true)"
+RUNNER_SOURCE_PATH="$RUNNER_SOURCE_ABSOLUTE"
+REPLAY_CWD="$ORIGINAL_CWD"
+RUNNER_COMMIT=""
+if [ -n "$RUNNER_ROOT" ]; then
+  case "$RUNNER_SOURCE_ABSOLUTE" in
+    "$RUNNER_ROOT"/*) RUNNER_SOURCE_PATH="${RUNNER_SOURCE_ABSOLUTE#"$RUNNER_ROOT"/}" ;;
+  esac
+  case "$ORIGINAL_CWD" in
+    "$RUNNER_ROOT") REPLAY_CWD="." ;;
+    "$RUNNER_ROOT"/*) REPLAY_CWD="${ORIGINAL_CWD#"$RUNNER_ROOT"/}" ;;
+  esac
+  RUNNER_COMMIT="$(git -C "$RUNNER_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+RUNNER_SHA256="$(sha256sum -- "$MUTATION_PROBE_FROZEN_SOURCE" | awk '{print $1}')"
+
 readonly PROG="mutation-probe"
 
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
@@ -2250,6 +2273,45 @@ fi
 # checker applied to this subject and the caught verdict carries that caveat.
 printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s relocation=%s\n' \
   "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE" "$RELOCATION_USED"
+
+# One JSON record per probe, copyable into an operational evidence artifact's
+# `mutationProbes` array. argv is the exact vector received by this invocation;
+# runnerCommit + runnerSha256 pin the executed script bytes to Git history.
+REPLAY_RECORD="$(
+  MUTATION_PROBE_RUNNER_PATH="$RUNNER_SOURCE_PATH" \
+  MUTATION_PROBE_RUNNER_SHA256="$RUNNER_SHA256" \
+  MUTATION_PROBE_RUNNER_COMMIT="$RUNNER_COMMIT" \
+  MUTATION_PROBE_REPLAY_CWD="$REPLAY_CWD" \
+  MUTATION_PROBE_VERDICT="$VERDICT" \
+  MUTATION_PROBE_EXPECTED="$EXPECT" \
+  MUTATION_PROBE_TARGET="$TARGET_MODE" \
+  MUTATION_PROBE_BASELINE_EXIT="$BASELINE_RC" \
+  MUTATION_PROBE_GUARD_EXIT="$TEST_RC" \
+  MUTATION_PROBE_MUTANT_PARSE="$MUTANT_PARSE" \
+  MUTATION_PROBE_ASSERTION_EVIDENCE="$MUTANT_ASSERTION_EVIDENCE" \
+  MUTATION_PROBE_RELOCATION="$RELOCATION_USED" \
+  perl -MJSON::PP -e '
+    print encode_json({
+      schemaVersion => 1,
+      runnerPath => $ENV{MUTATION_PROBE_RUNNER_PATH},
+      runnerSha256 => $ENV{MUTATION_PROBE_RUNNER_SHA256},
+      runnerCommit => $ENV{MUTATION_PROBE_RUNNER_COMMIT},
+      cwd => $ENV{MUTATION_PROBE_REPLAY_CWD},
+      argv => \@ARGV,
+      result => {
+        verdict => $ENV{MUTATION_PROBE_VERDICT},
+        expected => $ENV{MUTATION_PROBE_EXPECTED},
+        target => $ENV{MUTATION_PROBE_TARGET},
+        baselineExit => 0 + $ENV{MUTATION_PROBE_BASELINE_EXIT},
+        guardExit => 0 + $ENV{MUTATION_PROBE_GUARD_EXIT},
+        mutantParse => $ENV{MUTATION_PROBE_MUTANT_PARSE},
+        assertionEvidence => $ENV{MUTATION_PROBE_ASSERTION_EVIDENCE},
+        relocation => $ENV{MUTATION_PROBE_RELOCATION},
+      },
+    });
+  ' -- "${ORIGINAL_ARGS[@]}"
+)" || die "could not serialize the exact mutation-probe replay record"
+printf 'MUTATION_PROBE_EVIDENCE_JSON=%s\n' "$REPLAY_RECORD"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
 [ "$VERDICT" = "$EXPECT" ] || exit 1
