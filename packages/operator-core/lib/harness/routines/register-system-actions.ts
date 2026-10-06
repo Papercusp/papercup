@@ -483,6 +483,12 @@ import './autonomy-trust-scan-action';
 // direction that hands out blocked work — was going unobserved.
 import './readiness-drift-monitor-action';
 import './cargo-test-action';
+// WI-10006805 (plan operator-e2e-standing-isolated-run-2026-10-06 P-002): nightly operator
+// Playwright run inside the isolated verify-tauri-headless rig. Like the nightly cut below, the
+// action returns after launching the run through managedSpawn; the runner's ledger reporter
+// records each spec into test_runs under the run group operator-e2e-nightly:<fire>. Landed with
+// its TARGET_ROLE_SPEND entry, its seed script and its BESPOKE_ACTIVE_SEEDS row.
+import './operator-e2e-isolated-action';
 // WI-36794: daily Linux GUI-only nightly release cut. The action returns after
 // launching the long build through managedSpawn, so the durable routine step stays
 // short while the child remains tracked and resource-capped.

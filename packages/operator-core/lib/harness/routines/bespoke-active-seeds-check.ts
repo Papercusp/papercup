@@ -100,6 +100,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // guard cannot see" omission the dead-citation-sweep entry below records one instance of.
   { name: 'bulk-run-watchdog', seedScript: 'seed-bulk-run-watchdog-routine.ts' },
   { name: 'cargo-test', seedScript: 'seed-cargo-test-routine.ts' },
+  // WI-10006805: registered in the SAME change as the action and its seed script, so the
+  // "seed script nobody ever ran" guard covers the nightly operator e2e run from day one.
+  { name: 'operator-e2e-isolated', seedScript: 'seed-operator-e2e-isolated-routine.ts' },
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },

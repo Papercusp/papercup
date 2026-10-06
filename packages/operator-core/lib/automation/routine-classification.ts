@@ -403,6 +403,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:release-trigger': { spend: 'none', why: 'Deploys the green commit' },
   'system:pr-poll': { spend: 'none', why: 'Polls GitHub for PR state' },
   'system:cargo-test': { spend: 'none', why: 'Runs the Rust test suite' },
+  'system:operator-e2e-isolated': {
+    spend: 'none',
+    why: 'Launches the operator Playwright suite in the isolated Tauri rig; no model call',
+  },
   'system:nightly-release-cut': {
     spend: 'none',
     why: 'Launches a managed Linux nightly desktop build; no model call',

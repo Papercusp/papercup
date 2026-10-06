@@ -149,6 +149,9 @@ describe('classification guard (derived from source)', () => {
       // Runs release-local.sh and setup-release-checkout.sh from the LIVE tree before it moves
       // into the pinned release checkout; a committed source sha does not cover those scripts.
       'harness/routines/nightly-release-cut-action.ts',
+      // Runs the live tree's scripts/run-operator-e2e-isolated.sh, the verify-tauri-headless rig
+      // and the Playwright specs (WI-10006805).
+      'harness/routines/operator-e2e-isolated-action.ts',
     ];
     for (const rel of declared) expect(readFileSync(join(LIB, rel), 'utf8'), rel).toContain('executesIntegrationTreeCode: true');
   });
