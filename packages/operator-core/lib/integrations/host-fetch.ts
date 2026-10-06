@@ -16,6 +16,7 @@ import {
   type HostFetchResponse,
 } from '@papercusp/plugin-sdk';
 import type { ProviderRegistry } from './provider-registry';
+import { serviceCredentialForHost, serviceCredentialResolver } from './service-credentials';
 
 export type HostFetchErrorCode =
   | 'unknown-source'
@@ -23,7 +24,8 @@ export type HostFetchErrorCode =
   | 'egress-denied'
   | 'insecure-url'
   | 'caller-authorization-header'
-  | 'token-unavailable';
+  | 'token-unavailable'
+  | 'service-credential-unavailable';
 
 export class HostFetchError extends Error {
   constructor(
@@ -46,7 +48,18 @@ export interface HostFetchDeps {
   resolveSource(sourceId: string): Promise<HostFetchSource | null>;
   /** Returns a fresh access token for exactly this source's account; null when the source needs none. */
   accessToken(source: HostFetchSource): Promise<string | null>;
+  /**
+   * Mints the host-held service credential registered under `ref` (D-018.1).
+   * Defaults to the service-credentials registry.
+   */
+  serviceAccessToken?(ref: string): Promise<string>;
   fetchImpl?: typeof fetch;
+}
+
+async function defaultServiceAccessToken(ref: string): Promise<string> {
+  const resolver = serviceCredentialResolver(ref);
+  if (!resolver) throw new Error(`service credential "${ref}" is not registered`);
+  return resolver.accessToken();
 }
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-authorization']);
@@ -100,11 +113,27 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
       }
       if (!HOP_BY_HOP.has(lower)) headers.set(name, value);
     }
-    const token = await deps.accessToken(resolved);
-    if (registered.descriptor.oauth && !token) {
-      throw new HostFetchError('token-unavailable', `host.fetch: no access token for source "${source}"`);
+    // A host declared under serviceCredentials gets the host-held service
+    // identity, never the source's user token (D-018.1).
+    const service = serviceCredentialForHost(registered.descriptor.serviceCredentials, url.hostname);
+    if (service) {
+      let serviceToken: string;
+      try {
+        serviceToken = await (deps.serviceAccessToken ?? defaultServiceAccessToken)(service.ref);
+      } catch (error) {
+        throw new HostFetchError(
+          'service-credential-unavailable',
+          `host.fetch: service credential "${service.ref}" is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      headers.set('authorization', `Bearer ${serviceToken}`);
+    } else {
+      const token = await deps.accessToken(resolved);
+      if (registered.descriptor.oauth && !token) {
+        throw new HostFetchError('token-unavailable', `host.fetch: no access token for source "${source}"`);
+      }
+      if (token) headers.set('authorization', `Bearer ${token}`);
     }
-    if (token) headers.set('authorization', `Bearer ${token}`);
 
     const body =
       request.body === undefined
