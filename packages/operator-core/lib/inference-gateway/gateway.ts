@@ -1208,6 +1208,11 @@ export interface GatewayCarryTrialBinding {
     readonly reservationRef: string;
     readonly clockId: string;
     readonly validUntilMonotonicMs: number;
+    /** Trusted controller check of current revocation and admitted bounds.
+     * Runs synchronously immediately before the actual provider send. It must
+     * return undefined; an async check cannot authorize a write. Omission
+     * preserves the existing bounded-trial receipt's expiry-only contract. */
+    readonly validateAuthorization?: () => void;
   } | null>;
 }
 
@@ -2380,15 +2385,32 @@ export function createInferenceGateway(deps: GatewayDeps) {
     } catch { throw trialRefusal(); } // Do not expose private controller errors.
     // Copy the receipt: mutation after return must not extend the send window.
     const receipt = reservation ? { ...reservation } : null;
+    let checked = false;
     return () => {
       // Last synchronous check INSIDE the observed fetch callback, after any
       // authorization wait. Post-send headers-write evidence still judges the
       // actual D017 band; this is not proof of remote receipt or invoice cost.
-      if (init.signal.aborted || !receipt || receipt.attemptId !== attemptId ||
+      if (checked || init.signal.aborted || !receipt || receipt.attemptId !== attemptId ||
         typeof receipt.reservationRef !== 'string' || !receipt.reservationRef.trim() ||
         receipt.clockId !== processMonotonicClock.id ||
         !Number.isFinite(receipt.validUntilMonotonicMs) ||
         processMonotonicClock.now() >= receipt.validUntilMonotonicMs) throw trialRefusal();
+      checked = true;
+      // The asynchronous issuer result is not evidence that authority remains
+      // live at the write. Reuse the caller guard's synchronous-check contract;
+      // private controller errors must never escape in a gateway response.
+      try {
+        if (receipt.validateAuthorization !== undefined) {
+          if (typeof receipt.validateAuthorization !== 'function') throw trialRefusal();
+          const validation: unknown = receipt.validateAuthorization();
+          if (validation !== undefined) {
+            void Promise.resolve(validation).catch(() => {});
+            throw trialRefusal();
+          }
+        }
+      } catch { throw trialRefusal(); }
+      // The callback itself can revoke the signal or cross the send deadline.
+      if (init.signal.aborted || processMonotonicClock.now() >= receipt.validUntilMonotonicMs) throw trialRefusal();
     };
   }
   const processStartedAt = Date.now();
