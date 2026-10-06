@@ -30,6 +30,13 @@ export const FLAGS = {
   // decideFrozenConvergenceCycleEntry): flipping it off stops new cycles opening and leaves
   // an in-flight convergence to finish, rather than stranding its repair worktree.
   RELEASE_FREEZE_AND_CONVERGE_DEFAULT: "papercusp-release-freeze-and-converge-default",
+  // app-agent-tasks-durable-execution-2026-10-06 D-017 / WI-10006859: the kill-switch for
+  // automatic applied-worker placement. Default ON (derived FLAG_DEFAULTS — deliberately NOT
+  // in DARK_FLAGS): ON is the shipped behaviour, where the routines tick launches one headless
+  // role session per accepted agent-execution blueprint operation (bounded: 4 per tick, 4 live
+  // per workspace, 3 attempts per receipt). OFF stops new launches; receipts stay accepted and
+  // are placed when it is turned back on. Without placement an accepted app operation never runs.
+  BLUEPRINT_AGENT_OPERATION_PLACEMENT: "papercusp-blueprint-agent-operation-placement",
   // machine-enforced-terminal-criteria-2026-09-05 (P-006/P-007, D-018): the ENFORCEMENT
   // kill-switch for item-scoped terminal criteria on work-item closes. Default ON (derived
   // FLAG_DEFAULTS — deliberately NOT in DARK_FLAGS): ON is the shipped behaviour, so the
