@@ -34,6 +34,8 @@ import {
   type PotIntegrationModeRead,
 } from './pot-integration-mode';
 import { parseIntegrationModeAnswer } from './integration-mode-question';
+import { recommendIntegrationMode } from './integration-mode-recommendation';
+import { fetchRepoIntegrationFacts, type RepoIntegrationFactsOctokit } from '../github-repo-permissions';
 
 // ── real-git helpers (subprocess; mirrors multi-peer-convergence) ───────────────
 
@@ -267,4 +269,59 @@ describe('creation-time answer reaches real git (P-017, SPEC-P-017-create-questi
       expect(await tipOf(t.fork)).toBe(t.seed);
     },
   );
+});
+
+describe('no write access locks the working copy, and the lock reaches real git (P-018, SPEC-P-018-lock-no-write)', () => {
+  /** GitHub, at its one boundary: a literal Octokit answering the facts probe for a
+   *  public repo with one committer (the acting identity), no protection and no CI —
+   *  so `push` is the ONLY fact that differs between the two cases below. */
+  function github(push: boolean): RepoIntegrationFactsOctokit {
+    return {
+      repos: {
+        get: async () => ({ data: { permissions: { push }, private: false, default_branch: 'main' } }),
+        getBranch: async () => ({ data: { protected: false } }),
+        listContributors: async () => ({ data: [{ login: 'me', type: 'User' }] }),
+      },
+      users: { getAuthenticated: async () => ({ data: { login: 'me' } }) },
+      actions: { listRepoWorkflows: async () => ({ data: { total_count: 0 } }) },
+    };
+  }
+
+  /** The create step's path: real facts read → real recommendation → the applied setting. */
+  async function decide(push: boolean) {
+    const facts = await fetchRepoIntegrationFacts('acme', 'widgets', { getOctokit: async () => github(push) });
+    const rec = recommendIntegrationMode(facts, { repoLabel: 'acme/widgets' });
+    const read: PotIntegrationModeRead = { mode: rec.recommended, source: 'set' };
+    return { facts, rec, read };
+  }
+
+  it("a repo you can't push to: working copy forced and locked, with the reason, and the work lands on the fork only", async () => {
+    const { facts, rec, read } = await decide(false);
+    expect(facts.canWrite).toBe(false);
+    expect(rec).toMatchObject({ recommended: 'review', locked: true, rule: 'no-write-access' });
+    expect(rec.reason).toBe("You can't push to acme/widgets, so the agents' work has to go through a working copy and PRs.");
+
+    const t = await makeTopology('no-write');
+    await agentEdit(t.work, 'agent.txt');
+    const r = await tick('pim-no-write', t, read, t.fork);
+
+    expect(r.status).toBe('synced');
+    expect(await tipOf(t.fork)).toBe(await headOf(t.work));
+    expect(await tipOf(t.upstream)).toBe(t.seed);
+  });
+
+  it('calibration: the same repo WITH write access is not locked, and work goes straight into the main repository', async () => {
+    const { facts, rec, read } = await decide(true);
+    expect(facts.canWrite).toBe(true);
+    expect(rec.locked).toBe(false);
+    expect(rec.recommended).toBe('direct');
+
+    const t = await makeTopology('can-write');
+    await agentEdit(t.work, 'agent.txt');
+    const r = await tick('pim-can-write', t, read, t.fork);
+
+    expect(r.status).toBe('synced');
+    expect(await tipOf(t.upstream)).toBe(await headOf(t.work));
+    expect(await tipOf(t.fork)).toBe(t.seed);
+  });
 });
