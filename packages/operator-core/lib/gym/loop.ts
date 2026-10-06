@@ -8,8 +8,8 @@
  * (auto-revert on drift) → repeat until budget / maxCycles / breaker. Unattended.
  *
  * All effects are injected, so the orchestration is unit-tested without a real
- * pipeline, real agents, or PG. The bounded budget is the unattended-spend guard
- * (D-019): the loop never exceeds `budgetUsd`.
+ * pipeline, real agents, or PG. The budget stops admission once reported spend
+ * reaches the cap. Callers must separately bound each in-flight spending call.
  */
 import { createHash } from 'node:crypto';
 import { paretoFrontier } from './frontier';
@@ -31,7 +31,7 @@ export interface LoopConfig {
   baselineOfRecord: number;
   dropThreshold: number;
   maxCycles: number;
-  /** Hard unattended-spend cap (D-019); null ⇒ rely on maxCycles only. */
+  /** Admission cap for reported spend; null ⇒ rely on maxCycles only. */
   budgetUsd: number | null;
   proposerModel: string;
   /**
@@ -287,6 +287,17 @@ interface Tracked extends EvaluateResult {
 }
 
 export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): Promise<LoopResult> {
+  const budgetUsd = config.budgetUsd;
+  if (budgetUsd !== null && (!Number.isFinite(budgetUsd) || budgetUsd < 0)) {
+    // No effect has run, so zero is a measured failure charge here.
+    throw Object.assign(new RangeError('Gym budgetUsd must be null or a finite nonnegative number'), { costUsd: 0 });
+  }
+  if (budgetUsd === 0) {
+    return {
+      cycles: 0, accepts: 0, championId: deps.baseline.variantId, spentUsd: 0,
+      breakerTripped: false, skipped: 0, skipReasons: [],
+    };
+  }
   const variants = new Map<string, Tracked>();
   // Keep the scored inputs and native run joins; raw/distilled traces stay in
   // their existing artifacts rather than being duplicated in the verdict row.
@@ -333,7 +344,7 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
   let cycles = 0;
 
   for (let cycle = 1; cycle <= config.maxCycles; cycle++) {
-    if (config.budgetUsd !== null && spentUsd >= config.budgetUsd) break;
+    if (budgetUsd !== null && spentUsd >= budgetUsd) break;
     cycles = cycle;
 
     // Select parent from the frontier. Default: most fitness headroom (selectParent).
@@ -366,6 +377,11 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
       // Charge the proposer as soon as its response arrives. This must happen
       // before evaluation so a later failure cannot erase the proposer spend.
       spentUsd += costUsdOf(proposal.costUsd);
+      if (budgetUsd !== null && spentUsd >= budgetUsd) {
+        skipped++;
+        skipReasons.push(`cycle ${cycle}: budget exhausted after proposer; candidate evaluation not dispatched`);
+        break;
+      }
       candidateId = deps.newVariantId(cycle);
       evalRes = await runWithRatePause(() => deps.evaluate(candidateId, proposal.overlay), { now, sleep });
       spentUsd += costUsdOf(evalRes.costUsd);

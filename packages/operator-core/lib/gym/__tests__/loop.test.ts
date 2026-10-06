@@ -149,6 +149,56 @@ describe('runOptimizationLoop', () => {
     expect(res.spentUsd).toBeGreaterThanOrEqual(2.0);
   });
 
+  it.each([0, -0])('does not dispatch even the baseline with a zero budget (%s)', async (budgetUsd) => {
+    const archive: string[] = [];
+    const { d, calls } = baseDeps({
+      recordArchive: async (record) => { archive.push(record.variantId); },
+    });
+    const result = await runOptimizationLoop({ ...config, budgetUsd }, d);
+    expect(result).toEqual({
+      cycles: 0, accepts: 0, championId: 'baseline', spentUsd: 0,
+      breakerTripped: false, skipped: 0, skipReasons: [],
+    });
+    expect(calls).toEqual([]);
+    expect(archive).toEqual([]);
+  });
+
+  it.each([-1, NaN, Infinity, -Infinity])('rejects an invalid budget before dispatch (%s)', async (budgetUsd) => {
+    const { d, calls } = baseDeps();
+    await expect(runOptimizationLoop({ ...config, budgetUsd }, d)).rejects.toMatchObject({
+      name: 'RangeError', message: 'Gym budgetUsd must be null or a finite nonnegative number', costUsd: 0,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('stops before proposing when the baseline consumes the budget', async () => {
+    const { d, calls } = baseDeps();
+    const result = await runOptimizationLoop({ ...config, budgetUsd: 1 }, d);
+    expect(calls).toEqual(['eval:baseline']);
+    expect(result).toMatchObject({ cycles: 0, spentUsd: 1, accepts: 0 });
+  });
+
+  it.each([1, 1.25])('retains proposer spend and stops before candidate evaluation when the cap is reached ($%s)', async (costUsd) => {
+    const archives: string[] = [];
+    const { d, calls } = baseDeps({
+      async propose() {
+        calls.push('propose');
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker', costUsd };
+      },
+      recordArchive: async (record) => { archives.push(record.variantId); },
+      newVariantId: () => { calls.push('new-id'); return 'candidate'; },
+      recordProposal: async () => { calls.push('record-proposal'); },
+    });
+    const result = await runOptimizationLoop({ ...config, budgetUsd: 2, maxCycles: 99 }, d);
+    expect(calls).toEqual(['eval:baseline', 'propose']);
+    expect(archives).toEqual(['baseline']);
+    expect(result).toMatchObject({
+      cycles: 1, accepts: 0, championId: 'baseline', spentUsd: 1 + costUsd,
+      breakerTripped: false, skipped: 1,
+      skipReasons: ['cycle 1: budget exhausted after proposer; candidate evaluation not dispatched'],
+    });
+  });
+
   it('charges proposer spend before a successful evaluation is settled', async () => {
     const { d } = baseDeps({
       async propose() {

@@ -98,6 +98,26 @@ describe('independent replay source materialization', () => {
       symlinkSync(join(donor, 'source.ts'), join(out, 'node_modules', 'live-source'));
     } })).toThrow('escaping-replay-snapshot-link');
     expect(existsSync(join(f.target, '.replay-source-snapshot.json'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(f.target, '.replay-source-capture.json'), 'utf8')).sourceFiles['source.ts']).toBeTruthy();
+  });
+  it('captures ignored workspace launcher and conditional-export output named by package metadata', () => {
+    const f = fixture();
+    mkdirSync(join(f.input.rootPath, 'dist'));
+    writeFileSync(join(f.input.rootPath, 'dist', 'cli.js'), 'export const cli = 1;');
+    writeFileSync(join(f.input.rootPath, 'dist', 'api.js'), 'export const api = 1;');
+    writeFileSync(join(f.input.rootPath, 'package.json'), JSON.stringify({ bin: { fixture: './dist/cli.js' },
+      exports: { '.': { import: './dist/api.js' } } }));
+    const copied = materializeReplaySource(f.input, f.target, { ...f.options,
+      enumerateSources: () => [...f.options.enumerateSources(), 'package.json'], snapshotDependencies: (donor, out) => {
+        f.options.snapshotDependencies(donor, out);
+        mkdirSync(join(out, 'node_modules'));
+        symlinkSync('../dist/cli.js', join(out, 'node_modules', 'fixture-cli'));
+      } });
+    expect(readFileSync(join(copied.rootPath, 'node_modules', 'fixture-cli'), 'utf8')).toContain('cli = 1');
+    expect(readFileSync(join(copied.rootPath, 'dist', 'api.js'), 'utf8')).toContain('api = 1');
+    writeFileSync(join(f.input.rootPath, 'dist', 'cli.js'), 'changed donor');
+    expect(readFileSync(join(copied.rootPath, 'node_modules', 'fixture-cli'), 'utf8')).toContain('cli = 1');
+    expect(JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8')).sourceFiles['dist/cli.js']).toBeTruthy();
   });
   it('refuses source path escapes and hardlinked dependency mode', () => {
     const f = fixture();

@@ -83,6 +83,40 @@ export function replayRepositorySources(root: string): string[] {
   return [...files].sort();
 }
 
+/** Workspace launchers/exports can name ignored build output. The verifier's
+ * broad source mirror preserves those inputs; a Git-only census must add them
+ * from the existing package declarations rather than silently drop them. */
+function replayPackageRuntimeSources(root: string, sources: string[]): string[] {
+  const files = new Set(sources);
+  const visit = (path: string) => {
+    if (!insideReplayRoot(root, path)) throw new Error(`escaping-replay-package-input:${path}`);
+    const info = lstatSync(path);
+    if (!info.isDirectory()) { files.add(relative(root, path)); return; }
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (['.git', '.papercusp', 'node_modules'].includes(entry.name) || entry.name === '.env' || entry.name.startsWith('.env.')) continue;
+      visit(join(path, entry.name));
+    }
+  };
+  const targets = (value: unknown): string[] => typeof value === 'string' ? [value] :
+    value && typeof value === 'object' ? Object.values(value).flatMap(targets) : [];
+  for (const source of sources.filter(path => basename(path) === 'package.json')) {
+    const file = resolve(root, source);
+    if (!insideReplayRoot(root, file)) throw new Error(`escaping-replay-source:${source}`);
+    if (!existsSync(file)) continue;
+    const pkg = JSON.parse(readFileSync(file, 'utf8'));
+    for (const target of [pkg.main, pkg.module, pkg.exports, pkg.bin].flatMap(targets)) {
+      // Node package targets are relative to their package; dependency names and
+      // condition labels are not filesystem inputs.
+      if (isAbsolute(target) || target.startsWith('#')) continue;
+      const first = target.replace(/^\.\//, '').split('/')[0];
+      const path = first.includes('*') ? dirname(file) : resolve(dirname(file), first);
+      if (!insideReplayRoot(dirname(file), path)) throw new Error(`escaping-replay-package-input:${target}`);
+      if (existsSync(path)) visit(path);
+    }
+  }
+  return [...files].sort();
+}
+
 /** Extend the verifier's source-copy + locked pinned-dependency mechanism.
  * Copies have independent inodes, never a live symlink floor or Git worktree.
  * The manifest describes captured inputs, not an atomic commit or loaded JS. */
@@ -126,7 +160,7 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key as keyof typeof before] !== after[key as keyof typeof after]))
       throw new Error(`changed-during-replay-copy:${source}`);
   };
-  const paths = (options.enumerateSources ?? replayRepositorySources)(donor);
+  const paths = replayPackageRuntimeSources(donor, (options.enumerateSources ?? replayRepositorySources)(donor));
   for (const [index, path] of paths.entries()) {
     const source = resolve(donor, path);
     if (isAbsolute(path) || !insideReplayRoot(donor, source) || path.split('/').includes('.git'))
@@ -140,6 +174,9 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     if ((index + 1) % 256 === 0 || index + 1 === paths.length)
       options.onProgress?.({ phase: 'source-copied', completed: index + 1, total: paths.length });
   }
+  // Keep the completed phase even if a later dependency/containment phase fails.
+  writeFileSync(join(target, '.replay-source-capture.json'), JSON.stringify({ runId: input.runId,
+    donor, rootPath: target, sourceFiles: hashes, absent, loadedRuntime: 'unmeasured' }, null, 2), { flag: 'wx' });
   options.onProgress?.({ phase: 'dependencies-copy-started', completed: 0, total: 1 });
   (options.snapshotDependencies ?? ((root, out) => {
     execFileSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
