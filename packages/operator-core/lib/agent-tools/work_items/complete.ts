@@ -640,8 +640,16 @@ function firstUnrecognizedKeyMessage(value: unknown): string | undefined {
     }
     return undefined;
   }
-  const record = value as { code?: unknown; message?: unknown; errors?: unknown };
-  if (record.code === 'unrecognized_keys' && typeof record.message === 'string') return record.message;
+  const record = value as { code?: unknown; message?: unknown; path?: unknown; errors?: unknown };
+  if (record.code === 'unrecognized_keys' && typeof record.message === 'string') {
+    // EI-25240542476501298: this message REPLACES the union's, and the union node sits at the
+    // root — so without its own path a key rejected inside
+    // `completion.verification.requirementDisposition[0]` rendered exactly like a stray
+    // TOP-LEVEL arg, and the dispatcher then told the caller to re-send using only top-level
+    // keys that were all already valid. Name where the key was rejected.
+    const segments = Array.isArray(record.path) ? record.path.map(String) : [];
+    return segments.length > 0 ? `${segments.join('.')}: ${record.message}` : record.message;
+  }
   if (!Array.isArray(record.errors)) return undefined;
   for (const nested of record.errors) {
     const message = firstUnrecognizedKeyMessage(nested);
