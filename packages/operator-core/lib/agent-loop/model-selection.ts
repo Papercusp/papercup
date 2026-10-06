@@ -44,10 +44,24 @@ export interface ModelsDevModel {
   last_updated?: string;
   limit?: { context?: number; output?: number };
   cost?: {
+    /** Base list rates in USD per million tokens; never fee-inclusive spend. */
     input?: number;
     output?: number;
     cache_read?: number;
     cache_write?: number;
+  };
+  modalities?: { input?: string[]; output?: string[] };
+  supported_parameters?: string[];
+  /** Selected OpenRouter snapshot only. Mixed token/request/unit rates retain
+   * their exact decimal strings. Conditional prices, other charges and account
+   * fees require separate qualification before an all-in estimate is possible. */
+  pricing?: {
+    source: 'openrouter-models';
+    observedAtMs: number;
+    rates: Record<string, string>;
+    unpricedFields: string[];
+    conditional: boolean;
+    unrecognizedFields: boolean;
   };
 }
 
@@ -60,6 +74,124 @@ export interface ModelsDevProvider {
 }
 
 export type ModelsDevCatalog = Record<string, ModelsDevProvider>;
+
+const OPENROUTER_RATE_FIELDS = [
+  'prompt', 'completion', 'input_cache_read', 'input_cache_write', 'input_cache_write_1h',
+  'request', 'image', 'image_token', 'web_search', 'internal_reasoning', 'audio',
+  'input_audio_cache',
+] as const;
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+function strings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > 256
+      || !value.every((v) => typeof v === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(v))) return undefined;
+  return [...new Set(value as string[])];
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function rate(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value.length > 128
+      || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value)) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > Number.MAX_SAFE_INTEGER
+      || (n === 0 && /[1-9]/.test(value.split(/[eE]/)[0]))) return undefined;
+  return n;
+}
+
+/** Project an explicitly chosen set of exact OpenRouter ids into the existing
+ * advisory catalog. No I/O, defaults, pagination traversal, credential fields,
+ * production allowlist or privacy policy. A partial page is usable only when
+ * EVERY selected id occurs exactly once; it is never a full-catalog census.
+ * Source: https://openrouter.ai/docs/guides/overview/models (USD/token/unit).
+ * `cost` contains base token list rates; `pricing` preserves charge/unknown
+ * flags. Neither authorizes fee-inclusive pricing or provider-enforced limits. */
+export function curateOpenRouterCatalog(
+  body: unknown,
+  modelIds: readonly string[],
+  observedAtMs: number,
+): ModelsDevCatalog {
+  if (!Number.isSafeInteger(observedAtMs) || observedAtMs < 0) {
+    throw new Error('OpenRouter catalog requires an integer observation time');
+  }
+  const data = record(body)?.data;
+  if (!Array.isArray(data)) throw new Error('OpenRouter catalog data must be an array');
+  if (!Array.isArray(modelIds) || modelIds.length > 1000 || new Set(modelIds).size !== modelIds.length
+      || !modelIds.every((id) => typeof id === 'string'
+        && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/.test(id))) {
+    throw new Error('OpenRouter model selection is invalid or duplicated');
+  }
+  const selected = new Set(modelIds);
+  const rows = new Map<string, Record<string, unknown>>();
+  for (const value of data) {
+    const r = record(value);
+    if (!r || typeof r.id !== 'string' || !selected.has(r.id)) continue;
+    if (rows.has(r.id)) throw new Error('OpenRouter catalog contains a duplicate selected model');
+    rows.set(r.id, r);
+  }
+  const models: Record<string, ModelsDevModel> = Object.create(null);
+  for (const id of modelIds) {
+    const r = rows.get(id);
+    if (!r) throw new Error('OpenRouter selected model is missing from supplied catalog data');
+    const model: ModelsDevModel = { id };
+    if (typeof r.name === 'string' && r.name.length <= 160 && !/[\x00-\x1f\x7f]/.test(r.name)) {
+      model.name = r.name;
+    }
+    const parameters = strings(r.supported_parameters);
+    if (parameters) {
+      model.supported_parameters = parameters;
+      model.tool_call = parameters.includes('tools');
+      model.temperature = parameters.includes('temperature');
+      model.reasoning = parameters.includes('reasoning') || parameters.includes('reasoning_effort');
+    }
+    const efforts = strings(record(r.reasoning)?.supported_efforts);
+    if (efforts && model.reasoning !== false) model.reasoning_options = [{ type: 'effort', values: efforts }];
+    const architecture = record(r.architecture);
+    const input = strings(architecture?.input_modalities);
+    const output = strings(architecture?.output_modalities);
+    if (input || output) model.modalities = { ...(input ? { input } : {}), ...(output ? { output } : {}) };
+    const top = record(r.top_provider);
+    const contexts = [positiveInteger(r.context_length), positiveInteger(top?.context_length)]
+      .filter((n): n is number => n !== undefined);
+    const context = contexts.length ? Math.min(...contexts) : undefined;
+    const maxOutput = positiveInteger(top?.max_completion_tokens);
+    if (context !== undefined || maxOutput !== undefined) {
+      model.limit = { ...(context !== undefined ? { context } : {}),
+        ...(maxOutput !== undefined ? { output: Math.min(maxOutput, context ?? maxOutput) } : {}) };
+    }
+    const pricing = record(r.pricing);
+    const rates: Record<string, string> = Object.create(null);
+    const unpricedFields: string[] = [];
+    for (const field of OPENROUTER_RATE_FIELDS) {
+      if (!pricing || !Object.hasOwn(pricing, field)) continue;
+      if (rate(pricing[field]) === undefined) unpricedFields.push(field);
+      else rates[field] = pricing[field] as string;
+    }
+    for (const field of ['prompt', 'completion']) {
+      if (!Object.hasOwn(rates, field) && !unpricedFields.includes(field)) unpricedFields.push(field);
+    }
+    model.pricing = { source: 'openrouter-models', observedAtMs, rates, unpricedFields,
+      conditional: !!pricing && Object.hasOwn(pricing, 'overrides')
+        && (!Array.isArray(pricing.overrides) || pricing.overrides.length > 0),
+      unrecognizedFields: !!pricing && Object.keys(pricing).some((key) => key !== 'overrides'
+        && !(OPENROUTER_RATE_FIELDS as readonly string[]).includes(key)) };
+    const cost: NonNullable<ModelsDevModel['cost']> = {};
+    for (const [from, to] of [['prompt', 'input'], ['completion', 'output'],
+      ['input_cache_read', 'cache_read'], ['input_cache_write', 'cache_write']] as const) {
+      const n = rate(rates[from]);
+      if (n !== undefined && n * 1_000_000 <= Number.MAX_SAFE_INTEGER) cost[to] = n * 1_000_000;
+    }
+    if (Object.keys(cost).length) model.cost = cost;
+    models[id] = model;
+  }
+  return { openrouter: { id: 'openrouter', npm: '@openrouter/ai-sdk-provider', models } };
+}
 
 export interface LoopModelSelection {
   /** Original psu-shaped input. */
