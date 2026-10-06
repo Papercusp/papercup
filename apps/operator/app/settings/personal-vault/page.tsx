@@ -213,15 +213,22 @@ const ARCHIVE_HELP = {
 
 const GOOGLE_CALENDAR_EVENTS_SCOPE =
   "https://www.googleapis.com/auth/calendar.events";
+/**
+ * `vaultSource` is the Personal Vault partition the capability's records land
+ * in, so also its `personal:<source>` grant scope. Partitions are named for the
+ * datatype, never the provider: Gmail lands in `mail` (WI-10006490).
+ */
 const GOOGLE_CAPABILITY_META: Record<
   GoogleCapabilityId,
-  { label: string; detail: string }
+  { label: string; detail: string; vaultSource: string }
 > = {
   gmail: {
     label: "Gmail",
     detail: "Read mail and prepare drafts through replay-safe Gmail sync.",
+    vaultSource: "mail",
   },
   calendar: {
+    vaultSource: "calendar",
     label: "Calendar",
     detail:
       "Read events and allow create, update, and delete through the shared Calendar surface.",
@@ -229,8 +236,10 @@ const GOOGLE_CAPABILITY_META: Record<
   contacts: {
     label: "Contacts",
     detail: "Sync People API contacts into the owner-local Personal Vault.",
+    vaultSource: "contacts",
   },
   youtube: {
+    vaultSource: "youtube",
     label: "YouTube",
     detail:
       "Read channel activity and comments, and reply to comments. Replying needs the force-ssl scope, which also allows deleting your own comments.",
@@ -2170,8 +2179,8 @@ export default function PersonalVaultSettingsPage() {
               <legend style={{ padding: "0 6px", fontSize: 12 }}>
                 Scopes to authorize
               </legend>
-              {Object.entries(GOOGLE_CAPABILITY_META).map(([id, meta]) => {
-                const scope = `personal:${id}`;
+              {Object.values(GOOGLE_CAPABILITY_META).map((meta) => {
+                const scope = `personal:${meta.vaultSource}`;
                 const checked = directScopes.includes(scope);
                 return (
                   <label
