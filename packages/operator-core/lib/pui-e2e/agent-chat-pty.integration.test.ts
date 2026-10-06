@@ -2147,6 +2147,14 @@ beforeEach(async () => {
         // in acceptance evidence. Never rewrite the user's global config.
         configurationWarnings.push(args[0]);
         console.info('PUI_CONFIG_REPAIR_DIAGNOSTIC', args[0]);
+      } else if (scriptedEngine.backend === 'codex' && args.length === 1
+        && args[0] === "psu: repaired this session's codex home config/hooks/instructions in place (existing rollouts were preserved).") {
+        // WI-10006770: a resumed Codex SU session re-runs the canonical
+        // codex-home refresh through the operator; when it rewrites the
+        // session's config/hooks the launcher reports it on stderr. That repair
+        // is the readiness fix under test, so keep its notice as evidence.
+        configurationWarnings.push(args[0]);
+        console.info('PUI_CONFIG_REPAIR_DIAGNOSTIC', args[0]);
       } else error(...args);
     });
   }
@@ -7651,7 +7659,19 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(second.pid).not.toBe(first.pid);
       expect(second.instanceId).not.toBe(first.instanceId);
       await openAgentChat(resumedPane);
-      await resumedPane.waitFor(`chat ${chatId!.slice(0, 12)}`);
+      try {
+        await resumedPane.waitFor(`chat ${chatId!.slice(0, 12)}`);
+      } catch (error) {
+        // WI-10006770: tell "the label moved behind Ctrl+O (R-03)" apart from
+        // "the resumed chat never attached to its engine": record the details
+        // view, which carries the SU session line when a session is attached.
+        resumedPane.write('\x0f');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}\n--- Ctrl+O details at timeout ---\n${resumedPane.screen()}`,
+          { cause: error },
+        );
+      }
       frames.selectedConversation = resumedPane.screen();
       resumedPane.escape();
       await resumedPane.waitFor('i type · v speak');
