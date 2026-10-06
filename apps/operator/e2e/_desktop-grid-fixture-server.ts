@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { ViteDevServer } from 'vite';
+import type { Page } from '@playwright/test';
 
 // Shared by desktop-grid.spec.ts (cloud) and desktop-grid-local.spec.ts (this computer):
 // one isolated Vite server per spec that serves ONE fixture module with a closed
@@ -8,6 +9,29 @@ import type { ViteDevServer } from 'vite';
 // and an optional `aliases` map substitutes further modules (the local spec stubs
 // @papercusp/sync, whose real provider needs a live operator SSE stream).
 export const root = path.resolve(__dirname, '../../..');
+
+/** A text matcher requiring every (non-null) part to appear somewhere in the element. */
+export function containsAll(...parts: Array<string | null>): RegExp {
+  const escape = (part: string) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(parts.filter((part): part is string => !!part).map((part) => `(?=[\\s\\S]*${escape(part)})`).join(''));
+}
+
+/**
+ * Decoded pixel width of every grid thumbnail, in tile order. Decodes a fresh Image from
+ * each tile's own src, so the answer does not depend on the <img> being scrolled into
+ * view (tiles load lazily) or on a layout-stability wait. A src revoked mid-refresh
+ * rejects; the caller's expect.poll simply asks again.
+ */
+export function decodedThumbnailWidths(page: Page): Promise<number[]> {
+  return page.getByRole('list', { name: 'Available desktops' }).locator('img').evaluateAll(
+    (images: HTMLImageElement[]) => Promise.all(images.map(async (image) => {
+      const copy = new Image();
+      copy.src = image.src;
+      await copy.decode();
+      return copy.naturalWidth;
+    })).catch(() => [] as number[]),
+  );
+}
 
 export interface DesktopGridFixtureServer {
   server: ViteDevServer;

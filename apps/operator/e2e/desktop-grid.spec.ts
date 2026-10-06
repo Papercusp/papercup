@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { ViteDevServer } from 'vite';
 import type { Page } from '@playwright/test';
 import { expect, test } from './_egress';
-import { startDesktopGridFixtureServer } from './_desktop-grid-fixture-server';
+import { containsAll, decodedThumbnailWidths, startDesktopGridFixtureServer } from './_desktop-grid-fixture-server';
 
 // Plan agent-multi-desktops-grid-2026-10-06 P-006 (R-4): the cloud Desktops page shows
 // EVERY agent desktop on a workspace as a tile — thumbnail, owning agent, work-item,
@@ -12,7 +12,9 @@ import { startDesktopGridFixtureServer } from './_desktop-grid-fixture-server';
 // HostedDesktopWorkspace / DesktopGrid / HostedDesktopViewer / nuqs; the relay socket,
 // session ticket and RFB framebuffer are substituted (see __fixtures__/desktop-grid.tsx).
 // The live hosted-VM run of the same surface is EI-25225008797935576 (plan D-017).
-test.describe.configure({ mode: 'serial', timeout: 120_000 });
+// 180s: on the shared fleet box (load ~200 on 128 cores, measured 2026-10-06) a trivial
+// assertion round-trip costs 2-5s and the first navigation ~13s.
+test.describe.configure({ mode: 'serial', timeout: 180_000 });
 const output = process.env.DESKTOP_GRID_OUTPUT_DIR;
 let server: ViteDevServer;
 let origin: string;
@@ -62,16 +64,13 @@ test('[grid.cloud.tiles] every agent desktop is a tile with its thumbnail, owner
   for (const desktop of DESKTOPS) {
     const tile = tiles.filter({ has: page.getByRole('button', { name: `Watch ${desktop.title}`, exact: true }) });
     await expect(tile).toHaveCount(1);
-    await expect(tile.getByText(desktop.owner, { exact: true })).toBeVisible();
-    if (desktop.workItem) await expect(tile.getByText(desktop.workItem, { exact: true })).toBeVisible();
-    await expect(tile.getByText(/^running · 1280x720/)).toBeVisible();
-    // A real decoded JPEG, not the placeholder icon. Tiles load thumbnails lazily, so
-    // bring each into view the way a person scrolling the grid would.
-    const thumbnail = tile.locator('img');
-    await expect(thumbnail).toHaveAttribute('src', /^data:image\/jpeg;base64,/);
-    await thumbnail.scrollIntoViewIfNeeded();
-    await expect.poll(() => thumbnail.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBe(320);
+    // One retrying assertion per tile (owner, work-item, state): on the shared fleet box
+    // every Playwright round-trip costs seconds, so per-field assertions blow the budget.
+    await expect(tile).toHaveText(containsAll(desktop.owner, desktop.workItem, 'running · 1280x720'));
+    await expect(tile.locator('img')).toHaveAttribute('src', /^data:image\/jpeg;base64,/);
   }
+  // A real decoded 320px JPEG per tile, not the placeholder icon.
+  await expect.poll(() => decodedThumbnailWidths(page), { timeout: 30_000 }).toEqual(DESKTOPS.map(() => 320));
   await capture(page, 'cloud-grid.png');
   expect(errors).toEqual([]);
 });

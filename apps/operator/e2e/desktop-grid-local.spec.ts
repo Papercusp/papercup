@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { ViteDevServer } from 'vite';
 import type { Page } from '@playwright/test';
 import { expect, test } from './_egress';
-import { startDesktopGridFixtureServer } from './_desktop-grid-fixture-server';
+import { containsAll, decodedThumbnailWidths, startDesktopGridFixtureServer } from './_desktop-grid-fixture-server';
 
 // Plan agent-multi-desktops-grid-2026-10-06 P-007 + P-005 (R-5): "This computer" on the
 // Desktops page renders every agent desktop on this machine through the SAME grid as the
@@ -14,7 +14,9 @@ import { startDesktopGridFixtureServer } from './_desktop-grid-fixture-server';
 // roster stream, HTTP seam and RFB framebuffer are substituted
 // (__fixtures__/desktop-grid-local.tsx). The run against real Xvfb desktops through an
 // isolated sidecar is the separate live e2e on WI-10006486.
-test.describe.configure({ mode: 'serial', timeout: 120_000 });
+// 180s: on the shared fleet box (load ~200 on 128 cores, measured 2026-10-06) a trivial
+// assertion round-trip costs 2-5s and the first navigation ~13s.
+test.describe.configure({ mode: 'serial', timeout: 180_000 });
 const output = process.env.DESKTOP_GRID_OUTPUT_DIR;
 let server: ViteDevServer;
 let origin: string;
@@ -74,15 +76,13 @@ test('[grid.local.tiles] This computer lists every agent desktop with a thumbnai
     .toHaveText(`${DESKTOPS.length} desktops · 0/2 live`);
   for (const desktop of DESKTOPS) {
     const tile = tiles.filter({ has: page.getByRole('button', { name: `Watch ${desktop.title}`, exact: true }) });
-    await expect(tile.getByText(desktop.owner, { exact: true })).toBeVisible();
-    if (desktop.workItem) await expect(tile.getByText(desktop.workItem, { exact: true })).toBeVisible();
-    await expect(tile.getByText(/^ready · 1280×800/)).toBeVisible();
-    // Tiles load thumbnails lazily: bring each into view as a person scrolling would.
-    const thumbnail = tile.locator('img');
-    await expect(thumbnail).toHaveAttribute('src', /^blob:/);
-    await thumbnail.scrollIntoViewIfNeeded();
-    await expect.poll(() => thumbnail.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBe(320);
+    await expect(tile).toHaveCount(1);
+    // One retrying assertion per tile (owner, work-item, state) — see the timeout note above.
+    await expect(tile).toHaveText(containsAll(desktop.owner, desktop.workItem, 'ready · 1280×800'));
+    await expect(tile.locator('img')).toHaveAttribute('src', /^blob:/);
   }
+  // A real decoded 320px JPEG per tile, not the placeholder icon.
+  await expect.poll(() => decodedThumbnailWidths(page), { timeout: 30_000 }).toEqual(DESKTOPS.map(() => 320));
   await capture(page, 'local-grid.png');
   expect(errors).toEqual([]);
 });
