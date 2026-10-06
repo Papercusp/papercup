@@ -1055,7 +1055,7 @@ describe('coord:orient args', () => {
   it('starts the handler-owned GOAL portfolio read before composeOrient', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const modesStart = source.indexOf('const runtimeModesPromise =');
-    const portfolioStart = source.indexOf('const goalPortfolioReadPromise =');
+    const portfolioStart = source.indexOf('const goalPortfolioStagedPromise =');
     const obligationsStart = source.indexOf('const goalObligationsPromise =');
     const composeStart = source.indexOf('const result = await composeOrient(');
 
@@ -1065,7 +1065,12 @@ describe('coord:orient args', () => {
     expect(obligationsStart).toBeLessThan(composeStart);
     expect(source.slice(obligationsStart, composeStart)).toContain('readAgentObligationAgenda');
     expect(source.slice(obligationsStart, composeStart)).toContain('projectAgentTurnStartObligationBrief');
-    expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBrief');
+    expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBriefStaged');
+    // EI-25191349922959563: the obligation fold (900ms budget) must read the
+    // UNCOUNTED snapshot stage, never the counted display read it used to share.
+    const obligationsSlice = source.slice(obligationsStart, composeStart);
+    expect(obligationsSlice).toContain('goalPortfolio: async () => (goalPortfolioSnapshotPromise');
+    expect(obligationsSlice).not.toContain('await goalPortfolioReadPromise');
     // WI-2140700: the holder's owner-report obligation starts in the same early
     // window (overlapping the sequential folds) and is folded into
     // `modes.ownerReport`, the field the GOAL contract tells a holder to read

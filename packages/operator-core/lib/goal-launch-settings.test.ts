@@ -114,6 +114,7 @@ import {
   GOAL_LAUNCH_ROLES,
   isGoalLaunchRole,
   readGoalPortfolioBrief,
+  readGoalPortfolioBriefStaged,
   compileGoalPlanPlacement,
   parseGoalLaunchSettings,
   readGoalLaunchSettings,
@@ -1553,6 +1554,75 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       expect(explainIssueClaimFloors).not.toHaveBeenCalled();
       expect(skipped?.queue).toMatchObject({ claimable: null, claimabilityScope: 'not-requested' });
       expect(skipped?.degradedReasons.join(' ') ?? '').not.toContain('claimability unavailable');
+    } finally {
+      vi.doUnmock('./work-items');
+    }
+  });
+
+  it('staged read delivers the snapshot before the claim-floor count finishes (EI-25191349922959563)', async () => {
+    // orient shares one portfolio snapshot between its obligation fold (900ms
+    // budget, never reads queue.claimable) and its display fold. The obligation
+    // fold must not wait on the per-id count, which alone timed it out every wake.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const explainIssueClaimFloors = vi.fn(async (_harness: string, ids: string[]) => {
+      await gate;
+      return ids.map(() => ({ admissible: true }));
+    });
+    vi.doMock('./work-items', () => ({ explainIssueClaimFloors }));
+    try {
+      const row = {
+        ...portfolioRow,
+        queue: {
+          ...portfolioRow.queue,
+          issueCandidates: [
+            { id: 'EI-1', harness: 'papercusp' },
+            { id: 'EI-2', harness: 'papercusp' },
+            { id: 'EI-3', harness: 'other' },
+          ],
+        },
+      };
+      const staged = readGoalPortfolioBriefStaged({
+        workspaceId: WS,
+        goalId: 'goal-1',
+        sql: mockSql({ portfolio: { 'goal-1': row } }),
+        now: NOW,
+        launch,
+      });
+      let countedSettled = false;
+      void staged.counted.then(() => { countedSettled = true; });
+
+      const snapshot = await staged.snapshot;
+      expect(snapshot?.queue).toMatchObject({ claimable: null, claimabilityScope: 'not-requested' });
+      expect(snapshot?.priorities.join(' ') ?? '').not.toContain('goal-scoped claimable');
+      // The count is in flight but blocked: the snapshot did not wait for it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(explainIssueClaimFloors).toHaveBeenCalled();
+      expect(countedSettled).toBe(false);
+
+      release();
+      const counted = await staged.counted;
+      // Same candidate rows, counted per harness.
+      expect(explainIssueClaimFloors).toHaveBeenCalledWith('papercusp', ['EI-1', 'EI-2']);
+      expect(explainIssueClaimFloors).toHaveBeenCalledWith('other', ['EI-3']);
+      expect(counted?.queue).toMatchObject({ claimable: 3, claimabilityScope: 'issue-family' });
+      expect(counted?.priorities.join(' ') ?? '').toContain('Place 3 goal-scoped claimable issue(s)');
+      expect(counted?.assembledAt).toBe(snapshot?.assembledAt);
+    } finally {
+      vi.doUnmock('./work-items');
+    }
+  });
+
+  it('a failed claim-floor count leaves the counted stage unknown and degraded, not zero', async () => {
+    const explainIssueClaimFloors = vi.fn(async () => { throw new Error('floor read down'); });
+    vi.doMock('./work-items', () => ({ explainIssueClaimFloors }));
+    try {
+      const row = { ...portfolioRow, queue: { ...portfolioRow.queue, issueCandidates: [{ id: 'EI-1', harness: 'papercusp' }] } };
+      const counted = await readGoalPortfolioBrief({
+        workspaceId: WS, goalId: 'goal-1', sql: mockSql({ portfolio: { 'goal-1': row } }), now: NOW, launch,
+      });
+      expect(counted?.queue).toMatchObject({ claimable: null, claimabilityScope: 'unknown' });
+      expect(counted?.degradedReasons.join(' ') ?? '').toContain('goal-scoped claimability unavailable: floor read down');
     } finally {
       vi.doUnmock('./work-items');
     }
