@@ -59,6 +59,7 @@ import type {
   HostedDesktopRosterEntry,
   HostedDesktopSessionRecord,
   HostedDesktopSocket,
+  HostedDesktopViewer,
 } from './hosted-session-host';
 
 /**
@@ -95,6 +96,19 @@ export interface HostedDesktopBackendDeps {
    * Undefined means the desktop runs but has no row, so nothing can resolve it.
    */
   ensureDesktop: () => Promise<string | undefined>;
+  /**
+   * Lease ONE person's own desktop (or return the live one) and name its registry row —
+   * `desktop-lease.ensurePersonalDesktop` (personal-cloud-desktop-2026-10-06 P-003).
+   * Omitted: this host serves no personal desktops and `startPersonal` is absent.
+   */
+  ensurePersonalDesktop?: (userId: string) => Promise<string | undefined>;
+  /**
+   * Who a live lease belongs to, by registry id — `desktop-lease.leaseOwnerBySessionId`.
+   * Read from the lease this process holds, so `lookup` can name a personal desktop's
+   * owner without trusting a registry row. Omitted: no desktop is reported as personal,
+   * which is only correct for a host that cannot lease one (no `ensurePersonalDesktop`).
+   */
+  leaseOwner?: (desktopSessionId: string) => { scope: string; scopeRef: string } | undefined;
   /**
    * Retire registry rows no live lease backs — `reconcileLocalDesktopSessions` as
    * sole owner. Run once, before the first roster or start: a row a previous
@@ -481,7 +495,10 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
       // from "unknown id": both are `desktop_session_unknown` to the viewer, and
       // telling an unauthorised caller which desktop ids exist elsewhere is the
       // enumeration oracle this refusal exists to avoid.
-      return desktop ? desktopRecordForLease(desktop) : null;
+      if (!desktop) return null;
+      const record = desktopRecordForLease(desktop);
+      const lease = deps.leaseOwner?.(desktopSessionId);
+      return lease?.scope === 'user' ? { ...record, personalOwner: lease.scopeRef } : record;
     },
 
     dial(input: HostedDesktopDialInput): Promise<HostedDesktopSocket> {
@@ -501,9 +518,12 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
       });
     },
 
-    async roster(): Promise<HostedDesktopRosterEntry[]> {
+    async roster(viewer?: HostedDesktopViewer): Promise<HostedDesktopRosterEntry[]> {
       await reconcile();
-      const sessions = await deps.listSessions();
+      // A person's own desktop is listed only to its owner; with no viewer, none is.
+      const sessions = (await deps.listSessions()).filter(
+        (session) => session.scope !== 'user' || (!!viewer?.userId && session.scopeRef === viewer.userId),
+      );
       const claims = await claimsForSessions(sessions, deps.activeClaimFor, warn);
       return sessions.map((session) =>
         rosterEntryForSession(session, session.scope === 'agent' ? (claims.get(session.scopeRef) ?? null) : null),
@@ -526,6 +546,30 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
       const session = (await deps.listSessions()).find((entry) => entry.id === desktopSessionId);
       return session ? rosterEntryForSession(session) : null;
     },
+
+    // Only a host that can lease a person's desktop offers this; elsewhere the relay
+    // answers `personal_desktop_unavailable` (P-004).
+    ...(deps.ensurePersonalDesktop
+      ? {
+          async startPersonal(userId: string): Promise<HostedDesktopRosterEntry | null> {
+            const ensurePersonal = deps.ensurePersonalDesktop!;
+            await reconcile();
+            // A host without the personal worker throws `PersonalDesktopUnavailableError`
+            // from inside the lease, before anything starts; it propagates unchanged so the
+            // relay can report `personal_desktop_unavailable` (R-22).
+            const desktopSessionId = await ensurePersonal(userId);
+            if (!desktopSessionId) {
+              warn('hosted-desktop-backend — desktop.start personal: the desktop has no registry row');
+              return null;
+            }
+            if (!deps.leasedDesktop(desktopSessionId)) return null;
+            // The row must be THIS user's own desktop; anything else is never handed out.
+            const session = (await deps.listSessions()).find((entry) => entry.id === desktopSessionId);
+            if (!session || session.scope !== 'user' || session.scopeRef !== userId) return null;
+            return rosterEntryForSession(session);
+          },
+        }
+      : {}),
 
     async thumbnail(desktopSessionId: string): Promise<Buffer | null> {
       const display = await displayFor(desktopSessionId);

@@ -87,6 +87,12 @@ export const HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES = 256 * 1024;
 export const HOSTED_HOST_MAX_THUMBNAIL_BYTES = 512 * 1024;
 /** Roster entries served in one reply — a host serving more is misconfigured. */
 export const HOSTED_HOST_MAX_ROSTER_ENTRIES = 64;
+/**
+ * What `channelIdentity` answers for a channel whose principal it cannot resolve.
+ * Audit lines still need a value, but it is never an identity: a personal desktop
+ * treats it as "no viewer" and refuses (fail closed).
+ */
+const UNKNOWN_IDENTITY = 'unknown';
 
 const OUTPUT_CHUNK_BYTES = 48 * 1024;
 const MAX_DIRECTORY_ENTRIES = 2_000;
@@ -217,6 +223,18 @@ export interface HostedDesktopSessionRecord {
   endpoint: HostedDesktopEndpoint | null;
   /** The session's view-only and control users (P-012, D-020). */
   credentials: Pick<KasmvncSessionCredentials, 'view' | 'control'>;
+  /**
+   * Set exactly when the desktop is a PERSON'S OWN desktop (scope `user`,
+   * personal-cloud-desktop-2026-10-06): the hosted userId it belongs to, read from the
+   * lease this host holds. The relay admits only that user to it.
+   */
+  personalOwner?: string;
+}
+
+/** Who is asking for the roster — so a person's own desktop is listed only to them. */
+export interface HostedDesktopViewer {
+  /** The hosted userId behind the channel, or null when the channel carries none. */
+  userId: string | null;
 }
 
 export interface HostedDesktopDialInput {
@@ -267,11 +285,13 @@ export interface HostedDesktopBackend {
    * The desktops this host serves. Empty is a valid answer (no desktop pack, or
    * none running) and must not be confused with a failure.
    *
-   * NOT filtered by caller: the connector binding already scopes this adapter to
-   * ONE organization + customer workspace, and that binding IS the authorization
-   * boundary. A per-user filter here would imply a second, weaker one.
+   * Agent, pot and workspace desktops are NOT filtered by caller: the connector
+   * binding already scopes this adapter to ONE organization + customer workspace, and
+   * that binding IS their authorization boundary. A person's own desktop (scope
+   * `user`) is the one exception — it is listed only to its owner, and with no viewer
+   * every personal desktop is withheld (fail closed).
    */
-  roster(): Promise<HostedDesktopRosterEntry[]>;
+  roster(viewer?: HostedDesktopViewer): Promise<HostedDesktopRosterEntry[]>;
   /**
    * The latest capture JPEG for one desktop, or null when none is fresh.
    *
@@ -293,6 +313,14 @@ export interface HostedDesktopBackend {
    * handing the viewer an id nothing can resolve.
    */
   start(): Promise<HostedDesktopRosterEntry | null>;
+  /**
+   * Start ONE person's own desktop, or return theirs if it is already running
+   * (personal-cloud-desktop-2026-10-06 P-003). Idempotent per user. A host without the
+   * personal desktop worker rejects with `PersonalDesktopUnavailableError`
+   * (`personal_desktop_unavailable`) and starts nothing. Absent: this host serves no
+   * personal desktops.
+   */
+  startPersonal?(userId: string): Promise<HostedDesktopRosterEntry | null>;
 }
 
 export interface HostedWorkspaceHostOptions {
@@ -1236,6 +1264,16 @@ export class HostedWorkspaceHostSessionAdapter {
     try {
       const record = await backend.lookup(desktopSessionId);
       if (!record) throw new SafeRootFileError('desktop_session_unknown');
+      // A person's own desktop admits only that person, in EITHER role
+      // (personal-cloud-desktop-2026-10-06 P-004). Refused before the dial, so a
+      // non-owner never holds a socket — not even a view-only one. Audited as a
+      // denied operation naming the role it asked for, separately from the
+      // `desktop_detached` the close writes, so the refusal is never only implied.
+      if (record.personalOwner !== undefined && record.personalOwner !== userId) {
+        this.audit('operation_denied', channel, channelId, `desktop.${channel.action} desktop=${desktopSessionId} desktop_not_owner`);
+        this.closeDesktopChannel(channel, 'desktop_not_owner');
+        return;
+      }
       const endpoint = assertLoopbackDesktopEndpoint(record.endpoint);
       const grant = hostedDesktopGrant(role, record.credentials);
       const socket = await backend.dial({ desktopSessionId, endpoint, grant });
@@ -1553,7 +1591,7 @@ export class HostedWorkspaceHostSessionAdapter {
       const session = this.sessions.get(channel.sessionKey);
       if (session) return { userId: session.userId, hostedSessionId: session.hostedSessionId };
     }
-    return { userId: 'unknown', hostedSessionId: 'unknown' };
+    return { userId: UNKNOWN_IDENTITY, hostedSessionId: UNKNOWN_IDENTITY };
   }
 
   /**
@@ -1582,9 +1620,13 @@ export class HostedWorkspaceHostSessionAdapter {
       return;
     }
 
+    // A person's own desktop is listed and previewed only to its owner (P-004 / R-14):
+    // the roster is filtered for THIS channel's proven user, never an argument the
+    // viewer supplies.
+    const viewer: HostedDesktopViewer = { userId: identity.userId === UNKNOWN_IDENTITY ? null : identity.userId };
     try {
       if (type === 'desktop.roster') {
-        const desktops = (await backend.roster()).slice(0, HOSTED_HOST_MAX_ROSTER_ENTRIES);
+        const desktops = (await backend.roster(viewer)).slice(0, HOSTED_HOST_MAX_ROSTER_ENTRIES);
         this.send(channelId, { type: 'desktop.roster.result', requestId, desktops });
         this.audit('desktop_roster', identity, channelId, `count=${desktops.length}`);
         return;
@@ -1592,6 +1634,14 @@ export class HostedWorkspaceHostSessionAdapter {
       const desktopSessionId = string(payload.desktopSessionId);
       if (!desktopSessionId) {
         this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'desktop_session_required' });
+        return;
+      }
+      // A thumbnail is a picture of the screen, so it obeys the same owner rule as
+      // opening the desktop does.
+      const record = await backend.lookup(desktopSessionId);
+      if (record?.personalOwner !== undefined && record.personalOwner !== viewer.userId) {
+        this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'desktop_not_owner' });
+        this.audit('operation_denied', identity, channelId, `desktop.thumbnail desktop=${desktopSessionId} desktop_not_owner`);
         return;
       }
       const image = await backend.thumbnail(desktopSessionId);
@@ -1650,14 +1700,29 @@ export class HostedWorkspaceHostSessionAdapter {
     const backend = this.options.desktop;
     if (!backend) return refuse('desktop_unsupported');
 
+    // `personal: true` asks for the CALLER's own desktop (personal-cloud-desktop-2026-10-06
+    // P-004). Whose desktop it is comes from the channel's proven identity, never from
+    // the payload, so no frame can start or reach somebody else's.
+    const personal = payload.personal === true;
+    if (personal) {
+      if (identity.userId === UNKNOWN_IDENTITY) return refuse('desktop_not_owner');
+      if (!backend.startPersonal) return refuse('personal_desktop_unavailable');
+    }
+
     try {
-      const desktop = await backend.start();
-      if (!desktop) return refuse('desktop_unavailable');
+      const desktop = personal ? await backend.startPersonal!(identity.userId) : await backend.start();
+      if (!desktop) return refuse(personal ? 'personal_desktop_unavailable' : 'desktop_unavailable');
       this.send(channelId, { type: 'desktop.start.result', requestId, desktop });
-      this.audit('desktop_started', identity, channelId, `desktop=${desktop.desktopSessionId}`);
+      this.audit('desktop_started', identity, channelId, `desktop=${desktop.desktopSessionId}${personal ? ' personal' : ''}`);
     } catch (error) {
       if (error instanceof SafeRootFileError) return refuse(error.code);
-      this.warn(`desktop.start failed: ${String(error)}`);
+      // A host whose desktop pack has no personal worker (R-22): a typed, named code
+      // the viewer can show, never a generic start failure. Matched by its code so the
+      // relay does not import the desktop session client.
+      if (personal && (error as { code?: unknown } | null)?.code === 'personal_desktop_unavailable') {
+        return refuse('personal_desktop_unavailable');
+      }
+      this.warn(`desktop.start${personal ? ' personal' : ''} failed: ${String(error)}`);
       refuse('desktop_start_failed');
     }
   }
