@@ -1315,6 +1315,56 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toMatch(/normal\.txt/);
   });
 
+  it('WI-10006725: an edit whose stat the shared index caches racily is still committed', async () => {
+    // Git re-hashes an entry whose mtime is not older than the index file's own mtime (a
+    // "racy" entry). A private index copied with a fresh mtime would trust that cached stat,
+    // so a same-size edit would never stage. checkStat=minimal + trustctime=false reduce the
+    // stat check to mtime seconds and size, which makes the race deterministic here.
+    git(repo, 'config', 'core.checkStat', 'minimal');
+    git(repo, 'config', 'core.trustctime', 'false');
+    const file = join(repo, 'racy.txt');
+    const second = Math.floor(Date.now() / 1000) - 60;
+    writeFileSync(file, 'version 1\n');
+    utimesSync(file, second, second);
+    git(repo, 'add', 'racy.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'racy seed');
+    git(repo, 'push', 'origin', 'main');
+    // Same size and mtime, different bytes; the shared index is stamped in the same second.
+    writeFileSync(file, 'version 2\n');
+    utimesSync(file, second, second);
+    utimesSync(join(repo, '.git', 'index'), second, second);
+    // Calibration: the shared index itself sees the edit (read without rewriting the index).
+    expect(git(repo, '--no-optional-locks', 'status', '--porcelain', '--', 'racy.txt')).toMatch(/racy\.txt/);
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:racy.txt')).toBe('version 2');
+  });
+
+  it('WI-10006725: the catch-all still commits a force-added ignored file and an untracked ignored one stays out', async () => {
+    writeFileSync(join(repo, '.gitignore'), '*.log\n');
+    git(repo, 'add', '.gitignore');
+    git(repo, 'commit', '--no-verify', '-m', 'ignore logs');
+    git(repo, 'push', 'origin', 'main');
+    // An agent deliberately tracks one ignored file; `add -A` alone would never stage it.
+    writeFileSync(join(repo, 'forced.log'), 'deliberately tracked\n');
+    git(repo, 'add', '-f', 'forced.log');
+    writeFileSync(join(repo, 'other.log'), 'still ignored\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, log: (m) => logs.push(m) });
+
+    expect(out.status).toBe('synced');
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('forced.log');
+    expect(originFiles).not.toContain('other.log');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(logs.join('\n')).toContain('carried 0 staged deletion(s) and 1 staged addition(s)');
+  });
+
   it('EI-24356165312897992: commits released locks while retaining current locks and explicit exclusions', async () => {
     writeFileSync(join(repo, 'file.txt'), 'completed edit\n');
     writeFileSync(join(repo, 'explicit.txt'), 'explicitly excluded\n');
