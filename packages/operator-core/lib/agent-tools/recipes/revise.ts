@@ -1,9 +1,9 @@
 /**
  * recipes:revise — audited, NON-EXECUTING source correction for one saved recipe.
  *
- * Historical recipe runs are immutable. This verb changes only the stored source
- * and derived tools_used metadata behind an exact-revision compare-and-swap; it
- * never invokes the script and never writes code_recipe_runs or popularity counts.
+ * Historical recipe runs are immutable. This verb changes the stored source,
+ * display metadata, and optional runtime contract behind an exact-revision
+ * compare-and-swap; it never invokes the script or changes run/popularity data.
  */
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -32,21 +32,21 @@ const contractSchema = z.object({
 export default defineTool({
   name: 'recipes:revise',
   description:
-    'Revise the stored source and optionally its binding/capability contract WITHOUT executing it. ' +
+    'Revise a saved recipe source, title/description, and optionally its binding/capability contract WITHOUT executing it. ' +
     'Requires the exact current revision plus a reason, compares-and-swaps the row, preserves execution ' +
     'counters, refreshes toolsUsed, and returns old/new revisions. SU-only and audited through the ' +
     'normal tool invocation ledger.',
   guidance: {
     when:
-      'Correcting a saved recipe source or its versioned runtime contract when historical executions must ' +
-      'remain immutable. First inspect with recipes:get, then pass that exact authority.revision as ' +
-      'expectedRevision. Pass contract with both bindingSchema and capabilityManifest to replace the ' +
-      'contract atomically; omit it to preserve the current contract.',
+      'Correcting a saved recipe source, title, description, or versioned runtime contract when historical ' +
+      'executions must remain immutable. First inspect with recipes:get, then pass that exact ' +
+      'authority.revision as expectedRevision. Pass contract with both bindingSchema and ' +
+      'capabilityManifest to replace the contract atomically; omit it to preserve the current contract.',
     notWhen:
       'To run or replay a recipe (recipes:run), create one (code:run capture), or overwrite a revision ' +
       'you did not inspect. A stale expectedRevision fails closed.',
     chaining:
-      'recipes:get { id } → recipes:revise { id, expectedRevision, script, contract?, reason } → ' +
+      'recipes:get { id } → recipes:revise { id, expectedRevision, script, title?, description?, contract?, reason } → ' +
       'recipes:get { id }; verify the revision/contract changed and runCount/successCount did not.',
     seeAlso: [
       'recipes:get (inspect source, counters, and exact revision)',
@@ -59,6 +59,18 @@ export default defineTool({
   args: z.object({
     id: z.string().min(1).describe('Saved recipe id / kebab slug.'),
     expectedRevision: revisionSchema.describe('Exact authority.revision returned by recipes:get.'),
+    title: z
+      .string()
+      .min(1)
+      .max(1_000)
+      .optional()
+      .describe('Optional replacement display title; updated atomically with the script/contract.'),
+    description: z
+      .string()
+      .min(1)
+      .max(2_000)
+      .optional()
+      .describe('Optional replacement display description; updated atomically with the script/contract.'),
     script: z
       .string()
       .min(1)
@@ -104,7 +116,10 @@ export default defineTool({
       { bindingSchema: current.bindingSchema, capabilityManifest: current.capabilityManifest },
       args.contract,
     );
-    if (current.script === args.script && !contractChanged) {
+    const metadataChanged =
+      (args.title !== undefined && args.title !== current.title)
+      || (args.description !== undefined && args.description !== current.description);
+    if (current.script === args.script && !contractChanged && !metadataChanged) {
       return {
         content: [
           { type: 'text', text: JSON.stringify({ ok: false, id: args.id, error: 'no_change', revision: oldRevision }) },
@@ -116,6 +131,8 @@ export default defineTool({
     const toolsUsed = extractToolsUsed(args.script, listAllProjectedTools());
     const revised = await reviseRecipeSource(sql, {
       id: args.id,
+      ...(args.title !== undefined ? { title: args.title } : {}),
+      ...(args.description !== undefined ? { description: args.description } : {}),
       script: args.script,
       toolsUsed,
       ...(args.contract ? { contract: args.contract } : {}),

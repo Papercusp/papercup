@@ -277,11 +277,15 @@ describe('recipes:revise versioned contract updates', () => {
       content: { emits: ['text' as const] },
     };
     const script = 'return 2;';
+    const title = 'Evaluate exact spec-test bindings';
+    const description = 'Evaluate every supplied current binding and emit canonical passing drafts.';
     getRecipeMock.mockResolvedValue(current);
     reviseRecipeSourceMock.mockResolvedValue({
       status: 'updated',
       row: {
         ...current,
+        title,
+        description,
         script,
         bindingSchema,
         capabilityManifest,
@@ -292,6 +296,8 @@ describe('recipes:revise versioned contract updates', () => {
     const args = {
       id: current.id,
       expectedRevision: recipeRevision(current.script, current.updatedAt, current),
+      title,
+      description,
       script,
       contract: { bindingSchema, capabilityManifest },
       reason: 'Make the scorecard recipe reusable per invocation.',
@@ -309,6 +315,8 @@ describe('recipes:revise versioned contract updates', () => {
 
     expect(reviseRecipeSourceMock).toHaveBeenCalledWith(orgSqlMock, {
       id: current.id,
+      title,
+      description,
       script,
       toolsUsed: [],
       contract: { bindingSchema, capabilityManifest },
@@ -334,6 +342,49 @@ describe('recipes:revise versioned contract updates', () => {
       },
       reason: 'Add a binding without its manifest.',
     }).success).toBe(false);
+  });
+
+  it('applies metadata-only revisions instead of treating them as no_change', async () => {
+    const current = {
+      id: 'generic-recipe',
+      title: 'Old title',
+      description: 'Old description',
+      script: 'return 1;',
+      bindingSchema: null,
+      capabilityManifest: null,
+      updatedAt: '2026-10-02T00:00:00.000Z',
+      toolsUsed: [],
+    };
+    getRecipeMock.mockResolvedValue(current);
+    reviseRecipeSourceMock.mockResolvedValue({
+      status: 'updated',
+      row: { ...current, description: 'Corrected description', updatedAt: '2026-10-02T00:01:00.000Z' },
+    });
+    const args = {
+      id: current.id,
+      expectedRevision: recipeRevision(current.script, current.updatedAt, current),
+      script: current.script,
+      description: 'Corrected description',
+      reason: 'Correct the stale saved-recipe description.',
+    };
+
+    expect(recipeReviseTool.args.safeParse(args).success).toBe(true);
+    await recipeReviseTool.handler(args, {
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'operator',
+      isSuperuser: false,
+      uiClientId: 'revise-metadata-test',
+    } as never);
+
+    expect(reviseRecipeSourceMock).toHaveBeenCalledWith(orgSqlMock, {
+      id: current.id,
+      description: 'Corrected description',
+      script: current.script,
+      toolsUsed: [],
+      expectedUpdatedAt: current.updatedAt,
+    });
   });
 });
 

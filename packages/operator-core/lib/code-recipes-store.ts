@@ -125,6 +125,9 @@ export interface RecordRecipeRunInput {
 
 export interface ReviseRecipeSourceInput {
   id: string;
+  /** Optional display metadata replaced under the same revision CAS as the script. */
+  title?: string;
+  description?: string;
   script: string;
   toolsUsed: string[];
   /** Omit to preserve the current contract; supply both declarations to replace it atomically. */
@@ -344,7 +347,9 @@ export async function reviseRecipeSource(
 
     const rows = await tx<DbRow[]>`
       UPDATE harness_shared.code_recipes
-         SET script = ${input.script},
+         SET title = COALESCE(${input.title ?? null}, title),
+             description = COALESCE(${input.description ?? null}, description),
+             script = ${input.script},
              tools_used = ${input.toolsUsed},
              binding_schema = CASE WHEN ${input.contract !== undefined}
                THEN ${input.contract?.bindingSchema == null ? null : JSON.stringify(input.contract.bindingSchema)}::jsonb

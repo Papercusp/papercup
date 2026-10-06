@@ -200,6 +200,8 @@ describe('code_recipes store (real PG)', () => {
 
     const result = await reviseRecipeSource(db.adminSql, {
       id: initial.id,
+      title: 'Source revision v2',
+      description: 'Corrected source and catalog description in one CAS revision.',
       script: 'return await tools.state.read({ cell: "new" });',
       toolsUsed: ['state:read'],
       expectedUpdatedAt: before!.updatedAt,
@@ -207,6 +209,8 @@ describe('code_recipes store (real PG)', () => {
     expect(result.status).toBe('updated');
     if (result.status !== 'updated') throw new Error(`unexpected revision result: ${result.status}`);
     expect(result.row).toMatchObject({
+      title: 'Source revision v2',
+      description: 'Corrected source and catalog description in one CAS revision.',
       script: 'return await tools.state.read({ cell: "new" });',
       runCount: 2,
       successCount: 2,
@@ -220,6 +224,8 @@ describe('code_recipes store (real PG)', () => {
     });
     expect(stale.status).toBe('conflict');
     await expect(getRecipe(db.adminSql, initial.id)).resolves.toMatchObject({
+      title: 'Source revision v2',
+      description: 'Corrected source and catalog description in one CAS revision.',
       script: 'return await tools.state.read({ cell: "new" });',
       runCount: 2,
       successCount: 2,
