@@ -31,6 +31,7 @@ beforeEach(() => {
     readMode: vi.fn().mockResolvedValue({ mode: 'direct', source: 'absent' }),
     resolveSuite: vi.fn().mockResolvedValue('npm test'),
     choose: vi.fn().mockResolvedValue({ ok: true, mode: 'review', fork: { url: 'https://github.com/bot/widgets', created: true } }),
+    notifySaved: vi.fn().mockResolvedValue(undefined),
   };
   const routes = makeIntegrationModeRoutes(deps as unknown as IntegrationModeRouteDeps) as unknown as RouteLike[];
   get = routes.find((r) => r.method === 'GET')!;
@@ -150,5 +151,28 @@ describe('PUT /harness/:slug/integration-mode', () => {
     const r = await call(put, 'loose', { mode: 'review' });
     expect(r.status).toBe(409);
     expect(deps.choose).not.toHaveBeenCalled();
+  });
+});
+
+describe('PUT pushes the live settings read (EI-25188362216785598)', () => {
+  test('a saved switch invalidates potIntegration.settings for the harness slug', async () => {
+    const r = await call(put, 'acme-web', { mode: 'review' });
+    expect(r.status).toBe(200);
+    expect(deps.notifySaved).toHaveBeenCalledTimes(1);
+    expect(deps.notifySaved).toHaveBeenCalledWith('acme-web');
+  });
+
+  test('a refused switch pushes nothing', async () => {
+    deps.choose.mockResolvedValueOnce({ ok: false, error: 'test_suite_required', message: 'no suite' });
+    const r = await call(put, 'acme-web', { mode: 'review' });
+    expect(r.status).toBe(409);
+    expect(deps.notifySaved).not.toHaveBeenCalled();
+  });
+
+  test('a failed push never fails the save', async () => {
+    deps.notifySaved.mockRejectedValueOnce(new Error('bus down'));
+    const r = await call(put, 'acme-web', { mode: 'review' });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ ok: true, mode: 'review' });
   });
 });
