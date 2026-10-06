@@ -468,6 +468,31 @@ export function formatD026QuiescedSummary(wf: {
  */
 export const GIT_SYNC_MISSED_INTERVALS_ALARM = 3;
 
+/**
+ * WI-10006786: the git-sync starvation signature FAMILY. The alarm raises one signal — so one
+ * durable escalation row — PER install, keyed `git-sync-missed-intervals:<installSlug>`. It used to
+ * raise ONE install-less signal from the fleet-wide max: a long-dead install (every fire `skipped`
+ * since 2026-08-29) then held the max, kept that single row open for 11+ days, and every other
+ * install's starvation (papercusp missed 6 intervals on 2026-10-06) deduped onto it unnamed. The
+ * bare key survives only as the family marker for `unobservableLivenessSignatures` and as the
+ * fallback when a snapshot names no install.
+ */
+export const GIT_SYNC_MISSED_INTERVALS_SIGNATURE = 'git-sync-missed-intervals';
+
+export function gitSyncMissedIntervalsSignature(installSlug: string | null | undefined): string {
+  return installSlug ? `${GIT_SYNC_MISSED_INTERVALS_SIGNATURE}:${installSlug}` : GIT_SYNC_MISSED_INTERVALS_SIGNATURE;
+}
+
+export function isGitSyncMissedIntervalsSignature(sig: string): boolean {
+  return sig === GIT_SYNC_MISSED_INTERVALS_SIGNATURE || sig.startsWith(`${GIT_SYNC_MISSED_INTERVALS_SIGNATURE}:`);
+}
+
+/** Unobservable this tick? The bare family key in the set covers every per-install signature. */
+export function isUnobservableLivenessSignature(unobservable: ReadonlySet<string>, sig: string): boolean {
+  if (unobservable.has(sig)) return true;
+  return isGitSyncMissedIntervalsSignature(sig) && unobservable.has(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
+}
+
 export function evaluateLivenessAlarm(
   health: SystemHealth,
   snapshotAgeMs: number | null,
@@ -522,11 +547,22 @@ export function evaluateLivenessAlarm(
   //    reading is expected maintenance noise, not a restart-worthy outage. The
   //    advisory gets its own signature so old blocker rows can be reclassified
   //    explicitly rather than treated as recovered.
-  const gitSyncMissed = health.panels.deploy?.data?.gitSyncMaxMissedIntervals ?? null;
-  if (typeof gitSyncMissed === 'number' && gitSyncMissed > GIT_SYNC_MISSED_INTERVALS_ALARM) {
-    const slug = health.panels.deploy?.data?.gitSyncMissedIntervalsInstallSlug ?? null;
+  // WI-10006786: one signal PER starved install (see GIT_SYNC_MISSED_INTERVALS_SIGNATURE). A snapshot
+  // written before the per-install list existed falls back to the single max reading.
+  const deployData = health.panels.deploy?.data;
+  const gitSyncMissedMax = deployData?.gitSyncMaxMissedIntervals ?? null;
+  const starvedInstalls: Array<{ installSlug: string | null; missedIntervals: number }> = Array.isArray(
+    deployData?.gitSyncMissedIntervalsByInstall,
+  )
+    ? deployData.gitSyncMissedIntervalsByInstall.filter(
+        (e) => typeof e?.missedIntervals === 'number' && e.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+      )
+    : typeof gitSyncMissedMax === 'number' && gitSyncMissedMax > GIT_SYNC_MISSED_INTERVALS_ALARM
+      ? [{ installSlug: deployData?.gitSyncMissedIntervalsInstallSlug ?? null, missedIntervals: gitSyncMissedMax }]
+      : [];
+  for (const { installSlug: slug, missedIntervals: gitSyncMissed } of starvedInstalls) {
     signals.push({
-      key: 'git-sync-missed-intervals',
+      key: gitSyncMissedIntervalsSignature(slug),
       severity: 'blocker',
       summary:
         `git-sync${slug ? ` on ${slug}` : ''} has missed ${gitSyncMissed} consecutive scheduler intervals: ` +
@@ -877,7 +913,8 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     (deploy && (deploy.status === 'unknown' || deploy.error != null)) ||
     deploy?.data?.gitSyncMissedIntervalsUnreadable === true
   ) {
-    out.add('git-sync-missed-intervals');
+    // The bare family key marks EVERY per-install signature unobservable (isUnobservableLivenessSignature).
+    out.add(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
   }
   return out;
 }
@@ -1020,10 +1057,18 @@ export function resolveEvidenceFor(
     // Absent ≠ clear — the panel we would have judged was not in the snapshot at all.
     return `observed panel ${key} status=panel-absent${gate}`;
   }
-  if (sig === 'git-sync-missed-intervals') {
+  if (isGitSyncMissedIntervalsSignature(sig)) {
     const dp = health.panels.deploy;
     const missed = dp?.data?.gitSyncMaxMissedIntervals;
-    return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+    const slug = sig.length > GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length
+      ? sig.slice(GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length + 1)
+      : null;
+    const perInstall = dp?.data?.gitSyncMissedIntervalsByInstall;
+    // Absent from the per-install list = 0 missed (the list keeps every install with missed > 0).
+    const installNote = slug && Array.isArray(perInstall)
+      ? ` ${slug} missedIntervals=${perInstall.find((e) => e.installSlug === slug)?.missedIntervals ?? 0}`
+      : '';
+    return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'}${installNote} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
   }
   const wf = health.panels.workFeed;
   const d = wf?.data ?? null;
@@ -1234,7 +1279,8 @@ export function deriveSignatureFromSummary(summary: string): string | null {
     return 'overwatch-dark';
   if (/LLM pool account\(s\) (?:paused|unavailable by a fresh capacity projection)/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
-  if (/^git-sync\b.* has missed \d+ consecutive scheduler intervals/.test(s)) return 'git-sync-missed-intervals';
+  const gitSyncMissedMatch = /^git-sync\b(?: on (\S+))?.* has missed \d+ consecutive scheduler intervals/.exec(s);
+  if (gitSyncMissedMatch) return gitSyncMissedIntervalsSignature(gitSyncMissedMatch[1] ?? null);
   // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".
   const fireStaleMatch = /^([^@\s]+)@\S+ has not fired in/.exec(s);
   if (fireStaleMatch) return `autoloop-fire-stale:${fireStaleMatch[1]}`;
@@ -1254,7 +1300,16 @@ export function deriveSignatureFromSummary(summary: string): string | null {
  */
 export function livenessSignatureOf(rec: EscalationRecord): string | null {
   const explicit = (rec as Record<string, unknown>).livenessSignature;
-  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+  if (typeof explicit === 'string' && explicit.length > 0) {
+    // WI-10006786: a row stamped before the per-install split carries the bare family key. Re-key it
+    // by the install its summary names, so it dedupes and resolves with THAT install's signal instead
+    // of either absorbing every install's breach or resolving on the split as a false recovery.
+    if (explicit === GIT_SYNC_MISSED_INTERVALS_SIGNATURE) {
+      const derived = deriveSignatureFromSummary(rec.summary ?? '');
+      if (derived && isGitSyncMissedIntervalsSignature(derived)) return derived;
+    }
+    return explicit;
+  }
   return deriveSignatureFromSummary(rec.summary ?? '');
 }
 
@@ -2076,7 +2131,7 @@ export async function runLivenessAlarmTick(
   const transitionedBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
-    if (unobservableSigs.has(sig)) continue; // NOT OBSERVED this tick ≠ recovered
+    if (isUnobservableLivenessSignature(unobservableSigs, sig)) continue; // NOT OBSERVED this tick ≠ recovered
     // NOTE: a POLICY-SUPPRESSED signature is deliberately NOT skipped here. Closing its
     // row is correct — an idle-by-design fleet needs no human attention, so the open
     // "no bees running" blocker is a false positive that must drain (the one-time

@@ -1785,16 +1785,17 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         // the push-failure escalation already owns it; this measure is for 'not firing at all'.
         const missed = typeof derived.freshness.missed_intervals === 'number' ? derived.freshness.missed_intervals : null;
         const lastStatus = typeof md.last_status === 'string' ? md.last_status : null;
-        if (
-          missed !== null &&
-          lastStatus !== 'error' &&
-          lastStatus !== 'conflict' &&
-          (gitSyncMaxMissedIntervals === null || missed > gitSyncMaxMissedIntervals)
-        ) {
-          gitSyncMaxMissedIntervals = missed;
-          gitSyncMissedIntervalsInstallSlug = r.install_slug;
+        if (missed !== null && lastStatus !== 'error' && lastStatus !== 'conflict') {
+          // WI-10006786: keep every install's reading, not only the max — the alarm keys one
+          // signal per install, so a long-dead install cannot mask another install's starvation.
+          if (missed > 0) gitSyncMissedIntervalsByInstall.push({ installSlug: r.install_slug, missedIntervals: missed });
+          if (gitSyncMaxMissedIntervals === null || missed > gitSyncMaxMissedIntervals) {
+            gitSyncMaxMissedIntervals = missed;
+            gitSyncMissedIntervalsInstallSlug = r.install_slug;
+          }
         }
       }
+      gitSyncMissedIntervalsByInstall.sort((a, b) => b.missedIntervals - a.missedIntervals);
     } catch {
       /* routine metadata unreadable — leave git-sync delivery fields at defaults */
       gitSyncMissedIntervalsUnreadable = true;
@@ -1833,6 +1834,7 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
       gitSyncFailingLeg,
       gitSyncMaxMissedIntervals,
       gitSyncMissedIntervalsInstallSlug,
+      gitSyncMissedIntervalsByInstall,
       gitSyncMissedIntervalsUnreadable,
       bgHostStartedAtMs,
       bgHostCodeStale,

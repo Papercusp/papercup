@@ -20,6 +20,9 @@ import {
   type FlapState,
   type FlapMutationResult,
   GIT_SYNC_MISSED_INTERVALS_ALARM,
+  GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+  isGitSyncMissedIntervalsSignature,
+  isUnobservableLivenessSignature,
 } from './liveness-alarm';
 import type { SystemHealth, HealthPanel, PanelKey, PanelStatus } from './types';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
@@ -63,7 +66,7 @@ describe('git-sync missed-interval alarm', () => {
       withDeploy({ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM + 1, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
       null,
     );
-    const s = sigs.find((x) => x.key === 'git-sync-missed-intervals');
+    const s = sigs.find((x) => x.key === 'git-sync-missed-intervals:papercusp');
     expect(s?.severity).toBe('blocker');
     expect(s?.summary).toContain('papercusp');
     expect(s?.summary).toContain(`missed ${GIT_SYNC_MISSED_INTERVALS_ALARM + 1}`);
@@ -71,7 +74,7 @@ describe('git-sync missed-interval alarm', () => {
 
   it('is silent at the threshold and when unmeasured', () => {
     for (const data of [{ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM }, { gitSyncMaxMissedIntervals: null }, {}]) {
-      expect(evaluateLivenessAlarm(withDeploy(data), null).map((x) => x.key)).not.toContain('git-sync-missed-intervals');
+      expect(evaluateLivenessAlarm(withDeploy(data), null).some((x) => isGitSyncMissedIntervalsSignature(x.key))).toBe(false);
     }
   });
 
@@ -97,8 +100,102 @@ describe('git-sync missed-interval alarm', () => {
     const fired = evaluateLivenessAlarm(
       withDeploy({ gitSyncMaxMissedIntervals: 7, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
       null,
-    ).find((x) => x.key === 'git-sync-missed-intervals');
-    expect(deriveSignatureFromSummary(`[infra-liveness] ${fired?.summary ?? ''}`)).toBe('git-sync-missed-intervals');
+    ).find((x) => x.key === 'git-sync-missed-intervals:papercusp');
+    expect(deriveSignatureFromSummary(`[infra-liveness] ${fired?.summary ?? ''}`)).toBe('git-sync-missed-intervals:papercusp');
+  });
+
+  // WI-10006786: measured 2026-10-06 — thornbury-iphone-20260821 skipped every fire for 38 days, held the
+  // fleet-wide max, and kept ONE install-less row open for 11 days; papercusp's 6-interval starvation that
+  // day deduped onto it and was never named. One signal per install is the fix.
+  const DEAD = 'thornbury-iphone-20260821';
+  const deadInstallSummary =
+    `[infra-liveness] git-sync on ${DEAD} has missed 3883 consecutive scheduler intervals: nothing written there is being committed.`;
+
+  it('raises one signal PER starved install, so a long-dead install cannot mask another', () => {
+    const sigs = evaluateLivenessAlarm(
+      withDeploy({
+        gitSyncMaxMissedIntervals: 5490,
+        gitSyncMissedIntervalsInstallSlug: DEAD,
+        gitSyncMissedIntervalsByInstall: [
+          { installSlug: DEAD, missedIntervals: 5490 },
+          { installSlug: 'papercusp', missedIntervals: 6 },
+          { installSlug: 'calendar', missedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM },
+        ],
+      }),
+      null,
+    ).filter((x) => isGitSyncMissedIntervalsSignature(x.key));
+    expect(sigs.map((x) => x.key)).toEqual([`git-sync-missed-intervals:${DEAD}`, 'git-sync-missed-intervals:papercusp']);
+    const papercusp = sigs.find((x) => x.key === 'git-sync-missed-intervals:papercusp');
+    expect(papercusp?.severity).toBe('blocker');
+    expect(papercusp?.summary).toContain('git-sync on papercusp has missed 6 ');
+    expect(papercusp?.summary).not.toContain(DEAD);
+  });
+
+  it('the per-install list is authoritative when present: an empty list is silent despite a stale max', () => {
+    const sigs = evaluateLivenessAlarm(
+      withDeploy({ gitSyncMaxMissedIntervals: 9, gitSyncMissedIntervalsInstallSlug: 'papercusp', gitSyncMissedIntervalsByInstall: [] }),
+      null,
+    );
+    expect(sigs.some((x) => isGitSyncMissedIntervalsSignature(x.key))).toBe(false);
+  });
+
+  it('the bare family key in the unobservable set covers every per-install signature, and nothing else', () => {
+    const marker = new Set([GIT_SYNC_MISSED_INTERVALS_SIGNATURE]);
+    expect(isUnobservableLivenessSignature(marker, 'git-sync-missed-intervals:papercusp')).toBe(true);
+    expect(isUnobservableLivenessSignature(marker, GIT_SYNC_MISSED_INTERVALS_SIGNATURE)).toBe(true);
+    expect(isUnobservableLivenessSignature(marker, 'dead-routines')).toBe(false);
+    expect(isUnobservableLivenessSignature(new Set(), 'git-sync-missed-intervals:papercusp')).toBe(false);
+  });
+
+  it('a legacy row stamped with the bare key is re-keyed by the install its summary names', () => {
+    const legacy = { msg_id: 'm-legacy', severity: 'blocker', summary: deadInstallSummary, livenessSignature: GIT_SYNC_MISSED_INTERVALS_SIGNATURE } as unknown as EscalationRecord;
+    expect(livenessSignatureOf(legacy)).toBe(`git-sync-missed-intervals:${DEAD}`);
+    const unnamed = { ...legacy, summary: '[infra-liveness] git-sync has missed 5 consecutive scheduler intervals: x' } as unknown as EscalationRecord;
+    expect(livenessSignatureOf(unnamed)).toBe(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
+  });
+
+  it('resolve evidence names the install a per-install signature measured', () => {
+    const h = withDeploy({ gitSyncMaxMissedIntervals: 40, gitSyncMissedIntervalsByInstall: [{ installSlug: DEAD, missedIntervals: 40 }] });
+    expect(resolveEvidenceFor('git-sync-missed-intervals:papercusp', h)).toBe(
+      `observed deploy status=ok gitSyncMaxMissedIntervals=40 papercusp missedIntervals=0 (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`,
+    );
+  });
+
+  it('end to end: an open dead-install row neither absorbs a fresh starvation nor falsely resolves', async () => {
+    _resetLivenessAlarmDebounce();
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: {
+        deploy: {
+          data: {
+            gitSyncMaxMissedIntervals: 5490,
+            gitSyncMissedIntervalsInstallSlug: DEAD,
+            gitSyncMissedIntervalsByInstall: [
+              { installSlug: DEAD, missedIntervals: 5490 },
+              { installSlug: 'papercusp', missedIntervals: 6 },
+            ],
+          },
+        },
+      },
+    });
+    const legacy = { msg_id: 'm-legacy', severity: 'blocker', summary: deadInstallSummary, from: INFRA_LIVENESS_IDENTITY.ownerId, livenessSignature: GIT_SYNC_MISSED_INTERVALS_SIGNATURE } as unknown as EscalationRecord;
+    const escalated: Array<{ summary: string; meta?: Record<string, unknown> }> = [];
+    const resolvedIds: string[] = [];
+    const r = await runLivenessAlarmTick('ws', {
+      readLast: () => health,
+      computeHealth: async () => health,
+      listOpen: async () => [legacy],
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+      escalate: async (input) => { escalated.push(input as { summary: string; meta?: Record<string, unknown> }); },
+      resolve: async (msgId: string) => { resolvedIds.push(msgId); },
+      page: async () => {},
+    });
+    expect(r.fired.map((s) => s.key)).toEqual(['git-sync-missed-intervals:papercusp']);
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0].summary).toContain('git-sync on papercusp has missed 6 ');
+    expect(escalated[0].meta?.subjectSignature).toBe('git-sync-missed-intervals:papercusp');
+    expect(resolvedIds).toEqual([]);
   });
 });
 
