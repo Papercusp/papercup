@@ -1787,6 +1787,34 @@ function headModuleCandidates(relPath: string): string[] {
   ];
 }
 
+/**
+ * WI-10006734: working-tree JS/TS modules that the index bound to `runGit` does not provide —
+ * untracked, non-ignored files whose module path no indexed file resolves either (`foo.ts`
+ * untracked while `foo.js` or `foo/index.ts` is indexed still resolves). An ignored module is
+ * a build artifact by design and is never reported. Fails closed: when the index cannot be
+ * read, the guard cannot tell what the commit contains.
+ */
+async function untrackedModulesAbsentFromIndex(
+  runGit: RunGit,
+  repoPath: string,
+): Promise<{ ok: true; paths: string[] } | { ok: false; error: string }> {
+  const others = await runGit(['ls-files', '-z', '--others', '--exclude-standard'], repoPath);
+  if (others.code !== 0) return { ok: false, error: `could not list untracked files: ${gitFailureDetail(others)}` };
+  const modules = others.stdout
+    .split('\0')
+    .filter((path) => path && !path.endsWith('.d.ts') && RESOLVABLE_EXTS.some((ext) => path.endsWith(ext)));
+  if (modules.length === 0) return { ok: true, paths: [] };
+  const candidates = [...new Set(modules.flatMap((path) => headModuleCandidates(path)))];
+  const indexed = new Set<string>();
+  for (let i = 0; i < candidates.length; i += 500) {
+    const chunk = candidates.slice(i, i + 500).map((path) => `:(literal)${path}`);
+    const listed = await runGit(['ls-files', '-z', '--cached', '--', ...chunk], repoPath);
+    if (listed.code !== 0) return { ok: false, error: `could not read the index for untracked modules: ${gitFailureDetail(listed)}` };
+    for (const path of listed.stdout.split('\0')) if (path) indexed.add(path);
+  }
+  return { ok: true, paths: modules.filter((path) => !headModuleCandidates(path).some((c) => indexed.has(c))) };
+}
+
 async function isModuleResolvableAtHead(
   runGit: RunGit,
   repoPath: string,
@@ -3827,7 +3855,10 @@ export type PostStageGuardResult =
  *  - LATE-LOCKED paths: staged paths that a live lock now covers;
  *  - DRIFTED paths: staged paths whose working-tree content no longer matches the index
  *    (the staged blob was a transient state, e.g. a probe's mutant since restored);
- *  - their dirty importers, so an importer never lands without the module it needs.
+ *  - their dirty importers, so an importer never lands without the module it needs;
+ *  - WI-10006734: staged importers of an UNTRACKED module this index does not provide
+ *    (84959c3039 committed `import('../integrations/ticket-integrations')` while that
+ *    module stayed untracked for 39 minutes, and every isolated bundle failed).
  * Unstaged paths stay dirty in the working tree and are re-examined by the next tick,
  * with the full content guard pipeline, instead of being re-staged here unscanned.
  *
@@ -3949,20 +3980,31 @@ export async function guardStagedIndexBeforeCommit(opts: {
     ...packageClosure.paths,
   ]);
   const excludedDependencies = [...new Set([...(opts.excludedDependencies ?? []), ...alwaysInfectious])];
-  const importerOffenders = excludedDependencies.length > 0
+  // WI-10006734: an untracked module is absent from this commit whether or not anything
+  // excluded it, so a staged importer of it is as unresolvable as an importer of an excluded
+  // path. `runGit` is bound to the index this commit records (an attributed group's private
+  // index), so "absent" is judged against exactly that tree.
+  const absent = await untrackedModulesAbsentFromIndex(runGit, repoPath);
+  if (!absent.ok) return { ok: false, error: `post-stage guard ${absent.error}` };
+  const absentFromIndex = new Set(absent.paths);
+  const importerDependencies = [...new Set([...excludedDependencies, ...absentFromIndex])];
+  const importerOffenders = importerDependencies.length > 0
     ? await detectQuarantineImporters({
         readText: opts.readText,
         dirtyFiles: staged,
-        alreadyQuarantined: excludedDependencies,
+        alreadyQuarantined: importerDependencies,
         isResolvableAtHead: async (path) => {
-          if (alwaysInfectious.has(path)) return false;
+          if (alwaysInfectious.has(path) || absentFromIndex.has(path)) return false;
           return isModuleResolvableAtHead(runGit, repoPath, path, log);
         },
-        exclusionLabel: 'post-stage exclusion',
+        exclusionLabel: 'post-stage exclusion, or untracked and absent from this commit',
         log,
       })
     : [];
   const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
+  for (const offender of importerOffenders) {
+    if (stagedSet.has(offender.file)) log(`[git-sync] ${scope}: post-stage guard: ${offender.file} ${offender.error}`);
+  }
   const pathsToUnstage = [...new Set([...excludedDependencies, ...importers])].filter((path) => stagedSet.has(path));
   let unstagedPaths: string[] = [];
   if (pathsToUnstage.length > 0) {
