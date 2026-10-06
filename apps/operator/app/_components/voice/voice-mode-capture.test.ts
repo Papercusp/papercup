@@ -451,6 +451,36 @@ describe('speak / cancelAllSpeech queue', () => {
     expect((globalThis as any).window.speechSynthesis.cancel).toHaveBeenCalled();
   });
 
+  // R-4 output mute (voice-final-public-release-2026-10-01, WI-10004760): the
+  // voice-bar mute must silence the reply that is ALREADY playing and drop its
+  // queued sentences, not only gate the next reply — and it must not interrupt
+  // the voice turn itself (the answer still lands in the chat).
+  it('muting output stops the reply already playing and drops its queued sentences', async () => {
+    const prefs = await import('./voice-prefs-client');
+    prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
+    const mod = await loadVoiceMode();
+    mod.setVoiceOutputMuted(false);
+    mod.setVoiceMode('push-to-talk');
+    const synth = (globalThis as any).window.speechSynthesis;
+    const turnEvents: string[] = [];
+    (globalThis as any).window.addEventListener?.('papercusp:voiceTurnEvent', (e: Event) => {
+      turnEvents.push(String((e as CustomEvent<{ type?: string }>).detail?.type));
+    });
+    mod.speak('first sentence', 'system:operator');
+    mod.speak('second sentence', 'system:operator');
+    expect(synth.speak).toHaveBeenCalledTimes(1);
+    synth.cancel.mockClear();
+
+    mod.setVoiceOutputMuted(true);
+    expect(synth.cancel, 'mute cancels the audible reply').toHaveBeenCalled();
+    // The engine reports the cancelled utterance as ended; the queue must be empty.
+    const first = synth.speak.mock.calls[0]?.[0] as { onend?: () => void } | undefined;
+    first?.onend?.();
+    expect(synth.speak, 'the queued second sentence never starts').toHaveBeenCalledTimes(1);
+    expect(turnEvents.filter((t) => /interrupt/i.test(t)), 'mute is not a barge-in').toEqual([]);
+    mod.setVoiceOutputMuted(false);
+  });
+
   it('does not speak when voice mode is off and force is not set', async () => {
     const mod = await loadVoiceMode();
     mod.speak('quiet', 'system:operator'); // mode off, no force → gated out
