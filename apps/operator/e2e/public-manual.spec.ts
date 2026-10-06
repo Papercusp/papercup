@@ -38,3 +38,44 @@ test('a new guide is present in the actual Pagefind search index', async ({ page
   await result.click();
   await expect(page.getByRole('heading', { level: 1, name: 'Agent modes and fleets' })).toBeVisible();
 });
+
+for (const [device, viewport] of [
+  ['desktop', { width: 1280, height: 720 }],
+  ['mobile', { width: 375, height: 812 }],
+] as const) {
+  test(`Common questions has a reloadable public bookmark and readable answers on ${device}`, async ({ page }) => {
+    // Select the reader's layout before navigation; resizing an already-scrolled
+    // page preserves a pixel position instead of opening a new mobile bookmark.
+    await page.setViewportSize(viewport);
+    await page.goto('/docs');
+    if (device === 'mobile') {
+      await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    }
+    const faqLink = page.getByRole('link', { name: 'Common questions', exact: true }).first();
+    await expect(faqLink).toBeVisible();
+    await faqLink.click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Common questions' })).toBeVisible();
+    await expect(page.locator('main h2')).toHaveCount(20);
+    // Reload immediately: waiting for the first jump would hide the smooth-scroll
+    // race that used to restore the page at the top instead of this answer.
+    await page.goto('/docs/faq#where-should-i-enter-credentials');
+    await page.reload();
+    await expect(page.locator('#where-should-i-enter-credentials')).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(page.getByRole('main')).toContainText('Do not');
+  });
+}
+
+test('Common questions is found through alternate wording in the actual Pagefind index', async ({ page }) => {
+  for (const query of ['Can I paste an API key into chat', 'Do stopped disks still cost money']) {
+    await page.goto('/docs');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.locator('input').first().fill(query);
+    const result = dialog.locator('.pagefind-ui__result-link').filter({ hasText: 'Common questions' }).first();
+    await expect(result, query).toBeVisible();
+    await result.click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Common questions' })).toBeVisible();
+    expect(page.url()).toContain('/docs/faq');
+  }
+});
