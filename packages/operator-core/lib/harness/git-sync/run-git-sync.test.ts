@@ -102,9 +102,20 @@ function configUser(repo: string): void {
   git(repo, 'config', 'commit.gpgsign', 'false');
 }
 
-/** Avoid the production spawner sidecar in this focused real-git regression. */
-const directRunGit: RunGit = async (args, cwd) => {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+/**
+ * Avoid the production spawner sidecar in this focused real-git regression.
+ * Forwards `options.env` as an overlay, exactly like the production runners:
+ * attributed commits bind a private GIT_INDEX_FILE through it (WI-10006705) and
+ * refuse to run on a runner that drops it.
+ */
+const directRunGit: RunGit = async (args, cwd, options) => {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+    env: options?.env ? { ...process.env, ...options.env } : process.env,
+  });
   return {
     code: result.status ?? -1,
     stdout: String(result.stdout ?? ''),
@@ -2752,25 +2763,31 @@ describe('runGitSync (real git, no submodule)', () => {
     writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
 
     // A real-git runner (non-throwing: returns {code} instead of throwing on non-zero).
-    const realGit: RunGit = async (args, cwd) => {
-      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+    // It forwards `options.env`: attributed commits run on a private GIT_INDEX_FILE.
+    const realGit: RunGit = async (args, cwd, options) => {
+      const r = spawnSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+        env: options?.env ? { ...process.env, ...options.env } : process.env,
+      });
       return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
     // Fail ONLY the first attributed commit — the one carrying a `Papercusp-Agent:` trailer
     // (the catch-all auto-commit never does, so it runs for real). Do NOT execute it, exactly
-    // like an index.lock race that never wrote the commit.
+    // like a write that never produced the commit.
     let attributedCommitFailed = false;
-    const runGit: RunGit = async (args, cwd) => {
-      // WI-5111: commit calls now carry a leading `-c user.name=... -c
-      // user.email=...` bot-identity override before the `commit` subcommand
-      // (run-git-sync.ts GIT_SYNC_IDENTITY_ARGS) — match on inclusion, not
-      // args[0], so this injected fault still targets the right call.
-      const isAttributedCommit = args.includes('commit') && args.some((a) => a.startsWith('Papercusp-Agent:'));
+    const runGit: RunGit = async (args, cwd, options) => {
+      // WI-5111: the bot-identity `-c` override precedes the subcommand, so match on
+      // inclusion, not args[0]. WI-10006705: attributed commits are `commit-tree` on a
+      // private index (published by an update-ref CAS), no longer `commit`.
+      const isAttributedCommit = args.includes('commit-tree') && args.some((a) => a.startsWith('Papercusp-Agent:'));
       if (isAttributedCommit && !attributedCommitFailed) {
         attributedCommitFailed = true;
         return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };
       }
-      return realGit(args, cwd);
+      return realGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', {
@@ -2802,17 +2819,26 @@ describe('runGitSync (real git, no submodule)', () => {
     writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed → cup-7
     writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
 
-    const realGit: RunGit = async (args, cwd) => {
-      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+    const realGit: RunGit = async (args, cwd, options) => {
+      const r = spawnSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+        env: options?.env ? { ...process.env, ...options.env } : process.env,
+      });
       return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
+    // WI-10006705: the attributed add runs on a PRIVATE index (GIT_INDEX_FILE in
+    // options.env); the catch-all `add -A` never carries one, so it runs for real.
     let attributedAddFailed = false;
-    const runGit: RunGit = async (args, cwd) => {
-      if (args[0] === 'add' && args[1] === '--' && args.includes('mine.txt') && !attributedAddFailed) {
+    const runGit: RunGit = async (args, cwd, options) => {
+      const onPrivateIndex = Boolean(options?.env?.GIT_INDEX_FILE);
+      if (onPrivateIndex && args[0] === 'add' && args[1] === '--' && args.includes('mine.txt') && !attributedAddFailed) {
         attributedAddFailed = true;
         return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };
       }
-      return realGit(args, cwd);
+      return realGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', {
@@ -5059,8 +5085,6 @@ const UNWRAPPED_INDEX_WRITER_ALLOWLIST: Record<string, string> = {
     'Best-effort cleanup on an already-failing transplant path: the result is ignored and the tick reports error regardless.',
   "runGit(['merge', '--abort']":
     'Cleanup after a merge that already ran through recoverIndexLockContention this tick, which reclaimed any orphaned lock.',
-  "runGit(['add', '--', ...g.files]":
-    'A nonzero group add returns before its commit; the caller logs the error, then the STRANDING GUARD catch-all `git add -A` retries these files (WI-1316).',
 };
 
 async function findUnwrappedIndexWriters(source: string): Promise<Array<{ line: number; text: string }>> {
