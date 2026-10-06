@@ -10,8 +10,8 @@
  *
  * The mechanism is covered behaviourally in
  * `sync/pot-git/worktree-bridge.integration.test.ts`. This file pins the part a
- * library test cannot see: that the git-sync leg actually CALLS it, on both the
- * idle path and the accepted-nothing path. `runWorktreeBridgeLeg` is internal and
+ * library test cannot see: that the git-sync leg actually CALLS it, on the idle
+ * path and after every tick (WI-10006476: accepting ticks too). `runWorktreeBridgeLeg` is internal and
  * PG-coupled, so the pin reads its source, scoped to the function body.
  */
 import { readFileSync } from 'node:fs';
@@ -42,10 +42,13 @@ describe('WI-10003772: runWorktreeBridgeLeg runs the deferred-advance retry swee
     expect(leg).not.toMatch(/if \(feRows\.length === 0\) return;/);
   });
 
-  it('a tick that accepted nothing also retries, against the tick watermark', () => {
-    expect(leg).toMatch(
-      /if \(outcome\.acceptedCount === 0 && outcome\.watermark\.stagingSha\) \{\s*await runWorktreeCatchUp\(/,
-    );
+  // WI-10006476 (D-055): EVERY tick with a watermark sweeps, accepting ticks included. The
+  // tick's own advance returns a conflict as an unrecorded `diverged-manual`, and while a
+  // peer keeps committing every tick accepts — the old `acceptedCount === 0` gate meant a
+  // live hive never recorded the divergence (c1006k, 10:52Z + 11:02Z ticks).
+  it('every tick with a watermark retries against it, accepting ticks included', () => {
+    expect(leg).toMatch(/if \(outcome\.watermark\.stagingSha\) \{\s*await runWorktreeCatchUp\(/);
+    expect(leg).not.toMatch(/acceptedCount === 0 &&[^{]*\{\s*await runWorktreeCatchUp\(/);
   });
 
   it('the sweep delegates to the ff-only, dirty-safe library catch-up', () => {

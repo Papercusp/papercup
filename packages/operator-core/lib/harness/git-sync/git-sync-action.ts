@@ -7297,7 +7297,14 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // WI-10003772: a tick that consumed announcements but accepted none
     // (stale / replayed / held) re-bridged nothing, so it is also the moment to
     // retry a worktree still trailing the accepted watermark.
-    if (outcome.acceptedCount === 0 && outcome.watermark.stagingSha) {
+    // WI-10006476 (D-055): an ACCEPTING tick runs the sweep too. The tick's own
+    // advance reports a conflicting member as a bare `diverged-manual` that nobody
+    // records, and while a peer keeps committing EVERY tick accepts — gating on
+    // acceptedCount === 0 meant a live hive never recorded (or dispatched) the
+    // divergence (c1006k: the 10:52Z and 11:02Z ticks each accepted, worktree
+    // diverged, no record). After a clean advance the sweep short-circuits as
+    // `current`, which also clears a stale record.
+    if (outcome.watermark.stagingSha) {
       await runWorktreeCatchUp(catchUpCtx, repoPath, worktreePath, outcome.watermark.stagingSha);
     }
   } catch (e) {
