@@ -14,11 +14,13 @@ import { describe, expect, it } from 'vitest';
 import { NON_FLOOR_LABELS, STRUCTURAL_CLAIM_FLOORS, TRANSIENT_CLAIM_FLOORS } from './claim-floor-classification';
 import { EXTERNAL_BLOCKER_CAPABILITIES, externalBlockerCapabilityPolicy } from './external-blockers';
 import { AGENT_REVIEW_STATUSES, createImplementationReadiness } from './harness/improvements/agent-review-policy';
+import { STRANDED_REVIEW_REASONS } from './harness/improvements/capture-core';
 import {
   HOLD_PAYLOAD_KEYS,
   HOLD_REGISTRY,
   LEGACY_ACCEPTANCE_ADOPTION_REASON_PREFIX,
   OWNER_CAPABILITIES,
+  RetiredHoldError,
   UnmappedHoldError,
   assertHoldRegistered,
   claimFloorLabels,
@@ -117,6 +119,40 @@ describe('hold registry: unregistered holds are refused at the write', () => {
       createImplementationReadiness({ status: 'unknown', source: 'creation-enrollment', reason: 'no-acceptance-evidence-at-creation' }).reason,
     ).toBe('no-acceptance-evidence-at-creation');
     expect(createImplementationReadiness({ status: 'ready', source: 'capture-policy', reason: 'immediate capture' }).status).toBe('ready');
+  });
+
+  // P-008 / D-038: a retired reason is refused at the write but still RESOLVES. A deployed build
+  // that predates the retirement keeps stamping it until it ships, and a row already carrying it
+  // must keep naming a clearer — deleting the entry would make the census report it as a hold
+  // nobody ends (AUTO-BAR-R-4's falsifier) while the sweep is in fact clearing it.
+  it('a retired reason still resolves to its clearer but is refused at the write', () => {
+    const retired = HOLD_REGISTRY.filter((e) => e.retired);
+    expect(retired.map((e) => e.key)).toEqual(
+      expect.arrayContaining(['corroborated-tool-failure-awaiting-review', 'deployment-freshness-unknown']),
+    );
+    for (const e of retired) {
+      expect(resolveHold(e.domain, e.key)?.clearer.kind, e.key).toBe(e.clearer.kind);
+      expect(() => assertHoldRegistered(e.domain, e.key), e.key).toThrow(RetiredHoldError);
+      try {
+        assertHoldRegistered(e.domain, e.key);
+      } catch (err) {
+        expect((err as RetiredHoldError).code).toBe('retired_hold');
+        expect((err as RetiredHoldError).retiredBy).toBe(e.retired?.by);
+      }
+      if (e.domain === 'readiness') {
+        expect(() => createImplementationReadiness({ status: 'unknown', source: 'capture-policy', reason: e.key }), e.key).toThrow(
+          RetiredHoldError,
+        );
+      }
+    }
+  });
+
+  it('every retired readiness reason the stranded sweep clears is one the sweep actually selects', () => {
+    const sweptRetired = HOLD_REGISTRY.filter(
+      (e) => e.retired && e.domain === 'readiness' && e.clearer.ref.startsWith('stranded-tool-failure-sweep'),
+    );
+    expect(sweptRetired.length).toBeGreaterThan(0);
+    for (const e of sweptRetired) expect(STRANDED_REVIEW_REASONS, e.key).toContain(e.key);
   });
 
   it('a prefix entry matches only its stem followed by a space', () => {
