@@ -192,6 +192,13 @@ export interface CreatePotFromRepoDeps {
   chooseIntegrationMode?: (
     input: import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeInput,
   ) => Promise<import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeResult>;
+  /** P-018: the repo facts the integration recommendation reads. Default: fetchRepoIntegrationFacts (GitHub). */
+  fetchIntegrationFacts?: (
+    owner: string,
+    repo: string,
+  ) => Promise<import('../../harness/github-repo-permissions').RepoIntegrationFacts | null>;
+  /** P-018: PotControlPolicy.newPotIntegrationMode. Default: the cached workspace policy. */
+  integrationModePolicyDefault?: () => 'direct' | 'review' | null;
   /** P-017: the pot's real test suite (no build fallback). Default:
    *  resolvePotSuiteCommand (lazy-imported). */
   resolveSuiteCommand?: (slug: string, workspaceId: string) => Promise<string | null>;
@@ -474,6 +481,44 @@ export async function createPotFromRepo(
     potSlug = slugs.potSlug;
   }
 
+  // 2.5 — P-018: recommend (and maybe lock) the integration answer from the
+  //       repo's checkable facts, BEFORE any side effect, so a contradicted
+  //       lock refuses cleanly. Unanswered ⇒ the lock, else the workspace
+  //       default (PotControlPolicy.newPotIntegrationMode), else 'direct'.
+  let integrationRecommendation:
+    | import('../../harness/git-sync/integration-mode-recommendation').IntegrationModeRecommendation
+    | undefined;
+  let effectiveIntegrationMode: 'direct' | 'review' = opts.integrationMode ?? 'direct';
+  if (!intoPot) {
+    const fetchFacts =
+      deps.fetchIntegrationFacts ??
+      (async (owner: string, repo: string) =>
+        (await import('../../harness/github-repo-permissions')).fetchRepoIntegrationFacts(owner, repo));
+    const policyDefault = deps.integrationModePolicyDefault
+      ? deps.integrationModePolicyDefault()
+      : await import('../../pot-control-policy')
+          .then((m) => m.resolveNewPotIntegrationModeDefault(m.placementOverride()))
+          .catch(() => null);
+    const facts = await fetchFacts(parsed.owner, parsed.repo).catch(() => null);
+    const { recommendIntegrationMode } = await import('../../harness/git-sync/integration-mode-recommendation');
+    integrationRecommendation = recommendIntegrationMode(facts, {
+      repoLabel: `${parsed.owner}/${parsed.repo}`,
+      policyDefault,
+    });
+    if (integrationRecommendation.locked) {
+      if (opts.integrationMode && opts.integrationMode !== integrationRecommendation.recommended) {
+        return {
+          ok: false,
+          error: 'integration_mode_locked',
+          message: `"${opts.integrationMode}" is not allowed for ${parsed.owner}/${parsed.repo}: ${integrationRecommendation.reason}`,
+        };
+      }
+      effectiveIntegrationMode = integrationRecommendation.recommended;
+    } else if (!opts.integrationMode && policyDefault) {
+      effectiveIntegrationMode = policyDefault;
+    }
+  }
+
   const cleanup: string[] = [];
 
   // 3 — clone the member checkout.
@@ -631,7 +676,7 @@ export async function createPotFromRepo(
   let integrationMode:
     | import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeResult
     | undefined;
-  if (!intoPot && opts.integrationMode === 'review') {
+  if (!intoPot && effectiveIntegrationMode === 'review') {
     const resolveSuite =
       deps.resolveSuiteCommand ??
       (async (slug: string, ws: string) =>
@@ -763,5 +808,6 @@ export async function createPotFromRepo(
     gitSync,
     ...(hiveGitMode ? { hiveGitMode } : {}),
     ...(integrationMode ? { integrationMode } : {}),
+    ...(integrationRecommendation ? { integrationRecommendation } : {}),
   };
 }
