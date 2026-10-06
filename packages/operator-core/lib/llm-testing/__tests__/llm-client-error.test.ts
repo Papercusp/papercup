@@ -271,6 +271,19 @@ describe('llmCall successful usage completeness', () => {
         .toMatchObject({ text: 'finished', costUsd: 0.42, costUsdMeasurementMissing: true });
     } finally { events.length = 0; }
   });
+
+  it.each(['event', 'iterator'])('retains invalid-frame missingness when the %s then fails', async failureKind => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'partial', tokensIn: 12, tokensOut: 4, costUsd: 0.42 },
+      { type: 'result', finalText: 'finished', tokensIn: 13, tokensOut: 5, costUsd: NaN });
+    if (failureKind === 'event') events.push({ type: 'error', message: 'failed after result' });
+    else streamFailure = new Error('failed after result');
+    try {
+      const { llmCall } = await import('../llm-client');
+      await expect(llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged' }] }))
+        .rejects.toMatchObject({ costUsd: 0.42, costUsdMeasurementMissing: true });
+    } finally { events.length = 0; streamFailure = undefined; }
+  });
 });
 
 describe('llmCall subprocess error surfacing', () => {

@@ -159,6 +159,41 @@ describe('independent replay source materialization', () => {
   });
 });
 describe('daemon replay qualification', () => {
+  it('hashes complete multi-chunk binary bytes and reports each final validation attempt', () => {
+    const frozen = config();
+    const binary = join(frozen.rootPath, 'runtime.bin');
+    const bytes = Buffer.alloc(192 * 1024 + 17);
+    for (let index = 0; index < bytes.length; index++) bytes[index] = index % 251;
+    writeFileSync(binary, bytes);
+    const missing = join(frozen.rootPath, 'absent.bin');
+    const files = { ...frozen.files, [binary]: replayHash(bytes), [missing]: replayHash('absent') };
+    const progress: { phase: string; file?: string; completed: number; total: number }[] = [];
+    expect(replayFileMismatches(files, { onProgress: row => progress.push(row) })).toEqual([`unreadable-file:${missing}`]);
+    const completed = progress.filter(row => row.phase === 'file-validated');
+    expect(completed.map(row => row.file)).toEqual(Object.keys(files));
+    expect(completed.map(row => row.completed)).toEqual([1, 2, 3]);
+    expect(progress.find(row => row.file === binary)).toMatchObject({ phase: 'files-validating', completed: 1, total: 3 });
+    bytes[bytes.length - 1] ^= 255;
+    writeFileSync(binary, bytes);
+    expect(replayFileMismatches(files)).toEqual([`changed-file:${binary}`, `unreadable-file:${missing}`]);
+  });
+  it('refuses a mutation during final file validation and never emits frozen success', () => {
+    const frozen = config();
+    const root = frozen.rootPath;
+    const source = join(root, 'source.ts');
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], compilerOptions: { noLib: true } }));
+    const phases: string[] = [];
+    expect(() => freezeCompilerReplayConfig({ runId: 'validation-drift', rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'source.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [], evidenceRef: 'final-validation-mutation-control' }, { onProgress: progress => {
+        phases.push(progress.phase);
+        if (progress.phase === 'files-validating' && progress.file === source)
+          writeFileSync(source, 'export function replacement() {}\nreplacement();\n');
+      } })).toThrow(`changed-file:${source}`);
+    expect(phases).toContain('file-validated');
+    expect(phases).not.toContain('validated');
+  });
   it('freezes source and exact oracle before querying, and rejects cursor/source drift', () => {
     const frozen = config();
     expect(() => validateDaemonReplayConfig(frozen)).not.toThrow();

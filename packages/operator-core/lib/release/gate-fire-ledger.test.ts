@@ -77,6 +77,33 @@ describe('first required suite after named pure capture', () => {
     const input = fixture(); input.read.rows[3]!.detail.candidateSource = 'pinned';
     expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'pass', runId: 'second', excludedRunIds: ['first'] });
   });
+  const frozenRepair = (detail: Record<string, unknown>) => {
+    const frozenCandidate = 'b'.repeat(12);
+    const repairHead = sha.slice(0, 12);
+    Object.assign(detail, { candidate: frozenCandidate, frozenCandidate, repairHead,
+      verdictProvenance: { frozenCandidate, repairHead, phase: 'repairing',
+        frozenCandidateVerdict: 'full-gate-red', repairHeadVerdict: 'full-gate-red' } });
+  };
+  it.each([1, 3])('uses recorded judged repair-head provenance at outcome index %s', (index) => {
+    const input = fixture(); frozenRepair(input.read.rows[index]!.detail);
+    expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'pass', runId: 'first', pureReused: 1 });
+  });
+  it.each(['missing-provenance', 'unjudged-head', 'foreign-head', 'foreign-pin', 'conflicting-archive'])(
+    'keeps %s repair-head evidence unknown', (condition) => {
+      const input = fixture(); const detail = input.read.rows[3]!.detail;
+      frozenRepair(detail);
+      const provenance = detail.verdictProvenance as Record<string, unknown>;
+      if (condition === 'missing-provenance') delete detail.verdictProvenance;
+      if (condition === 'unjudged-head') provenance.repairHeadVerdict = 'not-judged';
+      if (condition === 'foreign-head') detail.repairHead = 'c'.repeat(12);
+      if (condition === 'foreign-pin') detail.frozenCandidate = 'c'.repeat(12);
+      if (condition === 'conflicting-archive') {
+        const other = structuredClone(input.read.rows[3]!);
+        other.id = 'conflicting-outcome'; other.detail.repairHead = 'c'.repeat(12);
+        input.read.rows.push(other); input.read.total++;
+      }
+      expect(evaluateFirstPostCaptureGateReuse(input).verdict).toBe('unknown');
+    });
   it.each(['capped', 'missing-first-outcome', 'historical-scope', 'foreign-run', 'foreign-capture',
     'missing-verdict', 'empty-proofs', 'unknown-lane', 'late-suite', 'duplicate-event',
     'historical-provenance', 'diagnostic-capture'])(
@@ -130,6 +157,16 @@ describe('reuse audit population from immutable gate events', () => {
 
   it('retains an inline-retry miss without any final FAIL console row', () => {
     expect(evaluateGateReuseAuditWindow(fixture('fail'))).toMatchObject({ verdict: 'fail', alarms: 1 });
+  });
+  it('audits the measured repair head while the display candidate remains frozen', () => {
+    const r = fixture(); const detail = r.rows[1]!.detail;
+    const frozenCandidate = 'b'.repeat(12); const repairHead = sha.slice(0, 12);
+    Object.assign(detail, { candidate: frozenCandidate, frozenCandidate, repairHead,
+      verdictProvenance: { frozenCandidate, repairHead, phase: 'repairing',
+        frozenCandidateVerdict: 'full-gate-red', repairHeadVerdict: 'full-gate-red' } });
+    expect(evaluateGateReuseAuditWindow(r)).toMatchObject({ verdict: 'pass', audited: 1, runIds: ['run-1'] });
+    (detail.verdictProvenance as Record<string, unknown>).repairHeadVerdict = 'not-judged';
+    expect(evaluateGateReuseAuditWindow(r).verdict).toBe('unknown');
   });
 
   const withZeroDrawFire = (runtime?: Record<string, unknown>) => {

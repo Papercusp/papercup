@@ -1,7 +1,7 @@
 /** Daemon execution and qualification for the existing saturation CLI, P-012. */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
@@ -35,6 +35,17 @@ export interface DaemonReplayConfig {
   readonly sourceSnapshot?: ReplayOracleInput['sourceSnapshot'];
 }
 export const replayHash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+/** Runtime binaries can be large; hash their original bytes without a whole-file allocation. */
+function replayFileHash(file: string, buffer: Buffer): string {
+  const descriptor = openSync(file, 'r');
+  try {
+    const hash = createHash('sha256');
+    let count: number;
+    while ((count = readSync(descriptor, buffer, 0, buffer.length, null)) > 0)
+      hash.update(buffer.subarray(0, count));
+    return hash.digest('hex');
+  } finally { closeSync(descriptor); }
+}
 export const replaySourceFingerprint = (files: DaemonReplayConfig['files']) => replayHash(JSON.stringify(Object.entries(files).sort()));
 export const replayOracleFingerprint = (oracle: Pick<ReplayOracle, 'sites' | 'staleSites'>) => replayHash(JSON.stringify(oracle));
 export interface ReplayOracleInput {
@@ -223,10 +234,25 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
  * checker, never calls the subject adapter/server or learns sites from a warmup.
  * The explicit config/roots bound the population and are retained in the archive.
  */
+interface ReplayOracleProgress {
+  phase: 'config-parsed' | 'compiler-loaded' | 'oracle-resolved' | 'references-scanned' | 'files-validating' | 'file-validated' | 'validated';
+  completed: number;
+  total: number;
+  file?: string;
+}
 export function freezeCompilerReplayConfig(input: ReplayOracleInput, options: {
-  onProgress?: (progress: { phase: 'config-parsed' | 'compiler-loaded' | 'oracle-resolved' | 'references-scanned' | 'validated';
-    completed: number; total: number }) => void;
+  onProgress?: (progress: ReplayOracleProgress) => void;
 } = {}): DaemonReplayConfig {
+  // Only plain config data crosses this boundary. Do not keep the compiler graph
+  // reachable while rereading the complete source/config/binary population.
+  const { config, sourceCount } = compilerReplayConfig(input, options);
+  validateDaemonReplayConfig(config, options);
+  options.onProgress?.({ phase: 'validated', completed: sourceCount, total: sourceCount });
+  return config;
+}
+function compilerReplayConfig(input: ReplayOracleInput, options: {
+  onProgress?: (progress: ReplayOracleProgress) => void;
+}): { config: DaemonReplayConfig; sourceCount: number } {
   const tsconfigPath = resolve(input.rootPath, input.tsconfigPath);
   const loadedInputs = new Map<string, string>();
   // Capture the very bytes handed to the compiler, not a later disk read.
@@ -269,9 +295,10 @@ export function freezeCompilerReplayConfig(input: ReplayOracleInput, options: {
   // they are not candidate reference sites. Their drift invalidates the oracle.
   for (const source of program.getSourceFiles()) if (!loadedInputs.has(resolve(source.fileName)))
     throw new Error(`unmeasured-compiler-input:${source.fileName}`);
+  const hashBuffer = Buffer.allocUnsafe(64 * 1024);
   for (const file of input.runtimeFiles) {
     const absolute = resolve(input.rootPath, file);
-    const hash = replayHash(readFileSync(absolute));
+    const hash = replayFileHash(absolute, hashBuffer);
     if (files[absolute] && files[absolute] !== hash) throw new Error(`changed-compiler-input:${absolute}`);
     files[absolute] = hash;
   }
@@ -320,18 +347,29 @@ export function freezeCompilerReplayConfig(input: ReplayOracleInput, options: {
       evidenceRef: input.evidenceRef },
     corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) },
     ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}) };
-  validateDaemonReplayConfig(config);
-  options.onProgress?.({ phase: 'validated', completed: sourceFiles.length, total: sourceFiles.length });
-  return config;
+  return { config, sourceCount: sourceFiles.length };
 }
-export function replayFileMismatches(files: DaemonReplayConfig['files']): string[] {
-  return Object.entries(files).flatMap(([file, hash]) => {
-    try { return replayHash(readFileSync(file)) === hash ? [] : [`changed-file:${file}`]; }
-    catch { return [`unreadable-file:${file}`]; }
-  });
+export function replayFileMismatches(files: DaemonReplayConfig['files'], options: {
+  onProgress?: (progress: ReplayOracleProgress) => void;
+} = {}): string[] {
+  const entries = Object.entries(files);
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const mismatches: string[] = [];
+  options.onProgress?.({ phase: 'files-validating', completed: 0, total: entries.length });
+  for (const [index, [file, hash]] of entries.entries()) {
+    // Emit the exact pending file before opening it, so a stalled read remains
+    // distinguishable from a completed reference scan or a successful freeze.
+    options.onProgress?.({ phase: 'files-validating', file, completed: index, total: entries.length });
+    try { if (replayFileHash(file, buffer) !== hash) mismatches.push(`changed-file:${file}`); }
+    catch { mismatches.push(`unreadable-file:${file}`); }
+    options.onProgress?.({ phase: 'file-validated', file, completed: index + 1, total: entries.length });
+  }
+  return mismatches;
 }
 
-export function validateDaemonReplayConfig(config: DaemonReplayConfig): void {
+export function validateDaemonReplayConfig(config: DaemonReplayConfig, options: {
+  onProgress?: (progress: ReplayOracleProgress) => void;
+} = {}): void {
   if (config.schemaVersion !== 'lsp-daemon-replay-config-v1' || !/^[a-zA-Z0-9_-]+$/.test(config.runId))
     throw new Error('invalid replay config identity');
   if (!isAbsolute(config.rootPath) || !isAbsolute(config.socketPath) || !config.workspaceId)
@@ -372,7 +410,7 @@ export function validateDaemonReplayConfig(config: DaemonReplayConfig): void {
   }
   if (config.corpus.definition.oracle.sourceFingerprint !== config.corpus['hot-references'].oracle.sourceFingerprint)
     throw new Error('unmatched source fingerprints');
-  const drift = replayFileMismatches(config.files);
+  const drift = replayFileMismatches(config.files, options);
   if (drift.length) throw new Error(drift.join('\n'));
 }
 
