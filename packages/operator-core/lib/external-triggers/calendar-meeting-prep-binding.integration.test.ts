@@ -19,8 +19,13 @@ import type { Sql } from 'postgres';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg } from '../blueprint/project-to-pg';
+import { upsertDatatype } from '../datatype-registry-store';
 import { dispatchPendingTriggerRuns, queueExternalTriggerBindings } from './binding-engine';
-import { migrateExternalTriggerPlanBindingToOperation, setExternalTriggerBindingArmed } from './admin';
+import {
+  migrateExternalTriggerPlanBindingToOperation,
+  queueExternalTriggerLastEventTestRun,
+  setExternalTriggerBindingArmed,
+} from './admin';
 import type { CanonicalExternalEvent } from './ingestion';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
@@ -98,7 +103,7 @@ async function signal(start: string, attendees: Array<{ email: string }>): Promi
 async function operationItems(): Promise<Array<{ id: string; payload: unknown }>> {
   return sql<Array<{ id: string; payload: unknown }>>`
     SELECT feature_id AS id, payload FROM harness_shared.work_items
-     WHERE workspace_id = ${WS} AND harness_slug = ${CALENDAR} ORDER BY created_at`;
+     WHERE workspace_id = ${WS} AND harness_slug = ${CALENDAR} ORDER BY created_ts`;
 }
 
 beforeAll(async () => {
@@ -133,6 +138,13 @@ beforeAll(async () => {
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
     VALUES (${WS}, ${CALENDAR}, 'calendar-meeting-prep', 'Meeting prep', 'active',
             ${'---\nslug: calendar-meeting-prep\n---\n# Meeting prep'}, 'meeting-prep-v1', '[]'::jsonb)`;
+  // trigger_deliveries.datatype_id is a FK into this workspace's registry.
+  await upsertDatatype(sql, {
+    id: 'calendar-event', workspaceId: WS, title: 'Calendar event',
+    description: 'A calendar event from a connected calendar.',
+    tier: 'generic-kind', nature: 'event', published: false,
+    createdBy: 'calendar-meeting-prep-binding.integration.test',
+  });
   const [src] = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'gcal', 'connected') RETURNING id`;
@@ -195,7 +207,7 @@ describe('Calendar meeting prep binding on durable execution (P-006 / R-6)', () 
 
     const runs = await sql<Array<{ dedupe_key: string; status: string; outcome: { blueprintOperation?: { operationId: string; harnessSlug: string } } }>>`
       SELECT dedupe_key, status, outcome FROM harness_shared.trigger_runs
-       WHERE workspace_id = ${WS} AND binding_id = ${replacementId}::uuid ORDER BY created_at`;
+       WHERE workspace_id = ${WS} AND binding_id = ${replacementId}::uuid ORDER BY triggered_at`;
     expect(runs.map((run) => [run.dedupe_key, run.status])).toEqual([
       [revisionKey('2026-10-20T15:00:00.000Z'), 'succeeded'],
       [revisionKey('2026-10-21T15:00:00.000Z'), 'succeeded'],
@@ -217,4 +229,21 @@ describe('Calendar meeting prep binding on durable execution (P-006 / R-6)', () 
     await dispatchPendingTriggerRuns(sql);
     expect(await operationItems()).toHaveLength(before);
   });
+
+  it('run-with-last-event proves the migrated operation binding with one audited extra operation', async () => {
+    const before = (await operationItems()).length;
+    const queued = await queueExternalTriggerLastEventTestRun(sql, WS, { bindingId: replacementId, requestedBy: 'owner:test' });
+    expect(queued).toMatchObject({ ok: true, run: { bindingId: replacementId, eventSource: 'binding-run', status: 'pending' } });
+    await expect(dispatchPendingTriggerRuns(sql)).resolves.toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    const items = await operationItems();
+    expect(items).toHaveLength(before + 1);
+    expect(JSON.stringify(items.at(-1))).not.toContain(PRIVATE_SUMMARY);
+    const [run] = await sql<Array<{ status: string; outcome: { blueprintOperation?: unknown; runWithLastEvent?: unknown } }>>`
+      SELECT status, outcome FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${queued.ok ? queued.run.id : ''}::uuid`;
+    expect(run).toMatchObject({
+      status: 'succeeded',
+      outcome: { blueprintOperation: { harnessSlug: CALENDAR, operationId: OPERATION }, runWithLastEvent: { requestedBy: 'owner:test' } },
+    });
+  }, 60_000);
 });

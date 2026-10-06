@@ -1732,14 +1732,22 @@ export async function queueExternalTriggerLastEventTestRun(
     const isPlanBinding = action === 'launch-plan' && !!binding.planHarnessSlug && !!binding.planSlug;
     const isDirectWorkItemBinding =
       action === 'create-work-item' && !!binding.workItemHarnessSlug && !!binding.workItemKind;
-    if (!isPlanBinding && !isDirectWorkItemBinding) {
+    // A migrated `blueprint-operation` binding (P-016 standard target) is the one an
+    // owner most needs to prove before cutover, and the dispatcher already submits it
+    // as a durable operation with the redacted routing envelope (plan
+    // app-agent-tasks-durable-execution-2026-10-06 P-006).
+    const isOperationBinding =
+      action === 'blueprint-operation'
+      && typeof binding.action.operationHarnessSlug === 'string' && !!binding.action.operationHarnessSlug.trim()
+      && typeof binding.action.operationId === 'string' && !!binding.action.operationId.trim();
+    if (!isPlanBinding && !isDirectWorkItemBinding && !isOperationBinding) {
       return {
         ok: false,
         error: 'unsupported_binding_action',
         bindingId,
         detail:
-          `Run with last event supports launch-plan and create-work-item bindings with a complete target; ` +
-          `this binding declares action '${action}' with no complete plan or work-item target.`,
+          `Run with last event supports launch-plan, create-work-item and blueprint-operation bindings with a ` +
+          `complete target; this binding declares action '${action}' with no complete plan, work-item or operation target.`,
       };
     }
 
