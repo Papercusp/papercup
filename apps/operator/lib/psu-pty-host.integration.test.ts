@@ -4342,7 +4342,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       // the carry — so 'ECHO:CARRIED' landing proves the retry loop worked.
       const childCode =
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
-        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>35)clearInterval(iv);},20);' +
+        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>35){clearInterval(iv);process.stdout.write("INITIAL_SETTLED\\n");}},20);' +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -4371,15 +4371,19 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(1200); // let the initial child boot + finish its spin
-      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+      try {
+      await vi.waitFor(() => {
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+        expect(captured()).toContain('INITIAL_SETTLED');
+      }, { timeout: 8000 });
 
       await controlInject(sock, 'recycle', 'CARRIED');
-      // kill + respawn + boot + ~700ms spin + retries across the 300ms cap until it
-      // settles + quiet(150) + submit CR — comfortably inside this window.
-      await sleep(4000);
-
-      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      const bootsAfter = await vi.waitFor(() => {
+        const boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(boots).toHaveLength(2);
+        expect(captured()).toContain('ECHO:CARRIED');
+        return boots;
+      }, { timeout: 8000 });
       expect(bootsAfter).toHaveLength(2); // genuinely respawned
       // The carry landed via RETRY (the fresh child was busy past the first cap).
       expect(captured()).toContain('ECHO:CARRIED');
@@ -4393,6 +4397,14 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        const eventLog = eventLogPathForOwner(ownerId);
+        console.error(`[${ownerId}] output=${captured()}\n${existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '(no host events yet)'}`);
+        throw error;
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n').catch((error) => console.error(error));
+        await done.catch((error: unknown) => console.error(error));
+      }
     },
     30_000,
   );
@@ -4404,6 +4416,8 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const fixtureRoot = mkdtempSync(join(tmpdir(), 'psu-recycle-drop-boot-'));
+      const bootRelease = join(fixtureRoot, 'ready');
 
       // WI-1818 (clean-boundary-only kill): the pre-recycle busy gate is now
       // unconditional (applies regardless of bridgeTty), so the ORIGINAL child
@@ -4419,10 +4433,12 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       // lands (raw inject bypasses the gate; the stdin handler fires between
       // the non-blocking spin ticks).
       const childCode =
-        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "const fs=require('fs');" +
         "const marker=process.argv[process.argv.length-1];" +
+        "const boot=()=>{process.stdout.write('BOOT:'+process.pid+'\\n');" +
         "if(marker==='RECYCLED'){setInterval(()=>process.stdout.write('.'),20);}" +
-        "else{let n=0;const iv=setInterval(()=>{process.stdout.write('.');if(++n>8)clearInterval(iv);},20);}" +
+        "else{let n=0;const iv=setInterval(()=>{process.stdout.write('.');if(++n>8){clearInterval(iv);process.stdout.write('INITIAL_SETTLED\\n');}},20);}};" +
+        "if(marker==='RECYCLED'){boot();}else{process.stdout.write('BOOT_PENDING\\n');const gate=setInterval(()=>{if(fs.existsSync(process.env.BOOT_RELEASE)){clearInterval(gate);boot();}},10);}" +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -4436,6 +4452,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         env: {
           ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
+          BOOT_RELEASE: bootRelease,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '150',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '200',
@@ -4457,26 +4474,25 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(800);
-      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+      let releaseBoot: ReturnType<typeof setTimeout> | undefined;
+      try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT_PENDING'), { timeout: 8000 });
+      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(0);
+      // Keep a real child alive without BOOT beyond the old 800ms assumption.
+      releaseBoot = setTimeout(() => writeFileSync(bootRelease, 'ready'), 900);
+      await vi.waitFor(() => {
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+        expect(captured()).toContain('INITIAL_SETTLED');
+      }, { timeout: 8000 });
 
       await controlInject(sock, 'recycle', 'CARRIED');
-      // Under the full integration suite, CPU scheduling can delay the fresh
-      // child beyond the old one-shot 2500ms sleep even though the host is
-      // progressing normally. Poll for the observable respawn marker within a
-      // bounded budget so this test measures the carry-drop contract rather
-      // than a scheduler-specific wall-clock slice.
-      const bootsDeadline = Date.now() + 8_000;
-      let bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-      let metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
-      while (
-        (bootsAfter.length < 2 || metaAfter.carryDropCount !== 1) &&
-        Date.now() < bootsDeadline
-      ) {
-        await sleep(50);
-        bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-        metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
-      }
+      const { bootsAfter, metaAfter } = await vi.waitFor(() => {
+        const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        const metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
+        expect(bootsAfter).toHaveLength(3);
+        expect(metaAfter.carryDropCount).toBe(1);
+        return { bootsAfter, metaAfter };
+      }, { timeout: 8000 });
       expect(bootsAfter).toHaveLength(3); // original + one bounded fresh-epoch retry
       // The carry was NEVER injected (the fresh child never reached its prompt)…
       expect(captured()).not.toContain('ECHO:CARRIED');
@@ -4501,6 +4517,18 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        // Preserve this fixture's evidence before teardown, rather than relying
+        // on the directory-wide failure hook to find a preceding fixture's log.
+        const eventLog = eventLogPathForOwner(ownerId);
+        console.error(`[${ownerId}] output=${captured()}\n${existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '(no host events yet)'}`);
+        throw error;
+      } finally {
+        clearTimeout(releaseBoot);
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n').catch((error) => console.error(error));
+        await done.catch((error: unknown) => console.error(error));
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
     },
     30_000,
   );
