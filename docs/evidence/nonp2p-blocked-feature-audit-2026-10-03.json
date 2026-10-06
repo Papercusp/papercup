@@ -2397,6 +2397,113 @@
   },
   {
    "id": "WI-10004541",
+   "reliabilityEvidenceQualification": {
+    "status": "retained-protocol-guards; full-R6-loaded-model-outcome-unqualified",
+    "recordedAt": "2026-10-06T06:09:18.055Z",
+    "sourceRef": "thread-post:1159031",
+    "requirement": "R-6 — Real-model reliability",
+    "sourcePlanVersion": 11,
+    "sourcePlanContentHash": "a5972967126ccfd937627d3a4b943b1df444e83215cf44dd4c9fb0d566566e3b",
+    "currentClauses": [
+     {
+      "specId": "AUTO-BAR-R-6-P-007",
+      "revision": 2,
+      "contentHash": "e6c3048368cc8b377544358e9fc8ecacafeb23d70f521d2adbeebe31cb7d1e20"
+     },
+     {
+      "specId": "MDENSE-restart-result-identity",
+      "revision": 1,
+      "contentHash": "df48f91354a6b6658e966e68a9a426a56b59e73564e68dac48b857b74bd30832"
+     }
+    ],
+    "selectedItemRead": {
+     "state": "blocked",
+     "assignee": null,
+     "checkpoint": null,
+     "checkpointContentHash": null,
+     "typedNextAction": "not established by this read",
+     "threadWindow": {
+      "requestedLimit": 20,
+      "postsReturned": 0,
+      "sameSnapshotTotal": 0
+     },
+     "effectiveBlockers": [
+      "P-005",
+      "P-006"
+     ]
+    },
+    "boundEvidenceWindow": {
+     "workItemIds": [
+      "WI-10004541"
+     ],
+     "specIds": [
+      "AUTO-BAR-R-6-P-007",
+      "MDENSE-restart-result-identity"
+     ],
+     "limit": 20,
+     "bindings": [],
+     "truncatedByLimit": false,
+     "scopeLimitation": "Only this item's selected plan/spec bindings were read; evidence elsewhere is not ruled out."
+    },
+    "retainedProtocolReceipt": {
+     "path": "docs/evidence/mdenseon-measurement-protocol-2026-10-01.json",
+     "bytes": 16234,
+     "sha256": "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a",
+     "declaredReliabilityPopulation": [
+      "concurrency",
+      "saturation",
+      "coalescing",
+      "bypass",
+      "timeout",
+      "cancellation",
+      "worker-crash",
+      "restart",
+      "bounded-soak",
+      "event-loop",
+      "resource-cleanup"
+     ],
+     "gate": "real loaded weights and immutable per-phase raw logs",
+     "qualification": "The receipt explicitly labels its retained harness proof synthetic guard qualification and denies a completed real-model measurement verdict. It declares the reliability population without supplying those loaded-model outcomes. No global absence of a reliability dossier is inferred."
+    },
+    "inspectedDetectorPins": [
+     {
+      "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+      "sha256": "fe09ea857d8e7e27ff4e81e4e119ac93493ed62e566402d45cdfa65a35dfc52b",
+      "headMatches": true,
+      "qualification": "Inspected attempt ownership, input/model/runtime fingerprint checks, HTTP model/revision/runtime/dimension and uncached-vector checks, exclusive report publication, and exact cell coverage/receipt identity verification. These mechanics do not themselves judge loaded-model reliability behavior."
+     },
+     {
+      "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.integration.test.ts",
+      "sha256": "5c6fc4f9c88e8b8d5c7744710dbc27e91f834420c06ffe23372daff0752905e4",
+      "headMatches": true,
+      "qualification": "Real HTTP and migrated PostgreSQL exercise synthetic model/weight files and a constant vector builder. The reliability cell retains an injected protocol failure before inference and refuses reuse of its failed attempt; it does not measure R6 loaded weights."
+     },
+     {
+      "path": "packages/operator-core/lib/memory/embed-sidecar-server.test.ts",
+      "sha256": "99fce67ab9ece77ffe30f31270d9e9a60baaef6f42b8759402de2c5e4a3e26da",
+      "headMatches": true,
+      "qualification": "Inspected fake/gated-builder guards for concurrent/FIFO scheduling, abort cleanup, coalescing, bypass accounting and retry after a failed inference. Their protocol scope does not establish actual candidate/incumbent soak or per-phase runtime outcomes."
+     },
+     {
+      "path": "libs/generic/memory/src/local-embedder-worker.test.ts",
+      "sha256": "285d8f7a5ec25587f84dce47f73a847e773f415958e550b82bb706230826d2d6",
+      "headMatches": true,
+      "headScope": "memory submodule",
+      "qualification": "Inspected lifecycle guards for pending-request rejection, drain/recycle and transient fault respawn. Selected cases tolerate load/inference failure or soft-skip absent optional Transformers. Worker-alive/respawn and clean promise settlement do not prove a successful post-restart vector retaining requested recipe identity."
+     }
+    ],
+    "reuse": "Use the maintained manifest/receipt identity and sidecar/worker scheduling seams for actual reliability phase measurements; acceptance still requires successful loaded-model outcomes, retained logs and independent qualification.",
+    "openAcceptance": [
+     "Qualify actual loaded candidate and incumbent traffic across the declared concurrency, saturation, coalescing/bypass, timeout/cancel and bounded-soak population with retained per-phase ledgers/logs.",
+     "Qualify successful worker crash/restart recovery and requested model/embedding-space identity, event-loop progress and settled resource cleanup.",
+     "Bind current immutable evidence and complete required source/completion audits and independent acceptance before canonical settlement."
+    ],
+    "behavioralVerificationPerformed": false,
+    "sourceInspectionIsAcceptance": false,
+    "acceptanceWaived": false,
+    "generationPerformed": false,
+    "disposition": "Retain this blocked item and its historical dependency fields. This dated qualification preserves the prior hardware-boundary qualification, frozen population and original40/200/109-root unknowns; it changes no claim, authority, dependency, settlement or completion state."
+   },
    "hardwareBoundaryPrerequisiteQualification": {
     "status": "retained-scoped-boundary-evidence; full-R5-acceptance-unqualified",
     "observedAt": "2026-10-06T05:47:51Z",
