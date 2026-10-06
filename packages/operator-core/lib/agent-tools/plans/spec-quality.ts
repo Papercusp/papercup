@@ -145,6 +145,13 @@ function implementationCouplingReason(behavior: string): string | null {
       return 'names implementation construct ' + JSON.stringify(match[0]) + ' instead of an observable contract';
     }
   }
+  // A bare lower-camel identifier is also an implementation reference: clauses
+  // can name a function directly (for example, `runSyncBatchDeltaCheck
+  // evaluates the batch`) without an introductory "function" or code quotes.
+  const camelCaseMatch = behavior.match(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/);
+  if (camelCaseMatch) {
+    return 'names implementation construct ' + JSON.stringify(camelCaseMatch[0]) + ' instead of an observable contract';
+  }
   return null;
 }
 

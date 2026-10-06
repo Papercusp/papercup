@@ -348,6 +348,19 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].evidence).toContain('"class OrientationState"');
   });
 
+  it('rejects a bare camelCase function reference in implementation-independence', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].evidence).toContain('"runSyncBatchDeltaCheck"');
+  });
+
   it('flags passive acceptance joined to streaming as multiple observable outcomes', () => {
     const compound = 'Opening one’s own personal desktop in watch mode through the hosted session host is accepted and streams the desktop.';
 
