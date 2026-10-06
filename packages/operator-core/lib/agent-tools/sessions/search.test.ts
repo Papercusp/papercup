@@ -347,6 +347,26 @@ describe('sessions:search owner-directive provenance filters', () => {
     expect(main?.values).toContain('owner-typed');
     expect(main?.values).toContain(true);
   });
+
+  it('uses the indexed lower(text) LIKE predicate and escapes literal LIKE metacharacters', async () => {
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
+    const tx = vi.fn(async (...args: unknown[]) => {
+      const [strings, ...values] = args;
+      const sql = Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings);
+      calls.push({ sql, values });
+      return [];
+    });
+
+    const res = await callTool({ query: 'Needle%_\\fragment', mode: 'verbatim', context: 0 }, tx);
+    const main = calls.find((call) => call.sql.includes('left(text, 700)'));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.ok).toBe(true);
+    expect(main).toBeDefined();
+    expect(main?.sql).toContain('lower(text) LIKE');
+    expect(main?.sql).not.toContain('text ILIKE');
+    expect(main?.values).toContain('%needle\\%\\_\\\\fragment%');
+  });
 });
 
 describe('sessions:search response-door shaping', () => {

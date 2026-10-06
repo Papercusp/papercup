@@ -20,6 +20,7 @@ import { describeSearchLegs } from '../search/describe-leg';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { SEARCH_SOURCES } from '../search/sources';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { escapeLikeLiteral } from '../search/session-turn-literal';
 import { searchFilterArgs, resolveSearchFilters } from '../search/filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
@@ -226,6 +227,9 @@ export default defineTool({
     if (mode === 'verbatim') {
       const f = filters ?? {};
       const owners = f.owners && f.owners.length ? f.owners : null;
+      // Match the expression served by session_turns_text_trgm_idx. ILIKE does
+      // not use that lower(text) trigram index and can scan the entire corpus.
+      const likePattern = `%${escapeLikeLiteral(args.query.toLowerCase())}%`;
       const rows = await tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string }>>`
         SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts::text AS ts,
                left(text, 700) AS text
@@ -241,7 +245,7 @@ export default defineTool({
            AND (${f.sourceKind ?? null}::text IS NULL OR source_kind = ${f.sourceKind ?? null})
            AND (${f.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since ?? null}::timestamptz)
            AND (${f.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until ?? null}::timestamptz)
-           AND text ILIKE '%' || ${args.query} || '%'
+           AND lower(text) LIKE ${likePattern}
            AND NOT ${restrictedTurnSql(tx, 'session_turns', selfOwnerIds)}
       ORDER BY COALESCE(ts, ingested_at) DESC
          LIMIT ${limit + 1}

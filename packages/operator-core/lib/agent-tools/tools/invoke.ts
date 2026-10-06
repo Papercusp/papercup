@@ -277,7 +277,7 @@ export default defineTool({
     // display spelling (`work_items__list`; `sanitizeToolName` maps ':' → '__'),
     // reached no tool at all, and reported "no open work items found". Re-running
     // the same arm with this contract delivered produced ZERO such calls in 12 runs.
-    // Keep this rail under SUMMARY_LEAD_MAX_CHARS so it ships intact at the
+    // Keep this rail under the retained compact rail cap so it ships intact at the
     // compact tier where the wrong display spelling caused actual failures.
     '⚠ Use colon tool names (flags:set); NEVER underscored display names. Args go in `args`. The call is ' +
     'dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: ' +

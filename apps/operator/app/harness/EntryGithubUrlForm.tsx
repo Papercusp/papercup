@@ -32,6 +32,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 // Pure parser leaf — SPA-bundle-safe (same import EntryHarnessLinkForm uses).
 import { parseHarnessLink } from '@papercusp/operator-core/lib/harness/harness-link-types';
+import { integrationModeQuestion } from '@papercusp/operator-core/lib/harness/git-sync/integration-mode-question';
 // P-008 (hardening): REAL step progress over the sync channel. Outside a
 // SyncProvider the hook degrades to {data: undefined} — the optimistic strip
 // below remains the fallback, so no provider = exactly the old behavior.
@@ -304,6 +305,12 @@ const inputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
 };
 
+/** P-017: how the main repository is named in the integration-mode question ("owner/repo"). */
+export function repoLabelFromUrl(url: string): string {
+  const m = /github\.com[/:]([^/\s]+\/[^/\s#?]+?)(?:\.git)?(?:[/#?]|$)/i.exec(url.trim());
+  return m ? m[1] : 'the repository';
+}
+
 function Hint({ children }: { children: ReactNode }) {
   return <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--fg-mute)' }}>{children}</p>;
 }
@@ -340,6 +347,9 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   // CODE from the pasted repo — explicit opt-in, default off. Transient draft →
   // useState (nuqs exception).
   const [verifyTests, setVerifyTests] = useState(false);
+  // P-017 (pot-review-integration-mode-2026-10-05, D-007): "Where should the
+  // agents' work go?" — transient form draft → useState (nuqs exception).
+  const [integrationMode, setIntegrationMode] = useState<'direct' | 'review'>('direct');
   // knowledge-packs P-006: which pack seeds the new hive's shared memory.
   // Default = the generic `coding` pack — this form imports a GitHub REPO, so the
   // hive is always a coding one. EI-1539: was 'papercusp-default', a
@@ -506,6 +516,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           // privacy (public → on, private → off) — the frontend sends nothing.
           // knowledge-packs P-006: the picker selection ('none' ⇒ null = seed nothing).
           ...(mode === 'new-hive' ? { knowledgePack: knowledgePack === 'none' ? null : knowledgePack } : {}),
+          // P-017 (D-007): only a new pot asks; 'direct' is today's default, so it is not sent.
+          ...(mode === 'new-hive' && integrationMode === 'review' ? { integrationMode: 'review' } : {}),
           ...(mode === 'into-hive' && hiveScope ? { intoHive: hiveScope } : {}),
           ...(verifyTests ? { runTests: true } : {}),
           ...(opts?.force ? { force: true } : {}),
@@ -990,6 +1002,40 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             or remove them anytime from the Learning tab.
           </Hint>
         </label>
+      )}
+
+      {/* P-017 (pot-review-integration-mode-2026-10-05, D-007): the ONE question that
+          decides where the agents' work goes. Wording comes from integrationModeQuestion
+          so every create path and the pot settings control say the same thing. */}
+      {mode === 'new-hive' && (
+        <fieldset data-testid="integration-mode-question" style={{ border: 'none', padding: 0, margin: '0 0 14px' }}>
+          <legend style={{ display: 'block', fontSize: 12, color: 'var(--fg-dim)', marginBottom: 4, fontWeight: 500 }}>
+            {integrationModeQuestion({ repoLabel: repoLabelFromUrl(url) }).prompt}
+          </legend>
+          {integrationModeQuestion({ repoLabel: repoLabelFromUrl(url) }).options.map((opt) => (
+            <label
+              key={opt.value}
+              data-testid={`integration-mode-${opt.value}`}
+              style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', borderRadius: 6, cursor: opt.available ? 'pointer' : 'not-allowed' }}
+            >
+              <input
+                type="radio"
+                name="integration-mode"
+                value={opt.value}
+                checked={integrationMode === opt.value}
+                disabled={!opt.available}
+                onChange={() => setIntegrationMode(opt.value)}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                <span style={{ display: 'block', fontSize: 13, fontWeight: integrationMode === opt.value ? 600 : 500 }}>{opt.label}</span>
+                <span style={{ display: 'block', fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}>
+                  {opt.available ? opt.description : opt.unavailableReason}
+                </span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
       )}
 
       {/* B-07 / C-2: the live status beacon is no longer an opt-in — it's auto-ON

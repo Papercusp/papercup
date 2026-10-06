@@ -11,12 +11,12 @@
 //
 // Catalog measured: 946 tools.
 
-/** claude: 0 full + 63 compact = 100242 B of 100000 B (OVERRUN 242 B — floors alone exceed the budget). */
+/** claude: 0 full + 64 compact = 99970 B of 100000 B. */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 100242,
-  budgetOverrun: 242,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 883 }),
+  spentBytes: 99970,
+  budgetOverrun: 0,
+  counts: Object.freeze({ full: 0, compact: 64, deferred: 882 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -41,6 +41,7 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "facts:list": "compact",
     "facts:retract": "compact",
     "fleet:launch-on-plan": "compact",
+    "fleet:list": "compact",
     "improvements:capture": "compact",
     "issues:list": "compact",
     "locks:acquire": "compact",
@@ -107,6 +108,7 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "facts:list",
     "facts:retract",
     "fleet:launch-on-plan",
+    "fleet:list",
     "improvements:capture",
     "issues:list",
     "locks:acquire",
@@ -217,12 +219,12 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 0 full + 63 compact = 100242 B of 100000 B (OVERRUN 242 B — floors alone exceed the budget). */
+/** codex: 0 full + 64 compact = 99970 B of 100000 B. */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 100242,
-  budgetOverrun: 242,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 883 }),
+  spentBytes: 99970,
+  budgetOverrun: 0,
+  counts: Object.freeze({ full: 0, compact: 64, deferred: 882 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -247,6 +249,7 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "facts:list": "compact",
     "facts:retract": "compact",
     "fleet:launch-on-plan": "compact",
+    "fleet:list": "compact",
     "improvements:capture": "compact",
     "issues:list": "compact",
     "locks:acquire": "compact",
@@ -313,6 +316,7 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "facts:list",
     "facts:retract",
     "fleet:launch-on-plan",
+    "fleet:list",
     "improvements:capture",
     "issues:list",
     "locks:acquire",
@@ -423,12 +427,12 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 0 full + 63 compact = 100242 B of 100000 B (OVERRUN 242 B — floors alone exceed the budget). */
+/** omp: 0 full + 64 compact = 99970 B of 100000 B. */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 100242,
-  budgetOverrun: 242,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 883 }),
+  spentBytes: 99970,
+  budgetOverrun: 0,
+  counts: Object.freeze({ full: 0, compact: 64, deferred: 882 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -453,6 +457,7 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "facts:list": "compact",
     "facts:retract": "compact",
     "fleet:launch-on-plan": "compact",
+    "fleet:list": "compact",
     "improvements:capture": "compact",
     "issues:list": "compact",
     "locks:acquire": "compact",
@@ -519,6 +524,7 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "facts:list",
     "facts:retract",
     "fleet:launch-on-plan",
+    "fleet:list",
     "improvements:capture",
     "issues:list",
     "locks:acquire",

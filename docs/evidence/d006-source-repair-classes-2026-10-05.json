@@ -1,0 +1,1430 @@
+{
+  "schemaVersion": 1,
+  "kind": "d006-source-repair-class-disposition",
+  "run": "1307302-b9c3dd76",
+  "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+  "population": {
+    "failedFiles": 124,
+    "repairedFocused": 5,
+    "openUnknown": 119
+  },
+  "classes": {
+    "assertion": 64,
+    "migration-stage": 1,
+    "missing-schema": 16,
+    "blueprint-fixture": 1,
+    "console-guard": 10,
+    "unclassified": 18,
+    "compat-view-insert": 1,
+    "stale-migration-list": 6,
+    "hook-mutex-cleanup": 4,
+    "profile-replay": 3
+  },
+  "files": [
+    {
+      "path": "apps/operator/test/role-principal-caps.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17210,
+        17242,
+        17267,
+        17299
+      ]
+    },
+    {
+      "path": "apps/operator/test/migration-649-pot-backfill.integration.test.ts",
+      "class": "migration-stage",
+      "state": "repaired-focused",
+      "item": "EI-25180329870974503",
+      "lines": [
+        17129,
+        17156,
+        17183
+      ],
+      "beforeTestRun": 20779546,
+      "afterTestRun": 20790241,
+      "passed": 5,
+      "skipped": 0,
+      "testSha256": "7b043791748e4a472c5042273529afea50879201e3f588196669d4e25195dc0e"
+    },
+    {
+      "path": "apps/operator/test/schema-object-drift.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17324
+      ]
+    },
+    {
+      "path": "apps/operator/test/user-protection-gate.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17350,
+        17351
+      ]
+    },
+    {
+      "path": "apps/operator/lib/release/deploy.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17607
+      ]
+    },
+    {
+      "path": "apps/operator/test/blueprint-run-action.integration.test.ts",
+      "class": "blueprint-fixture",
+      "state": "repaired-focused",
+      "item": "EI-25180327278686428",
+      "lines": [
+        17097,
+        17111
+      ],
+      "beforeTestRun": 20779547,
+      "afterTestRun": 20790104,
+      "passed": 20,
+      "skipped": 0,
+      "testSha256": "a55f651c241fef9693737cda7d2852b7f26944fc8ac4a7e8cf0a9ed067fbf963"
+    },
+    {
+      "path": "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17369,
+        17393,
+        17588
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-stale-claims.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13034
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/issues-engineer.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12834
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13293,
+        13320
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14946,
+        14947,
+        14948,
+        14949
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13046
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/su-lock-store.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15728
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/work-items-tools.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14990,
+        15009,
+        15028,
+        15029,
+        15030,
+        15031,
+        15032
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-security-drops-sidecar.repro.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16095
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-concurrent-writes-sidecar.repro.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16091,
+        16092,
+        16130
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/scheduler/get-next-exclusion-breakdown.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14204,
+        14223
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-restart-durability-sidecar.repro.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16146,
+        16165
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-plan-federation-seam.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15959,
+        15974,
+        15989,
+        16004
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/search/prose-vector-dims.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14242
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/scout/cycle-real-rails.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14263,
+        14285,
+        14341,
+        14353
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/initialization-runner.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14505,
+        14519,
+        14533,
+        14547,
+        14566,
+        14580,
+        14594,
+        14613,
+        14632
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/spawn-child.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14738,
+        14759,
+        14781
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/coordination-metadata-preflight.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14938
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/lifecycle-runner.restore.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14646
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/scout/rubric-drill.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14365,
+        14377,
+        14389,
+        14408
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14421
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/scheduler/fleet-filter-api.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14173
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/sidecar-joiner-owner-bootstrap-admit.repro.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16231,
+        16232,
+        16233
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-multimember-sidecar.repro.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16093,
+        16094
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/plan-items/convert.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13818,
+        13837,
+        13863,
+        13888,
+        13915
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/plan-part-federation-cutover.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16200,
+        16201,
+        16202,
+        16203,
+        16204,
+        16205,
+        16206,
+        16207,
+        16208,
+        16209,
+        16210,
+        16211,
+        16212,
+        16213
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-release-request.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12970,
+        13002
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/pot-git/peer-dial-registry.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15418,
+        15431
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/outbox-drain.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15444
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/reconcile-loop-routines.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15319,
+        15338,
+        15357
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/dbos/feature-blockers-edges.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13375
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13149
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-claim-issue-scope-reread.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12951
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/prompt-delivery.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15376
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/binding-enforcement.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13785
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/pot/pot-wake-pg.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14018
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/pot/start-pot-e2e.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14036,
+        14055,
+        14074,
+        14093
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/pot/declared-event-wake-e2e.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13942,
+        13961,
+        13980,
+        13999
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/external-triggers/ingestion.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13454
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/calibration/resolve-sweep-probes.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13112,
+        13131
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-planning.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12381,
+        12394
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/work-item-claim-lease-issue-cleanup.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12932,
+        12933
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/delegated-tasks.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12445,
+        12446,
+        12489,
+        12561,
+        12582,
+        12652,
+        12726,
+        12769
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/gitnexus-facade.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13204,
+        13223,
+        13235
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/dream/dream-sink.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13396
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/goals/package-goal-e2e.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13710,
+        13725
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13740,
+        13759
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/experiment/producer-lifecycle-store.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13421
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16019,
+        16055
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions-search-transcripts.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15821,
+        15833,
+        15845,
+        15868,
+        15890
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/improvements/watchdog-red-test-infra-enoent.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15144,
+        15156,
+        15168,
+        15180
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-fed-event.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15941
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/wire-outbox-drain-online.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16270
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-dep-gate.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15519,
+        15538,
+        15557,
+        15576,
+        15595,
+        15614,
+        15633,
+        15652
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync-resolver/__tests__/cache-tag-trigger-coverage.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15388
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/projections/__tests__/fed-ts-lww-guard.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        16289
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/gc-dead-loops.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15204
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/deployment/p2p-perf-tier3/p2p-perf-tier3.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15041
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14440
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/system-health/stale-paused-routines.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14477,
+        14478,
+        14479,
+        14480,
+        14481,
+        14482,
+        14483,
+        14484,
+        14485,
+        14486,
+        14487
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14420
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/gym/__tests__/loop-control-plane.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15102
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plan-items/plan-items-tools.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14797,
+        14816,
+        14835,
+        14854,
+        14875,
+        14897
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14459
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/claim-next-co-location.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12407,
+        12426
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/substrate-compaction.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15456
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/git-sync-hold.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13805
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/red-queen/red-queen.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14141,
+        14157
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/remote-connect-relay.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14105,
+        14123
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/spawn-admission.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13686,
+        13687,
+        13688,
+        13689,
+        13690,
+        13691,
+        13692
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/hive-canary-action.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15222,
+        15243
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13518,
+        13602
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/__tests__/spawn-signing-e2e.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13064,
+        13088
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/dock-layouts.integration.test.ts",
+      "class": "console-guard",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12797
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/__tests__/set-plan-status-deprecate-learnings.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15757,
+        15780
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14439
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/docs/doc-record.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15120,
+        15121,
+        15122,
+        15123,
+        15124,
+        15125,
+        15126
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/testing-flakiness.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12858,
+        12877
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/presence-reaper.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14712
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/curation/deps.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13347
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/code-intel-bench.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13183
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-git-sync-seed.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15671,
+        15690,
+        15709
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/__tests__/set-plan-status-supersede-cascade.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15802,
+        15803
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/topics-feed.integration.test.ts",
+      "class": "compat-view-insert",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12896,
+        12914
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/hive-roster.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13482,
+        13500
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-atomic-registry.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15468
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-admission.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13254
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-admission.pinned.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        13277
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/improvements/watchdog-red-test-scratch-config.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15192
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-coordination-scale.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15911
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/plan-run-cost.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15262,
+        15281,
+        15300
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+      "class": "missing-schema",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14441
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/events/await/wake-executor-resume-exit.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15061
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-auto-install-deps.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15481,
+        15500
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/fleet/fleet-campaign.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14670
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/scout/route-idea-revision.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14916
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        14967
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/gym/__tests__/autoloop-cycle.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        15077
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/adjacency-cross-feed-io.integration.test.ts",
+      "class": "stale-migration-list",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12022
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts",
+      "class": "hook-mutex-cleanup",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12067
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/code-recipes-candidates.integration.test.ts",
+      "class": "profile-replay",
+      "state": "repaired-focused",
+      "item": "EI-25184116853759962",
+      "lines": [
+        12080
+      ],
+      "beforeTestRun": 20782292,
+      "afterTestRun": 20787319,
+      "passed": 5,
+      "skipped": 0,
+      "testSha256": "1d5ca270b9da38ed415dea321288235ed3923abfc25f5b4ad80cd009ea344519"
+    },
+    {
+      "path": "packages/operator-core/lib/code-recipes-search.integration.test.ts",
+      "class": "profile-replay",
+      "state": "repaired-focused",
+      "item": "EI-25184116853759962",
+      "lines": [
+        12081
+      ],
+      "beforeTestRun": 20782290,
+      "afterTestRun": 20787318,
+      "passed": 12,
+      "skipped": 0,
+      "testSha256": "f34318258ee6f6b1887a0915333925245bca21b842e3fca1f43c73df3cca852c"
+    },
+    {
+      "path": "packages/operator-core/lib/datatype-registry.integration.test.ts",
+      "class": "profile-replay",
+      "state": "repaired-focused",
+      "item": "EI-25184116853759962",
+      "lines": [
+        12082
+      ],
+      "beforeTestRun": 20782291,
+      "afterTestRun": 20787317,
+      "passed": 7,
+      "skipped": 0,
+      "testSha256": "e198a8b7e09d64db0e97f2d510782e178d90a47b311f751a287317cba527c7f8"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-review-obligation-verdict.integration.test.ts",
+      "class": "hook-mutex-cleanup",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12090
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/peer-surface-source.integration.test.ts",
+      "class": "stale-migration-list",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12104
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/topic-matcher-io.integration.test.ts",
+      "class": "stale-migration-list",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12149
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-attribution-backfill.integration.test.ts",
+      "class": "stale-migration-list",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12194
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/coord/condition-bridge.integration.test.ts",
+      "class": "stale-migration-list",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12250
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/assignments.integration.test.ts",
+      "class": "hook-mutex-cleanup",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12292,
+        12305
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/presence.integration.test.ts",
+      "class": "hook-mutex-cleanup",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12317,
+        12330
+      ]
+    },
+    {
+      "path": "packages/operator-core/lib/sync/hyperbee/__tests__/memory-federation-privacy.integration.test.ts",
+      "class": "stale-migration-list",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        12342
+      ]
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/work-items-cdc-capture.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17943,
+        17944,
+        17945,
+        17946,
+        17947,
+        17948
+      ]
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/legacy-human-parks-migration.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17897
+      ]
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/work-item-deps.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17905,
+        17924
+      ]
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/idle-in-tx-timeout.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17878
+      ]
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/worked-by-history.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17859
+      ]
+    },
+    {
+      "path": "libs/test-config/src/pg-migrate.integration.test.ts",
+      "class": "assertion",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        17682
+      ]
+    },
+    {
+      "path": "libs/generic/search/src/embedding-space.integration.test.ts",
+      "class": "unclassified",
+      "state": "open-unknown",
+      "item": "WI-10006170",
+      "lines": [
+        18044
+      ]
+    }
+  ],
+  "sourceCensusRef": "local-state:verification-harness/goal-report-d006/1307302-b9c3dd76/file-census.json",
+  "sourceCensusSha256": "112cea242ce857acc773111a42283b86507b66795be3dba9b68a483fc4403c03",
+  "rootLogSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+  "assuranceGapsRef": "docs/evidence/expandable-goal-report-p004-d006-integration-2026-10-05.json#omissions",
+  "historicalVerdict": "failed",
+  "finalSweepReadiness": "not-established",
+  "remainingClasses": "Observed symptoms only; causes unproved. Parent owner accountable for diagnosis and placement; new source edits require accepted specific repair item.",
+  "focusedLimits": "Local ledger rows dirty=true,scratch=false; no complete current-source/import/environment or finalD006 assurance.",
+  "acceptanceClaim": false,
+  "shipmentClaim": false,
+  "classDisposition": [
+    {
+      "class": "assertion",
+      "count": 64,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "migration-stage",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "EI-25180329870974503",
+      "rootCause": "Historical649 rerun after1134 triggerreplacement; fixture seedmixed686column.",
+      "commit": "cf272b6803f838f1ee6a0e10684b74dd8f4ccaa1"
+    },
+    {
+      "class": "missing-schema",
+      "count": 16,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "blueprint-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "EI-25180327278686428",
+      "rootCause": "Private fixture lacked canonical receipt schema and stablefire identity.",
+      "commit": "a54a7b23573565dd4a0ab45aafa2fb2dec5dba46"
+    },
+    {
+      "class": "console-guard",
+      "count": 10,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "unclassified",
+      "count": 18,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "compat-view-insert",
+      "count": 1,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "stale-migration-list",
+      "count": 6,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "hook-mutex-cleanup",
+      "count": 4,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect pinned exact error/source and accept specific repair before edits."
+    },
+    {
+      "class": "profile-replay",
+      "count": 3,
+      "status": "repaired-focused",
+      "item": "EI-25184116853759962",
+      "rootCause": "Obsolete1154 replay after full migrated fixture ALTERed compatibility VIEW.",
+      "commit": "7e205c4211eaf42648e7513eb2f4f3825a3c4825"
+    }
+  ],
+  "prerequisites": [
+    "Resolve each remainingOPEN/UNKNOWN class through measured source diagnosis and accountable admittedrepair, or explicit revieweddisposition; no suite waiver is authorized by this map.",
+    "Preserve historicalD006124failed/298skipped/census/source-environment gaps.",
+    "P004 alone sequences finalexpensiveD006 after focusedrepairs/preconditionaudits and appropriate current-source/cleancausal evidence; readinessnotestablished."
+  ],
+  "parserMethod": "ANSI-stripped actual FAIL headers matched by first path token, including suite headers with trailing [ repeated file ]; task-bounded canonical124-file population; symptoms do not prove root cause."
+}

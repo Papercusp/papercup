@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GoalLaunchResolution } from '../goal-launch-settings';
 
 const beginGovernedExecutionMock = vi.fn();
 const registerGoalLaunchMock = vi.fn();
@@ -34,6 +35,18 @@ const context = {
   createdAtMs: 1,
   decisionGeneration: 2,
   leaseId: 'lease-1',
+};
+
+const finalResolution: GoalLaunchResolution = {
+  goalId: 'goal-final', settings: null, goalBrief: null, effective: {},
+  ceilings: { maxAgents: 6, maxPerFleet: 3 }, headcount: { total: 5, fleet: 2 },
+  headcountMeasurement: {
+    measuredAt: '2026-10-05T18:40:16Z', populationComplete: true,
+    candidate: { total: 6, fleet: 3 },
+    counted: [{ ownerId: 'existing', inFleet: true, basis: 'launch-reservation', heartbeatAt: null, briefUpdatedAt: null }],
+    oracleEndedOwnerIds: ['ended'], excludedOwnerIds: ['replacement', 'target'],
+  },
+  budget: null, refusal: null, degraded: false, degradedReasons: [],
 };
 
 describe('spawnGovernedAgentProcess', () => {
@@ -117,6 +130,45 @@ describe('spawnGovernedAgentProcess', () => {
     }), expect.anything(), expect.anything());
     expect(spawn).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledWith('fixture spawn failure');
+  });
+
+  it.each(['ok', 'error'] as const)('persists and returns the same final admission population after spawn %s', async (status) => {
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-final', finalResolution, null), resolution: finalResolution, degradedReason: null,
+    }));
+    const result = await spawnGovernedAgentProcess({
+      workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target',
+      metadata: { launchedBy: 'launcher', targetOwnerId: 'target', fleetSlug: 'fleet' },
+    }, async () => status === 'ok'
+      ? { status: 'ok', pid: 42, terminal: 'headless', child: null, display: null, desktopEnvResolvedVia: null }
+      : { status: 'error', error: 'late boot failure', code: 502 });
+    const persisted = JSON.parse(beginGovernedExecutionMock.mock.calls[0][0].metadata.goalAdmission);
+    expect(persisted).toMatchObject({
+      stage: 'final', goalId: 'goal-final', launcherOwnerId: 'launcher', targetOwnerId: 'target',
+      fleet: 'fleet', requested: 1, decision: 'admitted', capacityStatus: 'enforced',
+      ceilings: finalResolution.ceilings, headcount: finalResolution.headcount,
+      measurement: finalResolution.headcountMeasurement, degraded: false, degradedReasons: [],
+    });
+    expect(result).toMatchObject({ goalAdmission: persisted, admissionContext: context });
+    expect(beginGovernedExecutionMock).toHaveBeenCalledOnce();
+    if (status === 'error') expect(cancel).toHaveBeenCalledWith('late boot failure');
+  });
+
+  it('persists unknown final admission on a fail-open lock error instead of manufacturing a zero population', async () => {
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-final', null, 'fixture lock unavailable'), resolution: null,
+      degradedReason: 'fixture lock unavailable',
+    }));
+    const result = await spawnGovernedAgentProcess({
+      workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target', metadata: { launchedBy: 'launcher' },
+    }, async () => ({ status: 'error', error: 'late boot failure', code: 502 }));
+    const persisted = JSON.parse(beginGovernedExecutionMock.mock.calls[0][0].metadata.goalAdmission);
+    expect(persisted).toMatchObject({
+      decision: 'unknown', capacityStatus: 'unknown', headcount: null, measurement: null,
+      degraded: true, degradedReasons: ['fixture lock unavailable'],
+    });
+    expect(result).toMatchObject({ goalAdmission: persisted });
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('refuses before governor registration and process start when the serialized count has no seat', async () => {
