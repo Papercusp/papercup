@@ -1,4 +1,9 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const OPERATOR_DIR = resolve(__dirname, '../..');
+const E2E_DIR = join(OPERATOR_DIR, 'e2e');
 
 type WebServerConfig = {
   command?: string;
@@ -45,5 +50,64 @@ describe('Playwright isolated webServer contract', () => {
       restoreEnv('OPERATOR_E2E_BASE_URL', previousBaseUrl);
       restoreEnv('OPERATOR_E2E_REUSE_SERVER', previousReuse);
     }
+  });
+});
+
+function listFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? listFiles(join(dir, entry.name)) : [join(dir, entry.name)],
+  );
+}
+
+/**
+ * Profile configs are read as SOURCE, never imported: a profile config may
+ * validate its credentials at load (playwright.hosted-http1.config.ts throws
+ * without PAPERCUSP_HOSTED_ACCEPTANCE_STORAGE_STATE), which is the very failure
+ * this guard keeps out of the default run.
+ */
+function profileTestMatches(): Array<{ config: string; testMatch: RegExp }> {
+  return readdirSync(OPERATOR_DIR)
+    .filter((name) => /^playwright\.[a-z0-9-]+\.config\.ts$/.test(name))
+    .flatMap((config) => {
+      const source = readFileSync(join(OPERATOR_DIR, config), 'utf8');
+      const match = /testMatch:\s*\/((?:\\.|[^/\\\n])+)\/([a-z]*)/.exec(source);
+      return match ? [{ config, testMatch: new RegExp(match[1], match[2]) }] : [];
+    });
+}
+
+describe('default Playwright run never collects a profile-owned spec (WI-10006736)', () => {
+  it('ignores every e2e file a playwright.<profile>.config.ts selects', async () => {
+    const { default: config } = await import('../../playwright.config');
+    const testMatch = config.testMatch as RegExp;
+    const testIgnore = (config.testIgnore ?? []) as RegExp[];
+    const collectedByDefault = (file: string) =>
+      testMatch.test(file) && !testIgnore.some((pattern) => pattern.test(file));
+
+    const profiles = profileTestMatches();
+    // Positive control: the extractor must find the profile that motivated this
+    // guard, or every assertion below passes vacuously.
+    expect(profiles.map((p) => p.config)).toContain('playwright.hosted-http1.config.ts');
+
+    const files = listFiles(E2E_DIR);
+    const owned = files.filter((file) => profiles.some((p) => p.testMatch.test(file)));
+    expect(owned.map((file) => file.slice(E2E_DIR.length + 1))).toContain(
+      'hosted-http1-acceptance.spec.ts',
+    );
+
+    // Control: testMatch ALONE does collect a profile-owned spec, so the
+    // testIgnore below is load-bearing and removing it turns this guard red.
+    expect(owned.filter((file) => testMatch.test(file))).not.toEqual([]);
+
+    const leaked = owned.filter(collectedByDefault).map((file) => file.slice(E2E_DIR.length + 1));
+    expect(leaked).toEqual([]);
+  });
+
+  it('still collects ordinary specs (the ignore list is not over-broad)', async () => {
+    const { default: config } = await import('../../playwright.config');
+    const testMatch = config.testMatch as RegExp;
+    const testIgnore = (config.testIgnore ?? []) as RegExp[];
+    const ordinary = join(E2E_DIR, 'desktop-grid.spec.ts');
+    expect(testMatch.test(ordinary)).toBe(true);
+    expect(testIgnore.some((pattern) => pattern.test(ordinary))).toBe(false);
   });
 });

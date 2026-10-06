@@ -5,9 +5,21 @@ const BASE_URL = process.env.OPERATOR_E2E_BASE_URL ?? `http://localhost:${PORT}`
 
 const reuseExisting = process.env.OPERATOR_E2E_REUSE_SERVER === '1';
 
+/**
+ * Specs owned by a dedicated profile config (`playwright.<profile>.config.ts`).
+ * They need credentials or env that a default run does not have, and some throw
+ * at MODULE LOAD without it (hosted-http1-acceptance reads its storage-state
+ * path at top level). Playwright aborts the WHOLE run on a single load error,
+ * so collecting one of them here meant every unfiltered `playwright test` ran
+ * zero tests (WI-10006736). `playwright-config.test.ts` fails if a profile
+ * config's testMatch selects a file this default config would still collect.
+ */
+export const PROFILE_OWNED_SPECS: RegExp[] = [/hosted-http1-acceptance\.spec\.ts$/];
+
 export default defineConfig({
   testDir: './e2e',
   testMatch: /.*\.spec\.ts$/,
+  testIgnore: PROFILE_OWNED_SPECS,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
