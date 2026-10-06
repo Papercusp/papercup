@@ -196,7 +196,7 @@ Spec: `apps/operator/e2e/voice-synthetic-roundtrip.spec.ts`, run inside an isola
 | 2 | 20:07–20:15Z | `20261006T200744Z-1065105` | 9 passed, 1 failed (spec bug) | `.papercusp/scratch/r4-rig-run2.log` |
 | 3 | 20:17–20:28Z | `20261006T201756Z-1692605` | **10/10 passed**, HARNESS_RESULT verdict=pass | `.papercusp/scratch/r4-rig-run3.log` |
 | 4 | 20:28–20:43Z | `20261006T202848Z-2437388` | 10 passed, 1 failed (navigate leg, spec bug) | `.papercusp/scratch/r4-rig-run4.log` |
-| 5 | from 20:45Z | pending | navigate leg returns to the settled route | `.papercusp/scratch/r4-rig-run5.log` |
+| 5 | 20:45–20:56Z | `20261006T204526Z-3393922` | **11/11 passed**, HARNESS_RESULT verdict=pass, RIG_EXIT=0 | `.papercusp/scratch/r4-rig-run5.log`; ledger artifact `r4-rig-run5-2026-10-06.json` |
 
 What the reds were:
 
