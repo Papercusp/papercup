@@ -56,12 +56,12 @@ KOKORO_URL="${KOKORO_URL:-http://127.0.0.1:8880}"
 SPEECH_PHRASE="${PUI_SMOKE_SPEECH_EXPECT:-the quick brown fox jumps over the lazy dog}"
 SPEECH_WAV="$(mktemp --suffix=.wav)"
 trap 'rm -f "$SPEECH_WAV"; cleanup' EXIT
-SMOKES=(smoke_record_yields_16k_wav smoke_play_tone smoke_loopback_tone_roundtrip)
+SMOKES=(smoke_record_yields_16k_wav smoke_play_tone smoke_loopback_tone_roundtrip smoke_unreachable_mic_is_named_and_recovers)
 if curl -fsS -m 60 -X POST "$KOKORO_URL/v1/audio/speech" -H 'Content-Type: application/json' \
      -d "{\"model\":\"kokoro\",\"input\":\"$SPEECH_PHRASE\",\"voice\":\"af_bella\",\"response_format\":\"wav\"}" \
      -o "$SPEECH_WAV" && [ "$(stat -c %s "$SPEECH_WAV")" -gt 1000 ]; then
   echo "[audio-smoke] rendered Kokoro speech WAV ($(stat -c %s "$SPEECH_WAV") bytes) for the speech round trip"
-  SMOKES+=(smoke_speech_roundtrip_via_operator)
+  SMOKES+=(smoke_speech_roundtrip_via_operator smoke_stop_mid_reply_silences_playback smoke_stt_failure_then_retry_transcribes)
 elif [ "${PAPERCUSP_REQUIRE_LIVE_VOICE:-}" = "1" ]; then
   echo "[audio-smoke] FAIL: PAPERCUSP_REQUIRE_LIVE_VOICE=1 but Kokoro at $KOKORO_URL did not render speech"
   exit 1

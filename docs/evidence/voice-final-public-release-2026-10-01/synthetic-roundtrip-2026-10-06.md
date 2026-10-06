@@ -52,6 +52,23 @@ Re-run once `:3170` carried the D-007 availability change
 
 Log: `.papercusp/scratch/d006-tui-el-run1.log` (`EXIT=0`).
 
+### Stop, denial and retry — PASS (run 5, 2026-10-06T19:20Z–19:21Z)
+
+Three smokes were added to `apps/tui/src/voice_proxy.rs` (all `#[ignore]`, `PUI_LIVE_AUDIO=1` opt-in)
+and to the `SMOKES` list in `apps/tui/scripts/audio-loopback-smoke.sh`. Same runner and null-sink
+isolation as above. Result: `7 passed; 0 failed` (31.4 s), `[audio-smoke] PASS`, exit 0. Log:
+`.papercusp/scratch/d006-tui-smoke-run5.log`.
+
+| Leg | What it does | Measured | Result |
+|---|---|---|---|
+| Stop | Kokoro plays a three-sentence reply; `Player::stop()` is called 1.8 s in; capture continues 9 s past where the reply would end | stopped in 50 ms; stayed stopped; no player error; heard "Here is the first part of a long story.", none of the closing "purple elephants dance tonight" | PASS |
+| Denial | `PULSE_SERVER`/`PIPEWIRE_REMOTE` point at a dead socket, then `start_capture()` | refused in 0.58 s: "input config: The requested device is no longer available. For example, it has been unplugged."; capture works again once the variables are restored | PASS |
+| Retry | broken audio sent to `operator-stt`, then a real Kokoro capture | first call 400 `audio too short to transcribe`; the retry heard "The quick brown fox jumps over the lazy dog." (9/9) | PASS |
+
+Not covered on the TUI: a spoken question answered by the brain. That path is the same operator
+turn the desktop brain leg exercised (run 6 below), and Avi's guided session (D-005) covers it on
+the TUI with a real microphone.
+
 ## Desktop — PASS (run 6)
 
 The Playwright spec `apps/operator/e2e/voice-synthetic-roundtrip.spec.ts` runs inside an
