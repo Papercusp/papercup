@@ -530,6 +530,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
         reason: `intake ${disposition}: ${decision.reason}`,
         source: { kind: source.kind, title: source.title, summary: source.body },
         acceptedAt: now,
+        reproduction: reproductionReceipt,
       });
       if (!sealed.ok) return sealRefusal(sealed, source.id);
       let merged: IntakeWorkItem | null;
@@ -560,6 +561,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
       reason: `intake ${disposition}: ${decision.reason}`,
       source: { kind: targetKind, title, summary: body },
       acceptedAt: now,
+      reproduction: reproductionReceipt,
     });
     if (!sealed.ok) return sealRefusal(sealed, source.id);
     let created: IntakeWorkItem;
@@ -631,9 +633,17 @@ async function convergeOnKeyConflict(
 }
 
 function sealRefusal(
-  sealed: { ok: false; refusal: 'incomplete'; missing: string[] } | { ok: false; refusal: 'invalid-authority' },
+  sealed: Exclude<SealImplementationAcceptanceResult, { ok: true }>,
   sourceId: string,
 ): IntakeExecutionResult {
+  // P-006: the seal is the one verification stage; a bug without a receipt is refused there too.
+  if (sealed.refusal === 'reproduction-missing') {
+    return {
+      ok: false,
+      refusal: 'reproduction-missing',
+      detail: bugReproductionMissingText(sourceId),
+    };
+  }
   if (sealed.refusal === 'incomplete') {
     return {
       ok: false,
