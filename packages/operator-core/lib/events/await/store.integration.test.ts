@@ -854,9 +854,11 @@ describe('await-event store (PG)', () => {
     expect(rows[0].payload).not.toHaveProperty('held_open_reason');
   });
 
-  it('same-key supersession clears only the event blocker and preserves unrelated blockers', async () => {
+  // EI-25231851216237441: renewing a declaration does not fire its gate.
+  it.each([false, true])('same-key announcement renewal preserves active event blockers (unrelated blocker: %s)', async (withUnrelatedBlocker) => {
     const eventKey = 'gate:announcement-supersede-reconciles-blocker';
     const first = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    const blockers = [eventBlocker(eventKey), ...(withUnrelatedBlocker ? [runtimeBlocker()] : [])];
     await rootSql`
       INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
       VALUES (
@@ -865,13 +867,16 @@ describe('await-event store (PG)', () => {
           _claimHold: true,
           held_open_by: 'test-agent',
           held_open_reason: 'blocked',
-          externalBlockers: [eventBlocker(eventKey), runtimeBlocker()],
+          externalBlockers: blockers,
         })}::text::jsonb
       )
     `;
 
     const second = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
     expect(second.causalGeneration).toBeGreaterThan(first.causalGeneration ?? 0);
+    expect(second.firedAt).toBeNull();
+    expect(second.firedReason).toBeNull();
+    expect(await getKeyFireLatch(eventKey)).toBeNull();
 
     const rows = await rootSql`
       SELECT status, payload
@@ -879,19 +884,13 @@ describe('await-event store (PG)', () => {
        WHERE feature_id = 'EI-supersede-reconcile'
     `;
     expect(rows[0].status).toBe('blocked');
-    expect(rows[0].payload).toMatchObject({
-      externalBlockers: [
-        expect.objectContaining({ kind: 'event', ref: eventKey, status: 'cleared' }),
-        expect.objectContaining({ kind: 'runtime', ref: 'runtime:still-live', status: 'active' }),
-      ],
-    });
+    expect(rows[0].payload.externalBlockers).toEqual(blockers);
     expect(rows[0].payload).toHaveProperty('_claimHold', true);
     expect(rows[0].payload).toHaveProperty('held_open_reason', 'blocked');
   });
 
-  // EI-20721448404004954: firing is the THIRD settlement path. Retirement and
-  // supersession already reconciled blockers; a gate that actually OPENED did not,
-  // so the success case was the one that stranded finished work.
+  // EI-20721448404004954: a real fire must settle blockers as explicit retirement
+  // does. Renewing the declaration above is not a settlement path.
   it('firing clears the matching event blocker and restores an auto-blocked issue', async () => {
     const eventKey = 'gate:announcement-fire-reconciles-blocker';
     const otherKey = 'gate:announcement-fire-unrelated-gate';
