@@ -166,10 +166,28 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} chars clipped]`;
 }
 
-function reviewPatch(input: AmendmentReviewBriefInput): { patch: string; omittedCriteria: number } {
+interface ReviewPatchExcerpt {
+  patch: string;
+  omittedCriteria: number;
+  omittedBarKeys: string[];
+  totalCriteria: number;
+}
+
+/**
+ * The patch shown to the reviewer. A patch that fits is shown whole. A large
+ * replacement keeps every CHANGED criterion and drops the unchanged ones, and
+ * the trimmed form is deliberately NOT shaped like a replacement: changed
+ * criteria sit under `changedCriteria` and the omitted keys under
+ * `omittedUnchangedBarKeys`, with no `criteria` key. rubrics:amend reads a
+ * `criteria` array as a FULL replacement, so an excerpt keyed `criteria`
+ * replays as "every omitted bar removed" — three reviewers did exactly that
+ * on 2026-10-06 despite a prose warning (WI-10006741).
+ */
+function reviewPatch(input: AmendmentReviewBriefInput): ReviewPatchExcerpt {
   const full = JSON.stringify(input.patch);
+  const whole = { patch: full, omittedCriteria: 0, omittedBarKeys: [], totalCriteria: 0 };
   if (full.length <= BRIEF_PATCH_MAX || !Array.isArray(input.patch.criteria)) {
-    return { patch: full, omittedCriteria: 0 };
+    return whole;
   }
 
   const changedKeys = new Set(input.preview.changes.map((change) => change.barKey));
@@ -188,11 +206,20 @@ function reviewPatch(input: AmendmentReviewBriefInput): { patch: string; omitted
       const candidate = criterion as Record<string, unknown>;
       return ((candidate.barKey ?? candidate.key) as string).trim() === change.barKey;
     }))) {
-    return { patch: full, omittedCriteria: 0 };
+    return whole;
   }
+  const omittedBarKeys = criteria
+    .filter((criterion) => !changedCriteria.includes(criterion))
+    .map((criterion) => {
+      const candidate = criterion as Record<string, unknown>;
+      return String(candidate.barKey ?? candidate.key).trim();
+    });
+  const { criteria: _replacement, ...otherFields } = input.patch;
   return {
-    patch: JSON.stringify({ ...input.patch, criteria: changedCriteria }),
-    omittedCriteria: criteria.length - changedCriteria.length,
+    patch: JSON.stringify({ ...otherFields, changedCriteria, omittedUnchangedBarKeys: omittedBarKeys }),
+    omittedCriteria: omittedBarKeys.length,
+    omittedBarKeys,
+    totalCriteria: criteria.length,
   };
 }
 
@@ -240,7 +267,7 @@ export function buildAmendmentReviewBrief(
     `Changed BARs: ${bars || '(none listed)'}.`,
     input.reason?.trim() ? `Reason given: ${clip(input.reason.trim(), BRIEF_REASON_MAX)}` : 'No reason was given.',
     shownPatch.omittedCriteria > 0
-      ? `Requested patch excerpt: all changed criteria and other patch fields are complete; ${shownPatch.omittedCriteria} unchanged criteria omitted. Read the full current criteria with rubrics:get and compare the changed BARs before judging. This excerpt is not a complete replacement patch and must not be submitted to rubrics:amend.`
+      ? `Requested patch excerpt: the requester's replacement has ${shownPatch.totalCriteria} criteria. Every changed criterion is below under changedCriteria; the ${shownPatch.omittedCriteria} unchanged criteria (${shownPatch.omittedBarKeys.join(', ')}) are listed under omittedUnchangedBarKeys and are UNCHANGED, not removed. This excerpt is not a complete replacement patch and must not be submitted to rubrics:amend: replaying it as criteria would remove exactly those omitted bars. To check for removals, read the approval JSON below instead — it is the apply guard's own delta for the full patch, and a removed bar appears there with nextBarHash null. Read the full current criteria with rubrics:get and compare the changed BARs before judging.`
       : answerOn
         ? 'Requested patch. Read the current criteria with rubrics:get and judge what the patch changes; the apply guard itself checks the approval JSON below against the live delta:'
         : 'Requested patch. Read the current criteria with rubrics:get and compare them with the supplied patch and approval JSON above. Do not call rubrics:amend or pass reviewPreviewPost; this review is already open and the apply guard rechecks the live delta before judging:',

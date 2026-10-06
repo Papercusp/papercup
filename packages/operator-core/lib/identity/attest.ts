@@ -248,6 +248,15 @@ export interface CreateAttestationGistInput {
   githubLogin: string;
   /** OAuth token with `gist` scope */
   token: string;
+  /**
+   * WI-10006733: a gist id this device has resolved before (e.g. the announce
+   * identity cache). `ensureAttestationGist` verifies it directly — one request,
+   * or none on a verify-cache hit — and only falls back to the full listing when
+   * it does not verify. The listing walks EVERY gist on the account (10,293 on
+   * papercupai, ~104 pages, ~2 min), so it must not run on the steady-state path.
+   * Ignored by `createAttestationGist`.
+   */
+  knownGistId?: string;
 }
 
 export interface CreateAttestationGistResult {

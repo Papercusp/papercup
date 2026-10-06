@@ -358,11 +358,35 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const patch = { criteria: [...unchanged, changed], reason: 'keep this field' };
     expect(JSON.stringify(patch).length).toBeGreaterThan(2500);
     const brief = buildAmendmentReviewBrief({ ...baseInput, patch });
-    expect(brief).toContain(JSON.stringify({ criteria: [changed], reason: 'keep this field' }));
-    expect(brief).toContain('12 unchanged criteria omitted');
+    const omittedKeys = unchanged.map((criterion) => criterion.key);
+    expect(brief).toContain(JSON.stringify({ reason: 'keep this field', changedCriteria: [changed], omittedUnchangedBarKeys: omittedKeys }));
+    expect(brief).toContain("the requester's replacement has 13 criteria");
+    expect(brief).toContain(`the 12 unchanged criteria (${omittedKeys.join(', ')})`);
+    expect(brief).toContain('UNCHANGED, not removed');
+    expect(brief).toContain('a removed bar appears there with nextBarHash null');
     expect(brief).not.toContain(unchanged[0].model);
     expect(brief).not.toContain('chars clipped');
     expect(brief).toContain('must not be submitted to rubrics:amend');
+  });
+
+  it('emits a trimmed excerpt that cannot be replayed as a full criteria replacement (WI-10006741)', () => {
+    // rubrics:amend reads `criteria` as a FULL replacement: an excerpt keyed `criteria` replays as
+    // "every omitted bar removed". Three reviewers did exactly that on 2026-10-06.
+    const unchanged = Array.from({ length: 12 }, (_, index) => ({ barKey: `R-${index + 2}`, model: 'unchanged '.repeat(35) }));
+    const changed = { barKey: 'R-1', model: 'changed' };
+    const brief = buildAmendmentReviewBrief({ ...baseInput, patch: { criteria: [...unchanged, changed] } });
+    const firstBlock = brief.split('```json\n')[1]?.split('\n```')[0] ?? '';
+    const excerpt = JSON.parse(firstBlock) as Record<string, unknown>;
+    expect('criteria' in excerpt).toBe(false);
+    expect(excerpt.changedCriteria).toEqual([changed]);
+    expect(excerpt.omittedUnchangedBarKeys).toEqual(unchanged.map((criterion) => criterion.barKey));
+  });
+
+  it('shows a patch that fits whole, still keyed criteria', () => {
+    const patch = { criteria: [{ barKey: 'R-1', model: 'small' }] };
+    const brief = buildAmendmentReviewBrief({ ...baseInput, patch });
+    expect(brief).toContain(JSON.stringify(patch));
+    expect(brief).not.toContain('omittedUnchangedBarKeys');
   });
 
   it('keeps an unmappable replacement complete rather than hiding a changed criterion', () => {
