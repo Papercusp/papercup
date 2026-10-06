@@ -99,6 +99,13 @@ import {
   type SignalOrigin,
 } from './provenance';
 import { buildReportContext, type ReportContextFailure, type ReportContextInput } from './report-context';
+import {
+  reportErrorSignature,
+  sameErrorSignature,
+  storedErrorSignature,
+  type ErrorSignature,
+} from './error-signature';
+import { redactSensitiveText } from '../../sensitive-text';
 import { getBuildInfo } from '../../build-info';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { canonicalPotSlug, PLATFORM_POT_SLUG } from '../../platform-pot-slug';
@@ -493,7 +500,7 @@ export interface CoalesceEffect {
    *  an open twin by exact normalized titleKey. Deterministic like a key match
    *  (same normalization both sides), narrower than a derived guess.
    *  A derived fold is a judgement and can be wrong; the other two cannot. */
-  identity: 'condition-key' | 'class-key' | 'derived' | 'title-key';
+  identity: 'condition-key' | 'class-key' | 'derived' | 'title-key' | 'error-signature';
   /** P-004: present when the survivor row had been watchdog-AUTO-RESOLVED and
    *  this exact-key recurrence REOPENED it (resolved → open) before coalescing.
    *  The auto-close was a dedup marker, not a completion — recurrence voids it. */
@@ -1100,6 +1107,61 @@ function reportContextFor(input: CaptureImprovementInput, at: string) {
   });
 }
 
+/**
+ * P-011 (D-046): scrub the filing's free text with the shared redactor before
+ * anything reads it. The payload records which fields changed, never the values.
+ */
+export function redactIntakeText(input: CaptureImprovementInput): CaptureImprovementInput {
+  const title = redactSensitiveText(input.title);
+  const body = typeof input.body === 'string' ? redactSensitiveText(input.body) : input.body;
+  const fields = [...(title !== input.title ? ['title'] : []), ...(body !== input.body ? ['body'] : [])];
+  if (fields.length === 0) return input;
+  return {
+    ...input,
+    title,
+    body,
+    payloadExtra: { ...input.payloadExtra, intakeRedaction: { fields, at: new Date().toISOString() } },
+  };
+}
+
+/**
+ * P-011 (D-046): the error-signature identity of a keyless improvement-lane bug,
+ * from the most recent error its REPORTER sent (reportContext.recentErrors). A
+ * tool-failure filing is excluded: it already carries the stable class identity.
+ * Returns null — no inference, ordinary dedup applies — when the report names
+ * no specific error, when the lookup is unavailable (never guess a key the
+ * unique index might refuse), or when an open row with this signature names a
+ * DIFFERENT tool (same words, different defect).
+ */
+async function inferErrorSignatureKey(
+  input: CaptureImprovementInput,
+  deps: CaptureDeps,
+  isObservation: boolean,
+): Promise<ErrorSignature | null> {
+  if (isObservation || input.watchdogKey || input.artifactId || input.initialState === 'done') return null;
+  if (storageKindOf(input.kind) !== 'bug' || !input.reportContext) return null;
+  if (toolFailureProbationOf(input.payloadExtra ?? {})) return null;
+  const context = buildReportContext({
+    input: input.reportContext,
+    defaults: { app: 'papercusp', appVersion: null },
+    capturedAt: new Date().toISOString(),
+  });
+  const signature = reportErrorSignature(context.recentErrors);
+  if (!signature) return null;
+  let priors: EngineerIssue[];
+  try {
+    priors = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([signature.key]);
+  } catch {
+    return null;
+  }
+  const conflict = priors.some((prior) => {
+    if (!isWatchdogNonTerminal(prior)) return false;
+    const stored = storedErrorSignature(prior.payload);
+    return stored !== null && !sameErrorSignature(stored, signature);
+  });
+  return conflict ? null : signature;
+}
+
 export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
   return kind === 'bug' ? 'bug' : 'change';
 }
@@ -1619,6 +1681,8 @@ function buildCoalesceEffect(args: {
       ? 'exact titleKey match — keyless non-observation filer, no conditionKey supplied'
       : identity === 'class-key'
         ? `stable tool-failure class identity carried by \`${input.watchdogKey}\``
+        : identity === 'error-signature'
+          ? `same error signature \`${input.watchdogKey}\` inferred from the report's most recent error (P-011)`
         : identity === 'derived' && !fold
           ? `derived conditionKey \`${input.watchdogKey}\``
         : fold
@@ -1630,6 +1694,8 @@ function buildCoalesceEffect(args: {
       ? 'the shared normalized titleKey'
       : identity === 'class-key'
         ? 'the shared tool-failure class identity'
+        : identity === 'error-signature'
+          ? 'the shared error signature'
         : identity === 'derived'
           ? 'the derived identity'
           : 'the shared conditionKey';
@@ -1829,8 +1895,10 @@ async function coalesceWatchdogWinner(args: {
     repeatCount,
     lastSeenAt: new Date().toISOString(),
   };
+  // P-011 (D-046): an inferred error-signature fold keeps the first report's text and payload.
+  const keepPriorText = args.identityRoute === 'error-signature';
   if (input.paths?.length) mergePatch.paths = input.paths;
-  if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+  if (input.payloadExtra && !keepPriorText) Object.assign(mergePatch, input.payloadExtra);
   if (priorProbation && incomingProbation) {
     mergePatch.toolFailureProbation = {
       ...priorProbation,
@@ -1847,12 +1915,14 @@ async function coalesceWatchdogWinner(args: {
   // P-010: the corroboration record names every reporter KIND that filed this.
   mergePatch.reporterKinds = mergeReporterKinds(priorPayload, reporterOf(input).kind);
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
-  const refreshed = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
-    title: input.title,
-    body: input.body,
-    silent: true,
-    confirmShrink: true,
-  }).catch(() => null);
+  const refreshed = keepPriorText
+    ? null
+    : await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
+        title: input.title,
+        body: input.body,
+        silent: true,
+        confirmShrink: true,
+      }).catch(() => null);
   const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? prior;
   await appendCaptureOccurrence(
     deps,
@@ -2177,6 +2247,10 @@ export async function captureImprovement(
   };
   const reserved = await readReservedArtifact();
   if (reserved) return reserved;
+  // P-011 (unified-bug-pipeline D-046) — the one intake's first stage: every
+  // filing's text passes the shared scrubber before any identity, dedup or
+  // storage step reads it.
+  input = redactIntakeText(input);
   // Dedup search (D-001/P-002): full-text search, then a title-similarity pass.
   // Origin-scoped (frontier P-002/D-002): only candidates with the SAME effective
   // origin participate in dedup + decided-recall — a drill row deduping against an
@@ -2189,6 +2263,17 @@ export async function captureImprovement(
     ? nativeShellRefusalKey(input.title, input.body)
     : null;
   if (inferredShellRefusalKey) input = { ...input, watchdogKey: inferredShellRefusalKey };
+  // P-011 (D-046): a keyless bug whose report names an error folds onto an open
+  // candidate that reported the same error, through the exact-key path below
+  // (indexed lookup + the unique open-identity index, so a race cannot fork it).
+  const inferredErrorSignature = await inferErrorSignatureKey(input, deps, isObservation);
+  if (inferredErrorSignature) {
+    input = {
+      ...input,
+      watchdogKey: inferredErrorSignature.key,
+      payloadExtra: { ...input.payloadExtra, errorSignature: inferredErrorSignature },
+    };
+  }
   // Scorecards are immutable event records, not recurring sensor observations. They
   // use `initialState:'done'` as the scorecards:emit-only marker; letting that filing
   // enter the derived observation-fold path can shallow-merge its nested observation
@@ -2423,7 +2508,16 @@ export async function captureImprovement(
         lastSeenAt: new Date().toISOString(),
       };
       if (input.paths?.length) mergePatch.paths = input.paths;
-      if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+      // P-011 (D-046): an INFERRED error-signature key folds a different reporter's
+      // account of the same error. It keeps the first report's text and payload
+      // (D-042 precedent): this report survives as an occurrence, not an overwrite.
+      if (input.payloadExtra && !inferredErrorSignature) Object.assign(mergePatch, input.payloadExtra);
+      if (inferredErrorSignature) {
+        const priorSignature = storedErrorSignature(priorPayload);
+        if (priorSignature && !priorSignature.tool && inferredErrorSignature.tool) {
+          mergePatch.errorSignature = { ...priorSignature, tool: inferredErrorSignature.tool };
+        }
+      }
       if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
       if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
       mergePatch.reporterKinds = mergeReporterKinds(openKeyPrior.payload, reporter.kind);
@@ -2431,12 +2525,14 @@ export async function captureImprovement(
       // Best-effort title/body refresh — never blocks the coalesce (the payload
       // bump above is the load-bearing part). Silent: a detector re-fire must not
       // fan out subscriber notifications every cadence tick.
-      const refreshed = await (deps.updateIssuePatch ?? updateIssue)(openKeyPrior.id, {
-        title: input.title,
-        body: input.body,
-        silent: true,
-        confirmShrink: true,
-      }).catch(() => null);
+      const refreshed = inferredErrorSignature
+        ? null
+        : await (deps.updateIssuePatch ?? updateIssue)(openKeyPrior.id, {
+            title: input.title,
+            body: input.body,
+            silent: true,
+            confirmShrink: true,
+          }).catch(() => null);
       const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? openKeyPrior;
       await appendCaptureOccurrence(
         deps,
@@ -2453,7 +2549,16 @@ export async function captureImprovement(
         ok: true,
         created: false,
         reason: 'coalesced',
-        coalescedOnto: buildCoalesceEffect({ finalIssue, prior: openKeyPrior, input, repeatCount, bodyPersisted }),
+        coalescedOnto: buildCoalesceEffect({
+          finalIssue,
+          prior: openKeyPrior,
+          input,
+          repeatCount,
+          bodyPersisted,
+          ...(inferredErrorSignature
+            ? { identityRoute: 'error-signature' as const, textDisposition: 'append-only' as const }
+            : {}),
+        }),
         kind: finalIssue.kind as 'bug' | 'change',
         improvementKind: input.kind,
         issue: finalIssue,
@@ -3483,6 +3588,7 @@ export async function captureImprovement(
         topics,
         alreadyDecided,
         queueAdmission,
+        ...(inferredErrorSignature ? { identityRoute: 'error-signature' as const } : {}),
       });
     }
     // Migration 1157 is the authority for keyless non-observation captures. The
