@@ -8,6 +8,7 @@
 #   edge.sh apply-vm    WireGuard + nftables + nginx SNI router + WSS certificate on the VM
 #   edge.sh apply-box   WireGuard + policy routing + ufw + TURN certificate on this box
 #   edge.sh status      tunnel, DNS and certificate facts (changes nothing)
+#   edge.sh turn-hook   print the rendered TURN certificate deploy hook (changes nothing)
 #
 # Non-secret coordinates persist in ~/.config/papercusp-phone/edge.env. No secret is ever
 # printed or written to the repository: WireGuard private keys are generated on, and never
@@ -206,6 +207,9 @@ turn_hook() {
 set -eu
 case " \${RENEWED_DOMAINS:-} " in *" $PHONE_EDGE_TURN_HOST "*) ;; *) exit 0 ;; esac
 install -d -m 700 -o $(id -un) -g $(id -gn) "$TURN_TLS_DIR"
+# Same certificate and key already handed over: restarting LiveKit would only drop live calls
+# and the public WSS (WI-10006623), so an unchanged lineage is a no-op.
+if cmp -s "\$RENEWED_LINEAGE/fullchain.pem" "$TURN_TLS_DIR/fullchain.pem" && cmp -s "\$RENEWED_LINEAGE/privkey.pem" "$TURN_TLS_DIR/privkey.pem"; then exit 0; fi
 install -m 600 -o $(id -un) -g $(id -gn) "\$RENEWED_LINEAGE/fullchain.pem" "$TURN_TLS_DIR/fullchain.pem"
 install -m 600 -o $(id -un) -g $(id -gn) "\$RENEWED_LINEAGE/privkey.pem" "$TURN_TLS_DIR/privkey.pem"
 systemctl --user -M $(id -un)@ try-restart papercusp-phone-livekit.service || true
@@ -243,7 +247,8 @@ cmd_apply_box() {
   sudo -n certbot certonly --dns-cloudflare --dns-cloudflare-credentials "$creds" \
     --dns-cloudflare-propagation-seconds 30 -d "$PHONE_EDGE_TURN_HOST" --non-interactive --agree-tos \
     --register-unsafely-without-email --keep-until-expiring -q
-  # Directory deploy hooks only run on renewal; run it once for the current lineage.
+  # Directory deploy hooks only run on renewal; run it once for the current lineage. The hook
+  # is a no-op when the lineage already matches LiveKit's copy, so a re-run keeps calls up.
   sudo -n env RENEWED_DOMAINS="$PHONE_EDGE_TURN_HOST" RENEWED_LINEAGE="/etc/letsencrypt/live/$PHONE_EDGE_TURN_HOST" "$hook"
   say "box tunnel up; TURN certificate at $TURN_TLS_DIR"
 }
@@ -265,5 +270,6 @@ case "${1:-}" in
   apply-vm) cmd_apply_vm ;;
   apply-box) cmd_apply_box ;;
   status) cmd_status ;;
-  *) sed -n '3,14p' "$0"; exit 2 ;;
+  turn-hook) turn_hook ;;
+  *) sed -n '3,15p' "$0"; exit 2 ;;
 esac
