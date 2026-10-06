@@ -25,6 +25,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import {
   normalizeDocStatus,
   parseFrontmatterBlock,
@@ -42,6 +43,7 @@ import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scop
 import { engineeringAdapter, invalidateEngineeringAdapter } from './_engineering-adapter';
 import { refreshDocPageSections } from '../../search/doc-embed-sync';
 import { findMdxCompileError } from '../../content-lint/mdx';
+import { completedResultPayload } from '../abort-completion-payload';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -632,6 +634,29 @@ const argsSchema = z.object({
     ),
 });
 
+export function docsAuthorAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const storageHarness = payload?.storageHarness;
+  const ref = payload?.ref;
+  if (
+    payload?.ok === true &&
+    typeof storageHarness === 'string' &&
+    storageHarness.trim().length > 0 &&
+    typeof ref === 'string' &&
+    ref.trim().length > 0
+  ) {
+    return { status: 'recorded', effectRef: `docs-author:${storageHarness}:${ref}` };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'docs:author result did not confirm the saved canonical document after the deadline',
+    failures: ['missing-saved-doc-ref'],
+  };
+}
+
 export default defineTool({
   name: 'docs:author',
   description:
@@ -650,6 +675,7 @@ export default defineTool({
     ],
   },
   capability: 'docs:write',
+  abortCompletionReceipt: docsAuthorAbortCompletionReceipt,
   requirePrincipal: false,
   agentRoles: ['documenter', 'doc-steward', 'operator', 'worker', 'architect', 'cup', 'curator'],
   modality: ['text'],
