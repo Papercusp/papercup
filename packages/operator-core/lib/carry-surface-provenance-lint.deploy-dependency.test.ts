@@ -22,7 +22,7 @@ describe('unprobed-deploy-dependency', () => {
     'R-3 needs main before it can be graded',
     'Waiting on the deploy to :3070, then re-grade R-1',
     'blocked on green main — resume after release:deployed',
-    'Wait for the release deployment before re-checking the runtime',
+    'Wait for the release deployment before the maintenance window.',
     'Acceptance is pending deployment; nothing else to do',
     "can't grade R-3 until it lands on main",
     'R-3 needs the fix to be deployed before it can be graded',
