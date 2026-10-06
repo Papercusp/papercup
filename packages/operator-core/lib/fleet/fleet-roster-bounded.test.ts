@@ -19,12 +19,14 @@ const {
   fetchWakeabilityMock,
   listFleetAssignmentsMock,
   recordedLiveOwnerIdsMock,
+  endedRecordedOwnerIdsMock,
   fetchSelfWakeMock,
 } = vi.hoisted(() => ({
   fetchPresenceTier1Mock: vi.fn(),
   fetchWakeabilityMock: vi.fn(),
   listFleetAssignmentsMock: vi.fn(),
   recordedLiveOwnerIdsMock: vi.fn(),
+  endedRecordedOwnerIdsMock: vi.fn(),
   fetchSelfWakeMock: vi.fn(),
 }));
 
@@ -44,7 +46,7 @@ vi.mock('./assignments', async (importOriginal) => {
 // mock it like the other non-injectable legs so this file stays PG-free.
 vi.mock('../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../adv-sessions')>();
-  return { ...actual, recordedLiveOwnerIds: recordedLiveOwnerIdsMock };
+  return { ...actual, recordedLiveOwnerIds: recordedLiveOwnerIdsMock, endedRecordedOwnerIds: endedRecordedOwnerIdsMock };
 });
 // EI-19407725333778711: the forward-looking self-wake leg also hits PG — mock it
 // like every other non-injectable leg so this file stays PG-free.
@@ -86,10 +88,12 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     fetchWakeabilityMock.mockReset();
     listFleetAssignmentsMock.mockReset();
     recordedLiveOwnerIdsMock.mockReset();
+    endedRecordedOwnerIdsMock.mockReset();
     fetchSelfWakeMock.mockReset();
     // Default: the recorded leg answers promptly with "nobody recorded-live" —
     // the pre-existing tests' degradedLegs expectations stay exact.
     recordedLiveOwnerIdsMock.mockResolvedValue(new Set<string>());
+    endedRecordedOwnerIdsMock.mockResolvedValue(new Set<string>());
     // Same treatment for the self-wake leg (EI-19407725333778711): answer
     // promptly by default so every pre-existing degradedLegs expectation in
     // this file keeps asserting EXACTLY the leg it was written to assert.
@@ -164,6 +168,40 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
       complete: false,
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('fleet-roster:recorded failed'));
+    warn.mockRestore();
+  });
+
+  it('folds the latest recorded end into leader liveness despite a warm wake-await', async () => {
+    vi.setSystemTime(new Date('2026-07-10T10:00:10Z'));
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map([
+      ['su-leader', { wakeable: true, liveTurn: false }],
+    ]));
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    endedRecordedOwnerIdsMock.mockResolvedValue(new Set(['su-leader']));
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes', leaderOwnerId: 'su-leader',
+      readPresence: async () => [{ ...pres('su-leader'), agentRole: 'su', fleetRole: 'leader' }],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+    expect(endedRecordedOwnerIdsMock).toHaveBeenCalledWith(['su-leader']);
+    expect(result.leaderLiveness).toMatchObject({ sessionState: 'ended', recordedLive: false, complete: true });
+  });
+
+  it('keeps leader liveness incomplete when the recorded end read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    endedRecordedOwnerIdsMock.mockRejectedValue(new Error('session end ledger unavailable'));
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes', leaderOwnerId: 'su-leader', readPresence: async () => [],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+    expect(result.degradedLegs).toContain('recorded');
+    expect(result.leaderLiveness).toMatchObject({ recordedLive: null, complete: false });
     warn.mockRestore();
   });
 

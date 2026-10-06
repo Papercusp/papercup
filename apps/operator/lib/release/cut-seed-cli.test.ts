@@ -62,7 +62,7 @@ describe('D166 private row-drop plan transport', () => {
       'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts', 'apps/operator/lib/release/cut-seed-cli.ts',
       'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
       'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
-      'apps/operator/bin/release/dependency-generation.sh']
+      'apps/operator/bin/release/dependency-generation.sh', 'scripts/check-lockfile-census.mjs']
       .map(path => ({ path, sha256: 'e'.repeat(64) })) };
   const deps = { readFrozenExecution: async () => execution };
   it('exports the actual frozen manifest population read-only and refuses changed source identities', async () => {

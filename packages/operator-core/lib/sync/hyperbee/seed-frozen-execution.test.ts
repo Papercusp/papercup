@@ -22,6 +22,22 @@ const bash = (root: string, code: string, ...args: string[]) => execFileSync('ba
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe('D177 installed dependency census', () => {
+  it('uses the root workspace lock instead of a subsumed stale local lock and still refuses drift', async () => {
+    const root = temp(); const path = 'packages/workspace/node_modules/@types/node';
+    pkg(root, path, '@types/node', '2.0.0');
+    const locks: Parameters<typeof readSeedInstalledPackages>[2] = [{ path: 'package-lock.json', packages: {
+      'packages/workspace': { name: '@fixture/workspace', version: '0.1.0' },
+      [path]: { version: '2.0.0' } } },
+    { path: 'packages/workspace/package-lock.json', packages: {
+      'node_modules/@types/node': { version: '1.0.0' },
+      'node_modules/vestigial': { version: '1.0.0' } } }];
+    expect((await readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks))[0].version).toBe('2.0.0');
+    pkg(root, path, '@types/node', '1.0.0');
+    await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('name/version mismatch');
+    pkg(root, path, '@types/node', '2.0.0');
+    delete (locks[0].packages as Record<string, unknown>)[path];
+    await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('no committed lock entry');
+  });
   it('censuses nested and scoped packages and permits a missing optional entry', async () => {
     const root = temp();
     pkg(root, 'node_modules/a', 'a'); pkg(root, 'node_modules/a/node_modules/@scope/b', '@scope/b');

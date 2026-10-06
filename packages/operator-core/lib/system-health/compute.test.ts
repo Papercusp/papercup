@@ -56,6 +56,15 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   getFlag: getFlagMock,
 }));
 vi.mock('../dev-deploy-state', () => ({ devDeployState: devDeployStateMock }));
+// WI-10006803: the live git-sync push-backlog probe resolves its repo root through
+// operator-notes first, so this is where a test can hang the whole probe.
+const { projectDirForSlugMock } = vi.hoisted(() => ({
+  projectDirForSlugMock: vi.fn(async (_slug: string): Promise<string | null> => null),
+}));
+vi.mock('../operator-notes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../operator-notes')>()),
+  projectDirForSlug: projectDirForSlugMock,
+}));
 vi.mock('../harness/routines/cron', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../harness/routines/cron')>()),
   computeNextFireAt: computeNextFireAtMock,
@@ -86,6 +95,7 @@ vi.mock('node:os', async (importOriginal) => ({
 }));
 import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, readAcceptanceDrainVisibility, ACCEPTANCE_DRAIN_VISIBILITY_SQL, countInvalidModelFailures, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
+import { PUSH_BACKLOG_DEADLINE_MS } from './push-backlog-reader';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
@@ -1039,6 +1049,42 @@ describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
     });
     expect(panel.error).toBeUndefined();
   });
+
+  it('WI-10006803: a hung push-backlog probe never holds the deploy leg past the reader deadline', async () => {
+    // With push errors present (consecutive_error_ticks > 0) collectDeploy consults the
+    // live push backlog. The probe behind it is ~117 serial git spawns on a big tree
+    // (39-75s per tick measured on bg-host, 2026-10-06). Hang it outright: the panel must
+    // settle at the reader's cold-miss deadline with the backlog unknown and the error
+    // ticks kept. Awaiting the probe directly (the pre-fix wiring) never settles here.
+    // A unique slug keeps the hung single-flight entry out of every other test's key.
+    const slug = 'wi-10006803-hung-probe';
+    projectDirForSlugMock.mockReset().mockImplementation(() => new Promise<string | null>(() => {}));
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({ last_status: 'error', last_synced_at: now - 60_000, consecutive_error_ticks: 2 }),
+        install_slug: slug,
+      },
+    ]);
+
+    // Real timers: collectDeploy reaches the probe through dynamic imports, which load in
+    // real time, so fake time cannot order "probe entered" before "deadline fired".
+    // Pre-load both modules so the measured window is the deadline, not module loading.
+    await import('../agent-tools/routines/list');
+    await import('../operator-notes');
+    const startedAt = performance.now();
+    const panel = await collectDeploy(ctx());
+    const elapsedMs = performance.now() - startedAt;
+
+    // Upper bound only: libuv arms setTimeout from the loop's cached time, so under load
+    // the deadline can fire before performance.now() shows the full window. The guard is
+    // that the leg settles at all; the pre-fix wiring never does.
+    expect(projectDirForSlugMock).toHaveBeenCalledWith(slug);
+    expect(elapsedMs).toBeLessThan(PUSH_BACKLOG_DEADLINE_MS + 5_000);
+    expect(panel.data).toMatchObject({
+      gitSyncPushBacklog: null,
+      gitSyncConsecutiveErrorTicks: 2,
+    });
+  }, 20_000);
 });
 
 describe('computeEscalationsHealth — operational flood excluded (EI-1490)', () => {

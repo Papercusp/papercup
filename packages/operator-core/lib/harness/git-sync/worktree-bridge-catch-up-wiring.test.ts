@@ -79,6 +79,28 @@ describe('WI-10003772: runWorktreeBridgeLeg runs the deferred-advance retry swee
     expect(sweep).toMatch(/if \(write\) await patchRoutineMetadata\(slug, ctx\.workspaceId, \{ worktree_divergence: next \}\)/);
   });
 
+  // WI-10006833: a member without the resolver's agent CLI (a Server install ships none)
+  // died `spawn claude ENOENT` on every dispatch. The runtime is probed BEFORE the dispatch
+  // is computed, and its result is what divergenceResolverDispatch sees.
+  it('the sweep probes the resolver runtime before computing the dispatch', () => {
+    const sweep = functionBody(source, 'async function runWorktreeCatchUp(');
+    const probeAt = sweep.search(
+      /applyResolverRuntimeProbe\(next, await probeMergeResolverRuntime\(slug, ctx\.workspaceId\), now\)/,
+    );
+    const dispatchAt = sweep.indexOf('divergenceResolverDispatch(next)');
+    expect(probeAt, 'the runtime preflight is missing from the sweep').toBeGreaterThanOrEqual(0);
+    expect(probeAt).toBeLessThan(dispatchAt);
+    expect(sweep).toMatch(/if \(divergenceAwaitsResolver\(next\)\) \{/);
+    expect(sweep).toMatch(/if \(applied\.change !== null\) write = true;\s*next = applied\.next;/);
+  });
+
+  it('probeMergeResolverRuntime probes the role the conflict launch blueprint names', () => {
+    const probe = functionBody(source, 'async function probeMergeResolverRuntime(');
+    expect(probe).toMatch(/resolveLaunchTargetForEvent\(CONFLICT_EVENT, \{ installSlug: slug, workspaceId \}\)/);
+    expect(probe).toMatch(/probeRoleRuntime\(target\.role\)/);
+    expect(probe).toMatch(/return p\.ok \? \{ ok: true \} : \{ ok: false, runtime: p\.bin \};/);
+  });
+
   it('spawnMergeResolver forwards mergeRef to the resolver in its --git-sync-conflict extra', () => {
     const spawn = functionBody(source, 'async function spawnMergeResolver(');
     expect(spawn).toMatch(/opts: \{ mergeRef\?: string \} = \{\}/);

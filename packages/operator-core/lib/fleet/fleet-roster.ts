@@ -43,7 +43,7 @@ import {
   resolveSessionStates,
   type LivenessSubject,
 } from '../agent-tools/coordination/liveness-oracle';
-import { recordedLiveOwnerIds } from '../adv-sessions';
+import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../adv-sessions';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
 import {
   listLiveSessionPresence,
@@ -210,6 +210,7 @@ export function foldFleetRoster(
    *  every existing caller/test compiles unchanged and simply reports
    *  `selfWake: null` (UNKNOWN) — never a fabricated `'none'`. */
   selfWake: Map<string, SelfWakeSignals> = new Map(),
+  recordedEnded: ReadonlySet<string> = new Set<string>(),
 ): FleetRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -241,14 +242,19 @@ export function foldFleetRoster(
             stale,
             host: p?.host,
             pid: p?.pid,
+            source: p?.source,
+            agentRole: p?.agentRole,
             claimsHeld,
           },
           w,
           recordedLive,
           nowMs,
           undefined,
-          undefined,
+          // Match targeted presence's verified native-host authority. Keep
+          // negative authority off: a missing local host is not death evidence.
+          { enabled: true, negative: false, positive: true, findHostFn: findLiveHost },
           selfWake.get(id),
+          recordedEnded,
         )
       : null;
     const sessionState: SessionState | null = v?.sessionState ?? null;
@@ -553,8 +559,11 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     // here via the oracle's deriveVerdict. Best-effort like every other leg,
     // and IN the same parallel fan-out (a serial extra leg would add up to a
     // whole extra SUBREAD_TIMEOUT of latency to every roster read).
-    withBoundedTimeout(recordedLiveOwnerIds(enrichmentIds), {
-      fallback: new Set<string>(),
+    withBoundedTimeout(Promise.all([
+      recordedLiveOwnerIds(enrichmentIds),
+      endedRecordedOwnerIds(enrichmentIds),
+    ]).then(([live, ended]) => ({ live, ended })), {
+      fallback: { live: new Set<string>(), ended: new Set<string>() },
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:recorded',
     }),
@@ -590,8 +599,9 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     tier1Result.value,
     nowMs,
     wakeabilityResult.value,
-    recordedResult.value,
+    recordedResult.value.live,
     selfWakeResult.value,
+    recordedResult.value.ended,
   );
   let leaderEntry: FleetRosterEntry | null | undefined;
   if (leaderOwnerId != null) {
@@ -605,8 +615,9 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
           tier1Result.value,
           nowMs,
           wakeabilityResult.value,
-          recordedResult.value,
+          recordedResult.value.live,
           selfWakeResult.value,
+          recordedResult.value.ended,
         ).find((entry) => entry.agentId === leaderOwnerId) ?? null;
     } else {
       leaderEntry = null;
@@ -614,7 +625,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   }
   const leaderRecordedLive =
     leaderOwnerId != null && !leaderPresence?.federated && !recordedResult.degraded
-      ? recordedResult.value.has(leaderOwnerId)
+      ? recordedResult.value.live.has(leaderOwnerId)
       : null;
   const leaderLiveness = leaderOwnerId == null
     ? undefined

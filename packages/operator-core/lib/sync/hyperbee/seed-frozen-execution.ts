@@ -25,7 +25,8 @@ export const SEED_EXECUTION_PATHS = ['packages/operator-core/lib/sync/hyperbee/r
   'apps/operator/lib/release/cut-seed-cli.ts',
   'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
   'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
-  'apps/operator/bin/release/dependency-generation.sh'];
+  'apps/operator/bin/release/dependency-generation.sh',
+  'scripts/check-lockfile-census.mjs'];
 
 export interface SeedFrozenExecution {
   sourceCommit: string;
@@ -68,8 +69,20 @@ const safe = (path: string) => path.length > 0 && !path.startsWith('/')
  * installations. Workspace links bind to the committed link target's metadata. */
 export async function readSeedInstalledPackages(root: string, trees: readonly string[],
   locks: readonly { path: string; packages: Record<string, LockEntry> }[]): Promise<PackageRow[]> {
+  const rootLock = locks.find(lock => lock.path === 'npm-shrinkwrap.json')
+    ?? locks.find(lock => lock.path === 'package-lock.json');
+  let workspaceDirs = new Set<string>();
+  if (rootLock && Object.keys(rootLock.packages).some(path => path && !path.startsWith('node_modules/'))) {
+    // Reuse the maintained lock census's authority rule: a root workspace's
+    // historical local lock is subsumed, including its package-local installs.
+    // Dynamic URL import keeps this source-only helper independent of JS typings.
+    const censusUrl = new URL('../../../../../scripts/check-lockfile-census.mjs', import.meta.url);
+    const { rootWorkspaceDirs } = await import(censusUrl.href);
+    workspaceDirs = rootWorkspaceDirs({ packages: rootLock.packages });
+  }
   const expected = new Map<string, { entry: LockEntry; lock: typeof locks[number]; key: string }>();
   for (const lock of [...locks].sort((a, b) => a.path.length - b.path.length)) {
+    if (lock !== rootLock && workspaceDirs.has(posix.dirname(lock.path))) continue;
     for (const [key, entry] of Object.entries(lock.packages)) {
       if (!key.includes('node_modules/')) continue;
       if (!safe(key)) throw new Error('invalid committed package path');

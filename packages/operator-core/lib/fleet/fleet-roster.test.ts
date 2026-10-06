@@ -5,7 +5,7 @@
  * Tier-1 on top), and the registry "available = live-member-count" annotation — all
  * without PG.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   filterPresenceToFleet,
   foldFleetRoster,
@@ -24,6 +24,11 @@ import type { AgentAssignment, WorkListItem } from './assignments';
 import type { PresenceTier1Joins } from '../agent-tools/coordination/presence-tier1';
 import type { WakeabilitySignals } from '../agent-tools/coordination/presence-wakeability';
 import type { AgentFleetRecord } from '../agent-fleets-store';
+import { deriveVerdict } from '../agent-tools/coordination/liveness-oracle';
+
+const findLiveHostMock = vi.hoisted(() => vi.fn());
+vi.mock('../events/await/psu-pty-discovery', () => ({ findLiveHost: findLiveHostMock }));
+beforeEach(() => findLiveHostMock.mockReset());
 
 const NOW = Date.parse('2026-06-29T04:00:00Z');
 
@@ -218,6 +223,60 @@ describe('livePsuFleetMemberIds (WI-4755)', () => {
 });
 
 describe('foldFleetRoster', () => {
+  it.each([
+    { name: 'an old activity clock', signals: { lastActivityMs: NOW - 24 * 60 * 60_000 } },
+    { name: 'a missed wake', signals: { wakeAttemptMiss: true } },
+  ])('matches targeted presence for a verified native leader despite $name', ({ signals }) => {
+    const p = pres({
+      ownerId: 'su-native-leader',
+      agentRole: 'su',
+      fleetRole: 'leader',
+      heartbeatAt: new Date(NOW - 5_000).toISOString(),
+    });
+    const w = { wakeable: true, liveTurn: false, ...signals };
+    const assignment = asg({ agentId: p.ownerId, doing: WI('WI-held'), load: 1 });
+    findLiveHostMock.mockReturnValue({ pid: 12345 });
+    const targeted = deriveVerdict(
+      { ...p, claimsHeld: true }, w, new Set(), NOW, () => null,
+      { enabled: true, negative: false, positive: true, findHostFn: findLiveHostMock },
+    );
+    expect(targeted.sessionState).toBe('parked');
+    const [member] = foldFleetRoster([p], [assignment], tier1({}), NOW, new Map([[p.ownerId, w]]));
+    expect(member.sessionState).toBe(targeted.sessionState);
+    expect(member.alive).toBe(true);
+    expect(member.doing).toEqual(WI('WI-held'));
+
+    findLiveHostMock.mockReturnValue(null);
+    const [hostless] = foldFleetRoster([p], [assignment], tier1({}), NOW, new Map([[p.ownerId, w]]));
+    expect(hostless.sessionState).toBe('suspect');
+    expect(hostless.alive).toBe(false);
+  });
+
+  it.each(['cup', null])('does not rescue an unverified native role %s', (agentRole) => {
+    const p = pres({ ownerId: 'unverified-role', agentRole, heartbeatAt: new Date(NOW - 5_000).toISOString() });
+    findLiveHostMock.mockReturnValue({ pid: 12345 });
+    const [member] = foldFleetRoster(
+      [p], [asg({ agentId: p.ownerId, load: 1 })], tier1({}), NOW,
+      wake({ [p.ownerId]: { wakeable: true, wakeAttemptMiss: true } }),
+    );
+    expect(member.sessionState).toBe('suspect');
+    expect(member.alive).toBe(false);
+  });
+
+  it.each([
+    { load: 0, state: 'ended' },
+    { load: 1, state: 'suspect' },
+  ])('preserves confirmed session death with $load held claims despite a native host', ({ load, state }) => {
+    const p = pres({ ownerId: 'ended-native', agentRole: 'su', heartbeatAt: new Date(NOW - 5_000).toISOString() });
+    findLiveHostMock.mockReturnValue({ pid: 12345 });
+    const [member] = foldFleetRoster(
+      [p], [asg({ agentId: p.ownerId, load })], tier1({}), NOW,
+      wake({ [p.ownerId]: { wakeable: true } }), new Set(), new Map(), new Set([p.ownerId]),
+    );
+    expect(member.sessionState).toBe(state);
+    expect(member.alive).toBe(false);
+  });
+
   it('preserves the work-detail and layers presence + fleet label + Tier-1 on top', () => {
     const a = asg({
       agentId: 'su-x',
