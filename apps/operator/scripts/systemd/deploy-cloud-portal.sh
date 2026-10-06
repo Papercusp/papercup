@@ -510,6 +510,21 @@ listener_pid() {
   fi
 }
 
+listener_belongs_to_managed_unit() {
+  local pid=$1 unit_cgroup hierarchy controllers process_cgroup
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" != 0 ]] || return 1
+  unit_cgroup="$(systemctl_user show "$UNIT_NAME" --property=ControlGroup --value 2>/dev/null || true)"
+  [[ "$unit_cgroup" == /* && "$unit_cgroup" != "/" ]] || return 1
+  [[ -r "$PROC_ROOT/$pid/cgroup" ]] || return 1
+
+  while IFS=: read -r hierarchy controllers process_cgroup; do
+    if [[ "$process_cgroup" == "$unit_cgroup" || "$process_cgroup" == "$unit_cgroup/"* ]]; then
+      return 0
+    fi
+  done < "$PROC_ROOT/$pid/cgroup"
+  return 1
+}
+
 process_lineage_is_next_dev() {
   local cursor=$1 line ppid i
   for i in 1 2 3 4 5 6; do
@@ -542,15 +557,25 @@ validate_legacy_listener() {
   printf '%s\n' "$pgid"
 }
 
-stop_legacy_listener() {
-  local pgid=$1 attempts=$((PORT_RELEASE_WAIT_SEC + 1))
-  "$KILL_BIN" -TERM -- "-$pgid"
+wait_for_listener_release() {
+  local attempts=$((PORT_RELEASE_WAIT_SEC + 1))
   while ((attempts > 0)); do
     [[ -z "$(listener_pid)" ]] && return 0
     attempts=$((attempts - 1))
     ((attempts > 0)) && sleep 1
   done
   return 1
+}
+
+stop_legacy_listener() {
+  local pgid=$1
+  "$KILL_BIN" -TERM -- "-$pgid"
+  wait_for_listener_release
+}
+
+stop_managed_listener() {
+  systemctl_user stop "$UNIT_NAME" || return 1
+  wait_for_listener_release
 }
 
 restore_legacy_listener() {
@@ -607,6 +632,19 @@ handoff() {
   old_pid="$(listener_pid || true)"
   if [[ -z "$old_pid" ]]; then
     start_managed || die "managed portal unit did not become healthy on :$PORTAL_PORT"
+    log "started $UNIT_NAME and verified http://127.0.0.1:$PORTAL_PORT${HEALTH_PATH}"
+    return 0
+  fi
+
+  # A unit can be activating/restarting while its listener PID still owns the
+  # port. Confirm cgroup membership before entering the terminal-scoped legacy
+  # path; stop managed processes only through systemd, never by signaling PID.
+  if listener_belongs_to_managed_unit "$old_pid"; then
+    log "$UNIT_NAME is not active but listener PID $old_pid belongs to its ControlGroup; stopping it through systemd"
+    if ! stop_managed_listener; then
+      die "$UNIT_NAME managed listener did not release :$PORTAL_PORT; refusing to signal it"
+    fi
+    start_managed || die "managed portal unit did not become healthy on :$PORTAL_PORT after stopping its prior listener"
     log "started $UNIT_NAME and verified http://127.0.0.1:$PORTAL_PORT${HEALTH_PATH}"
     return 0
   fi
