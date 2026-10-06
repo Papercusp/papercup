@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -9,13 +9,18 @@ import {
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   buildWorkspaceHostCleanRoomInstallFixture,
+  buildWorkspaceHostCredentialReference,
+  buildWorkspaceHostCredentialRevocationReference,
   deriveWorkspaceHostCanonicalArtifactUrls,
   workspaceHostCleanRoomFixtureAttestation,
   workspaceHostRequiredReleaseMaterialFixtures,
   type WorkspaceHostCleanRoomInstallSpec,
+  type WorkspaceHostImageArtifact,
 } from "@papercusp/deployment-driver";
 import { WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
 import { AWS_AMI_REQUIRED_GUEST_TOOLS } from "@papercusp/operator-core/lib/workspace-host/aws-ami-release";
+import { GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family";
+import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runGovernedOperation } from "@papercusp/operator-core/lib/resource-governor/execution";
 
@@ -31,6 +36,8 @@ import {
   buildBootcImageArtifact,
   buildBootcTrustReport,
   composeBootcAwsRequest,
+  composeBootcGcpRequest,
+  main,
   parseBootcImageReleaseRequestCliArgs,
   parseBootcSecretScan,
   parseCosignVerifiedDigests,
@@ -56,6 +63,59 @@ const GUEST_TOOL_RPMS = AWS_AMI_REQUIRED_GUEST_TOOLS.map((name, index) => ({
   foundBy: "rpm-db-cataloger",
   locations: [{ path: RPMDB }],
 }));
+/** WI-10006488: the same for the GCP set (it adds the Google guest agent the shared bake installs). */
+const GCP_GUEST_TOOL_RPMS = GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name, index) => ({
+  name,
+  type: "rpm",
+  version: `2.${index}-1.el10`,
+  foundBy: "rpm-db-cataloger",
+  locations: [{ path: RPMDB }],
+}));
+const GCP_PROJECT = "papercusp-release-test";
+/** The exact-path readiness input the GCP release consumes; shape as gcp-image-release-request-cli's. */
+function gcpReadinessInput(): Record<string, unknown> {
+  return {
+    credentials: {
+      git: {
+        credentialRef: {
+          kind: "git",
+          ref: buildWorkspaceHostCredentialReference("git-short-lived-delegation", { forge: "github", owner: "Papercusp", repository: "papercusp" }),
+        },
+        delivery: {
+          kind: "short-lived-delegation",
+          generation: 7,
+          audience: "release",
+          revocationRef: buildWorkspaceHostCredentialRevocationReference(
+            "git-short-lived-delegation",
+            { forge: "github", owner: "Papercusp", repository: "papercusp" },
+            7,
+          ),
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+        revokedThrough: 0,
+      },
+      agent: {
+        credentialRef: {
+          kind: "agent",
+          ref: buildWorkspaceHostCredentialReference("agent-encrypted-reference", { hostId: "release", agentSet: "claude-codex-omp" }),
+        },
+        delivery: {
+          kind: "encrypted-reference",
+          generation: 9,
+          audience: "release",
+          revocationRef: buildWorkspaceHostCredentialRevocationReference(
+            "agent-encrypted-reference",
+            { hostId: "release", agentSet: "claude-codex-omp" },
+            9,
+          ),
+        },
+        revokedThrough: 0,
+      },
+    },
+    storage: { minimumFreeBytes: 1, minimumFreeInodes: 1, retainedPaths: [BOOTC_TEMPLATE_PATH] },
+    sourceGitlinks: [],
+  };
+}
 const vendorSbomArtifacts = [
   { name: "skopeo", type: "rpm", version: "3:1.22.2-4.el9", locations: [{ path: RPMDB }], metadata: { files: [{ path: "/usr/bin/skopeo" }] } },
   // An .rpm ARCHIVE lying in the image: catalogued as type rpm, but not installed.
@@ -390,8 +450,15 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       /** The release the bake recorded; "absent" writes a pre-WI-10005761 manifest with no key. */
       bakeRelease?: { version: string } | null | "absent";
       sbomArtifacts?: unknown[];
+      /** WI-10006488: the release target; gcp writes a gcp input, a GCE disk row and GCP guest-tool rpms. */
+      provider?: "aws" | "gcp";
+      /** gcp only: false omits the bake's GCE disk row. */
+      gcpDisk?: boolean;
+      /** Shallow-merged over the input document; an undefined value deletes the key. */
+      inputPatch?: Record<string, unknown>;
     } = {},
   ) {
+    const provider = overrides.provider ?? "aws";
     const root = mkdtempSync(join(tmpdir(), "bootc-release-request-"));
     dirs.push(root);
     const repo = join(root, "repo");
@@ -417,7 +484,12 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       pinnedRef: `${REPO}@${DIGEST}`,
       registryNamespace: "127.0.0.1:5096/papercusp",
       ...(overrides.bakeRelease === "absent" ? {} : { release: overrides.bakeRelease === undefined ? { version: VERSION } : overrides.bakeRelease }),
-      clouds: [{ cloud: "aws", type: "ami", artifact: join(out, "aws/disk.raw"), sha256: "2".repeat(64), sizeBytes: 1024 }],
+      clouds: [
+        { cloud: "aws", type: "ami", artifact: join(out, "aws/disk.raw"), sha256: "2".repeat(64), sizeBytes: 1024 },
+        ...(provider === "gcp" && overrides.gcpDisk !== false
+          ? [{ cloud: "gcp", type: "gce", artifact: join(out, "gcp/disk.tar.gz"), sha256: "3".repeat(64), sizeBytes: 2048 }]
+          : []),
+      ],
     }));
     writeFileSync(join(sc, "supply-chain-summary.json"), JSON.stringify({ digest: DIGEST, verifiedFromRegistry: true }));
     writeFileSync(join(sc, "verify-sig.log"), cosignLog(DIGEST));
@@ -427,7 +499,8 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
         type: "image",
         metadata: { manifestDigest: overrides.sbomDigest ?? DIGEST, imageSize: 2_000_000_000, manifest: overrides.sbomManifest ?? IMAGE_MANIFEST_B64 },
       },
-      artifacts: overrides.sbomArtifacts ?? [{ name: "bash" }, { name: "glibc" }, { name: "openssl-libs" }, ...GUEST_TOOL_RPMS],
+      artifacts: overrides.sbomArtifacts ??
+        [{ name: "bash" }, { name: "glibc" }, { name: "openssl-libs" }, ...(provider === "gcp" ? GCP_GUEST_TOOL_RPMS : GUEST_TOOL_RPMS)],
     }));
     writeFileSync(join(sc, "vulns.json"), JSON.stringify({
       descriptor: { name: "grype", version: "0.99.0" },
@@ -471,23 +544,41 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       trustReport: { trusted: true },
     }));
     const publishedAt = "2026-10-02T20:30:00Z";
-    writeFileSync(join(root, "input.json"), JSON.stringify({
+    const target = provider === "gcp"
+      ? {
+        gcp: {
+          projectId: GCP_PROJECT,
+          family: "papercusp-workspace-host",
+          cleanRoom: { zone: "us-central1-a", serviceAccountEmail: "papercusp-vm@example.iam.gserviceaccount.com", subnetwork: "pc-rel-subnet" },
+        },
+        connection: { target: "gcp", cloudCredentialRef: { kind: "cloud", ref: "gcloud://active-user" } },
+        readiness: gcpReadinessInput(),
+      }
+      : {
+        aws: {
+          publisherAccountId: "413781344298",
+          sourceRegion: "us-east-1",
+          targets: [{ region: "us-east-1", kmsKeyArn: "arn:aws:kms:us-east-1:413781344298:key/test", shareWithAccountIds: ["497149484242"] }],
+          cleanAccount: { accountId: "497149484242", region: "us-east-1", subnetId: "subnet-test", instanceProfileArn: "arn:aws:iam::497149484242:instance-profile/test" },
+          deprecatePreviousAt: "2026-11-01T00:00:00Z",
+        },
+        connection: { target: "aws" },
+      };
+    const input: Record<string, unknown> = {
       bakeManifest: "out/bake-manifest.json",
       cosignPublicKey: "cosign.pub",
       publicationManifest: "publication.json",
       baseImage: { architecture: "x86_64", ...(overrides.inputBaseSha256 ? { sha256: overrides.inputBaseSha256 } : {}) },
       builder: { version: "latest" },
       publishedAt,
-      aws: {
-        publisherAccountId: "413781344298",
-        sourceRegion: "us-east-1",
-        targets: [{ region: "us-east-1", kmsKeyArn: "arn:aws:kms:us-east-1:413781344298:key/test", shareWithAccountIds: ["497149484242"] }],
-        cleanAccount: { accountId: "497149484242", region: "us-east-1", subnetId: "subnet-test", instanceProfileArn: "arn:aws:iam::497149484242:instance-profile/test" },
-        deprecatePreviousAt: "2026-11-01T00:00:00Z",
-      },
-      connection: { target: "aws" },
-    }));
-    return { root, repo, inputFile: join(root, "input.json"), publishedAt };
+      ...target,
+    };
+    for (const [key, value] of Object.entries(overrides.inputPatch ?? {})) {
+      if (value === undefined) delete input[key];
+      else input[key] = value;
+    }
+    writeFileSync(join(root, "input.json"), JSON.stringify(input));
+    return { root, repo, revision, inputFile: join(root, "input.json"), publishedAt };
   }
 
   it("builds a trusted report bound to the bake digest, with unfixed findings scoped out", async () => {
@@ -735,5 +826,158 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
     await expect(
       composeBootcAwsRequest({ inputFile: f.inputFile, repoRoot: f.repo, emit: "request", cleanRoomReportFile: reportFile }, NOW),
     ).rejects.toThrow(/no installed rpm for guest tool\(s\): amazon-ssm-agent/);
+  });
+
+  describe("GCP image-family request (WI-10006488)", () => {
+    /** A passing clean-room report for exactly this artifact, as the clean-room acceptance CLI writes it. */
+    function writePassingReport(
+      f: ReturnType<typeof fixture>,
+      artifact: Extract<WorkspaceHostImageArtifact, { hostModel: "bootc-image" }>,
+      patch: Record<string, unknown> = {},
+    ): string {
+      const spec: WorkspaceHostCleanRoomInstallSpec = {
+        fixtureId: "gcp-bootc-clean-room",
+        action: "install",
+        provider: "gcp",
+        architecture: "x86_64",
+        hostModel: "bootc-image",
+        bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        observedAt: f.publishedAt,
+        hostId: "clean-host-1",
+        migrationId: "schema-1272",
+        minimumNodeMajor: 22,
+        service: { name: "papercusp-workspace", port: 3070 },
+      };
+      const cleanFixture = buildWorkspaceHostCleanRoomInstallFixture(artifact, spec);
+      const reportFile = join(f.root, "clean-room.json");
+      writeFileSync(reportFile, JSON.stringify({
+        cleanRoomReport: {
+          contractVersion: WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+          fixtureId: spec.fixtureId,
+          image: artifact.image,
+          passed: true,
+          checks: ["artifact-identity", "compatibility-matrix", "deterministic-bootstrap-fixture", "exact-bootstrap-attestation"],
+          issues: [],
+          bootstrapScriptSha256: cleanFixture.bootstrapScriptSha256,
+          attestation: workspaceHostCleanRoomFixtureAttestation(cleanFixture, spec.observedAt),
+          ...patch,
+        },
+      }));
+      return reportFile;
+    }
+
+    async function gcpFixture(overrides: Parameters<typeof fixture>[0] = {}) {
+      const f = fixture({ provider: "gcp", ...overrides });
+      const { artifact } = await buildBootcImageArtifact({ inputFile: f.inputFile, repoRoot: f.repo, emit: "artifact" }, NOW);
+      const reportFile = writePassingReport(f, artifact);
+      const args = { inputFile: f.inputFile, repoRoot: f.repo, emit: "request" as const, cleanRoomReportFile: reportFile };
+      return { f, artifact, reportFile, args };
+    }
+
+    it("composes a request the release gate accepts, targeted at the project and importing the bake's GCE disk", async () => {
+      const { f, artifact, args } = await gcpFixture();
+      // The artifact itself is GCP-targeted: a gcp input never yields an AWS-compatible image.
+      expect(artifact.buildManifest.targets).toEqual([{ provider: "gcp", locations: [GCP_PROJECT] }]);
+      expect(artifact.compatibility.map((rule) => rule.provider)).toEqual(["gcp"]);
+
+      const composed = await composeBootcGcpRequest(args, NOW);
+      expect(evaluateWorkspaceHostReleaseGate(composed.request.releaseGate).accepted).toBe(true);
+      expect(composed.request.releaseGate.compatibilityRequest.provider).toBe("gcp");
+      expect(composed.request.releaseGate.bootcBakeManifest?.clouds.map((cloud) => cloud.cloud)).toContain("gcp");
+      expect(composed.request).toMatchObject({
+        projectId: GCP_PROJECT,
+        family: "papercusp-workspace-host",
+        publishedAt: f.publishedAt,
+        cleanRoom: { zone: "us-central1-a", serviceAccountEmail: "papercusp-vm@example.iam.gserviceaccount.com", subnetwork: "pc-rel-subnet" },
+      });
+      expect(composed.request).not.toHaveProperty("previousVersion");
+      // Every required GCP guest tool's version comes from the bake's own SBOM.
+      expect(composed.request.guestToolVersions).toEqual(
+        Object.fromEntries(GCP_GUEST_TOOL_RPMS.map((row) => [row.name, row.version])),
+      );
+      // A TYPED credential reference, scoped to the release project.
+      expect(composed.connection).toEqual({
+        target: "gcp",
+        cloudCredentialRef: { kind: "cloud", ref: "gcloud://active-user" },
+        scope: { kind: "project", id: GCP_PROJECT },
+        provider: { projectId: GCP_PROJECT },
+      });
+      // Readiness: user and cwd captured from this process, source from the bake's recorded revision.
+      expect(composed.readiness.expected).toEqual({ username: userInfo().username, cwd: realpathSync(f.repo) });
+      expect(composed.readiness.source).toMatchObject({
+        repository: "https://github.com/Papercusp/papercusp.git",
+        revision: f.revision,
+      });
+    });
+
+    it("dispatches --emit request to the GCP composer for a gcp input", async () => {
+      const { args } = await gcpFixture();
+      const chunks: string[] = [];
+      const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+        chunks.push(String(chunk));
+        return true;
+      });
+      // main() reads the wall clock; the fixture's attestation is dated on the fixture clock.
+      const clock = vi.spyOn(Date, "now").mockImplementation(NOW);
+      try {
+        await main(["--input-file", args.inputFile, "--repo-root", args.repoRoot, "--emit", "request", "--clean-room-report", args.cleanRoomReportFile]);
+      } finally {
+        spy.mockRestore();
+        clock.mockRestore();
+      }
+      const document = JSON.parse(chunks.join("")) as Record<string, Record<string, unknown>>;
+      expect(Object.keys(document).sort()).toEqual(["connection", "readiness", "request"]);
+      expect(document.request?.projectId).toBe(GCP_PROJECT);
+      expect(document.connection?.target).toBe("gcp");
+    });
+
+    it("refuses an input naming both providers, or neither", async () => {
+      const both = fixture({ provider: "gcp", inputPatch: { aws: { targets: [{ region: "us-east-1" }] } } });
+      await expect(buildBootcImageArtifact({ inputFile: both.inputFile, repoRoot: both.repo, emit: "artifact" }, NOW))
+        .rejects.toThrow(/names both aws and gcp/);
+      const neither = fixture({ provider: "gcp", inputPatch: { gcp: undefined } });
+      await expect(buildBootcImageArtifact({ inputFile: neither.inputFile, repoRoot: neither.repo, emit: "artifact" }, NOW))
+        .rejects.toThrow(/names neither aws nor gcp/);
+    });
+
+    it("refuses a bake that rendered no GCE disk before any clean-room spend", async () => {
+      const f = fixture({ provider: "gcp", gcpDisk: false });
+      await expect(buildBootcImageArtifact({ inputFile: f.inputFile, repoRoot: f.repo, emit: "clean-room-input" }, NOW))
+        .rejects.toThrow(/cannot be released to gcp: clouds is missing provider 'gcp'/);
+    });
+
+    it("refuses a bare-string credential, a connection scoped to another project, and a failing report", async () => {
+      const bare = await gcpFixture({ inputPatch: { connection: { target: "gcp", cloudCredentialRef: "gcloud://active-user" } } });
+      await expect(composeBootcGcpRequest(bare.args, NOW)).rejects.toThrow(/typed \{ kind: 'cloud', ref \} reference/);
+
+      const elsewhere = await gcpFixture({
+        inputPatch: {
+          connection: { target: "gcp", cloudCredentialRef: { kind: "cloud", ref: "gcloud://active-user" }, scope: { kind: "project", id: "other-project" } },
+        },
+      });
+      await expect(composeBootcGcpRequest(elsewhere.args, NOW)).rejects.toThrow(/publishes into project papercusp-release-test/);
+
+      const failed = await gcpFixture();
+      writePassingReport(failed.f, failed.artifact, { passed: false });
+      await expect(composeBootcGcpRequest(failed.args, NOW)).rejects.toThrow(/clean-room report did not pass/);
+    });
+
+    it("refuses to compose one provider's request from the other provider's input", async () => {
+      const gcp = await gcpFixture();
+      await expect(composeBootcAwsRequest(gcp.args, NOW)).rejects.toThrow(/the input targets gcp, not aws/);
+      const f = fixture();
+      await expect(
+        composeBootcGcpRequest({ inputFile: f.inputFile, repoRoot: f.repo, emit: "request", cleanRoomReportFile: gcp.reportFile }, NOW),
+      ).rejects.toThrow(/the input targets aws, not gcp/);
+    });
+
+    it("refuses an image whose rpm database lacks a required GCP guest tool", async () => {
+      const { f, args } = await gcpFixture();
+      const sbomPath = join(f.root, "out/supply-chain/sbom.syft.json");
+      const sbom = JSON.parse(readFileSync(sbomPath, "utf8")) as { artifacts: { name?: string }[] };
+      sbom.artifacts = sbom.artifacts.filter((row) => row.name !== "google-guest-agent");
+      writeFileSync(sbomPath, JSON.stringify(sbom));
+      await expect(composeBootcGcpRequest(args, NOW)).rejects.toThrow(/no installed rpm for guest tool\(s\): google-guest-agent/);
+    });
   });
 });

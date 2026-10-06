@@ -986,6 +986,78 @@ export default defineTool({
     // P-001: hoisted above the derive because it participates in the windowing
     // decision below, not just the post-read filtering.
     const directedOnly = args.directed === true;
+    // Selective inbox reads have produced request_timeout failures, but the
+    // existing cache telemetry measures only the readInbox factory. Preserve a
+    // cumulative phase trace in invocation metadata for these less-common paths.
+    // ctx.metadata is overwrite-not-merge, so every update includes the complete
+    // finished-phase list plus any currently awaited helper; a timeout therefore
+    // still identifies the phase that was in flight.
+    const phaseMetadata = (ctx as {
+      metadata?: (value: Record<string, unknown>) => void;
+    } | undefined)?.metadata;
+    const traceSelectivePhases = Boolean(args.from || directedOnly || unansweredOnly);
+    const phaseTraceStartedAt = performance.now();
+    type InboxPhaseStatus = "running" | "fulfilled" | "rejected";
+    type InboxPhase = {
+      name: string;
+      status: InboxPhaseStatus;
+      startedAt: string;
+      elapsedMs: number | null;
+    };
+    const inboxPhases: InboxPhase[] = [];
+    const activeInboxPhases = new Map<number, string>();
+    let nextInboxPhaseId = 0;
+    const publishInboxPhases = (): void => {
+      if (!traceSelectivePhases || !phaseMetadata) return;
+      try {
+        phaseMetadata({
+          coordInboxRead: {
+            schemaVersion: "coord-inbox-read-phases-v1",
+            unit: "ms",
+            timing: "awaited-helper-wall-time",
+            request: {
+              hasFrom: Boolean(args.from),
+              directed: directedOnly,
+              unansweredOnly,
+            },
+            elapsedMs: Math.max(0, Math.round(performance.now() - phaseTraceStartedAt)),
+            activePhases: [...activeInboxPhases.values()],
+            phases: inboxPhases.map((phase) => ({ ...phase })),
+          },
+        });
+      } catch {
+        // Diagnostic delivery must never replace the inbox result or error.
+      }
+    };
+    const measureInboxPhase = async <T>(
+      name: string,
+      action: () => Promise<T>,
+    ): Promise<T> => {
+      if (!traceSelectivePhases || !phaseMetadata) return action();
+      const phaseId = ++nextInboxPhaseId;
+      const phase: InboxPhase = {
+        name,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        elapsedMs: null,
+      };
+      inboxPhases.push(phase);
+      activeInboxPhases.set(phaseId, name);
+      publishInboxPhases();
+      const startedAt = performance.now();
+      try {
+        const value = await action();
+        phase.status = "fulfilled";
+        return value;
+      } catch (error) {
+        phase.status = "rejected";
+        throw error;
+      } finally {
+        phase.elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+        activeInboxPhases.delete(phaseId);
+        publishInboxPhases();
+      }
+    };
     // EI-12930: resolve a SHORT ownerId/label `from` (`su-b0fbf`) to the FULL ownerId via
     // the SAME roster resolver coord:send uses — so a filter that SUCCESSFULLY sent can't
     // then silently FAIL to find the reply — and flag `from_unmatched` when it matches NO
@@ -994,7 +1066,10 @@ export default defineTool({
     let resolvedFrom = args.from ?? undefined;
     let fromUnmatched = false;
     if (args.from) {
-      const known = await knownOwnerIdSet(identity.workspaceId).catch(() => null);
+      const known = await measureInboxPhase(
+        "resolve-from-owner-roster",
+        () => knownOwnerIdSet(identity.workspaceId),
+      ).catch(() => null);
       ({ resolvedFrom, unmatched: fromUnmatched } = classifyInboxFromFilter(
         args.from,
         known ? [...known] : [],
@@ -1007,11 +1082,13 @@ export default defineTool({
     // matches the member's full actorUserKey ladder (resolveActorIdentity adds the
     // async gh id; cached). Best-effort — a drain hiccup must never break the read;
     // a fully-online member with no parked mail is a single cheap no-op UPDATE.
-    await resolveActorIdentity(ctx)
-      .then((actor) =>
-        drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
-      )
-      .catch(() => {});
+    await measureInboxPhase("resolve-actor-and-drain-mailbox", () =>
+      resolveActorIdentity(ctx)
+        .then((actor) =>
+          drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
+        )
+        .catch(() => {}),
+    );
     // Piggyback liveness: reading your inbox IS a heartbeat. Keeps a fresh
     // coord:presence row for every active agent (the read hook runs every
     // tool call) without clobbering a declared intent. Best-effort, and run
@@ -1024,13 +1101,15 @@ export default defineTool({
     // it (snapshot_rebootstrap_pending), so the common no-flag path adds only one
     // cheap PK read and no extra latency.
     const [, ownInbox, wm] = await Promise.all([
-      inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
-        ? heartbeatPresence(identity).catch(() => {})
-        : Promise.resolve(),
+      measureInboxPhase("presence-heartbeat", () =>
+        inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
+          ? heartbeatPresence(identity).catch(() => {})
+          : Promise.resolve(),
+      ),
       // Cache ONLY the pure derive (P-008). Keyed on the OWNER (principal-scoped — never
       // leak one agent's inbox to another), since_ts + kinds. The side effects above/below
       // run unconditionally. The VITEST bypass keeps existing coord:inbox tests unchanged.
-      cachedRead(
+      measureInboxPhase("readInbox-derive", () => cachedRead(
         ctx as CachedReadCtx,
         {
           tool: "coord:inbox",
@@ -1115,8 +1194,10 @@ export default defineTool({
                 }
               : undefined,
           ),
+      )),
+      measureInboxPhase("read-watermark", () =>
+        readWatermark(identity.ownerId).catch(() => emptyWatermark()),
       ),
-      readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);
     // WI-10005678: a verified spawn session (an acceptance judge) reads as
     // `system:<role>/<id>`, but peers, its inbox-wake and the ship recruiter all
@@ -1129,16 +1210,17 @@ export default defineTool({
     const all = sessionAlias
       ? mergeInboxEntries(
           ownInbox,
-          await readDirectedInbox(sessionAlias, { since_ts: deliveryFloorTs, kinds: args.kinds }).catch(
-            (e: unknown) => {
+          await measureInboxPhase(
+            "verified-session-alias-read",
+            () => readDirectedInbox(sessionAlias, { since_ts: deliveryFloorTs, kinds: args.kinds }),
+          ).catch((e: unknown) => {
               console.warn(
                 `[coord:inbox] session-alias read for ${sessionAlias} failed (own inbox still served): ${
                   e instanceof Error ? e.message : String(e)
                 }`,
               );
               return [];
-            },
-          ),
+            }),
         )
       : ownInbox;
 
@@ -1187,9 +1269,12 @@ export default defineTool({
     let unansweredLookupFailed = false;
     if (unansweredOnly) {
       try {
-        const unansweredMap = await fetchUnansweredDirected([identity.ownerId], {
-          perRecipientCap: UNANSWERED_FILTER_CAP,
-        });
+        const unansweredMap = await measureInboxPhase(
+          "unanswered-directed-lookup",
+          () => fetchUnansweredDirected([identity.ownerId], {
+            perRecipientCap: UNANSWERED_FILTER_CAP,
+          }),
+        );
         unansweredMsgIds = new Set(
           (unansweredMap.get(identity.ownerId)?.newest ?? []).map((e) => e.msgId),
         );
@@ -1324,8 +1409,11 @@ export default defineTool({
       identity.ownerId,
       wm.messages_shown_ts,
     );
-    const receiptResults = await Promise.allSettled(
-      newlyShownReceipts.map((entry) => emitReadReceipt(entry, identity)),
+    const receiptResults = await measureInboxPhase(
+      "read-receipt-emission",
+      () => Promise.allSettled(
+        newlyShownReceipts.map((entry) => emitReadReceipt(entry, identity)),
+      ),
     );
     const receiptsEmitted = receiptResults.every((result) => result.status === "fulfilled");
 
@@ -1349,9 +1437,11 @@ export default defineTool({
       injectionPopulation,
     );
     if (receiptsEmitted && safeShownTs && safeShownTs > wm.messages_shown_ts) {
-      await writeWatermark(identity.ownerId, {
-        messages_shown_ts: safeShownTs,
-      }).catch(() => {});
+      await measureInboxPhase("shown-watermark-write", () =>
+        writeWatermark(identity.ownerId, {
+          messages_shown_ts: safeShownTs,
+        }).catch(() => {}),
+      );
     }
 
     // Server-side injection render (token-efficient-coord-injection P-005): the
@@ -1370,7 +1460,10 @@ export default defineTool({
     // (TOCTOU) resolves to current truth.
     let cueScope: RecipientCueScope | undefined;
     try {
-      const fleet = (await fetchPresenceFleet([identity.ownerId])).get(identity.ownerId);
+      const fleet = (await measureInboxPhase(
+        "reader-presence-fleet-read",
+        () => fetchPresenceFleet([identity.ownerId]),
+      )).get(identity.ownerId);
       cueScope = {
         recipientId: identity.ownerId,
         fleetSlugs: fleet?.fleetSlug ? [fleet.fleetSlug] : [],
@@ -1404,9 +1497,11 @@ export default defineTool({
         ),
       ].slice(-RELATED_QUOTE_MAX_REFS);
       if (relatedIds.length) {
-        const hydrated = await hydrateRefs(
-          relatedIds.map((id) => ({ kind: "msg" as const, id })),
-          { budget: { snippetChars: RELATED_QUOTE_SNIPPET_CHARS, maxRefs: relatedIds.length } },
+        const hydrated = await measureInboxPhase("related-message-hydration", () =>
+          hydrateRefs(
+            relatedIds.map((id) => ({ kind: "msg" as const, id })),
+            { budget: { snippetChars: RELATED_QUOTE_SNIPPET_CHARS, maxRefs: relatedIds.length } },
+          ),
         );
         relatedQuotes = new Map(
           hydrated.flatMap((h) => (h.ref.kind === "msg" ? [[h.ref.id, h] as const] : [])),
@@ -1439,12 +1534,14 @@ export default defineTool({
         ),
       ].slice(-BODY_REF_MAX_TOTAL);
       if (ids.length) {
-        const hydrated = await hydrateRefs(
-          ids.map((id) => ({ kind: "work-item" as const, id })),
-          {
-            budget: { snippetChars: BODY_REF_SNIPPET_CHARS, maxRefs: ids.length },
-            resolvers: { "work-item": bodyRefWorkItemResolver },
-          },
+        const hydrated = await measureInboxPhase("work-item-body-reference-hydration", () =>
+          hydrateRefs(
+            ids.map((id) => ({ kind: "work-item" as const, id })),
+            {
+              budget: { snippetChars: BODY_REF_SNIPPET_CHARS, maxRefs: ids.length },
+              resolvers: { "work-item": bodyRefWorkItemResolver },
+            },
+          ),
         );
         bodyRefs = new Map(
           hydrated.flatMap((h) => (h.ref.kind === "work-item" ? [[h.ref.id, h] as const] : [])),
@@ -1471,14 +1568,22 @@ export default defineTool({
         workspaceId?: string | null;
         harnessSlug?: string | null;
       };
-      rebootstrap = await consumePresenceRebootstrap(
-        identity.ownerId,
-        wm,
-        async () => {
-          const resolved = await resolvePresenceScope(c);
-          const snap = await assemblePresenceSnapshot(resolved);
-          return renderPresenceRebootstrapBlock(snap);
-        },
+      rebootstrap = await measureInboxPhase("consume-presence-rebootstrap", () =>
+        consumePresenceRebootstrap(
+          identity.ownerId,
+          wm,
+          async () => {
+            const resolved = await measureInboxPhase(
+              "rebootstrap-presence-scope",
+              () => resolvePresenceScope(c),
+            );
+            const snap = await measureInboxPhase(
+              "rebootstrap-presence-snapshot",
+              () => assemblePresenceSnapshot(resolved),
+            );
+            return renderPresenceRebootstrapBlock(snap);
+          },
+        ),
       );
     } catch {
       rebootstrap = null;
@@ -1497,14 +1602,20 @@ export default defineTool({
     let contextGauge: string | null = null;
     let respawnLine: string | null = null;
     try {
-      const pres = await getPresence(identity.ownerId);
+      const pres = await measureInboxPhase(
+        "reader-presence-read",
+        () => getPresence(identity.ownerId),
+      );
       // WI-4154: derive the usage from the transcript's CURRENT state (anchored
       // incremental read — cost is the append delta), never from the watchdog's
       // point-in-time cache, which went stale across every compaction boundary and
       // served false 126%/87% post-compaction alarms. The presence value remains
       // only as the fallback for owners whose transcript can't be read here (the
       // same sessions it was the only source for before).
-      const live = await currentContextTokensForOwner(identity.ownerId);
+      const live = await measureInboxPhase(
+        "current-context-transcript-read",
+        () => currentContextTokensForOwner(identity.ownerId),
+      );
       const tokens = live ?? pres?.contextTokens;
       const readingSource: ContextGaugeReadingSource = contextGaugeReadingSource(live);
       // WI-2143463: the watchdog mirrors the gateway's route-bound lowest
@@ -1530,10 +1641,13 @@ export default defineTool({
         selfCompactionAvailable === false &&
         authorizationWorkspaceId
       ) {
-        fleetWindDownLoopEndAuthorized = await readFleetWindDownLoopEndAuthorization({
-          ownerId: identity.ownerId,
-          workspaceId: authorizationWorkspaceId,
-        });
+        fleetWindDownLoopEndAuthorized = await measureInboxPhase(
+          "fleet-wind-down-authorization-read",
+          () => readFleetWindDownLoopEndAuthorization({
+            ownerId: identity.ownerId,
+            workspaceId: authorizationWorkspaceId,
+          }),
+        );
       }
       usageLine = renderContextUsageLine(
         tokens,
@@ -1572,17 +1686,23 @@ export default defineTool({
         let loopNeedingCarryNote: string | null = null;
         try {
           const [{ getLoopStatus }, { getLoopCarryNoteWithMeta }, { armedLoopNeedsCarryNote }] =
-            await Promise.all([
+            await measureInboxPhase("flush-gate-module-load", () => Promise.all([
               import("../../../harness/routines/loop"),
               import("../../../carry-note"),
               import("../../../enforcement-gate"),
-            ]);
-          const loop = await getLoopStatus(identity.ownerId);
+            ]));
+          const loop = await measureInboxPhase(
+            "flush-gate-loop-status-read",
+            () => getLoopStatus(identity.ownerId),
+          );
           if (loop?.active) {
-            const meta = await getLoopCarryNoteWithMeta({
-              harness: loop.harnessSlug,
-              ownerId: identity.ownerId,
-            });
+            const meta = await measureInboxPhase(
+              "flush-gate-carry-note-read",
+              () => getLoopCarryNoteWithMeta({
+                harness: loop.harnessSlug,
+                ownerId: identity.ownerId,
+              }),
+            );
             if (
               !meta.readFailed &&
               armedLoopNeedsCarryNote({
@@ -1601,7 +1721,10 @@ export default defineTool({
           const ws =
             (ctx as { workspaceId?: string | null } | undefined)?.workspaceId ??
             activeWorkspaceId();
-          const fresh = await listActiveClaimFreshnessForOwner(ws, identity.ownerId);
+          const fresh = await measureInboxPhase(
+            "active-claim-freshness-read",
+            () => listActiveClaimFreshnessForOwner(ws, identity.ownerId),
+          );
           flushLine = renderFlushGateLine(pct, classifyStaleClaims(fresh, Date.now()), {
             loopNeedingCarryNote,
           });
@@ -1628,7 +1751,10 @@ export default defineTool({
       // extra, the discipline the flush-gate read above already follows.
       if (pct != null && pct >= CONTEXT_GAUGE_QUIET_PCT) {
         try {
-          respawnLine = lostRespawnAmbientLine(await readPriorRespawnOutcome(identity.ownerId));
+          respawnLine = lostRespawnAmbientLine(await measureInboxPhase(
+            "prior-respawn-outcome-read",
+            () => readPriorRespawnOutcome(identity.ownerId),
+          ));
         } catch {
           respawnLine = null;
         }
@@ -1702,7 +1828,12 @@ export default defineTool({
       const ids = entriesOut
         .map((e) => e["msg_id"])
         .filter((id): id is string => typeof id === "string");
-      if (ids.length > 0) entriesOut = annotateSuperseded(entriesOut, await getSupersededMap(ids));
+      if (ids.length > 0) {
+        entriesOut = annotateSuperseded(
+          entriesOut,
+          await measureInboxPhase("supersession-marker-read", () => getSupersededMap(ids)),
+        );
+      }
     } catch {
       // Unmarked, but complete.
     }
@@ -1715,9 +1846,11 @@ export default defineTool({
     // verdict is exactly the news a waiting reader needs; an undeterminable
     // ref gets NO verdict, never a guess.
     try {
-      entriesOut = await annotateBlockedOnStatus(entriesOut, {
-        workspaceId: identity.workspaceId ?? '',
-      });
+      entriesOut = await measureInboxPhase("blocked-on-status-annotation", () =>
+        annotateBlockedOnStatus(entriesOut, {
+          workspaceId: identity.workspaceId ?? '',
+        }),
+      );
     } catch {
       // Unmarked, but complete.
     }
@@ -1732,8 +1865,12 @@ export default defineTool({
       const ids = entriesOut
         .map((e) => e["msg_id"])
         .filter((id): id is string => typeof id === "string");
-      if (ids.length > 0)
-        entriesOut = annotateRemoteOrigin(entriesOut, await getRemoteOriginMsgIds(ids));
+      if (ids.length > 0) {
+        entriesOut = annotateRemoteOrigin(
+          entriesOut,
+          await measureInboxPhase("remote-origin-marker-read", () => getRemoteOriginMsgIds(ids)),
+        );
+      }
     } catch {
       // Unmarked, but complete.
     }

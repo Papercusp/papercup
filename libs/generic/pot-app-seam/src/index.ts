@@ -280,8 +280,11 @@ function assertNonEmpty(value: string, label: string): void {
 function stableJson(value: JsonValue): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((v) => stableJson(v)).join(',')}]`;
-  const keys = Object.keys(value).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`;
+  // Entries, not keys + index: the value travels with its key, so consumers
+  // compiling under noUncheckedIndexedAccess (Phone's sidecar) accept it.
+  // The comparator is the default sort's UTF-16 code-unit order.
+  const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
 }
 
 function fingerprintPots(pots: readonly PotSpec[]): string {

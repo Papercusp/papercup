@@ -55,17 +55,11 @@
  */
 import { performance } from 'node:perf_hooks';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { freezeCompilerReplayConfig, materializeReplaySource, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
+import { assertReplayOracleRuntimeQualified, freezeCompilerReplayConfig, freezeQualifiedReplayConfig, holdReplayOracleForQualification, materializeReplaySource, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput, type ReplayOracleProducerOptions } from './lsp-fleet-replay-runtime';
 import { moduleRepoRoot } from '../module-repo-root';
 import { isCliEntry } from '../util/cli-entry';
 
-import {
-  lspQuery,
-  shutdownAllLspClients,
-  lspClientInventory,
-  resolveServerBin,
-  type LspLanguage,
-} from './lsp-adapter.ts';
+import type { LspLanguage } from './lsp-adapter.ts';
 import type { ResolvedCursor } from './code-intel-bench.ts';
 import type { CodeIntelIntent } from './contracts.ts';
 
@@ -121,6 +115,7 @@ function percentile(sorted: readonly number[], p: number): number | null {
 }
 
 async function oneQuery(cursor: ResolvedCursor, intent: CodeIntelIntent): Promise<Sample> {
+  const { lspQuery } = await import('./lsp-adapter.ts');
   const t0 = performance.now();
   try {
     const answer = await lspQuery(intent, {
@@ -223,13 +218,25 @@ export async function runSaturationCli(argv: readonly string[] = process.argv): 
       sourceSnapshot: captured.sourceSnapshot, runtimeFiles: captured.runtimeFiles, loadedRuntime: 'unmeasured' }));
     return;
   }
+  // Independent parent declares the closure before the plain-Node child loads it.
+  if (argv[2] === '--freeze-qualified-replay') {
+    if (!argv[3] || !argv[4] || !argv[5])
+      throw new Error('--freeze-qualified-replay requires authored input, new config and producer options');
+    const options = JSON.parse(readFileSync(argv[5], 'utf8')) as ReplayOracleProducerOptions;
+    const config = await freezeQualifiedReplayConfig(argv[3], argv[4], options);
+    console.log(JSON.stringify({ config: argv[4], qualified: true, proofFingerprint: config.oracleProvenance.runtime!.proofFingerprint }));
+    return;
+  }
   // …lsp-saturation-bench-cli.ts --freeze-replay <authored-cursors.json> <new-frozen-config.json>
-  if (argv[2] === '--freeze-replay') {
+  if (argv[2] === '--freeze-replay' || argv[2] === '--freeze-replay-child') {
     if (!argv[3] || !argv[4]) throw new Error('--freeze-replay requires authored input and a new config path');
+    if (argv[2] === '--freeze-replay-child' && (!process.send || !process.connected))
+      throw new Error('replay-oracle-parent-channel-required');
     const input = JSON.parse(readFileSync(argv[3], 'utf8')) as ReplayOracleInput;
     const config = freezeCompilerReplayConfig(input, { onProgress: progress =>
       console.error(JSON.stringify({ event: 'replay-oracle-progress', runId: input.runId, atMs: Date.now(), ...progress })) });
-    writeFileSync(argv[4], JSON.stringify(config, null, 2), { flag: 'wx' });
+    if (argv[2] === '--freeze-replay-child') await holdReplayOracleForQualification(config, argv[4]);
+    else writeFileSync(argv[4], JSON.stringify(config, null, 2), { flag: 'wx' });
     console.log(JSON.stringify({ config: argv[4], files: Object.keys(config.files).length,
       expectedDefinitions: config.corpus.definition.oracle.sites.length, expectedReferences: config.corpus['hot-references'].oracle.sites.length }));
     return;
@@ -240,6 +247,7 @@ export async function runSaturationCli(argv: readonly string[] = process.argv): 
   if (argv[2] === '--fleet-replay') {
     if (!argv[3] || !argv[4]) throw new Error('--fleet-replay requires frozen config and archive parent');
     const config = JSON.parse(readFileSync(argv[3], 'utf8')) as DaemonReplayConfig;
+    assertReplayOracleRuntimeQualified(config);
     const replay = await runDaemonReplay(config, argv[4]);
     console.log(JSON.stringify(replay));
     process.exitCode = replay.result.rating === 'healthy' ? 0 : 2;
@@ -248,6 +256,7 @@ export async function runSaturationCli(argv: readonly string[] = process.argv): 
   // The historical benchmark builds Git-root-relative probes at module load.
   // Independent replay snapshots have no Git metadata and must not load it.
   const { BENCH_PROBES, resolveProbeCursor, sampleLspResources } = await import('./code-intel-bench.ts');
+  const { shutdownAllLspClients, lspClientInventory, resolveServerBin } = await import('./lsp-adapter.ts');
   const REPO_ROOT = moduleRepoRoot(import.meta.url);
   const wantLanguage = (argv[2] ?? 'typescript') as LspLanguage;
 

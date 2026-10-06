@@ -2307,8 +2307,11 @@ export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now
 }): Promise<Response>;
 /** Turn a structured operator/proxy failure into an actionable launcher error.
  * Keep the stable error code, but retain the server's detail and retry hint so
- * a final exhausted overload is distinguishable from a programming failure. */
-export function formatApiFailureMessage(json: any, status: any, path: any): string;
+ * a final exhausted overload is distinguishable from a programming failure.
+ * Keep the request hop even when the server supplies a message: a generic
+ * route deadline otherwise cannot identify which bootstrap request failed.
+ * Query strings and fragments may carry credentials and never enter the log. */
+export function formatApiFailureMessage(json: any, status: any, path: any, method?: string): string;
 /**
  * P-016 persona-append assertion: with the $HOME AGENTS.md mirrors gone
  * (P-015), the --append-system-prompt file IS the session's whole behavioral

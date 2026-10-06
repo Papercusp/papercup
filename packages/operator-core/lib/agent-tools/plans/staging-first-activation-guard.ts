@@ -2,10 +2,25 @@ import type { ParsedPlan, PlanDecision, PlanItem } from './parser';
 import { splitPlanSections } from './plan-sections';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 
+/**
+ * One clause that made the guard fire, attributed to where it was read. The guard
+ * scans the item's own text plus every decision linked to it (a `Related: P-NNN`
+ * line pulls that decision's FULL text in), the `## Now` block and acceptance
+ * sections, so without attribution a refusal caused by a sentence in someone
+ * else's decision is only findable by leave-one-out probing (EI-25238370394944654).
+ */
+export interface StagingFirstGateTrigger {
+  /** `P-NNN item text`, `decision D-NNN`, `## Now`, or `acceptance section "<heading>"`. */
+  source: string;
+  clause: string;
+}
+
 export interface StagingFirstActivationProblem {
   itemId: string;
   code: 'non_final_deployed_main_wait';
   detail: string;
+  /** The clauses that tripped the release-plane gate check, when that check is what fired. */
+  triggers?: StagingFirstGateTrigger[];
 }
 
 export interface StagingFirstBlockerInput {
@@ -181,10 +196,11 @@ function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string
   ].join('\n');
 }
 
-function hasStrongDeployedGate(text: string): boolean {
+function strongDeployedGateClauses(text: string): string[] {
   return neutralizePlanIdentifiers(text)
     .split(/\n+|(?<=[.!?])\s+/)
-    .some(
+    .map((clause) => clause.trim())
+    .filter(
       (clause) =>
         DEPLOYED_ENV_RE.test(clause) &&
         (STRONG_GATE_RE.test(clause) || RELEASE_PLANE_UNTIL_RE.test(clause)) &&
@@ -192,18 +208,60 @@ function hasStrongDeployedGate(text: string): boolean {
     );
 }
 
-function relatedGateText(plan: ParsedPlan, item: PlanItem): string {
+function hasStrongDeployedGate(text: string): boolean {
+  return strongDeployedGateClauses(text).length > 0;
+}
+
+interface GateTextSegment {
+  source: string;
+  text: string;
+}
+
+/**
+ * The text the gate check reads for one item, kept as attributed segments. Segments
+ * were previously joined with `\n`, which is itself a clause boundary, so checking
+ * each segment separately yields exactly the same clause set as the joined text.
+ */
+function relatedGateSegments(plan: ParsedPlan, item: PlanItem): GateTextSegment[] {
   const ref = itemRefPattern(item.id);
-  const now = plan.now?.raw && ref.test(plan.now.raw) ? [itemScopedText(plan.now.raw, item.id)] : [];
-  const acceptanceClauses = splitPlanSections(plan.raw)
+  const now: GateTextSegment[] =
+    plan.now?.raw && ref.test(plan.now.raw) ? [{ source: '## Now', text: itemScopedText(plan.now.raw, item.id) }] : [];
+  const acceptanceClauses: GateTextSegment[] = splitPlanSections(plan.raw)
     .filter((section) => ACCEPTANCE_SECTION_RE.test(section.heading) && ref.test(section.body))
-    .map((section) => `${section.heading}\n${itemScopedText(section.body, item.id)}`);
+    .map((section) => ({
+      source: `acceptance section "${section.heading.trim()}"`,
+      text: `${section.heading}\n${itemScopedText(section.body, item.id)}`,
+    }));
   return [
-    item.text,
-    ...applicableDecisions(item, plan.decisions).map((decision) => decisionTextForItem(decision, item)),
+    { source: `${item.id} item text`, text: item.text },
+    ...applicableDecisions(item, plan.decisions).map((decision) => ({
+      source: `decision ${decision.id}`,
+      text: decisionTextForItem(decision, item),
+    })),
     ...now,
     ...acceptanceClauses,
-  ].join('\n');
+  ];
+}
+
+function strongDeployedGateTriggers(segments: GateTextSegment[]): StagingFirstGateTrigger[] {
+  return segments.flatMap((segment) =>
+    strongDeployedGateClauses(segment.text).map((clause) => ({ source: segment.source, clause })),
+  );
+}
+
+const MAX_TRIGGERS_IN_DETAIL = 3;
+const MAX_TRIGGER_CLAUSE_CHARS = 200;
+
+function describeTriggers(triggers: StagingFirstGateTrigger[]): string {
+  const shown = triggers.slice(0, MAX_TRIGGERS_IN_DETAIL).map(({ source, clause }) => {
+    const quoted = clause.length > MAX_TRIGGER_CLAUSE_CHARS ? `${clause.slice(0, MAX_TRIGGER_CLAUSE_CHARS)}…` : clause;
+    return `[${source}] "${quoted}"`;
+  });
+  const more = triggers.length > shown.length ? ` (+${triggers.length - shown.length} more in \`triggers\`)` : '';
+  return (
+    `Tripped by: ${shown.join('; ')}${more}. ` +
+    `If a quoted clause describes the world rather than gating this item's work, reword that clause at its source. `
+  );
 }
 
 function isFinalLifecycleItem(item: PlanItem): boolean {
@@ -305,15 +363,18 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
       });
       continue;
     }
-    if (!hasStrongDeployedGate(relatedGateText(plan, item))) continue;
+    const triggers = strongDeployedGateTriggers(relatedGateSegments(plan, item));
+    if (triggers.length === 0) continue;
     if (isFinalLifecycleItem(item)) continue;
     if (hasNarrowDeployedMainException(relatedExceptionText(item, plan.decisions))) continue;
 
     problems.push({
       itemId: item.id,
       code: 'non_final_deployed_main_wait',
+      triggers,
       detail:
         `${item.id} makes main/:3070/green-checkpoint/deployment a prerequisite for non-final implementation. ` +
+        describeTriggers(triggers) +
         `Use staging/current-build for implementation and non-final acceptance, or declare a narrow exception on ` +
         `${item.id} (or a decision linked to it): name the deployed-only property, explain concretely why ` +
         `staging/current-build cannot exercise it, and retain deployed-main verification only for that property. ` +

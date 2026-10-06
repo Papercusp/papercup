@@ -188,6 +188,7 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
     specRevision: selection.specRevision,
     specFingerprint: selection.specFingerprint,
     replaySnapshot: true,
+    includeMutationFailureCaseTitle: true,
     ...(args.current !== undefined ? { currentProvenance: 'replayed-snapshot' as const } : {}),
     evidenceRefs,
     current,
@@ -345,6 +346,7 @@ export default defineTool({
       specRevision: args.specRevision,
       specFingerprint: args.specFingerprint,
       replaySnapshot: args.replaySnapshot === true,
+      includeMutationFailureCaseTitle: true,
       // `current` here is caller-supplied. Label it a replayed snapshot rather than
       // claiming the server measured it — otherwise any caller passing
       // replaySnapshot:true plus self-authored fingerprints mints a 'server-measured'

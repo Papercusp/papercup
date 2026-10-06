@@ -905,7 +905,17 @@ export async function stampPresenceAtBoot(opts: {
   agentRole?: string | null;
 }): Promise<string | null> {
   try {
-    const { writePresence } = await import('../../../agent-tools/coordination/presence');
+    const { writePresence, getPresence } = await import('../../../agent-tools/coordination/presence');
+    // WI-10006674: a session with NO harness (a workspace-level su, and every
+    // consult/headless `--fork`) has no pot_slug to stamp, so the only job here is to
+    // make the row EXIST — the launcher's supervisor beat (touchHeartbeat) never mints
+    // one (D-003). Without it, a session that never completes a first turn (a fork whose
+    // inherited transcript is already at the context limit) parks with a live host and
+    // NO presence row, which coord:presence reports as absent. Mint only when absent:
+    // store.write() overwrites intent/current_plan_slug unconditionally, and a
+    // carry-respawn re-POSTs bootstrap with the same ownerId, so an unconditional write
+    // here would wipe the live session's declared lane.
+    if (!opts.harnessSlug && (await getPresence(opts.ownerId))) return null;
     const agentRole = opts.agentRole?.trim() || 'su';
     await writePresence(
       {
@@ -3319,16 +3329,20 @@ export const bootstrapSu = defineTool({
     // fleet-launched member is visible to hive-scoped coord:presence before its
     // first agent turn/orient call. The session row exists on both ordinary and
     // port paths at this point, so this cannot create a launch ghost.
-    if (harnessSlug) {
+    // WI-10006674: a harness-less session is stamped too (create-if-absent — see
+    // stampPresenceAtBoot); gating this on harnessSlug left every `--fork` and
+    // workspace-level session invisible until its first turn, and forever when that
+    // turn never comes.
+    {
       const presenceStampErr = await stampPresenceAtBoot({
         workspaceId: workspace,
         ownerId: sid,
         ownerLabel: body.label?.trim() || null,
-        harnessSlug,
+        harnessSlug: harnessSlug || null,
       });
       if (presenceStampErr) {
         process.stderr.write(
-          `[bootstrap-su] presence pot-scope stamp failed (non-fatal; first coord:orient can repair it): ${presenceStampErr}\n`,
+          `[bootstrap-su] presence stamp failed (non-fatal; first coord:orient can repair it): ${presenceStampErr}\n`,
         );
       }
     }

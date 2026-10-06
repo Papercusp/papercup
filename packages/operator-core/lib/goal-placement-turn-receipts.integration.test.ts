@@ -124,6 +124,20 @@ async function records() {
     FROM harness_shared.agent_activity WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
 }
 
+function orientationDeps(obligations: () => typeof brief | null): OrientationDeps {
+  return {
+    held: async () => [], ownerDirectives: async () => [], historyUpdates: async () => [],
+    effortUpdates: async () => [], openChecks: async () => [], planDecisions: async () => undefined,
+    lockTransitions: async () => undefined, coupledPeers: async () => null,
+    inbox: async () => ({ count: 0, newest: [] }), announcedGates: async () => [], openAsks: async () => null,
+    modes: async () => [], authorityVerdict: async () => null, loopArmed: async () => true,
+    loopFireWithheld: async () => false, improvementTriage: async () => null,
+    executableFrontier: async () => null, obligations: async () => obligations(),
+    neverDropFacts: async () => [], toolSurface: async () => null, carryBlindWindow: async () => null,
+    contextEpoch: async () => 1, contextTokens: async () => null,
+  };
+}
+
 describe('completed eligibility joined on existing activity and cursor stores', () => {
   const planRef = 'plan:papercusp/plan';
   const read = async () => (await readGoalPlacementProgress({ workspaceId: WS, ownerId: OWNER,
@@ -377,20 +391,9 @@ describe('goal delivery receipt canonical persistence', () => {
   it('records exact-token success from a private native transcript through Orientation', async () => {
     const f = await fixture(false);
     let activeBrief: typeof brief | null = brief;
-    const orientationDeps: OrientationDeps = {
-      held: async () => [], ownerDirectives: async () => [], historyUpdates: async () => [],
-      effortUpdates: async () => [], openChecks: async () => [], planDecisions: async () => undefined,
-      lockTransitions: async () => undefined, coupledPeers: async () => null,
-      inbox: async () => ({ count: 0, newest: [] }), announcedGates: async () => [], openAsks: async () => null,
-      modes: async () => [], authorityVerdict: async () => null, loopArmed: async () => true,
-      loopFireWithheld: async () => false, improvementTriage: async () => null,
-      executableFrontier: async () => null, obligations: async () => activeBrief,
-      neverDropFacts: async () => [], toolSurface: async () => null, carryBlindWindow: async () => null,
-      contextEpoch: async () => 1, contextTokens: async () => null,
-    };
     const build = (confirmedDeliveryToken: string | null) => runWithWorkspace(WS, () =>
       buildTurnStartOrientationBlock({ ownerId: OWNER, workspaceId: WS, confirmedDeliveryToken,
-        deps: orientationDeps, progressReceiptDeps: f.deps }));
+        deps: orientationDeps(() => activeBrief), progressReceiptDeps: f.deps }));
 
     const offered = await build(null);
     expect(offered.block).toContain(formatAgentObligationLine(row, 'action'));
@@ -434,5 +437,37 @@ describe('goal delivery receipt canonical persistence', () => {
     expect(cursorRows[0]!.committed_candidate).toMatchObject({ token });
     expect(cursorRows[0]!.committed_identity).toMatchObject({ deliveryToken: token });
     expect(cursorRows[0]!.pending_candidate).toBeNull();
+  });
+
+  it('records cursor-stage rejection for an eligible placement without claiming a receipt', async () => {
+    const f = await fixture(false);
+    let attemptedToken: string | null = null;
+    const result = await runWithWorkspace(WS, () => buildTurnStartOrientationBlock({
+      ownerId: OWNER, workspaceId: WS, confirmedDeliveryToken: null,
+      deps: orientationDeps(() => brief), progressReceiptDeps: f.deps,
+      cursorStage: async (_ownerId, _surface, _next, options) => {
+        attemptedToken = options.deliveryToken ?? null;
+        throw new Error('cursor store unavailable');
+      },
+    }));
+    expect(result.block).toContain(formatAgentObligationLine(row, 'action'));
+    expect(result.deliveryToken).toBeNull();
+    expect(attemptedToken).toEqual(expect.any(String));
+    if (!attemptedToken) throw new Error('cursor stage did not receive the delivery token');
+
+    await drainDetached();
+    const rows = await records();
+    const outcomeRows = rows.filter((record) =>
+      (record.detail.goalPlacementDeliveryOutcome as { token?: string } | undefined)?.token === attemptedToken);
+    expect(outcomeRows).toHaveLength(1);
+    expect(outcomeRows[0]).toMatchObject({
+      detail: { goalPlacementDeliveryOutcome: {
+        version: 1, stage: 'stage', recorded: false,
+        reason: 'cursor-stage-rejected:cursor store unavailable', token: attemptedToken,
+      } },
+    });
+    expect(rows.filter((record) =>
+      (record.detail.goalPlacementTurn as { deliveryToken?: string } | undefined)?.deliveryToken === attemptedToken))
+      .toHaveLength(0);
   });
 });

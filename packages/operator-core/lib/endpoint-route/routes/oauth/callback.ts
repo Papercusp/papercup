@@ -16,6 +16,7 @@
  */
 import { loadAndRegisterProvidersFromDisk } from '../../../oauth/providers';
 import { verifyAndConsumeState } from '../../../oauth/state';
+import { safeOAuthReturnPath } from '../../../oauth/return-path';
 import { fsTokenStorage } from '../../../oauth/storage-fs';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -117,8 +118,21 @@ function oauthResultResponse(
   return redirectWith(reqUrl, path, key, value);
 }
 
-function callbackReturnPath(plugin: string, providerId: string, harness: string): string {
-  return connectionAdapterFor(plugin, providerId)?.returnPath ?? '/harness/' + encodeURIComponent(harness) + '?panel=config';
+/**
+ * Where the flow lands: the Settings page its start named (carried in the signed private context
+ * and re-checked here, D-014.2), else the connection adapter's page, else the harness config panel.
+ */
+function callbackReturnPath(
+  plugin: string,
+  providerId: string,
+  harness: string,
+  privateContext?: Readonly<Record<string, string>>,
+): string {
+  return (
+    safeOAuthReturnPath(privateContext?.returnPath) ??
+    connectionAdapterFor(plugin, providerId)?.returnPath ??
+    '/harness/' + encodeURIComponent(harness) + '?panel=config'
+  );
 }
 
 function requestedScopes(privateContext: Readonly<Record<string, string>> | undefined): string[] {
@@ -159,7 +173,12 @@ export default defineTool({
       if (state) {
         const verified = await verifyAndConsumeState(state);
         if (verified.ok && verified.claims) {
-          const path = callbackReturnPath(verified.claims.plugin, verified.claims.provider, verified.claims.harness);
+          const path = callbackReturnPath(
+            verified.claims.plugin,
+            verified.claims.provider,
+            verified.claims.harness,
+            verified.privateContext,
+          );
           return oauthResultResponse(req.url, path, 'oauth_error', errorParam, verified.privateContext);
         }
       }
@@ -176,7 +195,7 @@ export default defineTool({
 
     const { plugin, harness, field, provider: providerId } = verified.claims;
     const adapter = connectionAdapterFor(plugin, providerId);
-    const returnPath = callbackReturnPath(plugin, providerId, harness);
+    const returnPath = callbackReturnPath(plugin, providerId, harness, verified.privateContext);
     const fail = (message: string, legacyJsonStatus?: number) =>
       oauthResultResponse(req.url, returnPath, 'oauth_error', message, verified.privateContext, legacyJsonStatus);
     const provider = await resolveOAuthProvider(providerId);

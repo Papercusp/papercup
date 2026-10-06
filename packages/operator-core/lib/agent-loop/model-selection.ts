@@ -10,6 +10,7 @@
  * provider.
  */
 import { MODEL_EFFORT_LEVELS, splitModelSpec, type ModelEffort } from '../agent-config-constants';
+import type { ModelPrice } from '@papercusp/model-pricing';
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
 export const MODELS_DEV_TTL_MS = 15 * 60_000;
@@ -202,6 +203,42 @@ export interface LoopModelSelection {
   provider: LoopProviderId;
   metadata: ModelsDevModel | null;
   providerMetadata: ModelsDevProvider | null;
+}
+
+/** Exact selected OpenRouter TOKEN list rates only. Conditional, extra or
+ * malformed charges cannot become a complete estimate; absent cache rates
+ * remain absent for canonical arithmetic to refuse when those tokens occur.
+ * Never use models.dev's bare `cost` projection or another route as a fallback. */
+export function openRouterTokenPrice(selection: LoopModelSelection): ModelPrice | null {
+  const model = selection.metadata;
+  const pricing = model?.pricing;
+  if (selection.provider !== 'openrouter' || model?.id !== selection.modelId
+      || (selection.providerMetadata?.id !== undefined && selection.providerMetadata.id !== 'openrouter')
+      || pricing?.source !== 'openrouter-models' || pricing.conditional !== false
+      || pricing.unrecognizedFields !== false || !Array.isArray(pricing.unpricedFields)
+      || pricing.unpricedFields.length || !Number.isSafeInteger(pricing.observedAtMs)
+      || pricing.observedAtMs < 0) return null;
+  const rates = record(pricing.rates);
+  if (!rates || Object.entries(rates).some(([key, value]) =>
+    !(OPENROUTER_RATE_FIELDS as readonly string[]).includes(key) || rate(value) === undefined)) return null;
+  const tokens = ['prompt', 'completion', 'input_cache_read', 'input_cache_write', 'input_cache_write_1h'];
+  if (Object.entries(rates).some(([key, value]) => !tokens.includes(key) && rate(value) !== 0)) return null;
+  const perMillion = (key: string): number | undefined => {
+    const n = rate(rates[key]);
+    return n !== undefined && n * 1_000_000 <= Number.MAX_SAFE_INTEGER ? n * 1_000_000 : undefined;
+  };
+  const input = perMillion('prompt');
+  const output = perMillion('completion');
+  if (input === undefined || output === undefined) return null;
+  const price: ModelPrice = { in: input, out: output };
+  for (const [from, to] of [['input_cache_read', 'cacheRead'], ['input_cache_write', 'cacheWrite'],
+    ['input_cache_write_1h', 'cacheWrite1h']] as const) {
+    if (!Object.hasOwn(rates, from)) continue;
+    const n = perMillion(from);
+    if (n === undefined) return null;
+    price[to] = n;
+  }
+  return price;
 }
 
 /**

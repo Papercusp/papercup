@@ -205,9 +205,9 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     const serve = readFileSync(join(root, 'apps/operator/bin/serve.ts'), 'utf8');
     const hono = readFileSync(join(root, 'apps/operator/bin/hono-host.ts'), 'utf8');
     expect(serve.indexOf('PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE')).toBeLessThan(serve.indexOf('startSidecarParentDeathWatch();'));
-    expect(serve).toContain('runAdmissionPrecheckWorkerFromEnvironment');
+    expect(serve.includes('runAdmissionPrecheckWorkerMain')).toBe(true);
     expect(hono).toContain("'repair-precheck'");
-    expect(hono).toContain('runAdmissionPrecheckWorkerFromEnvironment');
+    expect(hono.includes('runAdmissionPrecheckWorkerMain')).toBe(true);
   });
 
   it('uses CAS transforms that ignore progress and settlements from a replaced operationId', () => {

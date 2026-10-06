@@ -58,6 +58,7 @@
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #                             [--source-only]
+#                             [--spa-only]
 #                             [--source-integrity allow-live-tree|object-sourced]
 #                             [--build-spa]
 #   setup-release-checkout.sh -h|--help   print this usage and exit 0 (touches nothing)
@@ -141,6 +142,7 @@ release_dependency_generation_lease_on_exit() {
 trap release_dependency_generation_lease_on_exit EXIT
 
 BUILD_SPA="0"
+SPA_ONLY="0"
 PREPARE_EXISTING="0"
 SOURCE_ONLY="0"
 REF_WAS_SET="0"
@@ -159,6 +161,7 @@ while [ $# -gt 0 ]; do
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
     --build-spa) BUILD_SPA="1"; shift ;;
+    --spa-only) SPA_ONLY="1"; PREPARE_EXISTING="1"; BUILD_SPA="1"; shift ;;
     --prepare-existing) PREPARE_EXISTING="1"; shift ;;
     --source-only) SOURCE_ONLY="1"; shift ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
@@ -192,6 +195,19 @@ if [ "$SOURCE_ONLY" = "1" ] && [ "$PREPARE_EXISTING" = "1" ]; then
 fi
 
 log() { echo "[setup-release] $*"; }
+
+# Shared by ordinary deployment preparation and the finite SPA-only phase.
+build_release_spa() {
+  log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
+  local spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log"
+  if (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build) >"$spa_log" 2>&1; then
+    rm -f "$spa_log"
+  else
+    tail -n 60 "$spa_log" >&2
+    echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting (full build output: $spa_log)" >&2
+    return 1
+  fi
+}
 
 # EI-21181583819839124: a crashed Git process can leave the linked checkout's
 # index.lock behind. Every later checkpoint then fails before running a single
@@ -358,6 +374,14 @@ if [ "$PREPARE_EXISTING" = "1" ]; then
 else
   TARGET_SHA="$(git -C "$INTEGRATION_ROOT" rev-parse --verify "${REF}^{commit}")"
   log "target ref=$REF sha=$TARGET_SHA"
+fi
+
+if [ "$SPA_ONLY" = "1" ]; then
+  # The existing-checkout/ref checks above apply, but source, dependencies and
+  # runtime assets are already prepared. Never re-clone or re-copy them here.
+  build_release_spa
+  log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"
+  exit 0
 fi
 
 # EI-25223821707990839: an explicit generation can expire while source checkout
@@ -1820,18 +1844,7 @@ fi
 # in apps/operator-vite/dev-dist-prune.ts. Plan
 # `dist-chunk-retention-default-2026-07-26` P-002 — do not "fix" this by adding =0.
 if [ "$BUILD_SPA" = "1" ]; then
-  log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
-  # WI-10003918: vite-build-singleflight writes vite's own error to STDOUT, and a
-  # retain-mode build leaves no failure record, so discarding stdout left only
-  # `npm error code 1` in the deploy log and the next build overwrote the cause.
-  _spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log"
-  if (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build) >"$_spa_log" 2>&1; then
-    rm -f "$_spa_log"
-  else
-    tail -n 60 "$_spa_log" >&2
-    echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting (full build output: $_spa_log)" >&2
-    exit 1
-  fi
+  build_release_spa
 fi
 
 log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"

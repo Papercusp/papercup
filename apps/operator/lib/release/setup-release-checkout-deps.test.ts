@@ -2287,6 +2287,28 @@ exec "$REGRESSION_REAL_GIT" "$@"
       '--source-only and --prepare-existing are mutually exclusive',
     );
   });
+
+  it.each([0, 19])('SPA-only reuses pinned source and dependencies, preserves build status %i', (status) => {
+    const bin = join(integrationRoot, 'spa-bin');
+    const calls = join(integrationRoot, 'spa-calls');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$SPA_CALLS"\necho SPA_FIXTURE_DIAGNOSTIC\nexit "$SPA_STATUS"\n', { mode: 0o755 });
+    mkdirSync(join(releaseRoot, 'node_modules/spa-sentinel'), { recursive: true });
+    writeFileSync(join(releaseRoot, 'node_modules/spa-sentinel/package.json'), 'existing dependency\n');
+    writeFileSync(join(releaseRoot, 'spa-source-sentinel'), 'existing source\n');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--spa-only', '--integration', integrationRoot,
+      '--release', releaseRoot, '--ref', targetSha, '--node-modules', 'force'], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        SPA_CALLS: calls, SPA_STATUS: String(status) },
+    });
+    expect(result.status, result.stderr).toBe(status === 0 ? 0 : 1);
+    expect(readFileSync(calls, 'utf8')).toBe('--workspace @papercusp/operator-vite run build\n');
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(readFileSync(join(releaseRoot, 'spa-source-sentinel'), 'utf8')).toBe('existing source\n');
+    expect(readFileSync(join(releaseRoot, 'node_modules/spa-sentinel/package.json'), 'utf8')).toBe('existing dependency\n');
+    expect(result.stdout).not.toContain('preserving existing checkout and submodules');
+    if (status !== 0) expect(result.stderr).toContain('SPA_FIXTURE_DIAGNOSTIC');
+  });
 });
 
 /**

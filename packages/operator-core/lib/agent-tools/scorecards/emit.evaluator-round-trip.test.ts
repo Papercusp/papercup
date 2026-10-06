@@ -244,7 +244,7 @@ type EvaluatorPayload = {
   rows: Array<{
     verdict: string;
     wouldBlock: string[];
-    ratings: Record<string, { rating: string; evidence: string }>;
+    ratings: Record<string, { rating: string; evidence: string; suggestion?: string }>;
     scorecardDraft: {
       rubricRef: string;
       subject: { kind: 'plan'; ref: string };

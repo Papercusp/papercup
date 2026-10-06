@@ -3,6 +3,7 @@ import type { X509Certificate } from 'node:crypto';
 type MediaEnvironment = Record<string, string | undefined>;
 type TlsReceipt = { hostname: string; address: string; validTo: string };
 
+export const NON_PUBLIC_V4_SUBNETS: ReadonlyArray<readonly [string, number]>;
 export function isPublicAddress(address: string): boolean;
 export function publicHostname(hostname: string | undefined): string;
 export function publicMediaUrl(value: unknown): URL;

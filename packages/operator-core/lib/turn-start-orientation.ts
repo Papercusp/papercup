@@ -4686,6 +4686,8 @@ export async function buildTurnStartOrientationBlock(input: {
   deps?: Partial<OrientationDeps>;
   /** Test seam only; production always uses the receipt module's real writers. */
   progressReceiptDeps?: GoalPlacementTurnReceiptDeps;
+  /** Test seam only; production always stages the real cursor. */
+  cursorStage?: typeof import('./agent-tools/coordination/read-cursors').stage;
   /** Test seam only; production uses the selected identity compiler. */
   identityBinder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs;
   /** Test seam only; production reads the caller's authoritative presence row. */
@@ -4704,7 +4706,7 @@ export async function buildTurnStartOrientationBlock(input: {
     // source is: a broken generation read must degrade the dedup to its old
     // behaviour, never fail the block or the turn.
     const { contextEpoch: epochDep, contextTokens: tokensDep } = { ...defaultOrientationDeps(), ...(input.deps ?? {}) };
-    const [{ ackAndRead, stage }, state, epoch, contextTokens, progressReceipts] = await Promise.all([
+    const [{ ackAndRead, stage: defaultStage }, state, epoch, contextTokens, progressReceipts] = await Promise.all([
       import('./agent-tools/coordination/read-cursors'),
       resolveOrientationState(ownerId, workspaceId, input.deps ?? {}),
       epochDep(ownerId).catch(() => 0),
@@ -4819,15 +4821,29 @@ export async function buildTurnStartOrientationBlock(input: {
         if (measured.degraded && measured.reason === 'timeout') latePlacement = preparing;
       }
     }
-    const staged = await stage(
+    const stageResult = await (input.cursorStage ?? defaultStage)(
       ownerId,
       ORIENTATION_CURSOR_SURFACE,
       deliveredFingerprint,
       deliveryToken ? { deliveryToken } : {},
     ).then(
-      () => true,
-      () => false,
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
     );
+    if (!stageResult.ok && progressReceipts && deliveryToken) {
+      const placementKey = progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY;
+      const candidate = deliveredFingerprint[placementKey];
+      if (candidate !== undefined) {
+        const errorReason = stageResult.error instanceof Error
+          ? stageResult.error.message
+          : String(stageResult.error);
+        void trackDetached(progressReceipts.recordGoalPlacementDeliveryOutcome({
+          ownerId, workspaceId, stage: 'stage',
+          reason: `cursor-stage-rejected:${errorReason}`, candidate,
+        }, input.progressReceiptDeps)).catch(() => {});
+      }
+    }
+    const staged = stageResult.ok;
     if (staged) {
       // Optional provenance must never consume the hook's 2.5s response wall.
       // The token-guarded update works whether native proof has already moved

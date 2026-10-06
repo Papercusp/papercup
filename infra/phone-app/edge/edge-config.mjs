@@ -22,13 +22,19 @@
 // terminates them.
 import { isIPv4 } from 'node:net';
 import { pathToFileURL } from 'node:url';
-import { isPublicAddress, publicHostname } from '../media-config.mjs';
+import { NON_PUBLIC_V4_SUBNETS, isPublicAddress, publicHostname } from '../media-config.mjs';
 
 export const TUNNEL = Object.freeze({ edge: '10.77.0.1', box: '10.77.0.2', prefix: 30, port: 51820, table: 7792 });
 export const VM_TUNNEL_IFACE = 'wg-phone';
 const LOCAL_WSS_PORT = 8443;
 const IFACE = /^[a-z][a-z0-9-]{0,14}$/;
 const WG_KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
+
+/** IPv4 destinations the box may never reach through the edge. ICE remote candidates are
+ *  chosen by the caller, and the edge NIC also carries the cloud VPC, so without this the
+ *  SFU would send into private networks next to the VM (WI-10006686). Same list as the
+ *  public-address check, so the two cannot drift. */
+export const NON_PUBLIC_V4 = Object.freeze(NON_PUBLIC_V4_SUBNETS.map(([ip, prefix]) => `${ip}/${prefix}`));
 
 /** Ports the VM forwards to the box. SIP/RTP are only forwarded when explicitly enabled
  *  (P-004 opens them at the cloud firewall for the carrier's published source ranges). */
@@ -140,7 +146,13 @@ export function vmNftables(c) {
   for (const p of forwardedPorts(c)) {
     lines.push(`    iifname "${wan}" oifname "${VM_TUNNEL_IFACE}" ip daddr ${TUNNEL.box} ${p.proto} dport ${p.ports} accept`);
   }
-  lines.push(`    iifname "${VM_TUNNEL_IFACE}" oifname "${wan}" ip saddr ${TUNNEL.box} accept`, '  }', '}', '');
+  lines.push(
+    `    iifname "${VM_TUNNEL_IFACE}" ip daddr { ${NON_PUBLIC_V4.join(', ')} } counter drop comment "box egress never enters private or special ranges"`,
+    `    iifname "${VM_TUNNEL_IFACE}" oifname "${wan}" ip saddr ${TUNNEL.box} accept`,
+    '  }',
+    '}',
+    '',
+  );
   return lines.join('\n');
 }
 

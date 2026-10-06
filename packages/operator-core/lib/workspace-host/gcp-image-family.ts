@@ -224,8 +224,9 @@ export interface GcpImageFamilyReleaseRequest {
   };
   /**
    * WI-10006408: the required guest-tool versions, derived by the request composer from the
-   * bake's syft SBOM (installed-rpm rows; `bootc-image-release-request-cli --emit
-   * guest-tool-versions --provider gcp`). The image provenance is pinned to exactly these; an
+   * bake's syft SBOM (installed-rpm rows; `bootc-image-release-request-cli --emit request` with a
+   * `gcp` input, WI-10006488, or `--emit guest-tool-versions --provider gcp` for the set alone).
+   * The image provenance is pinned to exactly these; an
    * operator `--guest-tool-versions-file` may only restate them (resolveSbomGuestToolVersions).
    */
   guestToolVersions?: Readonly<Record<string, string>>;

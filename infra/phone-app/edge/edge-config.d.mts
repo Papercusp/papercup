@@ -10,6 +10,7 @@ export interface EdgeCoordinates {
 }
 export interface ForwardedPort { proto: 'udp' | 'tcp'; ports: string; what: string }
 export declare const TUNNEL: Readonly<{ edge: string; box: string; prefix: number; port: number; table: number }>;
+export declare const NON_PUBLIC_V4: readonly string[];
 export declare const VM_TUNNEL_IFACE: string;
 export declare function forwardedPorts(options?: { sip?: boolean }): ForwardedPort[];
 export declare function edgeCoordinates(env: Record<string, string | undefined>): EdgeCoordinates;

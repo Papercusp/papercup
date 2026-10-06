@@ -176,7 +176,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...RERUN_RECIPE.args,
       detail: 'summary',
-      includeDraft: false,
+      includeDraft: true,
       payloadTier: 'full',
     });
     expect(getRubricPlanRevision).not.toHaveBeenCalled();
@@ -199,7 +199,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
-  it('forces a compact replay before an oversized evaluator result can become a spill envelope', async () => {
+  it('preserves draft selection while forcing a compact replay before an oversized result can spill', async () => {
     const matchingReplay = { ...passingReplay, evaluatorBuild: driftedRecipe.evaluatorBuild };
     const spillEnvelope = {
       structuredContent: {
@@ -210,7 +210,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
       content: [{ type: 'text', text: 'oversized evaluator result spilled' }],
     };
     const dispatchTool = vi.fn(async (_name: string, args: Record<string, unknown>) =>
-      args.detail === 'summary' && args.includeDraft === false ? matchingReplay : spillEnvelope,
+      args.detail === 'summary' && args.includeDraft === true ? matchingReplay : spillEnvelope,
     );
 
     const result = await emitScorecard(
@@ -224,7 +224,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
       ...RERUN_RECIPE.args,
       evaluatorBuild: driftedRecipe.evaluatorBuild,
       detail: 'summary',
-      includeDraft: false,
+      includeDraft: true,
       payloadTier: 'full',
     });
   });
@@ -238,7 +238,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...RERUN_RECIPE.args,
       detail: 'summary',
-      includeDraft: false,
+      includeDraft: true,
       payloadTier: 'full',
     });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
@@ -263,7 +263,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
       ...RERUN_RECIPE.args,
       evaluatorBuild: driftedRecipe.evaluatorBuild,
       detail: 'summary',
-      includeDraft: false,
+      includeDraft: true,
       payloadTier: 'full',
     });
     expect(getRubricPlanRevision).not.toHaveBeenCalled();

@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadAndRegisterProvidersFromDisk } from '../../../oauth/providers';
 import { signState } from '../../../oauth/state';
+import { safeOAuthReturnPath } from '../../../oauth/return-path';
 import { getSessionUserOrDefault } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { listOwnedExternalTriggerSources } from '../../../external-triggers/source-store';
@@ -52,9 +53,15 @@ export default defineTool({
     const requestedProviderAccountId = url.searchParams.get('account')?.trim() ?? '';
     const scopesRaw = url.searchParams.get('scopes') ?? '';
     const responseMode = url.searchParams.get('response') ?? 'redirect';
+    const requestedReturn = url.searchParams.get('return');
 
     if (!providerId || !plugin || !harness || !requestedField) {
       return Response.json({ ok: false, error: 'provider, plugin, harness, field all required' }, { status: 400 });
+    }
+    // Where the callback lands afterwards (D-014.2): an internal Settings page or nothing.
+    const returnPath = requestedReturn === null ? null : safeOAuthReturnPath(requestedReturn);
+    if (requestedReturn !== null && !returnPath) {
+      return Response.json({ ok: false, error: 'return must be an internal /settings/ path' }, { status: 400 });
     }
     if (responseMode !== 'redirect' && responseMode !== 'json') {
       return Response.json({ ok: false, error: 'response must be redirect or json' }, { status: 400 });
@@ -123,10 +130,12 @@ export default defineTool({
         ...privateContext,
         ownerUserId: owner.id,
         workspaceId: activeWorkspaceId(),
-        returnPath: adapter.returnPath,
+        returnPath: returnPath ?? adapter.returnPath,
         ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
         ...(adapter.recordRequestedScopes ? { requestedScopes: JSON.stringify(scopes) } : {}),
       };
+    } else if (returnPath) {
+      privateContext = { ...privateContext, returnPath };
     }
     if (responseMode === 'json') {
       // This marker is stored with the nonce-backed private context. The

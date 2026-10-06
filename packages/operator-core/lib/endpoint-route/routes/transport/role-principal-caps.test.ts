@@ -202,18 +202,41 @@ describe('loadRoleCapabilities', () => {
   );
 
   test(
-    'judge can make the runbook read an acceptance rubric mandates: docs:get passes BOTH gates (EI-24903256825782248)',
+    'judge can read rubric docs and use read-only SQL/LSP evidence fallbacks without write access',
     { timeout: 60_000 },
     async () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
-      const { default: docsGet } = await import('../../../agent-tools/docs/get');
+      const [
+        { default: docsGet },
+        { default: pgQuery },
+        { default: pgMutate },
+        { default: lspQuery },
+        { default: lspApply },
+      ] = await Promise.all([
+        import('../../../agent-tools/docs/get'),
+        import('../../../agent-tools/dev/pg_query'),
+        import('../../../agent-tools/dev/pg_mutate'),
+        import('../../../agent-tools/lsp/query'),
+        import('../../../agent-tools/lsp/apply'),
+      ]);
       // Gate 1: the tool's role allowlist. Gate 2: the principal capability it requires.
       expect(docsGet.agentRoles).toContain('judge');
       expect(docsGet.capability).toBe('docs:read');
       expect(caps.has(docsGet.capability as string)).toBe(true);
-      // Still read-only: no doc writer and no broad search/SQL grant rides along.
+      // Public evidence reads can be independently reproduced through the
+      // read-only SQL/compiler surfaces when their projections omit fields.
+      expect(pgQuery.agentRoles).toContain('judge');
+      expect(pgQuery.capability).toBe('intel:read');
+      expect(lspQuery.agentRoles).toContain('judge');
+      expect(lspQuery.capability).toBe('intel:read');
+      expect(caps.has('intel:read')).toBe(true);
+
+      // The evidence fallback remains read-only: the SQL and LSP writers need
+      // intel:write, which the judge principal does not receive.
+      expect(pgMutate.capability).toBe('intel:write');
+      expect(lspApply.capability).toBe('intel:write');
+      expect(caps.has('intel:write')).toBe(false);
       expect(caps.has('docs:write')).toBe(false);
-      expect(caps.has('intel:read')).toBe(false);
     },
   );
 

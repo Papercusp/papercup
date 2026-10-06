@@ -224,7 +224,8 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
 
     let linkedRecord: string | null = null;
     if (resolved.recordWorkItemId) {
-      const dst = await resolveRef(resolved.recordWorkItemId, input.harness);
+      // The record lives in its source's harness, not necessarily the one the work lands in.
+      const dst = await resolveRef(resolved.recordWorkItemId, resolved.recordHarness ?? input.harness);
       if (!dst) throw new Error(`admission_record_unresolvable:${resolved.recordWorkItemId}`);
       const linked = await link(workItemId, dst, 'about', { harness: input.harness, by });
       if ('error' in linked) throw new Error(`admission_link_failed:${linked.error}`);

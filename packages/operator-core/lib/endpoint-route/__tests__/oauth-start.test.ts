@@ -266,6 +266,38 @@ describe('GET /api/oauth/start', () => {
     );
   });
 
+  it('carries an internal Settings return path in the signed state, and refuses any other (D-014.2)', async () => {
+    registerProvider({ ...stubProvider, id: 'google', defaultScopes: ['scope:mail'], allowedScopes: ['scope:mail'] });
+    const start = (ret: string) =>
+      GET(new Request(`http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&return=${encodeURIComponent(ret)}`));
+
+    expect((await start('/settings/integrations')).status).toBe(302);
+    expect(stateMocks.signState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ plugin: 'google-workspace' }),
+      { privateContext: expect.objectContaining({ returnPath: '/settings/integrations' }) },
+    );
+
+    stateMocks.signState.mockClear();
+    for (const offsite of ['https://evil.example/x', '//evil.example/x', '/settings/../admin', '/harness/x', '/settings\\evil', '']) {
+      const refused = await start(offsite);
+      expect(refused.status, offsite).toBe(400);
+      expect(await refused.json()).toEqual({ ok: false, error: 'return must be an internal /settings/ path' });
+    }
+    expect(stateMocks.signState).not.toHaveBeenCalled();
+  });
+
+  it('carries the return path for a plugin flow with no connection adapter too', async () => {
+    registerProvider(stubProvider);
+    const response = await GET(
+      new Request('http://x/api/oauth/start?provider=github&plugin=github-repo&harness=demo&field=github_token&return=/settings/integrations'),
+    );
+    expect(response.status).toBe(302);
+    expect(stateMocks.signState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ plugin: 'github-repo' }),
+      { privateContext: { returnPath: '/settings/integrations' } },
+    );
+  });
+
   it('uses a unique private token field for each Google Workspace Add Account flow', async () => {
     registerProvider({
       ...stubProvider,

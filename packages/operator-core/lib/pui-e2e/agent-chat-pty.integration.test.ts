@@ -6761,7 +6761,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
   test('P-024: "hi" shows at once with a working line; a stalled engine and a hung operator each say so', { timeout: 240_000 }, async ({ onTestFailed }) => {
     const ENTER_FEEDBACK_MS = 100;
     const HUNG_OPERATOR_SENTENCE_MS = 5_000;
-    const HUNG_SENTENCE = 'Papercusp is not answering; start or restart Papercusp Server, then press Enter to send your message again.';
+    // WI-10006644: a connected-but-silent operator is running (a stalled event
+    // loop), so the sentence says it is busy and the send keeps retrying; it
+    // must not tell the owner to restart a server other sessions are using.
+    const HUNG_SENTENCE = 'Papercusp is busy; still trying to send your message';
     // ui.rs draws it as `<spinner> <phase>… (<n>s[ · …] · Esc to interrupt)`.
     const WORKING_LINE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Starting Claude|Still starting Claude[^…]*|Thinking|Working)… \((\d+)s[^)]* · Esc to interrupt\)/;
     /** The working line, when at least `sent` "hi" lines sit in the transcript
@@ -6830,14 +6833,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
         [{ ms: hung.at.sentence, workerLateMs: hung.workerLateMs }], HUNG_OPERATOR_SENTENCE_MS);
       const failed = pane.screen();
       expect(chatJargonIn(failed), failed).toEqual([]);
-      expect(failed.match(/Papercusp is not answering/g)).toHaveLength(1);
+      expect(failed.match(/Papercusp is busy/g)).toHaveLength(1);
+      expect(failed).not.toMatch(/restart/i);
       expect(scriptedEngine.requests).toEqual(['hi']);
 
-      // The operator answers again: Enter sends the kept message, once.
+      // The operator answers again: the retrying send delivers the message by
+      // itself (no Enter), once.
       stage = 'operator-back';
       transportFault = 'none';
       releaseHungSnapshots();
-      pane.enter();
       await vi.waitFor(() => expect(scriptedEngine.requests).toEqual(['hi', 'hi']), { timeout: 30_000, interval: 100 });
       await pane.waitForSendReady();
       console.info('PUI_P024_INSTANT_FEEDBACK_ACCEPTANCE', JSON.stringify({
@@ -7584,6 +7588,60 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     await engine.close();
     await engine.done;
   }, 900_000);
+
+  // WI-10006653 (P-032): on Codex the footer and /status showed no context
+  // during a live conversation, only after /resume, because the live
+  // app-server path ignored thread/tokenUsage/updated while the resume replay
+  // read the rollout's token_count. A live reply must fill both, no resume.
+  test('a live reply reports context left in the footer and /status without a resume', async () => {
+    installedManifest();
+    const nonce = shortMarkerId();
+    const { prompt, reply, replyPattern } = markerRequest(`pui-usage-${nonce}`, 'Hi. ');
+    // The footer under test is the chat-first one (P-029), so launch the way
+    // a user does: `pui --solo` in a directory, on the configured backend
+    // (pui reads it at startup, as in the P-016 case). The workbench composer
+    // has no such footer.
+    const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
+    const saved = await readAgentConfig();
+    const backend = scriptedEngine.backend === 'codex' || scriptedEngine.backend === 'omp'
+      ? scriptedEngine.backend : 'claude-code';
+    await writeAgentConfig({ ...saved, backend });
+    const launchDir = journeyDir('usage');
+    const label = scriptedEngine.backend === 'codex' ? 'Codex' : scriptedEngine.backend === 'omp' ? 'OMP' : 'Claude';
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
+    try {
+      await pane.waitFor(`${label} · ${launchDir}`, { timeoutMs: 40_000 });
+      pane.write(prompt);
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await waitForCorrelatedReply(prompt, replyPattern);
+      // waitForReply matches the workbench's assistant bubble; the chat-first
+      // transcript draws the reply as a plain `● <text>` row (P-029 case).
+      await pane.waitFor(reply, { timeoutMs: 120_000 });
+      await pane.waitForSendReady({ timeoutMs: 120_000 });
+      const engine = scriptedEngine.engines.at(-1);
+      expect(engine, 'the reply came from a live engine in this process').toBeDefined();
+      await vi.waitFor(
+        () => expect(engine!.adapter.host.descriptor().usage?.contextTokens ?? 0).toBeGreaterThan(0),
+        { timeout: 30_000, interval: 100 },
+      );
+      await pane.waitFor('% context left', { timeoutMs: 30_000 });
+      pane.write('/status');
+      pane.enter();
+      await pane.waitFor('% left)', { timeoutMs: 15_000 });
+      // WI-10006652: the live engine reports its own model catalog (Claude's
+      // SDK list, Codex `model/list`), and /model opens on it, not on the
+      // workspace's routing tiers.
+      expect(engine!.adapter.host.descriptor().models?.length ?? 0).toBeGreaterThan(0);
+      pane.write('/model');
+      pane.enter();
+      await pane.waitFor('Keep the current model', { timeoutMs: 15_000 });
+      expect(pane.screen()).not.toContain('[owner');
+    } finally {
+      await pane.stop();
+      await writeAgentConfig(saved);
+    }
+  }, 240_000);
 
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
     const manifest = installedManifest();

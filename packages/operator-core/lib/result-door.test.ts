@@ -2272,7 +2272,16 @@ describe('applyResultDoor', () => {
         byteCount: expect.any(Number),
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       });
-      expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain(original);
+      const spillDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'work_items:get', RUN_ID);
+      const spillFiles = readdirSync(spillDir);
+      expect(spillFiles).toHaveLength(1);
+      const reference = parseScratchReference(readFileSync(join(spillDir, spillFiles[0])));
+      expect(reference).not.toBeNull();
+      expect(reference!.manifest).toMatchObject({ mediaType: 'application/json', bodyOffsetInPayload: 0 });
+      const rawEnvelope = JSON.parse(
+        reference!.payload.subarray(reference!.manifest.bodyOffsetInPayload!).toString('utf8'),
+      ) as { content: Array<{ type: string; text?: string }> };
+      expect(rawEnvelope.content[0]?.text).toBe(original);
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         truncated: true,
         structural: true,

@@ -18,6 +18,9 @@
  *     retry or a later trigger resumes, then delivers it exactly once;
  *   - WI-10006574: a resumed CLI that EXITS before its prompt re-parks and holds the
  *     same way, and only a run of such exits ends the session, with a clear event;
+ *   - WI-10006607: a parked host still advertises its live host pid + socket to the
+ *     psu-host liveness authority (a parked agent never reads as ended), and the park
+ *     kills a SIGHUP-immune job the CLI orphaned into its process group;
  *   - D-003: a shutdown or host signal while parked ends the session without
  *     resuming the CLI, and a recycle reaching a parked host resumes first.
  */
@@ -32,6 +35,7 @@ import { mintParkResumeArgs } from '../scripts/psu-launcher.mjs';
 import {
   encodeControl,
   eventLogPathForOwner,
+  findLiveHostFor,
   hostThroughPty,
   metaPathFor,
   socketPathFor,
@@ -46,7 +50,9 @@ const SESSION_ID = '11111111-2222-4333-8444-555555555555';
  * child (the original or the resumed one) received a byte. It paints the
  * standalone composer glyph Claude's readiness detector keys on. With
  * `--with-descendant` it keeps a `sleep` child alive (an in-flight tool call).
- * With FAKE_CLAUDE_RESUME_EXITS=N, its first N `--resume` boots behave like a
+ * With `--with-orphan` it leaves a SIGHUP-immune background `sleep` behind
+ * (`nohup cmd &` from a tool call): out of its ppid tree, still in its process
+ * group, pid written to FAKE_CLAUDE_ORPHAN_PID_FILE. With FAKE_CLAUDE_RESUME_EXITS=N, its first N `--resume` boots behave like a
  * resume whose transcript is gone: print the CLI's error and exit 1 before any
  * prompt (WI-10006574).
  */
@@ -64,6 +70,9 @@ if (resumeExits > 0 && argv.includes('--resume')) {
   }
 }
 if (argv.includes('--with-descendant')) spawn('sleep', ['30'], { stdio: 'ignore' });
+if (argv.includes('--with-orphan')) {
+  spawn('sh', ['-c', 'trap "" HUP; sleep 30 & echo $! > "$FAKE_CLAUDE_ORPHAN_PID_FILE"'], { stdio: 'ignore' });
+}
 process.stdout.write('BOOT:' + process.pid + '\\n\\u276f\\n');
 process.stdin.setEncoding('utf8');
 let buf = '';
@@ -148,6 +157,22 @@ function pidAlive(pid: number): boolean {
     return false;
   }
 }
+
+/** `/proc/<pid>/stat` state, ppid and process group; null once the pid is gone.
+ *  A zombie answers `kill(pid, 0)`, so a liveness check must read the state. */
+function procStat(pid: number): { state: string; ppid: number; pgrp: number } | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return { state: fields[0], ppid: Number(fields[1]), pgrp: Number(fields[2]) };
+  } catch {
+    return null;
+  }
+}
+const procRunning = (pid: number) => {
+  const s = procStat(pid);
+  return s !== null && s.state !== 'Z' && s.state !== 'X';
+};
 
 /**
  * End the session after a failed test body WITHOUT masking the body's error.
@@ -660,6 +685,79 @@ describe('psu process-free parking (WI-10006574) — a resumed CLI that exits be
       // Launch + two resumes; the held turn was never written into any of them.
       expect(h.argvLog()).toHaveLength(3);
       expect(h.inputLog()).toEqual([]);
+    },
+    30_000,
+  );
+});
+
+describe('psu process-free parking (parked-presence) — a parked agent is still a live presence, never ended', () => {
+  it(
+    'keeps advertising the live HOST (pid, socket) to the psu-host authority after the CLI is gone',
+    async () => {
+      const h = startParkHost({ label: 'presence' });
+      try {
+        await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+        const [boot1] = h.argvLog();
+        await waitFor(() => !procRunning(boot1.pid), 'the parked CLI to be gone');
+        // The host runs in THIS process (as in psu-launcher), so its pid is ours; the
+        // dead CLI's pid must never be what liveness reads.
+        const meta = h.readMeta();
+        expect(meta).toMatchObject({ parked: true, ptyPid: null, pid: process.pid });
+        // liveness-oracle leg 6 (psu-host authority) resolves a non-cup owner with NO
+        // live host to `ended`; a parked host must still be found, or every parked
+        // agent reads as dead and is relaunched beside its own live host.
+        const live = findLiveHostFor(h.ownerId, { verifyIdentity: (pid: number) => pid === process.pid });
+        expect(live).not.toBeNull();
+        expect(live).toMatchObject({ parked: true, pid: process.pid });
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
+      }
+      expect(await h.quit()).toBe(0);
+    },
+    30_000,
+  );
+});
+
+describe('psu process-free parking (WI-10006607) — a park leaves no CLI-tree process behind', () => {
+  it(
+    'kills a background job the CLI orphaned: out of its ppid tree (so R-1 parks) but still in its process group',
+    async () => {
+      const orphanPidFile = join(tmpdir(), `psu-park-orphan-${process.pid}-${Math.floor(performance.now())}.pid`);
+      let orphanPid = 0;
+      cleanups.push(() => {
+        if (orphanPid && procRunning(orphanPid)) process.kill(orphanPid, 'SIGKILL');
+        rmSync(orphanPidFile, { force: true });
+      });
+      const h = startParkHost({
+        label: 'orphan',
+        extraArgs: ['--with-orphan'],
+        extraEnv: { FAKE_CLAUDE_ORPHAN_PID_FILE: orphanPidFile },
+      });
+      try {
+        orphanPid = await waitFor(() => {
+          const text = existsSync(orphanPidFile) ? readFileSync(orphanPidFile, 'utf8').trim() : '';
+          return text ? Number(text) : 0;
+        }, 'the orphaned job to start');
+        const [boot1] = h.argvLog();
+        // Positive controls: the job is running, has LEFT the CLI's ppid tree (so the
+        // descendant count lets the park proceed), and is still in the CLI's group.
+        const before = procStat(orphanPid);
+        expect(before).not.toBeNull();
+        expect(procRunning(orphanPid)).toBe(true);
+        expect(before!.ppid).not.toBe(boot1.pid);
+        expect(before!.pgrp).toBe(boot1.pid);
+
+        const parked = await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+        expect(parked).toMatchObject({ childPid: boot1.pid, exited: true });
+        // SIGHUP from the closing terminal cannot reach it (it ignores HUP); only the
+        // park's process-group SIGKILL can.
+        await waitFor(() => !procRunning(orphanPid), 'the orphaned job to die with the park', 3_000);
+        expect(procRunning(boot1.pid)).toBe(false);
+        expect(h.readMeta().parked).toBe(true);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
+      }
+      expect(await h.quit()).toBe(0);
     },
     30_000,
   );

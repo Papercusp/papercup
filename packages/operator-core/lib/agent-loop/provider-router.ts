@@ -14,6 +14,7 @@ import { createAnthropicPort } from './anthropic-port';
 import type { ModelPort, ModelRequest, ModelStreamEvent } from './model-port';
 import {
   loadModelsDevCatalog,
+  openRouterTokenPrice,
   resolveLoopModelSpec,
   type AiSdkProviderId,
   type LoopModelSelection,
@@ -201,6 +202,10 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
       // property narrowings do not survive an async boundary in TypeScript.
       const aiProvider: Exclude<LoopModelSelection['provider'], 'gateway-anthropic'> =
         selection.provider;
+      // Capture the selected rates before asynchronous credential/model work;
+      // later mutations of an injected advisory catalog cannot reprice this call.
+      const pricing = aiProvider === 'openrouter' ? { provider: 'openrouter' as const,
+        modelId: selection.modelId, price: openRouterTokenPrice(selection) } : undefined;
 
       let apiKey: string | undefined;
       let servedAccount: string | undefined;
@@ -234,6 +239,7 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
           model: await createLanguageModel({ selection, apiKey, gatewayBaseUrl: baseUrl }),
           provider: aiProvider,
           modelId: selection.modelId,
+          ...(pricing ? { pricing } : {}),
           effort: selection.effort,
           ...(aiProvider === 'gateway-codex'
             ? { headers: { ...priorityTierHeaders(req.priority), ...routeAccountHeaders(req.account) } }
@@ -252,7 +258,7 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
         return;
       }
       for await (const event of aiPort.stream({ ...req, model: selection.modelId })) {
-        yield event.type === 'stop' && servedAccount !== undefined
+        yield (event.type === 'stop' || event.type === 'provider_request') && servedAccount !== undefined
           ? { ...event, servedAccount }
           : event;
       }

@@ -122,6 +122,26 @@ vi.mock('../../oauth/state', () => ({
         },
       };
     }
+    if (token === 'google.integrations' || token === 'google.offsite') {
+      // A start that named a return page (D-014.2); the offsite one could only come from a forged
+      // or stale state, and the callback must ignore it rather than redirect off-app.
+      return {
+        ok: true,
+        privateContext: {
+          codeVerifier: 'persisted-verifier',
+          ownerUserId: '22222222-2222-4222-8222-222222222222',
+          workspaceId: 'workspace-1',
+          returnPath: token === 'google.integrations' ? '/settings/integrations' : 'https://evil.example/steal',
+        },
+        claims: {
+          plugin: 'google-workspace',
+          harness: 'papercusp',
+          field: 'owner-22222222-2222-4222-8222-222222222222',
+          providerHost: 'accounts.google.com',
+          provider: 'google',
+        },
+      };
+    }
     if (token === 'facebook.valid' || token === 'facebook.missing' || token === 'facebook.mismatch') {
       return {
         ok: true,
@@ -220,6 +240,13 @@ describe('GET /api/oauth/callback', () => {
     const response = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.valid'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_error=access_denied');
+  });
+
+  it('returns to the Settings page the start named, and ignores a return path outside Settings (D-014.2)', async () => {
+    const named = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.integrations'));
+    expect(named.headers.get('location')).toBe('http://x/settings/integrations?oauth_error=access_denied');
+    const offsite = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.offsite'));
+    expect(offsite.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_error=access_denied');
   });
 
   it('rejects state with bad signature', async () => {

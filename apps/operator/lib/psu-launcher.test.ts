@@ -14722,8 +14722,29 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
         "/api/adv/sessions/resumable",
       ),
     ).toBe(
-      "mcp_proxy_overloaded — proxy already has 192 request(s) in flight — shed before forwarding — retry in 2s",
+      "GET /api/adv/sessions/resumable (HTTP 429) — mcp_proxy_overloaded — proxy already has 192 request(s) in flight — shed before forwarding — retry in 2s",
     );
+  });
+
+  it("EI-25231240145060739: distinguishes bootstrap hops with the same route deadline", () => {
+    const failure = { error: { code: "timeout", message: "route exceeded 30s" } };
+    const picker = formatApiFailureMessage(failure, 408, "/api/agent-mcp/console/bootstrap-su/options");
+    const bootstrap = formatApiFailureMessage(failure, 408, "/api/agent-mcp/console/bootstrap-su", "post");
+    expect(picker).toBe("GET /api/agent-mcp/console/bootstrap-su/options (HTTP 408) — timeout — route exceeded 30s");
+    expect(bootstrap).toBe("POST /api/agent-mcp/console/bootstrap-su (HTTP 408) — timeout — route exceeded 30s");
+    expect(picker).not.toBe(bootstrap);
+  });
+
+  it("omits query credentials and fragments from the failed request diagnostic", () => {
+    const message = formatApiFailureMessage(
+      { error: { code: "timeout", message: "route exceeded 30s" } },
+      408,
+      "/api/agent-mcp/console/bootstrap-su?token=private-query-token#private-fragment",
+      "POST",
+    );
+    expect(message).toContain("POST /api/agent-mcp/console/bootstrap-su (HTTP 408)");
+    expect(message).not.toContain("private-query-token");
+    expect(message).not.toContain("private-fragment");
   });
 
   it("recognizes only a Retry-After-marked 429 as proxy overload", () => {

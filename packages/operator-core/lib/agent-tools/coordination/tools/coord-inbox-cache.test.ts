@@ -90,17 +90,24 @@ import {
 import { _refreshCacheLayerForTests } from "../../../cache/instance";
 
 const CACHE_LAYER = "papercusp-cache-layer";
-const ctx = (ownerId: string, workspaceId = "ws-inbox"): never =>
+const ctx = (
+  ownerId: string,
+  workspaceId = "ws-inbox",
+  metadata: ReturnType<typeof vi.fn> = vi.fn(),
+): never =>
   ({
     ownerId,
     workspaceId,
-    metadata: vi.fn(),
+    metadata,
     log: vi.fn(),
     progress: vi.fn(),
   }) as never;
 
-const inbox = (owner: string): Promise<unknown> =>
-  tool.handler({} as never, ctx(owner));
+const inbox = (
+  owner: string,
+  args: Record<string, unknown> = {},
+  metadata: ReturnType<typeof vi.fn> = vi.fn(),
+): Promise<unknown> => tool.handler(args as never, ctx(owner, "ws-inbox", metadata));
 
 beforeEach(async () => {
   resetOperatorCacheForTests();
@@ -124,6 +131,42 @@ afterEach(async () => {
 });
 
 describe("coord:inbox — cache the derive, keep side effects", () => {
+  it("retains the active selective await phase in overwrite-only invocation metadata", async () => {
+    let releaseRead!: () => void;
+    let markReadStarted!: () => void;
+    const waitingForRead = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve; });
+    M.readInbox.mockImplementation(async () => {
+      markReadStarted();
+      await waitingForRead;
+      return rawRows();
+    });
+
+    const metadata = vi.fn();
+    const pending = inbox("owner-a", { directed: true, limit: 2 }, metadata);
+    await readStarted;
+
+    const inFlight = metadata.mock.lastCall?.[0]?.coordInboxRead as {
+      activePhases: string[];
+      phases: Array<{ name: string; status: string; startedAt: string; elapsedMs: number | null }>;
+    };
+    expect(inFlight.activePhases).toContain("readInbox-derive");
+    expect(inFlight.phases).toContainEqual(expect.objectContaining({
+      name: "readInbox-derive",
+      status: "running",
+      startedAt: expect.any(String),
+      elapsedMs: null,
+    }));
+
+    releaseRead();
+    await pending;
+
+    const settled = metadata.mock.lastCall?.[0]?.coordInboxRead as typeof inFlight;
+    expect(settled.activePhases).toEqual([]);
+    expect(settled.phases.find((phase) => phase.name === "readInbox-derive"))
+      .toEqual(expect.objectContaining({ status: "fulfilled", elapsedMs: expect.any(Number) }));
+  });
+
   it("a repeat read HITS the derive (readInbox runs once)", async () => {
     await inbox("owner-a");
     await inbox("owner-a");

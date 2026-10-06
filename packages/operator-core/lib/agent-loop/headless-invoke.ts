@@ -21,7 +21,7 @@ import {
 } from './capability-toolset';
 import { runLoopChatTurn } from './chat-engine';
 import type { ModelPort } from './model-port';
-import type { ApprovalPort, LoopTool } from './loop';
+import type { ApprovalPort, LoopTool, LoopProviderRequestInfo } from './loop';
 import {
   flushPendingTelemetry,
   PROJECTED_DEPS,
@@ -34,6 +34,9 @@ export interface OperatorOwnedLoopPortOptions {
   tools?: LoopTool[];
   /** Test seam. Production flushes the shared deferred tool ledger once/turn. */
   flushTelemetry?: () => Promise<void>;
+  /** Trusted host composition, never an agent-supplied billing writer. */
+  onProviderRequest?(info: LoopProviderRequestInfo,
+    context: Readonly<{ runId: string; workspaceId: string; harnessSlug: string }>): Promise<void>;
 }
 
 const unattendedApprovalPort: ApprovalPort = {
@@ -106,6 +109,9 @@ export function createOperatorOwnedLoopPort(
     async invoke(request) {
       const tools = options.tools ?? buildCapabilityTools(request);
       const flushTelemetry = options.flushTelemetry ?? flushPendingTelemetry;
+      const captureContext = Object.freeze({ runId: request.runId,
+        workspaceId: request.workspaceId, harnessSlug: request.harnessSlug });
+      const capture = options.onProviderRequest;
       try {
         const result = await runLoopChatTurn({
           chatId: request.runId,
@@ -124,10 +130,12 @@ export function createOperatorOwnedLoopPort(
             },
           },
           model: request.model,
+          ownerId: captureContext.runId,
           ...(request.signal !== undefined ? { signal: request.signal } : {}),
           tools,
           approvals: unattendedApprovalPort,
           ...(options.modelPort ? { port: options.modelPort } : {}),
+          ...(capture ? { onProviderRequest: (info: LoopProviderRequestInfo) => capture(info, captureContext) } : {}),
         });
 
         if (result.errorMessage) {

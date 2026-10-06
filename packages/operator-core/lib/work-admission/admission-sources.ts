@@ -91,6 +91,12 @@ export interface ResolvedAdmissionSource {
    * work item links to it with the existing rel 'about' (D-030 point 5).
    */
   recordWorkItemId?: string | null;
+  /**
+   * The harness the record row lives in. A record is written under its source's
+   * `config.harnessSlug`, which need not be the admitting rule's harness, so the link target is
+   * looked up here, not in the harness the work lands in (WI-10006682).
+   */
+  recordHarness?: string | null;
   /** Provider-shaped snapshot persisted to work_admissions.source_ref. JSON-serialisable. */
   sourceRef: Record<string, unknown>;
   fieldAuthority?: FieldAuthority;

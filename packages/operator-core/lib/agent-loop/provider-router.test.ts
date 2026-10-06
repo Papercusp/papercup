@@ -1,7 +1,7 @@
 import type { LanguageModelV3, LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import { describe, expect, it, vi } from 'vitest';
 import type { ModelPort, ModelRequest, ModelStreamEvent } from './model-port';
-import type { ModelsDevCatalog } from './model-selection';
+import { curateOpenRouterCatalog, type ModelsDevCatalog } from './model-selection';
 import type { AccountPool, ActiveAccount } from '../inference-gateway/provider-contracts';
 import { createRoutedModelPort, type ProviderFactoryArgs } from './provider-router';
 
@@ -90,6 +90,109 @@ const openRouterAccount = (): ActiveAccount => ({
 });
 
 describe('createRoutedModelPort', () => {
+  async function selectedEstimate(pricing: Record<string, unknown>, modelId = 'openai/gpt-5.5:free', write = 0) {
+    const selected = curateOpenRouterCatalog({ data: [{ id: modelId, pricing }] }, [modelId], 123);
+    const port = createRoutedModelPort({ catalog: selected,
+      openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => model([{ type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' }, usage: {
+          inputTokens: { total: 1_000_000, noCache: 800_000, cacheRead: 200_000, cacheWrite: write },
+          outputTokens: { total: 100_000, text: 80_000, reasoning: 20_000 },
+        } }]),
+    });
+    const events = await collect(port, request('openrouter/' + modelId));
+    const stop = events.at(-1);
+    if (stop?.type !== 'stop') throw new Error('missing stop');
+    return stop.usage;
+  }
+
+  const tokenPrices = { prompt: '0.000002', completion: '0.000003', input_cache_read: '0.0000005', input_cache_write: '0.000004' };
+
+  it('composes exact selected OpenRouter rates through canonical token arithmetic', async () => {
+    expect((await selectedEstimate(tokenPrices, 'openai/gpt-5.5:free', 100_000))?.costUsd).toBeCloseTo(2.2);
+  });
+
+  it('preserves a genuinely free exact catalog variant', async () => {
+    expect((await selectedEstimate({ prompt: '0', completion: '0', input_cache_read: '0' }))?.costUsd).toBe(0);
+  });
+
+  it.each([
+    { ...tokenPrices, overrides: [{ min_prompt_tokens: 200_000, prompt: '0.000004' }] },
+    { ...tokenPrices, request: '0.01' },
+    { ...tokenPrices, image: '0.01' },
+    { ...tokenPrices, web_search: '0.01' },
+    { ...tokenPrices, internal_reasoning: '0.000001' },
+    { ...tokenPrices, future_charge: '0' },
+    { ...tokenPrices, input_cache_read: undefined },
+    { ...tokenPrices, completion: '-1' },
+    { ...tokenPrices, image: '-1' },
+  ])('keeps conditional, extra, invalid or unknown charges unpriced: %j', async (pricing) => {
+    expect(await selectedEstimate(pricing)).not.toHaveProperty('costUsd');
+  });
+
+  it('does not infer missing or unreported write-TTL prices', async () => {
+    expect(await selectedEstimate({ prompt: '0.000002', completion: '0.000003', input_cache_read: '0.0000005' },
+      'openai/gpt-5.5:free', 100_000)).not.toHaveProperty('costUsd');
+    expect(await selectedEstimate({ ...tokenPrices, input_cache_write_1h: '0.000008' },
+      'openai/gpt-5.5:free', 100_000)).not.toHaveProperty('costUsd');
+  });
+
+  it('accepts explicitly zero extra charges without adding arbitrary multipliers', async () => {
+    expect((await selectedEstimate({ ...tokenPrices, request: '0', image: '0', web_search: '0' }))?.costUsd)
+      .toBeCloseTo(2);
+  });
+
+  it.each([0, 100_000, undefined])('prices maintained SDK cache-write report %s without borrowing noCache semantics', async (writes) => {
+    const modelId = 'openai/gpt-5.5:free';
+    const selected = curateOpenRouterCatalog({ data: [{ id: modelId, pricing: tokenPrices }] }, [modelId], 123);
+    // The display projection is advisory; raw exact scoped rates remain the source.
+    selected.openrouter.models[modelId].cost = { input: 99, output: 99, cache_read: 99, cache_write: 99 };
+    const chunk = { id: 'gen-cache-estimate', object: 'chat.completion.chunk', created: 1, model: modelId,
+      choices: [{ index: 0, delta: { content: 'hello' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1_000_000, completion_tokens: 100_000, total_tokens: 1_100_000,
+        prompt_tokens_details: { cached_tokens: 200_000, ...(writes !== undefined ? { cache_write_tokens: writes } : {}) },
+        cost: 1.25 } };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } },
+    ));
+    try {
+      const port = createRoutedModelPort({ catalog: selected, openRouterAccounts: openRouterPool(openRouterAccount()) });
+      const events = await collect(port, request('openrouter/' + modelId));
+      const stop = events.at(-1);
+      if (stop?.type !== 'stop') throw new Error('missing stop');
+      expect(stop.providerResponse).toMatchObject({ provider: 'openrouter', id: 'gen-cache-estimate', reportedCostUsd: 1.25 });
+      expect(stop.usage?.inputTokens).toBe(1_000_000);
+      if (writes === undefined) expect(stop.usage).not.toHaveProperty('costUsd');
+      else expect(stop.usage?.costUsd).toBeCloseTo(writes === 0 ? 2 : 2.2);
+      expect(fetchSpy).toHaveBeenCalledOnce();
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it('refuses a catalog entry whose stored id differs from the exact selected key', async () => {
+    const modelId = 'openai/gpt-5.5:free';
+    const selected = curateOpenRouterCatalog({ data: [{ id: modelId, pricing: tokenPrices }] }, [modelId], 123);
+    selected.openrouter.models[modelId].id = 'openai/gpt-5.5';
+    const port = createRoutedModelPort({ catalog: selected, openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => model() });
+    const stop = (await collect(port, request('openrouter/' + modelId))).at(-1);
+    expect(stop?.type === 'stop' && stop.usage).not.toHaveProperty('costUsd');
+  });
+
+  it('captures selected price rates before asynchronous model creation', async () => {
+    const modelId = 'openai/gpt-5.5:free';
+    const selected = curateOpenRouterCatalog({ data: [{ id: modelId, pricing: tokenPrices }] }, [modelId], 123);
+    const port = createRoutedModelPort({ catalog: selected, openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => {
+        selected.openrouter.models[modelId].pricing!.rates.prompt = '999';
+        return model([{ type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: {
+          inputTokens: { total: 1_000_000, noCache: 800_000, cacheRead: 200_000, cacheWrite: 100_000 },
+          outputTokens: { total: 100_000, text: 100_000, reasoning: 0 },
+        } }]);
+      } });
+    const stop = (await collect(port, request('openrouter/' + modelId))).at(-1);
+    expect(stop?.type === 'stop' && stop.usage?.costUsd).toBeCloseTo(2.2);
+  });
+
   it('requires an injected OpenRouter account pool even when env and remote metadata name keys', async () => {
     const createLanguageModel = vi.fn(async () => model());
     const credentials = vi.fn(async () => ({ openai_api_key: 'unrelated-store-test-key' }));
@@ -118,6 +221,50 @@ describe('createRoutedModelPort', () => {
       selection: { spec: 'openrouter/vendor/model-test:high', provider: 'openrouter',
         modelId: 'vendor/model-test', effort: 'high', metadata: null, providerMetadata: null },
     }));
+  });
+
+  it('preserves the selected local account on dispatch and early failed-generation observations', async () => {
+    const pool = openRouterPool(openRouterAccount());
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: pool, createLanguageModel: async () => model([
+      { type: 'response-metadata', id: 'gen-routed-failure', modelId: 'vendor/model-test' },
+      { type: 'error', error: 'lost finish' },
+    ]) });
+    const events = await collect(port, { ...request('openrouter/vendor/model-test'), account: 'customer-openrouter-test' });
+    expect(events.slice(0, 2)).toEqual([
+      { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model-test' }, servedAccount: 'customer-openrouter-test' },
+      { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model-test',
+        response: { id: 'gen-routed-failure', modelId: 'vendor/model-test' } }, servedAccount: 'customer-openrouter-test' },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: 'error' });
+    expect(JSON.stringify(events)).not.toContain('customer-openrouter-test-key');
+    expect(events.some(e => 'providerResponse' in e)).toBe(false);
+  });
+
+  it.each(['error', 'eof', 'abort'] as const)('retains maintained SDK SSE identity on %s without a completed charge', async ending => {
+    const abort = new AbortController();
+    let cancelled = false;
+    const bytes = new TextEncoder();
+    const chunk = { id: 'gen-sdk-incomplete', object: 'chat.completion.chunk', created: 1, model: 'vendor/model-test',
+      choices: [{ index: 0, delta: { content: 'partial' }, finish_reason: null }] };
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(bytes.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      if (ending === 'error') controller.enqueue(bytes.encode('data: {"error":{"message":"failed","code":500}}\n\n'));
+      if (ending !== 'abort') controller.close();
+    }, cancel() { cancelled = true; } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { headers: { 'content-type': 'text/event-stream' } }));
+    try {
+      const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(openRouterAccount()) });
+      const events: ModelStreamEvent[] = [];
+      for await (const event of port.stream({ ...request('openrouter/vendor/model-test'), signal: abort.signal })) {
+        events.push(event);
+        if (ending === 'abort' && event.type === 'provider_request' && event.request.response?.id) abort.abort();
+      }
+      expect(events.find(e => e.type === 'provider_request' && e.request.response?.id)).toMatchObject({
+        request: { response: { id: 'gen-sdk-incomplete' } }, servedAccount: 'customer-openrouter-test' });
+      expect(events.at(-1)).toMatchObject(ending === 'abort' ? { type: 'stop', reason: 'aborted' } : { type: 'error' });
+      expect(events.some(e => 'providerResponse' in e)).toBe(false);
+      if (ending === 'abort') await vi.waitFor(() => expect(cancelled).toBe(true));
+    } finally { fetchSpy.mockRestore(); }
   });
 
   it('honors the explicit OpenRouter account pin without selecting another account', async () => {

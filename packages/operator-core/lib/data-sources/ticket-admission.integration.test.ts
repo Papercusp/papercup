@@ -214,13 +214,13 @@ async function sync(sourceId: string, hostFetch: HostFetch = githubFetch): Promi
 /** The data source's config; write-back hands it to the provider as `syncPage` gets it. */
 const SOURCE_CONFIG = { owner: OWNER, repo: REPO, harnessSlug: HARNESS };
 
-async function connect(kind = GITHUB): Promise<string> {
+async function connect(kind = GITHUB, config: Record<string, unknown> = SOURCE_CONFIG): Promise<string> {
   const [row] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
        destination_policy, permission_mapping)
     VALUES (${WS}, ${kind}, ${alice}, ${`${kind}-account-${Date.now()}`}, 'connected',
-            ${sql.json(SOURCE_CONFIG)}, 'organization',
+            ${sql.json(config as never)}, 'organization',
             ${sql.json({ ticket: ['record'], 'ticket-status-change': ['event'], 'ticket-comment': ['document'] })},
             ${sql.json({ mode: 'source-acl' })})
     RETURNING id::text`;
@@ -393,6 +393,30 @@ describe('ticket admission into work (P-020, R-14) through the shared connector 
     expect(await refuseExternalOwnedPatch(WS, first.workItemId, ['priority', 'status'], sql)).toBeNull();
     // A work item that was never admitted has no external owner.
     expect(await refuseExternalOwnedPatch(WS, recordId, ['title'], sql)).toBeNull();
+  });
+
+  it('admits into one harness a record its source keeps in another, linking across them (WI-10006682)', async () => {
+    // Records land in the source's config.harnessSlug; the work lands in the admitting harness.
+    // Every other case here makes the two coincide, which hid this.
+    const RECORD_HARNESS = 'ticket-admission-records';
+    issues = [issue(6, 'Records live elsewhere', ['papercusp-agents'])];
+    const sourceId = await connect(GITHUB, { ...SOURCE_CONFIG, harnessSlug: RECORD_HARNESS });
+    await sync(sourceId);
+    const recordId = dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#6`);
+    const [record] = await sql<Array<{ harness_slug: string }>>`
+      SELECT harness_slug FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${recordId}`;
+    expect(record).toEqual({ harness_slug: RECORD_HARNESS });
+
+    const admitted = await admitWorkItem(
+      { workspaceId: WS, harness: HARNESS, source: { kind: 'record', recordId }, admitter: { via: 'person', actorId: PERSON } },
+      { sql },
+    );
+    expect(admitted).toMatchObject({ ok: true, reason: 'admitted', linkedRecord: recordId });
+    if (!admitted.ok) throw new Error('unreachable');
+    const [work] = await sql<Array<{ harness_slug: string }>>`
+      SELECT harness_slug FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${admitted.workItemId}`;
+    expect(work).toEqual({ harness_slug: HARNESS });
+    expect(await admissions()).toEqual([expect.objectContaining({ work_item_id: admitted.workItemId, source_key: recordId, data_source_id: sourceId })]);
   });
 
   it('refuses a rule admission outside the rule’s data source and never admits an event row', async () => {

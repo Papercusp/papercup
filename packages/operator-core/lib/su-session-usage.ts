@@ -107,6 +107,24 @@ export function codexTokenUsage(payload: unknown): SuSessionUsage | null {
   });
 }
 
+/**
+ * Codex app-server (the engine a live PUI conversation runs on): the
+ * `thread/tokenUsage/updated` params `{ tokenUsage: { last, total,
+ * modelContextWindow } }` → usage. Same context figure as the rollout reader
+ * above (`last.totalTokens`), so a live meter and a resumed one agree
+ * (WI-10006653).
+ */
+export function codexAppServerTokenUsage(params: unknown): SuSessionUsage | null {
+  const tokenUsage = rec(rec(params)?.tokenUsage);
+  const last = rec(tokenUsage?.last);
+  return compact({
+    contextTokens: count(last?.totalTokens),
+    contextWindow: count(tokenUsage?.modelContextWindow),
+    inputTokens: count(last?.inputTokens),
+    outputTokens: count(last?.outputTokens),
+  });
+}
+
 const CODEX_STEP_STATUS: Record<string, SuPlanItemStatus> = {
   pending: 'pending',
   in_progress: 'in_progress',

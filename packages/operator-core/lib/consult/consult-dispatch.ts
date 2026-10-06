@@ -320,8 +320,18 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /**
    * Stop a session this rank SPAWNED but then failed (EI-24106882795589775).
    * Returns a short outcome for the attempt record; never throws.
+   *
+   * `neverRan` is passed ONLY when the rank failed before its host could run a
+   * turn (kickoff not persisted, or the child died before host registration).
+   * The stop then also closes that answering identity's open adv_sessions row
+   * as `ended_by='cleanup'` (WI-10006690). A launcher killed during boot never
+   * learns its own row id, so it cannot report its end, and the row otherwise
+   * read as an open session until the idle reaper noticed it ~25-35 min later.
    */
-  stopFailedLaunch: (taskId: string | null | undefined) => Promise<string>;
+  stopFailedLaunch: (
+    taskId: string | null | undefined,
+    neverRan?: { answeringOwnerId: string },
+  ) => Promise<string>;
   /**
    * The failure line a spawned rank's launch log ends on, or null. Never throws.
    * (WI-10003197: psu refusals were visible only by grepping fleet-logs.)
@@ -750,17 +760,46 @@ async function defaultReadLaunchLogReason(logPath: string | null | undefined): P
  * 2026-09-24: 77 of the 94 consult processes found running, and 178 of the 203
  * the task reaper had stranded earlier, were such unannounced orphans.
  *
- * Keyed on the task id, never on the owner id: a conversion shares the expert's
- * own identity, so an owner-keyed stop could hit the expert's live session.
+ * The KILL is keyed on the task id, never on the owner id: a conversion shares
+ * the expert's own identity, so an owner-keyed stop could hit the expert's live
+ * session.
+ *
+ * The row close (`neverRan`) is keyed on the ANSWERING owner id, which
+ * `walkConsultDispatch` mints fresh for this rank on every operation, so no other
+ * session can hold it. It runs only after a CONFIRMED kill: if the process could
+ * still be alive it might yet boot, and closing its row would mark a running
+ * session ended.
  */
-async function defaultStopFailedLaunch(taskId: string | null | undefined): Promise<string> {
+export async function defaultStopFailedLaunch(
+  taskId: string | null | undefined,
+  neverRan?: { answeringOwnerId: string },
+): Promise<string> {
   if (!taskId) return 'no task id to stop (unledgered spawn)';
+  let stopped: string;
   try {
     const { killTask } = await import('../task-manager/control');
     const outcome = await killTask(taskId);
-    return outcome.ok ? `stopped task ${taskId}` : `stop of task ${taskId} refused: ${outcome.error ?? 'unknown'}`;
+    if (!outcome.ok) return `stop of task ${taskId} refused: ${outcome.error ?? 'unknown'}`;
+    stopped = `stopped task ${taskId}`;
   } catch (e) {
     return `stop of task ${taskId} threw: ${(e as Error)?.message ?? String(e)}`;
+  }
+  if (!neverRan?.answeringOwnerId) return stopped;
+  return `${stopped}; ${await closeNeverRanLaunchRow(neverRan.answeringOwnerId)}`;
+}
+
+/** Close a never-ran answering identity's open adv_sessions row. Never throws. */
+async function closeNeverRanLaunchRow(answeringOwnerId: string): Promise<string> {
+  try {
+    const { getLatestActiveAdvSessionByOwner, markAdvSessionEnded } = await import('../adv-sessions');
+    const row = await getLatestActiveAdvSessionByOwner(answeringOwnerId);
+    if (!row) return `no open adv_session for ${answeringOwnerId}`;
+    const closed = await markAdvSessionEnded(row.id, null, 'cleanup');
+    return closed
+      ? `closed adv_session #${row.id} as never-ran (cleanup)`
+      : `adv_session #${row.id} was already ended`;
+  } catch (e) {
+    return `close of ${answeringOwnerId}'s adv_session threw: ${(e as Error)?.message ?? String(e)}`;
   }
 }
 
@@ -1418,8 +1457,9 @@ async function launchAnsweringSession(
   // brief would otherwise create a phantom responder the consult waits on.
   if (spawn.kickoffProof?.persisted !== true) {
     // The walk is about to launch another rank; this one must not outlive the
-    // verdict (see defaultStopFailedLaunch).
-    const stopped = await d.stopFailedLaunch(spawn.taskId);
+    // verdict (see defaultStopFailedLaunch). It never ran a turn, so its row is
+    // closed as never-ran rather than left for the idle reaper (WI-10006690).
+    const stopped = await d.stopFailedLaunch(spawn.taskId, { answeringOwnerId });
     const launchError = await d.readLaunchLogReason(spawn.logPath);
     const result = failed(
       'kickoff-not-persisted',
@@ -1461,8 +1501,9 @@ async function launchAnsweringSession(
       const failure = childExitFailure(winner.exit);
       if (failure) {
         // The root died, but its scope can still hold descendants (MCP servers,
-        // wrapper chains) — clear it before reporting the rank failed.
-        await d.stopFailedLaunch(spawn.taskId);
+        // wrapper chains) — clear it before reporting the rank failed. The host
+        // never registered, so its row is closed as never-ran (WI-10006690).
+        await d.stopFailedLaunch(spawn.taskId, { answeringOwnerId });
         const launchError = await d.readLaunchLogReason(spawn.logPath);
         return {
           record: {

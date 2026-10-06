@@ -8,7 +8,7 @@ import { Agent } from 'undici';
 import { afterEach, expect, it, vi } from 'vitest';
 import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { createFailoverPool } from './account-failover';
-import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt,
+import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt, type GatewayCarryTrialAttemptResult,
   type GatewayCarryTrialBinding } from './gateway';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { CACHE_POLICY_VERSION } from './cache-policy';
@@ -605,6 +605,100 @@ const sendAnthropicTrial = (port: number, token: string = trialToken, signal?: A
     body: anthropicTrialBody() });
 
 it.each(['anthropic', 'codex'] as const)(
+  'carry trial reports exact %s attempt response identity without claiming usage', async protocol => {
+    const attempts: GatewayCarryTrialAttempt[] = [], results: GatewayCarryTrialAttemptResult[] = [];
+    const changedObserver = vi.fn();
+    let issued: { observeAttemptResult: (result: GatewayCarryTrialAttemptResult) => Promise<void> } | undefined;
+    let writes = 0;
+    const authorize: GatewayCarryTrialBinding['authorizeAttempt'] = async attempt => {
+      attempts.push(attempt);
+      const receipt = { ...fixtureReservation(attempt), observeAttemptResult: async (result: GatewayCarryTrialAttemptResult) => {
+        expect(Object.isFrozen(result)).toBe(true); results.push(result);
+      } };
+      issued = receipt;
+      return receipt;
+    };
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      ...(protocol === 'anthropic'
+        ? { pool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }
+        : { codexPool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }),
+      carryTrial: protocol === 'anthropic' ? anthropicTrialBinding(authorize) : trialBinding(authorize),
+      fetchImpl: (async () => { writes++; issued!.observeAttemptResult = changedObserver;
+        return new Response('{}', { status: 200 }); }) as typeof fetch,
+      requestAbsorbMs: 0, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = protocol === 'anthropic' ? await sendAnthropicTrial(port) :
+      await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+        body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }) });
+    expect(response.status).toBe(200); await response.text();
+    expect(writes).toBe(1); expect(results).toHaveLength(1); expect(changedObserver).not.toHaveBeenCalled();
+    const { body: _privateBody, signal: _signal, ...identity } = attempts[0]!;
+    expect(results[0]).toEqual({ ...identity, reservationRef: `fixture:${identity.attemptId}`,
+      outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true });
+    expect(JSON.stringify(results)).not.toMatch(/PRIVATE_|costUsd"/);
+  });
+
+it.each(['refused', 'fetch-failed', 'observer-failed'] as const)(
+  'carry trial retains the per-attempt disposition for %s', async mode => {
+    const results: GatewayCarryTrialAttemptResult[] = [];
+    let writes = 0;
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      codexPool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]),
+      carryTrial: trialBinding(async attempt => ({ ...fixtureReservation(attempt),
+        validateAuthorization: () => { if (mode === 'refused') throw new Error('PRIVATE_REVOCATION'); },
+        observeAttemptResult: async result => { results.push(result);
+          if (mode === 'observer-failed') throw new Error('PRIVATE_OBSERVER_FAILURE'); },
+      })),
+      fetchImpl: (async () => { writes++; if (mode === 'fetch-failed') throw new Error('PRIVATE_FETCH_FAILURE');
+        return new Response('{}', { status: 200 }); }) as typeof fetch,
+      requestAbsorbMs: 0, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }) });
+    expect(response.status).not.toBe(200); expect(await response.text()).not.toMatch(/PRIVATE_/);
+    expect(writes).toBe(mode === 'refused' ? 0 : 1); expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject(mode === 'refused'
+      ? { outcome: 'send-refused', responseStatus: null, costUsd: 0, costUsdMeasurementMissing: false }
+      : { outcome: mode === 'fetch-failed' ? 'fetch-failed' : 'response-headers',
+        responseStatus: mode === 'fetch-failed' ? null : 200, costUsdMeasurementMissing: true });
+    if (mode !== 'refused') expect(results[0]).not.toHaveProperty('costUsd');
+  });
+
+it('carry trial reports separate results for each selected-provider failover attempt', async () => {
+  const attempts: GatewayCarryTrialAttempt[] = [], results: GatewayCarryTrialAttemptResult[] = [];
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    codexPool: createFailoverPool([{ accountId: 'account-a', token: async () => 'token-a' },
+      { accountId: 'account-b', token: async () => 'token-b' }]),
+    carryTrial: trialBinding(async attempt => { attempts.push(attempt); return { ...fixtureReservation(attempt),
+      observeAttemptResult: async result => { results.push(result); } }; }),
+    fetchImpl: (async (_target, init) => new Response('{}', {
+      status: new Headers(init?.headers).get('authorization') === 'Bearer token-a' ? 429 : 200,
+      headers: { 'content-type': 'application/json', 'retry-after': '3600' },
+    })) as typeof fetch,
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+  });
+  const port = await gateway.listen(0);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }) });
+  expect(response.status).toBe(200); await response.text();
+  expect(attempts.map(a => a.accountId)).toEqual(['account-a', 'account-b']);
+  expect(results.map(r => r.attemptId)).toEqual(attempts.map(a => a.attemptId));
+  expect(new Set(results.map(r => r.attemptId)).size).toBe(2);
+  expect(results.map(r => r.responseStatus)).toEqual([429, 200]);
+  for (let i = 0; i < results.length; i++) {
+    expect(results[i]).toMatchObject({ credentialSha256: attempts[i]!.credentialSha256,
+      bodySha256: attempts[i]!.bodySha256, reservationRef: `fixture:${attempts[i]!.attemptId}`,
+      costUsdMeasurementMissing: true });
+    expect(results[i]).not.toHaveProperty('costUsd');
+  }
+});
+
+it.each(['anthropic', 'codex'] as const)(
   'carry trial validates controller authority at the final %s send', async protocol => {
     let writes = 0, checks = 0;
     upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
@@ -991,6 +1085,7 @@ it('carry trial reauthorizes an OAuth token-refresh retry before a second infere
     access_token: jwt, refresh_token: 'PRIVATE_REFRESH', account_id: 'trial-oauth',
   } }));
   const attempts: GatewayCarryTrialAttempt[] = [];
+  const results: GatewayCarryTrialAttemptResult[] = [];
   let inferenceWrites = 0, refreshWrites = 0;
   upstream = http.createServer(async (req, res) => {
     for await (const _chunk of req) { /* exclusively local fixture */ }
@@ -1014,7 +1109,8 @@ it('carry trial reauthorizes an OAuth token-refresh retry before a second infere
       codexCliAccounts: () => [{ accountId: 'trial-oauth', home }], codexOAuthProxy: true,
       fetchImpl: ((target, init) => fetch(target, { ...init, dispatcher } as RequestInit)) as typeof fetch,
       carryTrial: trialBinding(async attempt => {
-        attempts.push(attempt); return attempts.length === 1 ? fixtureReservation(attempt) : null;
+        attempts.push(attempt); return attempts.length === 1 ? { ...fixtureReservation(attempt),
+          observeAttemptResult: async result => { results.push(result); } } : null;
       }),
       requestAbsorbMs: 0, selfHeal: { enabled: false },
     });
@@ -1024,6 +1120,11 @@ it('carry trial reauthorizes an OAuth token-refresh retry before a second infere
       body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture', stream: true }) });
     expect(response.status).toBe(403); await response.text();
     expect(inferenceWrites).toBe(1); expect(refreshWrites).toBe(1);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ attemptId: attempts[0]!.attemptId, transport: 'oauth-http',
+      credentialSha256: sha256(`Bearer ${jwt}`), bodySha256: attempts[0]!.bodySha256,
+      responseStatus: 401, outcome: 'response-headers', costUsdMeasurementMissing: true });
+    expect(results[0]).not.toHaveProperty('costUsd');
     expect(attempts.map(a => a.accountId)).toEqual(['trial-oauth', 'trial-oauth']);
     expect(attempts.map(a => a.transport)).toEqual(['oauth-http', 'oauth-http']);
     expect(attempts.map(a => a.credentialSha256)).toEqual([sha256(`Bearer ${jwt}`), sha256(`Bearer ${refreshed}`)]);

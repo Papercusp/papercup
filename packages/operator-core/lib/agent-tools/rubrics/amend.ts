@@ -6,10 +6,11 @@
  * improvements were being skipped. Amending preserves the stored lifecycle
  * status — an active rubric stays active.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { projectBoundedPayload } from '@papercusp/tooldef';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
@@ -99,6 +100,25 @@ function reviewerModelNotAllowedRefusal(error: unknown): {
 function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, unknown> {
   const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes'] as const;
   return Object.fromEntries(fields.filter((field) => args[field] !== undefined).map((field) => [field, args[field]]));
+}
+
+/** A retry for one routed review must reuse its receipt across workers. */
+function reviewReceiptKey(
+  args: z.infer<typeof rubricsAmendArgs>,
+  identity: ReturnType<typeof resolveAgentIdentity>,
+): string {
+  const request = {
+    schemaVersion: 1,
+    workspaceId: identity.workspaceId ?? null,
+    requesterId: identity.ownerId,
+    rubricRef: args.rubricRef,
+    previewPostRef: args.reviewPreviewPost,
+    reason: args.reason ?? null,
+    patch: amendmentPatch(args),
+    reviewerModel: args.reviewerModel ?? null,
+  };
+  const digest = createHash('sha256').update(canonicalJson(request), 'utf8').digest('hex');
+  return `review-${digest}`;
 }
 
 const AMEND_REVIEW_PRESERVE_PATHS = [
@@ -431,7 +451,9 @@ export default defineTool({
       actorId: identity.ownerId,
     };
     if (args.dryRun) {
-      const receiptKey = 'preview-' + randomUUID();
+      const receiptKey = args.reviewPreviewPost
+        ? reviewReceiptKey(args, identity)
+        : 'preview-' + randomUUID();
       const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
         let preview: Awaited<ReturnType<typeof previewAcceptanceBarAmendment>>;
         try {

@@ -3803,7 +3803,141 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "outcomePricingEvidenceQualification": {
+    "status": "scoped-qualification-only-no-item-acceptance",
+    "measuredAt": "2026-10-06",
+    "author": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "parentWorkItem": "WI-10005820",
+    "auditRef": "thread-post:1159989",
+    "auditReadback": {
+     "characters": 4378,
+     "sha256": "f1ba9c547dbb0437f5bc300edd82f521a84c5d80a7ed445af9fce1dec3b6a169",
+     "qualification": "Independent live thread-post read matches the recovered stored audit byte-for-byte."
+    },
+    "source": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "revision": 100,
+     "sha256": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+     "item": "P-010",
+     "governingDecisions": [
+      "D-003",
+      "D-007"
+     ],
+     "dependency": "P-007 / WI-10004291",
+     "qualification": "Source revision and decisions recovered for audit1159989; outcome-verified billing and pilot testnet boundaries retained."
+    },
+    "currentClausesAtAudit": [
+     {
+      "id": "AUTO-BAR-R-21-P-010",
+      "revision": 2,
+      "status": "active",
+      "sha256": "0a64d1bfc90bf1cee82cd6470e789066a9aa1a429bb3bfe679026ebc9152bc24"
+     },
+     {
+      "id": "AUTO-REQ-M-009-P-010",
+      "revision": 1,
+      "status": "draft",
+      "sha256": "41514240cdc94d38c65574f73ffaeedda6f13969f8db72e106c852b9bdc7b372"
+     }
+    ],
+    "contract": "Mandatory R21 requires a full refund when a refund-on-failed-grading invocation fails its grade. Premium outcome pricing and pay-on-shipped-evidence pricing remain unverified.",
+    "implementationQualification": "closeMeteredInvocation charges actual served quantity and releases unused reservations. The public settlement refund requires a buyer-opened dispute and explicit resolve/refund, tested with a fake facilitator. Stripe tests normalize already-issued refund/dispute events and ledger mappings. The inspected assertions do not exercise a failed scorecard triggering a full refund; no universal implementation absence is inferred.",
+    "namedCheck": {
+     "path": "packages/operator-core/lib/cupboard/outcome-priced-tiers.test.ts",
+     "exists": false,
+     "qualification": "Exact R21-named detector absent at audit; adjacent passing tests do not establish the required grading-failure refund."
+    },
+    "localTestsAtAudit": {
+     "command": "npm run test:file -- packages/operator-core/lib/p2p/metered-invocation.test.ts packages/operator-core/lib/cupboard/metered-invocation-door-io.test.ts apps/operator-public/src/__tests__/settlements.test.ts packages/operator-core/lib/cupboard/payment-adapters/stripe.test.ts",
+     "result": "Four files PASS, 138 tests PASS, zero skipped, outer process exit0; predecessor evidence reused without a new run.",
+     "commitSha": "728748a08564a423e34cc06ba6ea8e3ea69cdcbe",
+     "namedTestsClean": true,
+     "ledgerScope": "unqualified",
+     "qualification": "PAPERCUSP_TEST_RUN_HARNESS was unset and the runner used committed substitutes for dirty infrastructure scripts. No ledger ID or evidence binding is claimed. Eight named source/test pins were unchanged before/after; the full import graph and candidate reproducibility are unproved."
+    },
+    "clauseEvidenceSelectionAtAudit": {
+     "specIds": [
+      "AUTO-BAR-R-21-P-010",
+      "AUTO-REQ-M-009-P-010"
+     ],
+     "count": 0,
+     "truncatedByLimit": false,
+     "independentReads": 2,
+     "qualification": "No registered evidence in this exact two-clause query; no global implementation or provider behavior absence inferred."
+    },
+    "rubricAtAudit": {
+     "id": "acceptance-agent-economy-flywheel-2026-08-30",
+     "revision": 5,
+     "sha256": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+     "vetting": "unvetted",
+     "reason": "Rejected attestation: grading-audit-unsettled / criteria-hash-mismatch."
+    },
+    "targetReadback": "WI-10004294 remains blocked/unassigned with no checkpoint on this continuation's live read; no feature claim or disposition changed.",
+    "sourcePinRefresh": {
+     "commitSha": "b440c6a38cd18c4a10e0378f610aca02d7eee966",
+     "qualification": "Eight inspected files equal their saved audit SHA256 and their own HEAD blobs at this refresh. This checks named bytes only and does not upgrade the earlier test run to whole-current-build acceptance."
+    },
+    "sourcePins": [
+     {
+      "path": "packages/operator-core/lib/p2p/metered-invocation.ts",
+      "sha256": "694ffc9486fa351c5f0eb95224d58cea8e7100ee15d695049d4a94c9f2419e9c",
+      "ownHEADblob": "f7cce126a5624d442b7ec6cea597a8085110cd70",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/p2p/metered-invocation.test.ts",
+      "sha256": "42907db829b8f887bfe0fccbf8c9621fb96d3be59ee32b48d80f1a575b201717",
+      "ownHEADblob": "8e979d364f1d7e12edf570cdbf4e9cd31a922b0b",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/metered-invocation-door-io.ts",
+      "sha256": "47142283bec601a27e6d58967377f6469d2db9e219ffd2f9391d80061d0a0825",
+      "ownHEADblob": "2eb883918fa360874bdeb2a0c217a44551d43b6f",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/metered-invocation-door-io.test.ts",
+      "sha256": "4ed7ad457b57d6f35362e81f0d6bd00ec6b6512d422f55b2025aa664b765d7f8",
+      "ownHEADblob": "b4b61b7899ddf90df6cf79dfcce1e1f5374a0b2c",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "apps/operator-public/src/routes/settlements.ts",
+      "sha256": "115839d3661ef44bb1c175505e442e9a27b8318c566771a245a875310bce9414",
+      "ownHEADblob": "9b155eed430f92aa6f60d79fcf66b0eb7a767666",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "apps/operator-public/src/__tests__/settlements.test.ts",
+      "sha256": "b7bc6bb7226c572fc66182dea88d67b9f7ea77d304adb403d0da8935b9f6a77a",
+      "ownHEADblob": "ebfc0b4273b0ab0a94e101ec5d774197284e409c",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/payment-adapters/stripe.ts",
+      "sha256": "3897881f92ab1f0f7fa9320fcd5fb20c8f49008c379419e1b2164a3e967df5a9",
+      "ownHEADblob": "26bf674cf52a670f7dee385ec9bb6709e097a479",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/payment-adapters/stripe.test.ts",
+      "sha256": "4ab22567d805d3307814ccbfb73e0bde45edc4863b29c860641ce1e9e38f6c16",
+      "ownHEADblob": "3d8b4d626dbfc02c7beebb6fcacb02fe1903967d",
+      "equalsOwnHEAD": true
+     }
+    ],
+    "disposition": "Retain current dependency; no duplicate or supersession proved. Extend existing metering, settlement, ledger and payment adapter seams when admitted; no parallel system added.",
+    "acceptanceStillOpen": [
+     "Named R21 detector and a failed-scorecard-triggered full refund",
+     "Premium outcome tier and pay-on-shipped-evidence pricing",
+     "P007 prerequisite and actual provider execution",
+     "Current governed proof, fixture calibration, adequacy, rubric vetting and independent grade",
+     "Whole-item acceptance and final shipment"
+    ],
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004295",

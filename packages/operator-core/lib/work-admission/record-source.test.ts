@@ -31,14 +31,17 @@ const READ_ONLY_SOURCE = '00000000-0000-4000-8000-000000000002';
 const SOURCE_CONFIG = { harnessSlug: 'papercusp', sectionCategories: { Doing: 'in-progress' } };
 
 /** A tagged-template stand-in for postgres.Sql that only answers the data-source lookup. */
-function fakeSql(kinds: Record<string, string>): { sql: postgres.Sql; queries: string[] } {
+function fakeSql(
+  kinds: Record<string, string>,
+  config: Record<string, unknown> = SOURCE_CONFIG,
+): { sql: postgres.Sql; queries: string[] } {
   const queries: string[] = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('$');
     queries.push(text);
     if (text.includes('FROM harness_shared.data_sources')) {
       const kind = kinds[String(values[1])];
-      return Promise.resolve(kind ? [{ kind, config: SOURCE_CONFIG }] : []);
+      return Promise.resolve(kind ? [{ kind, config }] : []);
     }
     return Promise.reject(new Error(`unexpected query: ${text}`));
   }) as unknown as postgres.Sql;
@@ -125,6 +128,29 @@ describe('record write-back capability names', () => {
     expect(recordWriteBackCapability('ticket')).toBe('ticket.comment');
     expect(recordTransitionCapability('ticket')).toBe('ticket.transition');
     expect(recordTransitionCapability('work-task')).toBe('worktask.transition');
+  });
+});
+
+describe('write-back reads the token from the install that connected the source, never the admission target (WI-10006662)', () => {
+  // The OAuth callback stores the token under the install that ran the flow ('papercusp' unless the
+  // source records another as installSlug). `harnessSlug` is where ADMITTED WORK lands; its token
+  // store is empty, so binding host.fetch to it failed every write-back as reconnect-required.
+  it.each([
+    ['work admitted into another harness', { harnessSlug: 'project-x' }, 'papercusp'],
+    ['a source with no target harness yet', {}, 'papercusp'],
+    ['a source that records its install', { harnessSlug: 'project-x', installSlug: 'other-install' }, 'other-install'],
+  ])('%s: host.fetch is bound to the token-store install', async (_label, config, tokenHarness) => {
+    const h = harness();
+    const { sql } = fakeSql(KINDS, config);
+    const source = createRecordAdmissionSource({ registry: h.registry, hostFetchFor: h.hostFetchFor });
+
+    await source.writeBack!({ db: sql, admission: admission(TRACKER_SOURCE), text: 'triaged' });
+    await source.transition!({ db: sql, admission: admission(TRACKER_SOURCE), toCategory: 'done' });
+
+    expect(h.bound).toEqual([
+      { workspaceId: WS, providerId: 'tracker', sourceId: TRACKER_SOURCE, harness: tokenHarness },
+      { workspaceId: WS, providerId: 'tracker', sourceId: TRACKER_SOURCE, harness: tokenHarness },
+    ]);
   });
 });
 

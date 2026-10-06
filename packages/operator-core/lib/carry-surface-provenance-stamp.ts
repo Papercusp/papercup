@@ -468,7 +468,11 @@ export function applyOwnerTurnAutoVerify(
 export async function stampCarrySurfaceProvenance(
   text: string | null | undefined,
   ownerId: string | null | undefined,
-  options: { successfulActions?: readonly SuccessfulActionInvocation[] | null } = {},
+  options: {
+    successfulActions?: readonly SuccessfulActionInvocation[] | null;
+    /** The exact current-turn stamp already resolved by a caller expanding [turn:self]. */
+    currentTurnStamp?: CurrentTurnStamp;
+  } = {},
 ): Promise<CarryProvenanceStamp | undefined> {
   const lint = suppressProvenActionClaims(provenanceLintField(text), options.successfulActions);
   const slotLint = ownerQuestionSlotField(text);
@@ -481,20 +485,57 @@ export async function stampCarrySurfaceProvenance(
   if (!lint && !slotLint && refs.length === 0) return undefined;
 
   let verified: TurnRefVerdict[] = [];
-  let writtenDuring: CurrentTurnStamp | null = null;
-  if (ownerId) {
-    const { value } = await withBoundedTimeout(
-      Promise.all([
-        verifyTurnRefs(ownerId, refs, { scope: 'cross-session' }),
-        resolveCurrentTurnStamp(ownerId),
-      ]),
-      {
-        fallback: [[], null] as [TurnRefVerdict[], CurrentTurnStamp | null],
-        timeoutMs: STAMP_IO_BUDGET_MS,
-        label: 'carry-provenance-stamp',
-      },
-    );
-    [verified, writtenDuring] = value;
+  let writtenDuring: CurrentTurnStamp | null = options.currentTurnStamp ?? null;
+  const trustedCurrentTurnRefs: TurnRefVerdict[] = [];
+  if (options.currentTurnStamp) {
+    for (const ref of refs) {
+      // This ref was just generated from the resolver's recorded current turn. Re-reading
+      // the same transcript here creates a TOCTOU failure: a timeout or partial transcript
+      // read can turn a proven anchor into an unchecked miss after it was already used.
+      // Quoted refs still need full-turn verification for quoteMatch.
+      if (ref.raw !== options.currentTurnStamp.ref || ref.quote) continue;
+      trustedCurrentTurnRefs.push({
+        ref: ref.raw,
+        found: true,
+        verdict: options.currentTurnStamp.verdict,
+        origin: options.currentTurnStamp.origin,
+        snippet: null,
+        quote: null,
+        quoteMatch: null,
+        checked: true,
+        scope: 'current-session',
+      });
+    }
+  }
+  const trustedCurrentTurnRefsSet = new Set(trustedCurrentTurnRefs.map((r) => r.ref));
+  const refsToVerify = refs.filter((r) => !trustedCurrentTurnRefsSet.has(r.raw));
+  verified = trustedCurrentTurnRefs;
+  if (ownerId && (!options.currentTurnStamp || refsToVerify.length > 0)) {
+    if (options.currentTurnStamp) {
+      // Keep the known current-turn evidence if verification of some OTHER ref times out.
+      const { value: otherVerified } = await withBoundedTimeout(
+        verifyTurnRefs(ownerId, refsToVerify, { scope: 'cross-session' }),
+        {
+          fallback: [] as TurnRefVerdict[],
+          timeoutMs: STAMP_IO_BUDGET_MS,
+          label: 'carry-provenance-stamp',
+        },
+      );
+      verified = [...trustedCurrentTurnRefs, ...otherVerified];
+    } else {
+      const { value } = await withBoundedTimeout(
+        Promise.all([
+          verifyTurnRefs(ownerId, refsToVerify, { scope: 'cross-session' }),
+          resolveCurrentTurnStamp(ownerId),
+        ]),
+        {
+          fallback: [[], null] as [TurnRefVerdict[], CurrentTurnStamp | null],
+          timeoutMs: STAMP_IO_BUDGET_MS,
+          label: 'carry-provenance-stamp',
+        },
+      );
+      [verified, writtenDuring] = value;
+    }
   }
 
   // EI-22197373539314485: a ref the writer actually supplied must ALWAYS

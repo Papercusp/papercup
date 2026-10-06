@@ -186,6 +186,33 @@ export function repoLockName(repoRoot?: string): string;
  * while sharing the same user-level caches.
  */
 export function withPackageCacheReadLease(fn: any, opts?: {}): Promise<any>;
+/** Read the npm process RSS on Linux; other platforms report an unknown value. */
+export function readChildRssBytes(pid: any, platform?: NodeJS.Platform): number | null;
+/** Spawn npm asynchronously so long resolve/reify/repair phases stay observable. */
+export function runNpmWithHeartbeat({ phase, args, cwd, env, spawnCommand, heartbeatIntervalMs, readRssBytes, log, now, }?: {
+    cwd?: string | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+    spawnCommand?: typeof spawn | undefined;
+    heartbeatIntervalMs?: number | undefined;
+    readRssBytes?: typeof readChildRssBytes | undefined;
+    log?: ((line: any) => void) | undefined;
+    now?: (() => number) | undefined;
+}): Promise<any>;
+/** Apply resolver output only while the source snapshot is current. */
+export function applyResolvedManifestFiles({ repoRoot, snapshot, files, outputPaths, }: {
+    repoRoot: any;
+    snapshot: any;
+    files: any;
+    outputPaths: any;
+}): {
+    applied: boolean;
+    reason: string;
+    path: any;
+} | {
+    applied: boolean;
+    reason?: undefined;
+    path?: undefined;
+};
 /**
  * npm treats config flags before a command as global flags. Preserve the
  * long-documented `npm run install:safe -- --legacy-peer-deps` form by making
@@ -295,3 +322,4 @@ export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT: 30000;
 export const USAGE: "Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)\n       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]\n\nSerializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every\ndeclared dependency landed on disk. Arguments that start with \"-\" get an implicit `install`\nprepended, so `-- --legacy-peer-deps` means `npm install --legacy-peer-deps`.\n--help / -h is recognised only as the first argument; use `install --help` for npm's own help.\n";
 import { spawnSync } from "node:child_process";
 import { withFsMutex } from "./lib/fs-mutex.mjs";
+import { spawn } from "node:child_process";

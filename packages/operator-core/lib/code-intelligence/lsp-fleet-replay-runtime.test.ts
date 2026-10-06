@@ -103,7 +103,7 @@ describe('independently declared semantic graph', () => {
     expect(project.rootNames).toEqual([join(f.root, 'source.ts')]);
     expect(project.configFiles).toEqual([join(f.root, 'base.json'), join(f.root, 'tsconfig.json')]);
     expect(project.files).toEqual(expect.arrayContaining([...project.configFiles, join(f.root, 'source.ts'), join(f.root, 'ambient.d.ts')]));
-    expect(project.files.some(file => file.endsWith('/lib.d.ts'))).toBe(true);
+    expect(project.files).toContain(ts.getDefaultLibFilePath(project.compilerOptions as ts.CompilerOptions));
     expect(project.compilerOptions.strict).toBe(true);
     expect(project.compilerOptions).not.toHaveProperty('configFile');
     expect(project.files).not.toContain(f.runtimeFile);
@@ -352,7 +352,13 @@ describe('independent replay source materialization', () => {
     writeFileSync(binary, 'changed executable');
     expect(readFileSync(copied.runtimeFiles[0], 'utf8')).toBe('original executable');
     expect(statSync(copied.runtimeFiles[0]).mode & 0o111).toBe(0o111);
-    const oracle = freezeCompilerReplayConfig(copied);
+    // This source-copy fixture deliberately installs no compiler. It cannot
+    // qualify an isolated graph using this worker's already loaded live compiler.
+    expect(() => freezeCompilerReplayConfig(copied)).toThrow('snapshot-input-escape');
+    // Keep the source-byte/manifest drift control separately scoped as local
+    // source-only evidence; it carries no repository-isolation/runtime claim.
+    const oracle = freezeCompilerReplayConfig({ ...copied, sourceSnapshot: undefined });
+    expect(() => assertReplayOracleRuntimeQualified(oracle)).toThrow('replay-oracle-runtime-unmeasured');
     expect(oracle.corpus['hot-references'].oracle.sites).toEqual([{ path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]);
     expect(() => validateDaemonReplayConfig(oracle)).not.toThrow();
     writeFileSync(copied.sourceSnapshot!.manifestPath, '{}');

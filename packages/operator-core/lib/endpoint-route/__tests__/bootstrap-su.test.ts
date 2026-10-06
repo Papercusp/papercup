@@ -495,10 +495,14 @@ vi.mock('../../fleet-membership-store', async (orig) => ({
 const writePresenceMock = vi.fn(
   async (_identity: unknown, _input: unknown, _harness: unknown) => {},
 );
+// WI-10006674: a harness-less boot stamp reads the row first (create-if-absent).
+// Default null = no row yet, i.e. a fresh launch.
+const getPresenceMock = vi.fn(async (_ownerId: string): Promise<unknown> => null);
 vi.mock('../../agent-tools/coordination/presence', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   writePresence: (...args: unknown[]) =>
     writePresenceMock(...(args as [unknown, unknown, unknown])),
+  getPresence: (...args: unknown[]) => getPresenceMock(...(args as [string])),
 }));
 type PendingCarryRespawnTestSlot = {
   nonce: string;
@@ -1392,6 +1396,62 @@ describe('bootstrap-su', () => {
     // The session still has its identity + native id — only transcript isolation degraded.
     expect(json.envelopeEnv.PAPERCUSP_SID).toMatch(/^su-/);
     expect(json.nativeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  // WI-10006674: the supervisor beat never mints a presence row (D-003), so a harness-less
+  // session (a workspace-level su; every consult/headless --fork) that never completes a
+  // first turn used to park with a live host and NO row — coord:presence reported it
+  // absent. Bootstrap now mints the row for it too, before turn 1.
+  it('WI-10006674: a harness-less launch still gets a presence row before turn 1', async () => {
+    getPresenceMock.mockResolvedValueOnce(null);
+    const json = await (
+      await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, label: 'consult fork' })
+    ).json();
+    const sid = json.envelopeEnv.PAPERCUSP_SID;
+    expect(writePresenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: sid, ownerLabel: 'consult fork', source: 'omp-hook-session' }),
+      { agentRole: 'su' },
+      null,
+    );
+    expect(recordAdvSessionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      writePresenceMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('WI-10006674: a harness-less stamp never overwrites an existing row (create-if-absent)', async () => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+    // A carry-respawn re-POSTs bootstrap with the same ownerId: the live row holds the
+    // session's declared intent/plan, which store.write() would overwrite.
+    getPresenceMock.mockResolvedValueOnce({ ownerId: 'su-respawned', intent: 'WI-1: live lane' });
+    await expect(stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-respawned', harnessSlug: null }))
+      .resolves.toBeNull();
+    expect(getPresenceMock).toHaveBeenCalledWith('su-respawned');
+    expect(writePresenceMock).not.toHaveBeenCalled();
+
+    // No row yet → the stamp mints it, with a null harness.
+    getPresenceMock.mockResolvedValueOnce(null);
+    await expect(stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-fresh', harnessSlug: null }))
+      .resolves.toBeNull();
+    expect(writePresenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-fresh' }),
+      { agentRole: 'su' },
+      null,
+    );
+  });
+
+  it('WI-10006674: a harnessed stamp still writes unconditionally (pot_slug refresh)', async () => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+    getPresenceMock.mockResolvedValue({ ownerId: 'su-harnessed' });
+    try {
+      await stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-harnessed', harnessSlug: 'papercup' });
+      expect(writePresenceMock).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'su-harnessed' }),
+        { agentRole: 'su' },
+        'papercup',
+      );
+    } finally {
+      getPresenceMock.mockReset().mockResolvedValue(null);
+    }
   });
 
   it('no harness + no plan → playbook prompt still written; spec gets nulls', async () => {

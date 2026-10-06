@@ -1,5 +1,7 @@
 /**
- * Assemble the AWS AMI release request for a BOOTC workspace-host image from a real bake (WI-10005624).
+ * Assemble the release request for a BOOTC workspace-host image from a real bake (WI-10005624):
+ * an AWS AMI request when the input carries `aws`, a GCP image-family request when it carries
+ * `gcp` (WI-10006488). Exactly one of the two; the artifact's targets and compatibility follow it.
  *
  * `aws-ami-release-cli` executes an `AwsAmiReleaseRequest` whose `releaseGate` it treats as
  * already-verified evidence, and `executeAwsAmiRelease` ratifies that evidence before anything
@@ -36,7 +38,8 @@
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 import {
@@ -64,7 +67,14 @@ import {
   workspaceHostBootcBakeReleaseMismatch,
   workspaceHostBootcCloudArtifact,
 } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
-import { GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family";
+import {
+  GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+  type GcpImageFamilyReleaseRequest,
+} from "@papercusp/operator-core/lib/workspace-host/gcp-image-family";
+import {
+  buildGcpImageFamilyExactPathReadinessConfig,
+  type GcpImageFamilyExactPathReadinessConfig,
+} from "@papercusp/operator-core/lib/workspace-host/gcp-image-family-production";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { activeWorkspaceId } from "@papercusp/operator-core/lib/workspace-registry";
@@ -86,9 +96,10 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 export type BootcEmit = "trust-report" | "artifact" | "clean-room-input" | "request" | "guest-tool-versions";
 
 /**
- * The guest tools each provider's release pins, keyed by `--provider`. The AWS request carries
- * its set itself (composeBootcAwsRequest); `--emit guest-tool-versions` derives either set from
- * the same SBOM for a release request composed elsewhere (WI-10006408: GCP).
+ * The guest tools each provider's release pins, keyed by `--provider`. Each composed request
+ * carries its own set (composeBootcAwsRequest, composeBootcGcpRequest — WI-10006488);
+ * `--emit guest-tool-versions` derives either set from the same SBOM for an operator
+ * `--guest-tool-versions-file` (WI-10006408).
  */
 export const BOOTC_RELEASE_GUEST_TOOLS = {
   aws: AWS_AMI_REQUIRED_GUEST_TOOLS,
@@ -843,6 +854,8 @@ async function gitBlob(repoRoot: string, revision: string, path: string): Promis
 export interface BootcArtifactBuild extends BootcTrustBuild {
   artifact: Extract<WorkspaceHostImageArtifact, { hostModel: "bootc-image" }>;
   publishedAt: string;
+  /** The one cloud the input targets; the artifact's targets and compatibility name it. */
+  provider: BootcReleaseProvider;
 }
 
 /** Build the ONE artifact every emitted document is bound to. */
@@ -891,11 +904,15 @@ export async function buildBootcImageArtifact(
     fail(`Containerfile builds FROM '${String(baseArg)}', but the attested bootc base is '${WORKSPACE_HOST_BOOTC_BASE_IMAGE}'`);
   }
 
-  const aws = requiredRecord(loaded.input.aws, "aws");
-  const targets = Array.isArray(aws.targets) ? aws.targets : fail("aws.targets must be an array");
-  const regions = targets.map((target, index) =>
-    requiredString(requiredRecord(target, `aws.targets[${index}]`).region, `aws.targets[${index}].region`),
-  );
+  const provider = bootcReleaseProvider(loaded.input);
+  const locations = provider === "aws" ? awsTargetRegions(loaded.input) : [gcpProjectId(loaded.input)];
+  // A release for a cloud the bake rendered no disk for has nothing to import: refuse before any
+  // clean-room spend rather than at the provider's import step.
+  try {
+    workspaceHostBootcCloudArtifact(trust.bake, provider);
+  } catch (error) {
+    fail(`the bake cannot be released to ${provider}: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const baseImage = requiredRecord(loaded.input.baseImage, "baseImage");
   const architecture = requiredString(baseImage.architecture, "baseImage.architecture");
   // WI-10005711: the base digest is a fact of the signed image, never a hand-copied input.
@@ -942,7 +959,7 @@ export async function buildBootcImageArtifact(
       { name: "distribution_profile", value: "vm-release" },
       { name: "bootc_image_digest", value: trust.bake.digest },
     ],
-    targets: [{ provider: "aws", locations: regions }],
+    targets: [{ provider, locations }],
   });
 
   const publishedAt = requiredTimestamp(loaded.input.publishedAt, "publishedAt");
@@ -973,22 +990,44 @@ export async function buildBootcImageArtifact(
     },
     lifecycle: { state: "active" as const, publishedAt },
     compatibility: [
-      { ...ruleRest, provider: "aws", architecture, hostModel: "bootc-image", bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE },
+      { ...ruleRest, provider, architecture, hostModel: "bootc-image", bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE },
     ],
   } as unknown as Extract<WorkspaceHostImageArtifact, { hostModel: "bootc-image" }>;
-  return { ...trust, artifact, publishedAt };
+  return { ...trust, artifact, publishedAt, provider };
 }
 
-/** Compose the AWS request; run the release gate over it before anything is written. */
-export async function composeBootcAwsRequest(
-  args: BootcImageReleaseRequestCliArgs,
-  now: () => number = Date.now,
-): Promise<{ request: AwsAmiReleaseRequest; connection: Record<string, unknown> }> {
-  const built = await buildBootcImageArtifact(args, now);
+/**
+ * The cloud a release input targets: exactly one of `aws` / `gcp`. Both would leave the artifact's
+ * targets and compatibility ambiguous; neither has nowhere to publish.
+ */
+export function bootcReleaseProvider(input: Record<string, unknown>): BootcReleaseProvider {
+  const hasAws = input.aws !== undefined;
+  const hasGcp = input.gcp !== undefined;
+  if (hasAws && hasGcp) fail("the input names both aws and gcp; a release request targets exactly one provider");
+  if (!hasAws && !hasGcp) fail("the input names neither aws nor gcp; supply exactly one release target");
+  return hasAws ? "aws" : "gcp";
+}
+
+function awsTargetRegions(input: Record<string, unknown>): string[] {
+  const aws = requiredRecord(input.aws, "aws");
+  const targets = Array.isArray(aws.targets) ? aws.targets : fail("aws.targets must be an array");
+  return targets.map((target, index) =>
+    requiredString(requiredRecord(target, `aws.targets[${index}]`).region, `aws.targets[${index}].region`),
+  );
+}
+
+function gcpProjectId(input: Record<string, unknown>): string {
+  return requiredString(requiredRecord(input.gcp, "gcp").projectId, "gcp.projectId");
+}
+
+/**
+ * The parts both providers' requests share: a trusted image, a passing clean-room report for
+ * exactly this artifact, and a release gate that accepts them — checked before anything is written.
+ */
+async function composeBootcReleaseGate(args: BootcImageReleaseRequestCliArgs, built: BootcArtifactBuild) {
   if (!built.trustReport.trusted) {
     fail(`bootc image is not trusted: ${built.trustReport.failures.map((item) => item.message).join("; ")}`);
   }
-  const loaded = await loadInput(args);
   const reportDocument = await readJson(resolve(args.cleanRoomReportFile!), "clean-room report");
   const cleanRoomReport = requiredRecord(reportDocument.cleanRoomReport ?? reportDocument, "clean-room report");
   const reportImage = requiredRecord(cleanRoomReport.image, "clean-room report image");
@@ -998,16 +1037,14 @@ export async function composeBootcAwsRequest(
         `${built.artifact.image.id}@${built.artifact.image.version}; re-run it against --emit clean-room-input`,
     );
   }
-  const aws = requiredRecord(loaded.input.aws, "aws");
-  const connection = requiredRecord(loaded.input.connection, "connection");
-  if (connection.target !== "aws") fail(`connection.target must be 'aws', got '${String(connection.target)}'`);
+  if (cleanRoomReport.passed !== true) fail("clean-room report did not pass; refusing to compose a release request");
   const releaseGate = {
     artifact: built.artifact,
     bootcBakeManifest: built.bake,
     trustReport: built.trustReport,
     compatibilityRequest: {
       action: "install" as const,
-      provider: "aws" as const,
+      provider: built.provider,
       architecture: built.artifact.buildManifest.baseImage.architecture,
       hostModel: "bootc-image" as const,
       bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
@@ -1019,6 +1056,25 @@ export async function composeBootcAwsRequest(
   if (!gate.accepted) {
     fail(`the composed request would be refused by the release gate: ${gate.failures.map((item) => `${item.code}: ${item.message}`).join("; ")}`);
   }
+  return releaseGate;
+}
+
+function requireBuiltFor(built: BootcArtifactBuild, provider: BootcReleaseProvider): void {
+  if (built.provider !== provider) fail(`the input targets ${built.provider}, not ${provider}`);
+}
+
+/** Compose the AWS request; run the release gate over it before anything is written. */
+export async function composeBootcAwsRequest(
+  args: BootcImageReleaseRequestCliArgs,
+  now: () => number = Date.now,
+): Promise<{ request: AwsAmiReleaseRequest; connection: Record<string, unknown> }> {
+  const built = await buildBootcImageArtifact(args, now);
+  requireBuiltFor(built, "aws");
+  const loaded = await loadInput(args);
+  const aws = requiredRecord(loaded.input.aws, "aws");
+  const connection = requiredRecord(loaded.input.connection, "connection");
+  if (connection.target !== "aws") fail(`connection.target must be 'aws', got '${String(connection.target)}'`);
+  const releaseGate = await composeBootcReleaseGate(args, built);
   const request = {
     releaseGate,
     publisherAccountId: requiredString(aws.publisherAccountId, "aws.publisherAccountId"),
@@ -1034,11 +1090,92 @@ export async function composeBootcAwsRequest(
   return { request, connection };
 }
 
+/**
+ * The persisted connection a GCP image-family release authenticates through. The composition seam
+ * reads `cloudCredentialRef.ref`, so a bare-string reference reads as ABSENT and the release dies
+ * at the connection parse — refused here instead, together with a scope naming another project.
+ */
+function bootcGcpConnection(raw: unknown, projectId: string): Record<string, unknown> {
+  const connection = requiredRecord(raw, "connection");
+  if (connection.target !== "gcp") fail(`connection.target must be 'gcp', got '${String(connection.target)}'`);
+  if (typeof connection.cloudCredentialRef === "string") {
+    fail("connection.cloudCredentialRef must be a typed { kind: 'cloud', ref } reference, not a bare string");
+  }
+  const credential = requiredRecord(connection.cloudCredentialRef, "connection.cloudCredentialRef");
+  if (credential.kind !== "cloud") fail(`connection.cloudCredentialRef.kind must be 'cloud', got '${String(credential.kind)}'`);
+  const ref = requiredString(credential.ref, "connection.cloudCredentialRef.ref");
+  const scope = connection.scope === undefined ? undefined : requiredRecord(connection.scope, "connection.scope");
+  if (scope && (scope.kind !== "project" || scope.id !== projectId)) {
+    fail(`connection.scope is ${String(scope.kind)}:${String(scope.id)}, but the release publishes into project ${projectId}`);
+  }
+  const provider = connection.provider === undefined ? {} : requiredRecord(connection.provider, "connection.provider");
+  if (provider.projectId !== undefined && provider.projectId !== projectId) {
+    fail(`connection.provider.projectId is ${String(provider.projectId)}, but the release publishes into project ${projectId}`);
+  }
+  return {
+    ...connection,
+    cloudCredentialRef: { kind: "cloud", ref },
+    scope: { kind: "project", id: projectId },
+    provider: { ...provider, projectId },
+  };
+}
+
+export interface BootcGcpReleaseRequestDocument {
+  request: GcpImageFamilyReleaseRequest;
+  connection: Record<string, unknown>;
+  readiness: GcpImageFamilyExactPathReadinessConfig;
+}
+
+/**
+ * Compose the GCP image-family request (WI-10006488) — the document `gcp-image-family-release-cli`
+ * reads: `{ request, connection, readiness }`. Same gate as AWS; the GCP release imports the bake's
+ * own GCE disk (`releaseGate.bootcBakeManifest`) rather than building one with Packer.
+ */
+export async function composeBootcGcpRequest(
+  args: BootcImageReleaseRequestCliArgs,
+  now: () => number = Date.now,
+): Promise<BootcGcpReleaseRequestDocument> {
+  const built = await buildBootcImageArtifact(args, now);
+  requireBuiltFor(built, "gcp");
+  const loaded = await loadInput(args);
+  const gcp = requiredRecord(loaded.input.gcp, "gcp");
+  const projectId = gcpProjectId(loaded.input);
+  const connection = bootcGcpConnection(loaded.input.connection, projectId);
+  const releaseGate = await composeBootcReleaseGate(args, built);
+  const cleanRoom = requiredRecord(gcp.cleanRoom, "gcp.cleanRoom");
+  const request = {
+    releaseGate,
+    projectId,
+    family: requiredString(gcp.family, "gcp.family"),
+    publishedAt: built.publishedAt,
+    ...(gcp.previousVersion !== undefined ? { previousVersion: requiredRecord(gcp.previousVersion, "gcp.previousVersion") } : {}),
+    ...(gcp.retireVersions !== undefined
+      ? { retireVersions: Array.isArray(gcp.retireVersions) ? gcp.retireVersions : fail("gcp.retireVersions must be an array") }
+      : {}),
+    cleanRoom: {
+      zone: requiredString(cleanRoom.zone, "gcp.cleanRoom.zone"),
+      serviceAccountEmail: requiredString(cleanRoom.serviceAccountEmail, "gcp.cleanRoom.serviceAccountEmail"),
+      subnetwork: requiredString(cleanRoom.subnetwork, "gcp.cleanRoom.subnetwork"),
+    },
+    // Derived from the bake's own SBOM, exactly as the AWS request's are (WI-10006386).
+    guestToolVersions: requiredGuestToolVersions(built.installedRpms, GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS),
+  } as unknown as GcpImageFamilyReleaseRequest;
+  const readiness = buildGcpImageFamilyExactPathReadinessConfig(loaded.input.readiness, {
+    // Captured by the producer, never accepted from JSON: the release compares these exact values
+    // with its live user and cwd immediately before the billable seam.
+    username: userInfo().username,
+    cwd: await realpath(args.repoRoot),
+    source: built.artifact.buildManifest.source,
+  });
+  return { request, connection, readiness };
+}
+
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   const args = parseBootcImageReleaseRequestCliArgs(argv);
   const write = (value: unknown) => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
   if (args.emit === "request") {
-    write(await composeBootcAwsRequest(args));
+    const provider = bootcReleaseProvider((await loadInput(args)).input);
+    write(provider === "gcp" ? await composeBootcGcpRequest(args) : await composeBootcAwsRequest(args));
     return;
   }
   if (args.emit === "trust-report") {

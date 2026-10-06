@@ -325,9 +325,91 @@ function startReplayRuntime(options) {
     receipt('file-read', file, bytes);
     return bytes;
   };
-  // These readers do not expose a complete filename+byte population at this
-  // boundary. Keep the run usable, but never qualify a closure that used them.
-  for (const name of ['read', 'readSync', 'readv', 'readvSync', 'createReadStream']) {
+  // Streaming hashes consume large native inputs without allocating a whole
+  // file. Witness only bytes actually returned to the consumer: no disk reread
+  // can fill a gap, and a live, unfinished descriptor must remain unqualified.
+  const openSync = fs.openSync;
+  const readSync = fs.readSync;
+  const closeSync = fs.closeSync;
+  const descriptors = new Map();
+  let readSequence = 0;
+  const sameFile = (a, b) => a.isFile() && b.isFile() &&
+    ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key] === b[key]);
+  const failRead = (state, reason) => {
+    if (!state.failed) emit({ kind: 'unknown', reason: `${reason}:readSync` });
+    state.failed = true;
+  };
+  fs.openSync = function (file, ...args) {
+    const fd = openSync.call(this, file, ...args);
+    if (!completeReadDepth) {
+      const state = { fd, offset: 0, implicitOffset: 0, started: false, eof: false, failed: false };
+      try {
+        state.path = file instanceof URL ? fileURLToPath(file) : resolve(file);
+        state.stat = fs.fstatSync(fd, { bigint: true });
+        if (!sameFile(state.stat, fs.statSync(state.path, { bigint: true })) ||
+            state.stat.size > BigInt(Number.MAX_SAFE_INTEGER)) throw Error('unbound descriptor');
+        state.hash = createHash('sha256');
+      } catch { state.unbound = true; }
+      descriptors.set(fd, state);
+    }
+    return fd;
+  };
+  fs.readSync = function (fd, buffer, offsetOrOptions, length, position) {
+    if (completeReadDepth) return readSync.apply(this, arguments);
+    const state = descriptors.get(fd);
+    if (!state || state.unbound) {
+      emit({ kind: 'unknown', reason: 'unsupported-file-reader:readSync' });
+      return readSync.apply(this, arguments);
+    }
+    if (!state.started) {
+      state.started = true;
+      state.readId = `${process.pid}:${++readSequence}`;
+      emit({ kind: 'file-read-start', reader: 'readSync', readId: state.readId,
+        path: state.path, byteLength: Number(state.stat.size) });
+    }
+    const options = offsetOrOptions && typeof offsetOrOptions === 'object' ? offsetOrOptions : null;
+    const offset = options ? options.offset ?? 0 : offsetOrOptions ?? 0;
+    const requestedLength = options ? options.length ?? buffer?.byteLength - offset : length ?? buffer?.byteLength - offset;
+    const requestedPosition = options ? options.position ?? null : position ?? null;
+    const start = requestedPosition === null ? state.implicitOffset : requestedPosition;
+    if (!ArrayBuffer.isView(buffer) || !Number.isSafeInteger(offset) || offset < 0 ||
+        !Number.isSafeInteger(requestedLength) || requestedLength < 1 ||
+        offset + requestedLength > buffer.byteLength || !Number.isSafeInteger(start) || start < 0)
+      failRead(state, 'unsupported-file-reader');
+    else if (start !== state.offset || state.eof) failRead(state, 'nonsequential-file-reader');
+    let count;
+    try { count = readSync.apply(this, arguments); }
+    catch (error) { failRead(state, 'failed-file-reader'); throw error; }
+    if (!state.failed) {
+      if (!Number.isSafeInteger(count) || count < 0 || count > requestedLength ||
+          state.offset + count > Number(state.stat.size)) failRead(state, 'changed-file-reader');
+      else {
+        state.hash.update(Buffer.from(buffer.buffer, buffer.byteOffset + offset, count));
+        state.offset += count;
+        if (requestedPosition === null) state.implicitOffset += count;
+        if (count === 0) state.eof = true;
+      }
+    }
+    return count;
+  };
+  fs.closeSync = function (fd) {
+    const state = descriptors.get(fd);
+    if (state?.started && !state.failed) {
+      try {
+        if (!sameFile(state.stat, fs.fstatSync(fd, { bigint: true })) ||
+            !sameFile(state.stat, fs.statSync(state.path, { bigint: true }))) failRead(state, 'changed-file-reader');
+        else if (!state.eof || state.offset !== Number(state.stat.size)) failRead(state, 'incomplete-file-reader');
+      } catch { failRead(state, 'changed-file-reader'); }
+    }
+    // Preserve close errors. A failed close never completes the pending proof.
+    const result = closeSync.call(this, fd);
+    descriptors.delete(fd);
+    if (state?.started && !state.failed) emit({ kind: 'file-read', reader: 'readSync',
+      readId: state.readId, path: state.path, sha256: state.hash.digest('hex'), byteLength: state.offset });
+    return result;
+  };
+  // Other readers still lack a complete filename+byte population here.
+  for (const name of ['read', 'readv', 'readvSync', 'createReadStream']) {
     const original = fs[name];
     fs[name] = function (...args) {
       // Complete reads and the default ESM loader call exported readSync
@@ -350,7 +432,7 @@ function startReplayRuntime(options) {
   Module.register = refuseLoader;
   Module.registerHooks = refuseLoader;
   Module.syncBuiltinESMExports();
-  emit({ kind: 'ready', coverage: ['esm-load-return', 'commonjs-compile', 'json-load', 'file-read', 'native-load', 'child-launch'] });
+  emit({ kind: 'ready', coverage: ['esm-load-return', 'commonjs-compile', 'json-load', 'file-read', 'readSync', 'native-load', 'child-launch'] });
   process.argv = [process.execPath, resolve(options.entry), ...(options.args || [])];
   return import(pathToFileURL(resolve(options.entry)).href).catch(error => {
     emit({ kind: 'unknown', reason: `entry-failed:${String(error)}` });

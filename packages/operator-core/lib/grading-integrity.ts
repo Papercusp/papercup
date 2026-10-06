@@ -25,6 +25,7 @@ import {
 } from './acceptance-grader';
 import { getRubric } from './rubrics';
 import {
+  acquireGradingAuditSubjectMutex,
   listScorecards,
   parseGradedGeneration,
   type ScorecardGradingAuditCurrentness,
@@ -372,7 +373,7 @@ export async function confirmPendingGradingAuditReservation(
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
   const reservedAt = options.reservedAt ?? null;
-  const current = await boundedOrgTxn(
+  const current = await withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(
     async (tx: OrgSql) =>
       tx<{ feature_id: string }[]>`
       SELECT scorecard.feature_id
@@ -396,7 +397,7 @@ export async function confirmPendingGradingAuditReservation(
               AND superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM scorecard.payload->'observation'->>'sourceHive'
          )
        FOR UPDATE`,
-  );
+  ));
   return Boolean(current[0]);
 }
 
@@ -405,6 +406,25 @@ interface GradingAuditReservationOptions {
   now?: Date;
   /** Currentness from scorecards:list; stale or legacy identity-less settled cards are reopened atomically. */
   currentness?: ScorecardGradingAuditCurrentness;
+}
+
+async function withGradingAuditSubjectMutex<T>(
+  workspaceId: string,
+  issueId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (process.env.VITEST && process.env.PAPERCUSP_SCORECARD_EMIT_MUTEX_TEST !== '1') {
+    return operation();
+  }
+  const release = await acquireGradingAuditSubjectMutex({
+    workspaceId,
+    subjectIssueId: issueId,
+  });
+  try {
+    return await operation();
+  } finally {
+    await release();
+  }
 }
 
 /**
@@ -626,7 +646,7 @@ export async function reservePendingGradingAudit(
       })
     : null;
 
-  return boundedOrgTxn(async (tx: OrgSql) => {
+  return withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(async (tx: OrgSql) => {
     // WI-10005273: lock the row and capture the lease this claim may replace, so a dispatcher
     // that dedupes to the live holder of an expired lease can restore it rather than delete it.
     const priorRows = await tx<{ feature_id: string; prior_state: string | null; prior_reservation: unknown }[]>`
@@ -759,7 +779,7 @@ export async function reservePendingGradingAudit(
       };
     }
     return row.has_reservation ? { status: 'already-reserved' as const } : { status: 'not-pending' as const };
-  });
+  }));
 }
 
 /**
@@ -792,7 +812,7 @@ export async function releasePendingGradingAudit(
     ? JSON.stringify({ key: options.restore.key, reservedAt: options.restore.reservedAt })
     : null;
   const reservedAt = options.reservedAt ?? null;
-  const released = await boundedOrgTxn(
+  const released = await withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(
     async (tx: OrgSql) =>
       tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
@@ -827,7 +847,7 @@ export async function releasePendingGradingAudit(
            OR payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
          )
       RETURNING feature_id`,
-  );
+  ));
   return Boolean(released[0]);
 }
 

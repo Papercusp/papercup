@@ -22,6 +22,8 @@ import { loadSuOwnerTurnReceipts, type SuOwnerTurn, type SuOwnerTurnReceiptRef }
 import { makeCodingAssistantCodexHome } from './role-codex-home';
 import type { ClaudeEngineIdentity } from './su-session-claude-engine';
 import { persistSuSessionDescriptor } from './su-session-persistence';
+import { listCodexModels } from './su-session-engine-models';
+import { codexAppServerTokenUsage, codexPlan, ompMessageUsage } from './su-session-usage';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
@@ -393,6 +395,14 @@ export function startSuRpcEngine(
         nativeTurnId = string(object(params.turn).id); host.transition('running', 'Codex native turn started');
       } else if (method === 'turn/completed') {
         const turn = object(params.turn); void finish(string(turn.status), string(object(turn.error).message) || undefined);
+      } else if (method === 'thread/tokenUsage/updated') {
+        // WI-10006653: a live conversation's context meter. Without this the
+        // descriptor carried usage only after a resume replayed the rollout.
+        const usage = codexAppServerTokenUsage(params);
+        if (usage) host.updateUsage(usage);
+      } else if (method === 'turn/plan/updated') {
+        const plan = codexPlan(params);
+        if (plan) host.updatePlan(plan);
       } else if (method === 'item/agentMessage/delta') {
         transcript(string(params.itemId), 'text', string(params.delta));
       } else if (method === 'item/reasoning/summaryTextDelta') {
@@ -429,6 +439,15 @@ export function startSuRpcEngine(
             const key = `${channel}:${index}`;
             transcript(key, channel, streams.has(key) ? '' : string(block.text ?? block.thinking), true);
           }
+        }
+        // WI-10006653 (same class): usage per assistant message. The cost is
+        // added to the descriptor's running total, which a resume's transcript
+        // replay has already seeded.
+        const measured = ompMessageUsage(message);
+        if (measured) {
+          host.updateUsage(measured.cost !== undefined
+            ? { ...measured.usage, costUsd: (host.descriptor().usage?.costUsd ?? 0) + measured.cost }
+            : measured.usage);
         }
         if (message.errorMessage) void finish('failed', string(message.errorMessage));
         streams.clear();
@@ -584,6 +603,16 @@ export function startSuRpcEngine(
     if (closed) throw new Error(`${backend} closed while finalizing resume`);
     ready = true;
     host.transition('ready', `${backend} structured stream, SU tools and command executor attached`);
+    // WI-10006652: /model lists the models Codex reports it can run. Not
+    // awaited: the catalog only enriches the picker, so a slow or refused
+    // model/list must not delay or fail a ready session (the picker then keeps
+    // its own menu).
+    if (backend === 'codex') {
+      const listing = peer;
+      void listCodexModels((frame) => listing.request(frame, options.deliveryTimeoutMs ?? 30_000))
+        .then((models) => { if (!closed) host.updateModels(models); })
+        .catch(() => undefined);
+    }
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([starting, new Promise<never>((_resolve, reject) => {

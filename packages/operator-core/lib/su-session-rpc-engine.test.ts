@@ -362,6 +362,34 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     expect(servedAccountReader).toHaveBeenCalledWith('su-rpc-fixture');
   });
 
+  // WI-10006653: the context meter must fill during a LIVE conversation, not
+  // only after a resume replays the saved transcript.
+  it('publishes live usage on the session descriptor', async () => {
+    const f = fixture(backend);
+    await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    expect(f.engine.adapter.host.descriptor().usage).toBeUndefined();
+    if (backend === 'codex') {
+      const last = { totalTokens: 22_433, inputTokens: 22_428, cachedInputTokens: 12_288, outputTokens: 5, reasoningOutputTokens: 0 };
+      f.emit({ method: 'thread/tokenUsage/updated', params: {
+        threadId: 'native-codex', turnId: 'native-turn', tokenUsage: { last, total: last, modelContextWindow: 258_400 },
+      } });
+      f.emit({ method: 'turn/plan/updated', params: {
+        threadId: 'native-codex', turnId: 'native-turn', plan: [{ step: 'Read the file', status: 'completed' }, { step: 'Fix it', status: 'inProgress' }],
+      } });
+      expect(f.engine.adapter.host.descriptor()).toMatchObject({
+        usage: { contextTokens: 22_433, contextWindow: 258_400, inputTokens: 22_428, outputTokens: 5 },
+        plan: [{ text: 'Read the file', status: 'completed' }, { text: 'Fix it', status: 'in_progress' }],
+      });
+    } else {
+      const usage = (cost: number) => ({ input: 100, output: 20, cacheRead: 880, cacheWrite: 0, totalTokens: 1000, cost: { total: cost } });
+      f.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'one' }], usage: usage(0.25) } });
+      f.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'two' }], usage: usage(0.5) } });
+      // costUsd is the running session total; the token figures are the latest call.
+      expect(f.engine.adapter.host.descriptor().usage).toEqual({ contextTokens: 1000, inputTokens: 100, outputTokens: 20, costUsd: 0.75 });
+    }
+  });
+
   it('refreshes the served account after a known native turn failure', async () => {
     const servedAccountReader = vi.fn(async (_ownerId: string) => `pool-${backend}-failure`);
     const f = fixture(backend, { servedAccountReader });

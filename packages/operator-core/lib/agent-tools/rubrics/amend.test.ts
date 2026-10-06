@@ -90,7 +90,10 @@ const body = async (args: unknown) => {
   return JSON.parse((response as ToolOutput).content[0]!.text);
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  receiptDb.rows.clear();
+});
 
 const criterion = {
   key: 'r-1',
@@ -453,6 +456,46 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(Object.keys(call.patch)).toEqual(['criterion']);
   });
 
+  it('deduplicates concurrent retries of the same normalized review request', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let resolveReview!: (value: Record<string, unknown>) => void;
+    const reviewResult = new Promise<Record<string, unknown>>((resolve) => { resolveReview = resolve; });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementation(() => {
+      markStarted();
+      return reviewResult;
+    });
+    const args = { ...patchArgs, reviewPreviewPost: 'thread-post:42' };
+    const retriedArgs = {
+      ...args,
+      criterion: { text: args.criterion.text, mode: args.criterion.mode, field: args.criterion.field, key: args.criterion.key },
+    };
+
+    const first = body(args);
+    await started;
+    const concurrentRetry = await body(retriedArgs);
+
+    expect(concurrentRetry).toMatchObject({ ok: true, pending: true });
+    expect(rubricsMocks.previewAcceptanceBarAmendment).toHaveBeenCalledTimes(1);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+    expect(receiptDb.rows.size).toBe(1);
+
+    resolveReview({
+      state: 'routed',
+      conversationId: 'conv-review-retry',
+      screenedOut: [],
+      previewPostRef: 'thread-post:42',
+      next: 'await reviewer',
+    });
+    const completed = await first;
+    const replay = await body(retriedArgs);
+
+    expect(completed).toMatchObject({ ok: true, review: { state: 'routed', conversationId: 'conv-review-retry' } });
+    expect(replay).toEqual(completed);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+  });
+
   it('D-034: the actual handler and local relevance-router preserve the actionable review ahead of a large preview', async () => {
     const largePreview = {
       ...approvalRequired,
@@ -563,7 +606,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     await expect(body({
       ...patchArgs,
       reviewPreviewPost: 'thread-post:42',
-      reviewerModel: { agent: 'codex', model: 'gpt-6-sol' },
+      reviewerModel: { agent: 'codex', model: 'gpt-6-sol-next' },
     })).rejects.toThrow(unrelated.message);
   });
 
@@ -741,9 +784,12 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     });
   });
 
-  it('a slow dry-run returns a pollable preview receipt without applying the amendment', async () => {
+  it('separate slow preview-only dry runs get fresh pollable receipts without applying the amendment', async () => {
     const slow = deferred<unknown>();
-    rubricsMocks.previewAcceptanceBarAmendment.mockReturnValue(slow.promise);
+    const secondSlow = deferred<unknown>();
+    rubricsMocks.previewAcceptanceBarAmendment
+      .mockReturnValueOnce(slow.promise)
+      .mockReturnValueOnce(secondSlow.promise);
 
     const answered = await body({ ...amendArgs, dryRun: true, approvedBy: 'outside-reviewer' });
     expect(answered).toMatchObject({
@@ -762,7 +808,12 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
       source: 'receipt',
     });
 
+    const separatelyRequested = await body({ ...amendArgs, dryRun: true, approvedBy: 'outside-reviewer' });
+    expect(separatelyRequested.receipt.idempotencyKey).toMatch(/^preview-/);
+    expect(separatelyRequested.receipt.idempotencyKey).not.toBe(answered.receipt.idempotencyKey);
+
     slow.resolve({ changedBars: ['R-1'] });
+    secondSlow.resolve({ changedBars: ['R-1'] });
     await vi.waitFor(async () => {
       expect(await statusBody(answered.receipt.poll.args)).toMatchObject({
         state: 'previewed',

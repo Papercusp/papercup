@@ -222,7 +222,11 @@ Host notes (not pui defects):
     said only "sign in to Claude".
   - Operator unreachable: "PUI cannot reach Papercusp; start Papercusp Server, then …". Before, it said "PUI
     lost its connection to Claude", which pointed at the engine.
-  - Operator hung: "Papercusp is not answering; start or restart Papercusp Server, then …".
+  - Operator hung: "Papercusp is not answering; start or restart Papercusp Server, then …". Superseded
+    2026-10-06 by WI-10006644: a connected but silent operator is usually busy, not down (the P-032
+    instance had NRestarts=0 and a 10 s event-loop stall), so pui now shows "Papercusp is busy; still
+    trying to send your message" and retries for 20 s before "Papercusp is busy and did not answer; your
+    message is kept, …". Only a refused connection gets the start-Papercusp advice.
   - Dead session: "Claude stopped; press Enter to send your message again." This was already accurate: the
     next message reopens the conversation. The raw text kept behind details no longer says "start a new
     session".
@@ -263,15 +267,15 @@ with a positive control).
 | 6 | Tool call and result | 11.5 s | 12.0 s | 13.5 s / 16.0-18.5 s; one compact row and a one-line result | Level |
 | 7 | Edit with diff | 19.8 s, 1 approval, file changed | 22.8 s, 1 approval, file changed | Claude: 12.3 s, 1 approval, file changed. Codex: 8 approvals over 132 s, file unchanged, because the engine obeyed this box's AGENTS.md rule to claim a Papercusp file lock first and the lock was refused (not a git repo). The stock Codex leg had an isolated CODEX_HOME, so this is box config, not pui | Level on Claude; Codex not comparable on this box |
 | 8 | Approval prompt | 1 Yes / 2 Yes, and accept edits / 3 No | Codex's own approval card | 1 Yes / 2 Yes, don't ask again / 3 No on both engines (D-028) | Level |
-| 9 | Interrupt (Esc mid-reply) | Stops in 2.0 s, "Interrupted · What should Claude do instead?" | 2.0 s, "Conversation interrupted" | 2.0 s on both. The Claude engine also printed a raw `[ede_diagnostic] … Last child stderr` line | Level on speed; the stray line is fixed in the tree (WI-10006646), not yet live on :3170 |
+| 9 | Interrupt (Esc mid-reply) | Stops in 2.0 s, "Interrupted · What should Claude do instead?" | 2.0 s, "Conversation interrupted" | 2.0 s on both. The Claude engine also printed a raw `[ede_diagnostic] … Last child stderr` line | Level. Post-fix (13:34Z, :3170 728748a085): no stray line in any interrupt, Ctrl+C or scrollback frame (WI-10006646 done) |
 | 10 | Esc with nothing running | Stays in the box | Stays | Stays in the box | Level (G-3 closed) |
 | 11 | Slash menu | ~100 commands | Codex's list | 15 commands incl. /model /effort /backend /status /compact /approvals /clear; "/mo" filters to /model | Level (G-4 closed) |
-| 12 | Model switch | Picker of models with prices | Model and effort picker | /model and /effort exist, but the picker lists the server's routing tiers (all claude-opus-5:xhigh) with internal "[owner 2026-09-03] …" notes as descriptions; on Codex it offers only Claude tiers marked not settable | Behind → WI-10006652 |
+| 12 | Model switch | Picker of models with prices | Model and effort picker | /model and /effort exist, but the picker lists the server's routing tiers (all claude-opus-5:xhigh) with internal "[owner 2026-09-03] …" notes as descriptions; on Codex it offers only Claude tiers marked not settable | Level after WI-10006652 (13:34-13:42Z): in a conversation /model lists the engine's own models (Claude: Default, Opus, Fable, Sonnet); before the first message it offers only tiers for that engine, with no "[owner" notes |
 | 13 | ? shortcuts overlay | Two-column key list | Key list | Overlay with keys and commands | Level |
 | 14 | History (Up) | Recalls earlier messages | Recalls | Up 1 / Up 2 recall in order | Level |
 | 15 | Multiline input | Ctrl+J and `\`+Enter | Ctrl+J; `\`+Enter submits | Ctrl+J and `\`+Enter on both engines | Level |
 | 16 | Paste (40 lines) | Chip | Chip | "[Pasted text #1 +39 lines]" | Level (G-7 closed) |
-| 17 | @ file mention | "@cal" lists calc.js and calc.test.js under the prompt at once | Not captured (no list in the frame) | "Attach a file · 2 matches" popup on both engines. Right after a cleared paste the popup is open but not drawn until the next key (reproduced) | Mostly level → WI-10006651 |
+| 17 | @ file mention | "@cal" lists calc.js and calc.test.js under the prompt at once | Not captured (no list in the frame) | "Attach a file · 2 matches" popup on both engines. Right after a cleared paste the popup is open but not drawn until the next key (reproduced) | Level after WI-10006651 (13:28Z): the popup draws at once after a cleared paste on both engines |
 | 18 | /status, context and cost | Settings › Status panel | /status panel | Claude: model, account, engine, approvals, context 19077/1000000, cost. Codex: the same without context | Level on Claude; Codex → WI-10006653 |
 | 19 | Idle footer | "⏸ manual mode on · ? for shortcuts" | Model · cwd · task | Claude: model · approvals · cwd · context % · cost. Codex: no context % until after a resume (reproduced) | Ahead on Claude; Codex → WI-10006653 |
 | 20 | Unknown command | Transcript line | Transcript line | Transcript line "No command /notacommand…" and "no command matches" in the popup | Level (G-10 closed) |
@@ -282,7 +286,8 @@ with a positive control).
 | 25 | Zellij panes | n/a | n/a | Not exercised by this battery | P-030 |
 
 Also seen: when the operator is stalled rather than down, a send that waits more than 5 s tells the user
-to start or restart Papercusp Server and drops the turn (WI-10006644).
+to start or restart Papercusp Server and drops the turn (WI-10006644). Fixed 13:32Z: pui shows "Papercusp is
+busy; still trying to send your message", retries for 20 s and keeps the draft (P-024 e2e passes).
 
 Verdict: 22 rows level or ahead on the Claude engine (9 and 17 with a filed fix); 1 behind (12, model picker); 1 open (23);
 1 not in scope here (25). On the Codex engine rows 7, 18, 19 and 22 are not yet level (7 is box config).

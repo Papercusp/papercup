@@ -32,7 +32,7 @@
  * shipped logic, never a copy) and drive it under controlled inputs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
@@ -1356,22 +1356,27 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
       'STAGING_ROOT=/absent-staging-test',
       'create_staging_candidate() { STAGING_CANDIDATE_ROOT=/unused-candidate; }',
       'log() { printf "%s\\n" "$*"; }',
+      'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; "$@"; }',
       'bash() { printf "%s\\n" "$SETUP_OUTPUT"; return "$SETUP_STATUS"; }',
       'systemd-notify() { printf "NOTIFY:%s\\n" "$*"; }',
       'prepare_staging_candidate 0123456789abcdef',
     ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify', SETUP_OUTPUT: output, SETUP_STATUS: String(status) } });
   }
 
-  it('renews at completed setup milestones before the SPA build finishes', () => {
+  it('runs source, dependency and SPA preparation under separate finite command deadlines', () => {
     const sourceReady = '[setup-release] submodule recursion: cloned=2 archive-fallback=0 tracked plain=5 recursive=8 uninitialized=0';
     const spaStart = '[setup-release] building operator-vite SPA dist at the deployed sha (this can take a minute)';
     const result = prepareWithOutput([sourceReady, 'DEPENDENCIES', spaStart, 'SPA_FINISHED'].join('\n'));
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(sourceReady);
     expect(result.stdout).toContain(spaStart);
-    expect(result.stdout.match(/EXTEND_TIMEOUT_USEC=900000000/g) ?? []).toHaveLength(2);
-    expect(result.stdout.indexOf('candidate source prepared')).toBeLessThan(result.stdout.indexOf('DEPENDENCIES'));
-    expect(result.stdout.indexOf('candidate dependencies and runtime assets prepared')).toBeLessThan(result.stdout.indexOf('SPA_FINISHED'));
+    const bounds = result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'));
+    expect(bounds).toHaveLength(3);
+    expect(bounds.every((line) => line.startsWith('BOUND:--kill-after=10s 900s bash '))).toBe(true);
+    expect(bounds[0]).toContain('--source-only');
+    expect(bounds[1]).toContain('--prepare-existing');
+    expect(bounds[2]).toContain('--spa-only');
+    expect(result.stdout).not.toContain('EXTEND_TIMEOUT_USEC');
   });
 
   it('does not renew the deadline for arbitrary build output', () => {
@@ -1381,20 +1386,45 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
     expect(result.stdout).not.toContain('EXTEND_TIMEOUT_USEC');
   });
 
-  it('preserves a setup failure through the progress stream', () => {
+  it('terminates a stalled real setup child before dependencies, SPA or publication', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-phase-deadline-'));
+    const scripts = join(fixture, 'apps/operator/scripts/systemd');
+    const setup = join(fixture, 'apps/operator/bin/release');
+    mkdirSync(scripts, { recursive: true });
+    mkdirSync(setup, { recursive: true });
+    writeFileSync(join(scripts, 'papercusp-script-snapshot.sh'), 'exec bash "$@"\n');
+    writeFileSync(join(setup, 'setup-release-checkout.sh'), 'echo SETUP_ENTERED\nsleep 30\n');
+    try {
+      const result = runFn(['staging_sync_checkpoint', 'prepare_staging_candidate'], [
+        'STAGING_ROOT=/absent-staging-test',
+        'create_staging_candidate() { STAGING_CANDIDATE_ROOT=/unused-candidate; }',
+        'log() { printf "%s\\n" "$*"; }',
+        // Accelerate only the fixture duration; run the real GNU timeout and child group.
+        'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; command timeout --kill-after=1s 1s "$@"; }',
+        'prepare_staging_candidate 0123456789abcdef',
+      ].join('\n'), { env: { INTEGRATION_ROOT: fixture, NOTIFY_SOCKET: '' } });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('SETUP_ENTERED');
+      expect(result.stdout).toContain('failed in --source-only');
+      expect(result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'))).toHaveLength(1);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('stops before later phases and publication on a setup failure', () => {
     const result = prepareWithOutput('[setup-release] source failure', 17);
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('candidate checkout preparation failed');
+    expect(result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'))).toHaveLength(1);
     expect(result.stdout).not.toContain('--ready');
   });
 
-  it('renews a finite phase deadline without announcing readiness', () => {
+  it('reports a completed phase without making its deadline depend on systemd notifications', () => {
     const result = runFn(['staging_sync_checkpoint'], [
       'systemd-notify() { printf "%s\\n" "$*"; }',
       'staging_sync_checkpoint "candidate checkout and SPA prepared"',
     ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify' } });
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('EXTEND_TIMEOUT_USEC=900000000');
+    expect(result.stdout).not.toContain('EXTEND_TIMEOUT_USEC');
     expect(result.stdout).toContain('candidate checkout and SPA prepared');
     expect(result.stdout).not.toContain('--ready');
   });
@@ -1408,7 +1438,7 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
     expect(result.stdout).not.toContain('UNEXPECTED_NOTIFY');
   });
 
-  it.each([0, 17])('preserves exit %i and sends READY only for success', (status) => {
+  it.each([0, 17])('preserves exit %i and completes an inherited notify contract only on success', (status) => {
     const result = runFn(['finish_staging_sync'], [
       'cleanup_staging_candidate() { echo CLEANED; }',
       'systemd-notify() { printf "%s\\n" "$*"; }',
@@ -1420,7 +1450,7 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
     expect(result.stdout.includes('--ready')).toBe(status === 0);
   });
 
-  it('fails closed when the phase deadline extension cannot be delivered', () => {
+  it('preserves a diagnostic notification failure', () => {
     const result = runFn(['staging_sync_checkpoint'], [
       'systemd-notify() { return 42; }',
       'staging_sync_checkpoint "candidate prepared"',
@@ -1428,12 +1458,51 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
     expect(result.status).toBe(42);
   });
 
-  it('enrolls the snapshot unit in notify with a finite startup budget', () => {
+  it('starts the snapshot worker at exec with an aggregate runtime backstop', () => {
     const dropIn = readFileSync(join(__dirname, '../../scripts/systemd/papercup-staging-sync.service.d/50-script-snapshot.conf'), 'utf8');
-    expect(dropIn).toContain('Type=notify');
-    expect(dropIn).toContain('NotifyAccess=all');
+    expect(dropIn).toContain('Type=exec');
+    expect(dropIn).not.toContain('Type=notify');
+    expect(dropIn).toContain('RuntimeMaxSec=90min');
     expect(dropIn).toContain('TimeoutStartSec=15min');
     expect(readFileSync(SCRIPT_PATH, 'utf8')).toContain('trap finish_staging_sync EXIT');
+  });
+});
+
+describe('staging bundle failure evidence survives cleanup (EI-25202900905730650)', () => {
+  it('retains the full raw log and failure status before the real cleanup removes the candidate', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-bundle-evidence-'));
+    const candidateHome = join(fixture, '.candidate-fixture');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const home = join(fixture, 'private-home');
+    const bundle = join(candidateRoot, 'bundle.sh');
+    mkdirSync(join(candidateRoot, 'apps/operator/dist-host'), { recursive: true });
+    writeFileSync(bundle, 'mkdir -p "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host"\nprintf "PRIVATE_ERROR_MARKER\\0hidden tail\\n" > "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host/hono-host.mjs.build-error.log"\nexit 23\n');
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const begin = script.indexOf('  log "prebuilding proof-bound host bundle');
+    const end = script.indexOf('  staging_sync_checkpoint "host bundle prebuilt"', begin);
+    expect(begin).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(begin);
+    try {
+      const result = runFn(['prebuild_staging_host_bundle', 'cleanup_staging_candidate'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'SYNC_ROOT="$FIXTURE_ROOT"; bundle_script="$FIXTURE_BUNDLE"; UNIT=fixture.service',
+        'STAGING_CANDIDATE_HOME="$FIXTURE_CANDIDATE"; STAGING_CANDIDATE_ROOT="$FIXTURE_ROOT"',
+        'STAGING_CANDIDATE_PUBLISHED=0; INTEGRATION_ROOT=/absent-fixture-repo',
+        'status=0',
+        `(set -e; ${script.slice(begin, end)}) || status=$?`,
+        'cleanup_staging_candidate',
+        'printf "BUNDLE_STATUS=%s\\n" "$status"',
+      ].join('\n'), { env: { PAPERCUSP_HOME: home, FIXTURE_ROOT: candidateRoot,
+        FIXTURE_BUNDLE: bundle, FIXTURE_CANDIDATE: candidateHome, INVOCATION_ID: 'fixture-invocation' } });
+      expect(result.stdout).toContain('BUNDLE_STATUS=23');
+      expect(existsSync(candidateHome)).toBe(false);
+      const logs = join(home, 'checkpoint-logs');
+      expect(existsSync(logs)).toBe(true);
+      expect(readdirSync(logs)).toEqual(['staging-bundle-fixture-invocation.log']);
+      expect(readFileSync(join(logs, 'staging-bundle-fixture-invocation.log'))
+        .includes(Buffer.from('PRIVATE_ERROR_MARKER\0hidden tail\n'))).toBe(true);
+      expect(result.stderr).toContain('PRIVATE_ERROR_MARKER');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 });
 
@@ -1557,7 +1626,8 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     const restartIdx = script.indexOf('requesting coordinated restart');
     expect(prebuildIdx).toBeGreaterThan(-1);
     expect(restartIdx).toBeGreaterThan(prebuildIdx);
-    expect(script.slice(prebuildIdx, restartIdx)).toContain('PAPERCUSP_BUNDLE_REUSE_FRESH=1');
+    expect(script.slice(prebuildIdx, restartIdx)
+      .includes('prebuild_staging_host_bundle "$SYNC_ROOT" "$bundle_script"')).toBe(true);
   });
 
   it('prepares, validates, and builds a candidate before publishing the stable alias', () => {

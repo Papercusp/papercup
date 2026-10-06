@@ -31,6 +31,7 @@ import type {
   ModelPort,
   ModelProviderResponse,
   ModelStreamEvent,
+  ModelProviderRequest,
   ModelStopReason,
   ModelToolDef,
   ModelUsage,
@@ -139,7 +140,29 @@ export type PrepareStep = (args: PrepareStepArgs) => StepOverrides | undefined |
 
 export type LoopStopReason = 'complete' | 'stop-condition' | 'aborted' | 'error';
 
+export interface LoopProviderRequestInfo {
+  stepIndex: number;
+  /** Housekeeping requests are separate from completed model/tool steps. */
+  purpose?: 'compaction';
+  request: ModelProviderRequest;
+  /** Local routing identity, not a provider billing-account assertion. */
+  servedAccount?: string;
+}
+
+export function copyProviderRequest(info: LoopProviderRequestInfo): LoopProviderRequestInfo {
+  const response = info.request.response;
+  return { stepIndex: info.stepIndex, ...(info.purpose ? { purpose: info.purpose } : {}), request: {
+    provider: info.request.provider, modelId: info.request.modelId,
+    ...(response ? { response: {
+      ...(response.id !== undefined ? { id: response.id } : {}),
+      ...(response.modelId !== undefined ? { modelId: response.modelId } : {}),
+    } } : {}),
+    ...(info.request.identityUncertain ? { identityUncertain: true } : {}),
+  }, ...(info.servedAccount !== undefined ? { servedAccount: info.servedAccount } : {}) };
+}
+
 export type LoopEvent =
+  | ({ type: 'provider_request' } & LoopProviderRequestInfo)
   | { type: 'step_start'; stepIndex: number }
   | { type: 'text_delta'; stepIndex: number; text: string }
   | { type: 'reasoning_delta'; stepIndex: number; text: string }
@@ -165,6 +188,9 @@ export type LoopEvent =
       usage: ModelUsage;
       /** Account that actually served the most recent model request. */
       servedAccount?: string;
+      /** Early observations from successful AND incomplete requests. Never
+       * use their absence as a complete external liability census. */
+      providerRequests?: LoopProviderRequestInfo[];
     }
   | { type: 'error'; message: string; raw?: unknown };
 
@@ -193,6 +219,10 @@ export interface RunAgentLoopOptions {
   /** Stable caller identity forwarded to every model call for gateway
    * attribution (for example an owned chat loop id). */
   ownerId?: string;
+  /** Persist the observation before the next provider pull. Rejection fails
+   * the turn visibly. Production admission/binding supplies this hook; the
+   * loop itself cannot infer cash, credentials or commercial authority. */
+  onProviderRequest?(info: LoopProviderRequestInfo): Promise<void>;
 }
 
 function addUsage(total: ModelUsage, u: ModelUsage | null | undefined): ModelUsage {
@@ -246,6 +276,7 @@ function closeModelStream(iterator: AsyncIterator<ModelStreamEvent>): void {
 export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<LoopEvent, void, void> {
   const messages: ModelMessage[] = [...opts.messages];
   const steps: LoopStepInfo[] = [];
+  const providerRequests: LoopProviderRequestInfo[] = [];
   let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
   let servedAccount: string | undefined;
   const stopConditions: StopCondition[] = opts.stopWhen
@@ -268,6 +299,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
     steps,
     usage,
     ...(servedAccount ? { servedAccount } : {}),
+    ...(providerRequests.length ? { providerRequests: providerRequests.map(copyProviderRequest) } : {}),
   });
 
   for (let stepIndex = 0; ; stepIndex++) {
@@ -378,6 +410,22 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
 
         const ev = result.value.value;
         switch (ev.type) {
+          case 'provider_request': {
+            const info = copyProviderRequest({ stepIndex, request: ev.request,
+              ...(ev.servedAccount !== undefined ? { servedAccount: ev.servedAccount } : {}) });
+            providerRequests.push(info);
+            try {
+              await opts.onProviderRequest?.(copyProviderRequest(info));
+            } catch (error) {
+              // An overlapping parent abort must not disguise a failed
+              // durable capture as ordinary cancellation.
+              streamErrored = true;
+              yield { type: 'error', message: error instanceof Error ? error.message : String(error) };
+              break;
+            }
+            yield { type: 'provider_request', ...copyProviderRequest(info) };
+            break;
+          }
           case 'text_delta':
             text += ev.text;
             yield { type: 'text_delta', stepIndex, text: ev.text };
@@ -433,7 +481,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
       if (streamAborted || streamEndedEarly || streamErrored || sawStop) closeModelStream(iterator);
     }
 
-    if (streamAborted) {
+    if (streamAborted || stopReason === 'aborted') {
       yield done('aborted');
       return;
     }

@@ -77,6 +77,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     label: 'Keys & OAuth',
     links: [
+      { href: '/settings/integrations', label: 'Integrations', keywords: ['integrations', 'linear', 'asana', 'tickets', 'tasks', 'issues', 'tracker', 'sync', 'connect', 'oauth', 'admission', 'rules'] },
       { href: '/settings/api-keys', label: 'API keys', keywords: ['credentials', 'keys', 'api key', 'anthropic', 'openai', 'github', 'google', 'zeroentropy', 'elevenlabs', 'cartesia', 'deepgram', 'picovoice'] },
       // 'login' / 'sign in' / 'chatgpt' / 'codex' live HERE, not on api-keys: the account
       // sign-in cards were removed from that page (default-deploy-account-2026-08-08 P-001),

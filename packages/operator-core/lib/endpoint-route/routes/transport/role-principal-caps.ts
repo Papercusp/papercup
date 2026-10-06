@@ -73,9 +73,13 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // rubric, prior scorecards, test-run ledger, and work-item completion evidence;
   // emit the verdict; run the rubric's named checks; read the files those checks
   // cite; capture a defect they encounter; and persist their own lifecycle
-  // annotation/checkpoint/close. The lifecycle tools independently allowlist
-  // `judge`, so this write cap does not admit the role to broader work-item or
-  // coordination surfaces, and judge remains outside COORD_ROLES.
+  // annotation/checkpoint/close. They also need bounded, read-only SQL and code
+  // intelligence when a public evidence surface omits an authoritative field.
+  // `intel:read` only opens tools whose independent role allowlist includes
+  // `judge`; it does not grant `intel:write`, shell, or filesystem write.
+  // The lifecycle tools independently allowlist `judge`, so these capabilities
+  // do not admit the role to broader work-item or coordination surfaces, and
+  // judge remains outside COORD_ROLES.
   judge: [
     'coord:read',
     'coord:write',
@@ -88,6 +92,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // EI-24903256825782248: a rubric method can mandate a grading-runbook
     // read; docs:get is the only reader (allowlists `judge`). Read-only.
     'docs:read',
+    'intel:read',
   ],
   // The SENTINEL — the fleet WATCHER (unify-launch-mechanics-2026-06-09 D-004,
   // split out of the overloaded "operator"). READ-MOSTLY: it observes fleet

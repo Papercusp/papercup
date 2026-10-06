@@ -8,13 +8,16 @@ import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const blocked = new BlockList();
-for (const [ip, prefix] of [
+/** Every IPv4 range that is not a public unicast destination. Also the edge's forward-chain
+ *  drop set (infra/phone-app/edge/edge-config.mjs, WI-10006686), so the two cannot drift. */
+export const NON_PUBLIC_V4_SUBNETS = Object.freeze([
   ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
   ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
   ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
   ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
-]) blocked.addSubnet(ip, prefix, 'ipv4');
+].map(subnet => Object.freeze(subnet)));
+const blocked = new BlockList();
+for (const [ip, prefix] of NON_PUBLIC_V4_SUBNETS) blocked.addSubnet(ip, prefix, 'ipv4');
 const globalV6 = new BlockList();
 globalV6.addSubnet('2000::', 3, 'ipv6');
 blocked.addSubnet('2001:db8::', 32, 'ipv6');

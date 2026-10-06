@@ -5,7 +5,7 @@
  * packages are selected in provider-router.ts; no AI SDK type escapes the
  * ModelPort boundary.
  */
-import { costFromTokens } from '@papercusp/model-pricing';
+import { costFromTokens, type ModelPrice, type TokenUsage } from '@papercusp/model-pricing';
 import type {
   JSONValue,
   LanguageModelV3,
@@ -37,6 +37,9 @@ export interface AiSdkPortModel {
   provider: AiSdkProviderId | 'gateway-codex';
   /** Provider-scoped model id used for canonical pricing. */
   modelId: string;
+  /** Explicit route/model-bound list rates. Missing OpenRouter rates never
+   * inherit a direct-provider table price or a different catalog variant. */
+  pricing?: { provider: 'openrouter'; modelId: string; price: ModelPrice | null };
   effort?: string | null;
   /** Per-request headers (the gateway priority tier lives here). */
   headers?: Record<string, string | undefined>;
@@ -210,10 +213,11 @@ function stopReason(raw: LanguageModelV3StreamPart & { type: 'finish' }): ModelS
   }
 }
 
-function usage(raw: LanguageModelV3StreamPart & { type: 'finish' }): ModelUsage {
+function usage(raw: LanguageModelV3StreamPart & { type: 'finish' }, provider: AiSdkPortModel['provider']): ModelUsage {
   const input = raw.usage.inputTokens;
   const output = raw.usage.outputTokens;
-  const inputTokens = input.total ?? ((input.noCache ?? 0) + (input.cacheRead ?? 0));
+  const inputTokens = input.total ?? ((input.noCache ?? 0) + (input.cacheRead ?? 0)
+    + (provider === 'openrouter' ? 0 : (input.cacheWrite ?? 0)));
   const outputTokens = output.total ?? ((output.text ?? 0) + (output.reasoning ?? 0));
   return {
     inputTokens,
@@ -221,6 +225,31 @@ function usage(raw: LanguageModelV3StreamPart & { type: 'finish' }): ModelUsage 
     ...(input.cacheRead !== undefined ? { cacheReadTokens: input.cacheRead } : {}),
     ...(input.cacheWrite !== undefined ? { cacheCreationTokens: input.cacheWrite } : {}),
   };
+}
+
+/** ModelUsage keeps total input for display. Canonical pricing takes UNCACHED
+ * input plus disjoint cache subsets and a full per-request tier discriminator.
+ * OpenRouter SDK 2.9.1 `noCache` subtracts reads only, so derive from total and
+ * both subsets instead. Unknown writes are not measured zeroes. */
+function pricingUsage(raw: LanguageModelV3StreamPart & { type: 'finish' }, provider: AiSdkPortModel['provider']): TokenUsage | null {
+  const input = raw.usage.inputTokens;
+  const output = raw.usage.outputTokens;
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  if ([input.total, input.noCache, input.cacheRead, input.cacheWrite, output.total, output.text, output.reasoning]
+    .some((n) => n !== undefined && !count(n))) return null;
+  if (!count(input.cacheRead) || !count(input.cacheWrite)) return null;
+  const total = input.total ?? (input.noCache !== undefined
+    ? input.noCache + input.cacheRead + (provider === 'openrouter' ? 0 : input.cacheWrite) : undefined);
+  const out = output.total ?? (output.text !== undefined && output.reasoning !== undefined
+    ? output.text + output.reasoning : undefined);
+  if (!count(total) || !count(out)) return null;
+  const uncached = total - input.cacheRead - input.cacheWrite;
+  if (!count(uncached) || (provider !== 'openrouter' && input.noCache !== undefined && input.noCache !== uncached)
+      || (output.total !== undefined && output.text !== undefined && output.reasoning !== undefined
+        && output.total !== output.text + output.reasoning)) return null;
+  return { requestInputTokens: total, inputTokens: uncached, outputTokens: out,
+    cacheReadTokens: input.cacheRead, cacheCreationTokens: input.cacheWrite,
+    ...(provider === 'anthropic' && input.cacheWrite > 0 ? { cacheCreationTierUnknown: true } : {}) };
 }
 
 function errorMessage(error: unknown): string {
@@ -235,6 +264,7 @@ async function* readAiSdkStream(
   stream: ReadableStream<LanguageModelV3StreamPart>,
   resolved: AiSdkPortModel,
   decodeToolName: (name: string) => string = (name) => name,
+  signal?: AbortSignal,
 ): AsyncGenerator<ModelStreamEvent, void, void> {
   const reader = stream.getReader();
   let finished = false;
@@ -242,13 +272,20 @@ async function* readAiSdkStream(
   let responseModelId: string | undefined;
   let invalidResponseId = false;
   let invalidResponseModelId = false;
+  let lastObservation: string | undefined;
+  const cancelReader = () => { void reader.cancel().catch(() => undefined); };
+  signal?.addEventListener('abort', cancelReader, { once: true });
   try {
     while (true) {
+      if (signal?.aborted) break;
       const { done, value } = await reader.read();
+      if (signal?.aborted) break;
       if (done) break;
       switch (value.type) {
         case 'response-metadata':
           if (resolved.provider === 'openrouter') {
+            const validId = typeof value.id === 'string' && /^gen-[0-9A-Za-z-]{1,124}$/.test(value.id);
+            const validModel = typeof value.modelId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/.test(value.modelId);
             // Repeated identical frames are normal. A conflicting or invalid
             // id must never become the generation selected for reconciliation.
             if (value.id !== undefined) {
@@ -260,6 +297,19 @@ async function* readAiSdkStream(
               if (typeof value.modelId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/.test(value.modelId)
                   || (responseModelId !== undefined && responseModelId !== value.modelId)) invalidResponseModelId = true;
               if (!invalidResponseModelId) responseModelId = value.modelId;
+            }
+            // Emit before asking the provider for another frame. An error,
+            // lost finish frame or cancellation cannot erase this identity.
+            const id = validId ? value.id : value.id === undefined && !invalidResponseId ? responseId : undefined;
+            const modelId = validModel ? value.modelId : value.modelId === undefined && !invalidResponseModelId ? responseModelId : undefined;
+            const response = { ...(id !== undefined ? { id } : {}), ...(modelId !== undefined ? { modelId } : {}) };
+            const request = { provider: 'openrouter', modelId: resolved.modelId,
+              ...(Object.keys(response).length ? { response } : {}),
+              ...(invalidResponseId || invalidResponseModelId ? { identityUncertain: true } : {}) };
+            const signature = JSON.stringify(request);
+            if (signature !== lastObservation && (Object.keys(response).length || request.identityUncertain)) {
+              lastObservation = signature;
+              yield { type: 'provider_request', request };
             }
           }
           break;
@@ -287,8 +337,25 @@ async function* readAiSdkStream(
           break;
         }
         case 'finish': {
-          const baseUsage = usage(value);
-          const priced = costFromTokens(resolved.modelId, baseUsage);
+          if (value.finishReason.unified === 'error') {
+            yield { type: 'error', message: 'AI SDK provider reported an unsuccessful finish' };
+            return;
+          }
+          // The maintained OpenRouter SDK flushes a synthetic finish on EOF,
+          // even when the wire never supplied finish_reason. That closes its
+          // stream but cannot certify a completed provider request.
+          if (resolved.provider === 'openrouter' && (typeof value.finishReason.raw !== 'string' || !value.finishReason.raw.trim())) {
+            yield { type: 'error', message: 'OpenRouter stream ended without a provider finish reason' };
+            return;
+          }
+          const baseUsage = usage(value, resolved.provider);
+          const tokens = pricingUsage(value, resolved.provider);
+          const price = resolved.pricing?.provider === 'openrouter' && resolved.pricing.modelId === resolved.modelId
+            ? resolved.pricing.price : null;
+          const routeModelMatches = resolved.provider !== 'openrouter' || (!invalidResponseModelId
+            && (responseModelId === undefined || responseModelId === resolved.modelId));
+          const priced = tokens && routeModelMatches ? costFromTokens(resolved.modelId, tokens,
+            resolved.provider === 'openrouter' ? { price } : {}) : { usd: 0, priced: false };
           let providerResponse: ModelProviderResponse | undefined;
           if (resolved.provider === 'openrouter') {
             const metadata = value.providerMetadata?.openrouter;
@@ -324,10 +391,13 @@ async function* readAiSdkStream(
       }
     }
   } finally {
+    signal?.removeEventListener('abort', cancelReader);
+    if (!finished) cancelReader();
     reader.releaseLock();
   }
   if (!finished) {
-    yield { type: 'error', message: 'AI SDK provider stream ended without a finish event' };
+    yield signal?.aborted ? { type: 'stop', reason: 'aborted' }
+      : { type: 'error', message: 'AI SDK provider stream ended without a finish event' };
   }
 }
 
@@ -342,9 +412,14 @@ export function createAiSdkPort(opts: AiSdkPortOptions): ModelPort {
         return;
       }
       try {
+        if (req.signal?.aborted) { yield { type: 'stop', reason: 'aborted' }; return; }
         const codec = toolNameCodec(req);
+        if (resolved.provider === 'openrouter') {
+          yield { type: 'provider_request', request: { provider: 'openrouter', modelId: resolved.modelId } };
+          if (req.signal?.aborted) { yield { type: 'stop', reason: 'aborted' }; return; }
+        }
         const result = await resolved.model.doStream(buildAiSdkCallOptions(req, resolved, codec));
-        yield* readAiSdkStream(result.stream, resolved, codec.decode);
+        yield* readAiSdkStream(result.stream, resolved, codec.decode, req.signal);
       } catch (error) {
         if (req.signal?.aborted) {
           yield { type: 'stop', reason: 'aborted' };

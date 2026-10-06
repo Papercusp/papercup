@@ -811,7 +811,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       expect.objectContaining({
         slug: 'reconnect-plan',
         detail: 'summary',
-        includeDraft: false,
+        includeDraft: true,
         payloadTier: 'full',
       }),
     );
@@ -927,7 +927,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
         slug: 'reconnect-plan',
         evaluatorBuild: RERUN_RECIPE.evaluatorBuild,
         detail: 'summary',
-        includeDraft: false,
+        includeDraft: true,
         payloadTier: 'full',
       }),
     );

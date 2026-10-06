@@ -39,9 +39,20 @@ Each step's output feeds the next one. All commands run from the repo root.
      `vm/embed-trace-fetch.cjs` and `vm/host-sampler.sh`.
      `python3 vm/sidecar-idle-analyze.py <run.log>` turns its log into PASS / FAIL / NOT_OBSERVED
      verdicts and the `--p532-saved-gib` figure for the cost model.
+   - `vm/tenant-density.sh` is the multi-tenant packing run (P-011, D-045): tenants are added in
+     STEPS on one VM, each step is censused, and the run stops once host MemAvailable falls below
+     MIN_AVAIL_GIB. `python3 vm/tenant-density-analyze.py <evidence dir> [--run-log <run.log>]
+     [--group NAME=t1,t2]` turns its pulled-back evidence into per-tenant memory and CPU, the mean
+     over settled tenants, the top process classes and host MemAvailable per step.
    - `vm/p2p-join-soak.sh` is the p2p join soak (S6, P-525): a cold GCP joiner against the tower.
+     With a short OBSERVE_SEC it is also the one-shot cold join of field test S1 (P-522). It needs
+     JOIN_BODY, a local file `{"harnessLinkUrl": "<the pot's join link>", "slug": "<pot>"}`. The
+     link grants a join, so the file stays out of the repo.
      `python3 vm/backfill-split.py <fp.jsonl> <serve.log> [from_epoch]` splits its footprint
      samples by whether an embed-backfill drain overlapped them.
+   - `vm/build-test-deb.sh` builds a test-artifact .deb from the working tree and checks that it
+     carries the fixes named in a MARKERS_FILE. `vm/deb-soak-chain.sh` waits for that build,
+     uploads the .deb, takes the rig lock and runs `vm/p2p-join-soak.sh` on it.
    - `vm/gce-resize.sh` times a GCE machine-type resize (D-053).
 4. **Build the capacity table** from the pulled-back ramp results:
    `npx tsx scripts/agent-capacity/capacity-table.ts <root> [--disk-gb 120] [--json]`
@@ -72,11 +83,12 @@ deadline, a worst-case-cost admission check, and a teardown that only counts as 
 re-read of the project shows no instance and no orphaned disk. Its header explains each rail. Check
 `gcloud compute instances list --project=pc-agent-capacity-0930` after every run.
 
-## Not in the repo yet
+## Still made by hand
 
-These runs produced plan decisions but their drivers still live only in the gitignored
-`.papercusp/scratch/`, so nobody else can re-run them. Moving them here, with tests, is tracked as
-WI-10006497.
+Every driver behind this plan's decisions is now in `vm/` (WI-10006497). One input is still made
+by hand: the JOIN_BODY link for `vm/p2p-join-soak.sh` was minted by
+`.papercusp/scratch/s1join/mklink.mts`, which hard-codes hello-world-3-pot's identity.
 
-- P-011 multi-tenant Server packing (D-045): `run-p011-ab.sh`, `run-p011-replicate.sh`, `p011/`.
-- p2p field test S1, the one-shot cold join (P-522): `s1join/`.
+`.papercusp/scratch/run-p011-ab.sh` and `run-p011-replicate.sh` are NOT capacity drivers. They are
+P-011 of a different plan (deterministic-tool-definition-delivery-2026-09-21, the agent-comprehension
+A/B), so they do not belong here.

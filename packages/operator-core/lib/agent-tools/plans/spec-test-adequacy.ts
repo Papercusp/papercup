@@ -1792,6 +1792,14 @@ export function evaluateSpecTestAdequacy(input: {
                   );
                 }),
               ),
+              // EI-25235611084337188: name the repair. The attestation must sit on a binding OF the
+              // required layer; a pathReachable row on another layer (e.g. an integration mutation
+              // row) never satisfies it, and testing:run / re-measure bindings carry no attestation.
+              suggestion:
+                `Attest reachability on a binding OF the required layer (${unresolved.join(', ')}); a pathReachable ` +
+                'row on another layer does not count. Rebind the same run with plans:bind-spec-evidence ' +
+                '{ fromTestRun: <testRunId>, details: { adequacy: { testLayer, pathReachable: true } } } and ' +
+                'retract the unattested twin.',
             }
           : {
               rating: 'pass',

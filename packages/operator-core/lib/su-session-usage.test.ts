@@ -10,6 +10,7 @@ import {
   claudeResultUsage,
   claudeTodoPlan,
   codexPlan,
+  codexAppServerTokenUsage,
   codexPlanCall,
   codexTokenUsage,
   ompMessageUsage,
@@ -92,6 +93,22 @@ describe('Codex usage', () => {
   it('reports nothing before the first model call (info is null) or for another event', () => {
     expect(codexTokenUsage({ type: 'token_count', info: null })).toBeNull();
     expect(codexTokenUsage({ type: 'task_started', info: { model_context_window: 1 } })).toBeNull();
+  });
+
+  // WI-10006653: the frame a live app-server turn sends. Shape captured from
+  // codex-cli 0.160.1 on 2026-10-06 (numbers from that capture).
+  it('reads the same context figure from a live app-server thread/tokenUsage/updated', () => {
+    const breakdown = { totalTokens: 22_433, inputTokens: 22_428, cachedInputTokens: 12_288, cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0 };
+    expect(codexAppServerTokenUsage({
+      threadId: 't', turnId: 'u',
+      tokenUsage: { total: { ...breakdown, totalTokens: 90_000 }, last: breakdown, modelContextWindow: 258_400 },
+    })).toEqual({ contextTokens: 22_433, contextWindow: 258_400, inputTokens: 22_428, outputTokens: 5 });
+  });
+
+  it('reports nothing for an app-server frame without measured usage', () => {
+    expect(codexAppServerTokenUsage({ threadId: 't' })).toBeNull();
+    expect(codexAppServerTokenUsage({ tokenUsage: { last: {}, total: {}, modelContextWindow: null } })).toBeNull();
+    expect(codexAppServerTokenUsage(null)).toBeNull();
   });
 
   it('parses an update_plan function call whose arguments are a JSON string', () => {

@@ -250,6 +250,11 @@ beforeEach(async () => {
       bound,
     ),
     bindingRow({ id: 3, specId: 'SPEC-BLOCKED', evidenceKind: 'coverage-census', evidenceRef: 'surface:blocked', outcome: 'passed' }, bound),
+    // Current falsifiability requires a successful test binding to the same immutable clause
+    // revision and canonical test file as its counterexample.
+    bindingRow({ id: 4, specId: 'SPEC-PASS', evidenceKind: 'test', evidenceRef: 'test:pass', outcome: 'passed' }, bound),
+    // `fixtureCalibrated` only counts when fixture-scoped evidence is bound to this clause.
+    bindingRow({ id: 5, specId: 'SPEC-PASS', evidenceKind: 'fixture', evidenceRef: 'fixture:pass', outcome: 'passed' }, bound),
   ];
   listClauses.mockImplementation(async (input: { specIds?: string[] }) => {
     const all = [clause('SPEC-PASS'), clause('SPEC-BLOCKED')] as Array<{ specId: string }>;
@@ -306,6 +311,35 @@ describe('plans:certify-spec-clauses', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(dispatchTool.mock.calls[0]![1]).toMatchObject({ specIds: ['SPEC-PASS'], replaySnapshot: true });
+  });
+
+  it('keeps a draft clause in the exact replay when includeDraft:true was used for grading', async () => {
+    const specId = 'SPEC-DRAFT';
+    h.rows = [
+      ...h.rows,
+      bindingRow({ id: 6, specId, evidenceKind: 'coverage-census', evidenceRef: 'surface:draft', outcome: 'passed' }, bound),
+      bindingRow(
+        { id: 7, specId, evidenceKind: 'counterexample', evidenceRef: 'counterexample:draft', outcome: 'pass', targeted: specId.toLowerCase() },
+        bound,
+      ),
+      bindingRow({ id: 8, specId, evidenceKind: 'test', evidenceRef: 'test:draft', outcome: 'passed' }, bound),
+      bindingRow({ id: 9, specId, evidenceKind: 'fixture', evidenceRef: 'fixture:draft', outcome: 'passed' }, bound),
+    ];
+    listClauses.mockImplementation(async (input: { specIds?: string[] }) => {
+      const all = [clause(specId, 'draft')] as Array<{ specId: string }>;
+      return (input.specIds ? all.filter((c) => input.specIds!.includes(c.specId)) : all) as never;
+    });
+
+    const preview = await certify({ specIds: [specId], includeDraft: true, dryRun: true });
+    expect(preview).toMatchObject({ ok: true, dryRun: true, clauses: [{ card: { status: 'would-file' } }] });
+    expect(dispatchTool).not.toHaveBeenCalled();
+
+    const result = await certify({ specIds: [specId], includeDraft: true });
+
+    expect(result).toMatchObject({ ok: true, counts: { passing: 1, filed: 1, refused: 0 } });
+    expect(dispatchTool).toHaveBeenCalledTimes(1);
+    expect(dispatchTool.mock.calls[0]![1]).toMatchObject({ specIds: [specId], includeDraft: true, replaySnapshot: true });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
   it('EI-24340389297788793: the refusal remedy is accepted and reaches scorecards:emit', async () => {

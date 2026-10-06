@@ -100,18 +100,19 @@ MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
 
-# Keep each completed phase's next phase bounded by the existing 15-minute
-# startup budget. Extending only at milestones avoids both a whole-workflow
-# timeout during real progress and a heartbeat that hides a stalled phase.
+# Milestones are diagnostics only. Each preparation command has its own finite
+# GNU timeout, which survives systemd manager reloads without deadline extensions.
 staging_sync_checkpoint() {
   [[ -n "${NOTIFY_SOCKET:-}" ]] || return 0
-  systemd-notify --status="staging-sync: $1" EXTEND_TIMEOUT_USEC=900000000
+  systemd-notify --status="staging-sync: $1"
 }
 
 finish_staging_sync() {
   local status=$?
   trap - EXIT
   cleanup_staging_candidate || true
+  # A timer invocation may already have started under the previous notify unit
+  # when its drop-in is reloaded. Complete that inherited contract as well.
   if [[ "$status" -eq 0 && -n "${NOTIFY_SOCKET:-}" ]]; then
     systemd-notify --ready --status="staging-sync complete" || status=$?
   fi
@@ -275,38 +276,62 @@ cleanup_staging_candidate() {
 }
 
 prepare_staging_candidate() {
-  local target_sha="$1" setup_line=""
+  local target_sha="$1" phase
   local snapshot_script="$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh"
   local setup_script="$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"
   create_staging_candidate "$target_sha" || return 1
   log "preparing isolated staging candidate $STAGING_CANDIDATE_ROOT at ${target_sha:0:10}"
-  if ! PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
-    bash "$snapshot_script" "$setup_script" \
-      --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto --build-spa |
-    while IFS= read -r setup_line || [[ -n "$setup_line" ]]; do
-      printf '%s\n' "$setup_line"
-      # Reuse the materializer's existing semantic boundaries. Preparation
-      # includes source, dependencies and a SPA build: waiting for its final
-      # exit leaves all three under one deadline. Ordinary build chatter must
-      # never renew a deadline or conceal a stalled phase.
-      case "$setup_line" in
-        '[setup-release] submodule recursion:'*)
-          staging_sync_checkpoint "candidate source prepared" || exit "$?"
-          ;;
-        '[setup-release] building operator-vite SPA dist at the deployed sha'*)
-          staging_sync_checkpoint "candidate dependencies and runtime assets prepared" || exit "$?"
-          ;;
-      esac
-    done; then
-    log "FATAL: candidate checkout preparation failed; the published staging alias is unchanged"
-    return 1
-  fi
+  for phase in --source-only --prepare-existing --spa-only; do
+    if ! PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
+      timeout --kill-after=10s 900s bash "$snapshot_script" "$setup_script" \
+        --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto "$phase"; then
+      log "FATAL: candidate checkout preparation failed in $phase; the published staging alias is unchanged"
+      return 1
+    fi
+    staging_sync_checkpoint "candidate phase $phase complete" || return "$?"
+  done
   if [[ -f "$STAGING_ROOT/apps/operator/.env.local" ]]; then
     if ! cp -p -- "$STAGING_ROOT/apps/operator/.env.local" "$STAGING_CANDIDATE_ROOT/apps/operator/.env.local"; then
       log "FATAL: could not copy the staging runtime environment into the candidate"
       return 1
     fi
   fi
+}
+
+prebuild_staging_host_bundle() {
+  local candidate_root="$1" bundle_script="$2" bundle_status build_log found=0
+  local log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
+  local attempt="${INVOCATION_ID:-$$}" failure_log
+  if PAPERCUSP_INTEGRATION_ROOT="$candidate_root" PAPERCUSP_BUNDLE_REUSE_FRESH=1 \
+    timeout --kill-after=10s 900s bash "$bundle_script"; then
+    return 0
+  else
+    bundle_status=$?
+  fi
+  # Reuse the durable checkpoint-log directory. The EXIT trap removes a failed
+  # generation, and journal output alone cannot retain arbitrary raw build bytes.
+  [[ "$attempt" =~ ^[a-zA-Z0-9_-]+$ ]] || attempt="$$"
+  failure_log="$log_root/staging-bundle-$attempt.log"
+  if ! mkdir -p -- "$log_root"; then
+    log "FATAL: bundle failed (exit $bundle_status); cannot create failure log directory $log_root"
+    return "$bundle_status"
+  fi
+  if ! {
+    printf 'bundle exit status: %s\ncandidate: %s\n' "$bundle_status" "$candidate_root"
+    for build_log in "$candidate_root/apps/operator/dist-host/"*.build-error.log; do
+      [[ -f "$build_log" ]] || continue
+      found=1
+      printf '\n--- %s ---\n' "$build_log"
+      cat -- "$build_log" || printf '\ncould not read %s\n' "$build_log"
+    done
+    if [[ "$found" -eq 0 ]]; then printf 'no build-error log was produced\n'; fi
+  } > "$failure_log"; then
+    log "FATAL: bundle failed (exit $bundle_status); could not retain failure logs at $failure_log"
+    return "$bundle_status"
+  fi
+  log "FATAL: bundle failed (exit $bundle_status); raw build evidence retained at $failure_log"
+  tail -n 80 -- "$failure_log" >&2 || true
+  return "$bundle_status"
 }
 
 mark_staging_candidate_ready() {
@@ -938,7 +963,7 @@ if [ "$restart_required" = 1 ]; then
     exit 1
   fi
   log "prebuilding proof-bound host bundle before publishing or stopping $UNIT"
-  PAPERCUSP_INTEGRATION_ROOT="$SYNC_ROOT" PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$bundle_script"
+  prebuild_staging_host_bundle "$SYNC_ROOT" "$bundle_script"
   staging_sync_checkpoint "host bundle prebuilt"
   prepare_staging_schema "$SYNC_ROOT"
   staging_sync_checkpoint "target schema prepared"

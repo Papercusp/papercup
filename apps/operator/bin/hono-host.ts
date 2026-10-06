@@ -126,7 +126,7 @@ import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
-import { runAdmissionPrecheckWorkerFromEnvironment } from '@papercusp/operator-core/lib/release/admission-fix-precheck-managed';
+import { runAdmissionPrecheckWorkerMain } from '@papercusp/operator-core/lib/release/admission-fix-precheck-managed';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
 import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';
@@ -196,13 +196,7 @@ if (sidecarMode === 'resource-health') {
   });
 }
 if (sidecarMode === 'repair-precheck') {
-  void runAdmissionPrecheckWorkerFromEnvironment().then(
-    (code) => { process.exitCode = code; },
-    (error) => {
-      console.error('[release:repair-queue] pre-check worker startup failed', error);
-      process.exitCode = 1;
-    },
-  );
+  void runAdmissionPrecheckWorkerMain();
 }
 // WI-10002709: this process (primary AND every cluster worker — each re-evaluates
 // this entry) is a request host whose RSS makes a local fork cost ~240 ms of dead

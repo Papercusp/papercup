@@ -297,3 +297,21 @@ export async function runAdmissionPrecheckWorkerFromEnvironment(
     return 1;
   }
 }
+
+/** Finite entry role: finish queue settlement and diagnostics before terminating the worker. */
+export async function runAdmissionPrecheckWorkerMain(): Promise<never> {
+  let code: number;
+  try {
+    code = await runAdmissionPrecheckWorkerFromEnvironment();
+  } catch (error) {
+    console.error('[release:repair-queue] pre-check worker startup failed', error);
+    code = 1;
+  }
+  // Host imports and database clients can retain referenced handles after the finite task
+  // finishes. exitCode alone cannot terminate this role. Like restricted-hold-preflight-cli,
+  // explicitly exit after the pipe writes flush; include stderr so startup errors survive.
+  await Promise.all([process.stdout, process.stderr].map((stream) =>
+    new Promise<void>((resolveFlush) => { stream.write('', () => resolveFlush()); }),
+  ));
+  process.exit(code);
+}

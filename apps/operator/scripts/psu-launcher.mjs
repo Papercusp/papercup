@@ -8279,14 +8279,20 @@ export async function fetchWithResilience(
 
 /** Turn a structured operator/proxy failure into an actionable launcher error.
  * Keep the stable error code, but retain the server's detail and retry hint so
- * a final exhausted overload is distinguishable from a programming failure. */
-export function formatApiFailureMessage(json, status, path) {
+ * a final exhausted overload is distinguishable from a programming failure.
+ * Keep the request hop even when the server supplies a message: a generic
+ * route deadline otherwise cannot identify which bootstrap request failed.
+ * Query strings and fragments may carry credentials and never enter the log. */
+export function formatApiFailureMessage(json, status, path, method = "GET") {
   const err = json?.error;
+  const route = String(path ?? "").split(/[?#]/, 1)[0];
+  const request = `${String(method || "GET").toUpperCase()} ${route} (HTTP ${status})`;
   const msg =
     typeof err === "string"
       ? err
       : err?.message ||
-        (err ? JSON.stringify(err) : `HTTP ${status} from ${path}`);
+        (err ? JSON.stringify(err) : "");
+  const code = typeof err?.code === "string" ? err.code : "";
   const detail = typeof json?.detail === "string" ? json.detail.trim() : "";
   const rawRetryAfter = json?.retryAfterSec;
   const retryAfterSec =
@@ -8297,7 +8303,7 @@ export function formatApiFailureMessage(json, status, path) {
     Number.isFinite(retryAfterSec) && retryAfterSec >= 0
       ? `retry in ${retryAfterSec}s`
       : "";
-  return [msg, detail && detail !== msg ? detail : "", retryHint]
+  return [request, code && code !== msg ? code : "", msg, detail && detail !== msg ? detail : "", retryHint]
     .filter(Boolean)
     .join(" — ");
 }
@@ -8325,7 +8331,7 @@ async function api(path, opts = {}) {
     json = { status: "error", error: text.slice(0, 200) };
   }
   if (!res.ok || json.status === "error") {
-    const message = formatApiFailureMessage(json, res.status, path);
+    const message = formatApiFailureMessage(json, res.status, path, fetchOpts.method);
     // WI-10006057: the proxy's refusal names a port; say which unit is down and why.
     const failure = new Error(
       json?.error === "mcp_proxy_upstream_unavailable"

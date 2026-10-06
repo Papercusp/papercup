@@ -90,6 +90,8 @@ interface Fakes {
     capacity: Array<{ agent: string; workspaceId: string }>;
     /** Task ids the dispatcher asked to stop after a failed rank. */
     stopped: Array<string | null | undefined>;
+    /** The never-ran marker passed with each stop, index-aligned to `stopped` (WI-10006690). */
+    stoppedNeverRan: Array<{ answeringOwnerId: string } | null>;
     /** Launch logs the dispatcher read a failure reason from. */
     logReads: Array<string | null | undefined>;
     /** Every walk the dispatcher asked to persist (WI-10003197). */
@@ -111,7 +113,9 @@ function makeFakes(
     sourceRecords?: PersistedDispatchRecord[];
   } = {},
 ): Fakes {
-  const calls: Fakes['calls'] = { spawn: [], verify: [], capacity: [], stopped: [], logReads: [], recorded: [] };
+  const calls: Fakes['calls'] = {
+    spawn: [], verify: [], capacity: [], stopped: [], stoppedNeverRan: [], logReads: [], recorded: [],
+  };
   let mintSeq = 0;
   let spawnSeq = 0;
   const statuses = opts.spawnStatuses ?? [];
@@ -181,8 +185,9 @@ function makeFakes(
       return { available: true, detail: `${agent} fixture headroom` };
     },
     mintOwnerId: () => `su-answer-${++mintSeq}`,
-    stopFailedLaunch: async (taskId: string | null | undefined) => {
+    stopFailedLaunch: async (taskId: string | null | undefined, neverRan?: { answeringOwnerId: string }) => {
       calls.stopped.push(taskId);
+      calls.stoppedNeverRan.push(neverRan ?? null);
       return `stopped task ${taskId}`;
     },
     readLaunchLogReason: async (logPath: string | null | undefined) => {
@@ -615,6 +620,9 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(calls.stopped).toEqual(['task-1']);
     expect(r.attempts[0]!.detail).toMatch(/stopped task task-1/);
     expect(r).toMatchObject({ dispatched: true });
+    // WI-10006690: the kickoff never landed, so the rank never ran a turn and its
+    // freshly minted answering identity's row is closed with the stop.
+    expect(calls.stoppedNeverRan).toEqual([{ answeringOwnerId: 'su-answer-1' }]);
   });
 
   it('never stops the session of a DISPATCHED rank (CONTROL)', async () => {
@@ -826,6 +834,9 @@ describe('dispatchConsultResponder — the walk', () => {
       });
       expect(r.attempts[0]!.detail).toContain("'EndConversation'");
       expect(calls.stopped).toEqual(['task-1']);
+      // CONTROL (WI-10006690): this rank booted and replied, so its launcher reports
+      // its own end. The stop must not also mark its row never-ran.
+      expect(calls.stoppedNeverRan).toEqual([null]);
       // The conversion leg is not a Claude session, so it is not re-checked.
       expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
     });
@@ -1224,6 +1235,8 @@ describe('dispatchConsultResponder — every walk is persisted on its consult (W
     expect(r.attempts[0]!.detail).toContain('exited with status 2');
     expect(r.attempts[0]!.detail).toContain(`launcher said: ${reason}`);
     expect(calls.stopped).toEqual(['task-1']);
+    // WI-10006690: the host never registered, so the row is closed as never-ran.
+    expect(calls.stoppedNeverRan).toEqual([{ answeringOwnerId: 'su-answer-1' }]);
     expect(calls.logReads).toEqual(['/logs/x-1.log']);
     expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
   });

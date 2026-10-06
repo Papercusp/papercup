@@ -79,6 +79,19 @@ export interface ModelProviderResponse {
   reportedCostUsd?: number;
 }
 
+/** Dispatch intent and early response identity for one request. This is an
+ * obligation observation, including when no generation id arrives; it does
+ * not establish provider acceptance, zero liability, completion or a bill.
+ * Keep every valid conflicting identity for reconciliation, mark uncertainty,
+ * and never include raw provider metadata, credentials or prompt content. */
+export interface ModelProviderRequest {
+  provider: string;
+  /** Exact model selected for this route. */
+  modelId: string;
+  response?: Pick<ModelProviderResponse, 'id' | 'modelId'>;
+  identityUncertain?: boolean;
+}
+
 export type ModelStopReason =
   | 'end_turn'
   | 'tool_use'
@@ -92,6 +105,7 @@ export type ModelStopReason =
  *  never sees half-parsed arguments. Exactly one terminal event ends a healthy
  *  stream (`stop`); `error` is terminal too. */
 export type ModelStreamEvent =
+  | { type: 'provider_request'; request: ModelProviderRequest; servedAccount?: string }
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; input: unknown }

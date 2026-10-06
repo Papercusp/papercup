@@ -223,6 +223,42 @@ export function runGate(dir: string, { env, auditScript, allowlistPath }?: {
     allowlistPath?: string;
 }): Promise<GateVerdict>;
 /**
+ * The public cut's own typecheck — WI-10006584. Public CI on Papercusp/papercusp-app runs
+ * `npm ci` then `npm run lint:tsc` on every pushed commit, and the cut can fail it while the
+ * internal tree passes: the cut drops files (tests, closed-layer packages) whose ambient type
+ * augmentations other files relied on (5eb41d7e went red that way). Nothing before the push
+ * saw it, and an append-only push cannot be taken back. This leg runs the CUT's own lint
+ * script over a COPY of the export (the export itself is what gets committed, so nothing may
+ * be added to it), with the internal tree's installed dependencies standing in for `npm ci`.
+ * Fail-closed like the gate: a type regression is a finding (exit 1); a run that cannot
+ * complete or reports no verdict is cannot-check (exit 2).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, modulesRoot?: string, script?: string, timeoutMs?: number }} [opts]
+ * @returns {Promise<GateResult>}
+ */
+export function runCutTypecheck(dir: string, { env, modulesRoot, script, timeoutMs }?: {
+    env?: NodeJS.ProcessEnv;
+    modulesRoot?: string;
+    script?: string;
+    timeoutMs?: number;
+}): Promise<GateResult>;
+/**
+ * The public target's gate: the detector gate, then the cut typecheck. The typecheck takes
+ * minutes, so it runs only when the detectors are clean (a refusal is a refusal either way).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, gate?: Gate, typecheck?: (dir: string, opts: { env?: NodeJS.ProcessEnv }) => Promise<GateResult> }} [opts]
+ * @returns {Promise<GateVerdict>}
+ */
+export function runPublicGate(dir: string, { env, gate, typecheck }?: {
+    env?: NodeJS.ProcessEnv;
+    gate?: Gate;
+    typecheck?: (dir: string, opts: {
+        env?: NodeJS.ProcessEnv;
+    }) => Promise<GateResult>;
+}): Promise<GateVerdict>;
+/** The gate a target's push uses unless the caller injects one. @param {Target} target @returns {Gate} */
+export function defaultGateFor(target: Target): Gate;
+/**
  * Reviewed false positives of the ADDITIONAL detectors (gitleaks, trufflehog) —
  * never of the release audit, whose BENIGN_ERE stays the one vendor-key rule.
  * An entry matches one exact (detector, rule, path, secret-hash): a changed or new

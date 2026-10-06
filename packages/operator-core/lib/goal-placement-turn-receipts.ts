@@ -386,8 +386,8 @@ export async function boundedRecordGoalPlacementTurnEndOutcome(
   }
 }
 
-/** Where a staged turn-start goal-placement delivery stopped short of a receipt. */
-export type GoalPlacementDeliveryOutcomeStage = 'confirm' | 'late-upgrade';
+/** Where a turn-start goal-placement delivery stopped short of a receipt. */
+export type GoalPlacementDeliveryOutcomeStage = 'stage' | 'confirm' | 'late-upgrade';
 
 function candidateFields(candidate: unknown): {
   token: string | null; nativeSessionId: string | null; sourceKind: string | null;
@@ -405,10 +405,9 @@ function candidateFields(candidate: unknown): {
   };
 }
 
-/** Persist why a staged turn-start delivery produced no goalPlacementTurn receipt
- * (WI-10005636). Before this, both drop sites discarded the reason, so a missing
- * receipt could not be told apart from an absent opportunity. The row is a
- * diagnostic under its own detail key and is never read as eligibility evidence. */
+/** Persist why an eligible turn-start delivery produced no goalPlacementTurn
+ * receipt (WI-10005636), including cursor-stage rejection. The row is diagnostic
+ * under its own detail key and is never read as eligibility evidence. */
 export async function recordGoalPlacementDeliveryOutcome(input: {
   ownerId: string; workspaceId: string; stage: GoalPlacementDeliveryOutcomeStage;
   reason: string; candidate: unknown;

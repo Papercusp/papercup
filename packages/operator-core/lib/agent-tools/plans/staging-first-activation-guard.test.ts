@@ -476,6 +476,46 @@ describe('staging-first activation guard', () => {
     ]);
   });
 
+  // EI-25238370394944654: a `Related: P-NNN` line pulls another decision's FULL text into
+  // the item's check, so a refusal must name the decision and clause that tripped it.
+  // Without that, the only way to find the culprit was leave-one-out over plan.decisions.
+  it('names the linked decision and clause that tripped the gate', () => {
+    const parsed = plan(
+      ['- **P-001** `todo` Implement the interactive client on staging.'],
+      [
+        '### D-001 — Client shape\nDate: 2026-10-06\nThe client renders the queue as a flat list.\nRelated: P-001',
+        '### D-002 — Cohort note\nDate: 2026-10-06\nThe stale cohort regrows until main promotes.\nRelated: P-001',
+      ].join('\n\n'),
+    );
+    const [problem, ...rest] = stagingFirstActivationProblems(parsed);
+    expect(rest).toEqual([]);
+    expect(problem!.triggers).toEqual([
+      { source: 'decision D-002', clause: 'The stale cohort regrows until main promotes.' },
+    ]);
+    expect(problem!.detail).toContain('Tripped by: [decision D-002] "The stale cohort regrows until main promotes."');
+    expect(problem!.detail).not.toContain('[decision D-001]');
+  });
+
+  it("attributes a gate in the item's own text to the item, and caps the quoted clauses in detail", () => {
+    const decisions = ['D-001', 'D-002', 'D-003'].map(
+      (id) => `### ${id} — Gate ${id}\nDate: 2026-10-06\nWait for green main before P-001 can continue implementation.\nRelated: P-001`,
+    );
+    const parsed = plan(
+      ['- **P-001** `todo` Implement the client. Wait for main before continuing implementation.'],
+      decisions.join('\n\n'),
+    );
+    const [problem] = stagingFirstActivationProblems(parsed);
+    expect(problem!.triggers!.map((trigger) => trigger.source)).toEqual([
+      'P-001 item text',
+      'decision D-001',
+      'decision D-002',
+      'decision D-003',
+    ]);
+    expect(problem!.detail).toContain('[P-001 item text] "Wait for main before continuing implementation."');
+    expect(problem!.detail).toContain('(+1 more in `triggers`)');
+    expect(problem!.detail).not.toContain('[decision D-003]');
+  });
+
   it("does not attribute another item's Now gate to an incidentally mentioned item", () => {
     const parsed = plan(
       ['- **P-001** `todo` Implement the interactive client on staging.'],

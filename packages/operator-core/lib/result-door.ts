@@ -940,6 +940,10 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       content: contentMetadata(input.result.content),
       evidence,
       deferredWrites: input.opts.deferredScratchWrites,
+      // This spill path stores the JSON MCP content envelope directly as the
+      // scratch payload. Declare byte zero as its machine-readable body so the
+      // manifest has the same explicit framing contract as shaped text spills.
+      bodyOffsetInPayload: 0,
     });
   } catch (err) {
     spillError = err instanceof Error ? err.message : String(err);

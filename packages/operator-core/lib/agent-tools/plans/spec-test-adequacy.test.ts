@@ -17,6 +17,8 @@ import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './sp
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 
+const DEFAULT_MUTATION_TEST_CASE = 'the mutation is detected';
+
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
     planSlug: 'reconnect-plan',
@@ -45,7 +47,7 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
 }
 
 function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
-  return {
+  const row: SpecEvidenceForAdequacy = {
     workItemId: 'WI-101',
     planSlug: 'reconnect-plan',
     specId: 'SPEC-003-01',
@@ -98,6 +100,17 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     ...over,
   };
+  if (
+    row.evidenceKind === 'mutation' &&
+    row.testRunProvenance &&
+    !row.testRunProvenance.mutationFailedCaseTitle
+  ) {
+    row.testRunProvenance = {
+      ...row.testRunProvenance,
+      mutationFailedCaseTitle: DEFAULT_MUTATION_TEST_CASE,
+    };
+  }
+  return row;
 }
 
 function successfulTestBinding(filePath: string): SpecEvidenceForAdequacy {
@@ -113,6 +126,7 @@ function successfulTestBinding(filePath: string): SpecEvidenceForAdequacy {
         skipped: false,
         executed: true,
         outcome: 'passed',
+        testCases: [DEFAULT_MUTATION_TEST_CASE],
       },
     },
   });
@@ -948,6 +962,107 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
   });
 
+  it('requires the measured mutation failed case to exactly match a successful same-clause testCases entry', () => {
+    const testPath = 'packages/operator-core/lib/bash-substitution/pairs/code-search.test.ts';
+    const failedCaseTitle = 'code-search.callers-lookup';
+    const successfulTest = (testCases: string[]) => {
+      const row = successfulTestBinding(testPath);
+      row.details = {
+        ...row.details,
+        adequacy: {
+          ...(row.details.adequacy as Record<string, unknown>),
+          testCases,
+        },
+      };
+      return row;
+    };
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:callers-lookup:caught',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        mutationFailedCaseTitle: failedCaseTitle,
+      },
+      details: {
+        adequacy: {
+          falsifiable: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'caught',
+          targeted: RECONNECT_FALSIFIER_SCENARIO,
+        },
+      },
+    });
+    const input = {
+      clause: caseScopedClause(),
+      classRef: 'plan-class-feature-ship' as const,
+    };
+
+    const siblingCase = evaluateSpecTestAdequacy({
+      ...input,
+      evidence: [evidence(), successfulTest(['code-search.definition-lookup']), mutation],
+    });
+    expect(siblingCase.ratings.falsifiability.rating).toBe('unknown');
+    expect(siblingCase.ratings.falsifiability.evidence).toContain(failedCaseTitle);
+    expect(siblingCase.ratings.falsifiability.suggestion).toContain('adequacy.testCases');
+    expect(siblingCase.verdict).not.toBe('pass');
+
+    const exactCase = evaluateSpecTestAdequacy({
+      ...input,
+      evidence: [evidence(), successfulTest([failedCaseTitle]), mutation],
+    });
+    expect(exactCase.ratings.falsifiability.rating).toBe('pass');
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['whitespace-only', '   '],
+    ['surrounding whitespace', ' code-search.callers-lookup '],
+    ['control character', 'code-search.callers-lookup' + String.fromCharCode(10)],
+  ] as const)('fails closed when the measured mutation case title is %s', (_label, failedCaseTitle) => {
+    const testPath = 'packages/operator-core/lib/bash-substitution/pairs/code-search.test.ts';
+    const successfulTest = successfulTestBinding(testPath);
+    successfulTest.details = {
+      ...successfulTest.details,
+      adequacy: {
+        ...(successfulTest.details.adequacy as Record<string, unknown>),
+        testCases: failedCaseTitle === undefined ? ['code-search.callers-lookup'] : [failedCaseTitle],
+      },
+    };
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:callers-lookup:caught',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        ...(failedCaseTitle === undefined ? {} : { mutationFailedCaseTitle: failedCaseTitle }),
+      },
+      details: {
+        adequacy: {
+          falsifiable: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'caught',
+          targeted: RECONNECT_FALSIFIER_SCENARIO,
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: caseScopedClause(),
+      evidence: [evidence(), successfulTest, mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.verdict).not.toBe('pass');
+  });
+
   it('does not credit a sibling-case mutation failure to this clause', () => {
     const mutation = evidence({
       evidenceKind: 'mutation',
@@ -1398,6 +1513,53 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.freshness).toMatchObject({ rating: 'unknown' });
     expect(result.ratings.freshness.evidence).toContain('nothing is missing and nothing is stale');
     expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
+  });
+
+  it('keeps correct-layer unknown when only ANOTHER layer attests reachability, and names the repair (EI-25235611084337188)', () => {
+    const unitUnattested = evidence({
+      evidenceRef: 'surface:reconnect-unit',
+      details: {
+        adequacy: {
+          fixtureCalibrated: true,
+          falsifiable: true,
+          testLayer: 'unit',
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'passed',
+          targeted: true,
+          coverageRungs: { l3: true, l4: false },
+        },
+      },
+    });
+    // The default row is an INTEGRATION-layer binding with pathReachable:true.
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredTestLayers: ['unit'] }),
+      evidence: [unitUnattested, evidence()],
+      classRef: 'plan-class-feature-ship',
+    });
+    const layer = result.ratings['correct-layer'];
+    expect(layer.rating).toBe('unknown');
+    expect(layer.evidence).toContain('path reachability is unverified');
+    expect(layer.evidence).toContain(': unit.');
+    expect(layer.suggestion).toContain('OF the required layer (unit)');
+    expect(layer.suggestion).toContain('another layer does not count');
+    expect(layer.suggestion).toContain('fromTestRun');
+
+    // Positive control: the same unit row WITH the attestation passes.
+    const attested = evaluateSpecTestAdequacy({
+      clause: clause({ requiredTestLayers: ['unit'] }),
+      evidence: [
+        evidence({
+          evidenceRef: 'surface:reconnect-unit',
+          details: { adequacy: { ...unitUnattested.details!.adequacy!, pathReachable: true } },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(attested.ratings['correct-layer'].rating).toBe('pass');
+    expect(attested.ratings['correct-layer'].suggestion).toBeUndefined();
   });
 
   it('grades only the exact current cohort when historical stale or unknown bindings coexist', () => {

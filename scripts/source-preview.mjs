@@ -48,7 +48,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -919,6 +919,129 @@ export async function runGate(dir, { env = process.env, auditScript = AUDIT_SCRI
   }
 }
 
+/** True when `p` is `root` itself or lies beneath it. @param {string} root @param {string} p */
+function isInside(root, p) {
+  const rel = relative(root, p);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Mirror one node_modules directory of the INTERNAL tree into the same relative place in a
+ * copy of the cut, the way `npm ci` in public CI would leave it. A workspace link (its target
+ * lies outside the node_modules directory) is re-pointed to the same repository-relative path
+ * INSIDE the copy, so it resolves to the CUT's package — never to the internal tree's, which
+ * holds files the cut drops and peers' uncommitted edits. Every installed package is linked
+ * to the internal tree's copy. Scope directories (`@scope/`) are mirrored one level down.
+ * @param {{ modulesRoot: string, copy: string, src: string, nmRoot?: string }} a
+ */
+async function mirrorNodeModules({ modulesRoot, copy, src, nmRoot = src }) {
+  const dst = join(copy, relative(modulesRoot, src));
+  await fs.mkdir(dst, { recursive: true });
+  for (const ent of await fs.readdir(src, { withFileTypes: true })) {
+    const from = join(src, ent.name);
+    const to = join(dst, ent.name);
+    if (ent.name.startsWith('@') && ent.isDirectory()) {
+      await mirrorNodeModules({ modulesRoot, copy, src: from, nmRoot });
+      continue;
+    }
+    if (ent.isSymbolicLink()) {
+      const target = resolve(dirname(from), await fs.readlink(from));
+      if (!isInside(nmRoot, target)) {
+        // A workspace link. Inside the repository it maps into the copy (dangling when the
+        // cut drops that workspace, exactly as npm ci would have no such package).
+        await fs.symlink(isInside(modulesRoot, target) ? join(copy, relative(modulesRoot, target)) : target, to);
+        continue;
+      }
+    }
+    await fs.symlink(from, to);
+  }
+}
+
+/**
+ * Every node_modules directory of the internal tree whose parent directory exists in the
+ * copy, up to `maxDepth` levels below the root. Directories the cut does not contain are
+ * not descended into.
+ * @param {string} modulesRoot @param {string} copy @param {number} [maxDepth]
+ * @returns {Promise<string[]>}
+ */
+async function nodeModulesFor(modulesRoot, copy, maxDepth = 6) {
+  const found = [];
+  const walk = async (dir, depth) => {
+    let ents;
+    try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const ent of ents) {
+      if (!ent.isDirectory() || ent.name === '.git' || ent.name === '.papercusp') continue;
+      const p = join(dir, ent.name);
+      if (ent.name === 'node_modules') { found.push(p); continue; }
+      if (depth < maxDepth && existsSync(join(copy, relative(modulesRoot, p)))) await walk(p, depth + 1);
+    }
+  };
+  await walk(modulesRoot, 1);
+  return found;
+}
+
+/**
+ * The public cut's own typecheck — WI-10006584. Public CI on Papercusp/papercusp-app runs
+ * `npm ci` then `npm run lint:tsc` on every pushed commit, and the cut can fail it while the
+ * internal tree passes: the cut drops files (tests, closed-layer packages) whose ambient type
+ * augmentations other files relied on (5eb41d7e went red that way). Nothing before the push
+ * saw it, and an append-only push cannot be taken back. This leg runs the CUT's own lint
+ * script over a COPY of the export (the export itself is what gets committed, so nothing may
+ * be added to it), with the internal tree's installed dependencies standing in for `npm ci`.
+ * Fail-closed like the gate: a type regression is a finding (exit 1); a run that cannot
+ * complete or reports no verdict is cannot-check (exit 2).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, modulesRoot?: string, script?: string, timeoutMs?: number }} [opts]
+ * @returns {Promise<GateResult>}
+ */
+export async function runCutTypecheck(dir, { env = process.env, modulesRoot = ROOT, script = 'lint:tsc', timeoutMs = 45 * 60 * 1000 } = {}) {
+  const name = `cut typecheck (npm run ${script})`;
+  const result = (status, detail) => ({ name, ok: status === 'clean', status, detail: detail.trim().slice(-3000) });
+  if (!existsSync(dir)) throw new PreviewError(`typecheck: ${dir} does not exist`, 2);
+  let scripts = {};
+  try { scripts = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).scripts ?? {}; } catch (e) {
+    return result('cannot-check', `the cut has no readable package.json: ${e.message}`);
+  }
+  if (!scripts[script]) return result('cannot-check', `the cut's package.json has no "${script}" script — public CI would have nothing to run either`);
+  const copy = await mkdtemp(join(tmpdir(), 'source-preview-typecheck-'));
+  try {
+    run('cp', ['-a', `${dir}/.`, copy], { env });
+    for (const nm of await nodeModulesFor(modulesRoot, copy)) await mirrorNodeModules({ modulesRoot, copy, src: nm });
+    const r = spawnSync('npm', ['run', '--silent', script], { cwd: copy, encoding: 'utf8', env: { ...env, CI: 'true' }, maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs });
+    const out = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
+    if (r.error || r.signal) return result('cannot-check', `npm run ${script} did not complete (${r.error?.message ?? `signal ${r.signal}`})\n${out}`);
+    const marker = [...out.matchAll(/LINT_TSC_RESULT\b[^\n]*\bstatus=(\S+)/g)].at(-1);
+    if (!marker) return result('cannot-check', `npm run ${script} exited ${r.status} without a LINT_TSC_RESULT verdict line\n${out}`);
+    if (r.status === 0) return result('clean', marker[0]);
+    if (r.status === 1 && marker[1] === 'regressed') return result('finding', out);
+    return result('cannot-check', `npm run ${script} exited ${r.status} (status=${marker[1]})\n${out}`);
+  } finally {
+    await rm(copy, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The public target's gate: the detector gate, then the cut typecheck. The typecheck takes
+ * minutes, so it runs only when the detectors are clean (a refusal is a refusal either way).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, gate?: Gate, typecheck?: (dir: string, opts: { env?: NodeJS.ProcessEnv }) => Promise<GateResult> }} [opts]
+ * @returns {Promise<GateVerdict>}
+ */
+export async function runPublicGate(dir, { env = process.env, gate = runGate, typecheck = runCutTypecheck } = {}) {
+  const verdict = await gate(dir, { env });
+  if (!verdict.ok) return verdict;
+  const tc = await typecheck(dir, { env });
+  const results = [...verdict.results, tc];
+  const ok = results.every((r) => r.ok);
+  const exitCode = ok ? 0 : results.some((r) => r.status === 'finding') ? 1 : 2;
+  return { ...verdict, ok, exitCode, results };
+}
+
+/** The gate a target's push uses unless the caller injects one. @param {Target} target @returns {Gate} */
+export function defaultGateFor(target) {
+  return target.key === 'public' ? runPublicGate : runGate;
+}
+
 function relPath(dir, file) {
   const rel = relative(dir, file);
   return (rel.startsWith('..') ? file : rel).split(sep).join('/');
@@ -1072,11 +1195,13 @@ export function coAuthorTrailers(coAuthors = []) {
  */
 export async function pushSnapshot({
   repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, confirm = false,
-  env = process.env, selectScript, gate = runGate, log = () => {}, thirdPartyNotices, coAuthors = [],
+  env = process.env, selectScript, gate, log = () => {}, thirdPartyNotices, coAuthors = [],
 } = {}) {
   const t = resolveTarget(target);
   remote = remote ?? defaultRemote(t);
   assertRemoteMatchesTarget(t, remote);
+  // The public target also typechecks the cut the way its CI will (WI-10006584).
+  gate = gate ?? defaultGateFor(t);
   // Validate credit BEFORE any export work, so a malformed --co-author costs nothing.
   const trailers = coAuthorTrailers(coAuthors);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-push-'));
@@ -1171,7 +1296,7 @@ async function main(argv) {
   if (cmd === 'gate') {
     const dir = opts._[0];
     if (!dir) throw new PreviewError('usage: gate <dir>', 2);
-    const verdict = await runGate(dir);
+    const verdict = await defaultGateFor(target)(dir, {});
     printGate(verdict);
     // --json writes every finding (rule, path, line, sha256 — never the secret) for
     // reviewing new false positives into scripts/source-preview-allowlist.json.

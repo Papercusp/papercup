@@ -6,12 +6,11 @@
 // (libs/test-config/src/testcontainer-start-lock.ts): an atomic `mkdir` as the
 // lock primitive (POSIX mkdir either creates the dir or fails EEXIST — no
 // separate compare-and-swap needed), an owner.json recording {pid, host,
-// startedAt} for diagnostics, and a two-layer reclaim so a crashed holder can
-// never wedge every future caller forever:
-//   1. age-based staleness (`staleMs`) — a purely time-based fallback;
-//   2. positive dead-owner confirmation (same host + ESRCH on `kill(pid, 0)`) —
-//      reclaims immediately instead of waiting out the FULL stale window,
-//      closing the gap EI-7818 found in the pure age-based check alone.
+// startedAt} for diagnostics, and owner-aware reclamation:
+//   1. positive dead-owner confirmation (same host + ESRCH on `kill(pid, 0)`)
+//      reclaims immediately instead of waiting out the stale window;
+//   2. age-based staleness (`staleMs`) recovers only missing/malformed owner
+//      records. A live or remote owner retains its lease however old it gets.
 // Deliberately duplicated here rather than importing from `@papercusp/test-config`:
 // that package is TS or vitest-testcontainer-shaped, but the caller (a bare
 // `node scripts/npm-install-safe.mjs`, run from `preinstall`/CI/any agent's raw
@@ -124,56 +123,10 @@ async function readOwner(lockDir) {
   }
 }
 
-/**
- * True only when we can POSITIVELY confirm the lock's recorded owner process is
- * dead: same host (a cross-host pid means nothing) AND `process.kill(pid, 0)`
- * reports ESRCH (no such process). Any other outcome (different host,
- * unparseable owner.json, EPERM/alive, or any other error) returns false — this
- * must never produce a false "dead" that reclaims a live holder's lock.
- */
-async function isOwnerProcessConfirmedDead(lockDir) {
-  let raw;
-  try {
-    raw = await readFile(join(lockDir, "owner.json"), "utf8");
-  } catch {
-    return false;
-  }
-  let owner;
-  try {
-    owner = JSON.parse(raw);
-  } catch {
-    return false;
-  }
-  if (typeof owner.pid !== "number" || typeof owner.host !== "string")
-    return false;
-  if (owner.host !== hostname()) return false;
-  try {
-    process.kill(owner.pid, 0);
-    return false; // no throw ⇒ signal delivered ⇒ process exists (or we lack permission ⇒ assume alive)
-  } catch (error) {
-    return error && error.code === "ESRCH";
-  }
-}
-
 async function lockAgeMs(lockDir) {
   return stat(lockDir)
     .then((s) => Date.now() - s.mtimeMs)
     .catch(() => 0);
-}
-
-async function reclaimAbandonedLock(lockDir, staleMs) {
-  // Confirm a dead owner before falling back to the existing age-based safety
-  // valve. The positive pid check is what lets a crashed reader release its
-  // marker promptly; the age fallback also handles a process dying between
-  // mkdir and owner.json, where there is no pid to inspect.
-  if (
-    (await isOwnerProcessConfirmedDead(lockDir)) ||
-    (await lockAgeMs(lockDir)) > staleMs
-  ) {
-    await rm(lockDir, { recursive: true, force: true });
-    return true;
-  }
-  return false;
 }
 
 // EI-21915677034576963 — a FIFO fairness queue for `withFsMutex`'s WRITE-mode
@@ -251,45 +204,33 @@ function sanitizeIntent(intent) {
 }
 
 /**
- * Reclaim one abandoned WAIT TICKET. Deliberately NOT the same policy as
- * `reclaimAbandonedLock`: a ticket legitimately gets old while its owner is
- * genuinely still waiting — that is exactly the multi-hour starvation this queue
- * exists to prevent — so age alone must NEVER reclaim a ticket whose owner.json
- * parses and names a still-alive process; only a POSITIVELY confirmed-dead owner
- * does. Age is still the fallback ONLY for the narrow "mkdir landed, owner.json
- * never did" crash window: a ticket with no readable owner can never be confirmed
- * dead by pid, and left unreclaimed would otherwise wedge the whole queue behind a
- * phantom waiter forever.
+ * Reclaim an abandoned reader lease, writer lease or wait ticket using the same
+ * owner-aware policy. Long callbacks and queued tickets legitimately get old;
+ * only positive same-host dead-process evidence can reclaim a valid owner.
+ * Age remains a recovery fallback for missing/malformed records (including a
+ * crash between mkdir and owner publication). Remote owners and EPERM stay held.
  */
-async function reclaimAbandonedTicket(ticketDir, staleMs) {
-  let raw;
-  try {
-    raw = await readFile(join(ticketDir, "owner.json"), "utf8");
-  } catch {
-    if ((await lockAgeMs(ticketDir)) > staleMs)
-      await rm(ticketDir, { recursive: true, force: true });
-    return;
-  }
+async function reclaimAbandonedLock(lockDir, staleMs) {
   let owner;
   try {
-    owner = JSON.parse(raw);
+    owner = JSON.parse(await readFile(join(lockDir, "owner.json"), "utf8"));
   } catch {
-    if ((await lockAgeMs(ticketDir)) > staleMs)
-      await rm(ticketDir, { recursive: true, force: true });
-    return;
+    // The age fallback below handles unreadable and unparseable records.
   }
-  if (
-    typeof owner.pid !== "number" ||
-    typeof owner.host !== "string" ||
-    owner.host !== hostname()
-  )
-    return;
+  if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 ||
+      typeof owner.host !== "string" || owner.host.length === 0) {
+    if ((await lockAgeMs(lockDir)) <= staleMs) return false;
+    await rm(lockDir, { recursive: true, force: true });
+    return true;
+  }
+  if (owner.host !== hostname()) return false;
   try {
     process.kill(owner.pid, 0);
-    return; // no throw ⇒ signal delivered ⇒ owner is alive (or unconfirmable ⇒ assume alive)
+    return false;
   } catch (error) {
-    if (error && error.code === "ESRCH")
-      await rm(ticketDir, { recursive: true, force: true });
+    if (!error || error.code !== "ESRCH") return false;
+    await rm(lockDir, { recursive: true, force: true });
+    return true;
   }
 }
 
@@ -310,7 +251,7 @@ async function oldestTicketDir(ticketsDir, staleMs) {
     .filter((entry) => entry.isDirectory())
     .map((entry) => join(ticketsDir, entry.name));
   for (const ticketDir of ticketDirs)
-    await reclaimAbandonedTicket(ticketDir, staleMs);
+    await reclaimAbandonedLock(ticketDir, staleMs);
   let remaining;
   try {
     remaining = (await readdir(ticketsDir, { withFileTypes: true }))
@@ -521,17 +462,7 @@ export async function withFsMutex(name, fn, opts = {}) {
 
         const elapsed = Date.now() - startedAt;
         await announceWaiting(elapsed);
-        const lockAgeMs = await stat(lockDir)
-          .then((s) => Date.now() - s.mtimeMs)
-          .catch(() => 0);
-        if (lockAgeMs > staleMs) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-        if (await isOwnerProcessConfirmedDead(lockDir)) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
+        if (await reclaimAbandonedLock(lockDir, staleMs)) continue;
         if (elapsed > timeoutMs) {
           const currentOwner = await readOwner(lockDir);
           throw new Error(

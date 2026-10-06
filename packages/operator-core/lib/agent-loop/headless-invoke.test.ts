@@ -3,6 +3,38 @@ import type { ModelPort, ModelRequest } from './model-port';
 import { createOperatorOwnedLoopPort } from './headless-invoke';
 
 describe('createOperatorOwnedLoopPort', () => {
+  it.each(['provider-error', 'capture-error', 'capture-abort'])('awaits trusted capture in a headless %s turn and retains failure', async mode => {
+    const controller = new AbortController();
+    const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-headless' } };
+    let pulled = false;
+    let closed = false;
+    const modelPort: ModelPort = { async *stream() { try {
+      yield { type: 'provider_request', request, servedAccount: 'local-account' };
+      pulled = true;
+      yield { type: 'error', message: 'provider unavailable' };
+    } finally { closed = true; } } };
+    const capture = vi.fn(async () => {
+      if (mode !== 'provider-error') {
+        if (mode === 'capture-abort') controller.abort();
+        throw new Error('durable capture unavailable');
+      }
+    });
+    const flushTelemetry = vi.fn(async () => {});
+    const events: unknown[] = [];
+    const outcome = await createOperatorOwnedLoopPort({ modelPort, tools: [], flushTelemetry,
+      onProviderRequest: capture }).invoke({ role: 'worker', prompt: 'do work', model: 'openrouter:vendor/model',
+      runId: 'run-capture', featureId: null, chunkId: null, workspaceId: 'ws', harnessSlug: 'papercusp',
+      projectDir: '/repo', stateDir: '/repo/.papercusp', cwd: '/repo', signal: controller.signal,
+      emit: event => events.push(event) });
+    expect(capture).toHaveBeenCalledExactlyOnceWith({ stepIndex: 0, request, servedAccount: 'local-account' },
+      { runId: 'run-capture', workspaceId: 'ws', harnessSlug: 'papercusp' });
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain(mode === 'provider-error' ? 'provider unavailable' : 'durable capture unavailable');
+    expect(pulled).toBe(mode === 'provider-error');
+    expect(closed).toBe(true);
+    expect(events.some(event => (event as { type: string }).type === 'step_end')).toBe(false);
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
+  });
   it('runs one prompt through the owned ModelPort and emits bounded native events', async () => {
     const requests: ModelRequest[] = [];
     const modelPort: ModelPort = {
