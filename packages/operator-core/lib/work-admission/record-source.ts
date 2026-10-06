@@ -106,7 +106,7 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
     },
     async resolve(ctx, ref): Promise<ResolvedAdmissionSource | AdmissionRefusal> {
       const [row] = await ctx.db<RecordRow[]>`
-        SELECT feature_id, kind, title, summary, nature, payload
+        SELECT feature_id, item_kind AS kind, title, summary, nature, payload
           FROM harness_shared.work_items
          WHERE workspace_id = ${ctx.workspaceId} AND feature_id = ${ref.recordId}
          LIMIT 1`;
