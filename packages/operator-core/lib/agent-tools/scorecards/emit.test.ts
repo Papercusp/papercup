@@ -193,9 +193,12 @@ describe('scorecard abort completion receipts', () => {
 
     expect(committed).toBe(true);
     expect(result.ok).toBe(false);
+    // The caller's own signal aborted, so the code is 'aborted' (not a dispatcher timeout);
+    // the write still committed, so the receipt must survive (WI-10006764).
     expect(result.error).toMatchObject({
-      code: 'timeout',
+      code: 'aborted',
       meta: {
+        abortSource: 'parent-signal',
         abortCompletionReceipt: {
           status: 'recovery-incomplete',
           failures: ['missing-completion-receipt'],
