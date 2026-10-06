@@ -5,6 +5,11 @@
  *   npx tsx packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts prereg --out <dir> [--reps 3] [--seed 20261006]
  *   npx tsx packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts run --arm <id> --out <dir>
  *   npx tsx packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts score --out <dir>
+ *   npx tsx packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts adjudicate --out <dir>
+ *
+ * `adjudicate` runs the pooled-adjudication assistant (fair-comparison-adjudicate.ts) over
+ * `pending.json`, merges its verdicts into `verdicts.json` without rewriting a recorded one, and
+ * lists what it left for hand review in `adjudication-undecided.json`. Re-run `score` after it.
  *
  * `prereg` freezes corpus, seed keys, arms (version + intents), reps and bars
  * into `<dir>/prereg.json` BEFORE any arm runs; `run` refuses anything that
@@ -23,13 +28,13 @@ import { homedir, loadavg } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import type { ArmDeps } from './engine-comparison-arms';
-import { preregister, type ArmCapabilities, type Preregistration } from './fair-comparison';
+import { preregister, type AdjudicationVerdict, type ArmCapabilities, type Preregistration } from './fair-comparison';
 import { admitArm } from './fair-comparison-admission';
 import { createRgFairArm, type FairArm } from './fair-comparison-arms';
 import { FAIR_CORPUS, FAIR_CORPUS_COMMIT, initialKeys } from './fair-comparison-corpus';
 import { createCbmFairArm, createCgcArm, createCodegraphArm, createGitnexusFairArm, createTraceMcpArm } from './fair-comparison-engines';
 import { createLspQueryArm, createNoThirdPartyArm, loadVendoredTypescript } from './fair-comparison-first-party';
-import { runArm, scoreRuns, type ArmRun } from './fair-comparison-run';
+import { runArm, scoreRuns, type ArmRun, type PendingSites } from './fair-comparison-run';
 
 const run = promisify(execFile);
 const BENCH = process.env.P017_BENCH ?? join(homedir(), '.papercusp', 'bench', 'fair-comparison-2026-10');
@@ -178,8 +183,23 @@ async function main(): Promise<void> {
     await writeFile(join(out, 'pending.json'), JSON.stringify(scored.pending, null, 2));
     await writeFile(join(out, 'report.json'), JSON.stringify({ prereg: prereg.hash, aggregates: scored.aggregates, decision: scored.decision, keys: scored.keys }, null, 2));
     console.log(`score runs=${runs.length} pendingSites=${scored.pending.reduce((n, p) => n + p.sites.length, 0)} decision=${scored.decision.kind}`);
+  } else if (cmd === 'adjudicate') {
+    const { autoAdjudicatePending, createAdjudicator } = await import('./fair-comparison-adjudicate');
+    const { openTsTree } = await import('./fair-comparison-first-party');
+    const pending = await readJson<PendingSites[]>(join(out, 'pending.json'));
+    const existing = existsSync(join(out, 'verdicts.json')) ? await readJson<Record<string, AdjudicationVerdict[]>>(join(out, 'verdicts.json')) : {};
+    // The no-third-party arm's tree: the frozen snapshot plus the workspace node_modules links,
+    // so cross-package imports resolve the way they do in a real checkout.
+    await prepareTree('no-third-party');
+    const t0 = Date.now();
+    const tree = openTsTree(loadVendoredTypescript(VENDOR_LSP), treeOf('no-third-party'));
+    const result = autoAdjudicatePending(createAdjudicator(tree), cases, initialKeys(FAIR_CORPUS), pending, existing);
+    await writeFile(join(out, 'verdicts.json'), JSON.stringify(result.verdicts, null, 2));
+    await writeFile(join(out, 'adjudication-undecided.json'), JSON.stringify(result.undecided, null, 2));
+    const pooled = pending.reduce((n, p) => n + p.sites.length, 0);
+    console.log(`adjudicate pooled=${pooled} acceptedVerdicts=${result.accepted} undecided=${result.undecided.length} files=${tree.fileCount} wallMs=${Date.now() - t0}`);
   } else {
-    throw new Error('usage: fair-comparison-cli.ts prereg|run|score --out <dir> [--arm <id>] [--reps N] [--seed N]');
+    throw new Error('usage: fair-comparison-cli.ts prereg|run|score|adjudicate --out <dir> [--arm <id>] [--reps N] [--seed N]');
   }
 }
 
