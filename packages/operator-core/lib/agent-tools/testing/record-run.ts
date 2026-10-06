@@ -334,6 +334,7 @@ export function recoverArchivedMutationFailures(
     titles.push(title);
   }
   if (titles.length !== detail.failed || new Set(titles).size !== titles.length
+    || !parseTestRunExecutionDetails({ ...detail, failedCaseTitles: titles })
     || (detail.failedCaseTitles !== undefined && JSON.stringify(detail.failedCaseTitles) !== JSON.stringify(titles))) {
     throw new Error('evidence_archive_failed_cases_mismatch');
   }
@@ -491,7 +492,6 @@ export default defineTool({
       'Executing Vitest files (use testing:run), recording a temporary /tmp log, or manufacturing proof for a run that did not happen. Commit a self-describing docs/evidence JSON artifact first.',
     chaining:
       'Run the operational check → write and commit its docs/evidence JSON artifact → testing:record-run → bind the returned numeric testRunIds with plans:bind-spec-evidence.',
-    notes: 'For a completed clean mutation-probe whose ledger tail lost case names, the artifact may include archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256}. The committed machine log must match the exact scoped receipt, probe, verdict, counts, file and time window. This appends an explicitly labelled recovery record; it does not execute tests or overwrite the original receipt.',
   },
   capability: 'testing:run',
   requirePrincipal: false,

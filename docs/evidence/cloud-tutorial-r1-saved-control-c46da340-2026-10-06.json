@@ -69,6 +69,11 @@
       ]
     }
   ],
+  "archivedMutation": {
+    "originalTestRunId": 20845162,
+    "rawLogFile": "docs/evidence/cloud-tutorial-r1-saved-control-c46da340-2026-10-06.log",
+    "rawLogSha256": "85f0cea4001bdcc163a3d67d399af9250098f2f351703f4186e40be32e1fe988"
+  },
   "archiveProvenance": {
     "producer": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
     "workItem": "EI-25248905256718690",
@@ -131,7 +136,7 @@
     "limits": [
       "This archive is not a new Vitest execution.",
       "No original test_runs row or spec binding was overwritten.",
-      "testing:record-run currently records shell-wrapper artifacts as source=local, not source=mutation-probe canonical failed test identities.",
+      "archivedMutation requests additive identity recovery only after the recorder validates the committed raw log against original receipt20845162; it does not execute a new test or overwrite that receipt.",
       "The archive alone does not satisfy the evaluator's exact measured mutation-case requirement.",
       "No acceptance, clean repair matrix, final hosted verification, independent grade, or shipment is claimed."
     ]

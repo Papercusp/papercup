@@ -122,6 +122,43 @@ function archivedMutationFixture() {
 }
 
 describe('archived mutation identity recovery (EI-25248905256718690)', () => {
+  it('requires the archive hash and exact committed log bytes before reading a receipt', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'record-archived-mutation-'));
+    try {
+      git(repo, ['init', '-q']);
+      git(repo, ['config', 'user.email', 'test@example.invalid']);
+      git(repo, ['config', 'user.name', 'Test']);
+      mkdirSync(join(repo, 'docs/evidence'), { recursive: true });
+      mkdirSync(join(repo, 'scripts'));
+      const runner = '#!/bin/sh\nexit 0\n';
+      writeFileSync(join(repo, 'scripts/mutation-probe.sh'), runner);
+      const { evidence } = archivedMutationFixture();
+      const artifact = { ...evidence.artifact, mutationProbes: evidence.artifact.mutationProbes!.map(probe => ({
+        ...probe, runnerSha256: createHash('sha256').update(runner).digest('hex'),
+      })) };
+      const artifactBytes = JSON.stringify(artifact);
+      const hash = createHash('sha256').update(artifactBytes).digest('hex');
+      writeFileSync(join(repo, 'docs/evidence/archive.json'), artifactBytes);
+      writeFileSync(join(repo, 'docs/evidence/mutation.log'), evidence.archiveLog!);
+      git(repo, ['add', '.']);
+      git(repo, ['commit', '-qm', 'archive fixture']);
+      expect(await inspectCommittedOperationalEvidence(repo, 'docs/evidence/archive.json', hash))
+        .toMatchObject({ archiveLog: evidence.archiveLog });
+      writeFileSync(join(repo, 'docs/evidence/mutation.log'), 'tampered');
+      await expect(inspectCommittedOperationalEvidence(repo, 'docs/evidence/archive.json', hash))
+        .rejects.toThrow('evidence_archive_sha256_mismatch');
+      const changedArtifact = { ...artifact, archivedMutation: { ...artifact.archivedMutation!,
+        rawLogSha256: createHash('sha256').update('tampered').digest('hex') } };
+      const changedBytes = JSON.stringify(changedArtifact);
+      writeFileSync(join(repo, 'docs/evidence/archive.json'), changedBytes);
+      // Only commit the JSON: a matching hash must not certify an uncommitted raw log.
+      git(repo, ['add', 'docs/evidence/archive.json']);
+      git(repo, ['commit', '-qm', 'changed artifact fixture']);
+      await expect(inspectCommittedOperationalEvidence(repo, 'docs/evidence/archive.json',
+        createHash('sha256').update(changedBytes).digest('hex'))).rejects.toThrow('evidence_archive_not_committed');
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
   it('recovers exact machine identities despite long DOM messages and preserves the original receipt', async () => {
     const { evidence, original, scope, titles } = archivedMutationFixture();
     const saved = structuredClone(original);
