@@ -110,17 +110,20 @@ describe('resolveTtsEngine', () => {
   const healthy = async () => true;
   const unhealthy = async () => false;
 
-  // kokoro is the only server TTS engine available in this public release
-  // (voice-final-public-release-2026-10-01#D-005); elevenlabs/openai/cartesia
-  // are refused with a 400 rather than silently swapped for another engine.
+  // kokoro and elevenlabs are the server TTS engines available in this public
+  // release (voice-final-public-release-2026-10-01#D-005, ElevenLabs restored by
+  // D-006); openai/cartesia are refused with a 400 rather than silently swapped
+  // for another engine.
   it('honors an explicit, non-empty requested engine over prefs', async () => {
     const r = await resolveTtsEngine('kokoro', { ttsEngine: 'browser' }, unhealthy);
     expect(r).toEqual({ ok: true, engine: 'kokoro' });
+    const el = await resolveTtsEngine('elevenlabs', { ttsEngine: 'kokoro' }, unhealthy);
+    expect(el).toEqual({ ok: true, engine: 'elevenlabs' });
   });
 
   it('refuses an explicitly requested engine that is unavailable in this release', async () => {
-    const r = await resolveTtsEngine('elevenlabs', { ttsEngine: 'kokoro' }, unhealthy);
-    expect(r).toEqual({ ok: false, status: 400, error: releaseUnavailableMessage('elevenlabs') });
+    const r = await resolveTtsEngine('openai', { ttsEngine: 'kokoro' }, unhealthy);
+    expect(r).toEqual({ ok: false, status: 400, error: releaseUnavailableMessage('openai') });
   });
 
   it('falls back to the prefs engine when the request omits one', async () => {
