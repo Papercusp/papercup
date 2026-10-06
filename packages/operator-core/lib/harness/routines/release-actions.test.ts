@@ -2893,6 +2893,21 @@ describe('green-checkpoint routing skip — EI-17065 escalation auto-clear', () 
     routingPatch = null;
   });
 
+  it('WI-10006317: records a misconfigured gate as skipped-misconfigured, not skipped-disabled, and runs no suite', async () => {
+    routingPatch = {
+      skip: { reason: "integration-equals-release: integration branch 'main' is the release ref itself", misconfigured: true },
+    };
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    const statuses = appendPipelineEvent.mock.calls
+      .map(([event]) => event as Record<string, unknown>)
+      .filter((event) => event.kind === 'green_checkpoint')
+      .map((event) => event.status);
+    expect(statuses).toEqual(['skipped-misconfigured']);
+  });
+
   it('clears BOTH green-checkpoint escalation phases when the gate is not routable (gate_disabled)', async () => {
     routingPatch = { skip: { reason: 'gate_disabled' } };
 

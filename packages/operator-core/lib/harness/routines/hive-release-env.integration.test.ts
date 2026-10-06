@@ -312,6 +312,38 @@ describe('resolveHiveReleaseEnv', () => {
     expect(res.env.PAPERCUSP_INTEGRATION_BRANCH).toBe('master');
   });
 
+  it('WI-10006317: a main-default from-repo pot (integration == release) stays seeded but routes to an explicit misconfigured skip', async () => {
+    // Observed on the P-023 pilot: github_default_branch 'main' resolved integrationBranch
+    // 'main' == releaseRef 'main', so every fire read 'up-to-date' and nothing was ever tested.
+    const mainDir = makeHiveDir('coding-factory', { git: true });
+    const masterDir = makeHiveDir('coding-factory', { git: true });
+    registryProjects = [
+      { slug: 'main-default', path: mainDir, self_repo: false, github_default_branch: 'main' },
+      { slug: 'master-default', path: masterDir, self_repo: false, github_default_branch: 'master' },
+    ] as typeof registryProjects;
+    const { resolveHiveReleaseEnv, resolveCheckpointRouting } = await import('./hive-release-env');
+
+    const res = await resolveHiveReleaseEnv('main-default', 'default');
+    expect(res.enabled).toBe(true); // still seeded — the fault must stay visible
+    expect(res.misconfiguration?.code).toBe('integration-equals-release');
+    const routing = await resolveCheckpointRouting({ installSlug: 'main-default', workspaceId: 'default' }, '/DEFAULT');
+    expect(routing.skip?.misconfigured).toBe(true);
+    expect(routing.skip?.reason).toMatch(/^integration-equals-release: integration branch 'main'/);
+
+    // Control: a pot whose integration branch differs from its release ref is unaffected.
+    const control = await resolveHiveReleaseEnv('master-default', 'default');
+    expect(control.misconfiguration).toBeUndefined();
+    const controlRouting = await resolveCheckpointRouting({ installSlug: 'master-default', workspaceId: 'default' }, '/DEFAULT');
+    expect(controlRouting.skip).toBeUndefined();
+  });
+
+  it('WI-10006317: gateMisconfiguration flags exactly integration == release', async () => {
+    const { gateMisconfiguration } = await import('./hive-release-env');
+    expect(gateMisconfiguration({ integrationBranch: 'main', releaseRef: 'main' })?.code).toBe('integration-equals-release');
+    expect(gateMisconfiguration({ integrationBranch: 'staging', releaseRef: 'main' })).toBeNull();
+    expect(gateMisconfiguration({ integrationBranch: 'main', releaseRef: 'release' })).toBeNull();
+  });
+
   it('WI-5164: a self_repo hive with no github_default_branch recorded still defaults to staging', async () => {
     const dir = makeHiveDir('coding', { git: true });
     registryProjects = [{ slug: 'fresh-init-hive', path: dir, self_repo: true }];
