@@ -32,6 +32,7 @@ vi.mock('@papercusp/operator-core/lib/testing-run-source', () => ({
 vi.mock('postgres', () => ({ default: () => mocks.sql }));
 
 import AdminTestRunsPlaywrightReporter, {
+  playwrightCaseTitle,
   playwrightExecutionDetails,
 } from '../test/reporters/admin-test-runs-reporter-playwright';
 import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
@@ -149,6 +150,42 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     reporter.onEnd();
     await reporter.onExit();
     expect(mocks.sql.mock.calls[0]!.slice(1)[5]).toBeNull();
+  });
+
+  // WI-10006806: a filed red names its failing tests, so the row must carry the case identities.
+  it('records the failing case identities (not the passing ones) in execution_details', async () => {
+    mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
+    mocks.computeWorktreeDirty.mockReturnValue(false);
+    const reporter = new AdminTestRunsPlaywrightReporter();
+    reporter.onBegin();
+    const file = '/repo/e2e/example.spec.ts';
+    const kase = (title: string, describe = 'panel') => ({
+      location: { file },
+      title,
+      titlePath: () => ['', 'chromium', 'e2e/example.spec.ts', describe, title],
+    });
+    reporter.onTestEnd(kase('opens') as never, { startTime: new Date(0), duration: 1, status: 'passed', errors: [] } as never);
+    reporter.onTestEnd(kase('closes') as never, { startTime: new Date(0), duration: 1, status: 'failed', errors: [{ message: 'boom' }] } as never);
+    // A retry of the same case is ONE identity, not two.
+    reporter.onTestEnd(kase('closes') as never, { startTime: new Date(0), duration: 1, status: 'timedOut', errors: [] } as never);
+    reporter.onEnd();
+    await reporter.onExit();
+    const stored = mocks.sql.mock.calls[0]!.slice(1).at(-1);
+    const parsed = parseTestRunExecutionDetails(stored);
+    expect(parsed).toBeDefined();
+    expect(parsed).toMatchObject({ failed: 2, passed: 1, failedCaseTitles: ['panel > closes'] });
+  });
+});
+
+describe('playwrightCaseTitle', () => {
+  it('drops the root, project and file segments and joins the rest like Vitest fullName', () => {
+    expect(playwrightCaseTitle({ title: 't', titlePath: () => ['', 'chromium', 'e2e/a.spec.ts', 'outer', 'inner', 't'] })).toBe(
+      'outer > inner > t',
+    );
+  });
+  it('falls back to the bare title when no titlePath is available, and rejects an empty identity', () => {
+    expect(playwrightCaseTitle({ title: 'bare' })).toBe('bare');
+    expect(playwrightCaseTitle({})).toBeNull();
   });
 });
 
