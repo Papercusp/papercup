@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BOX_LOCAL_TABLE, TUNNEL, TURN_RELAY_RANGE, boxLocalDnat, boxWireguard, edgeCoordinates, forwardedPorts, livekitInterfaces,
@@ -321,6 +321,82 @@ describe("rotating the LiveKit secret keeps the rest of livekit.env", () => {
   it("keeps the deployer syntactically valid", () => {
     const result = spawnSync("bash", ["-n", script], { encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
+  });
+});
+
+// WI-10006587: deploy.sh armed the ops-alert timer but never wrote ops-alert.env
+// or scheduled a backup, so every 15-minute run reported backup:config-missing.
+describe("the deployer configures the Phone backup the ops-alert check verifies", () => {
+  const script = probedDeployScript;
+  const here = dirname(script);
+  const shellFunctions = () => extractShellFunctions(script, ["die", "upsert_env_var", "write_ops_alert_env"]);
+
+  function writeEnv(existing: string | null, archive: string, maxAge: string) {
+    const dir = mkdtempSync(join(tmpdir(), "phone-ops-env-"));
+    const opsEnv = join(dir, "ops-alert.env");
+    if (existing !== null) writeFileSync(opsEnv, existing, { mode: 0o644 });
+    const result = spawnSync("bash", ["-c", `set -euo pipefail\n${shellFunctions()}\nwrite_ops_alert_env "$A" "$M"`], {
+      encoding: "utf8",
+      env: { ...process.env, CONF_DIR: dir, ENV_FILE: join(dir, "livekit.env"), OPS_ALERT_ENV_FILE: opsEnv, A: archive, M: maxAge },
+    });
+    const content = existsSync(opsEnv) ? readFileSync(opsEnv, "utf8") : null;
+    const mode = existsSync(opsEnv) ? statSync(opsEnv).mode & 0o777 : null;
+    const livekitTouched = existsSync(join(dir, "livekit.env"));
+    rmSync(dir, { recursive: true, force: true });
+    return { result, content, mode, livekitTouched };
+  }
+
+  it("creates a private ops-alert.env with exactly the two backup settings", () => {
+    const { result, content, mode, livekitTouched } = writeEnv(null, "/srv/phone/backups/phone-db.dump", "36");
+    expect(result.status, result.stderr).toBe(0);
+    expect(content!.split("\n").filter(Boolean).sort()).toEqual([
+      "PHONE_BACKUP_ARCHIVE=/srv/phone/backups/phone-db.dump",
+      "PHONE_BACKUP_MAX_AGE_HOURS=36",
+    ]);
+    expect(mode).toBe(0o600);
+    expect(livekitTouched).toBe(false);
+  });
+
+  it("rewrites only the backup lines and keeps the owner's other settings", () => {
+    const { result, content } = writeEnv(
+      ["PHONE_BACKUP_ARCHIVE=/old.dump", "PHONE_ALERT_CHANNEL=owner", "PHONE_BACKUP_MAX_AGE_HOURS=999", ""].join("\n"),
+      "/new/phone-db.dump",
+      "24",
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const lines = content!.split("\n").filter(Boolean);
+    expect(lines).toHaveLength(3);
+    expect(lines).toEqual(expect.arrayContaining([
+      "PHONE_ALERT_CHANNEL=owner",
+      "PHONE_BACKUP_ARCHIVE=/new/phone-db.dump",
+      "PHONE_BACKUP_MAX_AGE_HOURS=24",
+    ]));
+  });
+
+  it("refuses values the ops-alert check would reject as config-missing", () => {
+    for (const [archive, maxAge] of [["relative/phone.dump", "36"], ["/a.dump", "0"], ["/a.dump", "169"], ["/a.dump", "1h"]]) {
+      const { result, content } = writeEnv(null, archive, maxAge);
+      expect(result.status, `${archive} ${maxAge}`).not.toBe(0);
+      expect(content).toBeNull();
+    }
+  });
+
+  it("installs a daily backup unit that writes the archive ops-alert.env names, before arming the alert", () => {
+    const deploy = readFileSync(script, "utf8");
+    const unit = readFileSync(join(here, "systemd/papercusp-phone-backup.service.tmpl"), "utf8");
+    const timer = readFileSync(join(here, "systemd/papercusp-phone-backup.timer"), "utf8");
+    expect(unit).toMatch(/^EnvironmentFile=\$\{PHONE_CONFIG_DIR\}\/ops-alert\.env$/m);
+    expect(unit).toMatch(/^ExecStart=\$\{PHONE_NODE_BIN\} \$\{PHONE_BACKUP_SCRIPT\} backup --out \$PHONE_BACKUP_ARCHIVE$/m);
+    expect(deploy).toContain("content=\"${content//'${PHONE_BACKUP_SCRIPT}'/$HERE/phone-db-backup.mjs}\"");
+    expect(timer).toMatch(/^OnCalendar=daily$/m);
+    expect(timer).toMatch(/^Unit=papercusp-phone-backup\.service$/m);
+    expect(deploy).toContain('write_ops_alert_env "$PHONE_BACKUP_ARCHIVE" "$PHONE_BACKUP_MAX_AGE_HOURS"');
+    const backupArmed = deploy.indexOf("systemctl --user enable --now papercusp-phone-backup.timer");
+    const firstBackup = deploy.indexOf("systemctl --user start papercusp-phone-backup.service");
+    const alertArmed = deploy.indexOf("systemctl --user enable --now papercusp-phone-ops-alert.timer");
+    expect(backupArmed).toBeGreaterThan(0);
+    expect(firstBackup).toBeGreaterThan(backupArmed);
+    expect(alertArmed).toBeGreaterThan(firstBackup);
   });
 });
 
