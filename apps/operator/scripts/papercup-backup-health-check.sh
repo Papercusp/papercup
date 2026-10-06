@@ -651,12 +651,24 @@ backup_volume_consumers() ( # <mount> <dump-dir>
   mount="${1%/}" dump_dir="${2%/}"
   [ -d "$mount" ] || { echo "  (mount point '$mount' is not a readable directory)"; exit 0; }
   shopt -s nullglob dotglob
-  deadline=$(( $(date +%s) + BACKUP_VOLUME_CONSUMERS_TIMEOUT_S ))
-  rows="" skipped=0
+  # The deadline must bound the scan's OWN cost, not only du's. Measured 2026-10-06
+  # (EI-25211496463956189): /tmp held 12,667 entries, and the old loop forked
+  # `date +%s` for every entry even after the deadline, so a 0s budget still cost
+  # ~12.6k forks and over a minute per call under load. Now the clock is read with
+  # the printf builtin (no fork), and the loop stops at the deadline, counting the
+  # rest as skipped arithmetically.
+  entries=()
   for entry in "$mount"/*; do
-    [ "${entry##*/}" = lost+found ] && continue
-    left=$(( deadline - $(date +%s) ))
-    if [ "$left" -le 0 ]; then skipped=$((skipped + 1)); continue; fi
+    [ "${entry##*/}" = lost+found ] || entries+=("$entry")
+  done
+  printf -v now '%(%s)T' -1
+  deadline=$(( now + BACKUP_VOLUME_CONSUMERS_TIMEOUT_S ))
+  rows="" skipped=0
+  for i in "${!entries[@]}"; do
+    printf -v now '%(%s)T' -1
+    left=$(( deadline - now ))
+    if [ "$left" -le 0 ]; then skipped=$(( skipped + ${#entries[@]} - i )); break; fi
+    entry="${entries[$i]}"
     size_kb="$(timeout "$left" nice -n 19 ionice -c3 du -x -s -k -- "$entry" 2>/dev/null | awk 'NR == 1 { print $1; exit }')"
     if ! [[ "$size_kb" =~ ^[0-9]+$ ]]; then skipped=$((skipped + 1)); continue; fi
     if [ "$entry" = "$dump_dir" ] || [ "${dump_dir#"$entry"/}" != "$dump_dir" ]; then
@@ -717,8 +729,10 @@ check_backup_volume_headroom() {
     local host title body mount consumers
     host="$(hostname 2>/dev/null || echo unknown-host)"
     mount="$(printf '%s' "$df_line" | awk '{ print $NF }')"
-    consumers="$(backup_volume_consumers "$mount" "$BACKUP_DUMP_DIR")"
-    log "Backup-volume consumers on ${mount} (largest first):"$'\n'"${consumers}"
+    # The consumer scan is a du over the whole volume, so it runs only past red_gate
+    # below: a dedup-suppressed RED tick (the same alarm, already filed) does not
+    # re-scan (EI-25211496463956189). The body is spliced there.
+    consumers="@@BACKUP_VOLUME_CONSUMERS@@"
     # Keep changing measurements out of the title so repeated samples dedupe.
     title="Backup repository volume above capacity warning threshold on ${host}"
     body="WI-39596 durable backup-volume detector: the filesystem containing '$BACKUP_VOLUME_PATH' is ${disk_pct}% used with ${avail_kb} KiB free. The producer-fit threshold is ${required_free_gb} GiB (${largest_dump_gb} GiB largest recent dump x ${PC_BACKUP_SPACE_SAFETY}% + ${PC_BACKUP_MIN_FREE_GB} GiB floor); the coarse percentage backstop is ${BACKUP_VOLUME_WARN_PCT}% used and the admission floor is ${BACKUP_VOLUME_FLOOR_PCT}% free.
@@ -735,6 +749,10 @@ ACTION: read the measured trend first. If it is still shrinking, compare consecu
 df output:
 ${df_line}"
     if red_gate "$red_marker" "backup volume"; then
+      consumers="$(backup_volume_consumers "$mount" "$BACKUP_DUMP_DIR")"
+      log "Backup-volume consumers on ${mount} (largest first):"$'\n'"${consumers}"
+      # Quoted replacement: bash 5.2's patsub_replacement would expand a '&' in a path.
+      body="${body/"@@BACKUP_VOLUME_CONSUMERS@@"/"$consumers"}"
       file_ei "$title" "$body"
       mark_red "$red_marker"
     fi
@@ -957,6 +975,14 @@ optional_artifact_latest_hook_degraded() { # <artifact>
 # Run:  apps/operator/scripts/papercup-backup-health-check.sh --self-test
 if [ "${1:-}" = "--self-test" ]; then
   t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
+  # Probes below run against /tmp fixtures with the REAL df, and that host volume can
+  # read RED. A zero budget keeps backup_volume_consumers from du-ing real host entries:
+  # measured 2026-10-06, without it each such probe spent the full 120s default and the
+  # suite timed out at load ~150. A zero budget alone was NOT enough: the scan still
+  # forked `date` once per /tmp entry (12,667 of them), ~150s per check, until the loop
+  # learned to stop at its deadline (pinned by the "consumer scan stops at its
+  # deadline" case below). The consumer cases (stub df/du) set their own budget.
+  export BACKUP_VOLUME_CONSUMERS_TIMEOUT_S=0
   mkdir -p "$t/dump" "$t/state"
   self="${BASH_SOURCE[0]}"
   p=0; f=0
@@ -1439,6 +1465,7 @@ EOF
     out="$(env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
         BACKUP_DB_DATA_DIR="$t/no-db-data" BACKUP_VOLUME_PATH="$t/dump" \
         BACKUP_VOLUME_WARN_PCT="$threshold" BACKUP_VOLUME_FLOOR_PCT=2 \
+        BACKUP_VOLUME_CONSUMERS_TIMEOUT_S=30 \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
@@ -1493,6 +1520,28 @@ EOF
   check_backup_volume "backup volume red: tags the dump directory as a backup output" \
         0 yes "" "/vol/dump  \\[backup output\\]" \
         BACKUP_ALERT_FORCE=1 BACKUP_VOLUME_PATH="$t/vol" BACKUP_DUMP_DIR="$t/vol/dump"
+
+  # EI-25211496463956189: a past-deadline consumer scan must cost O(1) processes, not
+  # one fork per entry. A `date`/`du` shim logs each spawn; the old loop spawned `date`
+  # once per entry (301 here) even with a 0s budget, which is what made every probe
+  # against the real /tmp (12,667 entries) take minutes.
+  rm -rf "${t:?}/many" "$t/spawnbin"; mkdir -p "$t/many" "$t/spawnbin"
+  for i in $(seq 1 300); do : > "$t/many/e$i"; done
+  for cmd in date du; do
+    printf '#!/usr/bin/env bash\necho %s >> "%s/spawns.log"\nexec %s "$@"\n' \
+      "$cmd" "$t" "$(command -v "$cmd")" > "$t/spawnbin/$cmd"
+    chmod +x "$t/spawnbin/$cmd"
+  done
+  : > "$t/spawns.log"
+  consumers_out="$(PATH="$t/spawnbin:$PATH" BACKUP_VOLUME_CONSUMERS_TIMEOUT_S=0 \
+    backup_volume_consumers "$t/many" "$t/dump")"
+  spawns="$(wc -l < "$t/spawns.log")"
+  if [ "$spawns" -le 2 ] && grep -q '(300 entries not sized' <<<"$consumers_out"; then
+    printf '  ok    consumer scan stops at its deadline (spawns=%s, 300 entries skipped)\n' "$spawns"; p=$((p+1))
+  else
+    printf '  FAIL  consumer scan stops at its deadline — wanted <=2 spawns and 300 skipped; got spawns=%s, output: %s\n' \
+      "$spawns" "$(tr '\n' ' ' <<<"$consumers_out")"; f=$((f+1))
+  fi
   printf '  ---- %d passed, %d failed (post backup-volume block)\n' "$p" "$f"
 
   # ── WI-38830 recurrence guard: signal (f), TMPDIR entry count ─────────────
