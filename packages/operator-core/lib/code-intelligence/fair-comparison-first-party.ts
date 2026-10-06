@@ -23,32 +23,31 @@
  * never imports the adapter or its Postgres capability store.
  */
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type * as TsModule from 'typescript';
 import type { CodeIntelAnswer, SymbolSite } from './contracts';
 import type { PhaseCost } from './engine-comparison';
 import type { ArmCapabilities, FairCase, FairIntent } from './fair-comparison';
 import { guardedArm, type FairArm, type RawReply } from './fair-comparison-arms';
 import { narrowToAnchor } from './fair-comparison-engines';
+// The TypeScript-service core moved to ./typescript-service (WI-10006543) so the
+// production callers path runs the code D-026 measured without importing this
+// bench module. Re-exported here so the bench's own importers are unchanged.
+import {
+  dedupeSites as dedupe,
+  hierarchyItems,
+  identifierColumn,
+  incomingCallSites,
+  isExternalPath as isExternal,
+  loadVendoredTypescript,
+  openTsTree,
+  tsDeclarations,
+  tsSiteOf,
+  type Ts,
+  type TsTree,
+} from './typescript-service';
 
-type Ts = typeof TsModule;
-
-const posix = (p: string): string => p.split('\\').join('/');
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const siteId = (s: Pick<SymbolSite, 'path' | 'line1'>): string => `${s.path}:${s.line1 ?? '?'}`;
-
-/** Zero-based column of `name` as a whole identifier in `text`, or -1. */
-export function identifierColumn(text: string, name: string): number {
-  const m = new RegExp(`(?<![\\w$])${escapeRe(name)}(?![\\w$])`).exec(text);
-  return m ? m.index : -1;
-}
-
-function dedupe(sites: readonly SymbolSite[]): SymbolSite[] {
-  const byId = new Map<string, SymbolSite>();
-  for (const s of sites) if (!byId.has(siteId(s))) byId.set(siteId(s), s);
-  return [...byId.values()];
-}
+export { identifierColumn, loadVendoredTypescript, openTsTree, type TsTree };
 
 const joinNotes = (notes: readonly string[]): string | null => (notes.length > 0 ? notes.join('; ') : null);
 
@@ -174,93 +173,6 @@ export function createLspQueryArm(cfg: LspQueryArmConfig, door: LspDoor, now?: (
 
 export const NO_THIRD_PARTY_INTENTS: readonly FairIntent[] = ['callers', 'callees', 'impact', 'definition', 'references', 'symbol-search'];
 
-/** Every source extension the program takes. JS is included because callers live in .mjs scripts too. */
-const TS_TREE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
-
-/** The TypeScript that typescript-language-server runs, from the vendored LSP install. */
-export function loadVendoredTypescript(vendorDir: string): Ts {
-  return createRequire(join(vendorDir, 'noop.js'))('typescript') as Ts;
-}
-
-export interface TsTree {
-  readonly ts: Ts;
-  readonly root: string;
-  readonly service: TsModule.LanguageService;
-  readonly fileCount: number;
-}
-
-/**
- * One LanguageService over every source file under `root` (node_modules
- * excluded), with the root tsconfig's compiler options when it has one.
- */
-export function openTsTree(ts: Ts, root: string): TsTree {
-  const configPath = join(root, 'tsconfig.json');
-  let options: TsModule.CompilerOptions = {};
-  if (ts.sys.fileExists(configPath)) {
-    const read = ts.readConfigFile(configPath, ts.sys.readFile);
-    if (!read.error) options = ts.parseJsonConfigFileContent(read.config, ts.sys, root).options;
-  }
-  options = { ...options, allowJs: true, checkJs: false, noEmit: true, skipLibCheck: true };
-  const files = ts.sys.readDirectory(root, TS_TREE_EXTENSIONS, ['**/node_modules'], undefined);
-  const snapshots = new Map<string, TsModule.IScriptSnapshot | undefined>();
-  const host: TsModule.LanguageServiceHost = {
-    getScriptFileNames: () => files,
-    getScriptVersion: () => '0',
-    getScriptSnapshot: (f) => {
-      if (!snapshots.has(f)) {
-        const text = ts.sys.readFile(f);
-        snapshots.set(f, text === undefined ? undefined : ts.ScriptSnapshot.fromString(text));
-      }
-      return snapshots.get(f);
-    },
-    getCurrentDirectory: () => root,
-    getCompilationSettings: () => options,
-    getDefaultLibFileName: (o) => ts.getDefaultLibFilePath(o),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    readDirectory: ts.sys.readDirectory,
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
-    realpath: ts.sys.realpath,
-  };
-  return { ts, root, service: ts.createLanguageService(host, ts.createDocumentRegistry()), fileCount: files.length };
-}
-
-/** A path outside the tree: a default-lib or package declaration. */
-const isExternal = (path: string): boolean => path.startsWith('../') || isAbsolute(path) || path.split('/').includes('node_modules');
-
-interface TsDeclaration {
-  readonly file: string;
-  /** Offset of the declared name: where the cursor goes for every follow-up query. */
-  readonly namePos: number;
-  readonly site: SymbolSite;
-}
-
-function tsSiteOf(tree: TsTree, program: TsModule.Program, fileName: string, pos: number, kind: string | null): SymbolSite {
-  const sf = program.getSourceFile(fileName);
-  return { path: posix(relative(tree.root, fileName)), line1: sf ? sf.getLineAndCharacterOfPosition(pos).line + 1 : null, kind: kind || null };
-}
-
-/** Exact-name declarations from navigate-to (the search behind tsserver's workspace/symbol), default libs excluded. */
-function tsDeclarations(tree: TsTree, program: TsModule.Program, subject: string): TsDeclaration[] {
-  const out: TsDeclaration[] = [];
-  for (const item of tree.service.getNavigateToItems(subject, undefined, undefined, false, true)) {
-    if (item.name !== subject) continue;
-    const sf = program.getSourceFile(item.fileName);
-    if (!sf) continue;
-    const span = sf.text.slice(item.textSpan.start, item.textSpan.start + item.textSpan.length);
-    const col = identifierColumn(span, subject);
-    const namePos = item.textSpan.start + Math.max(col, 0);
-    out.push({ file: item.fileName, namePos, site: tsSiteOf(tree, program, item.fileName, namePos, item.kind) });
-  }
-  return out;
-}
-
-function hierarchyItems(tree: TsTree, d: TsDeclaration): TsModule.CallHierarchyItem[] {
-  const r = tree.service.prepareCallHierarchy(d.file, d.namePos);
-  return r === undefined ? [] : Array.isArray(r) ? r : [r];
-}
-
 const itemId = (i: TsModule.CallHierarchyItem): string => `${i.file}#${i.selectionSpan.start}`;
 
 /** One case through the LanguageService. Pure over an opened tree, so it is tested on the real micro repo. */
@@ -285,14 +197,9 @@ export function askTypescript(tree: TsTree, kase: FairCase): RawReply {
     }
     case 'callers': {
       // Raw answer: every call line (fromSpans). D-012 aliases extra lines in
-      // one scope to that scope's unit.
-      const out: SymbolSite[] = [];
-      for (const item of decls.flatMap((d) => hierarchyItems(tree, d))) {
-        for (const call of tree.service.provideCallHierarchyIncomingCalls(item.file, item.selectionSpan.start)) {
-          for (const span of call.fromSpans) out.push(site(call.from.file, span.start, call.from.kind));
-        }
-      }
-      return { sites: dedupe(out), error: null };
+      // one scope to that scope's unit. Shared with graph:query callers
+      // (first-party-callers.ts), so the two cannot drift.
+      return { sites: incomingCallSites(tree, program, decls), error: null };
     }
     case 'callees': {
       // A callee declared outside the tree (a default-lib or package method) is
