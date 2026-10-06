@@ -32,10 +32,12 @@
  *           duplicate-flagged summary.
  *
  * Hermetic: stubs `/api/flags/bootstrap` (pins POT_FROM_GITHUB_URL +
- * THE_HIVE so copy is deterministic), `/api/harness/projects/lite` + the
+ * THE_HIVE so copy is deterministic), the `harnessProjects.lite` sync query +
  * benign dock fetches, and MOCKS POST /api/harness/pots/from-repo — the spec
- * never clones a repository or writes anything. The projects/join-link POSTs
- * are stubbed to fail loudly so a mis-route can never hit the real backend.
+ * never clones a repository or writes anything. The sync stub is asserted so
+ * a missed fixture cannot silently load real workspace projects. The
+ * projects/join-link POSTs are stubbed to fail loudly so a mis-route can never
+ * hit the real backend.
  *
  * NB (same as the creation-fork spec): the operator-vite SPA only renders
  * against a BUILT bundle (staging-served dist on :3170, or a vite preview) —
@@ -50,6 +52,7 @@
  * which is what this spec drives.
  */
 import { test, expect, assertMounted, type Page, type Locator } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -62,7 +65,7 @@ const REPO_URL = 'https://github.com/octocat/Hello-World';
 const DERIVED_SLUG = 'hello-world'; // deriveSlugFromRepo('Hello-World')
 const HOME_SLUG = 'hello-world-hive';
 
-/** projects/lite stub: a real root + a member so the tab mounts its dock. */
+/** Sync-query fixture: a real root + a member so the tab mounts its dock. */
 const PROJECTS_LITE = {
   projects: [
     { slug: HIVE, path: `/tmp/${HIVE}`, hasState: true, hasSpec: true, parent_slug: null, harness_kind: 'project', is_shared: false },
@@ -76,11 +79,11 @@ interface FromRepoCapture {
 
 /**
  * Pin the flags this spec depends on (POT_FROM_GITHUB_URL — the live entry;
- * THE_HIVE — "Hive" lexicon so copy assertions are deterministic), stub
- * projects/lite + the benign dock fetches, and fail-loud-stub the OTHER write
+ * THE_HIVE — "Hive" lexicon so copy assertions are deterministic), stub the
+ * `harnessProjects.lite` sync query + benign dock fetches, and fail-loud-stub the OTHER write
  * endpoints so a mis-routed create can never touch the real backend.
  */
-async function stubBase(page: Page): Promise<void> {
+async function stubBase(page: Page): Promise<SyncQueryStub> {
   await page.route('**/api/flags/bootstrap', async (route) => {
     await route.fulfill({
       status: 200,
@@ -92,9 +95,9 @@ async function stubBase(page: Page): Promise<void> {
       }),
     });
   });
-  await page.route('**/api/harness/projects/lite', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS_LITE) });
-  });
+  const sync = await stubSyncQueries(page, (name) =>
+    name === 'harnessProjects.lite' ? PROJECTS_LITE.projects : undefined,
+  );
   // Guard rails: this spec must NEVER create anything for real.
   await page.route('**/api/harness/projects', async (route) => {
     if (route.request().method() === 'POST') {
@@ -119,6 +122,7 @@ async function stubBase(page: Page): Promise<void> {
   await page.route('**/api/harness/*/agents**', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ agents: [] }) });
   });
+  return sync;
 }
 
 /**
@@ -192,8 +196,9 @@ const SKIP_MSG =
   '(staging-served dist on :3170 via OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170, or a vite preview) — ' +
   "a stale HMR-disabled :3055 serves a blank #root.";
 
-async function gotoHarnessesTab(page: Page, search: string): Promise<boolean> {
+async function gotoHarnessesTab(page: Page, search: string, sync: SyncQueryStub): Promise<boolean> {
   await page.goto(`${baseURL}/adv?tab=harnesses&${search}`, { waitUntil: 'domcontentloaded' });
+  await sync.waitForServed(['harnessProjects.lite']);
   return page
     .getByRole(DOCK_MOUNT.role, { name: DOCK_MOUNT.name })
     .first()
@@ -231,8 +236,8 @@ async function openGithubUrlForm(page: Page): Promise<Locator> {
 
 test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   test('P-018a picker shows the hive-native Create / Join layout (flag-on default)', async ({ page }) => {
-    await stubBase(page);
-    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    const sync = await stubBase(page);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, sync);
     assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openPicker(page);
@@ -254,8 +259,8 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   });
 
   test('P-018b entry renders EntryGithubUrlForm: new-hive default, visibility Public, slug auto-derive', async ({ page }) => {
-    await stubBase(page);
-    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    const sync = await stubBase(page);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, sync);
     assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
@@ -285,9 +290,9 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   });
 
   test('P-018c invalid URL fails inline with NO network call', async ({ page }) => {
-    await stubBase(page);
+    const sync = await stubBase(page);
     const cap = await stubFromRepo(page, [CREATED_RESPONSE]);
-    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, sync);
     assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
@@ -303,9 +308,9 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   });
 
   test('P-018d clean created response closes the dialog and focuses the new hive', async ({ page }) => {
-    await stubBase(page);
+    const sync = await stubBase(page);
     const cap = await stubFromRepo(page, [CREATED_RESPONSE]);
-    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, sync);
     assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
@@ -328,9 +333,9 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   });
 
   test('P-018e existing (joinable) response renders the join-offer card with Join', async ({ page }) => {
-    await stubBase(page);
+    const sync = await stubBase(page);
     const cap = await stubFromRepo(page, [EXISTING_JOINABLE_RESPONSE]);
-    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, sync);
     assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
@@ -350,9 +355,9 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
   });
 
   test('P-018f existing non-joinable response offers Create-anyway → force:true → duplicate-flagged summary', async ({ page }) => {
-    await stubBase(page);
+    const sync = await stubBase(page);
     const cap = await stubFromRepo(page, [EXISTING_UNJOINABLE_RESPONSE, FORCED_CREATED_RESPONSE]);
-    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`, sync);
     assertMounted(mounted, SKIP_MSG);
 
     const dialog = await openGithubUrlForm(page);
