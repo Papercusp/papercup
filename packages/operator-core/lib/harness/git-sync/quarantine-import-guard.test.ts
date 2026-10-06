@@ -8,7 +8,7 @@
  * failure is skipped (fail open) rather than blocking the commit.
  */
 import { describe, it, expect } from 'vitest';
-import { detectQuarantineImporters } from './quarantine-import-guard';
+import { detectQuarantineImporters, extractSideEffectOnlySpecifiers } from './quarantine-import-guard';
 
 describe('detectQuarantineImporters', () => {
   it('EI-19932544083689229: quarantines a dirty *.test.ts sibling that imports an already-quarantined source', async () => {
@@ -156,5 +156,94 @@ describe('detectQuarantineImporters', () => {
       alreadyQuarantined: ['lib/quarantined.ts'],
     });
     expect(offenders).toEqual([]);
+  });
+});
+
+// WI-10006940: the live-lock pass treated bare side-effect imports as infectious, so a
+// registration hub (agent-tools/index.ts) bridged a peer's lock on one tool file into
+// every route that imports the hub for registration. Shape mirrors the measured chain:
+// locked tool deps -> dirty complete.ts (binding) -> dirty index.ts (side-effect) ->
+// dirty device/plans.ts (side-effect) -> dirty plans.test.ts (binding).
+describe('detectQuarantineImporters — side-effect edges (WI-10006940)', () => {
+  const chain: Record<string, string> = {
+    'tools/complete.ts': `import { gate } from './spec-store';\nexport const complete = gate;\n`,
+    'tools/index.ts': `import './calendar/delete';\nimport './complete';\n`,
+    'routes/plans.ts': `import '../tools/index';\nexport const route = 1;\n`,
+    'routes/plans.test.ts': `import { route } from './plans';\nit('r', () => route);\n`,
+  };
+  const dirty = ['tools/spec-store.ts', ...Object.keys(chain)];
+  const files = (rel: string) => Promise.resolve(chain[rel] ?? null);
+
+  it('(a) commits a dirty hub whose side-effect import target is tracked in HEAD; holds only the binding importer', async () => {
+    const headChecks: string[] = [];
+    const offenders = await detectQuarantineImporters({
+      readText: files,
+      dirtyFiles: dirty,
+      alreadyQuarantined: ['tools/spec-store.ts'],
+      sideEffectTargetAtHead: async (rel) => {
+        headChecks.push(rel);
+        return true; // complete.ts is a tracked, modified file
+      },
+    });
+    expect(offenders.map((o) => o.file)).toEqual(['tools/complete.ts']);
+    expect(headChecks).toEqual(['tools/complete.ts']);
+  });
+
+  it('(b) still holds the side-effect importer when its target is ABSENT from HEAD (a new file)', async () => {
+    const offenders = await detectQuarantineImporters({
+      readText: files,
+      dirtyFiles: dirty,
+      alreadyQuarantined: ['tools/spec-store.ts'],
+      sideEffectTargetAtHead: async () => false,
+    });
+    expect(offenders.map((o) => o.file).sort()).toEqual(
+      ['routes/plans.test.ts', 'routes/plans.ts', 'tools/complete.ts', 'tools/index.ts'].sort(),
+    );
+  });
+
+  it('(c) a BINDING import of a locked tracked file is still held even when it is present in HEAD', async () => {
+    const offenders = await detectQuarantineImporters({
+      readText: async (rel) => (rel === 'lib/user.ts' ? `import { x } from './locked';\n` : null),
+      dirtyFiles: ['lib/locked.ts', 'lib/user.ts'],
+      alreadyQuarantined: ['lib/locked.ts'],
+      sideEffectTargetAtHead: async () => true,
+    });
+    expect(offenders.map((o) => o.file)).toEqual(['lib/user.ts']);
+  });
+
+  it('a HEAD-check failure on a side-effect target fails safe (held)', async () => {
+    const offenders = await detectQuarantineImporters({
+      readText: async (rel) => (rel === 'lib/hub.ts' ? `import './locked';\n` : null),
+      dirtyFiles: ['lib/locked.ts', 'lib/hub.ts'],
+      alreadyQuarantined: ['lib/locked.ts'],
+      sideEffectTargetAtHead: async () => {
+        throw new Error('git unavailable');
+      },
+    });
+    expect(offenders.map((o) => o.file)).toEqual(['lib/hub.ts']);
+  });
+
+  it('without the seam, side-effect edges keep the historical infectious behavior', async () => {
+    const offenders = await detectQuarantineImporters({
+      readText: files,
+      dirtyFiles: dirty,
+      alreadyQuarantined: ['tools/spec-store.ts'],
+    });
+    expect(offenders).toHaveLength(4);
+  });
+});
+
+describe('extractSideEffectOnlySpecifiers', () => {
+  it('keeps bare imports and drops any specifier also consumed through a binding form', () => {
+    const text = [
+      `import './a';`,
+      `import "./b";`,
+      `import { y } from './b';`,
+      `// import './commented';`,
+      `const z = await import('./c');`,
+      `import './d'; import './e';`,
+      `export * from './e';`,
+    ].join('\n');
+    expect([...extractSideEffectOnlySpecifiers(text)].sort()).toEqual(['./a', './d']);
   });
 });

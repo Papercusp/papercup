@@ -61,6 +61,17 @@ export interface QuarantineImportGuardDeps {
    *  When omitted, the historical conservative behavior treats every quarantined
    *  path as absent from HEAD (useful for the pure guard tests). */
   isResolvableAtHead?: (relPath: string) => Promise<boolean>;
+  /** WI-10006940: whether the TARGET of a bare side-effect import (`import './x'`)
+   *  is present in HEAD. A side-effect import consumes no symbols, so when its target
+   *  is tracked in HEAD, committing the importer leaves HEAD resolvable and
+   *  type-consistent even though the target's own edit is held back. When provided,
+   *  a side-effect-ONLY edge propagates the hold only when its target is ABSENT from
+   *  HEAD (or the check fails — fail safe). Binding edges (`from`, dynamic `import()`,
+   *  `require`) keep the conservative rule. Omitted ⇒ every edge is infectious (the
+   *  historical behavior). Without this, a registration hub (agent-tools/index.ts,
+   *  all bare `import './…'`) bridged ANY peer's lock on one tool file into every
+   *  route that imports the hub for registration. */
+  sideEffectTargetAtHead?: (relPath: string) => Promise<boolean>;
   /** Human-readable source of the exclusion for the diagnostic; defaults to the
    *  historical content/deletion guard wording. */
   exclusionLabel?: string;
@@ -89,6 +100,27 @@ function isScannableCandidate(path: string): boolean {
   return RESOLVABLE_EXTS.some((ext) => path.endsWith(ext));
 }
 
+const BARE_SIDE_EFFECT_IMPORT_RE = /(?:^|[;{}])[ \t]*import[ \t]*['"](\.[^'"]+)['"]/gm;
+const BINDING_IMPORT_RE =
+  /from\s*['"](\.[^'"]+)['"]|import\s*\(\s*['"](\.[^'"]+)['"]|require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+
+/**
+ * Relative specifiers that a file reaches ONLY through bare side-effect imports
+ * (`import './x';`). A specifier that also appears in any binding form (`from`,
+ * `export … from`, dynamic `import()`, `require`) is excluded — the conservative
+ * reading wins whenever a file consumes symbols from the module anywhere.
+ */
+export function extractSideEffectOnlySpecifiers(text: string): Set<string> {
+  const bare = new Set<string>();
+  for (const m of text.matchAll(BARE_SIDE_EFFECT_IMPORT_RE)) bare.add(m[1]);
+  if (bare.size === 0) return bare;
+  for (const m of text.matchAll(BINDING_IMPORT_RE)) {
+    const spec = m[1] ?? m[2] ?? m[3];
+    if (spec) bare.delete(spec);
+  }
+  return bare;
+}
+
 /**
  * Detect dirty files that (transitively) import an already-quarantined path. Returns
  * `ContentOffender`-shaped records so `commitOneRepo` can fold them into the SAME
@@ -101,6 +133,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
     dirtyFiles,
     alreadyQuarantined,
     isResolvableAtHead,
+    sideEffectTargetAtHead,
     exclusionLabel = 'content/deletion guard',
     log,
   } = deps;
@@ -134,6 +167,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
   // Read every candidate's specifiers ONCE (fixed-point iteration below reuses this —
   // no re-reading a file just because it wasn't infected on an earlier pass).
   const specsByFile = new Map<string, string[]>();
+  const sideEffectOnlyByFile = new Map<string, Set<string>>();
   await mapPool(candidates, MAX_READ_CONCURRENCY, async (file) => {
     let text: string | null;
     try {
@@ -144,7 +178,28 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
     }
     if (text == null) return; // gone/unreadable (e.g. a deletion in the dirty set)
     specsByFile.set(file, extractRelativeImportSpecifiers(text));
+    if (sideEffectTargetAtHead) sideEffectOnlyByFile.set(file, extractSideEffectOnlySpecifiers(text));
   });
+
+  // Actual repo path behind each normalized infectious target, so a side-effect edge
+  // can ask HEAD about the real file (seeded paths + importers quarantined below).
+  const actualPathByNormalized = new Map<string, string>();
+  for (const p of infectiousPaths) {
+    const n = normalizeModulePath(p);
+    if (!actualPathByNormalized.has(n)) actualPathByNormalized.set(n, p);
+  }
+  const headPresence = new Map<string, Promise<boolean>>();
+  const targetPresentAtHead = (path: string): Promise<boolean> => {
+    let cached = headPresence.get(path);
+    if (!cached) {
+      cached = (sideEffectTargetAtHead as (p: string) => Promise<boolean>)(path).catch((e) => {
+        log?.(`[quarantine-import-guard] could not check side-effect target ${path} in HEAD — treating it as absent (fail safe): ${errMsg(e)}`);
+        return false;
+      });
+      headPresence.set(path, cached);
+    }
+    return cached;
+  };
 
   const offenders: ContentOffender[] = [];
   // Fixed point: newly-quarantined importers can themselves be imported by another
@@ -156,14 +211,20 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
       if (quarantined.has(file)) continue;
       const specs = specsByFile.get(file);
       if (!specs || specs.length === 0) continue;
+      const sideEffectOnly = sideEffectOnlyByFile.get(file);
       for (const spec of specs) {
         const resolved = resolveRelativeSpecifier(file, spec);
         if (!quarantinedNormalized.has(resolved)) continue;
-        // Which already-quarantined path this resolves to (for the error message —
-        // several could normalize the same; report the first match).
-        const target = infectiousPaths.find((p) => normalizeModulePath(p) === resolved) ?? resolved;
+        // Which quarantined path this resolves to (for the error message — several
+        // could normalize the same; report the first match).
+        const target = actualPathByNormalized.get(resolved) ?? resolved;
+        // WI-10006940: a bare side-effect import consumes no symbols — it only needs
+        // the target to EXIST in HEAD. Propagate through it only when it does not.
+        if (sideEffectOnly?.has(spec) && (await targetPresentAtHead(target))) continue;
         quarantined.add(file);
-        quarantinedNormalized.add(normalizeModulePath(file));
+        const fileNormalized = normalizeModulePath(file);
+        quarantinedNormalized.add(fileNormalized);
+        if (!actualPathByNormalized.has(fileNormalized)) actualPathByNormalized.set(fileNormalized, file);
         offenders.push({
           file,
           detectorKey: 'quarantined-importer',

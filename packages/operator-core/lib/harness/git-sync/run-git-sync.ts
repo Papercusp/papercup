@@ -5152,12 +5152,17 @@ async function commitOneRepoWithScratch(
     // produce an incomplete HEAD. Hold dirty importers and their transitive
     // chain whenever their dependency is excluded by a live lock. Unlike the
     // content guard above, resolving the old module at HEAD is not enough:
-    // its old exports may not satisfy the importer's new symbols.
+    // its old exports may not satisfy the importer's new symbols. That rationale
+    // covers BINDING edges only — a bare side-effect import (`import './x'`)
+    // consumes no symbols, so it holds only when its target is absent from HEAD
+    // (WI-10006940: otherwise a registration hub bridges any peer lock into
+    // every route that imports the hub).
     if (atomicExclusions.paths.length > 0) {
       const liveLockImporterErrors = await detectQuarantineImporters({
         readText: (rel) => o.readText(repoPath, rel),
         dirtyFiles: dirty,
         alreadyQuarantined: atomicExclusions.paths,
+        sideEffectTargetAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
         exclusionLabel: 'live-lock exclusion',
         log: o.log,
       });
