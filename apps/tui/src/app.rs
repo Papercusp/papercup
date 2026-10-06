@@ -3860,14 +3860,20 @@ impl App {
                     entry.backend,
                 )
             })?;
-        self.su_adopted_sessions
-            .insert(adv_session_id)
-            .then(|| Action::AttachSuSession {
-                harness: self.harness.clone(),
-                chat_id,
-                adv_session_id,
-                backend,
-            })
+        if !self.su_adopted_sessions.insert(adv_session_id) {
+            return None;
+        }
+        // WI-10006770: the engine is the adopted session's, as on the picker
+        // path. Without this a refused restore of a Codex conversation fell
+        // back to the operator's configured default and read "Claude could
+        // not start".
+        self.su_backend = Some(backend);
+        Some(Action::AttachSuSession {
+            harness: self.harness.clone(),
+            chat_id,
+            adv_session_id,
+            backend,
+        })
     }
 
     pub fn reset_agent_chat_binding(&mut self) {
@@ -20421,6 +20427,31 @@ mod tests {
         assert!(a
             .chat_raw_failure()
             .is_some_and(|raw| raw.contains("attached_engine_start_failed")));
+
+        // WI-10006770: a restored (adopted) Codex conversation whose attach
+        // the operator refuses names Codex, not the configured default engine.
+        let mut c = chat_first_app();
+        c.agent_chat_id = Some("chat-codex".into());
+        c.su_session_inventory = vec![inventory_row_for(
+            "chat-codex",
+            crate::su_session::SuSessionReconciliation::Attached,
+        )];
+        assert!(matches!(
+            c.adopt_bound_su_session(),
+            Some(Action::AttachSuSession {
+                backend: crate::su_session::SuSessionBackend::Codex,
+                ..
+            })
+        ));
+        c.update(Event::SuSessionRefused {
+            code: "attached_engine_start_failed".into(),
+            message: "The saved Codex SU configuration is not ready: AGENTS.md is missing".into(),
+        });
+        let sentence = c.chat_failure_sentence().unwrap_or_default();
+        assert!(
+            sentence.starts_with("Codex could not start: The saved Codex SU configuration is not ready"),
+            "{sentence}"
+        );
 
         let mut b = chat_first_app();
         b.chat_input = "hello".into();
