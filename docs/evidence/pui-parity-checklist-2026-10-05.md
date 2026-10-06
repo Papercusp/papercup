@@ -276,12 +276,12 @@ with a positive control).
 | 15 | Multiline input | Ctrl+J and `\`+Enter | Ctrl+J; `\`+Enter submits | Ctrl+J and `\`+Enter on both engines | Level |
 | 16 | Paste (40 lines) | Chip | Chip | "[Pasted text #1 +39 lines]" | Level (G-7 closed) |
 | 17 | @ file mention | "@cal" lists calc.js and calc.test.js under the prompt at once | Not captured (no list in the frame) | "Attach a file · 2 matches" popup on both engines. Right after a cleared paste the popup is open but not drawn until the next key (reproduced) | Level after WI-10006651 (13:28Z): the popup draws at once after a cleared paste on both engines |
-| 18 | /status, context and cost | Settings › Status panel | /status panel | Claude: model, account, engine, approvals, context 19077/1000000, cost. Codex: the same without context | Level on Claude; Codex → WI-10006653 |
-| 19 | Idle footer | "⏸ manual mode on · ? for shortcuts" | Model · cwd · task | Claude: model · approvals · cwd · context % · cost. Codex: no context % until after a resume (reproduced) | Ahead on Claude; Codex → WI-10006653 |
+| 18 | /status, context and cost | Settings › Status panel | /status panel | Claude: model, account, engine, approvals, context 19077/1000000, cost. Codex: the same without context | Level after WI-10006653 (14:02Z, real Codex, installed pui b2f07aeeaa): a live conversation's /status shows "context N/M (N% left)" with no resume; e2e `a live reply reports context left…` passes |
+| 19 | Idle footer | "⏸ manual mode on · ? for shortcuts" | Model · cwd · task | Claude: model · approvals · cwd · context % · cost. Codex: no context % until after a resume (reproduced) | Ahead on both after WI-10006653 (14:02Z): the Codex footer reads "gpt-6.1-sol · auto-edit · <dir> · 98% context left" after the first live reply |
 | 20 | Unknown command | Transcript line | Transcript line | Transcript line "No command /notacommand…" and "no command matches" in the popup | Level (G-10 closed) |
 | 21 | Ctrl+C with a draft | 1st clears, 3rd exits | 1st clears, 2nd exits | 1st clears ("Press Ctrl+C again to exit"), 2nd exits | Level with Codex (G-11 closed) |
 | 22 | Resume | `--continue` ready 1.9 s, recall correct | `resume --last` 0.5 s, recall correct | Claude: ready 0.1 s, /resume picker, recall correct. Codex: once the picker said "No earlier conversations" for a conversation that existed, so recall was never sent; the repeat listed it at once and recall was correct | Level on Claude; Codex glitch unconfirmed → WI-10006654 |
-| 23 | Errors: usage limit | - | - | Not exercised (no account was walled); P-031 covered the wording; the line still offers no next step | Open → WI-10006626 |
+| 23 | Errors: usage limit | - | - | Not exercised (no account was walled); P-031 covered the wording; the line still offers no next step | Level after WI-10006626 (14:15Z): chat-first adds "Wait for the reset, or type /backend to continue on another engine in a new conversation." under the failure line (stock Claude Code: /usage-credits). Rendered-frame test only; no account was walled to capture it live |
 | 24 | Choosing the account/route | Login or env | Login | `pui --account auto`; /status names the account | Level (G-14 closed) |
 | 25 | Zellij panes | n/a | n/a | Not exercised by this battery | P-030 |
 
@@ -294,6 +294,13 @@ Verdict: 22 rows level or ahead on the Claude engine (9 and 17 with a filed fix)
 Before re-asking Avi for R-05 (P-006): ship WI-10006646 live and fix WI-10006652, WI-10006651 and
 WI-10006653 [self-imposed under AUTO, owner:Avi #1356], since the model picker was one of the reasons
 for the 2026-10-02 rejection.
+
+Post-fix verdict (2026-10-06 14:05Z, installed pui b2f07aeeaa built from the tree, :3170 728748a085): all
+four fixes are done and verified on real engines (rows 9, 12, 17 above; 18 and 19 by the real-Codex e2e
+`a live reply reports context left in the footer and /status without a resume`). Claude engine: 24 rows
+level or ahead (23 by WI-10006626 at 14:15Z, frame test), 1 not in scope (25, P-030).
+Codex engine: 18 and 19 now level; still not level are 7 (box config, not pui) and 22 (one unconfirmed
+resume-picker glitch, WI-10006654). R-05 itself is Avi's verdict; it is not graded here.
 
 ## Where pui is already level or ahead
 
