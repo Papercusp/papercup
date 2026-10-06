@@ -33,6 +33,7 @@ import {
   resolveIntegrationPushRemote,
   type PotIntegrationModeRead,
 } from './pot-integration-mode';
+import { parseIntegrationModeAnswer } from './integration-mode-question';
 
 // ── real-git helpers (subprocess; mirrors multi-peer-convergence) ───────────────
 
@@ -227,6 +228,42 @@ describe('pot integration mode — where a real git-sync tick pushes (P-014, SPE
       expect(r.cfg.push).toBe(false);
       expect(await headOf(t.work)).not.toBe(t.seed);
       expect(await tipOf(t.upstream)).toBe(t.seed);
+      expect(await tipOf(t.fork)).toBe(t.seed);
+    },
+  );
+});
+
+describe('creation-time answer reaches real git (P-017, SPEC-P-017-create-question)', () => {
+  /** The create paths forward the raw form/tool answer through parseIntegrationModeAnswer;
+   *  an unanswered/unknown value leaves the setting absent, i.e. the direct default. */
+  function readFromAnswer(answer: unknown): PotIntegrationModeRead {
+    const mode = parseIntegrationModeAnswer(answer);
+    return mode ? { mode, source: 'set' } : { mode: 'direct', source: 'absent' };
+  }
+
+  it("answering 'Into a working copy' (review) sends the agents' work to the fork, never the main repository", async () => {
+    const t = await makeTopology('answer-review');
+    await agentEdit(t.work, 'agent.txt');
+
+    const r = await tick('pim-answer-review', t, readFromAnswer('review'), t.fork);
+
+    expect(r.status).toBe('synced');
+    const head = await headOf(t.work);
+    expect(await tipOf(t.fork)).toBe(head);
+    expect(await tipOf(t.upstream)).toBe(t.seed);
+  });
+
+  it.each([['direct'], [undefined], ['Review'], ['fork']])(
+    "answer %s keeps today's behaviour: work goes straight into the main repository",
+    async (answer) => {
+      const t = await makeTopology(`answer-${String(answer)}`);
+      await agentEdit(t.work, 'agent.txt');
+
+      const r = await tick(`pim-answer-${String(answer)}`, t, readFromAnswer(answer), t.fork);
+
+      expect(r.status).toBe('synced');
+      const head = await headOf(t.work);
+      expect(await tipOf(t.upstream)).toBe(head);
       expect(await tipOf(t.fork)).toBe(t.seed);
     },
   );
