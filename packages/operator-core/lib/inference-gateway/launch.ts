@@ -27,6 +27,7 @@ import {
   parseUnifiedWindow,
   parseUnified7dWindow,
   serviceableAdmissionFor,
+  type GatewayCarryTrialBinding,
   type InferenceGateway,
 } from './gateway';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
@@ -133,6 +134,10 @@ export async function resolvePriorityTiers(
 }
 
 export interface GatewayServiceOptions {
+  /** Existing trusted, scoped provider-attempt binding. The service uses the
+   * normal account pool and credential resolvers; the controller owns approval,
+   * reservation/settlement and the synchronous final-send authority check. */
+  carryTrial?: GatewayCarryTrialBinding;
   port?: number;
   workspace?: string;
   concurrency?: number;
@@ -694,6 +699,16 @@ function createOptionalFailoverPool(
 }
 
 export async function startGatewayService(opts: GatewayServiceOptions = {}): Promise<RunningGatewayService> {
+  const binding = opts.carryTrial;
+  if (binding !== undefined && (!binding || typeof binding !== 'object' || Array.isArray(binding))) {
+    throw new Error('inference-gateway: invalid carry trial binding');
+  }
+  // Account/credential setup is asynchronous. Capture authority before that
+  // wait so mutation cannot remove the guard or substitute its scope/protocols.
+  // Preserve malformed protocol values for createInferenceGateway's validator.
+  const carryTrial = binding === undefined ? undefined : Object.freeze({ ...binding,
+    ...(Array.isArray(binding.protocols) ? { protocols: Object.freeze([...binding.protocols]) } : {}),
+  });
   const log = opts.log ?? ((lvl, m) => console.log(`[inference-gateway:${lvl}] ${m}`));
   // P-012: every deployment path (dev tsx, systemd unit, packaged re-exec, container) enters the
   // gateway through THIS function, which is what lets one call make "equivalent inputs produce
@@ -980,6 +995,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   }
 
   const gateway = createInferenceGateway({
+    ...(carryTrial === undefined ? {} : { carryTrial }),
     readAcceptedOperationModelPolicy: async (ownerId, backend = 'claude') => {
       const [{ activeWorkspaceId }, { readActiveOperationModelPolicy }] = await Promise.all([
         import('../workspace-registry'),
