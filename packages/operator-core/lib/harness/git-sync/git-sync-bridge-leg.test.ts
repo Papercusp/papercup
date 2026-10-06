@@ -60,6 +60,21 @@ vi.mock('../../sync/pot-git/hive-effect-authority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   loadHiveEffectAuthority: loadHiveEffectAuthorityMock,
 }));
+// An OWNER key makes the leg resolve its serving actor; keep that hermetic and fast
+// (the real path boots a harness and waits 30s before giving up).
+vi.mock('../../sync/hyperbee/boot-all', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getBootedHarness: () => undefined,
+  bootSingleHarness: async () => {
+    throw new Error('unit test: no harness boot');
+  },
+}));
+vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getPgGitServingCapability: async () => {
+    throw new Error('unit test: no advertised serving');
+  },
+}));
 vi.mock('./git-sync-events', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   emitGitSyncEgressedEvent: emitGitSyncEgressedEventMock,
@@ -393,10 +408,16 @@ describe('runGithubBridgeLeg — WI-10006624 non-owner members do not bridge Git
       sign: async () => Buffer.alloc(64),
     });
     runGithubBridgeTickMock.mockResolvedValue(clearOutcome);
+    // No serving actor in a unit test: the leg says so and continues (effectAuthority null).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await runGithubBridgeLeg(SLUG, WS);
 
+    // Keyed on the owning KEY, not on the serving actor: an owner whose actor is
+    // missing still bridges and REPORTS the refusal instead of silently skipping.
     expect(await writerSeam()).toBe(true);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('serving unavailable'))).toBe(true);
+    warn.mockRestore();
   });
 });
 
