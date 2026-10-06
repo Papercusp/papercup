@@ -70,7 +70,33 @@ describe('native Gym LLM consumer binding', () => {
     const request = { model: 'gpt-6.1-sol:xhigh', maxTokens: 500,
       messages: [{ role: 'user' as const, content: 'propose' }] };
     await expect(proposer(request)).resolves.toBe(receipt);
-    expect(call.mock.calls[0]![0]).toEqual({ ...request, priority: 'gym', harnessSlug: 'native-harness' });
+    expect(call.mock.calls[0]![0]).toEqual({ ...request, requireOutputTokenLimit: true,
+      priority: 'gym', harnessSlug: 'native-harness' });
+  });
+
+  it.each([undefined, 0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'refuses an absent or invalid native proposer bound %s before transport', async maxTokens => {
+      const call = vi.fn(async (_request: NativeGymRequest) => receipt);
+      const sleep = vi.fn(async () => {});
+      const { proposer } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {}, sleep });
+      await expect(proposer({ model: 'claude-sonnet-4-6', maxTokens,
+        messages: [{ role: 'user', content: 'PRIVATE_PROPOSER_TASK' }] }))
+        .rejects.toMatchObject({ costUsd: 0 });
+      expect(call).not.toHaveBeenCalled(); expect(sleep).not.toHaveBeenCalled();
+    });
+
+  it('preserves the configured native proposer bound and request across a measured-zero retry', async () => {
+    const request = { model: 'gpt-6.1-sol:xhigh', maxTokens: 257,
+      messages: [{ role: 'user' as const, content: 'PRIVATE_PROPOSER_TASK' }] };
+    const original = structuredClone(request);
+    const call = vi.fn().mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { costUsd: 0 }))
+      .mockResolvedValue(receipt);
+    const { proposer } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {}, sleep: async () => {
+      request.maxTokens = 1; request.model = 'changed'; request.messages[0]!.content = 'changed';
+    } });
+    await expect(proposer(request)).resolves.toBe(receipt);
+    expect(call.mock.calls).toEqual([0, 1].map(() => [{ ...original, requireOutputTokenLimit: true,
+      priority: 'gym', harnessSlug: 'native-harness' }]));
   });
 });
 
@@ -182,6 +208,27 @@ function fakeLlm(json: unknown): GymLlmCall {
 }
 
 describe('proposeCandidate', () => {
+  it('forwards a supplied proposer output bound without changing its model or prompt', async () => {
+    const requests: Parameters<GymLlmCall>[0][] = [];
+    const llmCall: GymLlmCall = async request => {
+      requests.push(request); return { text: '', json: { promptOverrides: { worker: 'x' }, rationale: 'r' },
+        costUsd: 0, inputTokens: 0, outputTokens: 0 };
+    };
+    await proposeCandidate({ ...input, maxTokens: 257 } as ProposeInput, { llmCall });
+    expect(requests[0]).toMatchObject({ model: input.proposerModel, maxTokens: 257 });
+    expect(requests[0]!.system).toBe(buildProposerPrompt(input).system);
+    expect(requests[0]!.messages[0]!.content).toBe(buildProposerPrompt(input).user);
+    await proposeCandidate(input, { llmCall });
+    expect(requests[1]).not.toHaveProperty('maxTokens');
+  });
+
+  it.each([0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid supplied proposer output bound %s with known-zero usage', async maxTokens => {
+      const llmCall = vi.fn(fakeLlm({ promptOverrides: { worker: 'x' }, rationale: 'r' }));
+      await expect(proposeCandidate({ ...input, maxTokens } as ProposeInput, { llmCall }))
+        .rejects.toMatchObject({ costUsd: 0 });
+      expect(llmCall).not.toHaveBeenCalled();
+    });
   it.each([
     { label: 'absent', usage: {}, subtotal: 0 },
     { label: 'NaN', usage: { costUsd: NaN }, subtotal: 0 },

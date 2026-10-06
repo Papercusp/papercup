@@ -59,7 +59,7 @@ import { resolveGymAccountWorkspace } from './account-workspace';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
-import { bindNativeGymLlmCalls } from './proposer';
+import { bindNativeGymLlmCalls, requireNativeGymOutputLimit } from './proposer';
 
 // Anchored on the checkout, not on this module's directory: this module is inlined into the
 // esbuild host bundle, where import.meta.url is the bundle's URL, so both a `..` climb and a
@@ -163,6 +163,8 @@ export interface RunOneAutoloopCycleOptions {
   agentCmd?: string;
   /** Proposer model (default: the canonical learning model). */
   proposerModel?: string;
+  /** Required in real mode. Supplied output limit; no implicit token default. */
+  proposerMaxTokens?: number;
   /** QD novelty weight ∈ [0,1] (P-011/D-008; default env GYM_LOOP_NOVELTY_WEIGHT / 0.3). */
   noveltyWeight?: number;
   log?: (msg: string) => void;
@@ -190,6 +192,16 @@ export async function runOneAutoloopCycle(
   opts: RunOneAutoloopCycleOptions = {},
 ): Promise<AutoloopCycleOutcome> {
   const FAKE = opts.fake ?? process.env.GYM_LOOP_FAKE === '1';
+  // Refuse before probing ports, changing routing env or provisioning anything.
+  // Missing native policy is not authority to dispatch an unbounded proposer.
+  const proposerMaxTokens = opts.proposerMaxTokens;
+  if (!FAKE) {
+    try { requireNativeGymOutputLimit(proposerMaxTokens, 'proposer'); }
+    catch (error) {
+      return { ok: false, result: null, report: { mode: 'real', harnessSlug: slug,
+        error: error instanceof Error ? error.message : String(error), costUsd: 0 } };
+    }
+  }
   // Explicit pin (opts.port or GYM_LOOP_PORT) always wins; otherwise probe a genuinely-free
   // ephemeral port so concurrent/manual cycles on this box never collide (see
   // GYM_LOOP_PORT_RANGE above for the full rationale — EI-18154750714519366).
@@ -496,6 +508,7 @@ export async function runOneAutoloopCycle(
       judgeCall: judge,
       proposerCall: proposer,
       proposerModel: PROPOSER_MODEL,
+      ...(proposerMaxTokens === undefined ? {} : { proposerMaxTokens }),
       // WI-5697: reuse this run's own random token (already minted above for the ephemeral
       // DB name / log path) so every candidate id is unique PER RUN, not just per cycle —
       // without this, autoloop cycles (almost always maxCycles=1) always minted "cand-c1",

@@ -30,6 +30,8 @@ export interface ProposeInput {
   changelog: string;
   /** Model that proposes — should differ from the judge for the same decorrelation spirit. */
   proposerModel: string;
+  /** Supplied output bound; no model-dependent default is invented here. */
+  maxTokens?: number;
   /**
    * P-032 (learning-system-audit): operator improvement ideas TRIAGED TO THE GYM
    * (payload.ideaLifecycle.triageDecision='gym'), pre-formatted one per line.
@@ -98,9 +100,17 @@ type NativeGymLlmRequest = Parameters<JudgeLlmCall>[0] & {
   requireOutputTokenLimit?: boolean;
 };
 
+/** Shared native admission guard, used before cycle setup and before transport. */
+export function requireNativeGymOutputLimit(value: unknown, consumer: 'judge' | 'proposer'): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw Object.assign(new RangeError(`Native Gym ${consumer} requires its configured output token limit`), { costUsd: 0 });
+  }
+  return value;
+}
+
 /** The real cycle's transport binding. A frozen judge limit must be enforced
  * by the selected provider route, including SDK retries. This does not issue
- * a monetary grant; the proposer still needs its admitted resource policy. */
+ * a monetary grant; both consumers still need their admitted resource policy. */
 export function bindNativeGymLlmCalls(
   call: (opts: NativeGymLlmRequest) => ReturnType<JudgeLlmCall>,
   harnessSlug: string,
@@ -114,12 +124,14 @@ export function bindNativeGymLlmCalls(
   return {
     async judge(opts) {
       const request = snapshot(opts);
-      if (!Number.isSafeInteger(request.maxTokens) || request.maxTokens! <= 0) {
-        throw Object.assign(new RangeError('Native Gym judge requires its frozen output token limit'), { costUsd: 0 });
-      }
+      requireNativeGymOutputLimit(request.maxTokens, 'judge');
       return dispatch({ ...request, requireOutputTokenLimit: true });
     },
-    proposer: opts => dispatch(snapshot(opts)),
+    async proposer(opts) {
+      const request = snapshot(opts);
+      requireNativeGymOutputLimit(request.maxTokens, 'proposer');
+      return dispatch({ ...request, requireOutputTokenLimit: true });
+    },
   };
 }
 
@@ -221,6 +233,8 @@ export async function proposeCandidate(
   input: ProposeInput,
   deps: { llmCall: GymLlmCall },
 ): Promise<CandidateProposal> {
+  const maxTokens = input.maxTokens;
+  if (maxTokens !== undefined) requireNativeGymOutputLimit(maxTokens, 'proposer');
   const { system, user } = buildProposerPrompt(input);
   let res: Awaited<ReturnType<GymLlmCall>>;
   try {
@@ -229,6 +243,7 @@ export async function proposeCandidate(
       system,
       messages: [{ role: 'user', content: user }],
       responseFormat: 'json',
+      ...(maxTokens === undefined ? {} : { maxTokens }),
     });
   } catch (error) {
     // A provider can attach costUsd even when the request ultimately throws.
