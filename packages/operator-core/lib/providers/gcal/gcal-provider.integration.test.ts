@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { HostFetch, HostFetchRequest, HostFetchResponse, ProviderAdapter } from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { proposeCalendarEvent, updateCalendarEvent, type CalendarDeps } from '../../capability-verbs/calendar';
+import { deleteCalendarEvent, proposeCalendarEvent, updateCalendarEvent, type CalendarDeps } from '../../capability-verbs/calendar';
 import { CANONICAL_SOURCE_BY_DATATYPE, resolveCanonicalDocument } from '../../capability-verbs/resolve';
 import { getDatatype, upsertDatatype } from '../../datatype-registry-store';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../../external-triggers/ingestion';
@@ -116,6 +116,7 @@ function calendarApi(expectedSource: () => string, calendar: Calendar) {
       });
     }
     if (method === 'PATCH' && eventId) return respond(200, { id: eventId, status: 'confirmed', attendees: [] });
+    if (method === 'DELETE' && eventId) return { status: 204, headers: {}, body: '', bodyEncoding: 'utf8' };
     throw new Error(`gcal integration: unscripted request ${method} ${request.url}`);
   };
   return { fetch, seen };
@@ -411,5 +412,20 @@ describe('calendar verbs dispatch through the registered provider (D-021)', () =
     expect(writes[0].url.searchParams.get('sendUpdates')).toBe('all');
     expect(writes[0].body).toEqual({ location: 'Room 9' });
     expect(updated).toMatchObject({ id: 'held', summary: 'Event held' });
+  });
+
+  it('calendar:delete cancels a held event through the source that holds it, and refuses an event the owner does not hold', async () => {
+    const deleted = await deleteCalendarEvent(org.adminSql, { workspaceId: WS, userId, eventId: 'held', agentOwnerId: null }, deps);
+    const writes = api.seen.filter((r) => r.method !== 'GET');
+    expect(writes.map((r) => [r.method, r.calendarId, r.url.pathname.split('/').pop()])).toEqual([['DELETE', 'primary', 'held']]);
+    expect(writes[0].url.searchParams.get('sendUpdates')).toBe('all');
+    expect(deleted).toMatchObject({ id: 'held', nativeId: 'held', status: 'cancelled', summary: 'Event held' });
+    expect(deleted.sourceId).toEqual(expect.any(String));
+
+    api.seen.length = 0;
+    await expect(
+      deleteCalendarEvent(org.adminSql, { workspaceId: WS, userId, eventId: 'read-out-of-a-message', agentOwnerId: null }, deps),
+    ).rejects.toThrow();
+    expect(api.seen.filter((r) => r.method !== 'GET')).toEqual([]);
   });
 });

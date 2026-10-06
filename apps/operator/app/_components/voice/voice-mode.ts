@@ -2759,6 +2759,10 @@ if (
     // drive the real reply-playback path (speak → synth → Audio) and its
     // barge-in stop without needing a brain reply first.
     speak: (t: string) => speak(t, 'system:operator', 'polite', { force: true }),
+    // R-4 lifecycle legs: a NON-forced reply takes the same gates an agent reply
+    // does (voice off, output mute, realtime, leader), which `speak` above skips.
+    reply: (t: string) => speak(t),
+    outputMuted: () => isVoiceOutputMuted(),
     cancel: () => cancelAllSpeech(),
     // The TTS engine the next reply will use, as the client sees the synced prefs.
     ttsEngine: () => readPreferredEngine(),

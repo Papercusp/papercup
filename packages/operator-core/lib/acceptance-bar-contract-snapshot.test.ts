@@ -303,6 +303,12 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     evidence.details = { evidencePlane: 'tree', adequacy: { testLayer: 'integration', pathReachable: true,
       falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
       outcome: 'passed', coverageRungs: { l3: true } } };
+    // Since 39ce2b4152 a counterexample proves falsifiability only when its run's test file
+    // also carries this clause's current passing `test` binding (clauseBoundCurrentTests pairs
+    // them by testRunProvenance.filePath). The counterexamples below spread this row, so each
+    // pairs with its own positive proof, as a real binding would (WI-10006871).
+    evidence.testRunProvenance = { filePath: 'packages/operator-core/lib/bar-proof-fixture.integration.test.ts',
+      commitSha: 'abc123', worktreeDirty: false };
   }
   // Falsifiability is demonstrated by an executed negative control, not by the
   // positive row's `falsifiable: true` self-attestation. Keep the logical

@@ -419,20 +419,63 @@ describe('scorecards:get evidence-first projection', () => {
     )).resolves.toMatchObject({ data: { ok: false, error: 'invalid_evidence_offset' } });
   });
 
-  it('fails explicitly when even the criterion index cannot fit instead of letting transport silently trim it', async () => {
-    readScorecardEvidenceM.mockResolvedValue({
-      kind: 'found',
-      scorecard: { ...scorecard, criteria: Array.from({ length: 300 }, (_, i) => ({
+  it('pages an oversized criterion index while preserving grading-audit metadata', async () => {
+    const gradingAudit = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-10-06T00:00:00.000Z',
+      dispatchReservation: { key: 'reservation-key', reservedAt: '2026-10-06T00:00:00.000Z' },
+    };
+    const largeIndex = {
+      ...scorecard,
+      gradingAudit,
+      criteria: Array.from({ length: 300 }, (_, i) => ({
         key: `criterion-${i}`, rating: 'pass', evidence: 'x'.repeat(200),
-      })) },
-    });
-    const dispatched = await dispatchProjectedTool(
-      lookupByMcpName('scorecards:get')!, 'scorecards:get',
-      { issueId: scorecard.issueId }, makeDispatchContext(), {},
-    );
-    expect(readJsonResult(dispatched.result!)).toMatchObject({
-      ok: false, error: 'scorecard_index_exceeds_inline_budget',
-    });
+      })),
+    };
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: largeIndex });
+    const read = async (args: Record<string, unknown>) => {
+      const dispatched = await dispatchProjectedTool(
+        lookupByMcpName('scorecards:get')!, 'scorecards:get', args, makeDispatchContext(), {},
+      );
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      return readJsonResult<{
+        ok: boolean;
+        scorecard: typeof largeIndex;
+        evidenceRead: {
+          complete: boolean;
+          scope?: string;
+          totalCriteria?: number;
+          criteria?: Array<{ key: string; read: { args: Record<string, unknown> } }>;
+          next?: { args: Record<string, unknown> };
+        };
+        _projection?: unknown;
+      }>(dispatched.result!)!;
+    };
+
+    let args: Record<string, unknown> | undefined = { issueId: largeIndex.issueId };
+    const indexedKeys: string[] = [];
+    let pages = 0;
+    while (args) {
+      expect(++pages).toBeLessThan(30);
+      const result = await read(args);
+      expect(result.ok).toBe(true);
+      expect(result._projection).toBeUndefined();
+      expect(JSON.stringify(result).length).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+      expect(result.scorecard.criteria).toEqual([]);
+      expect(result.scorecard.gradingAudit).toEqual(gradingAudit);
+      expect(result.scorecard.auditTarget).toEqual(scorecard.auditTarget);
+      expect(result.evidenceRead).toMatchObject({
+        complete: false,
+        scope: 'criterion-index',
+        totalCriteria: largeIndex.criteria.length,
+      });
+      expect(result.evidenceRead.criteria?.length).toBeGreaterThan(0);
+      indexedKeys.push(...result.evidenceRead.criteria!.map(({ key }) => key));
+      args = result.evidenceRead.next?.args;
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(indexedKeys).toEqual(largeIndex.criteria.map(({ key }) => key));
   });
 
   it('preserves typed transient contention failures', async () => {

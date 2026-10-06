@@ -102,7 +102,7 @@ describe('external trigger ingestion core', () => {
 
     const rows = await sql<{ sink_kind: string; outcome: string }[]>`
       SELECT sink_kind, outcome FROM harness_shared.trigger_deliveries
-       WHERE dedupe_key = 'gmail:m-1' ORDER BY sink_kind`;
+       WHERE dedupe_key = 'gmail:email-message:m-1' ORDER BY sink_kind`;
     expect(rows).toEqual([
       { sink_kind: 'event-bus', outcome: 'delivered' },
       { sink_kind: 'personal-vault', outcome: 'delivered' },
@@ -179,7 +179,7 @@ describe('external trigger ingestion core', () => {
     );
     const rows = await sql<{ sink_kind: string; outcome: string; attempts: number }[]>`
       SELECT sink_kind, outcome, attempts FROM harness_shared.trigger_deliveries
-       WHERE dedupe_key = 'gmail:m-retry' ORDER BY sink_kind`;
+       WHERE dedupe_key = 'gmail:email-message:m-retry' ORDER BY sink_kind`;
     expect(rows).toEqual([
       { sink_kind: 'event-bus', outcome: 'delivered', attempts: 1 },
       { sink_kind: 'personal-vault', outcome: 'delivered', attempts: 2 },
@@ -198,7 +198,7 @@ describe('external trigger ingestion core', () => {
           (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
            sink_kind, sink_ref, outcome, attempts, updated_at)
         VALUES (
-          'papercusp-workspace', ${sourceId}, ${`gmail:${externalId}`}, 'email-message',
+          'papercusp-workspace', ${sourceId}, ${`gmail:email-message:${externalId}`}, 'email-message',
           'ext:gmail:message.received', '{}'::jsonb, 'event-bus', 'workspace', 'pending', 1,
           now() - (${ageSeconds} * interval '1 second')
         )`;
@@ -241,7 +241,7 @@ describe('external trigger ingestion core', () => {
     );
     const orphanedRows = await sql<{ sink_kind: string; outcome: string; attempts: number }[]>`
       SELECT sink_kind, outcome, attempts FROM harness_shared.trigger_deliveries
-       WHERE dedupe_key = 'gmail:m-orphaned' ORDER BY sink_kind`;
+       WHERE dedupe_key = 'gmail:email-message:m-orphaned' ORDER BY sink_kind`;
     expect(orphanedRows).toEqual([
       { sink_kind: 'event-bus', outcome: 'delivered', attempts: 2 },
       { sink_kind: 'trigger-bindings', outcome: 'delivered', attempts: 1 },
@@ -259,7 +259,7 @@ describe('external trigger ingestion core', () => {
     );
     const [inFlightRow] = await sql<{ outcome: string; attempts: number }[]>`
       SELECT outcome, attempts FROM harness_shared.trigger_deliveries
-       WHERE dedupe_key = 'gmail:m-in-flight' AND sink_kind = 'event-bus'`;
+       WHERE dedupe_key = 'gmail:email-message:m-in-flight' AND sink_kind = 'event-bus'`;
     expect(inFlightRow).toEqual({ outcome: 'pending', attempts: 1 });
   });
 
@@ -318,7 +318,7 @@ describe('external trigger ingestion core', () => {
     expect(vaultDeliver).not.toHaveBeenCalled();
     const rows = await sql<{ sink_kind: string; outcome: string; error: string }[]>`
       SELECT sink_kind, outcome, error FROM harness_shared.trigger_deliveries
-       WHERE dedupe_key = 'gmail:m-2' ORDER BY sink_kind`;
+       WHERE dedupe_key = 'gmail:email-message:m-2' ORDER BY sink_kind`;
     expect(rows).toHaveLength(3);
     expect(rows.every((row) => row.outcome === 'failed' && /invalid_email-message_payload/.test(row.error))).toBe(true);
   });

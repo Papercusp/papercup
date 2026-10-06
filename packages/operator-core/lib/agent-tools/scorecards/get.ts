@@ -30,11 +30,16 @@ export const scorecardGetArgs = z.object({
     .describe('Compatibility alias for issueId for generic id-based read callers; issueId wins when both are supplied.'),
   criterionKey: z.string().min(1).max(200).optional()
     .describe('Read one criterion from an oversized card index. Evidence remains exact; follow evidenceRead.next until complete.'),
+  indexOffset: z.number().int().min(0).optional()
+    .describe('Resume a paged criterion index at evidenceRead.next.args.indexOffset.'),
   evidenceOffset: z.number().int().min(0).optional()
     .describe('UTF-16 offset from evidenceRead.next for one criterion. Concatenate pages in order; never grade from an incomplete page.'),
 }).refine(({ issueId, id }) => issueId !== undefined || id !== undefined, {
   message: 'issueId or id is required',
   path: ['issueId'],
+}).refine(({ criterionKey, indexOffset }) => criterionKey === undefined || indexOffset === undefined, {
+  message: 'criterionKey and indexOffset cannot be combined',
+  path: ['indexOffset'],
 });
 
 // Bound the JSON-encoded result before both payload shaping and the later MCP
@@ -64,13 +69,20 @@ const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset 
   args: { issueId, criterionKey, evidenceOffset },
 });
 
+const criterionIndexReadCall = (issueId: string, indexOffset: number) => ({
+  tool: 'scorecards:get',
+  args: { issueId, indexOffset },
+});
+
 const evidenceReadCallSchema = z.object({
   tool: z.literal('scorecards:get'),
   args: z.object({
     issueId: z.string(),
-    criterionKey: z.string(),
+    criterionKey: z.string().optional(),
     evidenceOffset: z.number().int().nonnegative().optional(),
-  }).passthrough(),
+    indexOffset: z.number().int().nonnegative().optional(),
+  }).passthrough().refine(({ criterionKey, indexOffset }) =>
+    (criterionKey !== undefined) !== (indexOffset !== undefined)),
 }).passthrough();
 
 const scorecardEvidenceCriterionSchema = z.object({
@@ -189,9 +201,10 @@ const scorecardEvidenceReadSchema = z.object({
     evidenceChars: z.number().int().nonnegative(),
     read: evidenceReadCallSchema,
   }).passthrough()).optional(),
-  scope: z.literal('selected-criterion').optional(),
+  scope: z.enum(['selected-criterion', 'criterion-index']).optional(),
   offset: z.number().int().nonnegative().optional(),
   totalChars: z.number().int().nonnegative().optional(),
+  totalCriteria: z.number().int().nonnegative().optional(),
   next: evidenceReadCallSchema.optional(),
 }).passthrough();
 
@@ -216,25 +229,45 @@ function boundedEvidenceRead(
       return { ok: false as const, error: 'criterion_required_for_offset' };
     }
     const full = { ok: true as const, scorecard, evidenceRead: { complete: true } };
-    if (JSON.stringify(full).length <= inlineBudgetChars) return full;
-    const index = {
-      ok: true as const,
-      scorecard: { ...scorecard, criteria: [] },
-      evidenceRead: {
-        complete: false,
-        reason: 'card-exceeds-inline-budget',
-        instruction: 'Evidence has NOT been read. Read every indexed criterion and concatenate its pages before grading; this index is not evidence of a missing probe.',
-        criteria: scorecard.criteria.map(({ key, rating, evidence }) => ({
-          key, rating, evidenceChars: evidence.length,
-          read: evidenceReadCall(issueId, key),
-        })),
-      },
+    if (args.indexOffset === undefined && JSON.stringify(full).length <= inlineBudgetChars) return full;
+
+    const indexOffset = args.indexOffset ?? 0;
+    if (indexOffset > scorecard.criteria.length || (indexOffset === scorecard.criteria.length && indexOffset > 0)) {
+      return { ok: false as const, error: 'invalid_criterion_index_offset' };
+    }
+    const metadata = { ...scorecard, criteria: [] };
+    const page = (count: number) => {
+      const endOffset = indexOffset + count;
+      const completeIndex = endOffset === scorecard.criteria.length;
+      return {
+        ok: true as const,
+        scorecard: metadata,
+        evidenceRead: {
+          complete: false,
+          reason: args.indexOffset === undefined ? 'card-exceeds-inline-budget' : 'criterion-index-page',
+          instruction: 'Evidence has NOT been read. For a criterion-index page, follow evidenceRead.next until the full index is assembled; then read every indexed criterion and concatenate its pages before grading.',
+          criteria: scorecard.criteria.slice(indexOffset, endOffset).map(({ key, rating, evidence }) => ({
+            key, rating, evidenceChars: evidence.length,
+            read: evidenceReadCall(issueId, key),
+          })),
+          scope: 'criterion-index' as const,
+          offset: indexOffset,
+          totalCriteria: scorecard.criteria.length,
+          ...(!completeIndex ? { next: criterionIndexReadCall(issueId, endOffset) } : {}),
+        },
+      };
     };
+    let count = scorecard.criteria.length - indexOffset;
+    let index = page(count);
+    while (JSON.stringify(index).length > inlineBudgetChars && count > 1) {
+      count = Math.max(1, Math.floor(count / 2));
+      index = page(count);
+    }
     if (JSON.stringify(index).length > inlineBudgetChars) {
       return {
         ok: false as const,
-        error: 'scorecard_index_exceeds_inline_budget',
-        message: 'No evidence was read. Select a criterionKey from the source rubric and read its pages.',
+        error: 'scorecard_metadata_exceeds_inline_budget',
+        message: 'Scorecard metadata and one criterion index entry exceed the inline budget.',
       };
     }
     return index;
@@ -277,15 +310,15 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins. Stored evidenceFingerprint identifies the evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.',
+    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins. Stored evidenceFingerprint identifies the evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index; when the index is paged, follow evidenceRead.next until scope is no longer criterion-index. Then read each criterion and concatenate its pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; indexOffset resumes an index page; evidenceOffset resumes a criterion page. History-only payload is omitted.',
   guidance: {
     when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation; generic id-based callers may use id as a compatibility alias.',
     notWhen:
       'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
     chaining:
-      'scorecards:get { issueId } → when evidenceRead.complete:false, read the criterion index and fetch each criterion’s pages sequentially; batch independent criteria in small Promise.all groups. Sibling reads share the result door: before reading scorecard.criteria, detect and recover any `papercusp.output-envelope/v1` result via capability:read. A wrapper is not missing evidence. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
+      'scorecards:get { issueId } → when evidenceRead.scope is criterion-index, follow evidenceRead.next until there is no next, then fetch each indexed criterion’s pages sequentially; batch independent criteria in small Promise.all groups. Sibling reads share the result door: before reading scorecard.criteria, detect and recover any `papercusp.output-envelope/v1` result via capability:read. A wrapper is not missing evidence. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
     returns:
-      'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded. Full reads contain every exact criterion; an oversized read contains criteria:[] plus an explicit index, not absent evidence. Criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next; concatenate before grading.',
+      'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded. Full reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index, not absent evidence. Index pages preserve scorecard metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Concatenate all index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',

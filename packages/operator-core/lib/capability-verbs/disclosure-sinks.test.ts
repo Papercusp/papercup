@@ -3,7 +3,7 @@
  * disclosure ledger BEFORE anything leaves the box (plan
  * personal-data-reader-set-labels-2026-10-01, P-004).
  *
- * For each of the nine sinks the ledger is replaced by a stub that refuses, and
+ * For each of the ten sinks the ledger is replaced by a stub that refuses, and
  * the provider seam (send / create / post, and the credential lookup that
  * precedes it) must never run. `disclosure-ledger.integration.test.ts` proves
  * the refusal DECISION against real Postgres; this file proves every sink
@@ -58,7 +58,7 @@ import { DisclosureRefused } from '../personal-vault/disclosure-ledger';
 import type { CanonicalDocument } from './resolve';
 import { allowAllMailboxProbe } from './deliverability';
 import { replyToCanonicalMail, sendMailDraft, sendNewMail } from './mail';
-import { proposeCalendarEvent, updateCalendarEvent } from './calendar';
+import { deleteCalendarEvent, proposeCalendarEvent, updateCalendarEvent } from './calendar';
 import { postToChatChannel, replyToCanonicalChat } from './chat';
 import { postToCanonicalSocialDestination, replyToCanonicalSocialPost } from './social';
 
@@ -216,6 +216,15 @@ const CASES: SinkCase[] = [
     delivery: (p) => [p.calendarWrite],
   },
   {
+    verb: 'calendar:delete',
+    // The cancellation reaches everyone already on the event.
+    recipients: ['ida@existing.example', 'jon@existing.example'],
+    sink: 'calendar:delete',
+    document: doc('calendar', 'calendar-event', ['ida@existing.example', 'jon@existing.example'], { summary: 'Sync' }),
+    run: (p) => deleteCalendarEvent(sql, { workspaceId: WORKSPACE, userId: USER, eventId: 'ext-1', agentOwnerId: AGENT }, p as never),
+    delivery: (p) => [p.calendarWrite],
+  },
+  {
     verb: 'chat:reply',
     recipients: null,
     sink: 'slack:C1',
@@ -271,10 +280,10 @@ beforeEach(() => {
 });
 
 describe('every outbound capability verb asks the disclosure ledger before delivering', () => {
-  it('covers all nine sinks', () => {
+  it('covers all ten sinks', () => {
     expect(CASES.map((c) => c.verb)).toEqual([
       'mail:reply', 'mail:send', 'mail:send-draft',
-      'calendar:propose', 'calendar:update',
+      'calendar:propose', 'calendar:update', 'calendar:delete',
       'chat:reply', 'chat:post',
       'social:reply', 'social:post',
     ]);

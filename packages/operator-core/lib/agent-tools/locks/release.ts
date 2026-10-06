@@ -102,14 +102,29 @@ export default defineTool({
         message: 'native_edit_proof requires tool or tools',
       })
       .optional(),
+    retain: z
+      .boolean()
+      .optional()
+      .describe('edit hook only: attribute native_edit_proof.paths, still held by you, and release nothing'),
   })
     .refine(
-      (a) => Boolean(a.lock_id) || (a.lock_ids?.length ?? 0) > 0 || Boolean(a.all_mine) || (a.paths?.length ?? 0) > 0,
+      (a) =>
+        Boolean(a.lock_id) ||
+        (a.lock_ids?.length ?? 0) > 0 ||
+        Boolean(a.all_mine) ||
+        (a.paths?.length ?? 0) > 0 ||
+        (Boolean(a.retain) && Boolean(a.native_edit_proof)),
       { message: 'pass lock_id, lock_ids, all_mine=true, or one or more paths' },
     )
     .refine(
       (a) => !a.all_mine || ((a.lock_ids?.length ?? 0) === 0 && !a.lock_id && (a.paths?.length ?? 0) === 0),
       { message: 'all_mine=true cannot be combined with lock_id(s) or paths' },
+    )
+    .refine(
+      (a) =>
+        !a.retain ||
+        (Boolean(a.native_edit_proof) && !a.lock_id && (a.lock_ids?.length ?? 0) === 0 && !a.all_mine && (a.paths?.length ?? 0) === 0),
+      { message: 'retain=true takes native_edit_proof (its paths are the subject) and no lock_id(s), paths or all_mine' },
     ),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
@@ -122,6 +137,19 @@ export default defineTool({
       };
     }
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
+
+    if (args.retain) {
+      return textResult(
+        await attestRetainedNativeEdit({
+          ownerId,
+          ownerLabel,
+          coordinationDomain,
+          proof: args.native_edit_proof,
+          conflictingSelector: lockIds.length > 0 || Boolean(args.all_mine) || (args.paths?.length ?? 0) > 0,
+          identity: resolveAgentIdentity(ctx),
+        }),
+      );
+    }
 
     const hasPathSelector = (args.paths?.length ?? 0) > 0;
     if (lockIds.length === 0 && !args.all_mine && !hasPathSelector) {

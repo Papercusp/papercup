@@ -117,6 +117,9 @@ export const ALLOWLIST = new Map([
   // deadline, terminated in `finally`, and awaited through exit before the
   // preflight settles. `detached` supplies only the POSIX group that cleanup kills.
   ['packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts', 'detached ONLY to let the request deadline kill the esbuild worker process group; testImportClosures terminates it in finally and awaits worker exit before the preflight settles'],
+  // WI-10006543: the same shape as mutation-probe-fence. One forked worker per graph:query
+  // callers question, killed by group in `finally` and awaited through exit before the call returns.
+  ['packages/operator-core/lib/code-intelligence/first-party-callers-offthread.ts', 'detached ONLY to let the query deadline kill the callers worker process group; firstPartyCallersOffthread terminates it in finally and awaits worker exit before the answer returns'],
   ['packages/operator-core/lib/release/admission-fix-precheck.ts', 'detached ONLY to lead a process group so a timeout (or a stdout-holding grandchild after exit) group-kills the pre-check subtree; the child is awaited and dies with the call (WI-10004928 part 5)'],
   // Same category-(2) shape, verified first-hand (WI-10004340): each spawn site is inside
   // `await new Promise((resolve) => …)` that resolves on the child's `close`, and `detached`

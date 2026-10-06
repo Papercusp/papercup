@@ -32,11 +32,49 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   GITNEXUS_FACADE_OPS,
   GITNEXUS_NOT_ROUTABLE,
+  MAX_SITES_PER_ANSWER,
   gitnexusFacade,
   gitnexusRefusal,
   type GitnexusFacadeOp,
 } from '../../code-intelligence/gitnexus-facade';
 import type { CodeIntelIntent } from '../../code-intelligence/contracts';
+import { FIRST_PARTY_CALLERS_DEFAULT_LIMIT } from '../../code-intelligence/first-party-callers';
+import { firstPartyCallersOffthread } from '../../code-intelligence/first-party-callers-offthread';
+import { LSP_VENDOR_DIR } from '../../code-intelligence/lsp-adapter';
+import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+
+/**
+ * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
+ * `callers` is answered by the first-party backend, the vendored TypeScript's call
+ * hierarchy over the agent's workspace root, built from disk per question in a
+ * forked worker. It never refuses a shared name (it unions every declaration, as
+ * grep does), every site has a line, and there is no index to go stale. The
+ * GitNexus selectors (kind, file_path, uid, repo) do not apply to it.
+ */
+async function firstPartyCallersAnswer(
+  args: { name?: string; kind?: string; file_path?: string; uid?: string; repo?: string; limit?: number },
+  ctx: { projectDir?: string },
+) {
+  const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), FIRST_PARTY_CALLERS_DEFAULT_LIMIT);
+  const answer = await firstPartyCallersOffthread({
+    vendorDir: LSP_VENDOR_DIR,
+    root: resolveAgentWorkspaceRoot(ctx),
+    name: args.name ?? '',
+    limit,
+  });
+  const ignored = (['kind', 'file_path', 'uid', 'repo'] as const).filter((k) => args[k] !== undefined);
+  if (ignored.length === 0) return answer;
+  return {
+    ...answer,
+    coverage: {
+      ...answer.coverage,
+      limitations: [
+        ...answer.coverage.limitations,
+        `callers ignores ${ignored.join(', ')}: it answers for every symbol with this name in the workspace.`,
+      ],
+    },
+  };
+}
 
 // Keep the closed operation set, but also accept intents that the facade
 // deliberately refuses. That lets an agent receive the typed `useInstead`
@@ -49,7 +87,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Curated GitNexus topology: symbol | callers | callees | impact | health; refused intents return redirects. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Fresh or untruncated results do not prove source completeness. Missing/ambiguous symbols and backend failures carry errors; corroborate consumers in current source.',
+    'Code topology: symbol | callers | callees | impact | health; refused intents return redirects. `callers` reads current source (TypeScript call hierarchy plus labelled unresolved calls), so empty means no call in any searched file. Other ops use the GitNexus index. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Missing/ambiguous symbols and backend failures carry errors.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
@@ -82,12 +120,12 @@ export default defineTool({
       .string()
       .min(1)
       .optional()
-      .describe('symbol/callers/callees: defining file; picks one of several same-name symbols.'),
+      .describe('symbol/callees: defining file; picks one of several same-name symbols.'),
     uid: z
       .string()
       .min(1)
       .optional()
-      .describe('symbol/callers/callees: exact uid from an ambiguity error candidate.'),
+      .describe('symbol/callees: exact uid from an ambiguity error candidate.'),
     direction: z
       .enum(['upstream', 'downstream', 'both'])
       .optional()
@@ -104,7 +142,7 @@ export default defineTool({
       .int()
       .min(1)
       .optional()
-      .describe('Cap on returned sites. Clamped to the facade budget.'),
+      .describe('Cap on returned sites. Default 100; callers allows up to 500.'),
   }),
   async handler(args, ctx) {
     const op = args.op as string;
@@ -114,6 +152,8 @@ export default defineTool({
       const refusal = gitnexusRefusal(op as CodeIntelIntent, args.name ?? '');
       if (refusal) return { data: refusal };
     }
+
+    if (op === 'callers') return { data: await firstPartyCallersAnswer(args, ctx) };
 
     // The dispatcher is passed PER CALL rather than installed into the module
     // global by this handler. It closes over `ctx` — which carries the calling

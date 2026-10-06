@@ -36,11 +36,14 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   buildWorkspaceHostBootstrap,
   validateWorkspaceHostImageArtifact,
+  workspaceHostImageModel,
   type WorkspaceHostAgentRuntimeInstall,
+  type WorkspaceHostBootcRelease,
   type WorkspaceHostBootstrapRelease,
   type WorkspaceHostBootstrapService,
   type WorkspaceHostBootstrapStatusChannel,
   type WorkspaceHostImageArtifact,
+  type WorkspaceHostModel,
 } from '@papercusp/deployment-driver';
 import { buildFrameworkInstallSpec } from '../endpoint-route/routes/desktop/setup-pty-commands';
 import {
@@ -76,6 +79,15 @@ export const DEFAULT_WORKSPACE_HOST_MINIMUM_NODE_MAJOR = 22;
 /** Everything the render needs, with every value already validated. */
 export interface WorkspaceHostProvisionBootstrapProfile {
   release: WorkspaceHostBootstrapRelease;
+  /**
+   * The host model of the published artifact, carried with its release (WI-10006865). Required,
+   * not defaulted: dropping it rendered every bootc host's bootstrap as Ubuntu, which then failed
+   * `validate-host` on the first real provision while the clean room (which carried the artifact
+   * whole) passed.
+   */
+  hostModel: WorkspaceHostModel;
+  /** The artifact's bootc image identity; present exactly when `hostModel` is `'bootc-image'`. */
+  bootc?: WorkspaceHostBootcRelease;
   migrationId: string;
   minimumNodeMajor: number;
   service: WorkspaceHostBootstrapService;
@@ -183,7 +195,7 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
   );
 
   const manifestPath = (env[WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile] ?? '').trim();
-  let release: WorkspaceHostBootstrapRelease | undefined;
+  let release: ResolvedWorkspaceHostRelease | undefined;
   if (!manifestPath) {
     problems.push(`${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} is not set`);
   } else if (!isAbsolute(manifestPath)) {
@@ -239,7 +251,9 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
   }
 
   return {
-    release,
+    release: release.release,
+    hostModel: release.hostModel,
+    ...(release.bootc ? { bootc: release.bootc } : {}),
     migrationId,
     minimumNodeMajor,
     service: { name: serviceName, port: servicePort },
@@ -265,6 +279,8 @@ export function renderWorkspaceHostProvisionBootstrap(
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     action: 'install',
     hostId,
+    hostModel: profile.hostModel,
+    ...(profile.bootc ? { bootc: profile.bootc } : {}),
     release: profile.release,
     migrationId: profile.migrationId,
     minimumNodeMajor: profile.minimumNodeMajor,
@@ -299,12 +315,23 @@ function workspaceHostAgentRuntimeInstalls(): WorkspaceHostAgentRuntimeInstall[]
   });
 }
 
+/**
+ * The parts of a validated artifact the bootstrap render needs. The release alone is NOT enough:
+ * the host model and bootc identity decide which host the script validates and how it installs,
+ * so they travel with the release from the one artifact rather than being defaulted downstream.
+ */
+interface ResolvedWorkspaceHostRelease {
+  release: WorkspaceHostBootstrapRelease;
+  hostModel: WorkspaceHostModel;
+  bootc?: WorkspaceHostBootcRelease;
+}
+
 async function readRelease(
   manifestPath: string,
   readTextFile: (path: string) => Promise<string>,
   problems: string[],
   manifestResolutionContext: WorkspaceHostProvisionManifestResolutionContext,
-): Promise<WorkspaceHostBootstrapRelease | undefined> {
+): Promise<ResolvedWorkspaceHostRelease | undefined> {
   let raw: string;
   try {
     raw = await readTextFile(manifestPath);
@@ -346,7 +373,13 @@ async function readRelease(
     problems.push(unsupported);
     return undefined;
   }
-  return validated.release;
+  const hostModel = workspaceHostImageModel(validated);
+  return {
+    release: validated.release,
+    hostModel,
+    // The validator already requires `bootc` exactly when the model is bootc-image.
+    ...(validated.hostModel === 'bootc-image' ? { bootc: { ...validated.bootc } } : {}),
+  };
 }
 
 /**

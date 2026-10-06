@@ -10,7 +10,10 @@ import { createHash } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
@@ -97,6 +100,46 @@ function artifact(version = '2026.8.22-1'): WorkspaceHostImageArtifact {
         ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
         bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
         actions: ['install'],
+        maximumArtifactAgeDays: 30,
+        agentHomeBundleContractVersions: [WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION],
+      },
+    ],
+  };
+}
+
+const BOOTC_IMAGE_DIGEST = `sha256:${'9'.repeat(64)}` as const;
+
+/** The same valid artifact as a bootc-image release, shaped the way the bootc release gate builds one. */
+function bootcArtifact(): Extract<WorkspaceHostImageArtifact, { hostModel: 'bootc-image' }> {
+  const current = artifact();
+  const { schemaVersion: _schemaVersion, manifestIdentity: _identity, ...manifestInput } = current.buildManifest;
+  return {
+    ...current,
+    hostModel: 'bootc-image',
+    bootc: {
+      image: 'registry.example.com/papercusp/workspace-host:2026.8.22-1',
+      imageDigest: BOOTC_IMAGE_DIGEST,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    },
+    buildManifest: buildWorkspaceHostBuildManifest({
+      ...manifestInput,
+      builder: {
+        strategy: 'shared',
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        version: 'latest',
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        templateSha256: 'd'.repeat(64),
+      },
+    }),
+    compatibility: [
+      {
+        provider: 'gcp',
+        architecture: 'x86_64',
+        hostModel: 'bootc-image',
+        bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+        actions: ['install', 'upgrade', 'rollback'],
         maximumArtifactAgeDays: 30,
         agentHomeBundleContractVersions: [WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION],
       },
@@ -384,5 +427,40 @@ describe('workspace-host provision bootstrap profile', () => {
     const script = renderWorkspaceHostProvisionBootstrap('host-p046-1', configured);
     expect(script).toContain(WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT);
     expect(script).toContain("ORIGIN='https://app.papercusp.com'");
+  });
+
+  // WI-10006865: the profile used to keep only `artifact.release`, so every bootc release rendered
+  // the Ubuntu bootstrap and failed `validate-host` on the first real provision, while the clean
+  // room (which passes the artifact whole) certified the same image.
+  it('renders a bootc release as a bootc bootstrap, carrying the artifact host model and image pin', async () => {
+    const ubuntu = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader(FILES),
+      controllerProfile: CONTROLLER,
+    });
+    expect(ubuntu.hostModel).toBe('ubuntu-release-bundle');
+    expect(ubuntu.bootc).toBeUndefined();
+    const ubuntuScript = renderWorkspaceHostProvisionBootstrap('host-wi10006865', ubuntu);
+    expect(ubuntuScript).toContain(`Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required`);
+    expect(ubuntuScript).not.toContain(BOOTC_IMAGE_DIGEST);
+
+    const bootc = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader({ ...FILES, [MANIFEST_PATH]: JSON.stringify({ artifact: bootcArtifact() }) }),
+      controllerProfile: CONTROLLER,
+    });
+    expect(bootc.hostModel).toBe('bootc-image');
+    expect(bootc.bootc).toEqual({
+      image: 'registry.example.com/papercusp/workspace-host:2026.8.22-1',
+      imageDigest: BOOTC_IMAGE_DIGEST,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    });
+    const bootcScript = renderWorkspaceHostProvisionBootstrap('host-wi10006865', bootc);
+    expect(bootcScript).not.toContain(`Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required`);
+    // The booted deployment is checked against the artifact's pinned digest, not a default.
+    expect(bootcScript).toContain(BOOTC_IMAGE_DIGEST);
+    expect(bootcScript).toContain('EXPECTED_IMAGE_DIGEST');
+    expect(bootcScript).toContain(WORKSPACE_HOST_BOOTC_BASE_IMAGE);
   });
 });

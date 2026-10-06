@@ -86,6 +86,15 @@ function assertKeySegments(source: string, event: string): void {
 }
 
 /**
+ * Provider IDs are only unique within a datatype. Legacy delivery rows keep
+ * their `${source}:${externalId}` key, so the first replay after this change
+ * can deliver once again; subsequent replays use this datatype-scoped key.
+ */
+function defaultDedupeKey(source: string, datatypeId: string, externalId: string): string {
+  return `${source}:${datatypeId}:${externalId}`;
+}
+
+/**
  * How long a 'pending' delivery claim is honoured before a replay may reclaim
  * it. Sink deliveries complete in seconds; a claim this old was orphaned.
  */
@@ -249,7 +258,7 @@ export async function ingestExternalTriggerEvent(
     datatypeId,
     externalId,
     occurredAt: input.occurredAt ?? null,
-    dedupeKey: required(input.dedupeKey ?? `${source}:${externalId}`, 'dedupe_key'),
+    dedupeKey: required(input.dedupeKey ?? defaultDedupeKey(source, datatypeId, externalId), 'dedupe_key'),
     payload,
     workspaceId,
   };

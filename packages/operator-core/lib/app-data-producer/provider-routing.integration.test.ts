@@ -156,20 +156,23 @@ describe('P-005 provider-neutral routing (D-010)', () => {
   it('routes a non-Google email and calendar record into the Vault by datatype, keyed by source id', async () => {
     const account = 'alice@outlook.example';
     const fx = await source(FIXTURE, alice, account);
-    // One source serving two datatypes: each record has its own native id, as a
-    // real provider's mail and calendar resources do. (Cross-SOURCE reuse of one
-    // native id is the collision under test in the next two cases.)
-    const nativeFor = { 'email-message': NATIVE, 'calendar-event': `${NATIVE}-event` } as const;
+    // One source can expose two datatypes with the same native id. Delivery
+    // dedupe must include the datatype so neither provider record suppresses the other.
+    const nativeFor = { 'email-message': NATIVE, 'calendar-event': NATIVE } as const;
+    const dedupeKeys = new Set<string>();
 
     for (const [datatypeId, payload] of [
       ['email-message', mail(account)],
       ['calendar-event', { ...meeting(account), id: nativeFor['calendar-event'] }],
     ] as const) {
       const result = await ingest(fx, FIXTURE, datatypeId, payload, nativeFor[datatypeId]);
+      dedupeKeys.add(result.event.dedupeKey);
+      expect(result.event.dedupeKey).toBe(`${FIXTURE}:${datatypeId}:${NATIVE}`);
       expect(result.deliveries).toEqual(expect.arrayContaining([
         expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'delivered', deduped: false }),
       ]));
     }
+    expect([...dedupeKeys]).toHaveLength(2);
 
     // No Google key prefix was involved anywhere on the way in.
     expect(emittedKeys.length).toBe(2);

@@ -2483,6 +2483,85 @@ export function markFrozenRepairAdmitted(
 }
 
 /**
+ * WI-10006866 — what a MISSED queue-row write means for an admission the door already published.
+ *
+ * The admit door moves the lineage ref FIRST and writes the row second. Every
+ * `release:repair-queue` read reconciles a row that is behind its ref
+ * (`reconcileFrozenRepairQueueWithLineageRef`), so any concurrent op landing in that window
+ * records the admission itself, as a `reconciled-from-ref` rebuild, and moves `updatedAtMs`.
+ * The door's own CAS write then misses. Measured 2026-10-06 19:12Z (queue ad82b273, head
+ * c0ad6500): the door read that miss as "nothing moved", retracted the ref, and left the row
+ * AHEAD of the ref (`ref-behind-row`), which is the split the two-store protocol exists to prevent.
+ *
+ * Pure. Given the FRESH row, decide what the miss means:
+ *  - `recorded`: the row is already at this admission with a door-written entry; nothing to write
+ *    (the returned queue IS `fresh`, so a CAS transition writes nothing).
+ *  - `adopt-reconciled`: the row is at this admission through a reconciled rebuild; replace that
+ *    entry with the door's richer one (mode, precheck, hunks, wall-clock atMs).
+ *  - `apply`: the row is still at the admission's parent (the miss was an unrelated writer), so
+ *    the admission is applied to the fresh row.
+ *  - `diverged`: anything else. The caller must not report the admission as persisted.
+ */
+export type FrozenRepairAdmissionSettlement =
+  | { kind: 'recorded' | 'adopt-reconciled' | 'apply'; queue: FrozenCandidateRepairQueue }
+  | { kind: 'diverged'; queue: null; detail: string };
+
+export function settleFrozenRepairAdmission(
+  fresh: FrozenCandidateRepairQueue,
+  entry: FrozenRepairAdmission,
+): FrozenRepairAdmissionSettlement {
+  const short = (sha: string) => sha.slice(0, 12);
+  if (fresh.repairHead === entry.toRepairHead) {
+    const admissions = fresh.admissions ?? [];
+    const idx = admissions.findIndex((a) => a.toRepairHead === entry.toRepairHead);
+    if (idx < 0) {
+      return {
+        kind: 'diverged',
+        queue: null,
+        detail: `the row is at ${short(entry.toRepairHead)} but carries no ledger entry for it`,
+      };
+    }
+    const recorded = admissions[idx]!;
+    if (recorded.fromRepairHead !== entry.fromRepairHead) {
+      return {
+        kind: 'diverged',
+        queue: null,
+        detail:
+          `the row records ${short(entry.toRepairHead)} as built onto ${short(recorded.fromRepairHead)}, ` +
+          `not ${short(entry.fromRepairHead)}`,
+      };
+    }
+    if (recorded.provenance !== 'reconciled-from-ref') return { kind: 'recorded', queue: fresh };
+    const replaced = admissions.slice();
+    replaced[idx] = entry;
+    const retest =
+      fresh.retestRequested && fresh.retestRequested.repairHead === entry.toRepairHead
+        ? { ...fresh.retestRequested, requestedAtMs: entry.atMs }
+        : fresh.retestRequested;
+    return {
+      kind: 'adopt-reconciled',
+      queue: {
+        ...fresh,
+        admissions: replaced,
+        ...(retest ? { retestRequested: retest } : {}),
+        updatedAtMs: Math.max(fresh.updatedAtMs, entry.atMs),
+        lastAdmittedAtMs: Math.max(fresh.lastAdmittedAtMs ?? 0, entry.atMs),
+      },
+    };
+  }
+  if (fresh.repairHead === entry.fromRepairHead) {
+    return { kind: 'apply', queue: markFrozenRepairAdmitted(fresh, entry) };
+  }
+  return {
+    kind: 'diverged',
+    queue: null,
+    detail:
+      `the row's repairHead ${short(fresh.repairHead)} is neither the admission ` +
+      `${short(entry.toRepairHead)} nor its parent ${short(entry.fromRepairHead)}`,
+  };
+}
+
+/**
  * WI-10003213 — may the gate spend its once-per-head re-verification on this queue?
  *
  * An UNMEASURED red (every red leg was killed, timed out or errored without a single test

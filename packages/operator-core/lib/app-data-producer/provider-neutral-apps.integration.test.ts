@@ -33,7 +33,7 @@ import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
 import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import { createPersonalVaultExternalSinkForSource } from '../personal-vault/live-sink';
 import { setPersonalVaultEnabled } from '../personal-vault/store';
-import { updateCalendarEvent, type CalendarDeps } from '../capability-verbs/calendar';
+import { deleteCalendarEvent, updateCalendarEvent, type CalendarDeps } from '../capability-verbs/calendar';
 import { allowAllMailboxProbe } from '../capability-verbs/deliverability';
 import { replyToCanonicalMail, type MailDeps } from '../capability-verbs/mail';
 import { APP_SYNC_SOURCE_REF, appRowId } from './app-rows';
@@ -351,6 +351,28 @@ describe('R-13: app-originated writes dispatch to the provider owning the record
     }
   });
 
+  it('deletes each event through the provider that holds it (WI-10006509)', async () => {
+    const body = await reconcileBatch('calendar');
+    providerRequests = [];
+    const events = body.events as Array<{ nativeId: string; sourceId: string }>;
+
+    // Exactly what the calendar app's gateway sends for a stored row: its native id under its source.
+    const results = [];
+    for (const row of events) {
+      results.push(await deleteCalendarEvent(
+        org.adminSql,
+        { workspaceId: WS, userId, eventId: row.nativeId, sourceId: row.sourceId, agentOwnerId: null },
+        calendarDeps(),
+      ));
+    }
+
+    expect(providerRequests.map((r) => `${r.host}${r.path}:${String(r.body.source)}`).sort()).toEqual(
+      PROVIDERS.map((p) => `${p.host}/calendar.write/delete:${sourceOf.get(p.kind)}`).sort(),
+    );
+    for (const request of providerRequests) expect(request.body).toMatchObject({ operation: 'delete', eventId: SHARED_EVENT });
+    expect(results.map((r) => r.sourceId).sort()).toEqual(events.map((row) => row.sourceId).sort());
+  });
+
   it('refuses, before any provider call, a write that omits the source for an id two sources share', async () => {
     await expect(replyToCanonicalMail(
       org.adminSql,
@@ -360,6 +382,11 @@ describe('R-13: app-originated writes dispatch to the provider owning the record
     await expect(updateCalendarEvent(
       org.adminSql,
       { workspaceId: WS, userId, eventId: SHARED_EVENT, summary: 'Moved', agentOwnerId: null },
+      calendarDeps(),
+    )).rejects.toThrow(/canonical_document_ambiguous/);
+    await expect(deleteCalendarEvent(
+      org.adminSql,
+      { workspaceId: WS, userId, eventId: SHARED_EVENT, agentOwnerId: null },
       calendarDeps(),
     )).rejects.toThrow(/canonical_document_ambiguous/);
     expect(providerRequests).toEqual([]);

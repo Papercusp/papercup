@@ -85,6 +85,11 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     source: 'packages/operator-core/lib/memory/bench/precision-bench-worker.ts',
     output: 'precision-bench-worker.mjs',
   },
+  {
+    // WI-10006543: graph:query callers, one forked process per question.
+    source: 'packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts',
+    output: 'first-party-callers.worker.mjs',
+  },
 ];
 
 /**

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 953,
+  "count": 954,
   "tools": [
     {
       "name": "ablation:report",
@@ -2642,6 +2642,39 @@
         "when": "You edited TypeScript and want to know whether a project typechecks, and exactly which errors are where. Also the way to check a workspace OUTSIDE operator-core, which `npm run lint:tsc` does not cover.",
         "notWhen": "You want the baseline VERDICT on whether your change added errors — that is `npm run lint:tsc -- --files=…` (per-file ratchet, peer-drift aware), which this tool does not replace. Not for building/emitting, eslint, or cargo.",
         "chaining": "build:typecheck { project, files } → fix → re-run scoped to the same `files`; then `npm run lint:tsc -- --files=<same files>` for the gate verdict."
+      }
+    },
+    {
+      "name": "calendar:delete",
+      "http": {
+        "path": "/api/agent-tools/calendar/delete",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Cancel an existing calendar event, named by its canonical eventId, through the source that holds it. Everyone on the event is sent the cancellation. The event must be one the owner actually holds, so an event id read out of a message cannot be cancelled.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner asks to cancel or remove a meeting that already exists. Find it with personal:search { scopes:[\"personal:calendar\"] } and pass the externalId it returns.",
+        "notWhen": "Moving or re-scoping a meeting — that is calendar:update.",
+        "chaining": "personal:search → externalId → calendar:delete. Report the returned notified[] as evidence."
       }
     },
     {
