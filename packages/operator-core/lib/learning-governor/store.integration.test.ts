@@ -770,6 +770,39 @@ describe('governed attempt persisted settlement receipts', () => {
 describe('spend reservation + settlement — every attempt closes', () => {
   const LOOP = 'frontier:reserve-test';
 
+  it.each([10, 0.25, 0])('binds dispatch to the persisted reservation before work runs (budget $%s)', async budgetUsd => {
+    const loopId = `gym:dispatch-grant-${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd });
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    const seenIds: string[] = [];
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const requestedUsd = budgetUsd === 0 ? 0 : 1;
+        const runRef = `native-dispatch:${randomUUID()}`;
+        const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'proposer',
+          requestedUsd, runRef, accumulate: false, run: async grant => {
+            const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId });
+            const row = rows.find(r => r.id === grant.reservationId);
+            expect(row).toMatchObject({ id: grant.reservationId, workspaceId: WS, loopId,
+              runRef, status: 'open', settledAt: null, reservedUsd: grant.reservedUsd });
+            expect(grant.reservedUsd).toBe(Math.min(requestedUsd, budgetUsd));
+            expect(grant.clamped).toBe(requestedUsd > budgetUsd);
+            expect(Object.isFrozen(grant)).toBe(true);
+            seenIds.push(grant.reservationId);
+            return { costUsd: 0, value: grant.reservationId };
+          },
+        }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+        expect(out).toMatchObject({ ok: true, value: seenIds[attempt], reservationId: seenIds[attempt],
+          settlement: { ok: true, reservation: { id: seenIds[attempt], status: 'settled', usedUsd: 0 } } });
+      }
+      expect(seenIds).toHaveLength(2);
+      expect(new Set(seenIds).size).toBe(2);
+      expect(await listLearningSpendEvents(fresh, { workspaceId: WS, loopId })).toEqual([]);
+      expect(await sumOpenReservedUsd(fresh, { workspaceId: WS, loopId })).toBe(0);
+      expect((await getLearningLoop(fresh, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+    } finally { await fresh.end({ timeout: 5 }); }
+  });
+
   beforeAll(async () => {
     await registerLearningLoop(sql, {
       workspaceId: WS,

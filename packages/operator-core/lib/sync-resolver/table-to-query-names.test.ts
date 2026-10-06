@@ -98,13 +98,21 @@ describe('queryNamesForTriggerEvent', () => {
       'hive.steering',
       'learning.dream',
       'hive.beaconConsent',
+      // pot-review-integration-mode P-017 (EI-25188362216785598): the integration-mode settings
+      // section reads pot_settings; it full-busts because its args are the harness slug.
+      'potIntegration.settings',
     ]);
     expect(
       queryNamesForTriggerEvent('harness_shared.pot_settings.changed', {
         workspace_id: 'w1',
         harness_slug: 'acme-hive',
       }),
-    ).toEqual(['hive.steering', 'learning.dream', { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } }]);
+    ).toEqual([
+      'hive.steering',
+      'learning.dream',
+      { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },
+      'potIntegration.settings',
+    ]);
   });
 
   it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {

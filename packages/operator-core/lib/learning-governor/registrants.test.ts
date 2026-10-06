@@ -123,6 +123,38 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
     expect(settlements).toEqual([{ disposition: 'used', usedUsd: 0.4 }]);
   });
 
+  it.each([1, 0.25, 0])('gives work an immutable reservation identity with the actual $%s grant', async reservedUsd => {
+    const { deps } = fakeAttemptDeps();
+    const reserved = await deps.reserve!(SQL, {} as never);
+    if (!reserved.ok) throw new Error('fixture must grant');
+    reserved.reservation.reservedUsd = reservedUsd;
+    reserved.clamped = reservedUsd < 1;
+    let seen: unknown;
+    const out = await runGovernedSpendAttempt(attempt(async grant => {
+      seen = grant;
+      expect(grant).toEqual({ reservationId: 'res-1', reservedUsd, clamped: reservedUsd < 1 });
+      expect(Object.isFrozen(grant)).toBe(true);
+      expect(() => Object.defineProperty(grant, 'reservedUsd', { value: 99 })).toThrow(TypeError);
+      return { costUsd: 0, value: 'bounded work' };
+    }), deps);
+    expect(out).toMatchObject({ ok: true, reservationId: 'res-1', clamped: reservedUsd < 1 });
+    expect(seen).toEqual({ reservationId: 'res-1', reservedUsd, clamped: reservedUsd < 1 });
+  });
+
+  it('keeps the dispatched grant snapshot when the reservation adapter changes its own result', async () => {
+    const { deps } = fakeAttemptDeps();
+    const reserved = await deps.reserve!(SQL, {} as never);
+    if (!reserved.ok) throw new Error('fixture must grant');
+    reserved.clamped = true;
+    const out = await runGovernedSpendAttempt(attempt(async grant => {
+      reserved.clamped = false;
+      reserved.reservation.reservedUsd = 99;
+      expect(grant).toEqual({ reservationId: 'res-1', reservedUsd: 1, clamped: true });
+      return { costUsd: 0, value: 'completed' };
+    }), deps);
+    expect(out).toMatchObject({ ok: true, reservationId: 'res-1', clamped: true });
+  });
+
   it('settles a PARTIAL attempt at the partial cost, not the reservation', async () => {
     const { deps, settlements } = fakeAttemptDeps();
     const out = await runGovernedSpendAttempt(

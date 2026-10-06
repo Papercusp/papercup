@@ -339,13 +339,13 @@ describe('independent capability source and skeptical review', () => {
     expect(f.sources.readCurrent).toHaveBeenCalledWith(f.priors[0], expect.any(AbortSignal));
     expect(f.calls).toHaveLength(0);
   });
-  it.each(['stale', 'foreign', 'partial-rerank', 'failed-rerank', 'same-model'] as const)('keeps preflight %s failures actionable and unpaid', async (fault) => {
+  it.each(['stale', 'foreign', 'partial-rerank', 'failed-rerank', 'missing-model'] as const)('keeps preflight %s failures actionable and unpaid', async (fault) => {
     const f = await fixture();
     if (fault === 'stale') f.sources.readCurrent = async () => null;
     if (fault === 'foreign') f.priors[0]!.scope = { ...scope, potSlug: 'foreign' };
     if (fault === 'partial-rerank') f.deps.rerank = async (_q, priors) => ({ priors, outcome: { attempted: true, scored: 1 } });
     if (fault === 'failed-rerank') f.deps.rerank = async () => { throw new Error('Scorer unavailable'); };
-    if (fault === 'same-model') f.options.dreamerModel = 'reviewer-model';
+    if (fault === 'missing-model') f.options.dreamerModel = '   ';
     const result = await preflightCapabilityReview(f.options, f.deps);
     expect(result.ready).toBe(false);
     expect(result.nextCheck!.instruction.length).toBeGreaterThan(30);
@@ -543,8 +543,9 @@ describe('independent capability source and skeptical review', () => {
     expect(f.calls).toHaveLength(3);
   });
 
-  it('checks actual files, retrieves all facets, preserves scopes and uses three isolated different-model contexts', async () => {
+  it('checks actual files, retrieves all facets, preserves scopes and uses three isolated review contexts on the uniform model', async () => {
     const f = await fixture();
+    f.options.dreamerModel = ' REVIEWER-MODEL ';
     const result = await runCapabilityDreamReview(f.options, f.deps);
     expect(result.verdict, result.note).toBe('accept');
     expect(result.coverage.globalNovelty).toBe('not-established');
@@ -799,14 +800,12 @@ describe('independent capability source and skeptical review', () => {
       expect((await runCapabilityDreamReview(f.options, f.deps)).verdict).toBe('unverified');
     },
   );
-  it('refuses same-model and missing dreamer provenance before reads or spend', async () => {
+  it('refuses missing dreamer provenance before reads or spend', async () => {
     const f = await fixture();
-    for (const dreamerModel of ['', ' REVIEWER-MODEL ']) {
-      expect(await runCapabilityDreamReview({ ...f.options, dreamerModel }, f.deps)).toMatchObject({
-        verdict: 'unverified',
-        reason: 'reviewer-not-independent',
-      });
-    }
+    expect(await runCapabilityDreamReview({ ...f.options, dreamerModel: '   ' }, f.deps)).toMatchObject({
+      verdict: 'unverified',
+      reason: 'reviewer-not-independent',
+    });
     expect(f.sources.search).not.toHaveBeenCalled();
     expect(f.calls).toHaveLength(0);
   });

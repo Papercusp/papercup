@@ -8,7 +8,7 @@ import { dreamCapabilityRun, dreamCallTotals, newDreamCapabilityRun } from './dr
 import type { DreamRun } from './dream-run-store';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
 import { freezeDreamEvaluationProtocol, dreamComparisonInputHash } from './dream-evaluation';
-import { dreamRunOutcome } from './dream-config';
+import { DEFAULT_DREAM_PASS_CONFIG, DEFAULT_DREAM_REVIEW_CONFIG, dreamRunOutcome } from './dream-config';
 import { scopeDreamProblems } from './capability-pass';
 import { capabilityHash } from './capability-contracts';
 
@@ -141,10 +141,11 @@ function harness() {
     }),
     review: vi.fn(async (options, deps) => {
       await deps!.rerank('query', f.review.priorMatches, { timeoutMs: options.config?.timeoutMs ?? 180_000 });
+      const reviewerModel = options.config?.model ?? 'reviewer';
       const values = await Promise.allSettled(
         (['control-a', 'control-b'] as const).map((p) =>
           options.callForPhase!(p)({
-            model: 'reviewer',
+            model: reviewerModel,
             messages: [{ role: 'user', content: p }],
             signal: options.signal,
           }),
@@ -153,7 +154,7 @@ function harness() {
       const failed = values.find((v) => v.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
       const last = await options.callForPhase!('review')({
-        model: 'reviewer',
+        model: reviewerModel,
         messages: [{ role: 'user', content: 'review' }],
         signal: options.signal,
       });
@@ -161,7 +162,7 @@ function harness() {
       return {
         ...f.review,
         usage: {
-          model: 'reviewer',
+          model: reviewerModel,
           costUsd: usage.reduce((n, u) => n + u.costUsd, 0),
           inputTokens: usage.reduce((n, u) => n + u.inputTokens, 0),
           outputTokens: usage.reduce((n, u) => n + u.outputTokens, 0),
@@ -212,10 +213,29 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'review-unavailable', attempts: 1, costUsd: 0 });
     expect(h.runs.size).toBe(1);
   });
-  it('refuses same-model provenance before starting a paid call', async () => {
-    const h = harness(); h.input.review = { model: 'dreamer' };
-    await expect(runDreamCycle(h.input, h.d)).rejects.toThrow('different model');
-    expect(h.llm).not.toHaveBeenCalled();
+  it('runs the uniform-model defaults with separately governed review evidence', async () => {
+    const h = harness();
+    h.input.pass = DEFAULT_DREAM_PASS_CONFIG;
+    h.input.review = DEFAULT_DREAM_REVIEW_CONFIG;
+    expect(h.input.pass.model).toBe(h.input.review.model);
+
+    await runDreamCycle(h.input, h.d);
+
+    const run = h.row('cycle-1:dream:1');
+    const provenance = dreamCapabilityRun(run)!;
+    expect(run.status).toBe('accepted');
+    expect(provenance).toMatchObject({
+      dreamerModel: DEFAULT_DREAM_PASS_CONFIG.model,
+      reviewerModel: DEFAULT_DREAM_REVIEW_CONFIG.model,
+    });
+    expect(provenance.dreamPromptVersion).not.toBe(provenance.reviewPromptVersion);
+    const reviewedPhases = provenance.calls.filter((call) =>
+      ['generation', 'control-a', 'control-b', 'review'].includes(call.phase),
+    );
+    expect(reviewedPhases).toHaveLength(4);
+    expect(reviewedPhases.every((call) => call.model === DEFAULT_DREAM_PASS_CONFIG.model)).toBe(true);
+    expect(h.llm).toHaveBeenCalledTimes(4);
+    expect(h.d.sink).toHaveBeenCalledTimes(1);
   });
   it('rechecks dependencies after readiness rather than treating preflight as proposal approval', async () => {
     const h = harness();

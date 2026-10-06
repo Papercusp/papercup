@@ -41,11 +41,21 @@ import {
 } from '../resource-governor/execution';
 import { activeWorkspaceId } from '../workspace-registry';
 
+export const PROCESS_EXEC_CALLER_LABELS = {
+  command: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+  stdin: 'git-via-sidecar.runGitStdinViaSpawnerSidecar',
+} as const;
+
+export type ProcessExecCallerLabel =
+  (typeof PROCESS_EXEC_CALLER_LABELS)[keyof typeof PROCESS_EXEC_CALLER_LABELS];
+
 export interface ExecParams {
   command: string;
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Safe, static callsite identity for transport-fault diagnostics. */
+  callerLabel?: ProcessExecCallerLabel;
   /** Optional no-output deadline. Unlike `timeoutMs` (the absolute hard
    * ceiling), this timer refreshes on observed stdout/stderr progress. File
    * output is sampled at idle deadlines, without copying its bytes into JS. */

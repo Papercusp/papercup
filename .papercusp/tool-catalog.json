@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 946,
+  "count": 950,
   "tools": [
     {
       "name": "ablation:report",
@@ -32554,6 +32554,128 @@
       "guidance": {
         "when": "A topic you followed is no longer relevant and its updates are noise. Drop several at once via topics:[…].",
         "notWhen": "You want to mute briefly — re-register at mention mode via watch:create { pattern: topic, targetKind:\"topic\", wake:false, mode:\"mention\" } instead of dropping it."
+      }
+    },
+    {
+      "name": "trigger-packs:arm",
+      "http": {
+        "path": "/api/agent-tools/trigger-packs/arm",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Arm every binding of an installed trigger pack against the review fingerprint you read. A stale fingerprint is refused with the current review.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Activate a configured trigger pack after reading trigger-packs:review. Pass confirm:true because this starts autonomous plan runs.",
+        "notWhen": "Pausing one binding: triggers:disarm. A hand-bound binding: triggers:arm.",
+        "chaining": "trigger-packs:review → trigger-packs:arm { installationId, fingerprint, confirm:true } → triggers:status."
+      }
+    },
+    {
+      "name": "trigger-packs:export",
+      "http": {
+        "path": "/api/agent-tools/trigger-packs/export",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Write an installed trigger pack to an empty directory as a portable package: its manifest plus each plan sanitized back into a template. Installer mappings, inputs, ids and run history are never written.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Sharing or republishing a pack you configured. The directory can then be published to the Cupboard.",
+        "notWhen": "Exporting a single plan: cupboard:publish-plan."
+      }
+    },
+    {
+      "name": "trigger-packs:review",
+      "http": {
+        "path": "/api/agent-tools/trigger-packs/review",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List installed trigger packs, or read one pack's review: everything it can do once armed, plus the fingerprint trigger-packs:arm needs.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before arming an installed trigger pack, or to see which packs are installed, reviewed and armed.",
+        "notWhen": "Hand-bound bindings: use triggers:status.",
+        "chaining": "trigger-packs:review { installationId } → trigger-packs:arm { installationId, fingerprint, confirm:true }."
+      }
+    },
+    {
+      "name": "trigger-packs:uninstall",
+      "http": {
+        "path": "/api/agent-tools/trigger-packs/uninstall",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Uninstall a trigger pack from one harness: detach its bindings, archive its plans, revoke its grants there, and report workflows that still depend on it.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Removing an installed trigger pack. Runs, work items, data sources and the plugin files are kept.",
+        "notWhen": "Pausing it: triggers:disarm per binding."
       }
     },
     {

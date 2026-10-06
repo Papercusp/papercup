@@ -14,7 +14,7 @@ vi.mock('./spawner-ipc-client', () => ({
 }));
 vi.mock('./sidecar-exec-lifetime', () => ({ sidecarContainmentCurrent: mock.preflight, reapDeadSidecar: mock.reap }));
 
-import { isSidecarInfrastructureFault, runCommandViaSpawnerSidecar } from './git-via-sidecar';
+import { isSidecarInfrastructureFault, runCommandViaSpawnerSidecar, runGitStdinViaSpawnerSidecar } from './git-via-sidecar';
 
 const fence = { serverGeneration: 'original-server', connectionId: 'original-connection' };
 const capabilities = { processExecFence: fence, processExecContainment: { pid: 123, identity: 'original' } };
@@ -46,6 +46,9 @@ describe('cancellable process:exec caller', () => {
       cwd: '/tmp', timeoutMs: 5000, signal: controller.signal, onProgress,
     });
     await vi.waitFor(() => expect(mock.call).toHaveBeenCalledWith('process:exec', expect.anything(), expect.anything()));
+    expect(mock.call.mock.calls.find(([method]) => method === 'process:exec')?.[1]).toMatchObject({
+      callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+    });
     expect(onProgress).toHaveBeenCalledOnce();
     controller.abort();
     controller.abort();
@@ -58,6 +61,17 @@ describe('cancellable process:exec caller', () => {
     expect(settled).toBe(false);
     finish({ code: -1, stdout: '', stderr: 'aborted by caller' });
     expect(await run).toMatchObject({ code: -1, stderr: 'aborted by caller' });
+  });
+
+  it('labels stdin handoff executions with their static callsite identity', async () => {
+    mock.call.mockResolvedValue({ code: 0, stdoutBytes: 0, stderr: '' });
+
+    const result = await runGitStdinViaSpawnerSidecar([], '/tmp', '', 5000, {});
+
+    expect(result).toMatchObject({ code: 0, stdout: Buffer.alloc(0), stderr: '' });
+    expect(mock.call).toHaveBeenCalledWith('process:exec', expect.objectContaining({
+      callerLabel: 'git-via-sidecar.runGitStdinViaSpawnerSidecar',
+    }), expect.anything());
   });
 
   it('refuses dispatch without verified containment, so fallback cannot duplicate work', async () => {

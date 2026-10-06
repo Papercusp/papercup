@@ -63,6 +63,13 @@ vi.mock("../../sync/hyperbee/substrate-sidecar-spawn", () => ({
 vi.mock("../../fleet/spawner-sidecar-spawn", () => ({
   spawnerSidecarSupervisionStatus: vi.fn(() => ({ running: false, respawnAttemptsInWindow: 5, gaveUp: true, lastRespawnScheduledAt: 2000 })),
 }));
+// WI-10005995: the isolated-DHT probe reads systemd, /proc and the lock store — stubbed here
+// (its own logic is pinned in dht-universe-probe.test.ts); this suite pins how the handler
+// SURFACES its verdict. Default null = systemd unreadable, the no-verdict case.
+vi.mock("./dht-universe-probe", () => ({
+  probeProductHostDhtUniverse: vi.fn(async () => null),
+  dhtUniverseNextVerb: vi.fn((unit: string) => `fix-dht:${unit}`),
+}));
 
 import { probeAll, probeMcpHandshake } from "../../service-health";
 import { mockResolvedTyped } from "../../testing/typed-mock";
@@ -71,6 +78,7 @@ import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { probeUnitStates } from "./systemd-service-probe";
+import { probeProductHostDhtUniverse } from "./dht-universe-probe";
 import {
   buildMcpProxyTransportBlock,
   buildServiceHealthDiagnostic,
@@ -88,6 +96,7 @@ import {
 const NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
 const probeM = vi.mocked(probeAll);
 const unitM = vi.mocked(probeUnitStates);
+const dhtM = vi.mocked(probeProductHostDhtUniverse);
 const mcpHandshakeM = vi.mocked(probeMcpHandshake);
 const supervisionM = vi.mocked(supervisionSnapshot);
 const substrateM = vi.mocked(substrateSidecarSupervisionStatus);
@@ -104,6 +113,7 @@ beforeEach(() => {
   // environment they intend explicitly below.
   vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR", "0");
   vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR_MODE", "0");
+  dhtM.mockResolvedValue(null);
   mcpHandshakeM.mockResolvedValue({
     ok: true,
     latencyMs: 3,
@@ -265,6 +275,79 @@ describe("dev:service_health handler", () => {
     expect(b.rootCause).toBeNull();
     expect(b.nextVerb).toBeNull();
     expect(b.effective).toMatchObject({ down: 0 });
+  });
+});
+
+describe("WI-10005995: isolated-DHT alarm in dev:service_health", () => {
+  const BG = "papercusp-bg-host.service";
+  const WARNING = `${BG} is off the PUBLIC DHT outside a drill: the running process resolves ISOLATED (PAPERCUSP_DHT_BOOTSTRAP = 172.31.44.1:49838), and no drill holds the hive-git-physical-rig lock.`;
+  const isolated = { mode: "isolated" as const, source: "env" as const, bootstrap: "172.31.44.1:49838" };
+
+  it("surfaces the probe block and names an isolated host as the root cause when nothing else is wrong", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    supervisionM.mockReturnValueOnce([]);
+    dhtM.mockResolvedValueOnce({
+      rigLockHeld: false,
+      hosts: [{ unit: BG, mainPid: 42, running: isolated, configured: isolated, warning: WARNING }],
+      warnings: [{ unit: BG, warning: WARNING }],
+    });
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    expect(b.dhtUniverse.warnings).toEqual([{ unit: BG, warning: WARNING }]);
+    expect(b.rootCause).toEqual({ component: BG, reason: WARNING });
+    expect(b.nextVerb).toBe(`fix-dht:${BG}`);
+  });
+
+  it("a drill holding the rig lock produces no root cause, while the block still reports the universe", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    supervisionM.mockReturnValueOnce([]);
+    dhtM.mockResolvedValueOnce({
+      rigLockHeld: true,
+      hosts: [{ unit: BG, mainPid: 42, running: isolated, configured: isolated }],
+      warnings: [],
+    });
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    expect(b.dhtUniverse).toMatchObject({ rigLockHeld: true, warnings: [] });
+    expect(b.rootCause).toBeNull();
+    expect(b.nextVerb).toBeNull();
+  });
+
+  it("no verdict (systemd unreadable) adds no key and no root cause", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    supervisionM.mockReturnValueOnce([]);
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    expect(b).not.toHaveProperty("dhtUniverse");
+    expect(b.rootCause).toBeNull();
+  });
+
+  it("a probe that throws does not take the rest of the snapshot down", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    dhtM.mockRejectedValueOnce(new Error("systemd bus gone"));
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    expect(b.ok).toBe(true);
+    expect(b).not.toHaveProperty("dhtUniverse");
+  });
+
+  it("a DOWN service outranks the DHT warning as the root cause", () => {
+    const out = buildServiceHealthDiagnostic(
+      [{ name: "operator", up: false, status: null, latencyMs: 1, note: "connection refused" }] as never,
+      [],
+      undefined,
+      [{ unit: BG, warning: WARNING }],
+    );
+    expect(out.rootCause).toMatchObject({ component: "operator" });
+    expect(out.nextVerb).not.toContain("fix-dht");
+  });
+
+  it("passes the probed watchdog liveness through to a bg-host verb (it used to be dropped -> always 'unknown')", async () => {
+    probeM.mockResolvedValue([{ name: "bg-host-ticker", up: false, status: null, latencyMs: 2, note: "frozen" }] as never);
+    unitM.mockResolvedValueOnce({
+      states: [{ unit: `${BG_HOST_WATCHDOG_UNIT}.service`, known: true, loadState: "loaded", activeState: "active" }],
+      unitsUnknown: [],
+      scopesUnavailable: [],
+    } as never);
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    expect(b.nextVerb).toMatch(/is RUNNING and OWNS this restart/);
+    expect(b.nextVerb).not.toMatch(/could NOT determine/);
   });
 });
 

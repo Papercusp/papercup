@@ -59,11 +59,21 @@ import {
   resolveSpawnerSocketPath,
   reapOrphanedSpawnerSockets,
 } from './spawner-socket-path';
-import { execProcess, type ExecParams, type ExecResult } from './sidecar-exec-process';
+import {
+  execProcess,
+  PROCESS_EXEC_CALLER_LABELS,
+  type ExecParams,
+  type ExecResult,
+  type ProcessExecCallerLabel,
+} from './sidecar-exec-process';
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
 import { armSpawnerSidecarOrphanWatchdog } from './spawner-sidecar-orphan-watchdog';
 import { getBuildInfo } from '../build-info';
+
+const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
+  Object.values(PROCESS_EXEC_CALLER_LABELS),
+);
 
 // JSON-RPC 2.0 response builders
 function rpcResult(result: unknown, id: number | string): object {
@@ -198,6 +208,15 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     const requests = new Map<number | string, AbortController>();
     const executions = new Map<number | string, Promise<ExecResult>>();
     const requestMethods = new Map<number | string, string>();
+    const requestCallerLabels = new Map<number | string, ProcessExecCallerLabel>();
+    const activeRequestSnapshot = (): Array<{
+      requestId: number | string;
+      method: string;
+      callerLabel?: ProcessExecCallerLabel;
+    }> => Array.from(requestMethods, ([requestId, method]) => {
+      const callerLabel = requestCallerLabels.get(requestId);
+      return { requestId, method, ...(callerLabel ? { callerLabel } : {}) };
+    });
     const connectionId = randomUUID();
     const connection = { socket, requests, executions, requestMethods, clientConnectionId: null as string | null };
     connections.set(connectionId, connection);
@@ -272,6 +291,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
           controllers.delete(controller);
           requests.delete(id);
           requestMethods.delete(id);
+          requestCallerLabels.delete(id);
           forgetDrainedConnection();
           exitWhenDrained();
         }
@@ -298,8 +318,14 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         controllers.add(controller);
         requests.set(id, controller);
         requestMethods.set(id, req.method);
+        const callerLabel = params.callerLabel;
+        if (callerLabel && SAFE_PROCESS_EXEC_CALLER_LABELS.has(callerLabel)) {
+          requestCallerLabels.set(id, callerLabel);
+        }
         try {
-          const execution = (deps.executeProcess ?? execProcess)(params, {
+          const executionParams = { ...params };
+          delete executionParams.callerLabel;
+          const execution = (deps.executeProcess ?? execProcess)(executionParams, {
             signal: controller.signal,
             onPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
             onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
@@ -314,6 +340,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
           controllers.delete(controller);
           requests.delete(id);
           requestMethods.delete(id);
+          requestCallerLabels.delete(id);
           executions.delete(id);
           forgetDrainedConnection();
           exitWhenDrained();
@@ -406,11 +433,11 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         clientConnectionId: connection.clientConnectionId,
         errorCode: errno.code ?? null,
         errorName: err.name,
-        activeRequests: Array.from(requestMethods, ([requestId, method]) => ({ requestId, method })),
+        activeRequests: activeRequestSnapshot(),
       });
     });
     socket.on('end', () => {
-      const activeRequests = Array.from(requestMethods, ([requestId, method]) => ({ requestId, method }));
+      const activeRequests = activeRequestSnapshot();
       if (activeRequests.length === 0) return;
       console.warn('[spawner-socket-peer-eof]', {
         serverGeneration,

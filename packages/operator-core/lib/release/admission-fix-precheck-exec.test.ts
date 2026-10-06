@@ -104,6 +104,7 @@ describe('admission pre-check defaultExec output, idle watchdog and durable log 
     const r = await defaultExec(['bash', '-c', 'echo started; sleep 30'], {
       cwd: process.cwd(),
       timeoutMs: 20_000,
+      // idle-window-ok: this case WANTS the idle window to fire; a slow child boot only makes it fire sooner.
       idleTimeoutMs: 500,
     });
     expect(r.timedOut).toBe(true);
@@ -112,13 +113,17 @@ describe('admission pre-check defaultExec output, idle watchdog and durable log 
   }, 15_000);
 
   it('a child that keeps printing outlives the idle window (progress resets it)', async () => {
-    // 8 lines 250 ms apart = ~2 s total, far past the 700 ms idle window.
-    const r = await defaultExec(['bash', '-c', 'for i in 1 2 3 4 5 6 7 8; do echo tick-$i; sleep 0.25; done'], {
+    // 12 lines 250 ms apart = ~3 s total, well past the idle window. The window is at the
+    // 1000 ms floor (lint:test-timing-budgets): the idle clock is armed at spawn, so a slow
+    // child boot under gate load must not be charged against a shorter first window.
+    const PROGRESS_IDLE_WINDOW_MS = 1_000;
+    const r = await defaultExec(['bash', '-c', 'for i in $(seq 1 12); do echo tick-$i; sleep 0.25; done'], {
       cwd: process.cwd(),
       timeoutMs: 20_000,
-      idleTimeoutMs: 700,
+      idleTimeoutMs: PROGRESS_IDLE_WINDOW_MS,
     });
     expect(r).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(r.durationMs).toBeGreaterThan(PROGRESS_IDLE_WINDOW_MS); // it really outlived one window
     expect(r.idleTimedOut).toBeUndefined();
     expect(r.output).toContain('tick-8');
   }, 15_000);

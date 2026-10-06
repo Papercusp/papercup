@@ -257,6 +257,55 @@ describe('host-global resource exclusion across legacy coordination domains', as
       .rejects.toMatchObject(crossDomainError);
   });
 
+  it.skipIf(!live)('fences raw legacy writes and waits for an uncommitted foreign lease', async () => {
+    const resource = await hostResource();
+    const readerDomain = unique('raw-reader');
+    let unblock!: () => void;
+    let inserted!: () => void;
+    const hold = new Promise<void>(resolve => { unblock = resolve; });
+    const ready = new Promise<void>(resolve => { inserted = resolve; });
+    const reader = getTxPool().begin(async tx => {
+      await tx`INSERT INTO agent_resource_locks
+        (coordination_domain, resource, owner, mode, expires_ts)
+        VALUES (${readerDomain}, ${resource}, 'raw-reader', 'shared',
+          clock_timestamp() + interval '60 seconds')`;
+      inserted();
+      await hold;
+    });
+    // Propagate setup failure rather than leave a readiness promise hanging.
+    await Promise.race([ready, reader]);
+    try {
+      await expect(getTxPool().begin(async tx => {
+        await tx`SET LOCAL lock_timeout = '100ms'`;
+        await tx`INSERT INTO agent_resource_locks
+          (coordination_domain, resource, owner, mode, expires_ts)
+          VALUES (${unique('raw-writer')}, ${resource}, 'raw-writer', 'exclusive',
+            clock_timestamp() + interval '60 seconds')`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      // The gate is per registry row, so another physical resource stays usable.
+      const other = await hostResource();
+      expect((await legacyExclusive(unique('other-resource'), other, 'other-writer')).ok).toBe(true);
+    } finally {
+      unblock();
+      await reader;
+    }
+    await expect(legacyExclusive(unique('after-commit'), resource, 'writer'))
+      .rejects.toMatchObject(crossDomainError);
+  });
+
+  it.skipIf(!live)('checks lease renewal as well as insertion after a foreign writer is admitted', async () => {
+    const resource = await hostResource();
+    const domain = unique('expired-reader');
+    const reader = await acquire(domain, resource, 'reader');
+    if (!reader.ok) throw new Error('setup reader refused');
+    await getTxPool()`UPDATE agent_resource_locks
+      SET expires_ts = clock_timestamp() - interval '1 second' WHERE resource = ${resource}`;
+    expect((await legacyExclusive(unique('writer-domain'), resource, 'writer')).ok).toBe(true);
+    await expect(getTxPool()`UPDATE agent_resource_locks
+      SET expires_ts = clock_timestamp() + interval '60 seconds'
+      WHERE lock_id = ${reader.lock_id}::uuid`).rejects.toMatchObject(crossDomainError);
+  });
+
   it.skipIf(!live)('allows shared readers across domains and ignores expired foreign leases', async () => {
     const resource = await hostResource();
     expect((await acquire(unique('reader-a'), resource, 'reader-a')).ok).toBe(true);

@@ -22,7 +22,7 @@ vi.mock('./sidecar-exec-process', async (original) => {
   };
 });
 
-import { execProcess } from './sidecar-exec-process';
+import { execProcess, PROCESS_EXEC_CALLER_LABELS, type ProcessExecCallerLabel } from './sidecar-exec-process';
 import { runSpawnerSidecarServer } from './spawner-sidecar-server';
 import { SpawnerIpcClient, type SpawnerCallOpts } from './spawner-ipc-client';
 import { runCommandViaSpawnerSidecar, isSidecarInfrastructureFault } from './git-via-sidecar';
@@ -76,7 +76,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function runChild(releasePath?: string) {
+function runChild(releasePath?: string, callerLabel?: ProcessExecCallerLabel) {
   const client = new SpawnerIpcClient(join(dir, 'server.sock'));
   clients.push(client);
   let requestId = 0;
@@ -89,6 +89,7 @@ function runChild(releasePath?: string) {
     : childScript;
   const result = client.call<{ code: number; stdout: string; stderr: string }>('process:exec', {
     command: process.execPath, args: ['-e', script], timeoutMs: 5000,
+    ...(callerLabel ? { callerLabel } : {}),
   }, {
     onRequestId: (id, connectionId) => { requestId = id; clientConnectionId = connectionId; },
     onPid: (value) => { pid = value; pids.add(pid); },
@@ -185,7 +186,8 @@ describe('cancellable caller with real IPC and child processes', () => {
   });
 
   it('logs peer EOF with the active process request identity', async () => {
-    const child = runChild();
+    const callerLabel = PROCESS_EXEC_CALLER_LABELS.command;
+    const child = runChild(undefined, callerLabel);
     await child.started;
     const fence = await executionFence(child.client);
     const peerEof = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -198,8 +200,8 @@ describe('cancellable caller with real IPC and child processes', () => {
       (details as { clientConnectionId?: string }).clientConnectionId === child.clientConnectionId(),
     )).toBe(true));
     const event = peerEof.mock.calls.find(([tag]) => tag === '[spawner-socket-peer-eof]')?.[1] as
-      { activeRequests?: Array<{ requestId: number; method: string }> } | undefined;
-    expect(event?.activeRequests).toContainEqual({ requestId: child.id(), method: 'process:exec' });
+      { activeRequests?: Array<{ requestId: number; method: string; callerLabel?: string }> } | undefined;
+    expect(event?.activeRequests).toContainEqual({ requestId: child.id(), method: 'process:exec', callerLabel });
     await recoveryClient().call('process:drain', { ...fence, requestId: child.id() });
   });
 

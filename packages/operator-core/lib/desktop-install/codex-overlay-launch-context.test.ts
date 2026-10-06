@@ -83,6 +83,12 @@ const CODEX_GUIDANCE = [
   'tools.mcp__papercusp_su__work_items_get({ id, harness })',
   'Use `tools:find` only for a capability that is\nnot in `ALL_TOOLS`',
   'on the `ptool` path it cannot',
+  // EI-25176447697693688: stale direct wrappers require a current tools/list baseline.
+  '`stale_tool_contract`',
+  '`tools/list` baseline for the current serving generation.',
+  'each named `ptool` invocation opens its own MCP\nconnection and lists the current catalog',
+  'The CLI uses its\nown connection, so it does not repair the old direct-wrapper session.',
+  'that client reconnects and refreshes its list.',
 ] as const;
 
 describe('codex overlay reaches live launch context (P-010)', () => {
