@@ -2424,6 +2424,45 @@
       }
      }
     ],
+    "manifestPrerequisiteQualification": {
+     "status": "retained-P001-protocol-guards; current-source-and-terminal-authority-unsettled",
+     "sourceRef": "thread-post:1159134",
+     "workItem": "papercusp#WI-10004535",
+     "observedState": "done",
+     "completionAuthority": "proposed",
+     "completionFreshness": "stale",
+     "terminalCompletionRef": null,
+     "clause": {
+      "specId": "MDENSE-manifest-identity",
+      "revision": 1,
+      "contentHash": "73b517721ad97ae362a191a31463e5bf26d09a64746d4c013b1e17ffc65d1577",
+      "behavior": "A measurement run refuses execution when a declared input, label, model or runtime identity differs from its frozen manifest.",
+      "requiredEvidence": ["fixture", "operational", "test"],
+      "requiredTestLayers": ["integration", "unit"]
+     },
+     "retainedProtocol": {
+      "path": "docs/evidence/mdenseon-measurement-protocol-2026-10-01.json",
+      "sha256": "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a",
+      "bytes": 16234,
+      "scope": "Historical synthetic protocol guards with actual HTTP/client/migrated owned PostgreSQL18; real seven-bar model measurements remain P-002 through P-008."
+     },
+     "selectedBindings": {
+      "ids": [18188, 18187, 18186],
+      "limit": 10,
+      "truncatedByLimit": false,
+      "currentness": "server-measured stale source/test; current spec; historical dirty test-run identity unknown",
+      "historicalRuns": "Unit20364580 PASS, integration20356843 PASS, copy-out baseline20364581 retained in protocol, threshold mutant20364582 FAIL/caught. No replay or current acceptance upgrade."
+     },
+     "guardInspection": "prepareMeasurementCell verifies frozen SHA, owner, source ancestry and declared input/model/external-weight/runtime bytes before claiming output. Conventional units distinguish profile/tokenizer/device/runtime/HTTP/cache identity; integration rejects changed labels through both CLIs before another inference/SQL write, changed external weights, reused judge artifacts and failed-attempt overwrite. Synthetic files and constant vectors do not establish loaded-model outcomes.",
+     "pinQualification": "Four declared corpus/gold files and the synthetic measurement fixture match retained SHA and size. Five current source/test files differ from the protocol receipt. Current model-cache assets were not rehashed or loaded.",
+     "terminalResidue": "Stored completion unit-file identity already differed from its declared HEAD; protocol settlement path remains superseded-before-commit. Full structured completion and retained legacy snapshot were read; the legacy narrative is itself clipped.",
+     "remainingAcceptance": [
+      "Qualify current source execution and current fixture/operational/unit/integration evidence before rebinding historical proof.",
+      "Resolve P-001 proposed terminal authority and declared receipt settlement residue without waiving the manifest identity clause.",
+      "Preserve distinct real-model phase outcomes and production v1 identities."
+     ],
+     "acceptanceWaived": false
+    },
     "productionPathEvidenceQualification": {
      "status": "inspected-neutral-route-is-partial-complete-R3-outcome-unqualified",
      "sourceRef": "thread-post:1158779",
