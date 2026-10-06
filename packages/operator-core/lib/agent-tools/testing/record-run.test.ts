@@ -6,8 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
+  TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+  parseTestRunExecutionDetails,
+} from '@papercusp/test-config/execution-details';
+import {
   MAX_OPERATIONAL_EVIDENCE_BYTES,
   inspectCommittedOperationalEvidence,
+  operationalExecution,
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
   recoverArchivedMutationFailures,
@@ -41,7 +46,7 @@ const EVIDENCE: CommittedOperationalEvidence = {
 
 const MUTATION_PROBE = {
   schemaVersion: 1 as const,
-  runnerPath: 'scripts/mutation-probe.sh',
+  runnerPath: 'scripts/mutation-probe.sh' as const,
   runnerSha256: 'c'.repeat(64),
   runnerCommit: 'd'.repeat(40),
   cwd: '.',
@@ -301,6 +306,39 @@ describe('testing:record-run', () => {
         rows: [expect.objectContaining({ framework: 'playwright', status: 'pass', durationMs: 240_000 })],
       }),
     );
+  });
+
+  it('persists an execution contract the shared ledger parser accepts (WI-10007016)', async () => {
+    const d = deps({ inspectEvidence: vi.fn(async () => EVIDENCE) });
+    await recordOperationalRun(
+      { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
+      { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() },
+      d,
+    );
+    const params = vi.mocked(d.persist).mock.calls[0]![0];
+    // Without BOTH root and row.execution the shared writer stores NULL execution_details.
+    expect(typeof params.root).toBe('string');
+    expect(params.root!.length).toBeGreaterThan(0);
+    const row = params.rows[0]!;
+    expect(row.execution).toMatchObject({
+      passed: ARTIFACT.assertions.length, failed: 0, skipped: 0, collectionFailed: false,
+    });
+    const parsed = parseTestRunExecutionDetails({
+      schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+      root: params.root, filePath: row.filePath, runGroupId: params.runGroupId,
+      workspaceId: params.workspaceId, harnessSlug: params.harnessSlug, testNamePattern: null,
+      ...row.execution, mutationPhase: null, commitSha: params.commit, worktreeDirty: params.worktreeDirty,
+    });
+    expect(parsed).toBeDefined();
+  });
+
+  it('counts failing assertions and an unexplained nonzero exit as failed cases', () => {
+    const ok = { id: 'ok', passed: true, evidence: 'held' };
+    expect(operationalExecution({ ...ARTIFACT, exitCode: 1, assertions: [ok, { id: 'bad', passed: false, evidence: 'no' }] }))
+      .toMatchObject({ passed: 1, failed: 1, failedCaseTitles: ['bad'] });
+    expect(operationalExecution({ ...ARTIFACT, exitCode: 2, assertions: [ok] }))
+      .toMatchObject({ passed: 1, failed: 1, failedCaseTitles: ['nonzero-exit-2'] });
+    expect(operationalExecution({ ...ARTIFACT, exitCode: 0, assertions: [ok] })).not.toHaveProperty('failedCaseTitles');
   });
 
   it('is idempotent when the artifact hash already has a scoped row', async () => {
