@@ -31,6 +31,10 @@ describe('set-plan-status public lifecycle guidance', () => {
     expect(publicGuidance).toContain('peer grade');
   });
 
+  it('documents the dropped plan-status alias', () => {
+    expect(setPlanStatusTool.description).toContain('`dropped` maps to the terminal `superseded` status');
+  });
+
   it('projects the post-implementation authoring contract to both agent clients', () => {
     for (const clientDoc of ['AGENTS.md', 'CLAUDE.md']) {
       const projected = readFileSync(resolve(ROOT, clientDoc), 'utf8');
@@ -72,6 +76,16 @@ describe('normalizePlanStatus (P-006)', () => {
   it('maps the legacy/confused aliases to canonical, reporting mappedFrom', () => {
     expect(normalizePlanStatus('active')).toEqual({ status: 'ready', mappedFrom: 'active' });
     expect(normalizePlanStatus('done')).toEqual({ status: 'shipped', mappedFrom: 'done' });
+    expect(normalizePlanStatus('dropped')).toEqual({ status: 'superseded', mappedFrom: 'dropped' });
+  });
+
+  it('accepts dropped in the public status schema', () => {
+    expect(setPlanStatusTool.args.safeParse({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      status: 'dropped',
+      expectedCurrent: 'draft',
+    }).success).toBe(true);
   });
 
   it('passes a canonical status through with no mappedFrom', () => {
@@ -126,14 +140,18 @@ describe('set-plan-status terminal repair gate (WI-38303)', () => {
   });
 });
 
-// Sanity that the mapped target actually flips the frontmatter (active→ready writes ready).
-describe('flipPlanFrontmatterStatus with mapped alias', () => {
-  it('writes the canonical target from a mapped alias', () => {
+// Sanity that mapped targets write their canonical plan-level status.
+describe('flipPlanFrontmatterStatus with mapped aliases', () => {
+  it.each([
+    ['active', 'ready'],
+    ['dropped', 'superseded'],
+  ])('writes the canonical target for %s', (alias, canonical) => {
     const body = '---\ntitle: T\nstatus: draft\n---\n\n# Body\n';
-    const { status } = normalizePlanStatus('active'); // → ready
+    const { status } = normalizePlanStatus(alias);
+    expect(status).toBe(canonical);
     const flip = flipPlanFrontmatterStatus(body, status, 'draft');
     expect(flip.oldStatus).toBe('draft');
-    expect(flip.newBody).toContain('status: ready');
+    expect(flip.newBody).toContain(`status: ${canonical}`);
     expect(flip.code).toBeUndefined();
   });
 });

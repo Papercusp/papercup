@@ -86,15 +86,17 @@ const GUARDABLE = PLAN_STATUSES;
 /** Caller-DX (watchdog P-006): aliases agents reach for, mapped to the
  *  canonical settable status instead of being zod-rejected. `active` is the
  *  legacy synonym for `ready` (bucketOf treats it as approved). `done` is the
- *  ITEM-status word — at PLAN level a "done" plan is `shipped`. Accept + map
- *  (echo `mappedFrom`) so the confusing reject (vs plans:set-status) stops
- *  recurring. */
+ *  ITEM-status word — at PLAN level a "done" plan is `shipped`. `dropped` is
+ *  owner-facing plan disposition language and maps to the existing terminal
+ *  `superseded` status. Accept + map (echo `mappedFrom`) so these caller terms
+ *  do not leave a lifecycle transition unapplied. */
 const STATUS_ALIASES: Record<string, (typeof SETTABLE)[number]> = {
   active: 'ready',
   done: 'shipped',
+  dropped: 'superseded',
 };
 /** Accepted on the wire = canonical + the mapped aliases. */
-const ACCEPTED = ['draft', 'ready', 'shipped', 'superseded', 'active', 'done'] as const;
+const ACCEPTED = ['draft', 'ready', 'shipped', 'superseded', 'active', 'done', 'dropped'] as const;
 
 /** Pure (watchdog P-006): map an accepted status to its canonical settable form,
  *  reporting the alias that was mapped (for the `mappedFrom` echo). */
@@ -118,7 +120,7 @@ const argsSchema = z
     status: z
       .enum(ACCEPTED)
       .describe(
-        "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped (the item-status words agents reach for). For a P-NNN item's status use plans:set-status instead.",
+        "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped, 'dropped'→superseded. For a P-NNN item's status use plans:set-status instead.",
       ),
     expectedCurrent: z
       .enum([...GUARDABLE] as [string, ...string[]])
@@ -598,7 +600,7 @@ export function acceptanceGraderRefusalFields(
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
-    "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` is post-implementation: author the plan-specific rubric from as-built reality, run `plans:audit { phase:'completion' }`, then get a peer grade. Plan frontmatter, not item status.",
+    "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. `dropped` maps to the terminal `superseded` status. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` is post-implementation: author the plan-specific rubric from as-built reality, run `plans:audit { phase:'completion' }`, then get a peer grade. Plan frontmatter, not item status.",
   guidance: {
     when: "Lifecycle changes. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), repair omissions, and record `plans:audit { phase:'activation' }`. Before shipped/`done`, author the acceptance rubric AFTER implementation from as-built outcomes, run `plans:audit { phase:'completion', items:[...] }`, then get a peer grade. Other moves: ready→draft or supersede.",
     notWhen:
@@ -624,7 +626,7 @@ export default defineTool({
   timeoutSec: 90,
   args: argsSchema,
   async handler(args, ctx) {
-    // Caller-DX (P-006): map a friendly alias (active→ready, done→shipped) to canonical.
+    // Caller-DX (P-006): map caller aliases to canonical plan lifecycle statuses.
     const { status, mappedFrom } = normalizePlanStatus(args.status);
     const slugs = mergeIds(args.slug, args.slugs);
     // EI-21405955283990151: lifecycle closeout already names exact plan slugs,
