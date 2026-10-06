@@ -544,6 +544,105 @@ describe('executeWake — delivery-time current wake-mode fence (EI-249401776654
   });
 });
 
+describe('executeWake — managed shutdown replay fence (EI-25270078901082313)', () => {
+  // The archived receipt proves one delivery, two attempts, and a hostless
+  // resume after accepted shutdown. Its intermediate retry state is UNKNOWN.
+  // This distinguishing fixture shows accepted-host retry is sufficient even
+  // when no detached turn or failed-turn exit/reopen callback ever occurred.
+  const ownerId = 'su-7afe5ac1-8a88-4476-bff8-104ca4a195dd';
+  const nativeId = '01a1132f-8539-7d42-be10-9a3fee60765f';
+  const shutdown = { at: '2026-10-06T22:07:55.842Z', by: ownerId };
+  const replay = (over: Partial<DeliveryWork> = {}) => work({
+    id: 460479,
+    subscriberId: ownerId,
+    eventKey: `coord:inbox-wake:${ownerId}`,
+    payload: { msg_id: 'coord-send-041fbf6037af2ab2888028dc35d009ad271e6eb8ce9caa589a0c95ab44b2c94d' },
+    createdAt: '2026-10-06T22:07:15.733Z',
+    wakeHandle: advHandle({ sessionId: nativeId }),
+    ...over,
+  });
+  const endedSession = () => session({
+    coordOwnerId: ownerId,
+    sessionId: nativeId,
+    startedAt: '2026-10-06T22:00:00.000Z',
+    endedAt: '2026-10-06T22:07:56.001Z',
+  });
+
+  it('settles the same accepted-host delivery after shutdown without a failed-turn callback or hostless resume', async () => {
+    let stopped = false;
+    const onResumeTurnExit = vi.fn();
+    const d = deps({
+      getSession: vi.fn(async () => stopped ? endedSession() : { ...endedSession(), endedAt: null }) as never,
+      getSessionLifecycle: vi.fn(async () => stopped ? { shutdown } : null) as never,
+      findPsuHost: vi.fn(() => stopped ? null : { sock: '/tmp/managed-shutdown.sock' }) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: vi.fn(async () => ({ ok: true, confirmation: 'acked', reason: 'accepted' })) as never,
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead'),
+      onResumeTurnExit,
+    });
+    expect(await executeWake(replay(), d)).toMatchObject({ kind: 'park', hostCommitPending: true });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(onResumeTurnExit).not.toHaveBeenCalled();
+
+    stopped = true;
+    const outcome = await executeWake(replay({
+      attempts: 2,
+      lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+    }), d);
+    expect(outcome).toMatchObject({ kind: 'drop', reason: expect.stringContaining('managed shutdown') });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+    expect(onResumeTurnExit).not.toHaveBeenCalled();
+  });
+
+  it.each([null, 'resume-turn-death:process-exit'])('also fences an old delivery with retry history %s', async (lastError) => {
+    const d = deps({
+      getSession: vi.fn(async () => endedSession()) as never,
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      alive: vi.fn(() => false),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead'),
+    });
+    expect(await executeWake(replay({ attempts: 2, lastError }), d)).toMatchObject({ kind: 'drop' });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+  });
+
+  it('keeps a genuinely newer wake durable until a managed host is available, then injects once', async () => {
+    let hostAvailable = false;
+    const d = deps({
+      getSession: vi.fn(async () => endedSession()) as never,
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn(() => hostAvailable ? { sock: '/tmp/restored-managed-host.sock' } : null) as never,
+      alive: vi.fn(() => false),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead'),
+    });
+    const freshWake = replay({ id: 460480, createdAt: '2026-10-06T22:08:07.000Z', attempts: 1 });
+    expect(await executeWake(freshWake, d)).toMatchObject({
+      kind: 'park', reason: expect.stringContaining('managed psu host'),
+    });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+    hostAvailable = true;
+    expect(await executeWake(freshWake, d)).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(d.injectPsuHost).toHaveBeenCalledTimes(1);
+    expect(d.injectPsuHost).toHaveBeenCalledWith('/tmp/restored-managed-host.sock', expect.objectContaining({ deliveryId: '460480' }));
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('does not replay pre-shutdown wakes even after a managed successor becomes available', async () => {
+    const d = deps({
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/new-managed-host.sock' })) as never,
+    });
+    for (const wakeHandle of [null, advHandle({ sessionId: nativeId }), { kind: 'plan-run' as const, runId: 12 }]) {
+      expect(await executeWake(replay({ wakeHandle }), d)).toMatchObject({ kind: 'drop' });
+    }
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.injectPsuHost).not.toHaveBeenCalled();
+    expect(d.resumePlanRun).not.toHaveBeenCalled();
+  });
+});
+
 describe('executeWake — durable fleet release latch (EI-203843)', () => {
   it('drops every wake shape before any injection or resume side effect', async () => {
     const lifecycle = {
