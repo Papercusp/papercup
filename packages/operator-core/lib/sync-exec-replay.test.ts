@@ -11,6 +11,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { currentCheckpointCandidate } from './release-checkpoint-launch';
 import {
   createGitReadMemo,
+  createSidecarFirstExec,
   execFileResult,
   execFileResultShared,
   GIT_READ_MEMO_TTL_MS,
@@ -309,5 +310,61 @@ describe('gitReadIsContentAddressed (EI-24852529885337741)', () => {
     expect(gitReadIsContentAddressed(['commit', '-m', sha])).toBe(false);
     expect(gitReadIsContentAddressed(['log', '-n', '5', sha])).toBe(false);
     expect(gitReadIsContentAddressed([])).toBe(false);
+  });
+});
+
+describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host)', () => {
+  type Call = { where: 'sidecar' | 'local'; cmd: string; args: string[]; timeoutMs?: number };
+  function harness(opts: {
+    enabled: boolean;
+    sidecar?: () => Promise<{ code: number; stdout: string; stderr: string }>;
+  }) {
+    const calls: Call[] = [];
+    const fallbacks: unknown[] = [];
+    const exec = createSidecarFirstExec({
+      enabled: () => opts.enabled,
+      viaSidecar: async (cmd, args, o) => {
+        calls.push({ where: 'sidecar', cmd, args, timeoutMs: o.timeoutMs });
+        return (opts.sidecar ?? (async () => ({ code: 0, stdout: 'remote\n', stderr: '' })))();
+      },
+      local: async (cmd, args) => {
+        calls.push({ where: 'local', cmd, args });
+        return { status: 0, stdout: 'local\n', stderr: '' };
+      },
+      noteFallback: (e) => fallbacks.push(e),
+    });
+    return { exec, calls, fallbacks };
+  }
+
+  it('runs in the sidecar when enabled, passing the caller timeout and keeping the exit code', async () => {
+    const h = harness({ enabled: true, sidecar: async () => ({ code: 1, stdout: '', stderr: 'no' }) });
+    expect(await h.exec('git', ['rev-parse', 'HEAD'], { timeout: 5_000 })).toEqual({ status: 1, stdout: '', stderr: 'no' });
+    expect(h.calls).toEqual([{ where: 'sidecar', cmd: 'git', args: ['rev-parse', 'HEAD'], timeoutMs: 5_000 }]);
+    expect(h.fallbacks).toEqual([]);
+  });
+
+  it('runs locally, without touching the sidecar, when disabled', async () => {
+    const h = harness({ enabled: false });
+    expect((await h.exec('systemctl', ['--user', 'is-active', 'x'])).stdout).toBe('local\n');
+    expect(h.calls.map((c) => c.where)).toEqual(['local']);
+  });
+
+  it('falls back locally (counted) on a transport rejection and on a sidecar infrastructure fault', async () => {
+    const rejected = harness({ enabled: true, sidecar: async () => { throw new Error('Sidecar socket closed'); } });
+    expect((await rejected.exec('git', ['status'])).stdout).toBe('local\n');
+    expect(rejected.calls.map((c) => c.where)).toEqual(['sidecar', 'local']);
+    expect(rejected.fallbacks).toHaveLength(1);
+
+    const fault = harness({ enabled: true, sidecar: async () => ({ code: -1, stdout: '', stderr: 'spawner sidecar admission refused' }) });
+    expect((await fault.exec('git', ['status'])).stdout).toBe('local\n');
+    expect(fault.calls.map((c) => c.where)).toEqual(['sidecar', 'local']);
+    expect(fault.fallbacks).toHaveLength(1);
+  });
+
+  it('maps a killed child (negative code, not an infrastructure fault) to status null and does not re-run it', async () => {
+    const h = harness({ enabled: true, sidecar: async () => ({ code: -1, stdout: '', stderr: 'timed out' }) });
+    expect(await h.exec('git', ['log'], { timeout: 50 })).toEqual({ status: null, stdout: '', stderr: 'timed out' });
+    expect(h.calls.map((c) => c.where)).toEqual(['sidecar']);
+    expect(h.fallbacks).toEqual([]);
   });
 });
