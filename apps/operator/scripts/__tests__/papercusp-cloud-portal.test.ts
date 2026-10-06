@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { parseEnvFile, resolveIntegrationReferences } from "../systemd/portal-hosted-launcher";
+import { parseEnvFile, resolveIntegrationReferences, siblingAppEnv } from "../systemd/portal-hosted-launcher";
 
 const ROOT = resolve(__dirname, "../../../..");
 const SCRIPT = join(ROOT, "apps/operator/scripts/systemd/deploy-cloud-portal.sh");
@@ -179,6 +179,50 @@ describe("hosted Portal boot launcher", () => {
   it("rejects malformed encrypted references before child startup", async () => {
     await expect(resolveIntegrationReferences({ BAD_REF: "integration:not-valid" }, async () => "never"))
       .rejects.toThrow("portal_hosted_secret_ref_malformed");
+  });
+
+  // WI-10006664: phone deploy mints the bearer secret into papercusp-phone/portal.env;
+  // a Portal started without it refuses every signed-in call 503 portal_app_auth_unavailable.
+  it("passes the phone app's portal bearer secret from its own config file, and nothing else", () => {
+    const dir = mkdtempSync(join(tmpdir(), "papercusp-cloud-portal-sibling-env-"));
+    try {
+      mkdirSync(join(dir, "papercusp-phone"), { recursive: true });
+      writeFileSync(
+        join(dir, "papercusp-phone/portal.env"),
+        "PHONE_AUTH_SECRET=phone-sentinel\nPHONE_OWNER_SUBJECT_ID=not-for-the-portal\nPORTAL_PHONE_ORIGIN=http://127.0.0.1:8793\n",
+      );
+      expect(siblingAppEnv({ XDG_CONFIG_HOME: dir }, {})).toEqual({
+        PHONE_AUTH_SECRET: "phone-sentinel",
+        PORTAL_PHONE_ORIGIN: "http://127.0.0.1:8793",
+      });
+      // HOME/.config is the default when XDG_CONFIG_HOME is unset (systemd user units).
+      const home = mkdtempSync(join(tmpdir(), "papercusp-cloud-portal-sibling-home-"));
+      try {
+        mkdirSync(join(home, ".config/papercusp-phone"), { recursive: true });
+        writeFileSync(join(home, ".config/papercusp-phone/portal.env"), "PHONE_AUTH_SECRET=from-home\n");
+        expect(siblingAppEnv({ HOME: home }, {})).toEqual({ PHONE_AUTH_SECRET: "from-home" });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the hosted env win, honours an explicit file override, and tolerates a missing file", () => {
+    const read = (path: string): Record<string, string> => (path === "/explicit/portal.env" ? { PHONE_AUTH_SECRET: "explicit" } : {});
+    expect(siblingAppEnv({ PAPERCUSP_PORTAL_PHONE_ENV_FILE: "/explicit/portal.env", HOME: "/h" }, {}, read))
+      .toEqual({ PHONE_AUTH_SECRET: "explicit" });
+    expect(siblingAppEnv({ PAPERCUSP_PORTAL_PHONE_ENV_FILE: "/explicit/portal.env" }, { PHONE_AUTH_SECRET: "hosted" }, read))
+      .toEqual({});
+    expect(siblingAppEnv({ HOME: "/nonexistent-home-for-test" }, {})).toEqual({});
+  });
+
+  it("the boot path applies the sibling env to the Portal child", () => {
+    const source = readFileSync(LAUNCHER_SCRIPT, "utf8");
+    const main = source.slice(source.indexOf("async function main"));
+    expect(main).toMatch(/Object\.assign\(childEnv, siblingAppEnv\(process\.env, childEnv\)\)/);
+    expect(main.indexOf("siblingAppEnv(")).toBeLessThan(main.indexOf("spawn("));
   });
 });
 

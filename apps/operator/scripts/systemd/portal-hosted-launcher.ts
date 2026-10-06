@@ -19,6 +19,44 @@ const SAFE_OPERATOR_ENV = [
   "PAPERCUSP_INTEGRATION_ROOT",
 ] as const;
 
+/**
+ * Sibling apps whose own deploy mints the Portal<->app bearer secret into that
+ * app's config file: infra/phone-app/deploy.sh writes PHONE_AUTH_SECRET to
+ * papercusp-phone/portal.env, and the phone sidecar verifies bearers with the
+ * same file. The Portal proxy signs every signed-in request to the app with it,
+ * so without it each one is refused 503 `portal_app_auth_unavailable` (WI-10006664:
+ * no hosted user could start a Phone call). Only these portal-facing keys are
+ * copied, never the whole file, and a value the hosted env already sets wins.
+ */
+const SIBLING_APP_ENV = [
+  {
+    fileEnv: "PAPERCUSP_PORTAL_PHONE_ENV_FILE",
+    defaultConfigPath: "papercusp-phone/portal.env",
+    keys: ["PHONE_AUTH_SECRET", "PORTAL_PHONE_ORIGIN"],
+  },
+] as const;
+
+/** The sibling-app keys to add to the Portal child's env (values never logged). */
+export function siblingAppEnv(
+  env: NodeJS.ProcessEnv,
+  existing: Record<string, string | undefined>,
+  read: (path: string) => Record<string, string> = readOptional,
+): Record<string, string> {
+  const added: Record<string, string> = {};
+  const configHome = env.XDG_CONFIG_HOME?.trim() || (env.HOME?.trim() ? join(env.HOME.trim(), ".config") : "");
+  for (const sibling of SIBLING_APP_ENV) {
+    const file = env[sibling.fileEnv]?.trim() || (configHome ? join(configHome, sibling.defaultConfigPath) : "");
+    if (!file) continue;
+    const values = read(file);
+    for (const key of sibling.keys) {
+      if (existing[key]?.trim()) continue;
+      const value = values[key]?.trim();
+      if (value) added[key] = value;
+    }
+  }
+  return added;
+}
+
 /** Parse the small dotenv subset used by the checked-in deployment env files. */
 export function parseEnvFile(contents: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -105,6 +143,7 @@ async function main(): Promise<void> {
   childEnv.PORTAL_LOCAL_MODE = "0";
   childEnv.PORTAL_USE_MEMORY_STORE = "0";
   childEnv.HOSTNAME = childEnv.HOSTNAME || "127.0.0.1";
+  Object.assign(childEnv, siblingAppEnv(process.env, childEnv));
 
   const rewritten = await resolveIntegrationReferences(hosted, resolverModule.resolveHostedSecretRef);
   Object.assign(childEnv, rewritten);
