@@ -39,6 +39,21 @@ pub struct PendingSuTurn {
     pub command: Option<Value>,
     pub uncertain: bool,
     pub error: Option<String>,
+    /// pui-chat-first-ux P-026 / D-025: the `model[:effort]` spec picked in
+    /// /model for this turn. The engine applies it before running the turn;
+    /// `None` keeps the model the session already runs on.
+    pub model: Option<String>,
+}
+
+/// `model[:effort]` with any effort suffix removed, the Rust twin of the
+/// server's `splitModelSpec` (agent-config-constants.ts): only a known effort
+/// level counts as a suffix, so `provider/model:tag` names keep their tag.
+pub fn spec_without_effort(spec: &str) -> &str {
+    const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+    match spec.rsplit_once(':') {
+        Some((model, effort)) if !model.is_empty() && EFFORTS.contains(&effort.to_ascii_lowercase().as_str()) => model,
+        _ => spec,
+    }
 }
 
 /// Fallback Cupboard kind order for legacy workers that do not return
@@ -2223,6 +2238,10 @@ pub struct App {
     /// Optional launch-time posture for the next fresh SU session. The menu is
     /// projected from the server's canonical mode registry.
     pub chat_mode: Option<String>,
+    /// pui-chat-first-ux P-026 / D-025: a `model[:effort]` picked in /model
+    /// for a live bound session. It rides on the next owner turn (taken into
+    /// `PendingSuTurn.model` at dispatch) and the footer names it until then.
+    pub su_next_model: Option<String>,
     /// Fleet/seat context inherited from the PUI process launch. A remote PUI
     /// uses these on every fresh SU session so bootstrap-su consumes the same
     /// delegated seat a remote psu launch would.
@@ -2914,6 +2933,7 @@ impl App {
             chat_effort: None,
             chat_account: None,
             chat_mode: None,
+            su_next_model: None,
             su_launch_fleet: None,
             su_launch_seat: None,
             account_rows: Vec::new(),
@@ -5173,6 +5193,9 @@ impl App {
                 command: None,
                 uncertain: false,
                 error: None,
+                // P-026: the /model pick rides on this turn. A refusal keeps it
+                // on the pending turn, so a retry asks for the same model.
+                model: self.su_next_model.take(),
             });
             if clear_composer {
                 self.chat_clear_input();
@@ -6446,19 +6469,46 @@ impl App {
             .as_ref()
             .and_then(|a| a.config.surface_models.get("operator").cloned());
         let mut opts = crate::session_config::model_options(&tiers, surface_default.as_deref());
-        if let Some(setup) = &self.session_setup {
-            opts[0].label = "Server default model".into();
+        // P-026: a live bound session switches from its next turn, so its
+        // picker is limited to its own engine's tiers just like the setup form.
+        let live = self
+            .su_session
+            .as_ref()
+            .filter(|session| self.session_setup.is_none() && session.is_live());
+        let pick_backend = self
+            .session_setup
+            .as_ref()
+            .map(|setup| setup.backend)
+            .or_else(|| live.map(|session| session.backend()));
+        if let Some(pick_backend) = pick_backend {
+            if let Some(session) = live {
+                let current = self
+                    .su_next_model
+                    .clone()
+                    .or_else(|| session.descriptor.as_ref().and_then(|d| d.model.clone()));
+                opts[0].label = match &current {
+                    Some(spec) => format!("Keep the current model ({spec})"),
+                    None => "Keep the current model".into(),
+                };
+                for option in opts.iter_mut().skip(1) {
+                    if current.as_deref().map(spec_without_effort) == Some(spec_without_effort(&option.id)) {
+                        option.label.push_str(" · current");
+                    }
+                }
+            } else {
+                opts[0].label = "Server default model".into();
+            }
             for (option, tier) in opts.iter_mut().skip(1).zip(&tiers) {
                 if tier.backend.as_deref().is_some_and(|backend| {
-                    backend != setup.backend.as_str()
+                    backend != pick_backend.as_str()
                         && !(backend == "claude-code"
-                            && setup.backend == crate::su_session::SuSessionBackend::Claude)
+                            && pick_backend == crate::su_session::SuSessionBackend::Claude)
                 }) {
                     option.disabled = true;
                     option.hint = Some(format!(
                         "This tier uses {}; choose a {} tier.",
                         tier.backend.as_deref().unwrap_or("another backend"),
-                        setup.backend.label()
+                        pick_backend.label()
                     ));
                 }
             }
@@ -6575,10 +6625,48 @@ impl App {
                 return Action::Render;
             }
             Ok((id, label)) => {
-                // Backend/model/effort/account/mode are launch-time choices: a
-                // bound conversation's engine already runs with its own and no
-                // turn carries them. Route the pick to the in-PUI New SU session
-                // form instead of claiming it applied to this conversation.
+                // pui-chat-first-ux P-026 / D-025: a live bound session switches
+                // model and effort from its next turn (the owner turn carries
+                // the spec), so these picks stay on this conversation rather
+                // than opening a new session.
+                let live_model = self
+                    .su_session
+                    .as_ref()
+                    .filter(|session| session.is_live())
+                    .map(|session| session.descriptor.as_ref().and_then(|d| d.model.clone()));
+                if let (None, Some(current)) = (self.session_setup.as_ref(), live_model) {
+                    use crate::session_config::PickerAxis;
+                    if matches!(axis, PickerAxis::Model | PickerAxis::Effort) {
+                        self.session_picker = None;
+                        let base = self.su_next_model.clone().or(current.clone());
+                        let next = match axis {
+                            PickerAxis::Model => crate::session_config::model_pick(&id),
+                            _ => match (crate::session_config::effort_pick(&id), base) {
+                                (Some(effort), Some(base)) => {
+                                    Some(format!("{}:{effort}", spec_without_effort(&base)))
+                                }
+                                (Some(_), None) => {
+                                    self.session_note = Some(
+                                        "Pick a model first; this session has not named the model it runs on."
+                                            .to_string(),
+                                    );
+                                    return Action::Render;
+                                }
+                                (None, base) => base.map(|b| spec_without_effort(&b).to_string()),
+                            },
+                        };
+                        self.su_next_model = next.filter(|spec| Some(spec) != current.as_ref());
+                        self.session_note = Some(match &self.su_next_model {
+                            Some(spec) => format!("Next turn uses {spec}."),
+                            None => format!("Keeping {label}."),
+                        });
+                        return Action::Render;
+                    }
+                }
+                // Backend/account/mode are launch-time choices: a bound
+                // conversation's engine already runs with its own and no turn
+                // carries them. Route the pick to the in-PUI New SU session form
+                // instead of claiming it applied to this conversation.
                 let applies_to_new_session = self.session_setup.is_none()
                     && !matches!(axis, crate::session_config::PickerAxis::Conversation)
                     && (self.agent_chat_id.is_some() || self.su_session.is_some());
@@ -6878,13 +6966,26 @@ impl App {
             let model = model.trim();
             (!model.is_empty() && !model.eq_ignore_ascii_case("unknown")).then(|| model.to_string())
         };
-        self.chat_messages
+        let running = self
+            .chat_messages
             .iter()
             .rev()
             .filter_map(|m| m.provenance.as_ref())
             .find_map(|p| known(&p.model))
+            .or_else(|| {
+                self.su_session
+                    .as_ref()
+                    .and_then(|s| s.descriptor.as_ref())
+                    .and_then(|d| d.model.as_deref())
+                    .and_then(known)
+            })
             .or_else(|| self.chat_model.as_deref().and_then(known))
-            .unwrap_or_else(|| self.chat_engine_label().to_string())
+            .unwrap_or_else(|| self.chat_engine_label().to_string());
+        // P-026: a /model pick applies from the next turn; say so until then.
+        match self.su_next_model.as_deref() {
+            Some(next) => format!("{running} · next turn: {next}"),
+            None => running,
+        }
     }
 
     /// The launch directory, with the home prefix shortened to `~` as in a
