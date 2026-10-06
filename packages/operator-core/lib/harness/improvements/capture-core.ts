@@ -89,7 +89,17 @@ import {
   type StoredBugReproduction,
 } from '../../attention/bug-reproduction';
 import { extractCitedIds } from './triage';
-import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
+import {
+  DEFAULT_SIGNAL_ORIGIN,
+  deriveReporterProvenance,
+  effectiveOrigin,
+  mergeReporterKinds,
+  type ReporterKind,
+  type ReporterProvenance,
+  type SignalOrigin,
+} from './provenance';
+import { buildReportContext, type ReportContextFailure, type ReportContextInput } from './report-context';
+import { getBuildInfo } from '../../build-info';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { canonicalPotSlug, PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import { isWorkspaceGlobalLabel } from '../../workspace-global-labels';
@@ -314,6 +324,20 @@ export interface CaptureImprovementInput {
    * row must never suppress a real signal, nor a real row a planted drill).
    */
   origin?: SignalOrigin;
+  /**
+   * Who filed this (unified-bug-pipeline P-010, D-001). Omit to derive it from
+   * `createdBy` / `sourceRole` (provenance.ts `deriveReporterProvenance`): a
+   * `system:` identity is a watchdog, a session is an agent. The in-app
+   * "Report a problem" door passes 'end-user' — no other signal can say so.
+   */
+  reporterKind?: ReporterKind;
+  /**
+   * The reporter's captured context (report-context.ts): app, version, screen
+   * or URL state, recent errors, log excerpt, screenshot reference. Stored on
+   * bug rows; whatever the door omits is filled from the serving build and, for
+   * a captured tool failure, its failing call.
+   */
+  reportContext?: ReportContextInput;
   /**
    * Machine-readable finding class (frontier P-044/D-008): a stable
    * `<miner>:<shape>` slug (e.g. `negative-space:resolution-gap`,

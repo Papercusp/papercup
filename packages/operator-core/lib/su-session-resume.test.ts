@@ -20,7 +20,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   ensureResumeTranscriptPresent: m.transcript,
   tryRematerializeFromArchive: m.archive,
   ensureCodexHomeViaOperator: m.ensureCodex, ensureInteractiveConfigViaOperator: vi.fn(),
-  isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true,
+  isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true, codexHomeLaunchReadiness: () => null,
   rehealResumeCredentials: vi.fn(), rehealResumeCodexAuth: vi.fn(),
   applyCodexGatewayRoute: m.codexRoute, applyOmpResumeAccountRoute: m.ompRoute,
   ompTrackedResumeEnv: () => ({ PI_CODING_AGENT_DIR: '/saved/omp', PI_CONFIG_DIR: '.saved/omp' }),

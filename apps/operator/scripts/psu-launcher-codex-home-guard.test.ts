@@ -52,6 +52,7 @@ const {
   codexFreshDefaultAuthPreflight,
   reconcileCodexSystemAuth,
   isCodexHomeLaunchReady,
+  codexHomeLaunchReadiness,
 } = launcher;
 
 let dir: string;
@@ -336,6 +337,31 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
   it('FALSE for a null/empty home rather than throwing', () => {
     expect(isCodexHomeLaunchReady(null)).toBe(false);
     expect(isCodexHomeLaunchReady('')).toBe(false);
+  });
+
+  // WI-10006770: a resume refusal used to say only "not ready", and the home
+  // was gone by the time anyone looked. The reason must name the ONE check
+  // that failed, so each case below breaks exactly one condition of a home
+  // that is otherwise ready (calibrated first: the healthy home reads null).
+  it('names the single failing check instead of a bare not-ready', () => {
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
+    expect(codexHomeLaunchReadiness(dir)).toBeNull();
+    expect(codexHomeLaunchReadiness(null)).toBe('no Codex home recorded');
+
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG.replace('alternate_screen = "never"\n', ''));
+    expect(codexHomeLaunchReadiness(dir)).toMatch(/\[tui\]/);
+    writeFileSync(join(dir, 'config.toml'), CODEX_STUB);
+    expect(codexHomeLaunchReadiness(dir)).toBe('config.toml has no papercusp-su MCP server');
+    rmSync(join(dir, 'config.toml'));
+    expect(codexHomeLaunchReadiness(dir)).toBe('config.toml is missing');
+
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
+    rmSync(join(dir, 'AGENTS.md'));
+    expect(codexHomeLaunchReadiness(dir)).toBe('AGENTS.md is missing');
+    writeFileSync(join(dir, 'AGENTS.md'), '   \n');
+    expect(codexHomeLaunchReadiness(dir)).toBe('AGENTS.md is empty');
+    // The boolean is exactly "no reason".
+    expect(isCodexHomeLaunchReady(dir)).toBe(false);
   });
 
   it('FALSE for a structurally ready home whose config/hooks/diagnostics belong to a prior owner', () => {

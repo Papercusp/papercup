@@ -39,6 +39,11 @@ import {
   runGitViaSpawnerSidecar,
   runGitStdinViaSpawnerSidecar,
 } from '../../fleet/git-via-sidecar';
+import {
+  gitReplayIsSafe,
+  isSidecarPostDispatchFault,
+  sidecarPostDispatchUnknownResult,
+} from '../../fleet/sidecar-dispatch-fault';
 
 /** Per-call override for {@link defaultRunGit}'s kill-timeout. */
 export interface RunGitOptions {
@@ -262,6 +267,13 @@ const runGitUnchecked: RunGit = async (args, cwd, opts) => {
       // and then looking identical to a healthy process — see
       // {@link noteSidecarFallback}.
       noteSidecarFallback('pot-git', e);
+      // WI-10006716: a transport loss AFTER dispatch leaves the outcome unknown
+      // (the sidecar child may have written the ref). Replaying a write could
+      // apply it twice, so only reads replay; a write reports failure and the
+      // caller re-reads state. A pre-dispatch fault still falls back as before.
+      if (isSidecarPostDispatchFault(e) && !gitReplayIsSafe(args)) {
+        return sidecarPostDispatchUnknownResult(args, e);
+      }
     }
   }
   return runGitLocal(args, cwd, opts);

@@ -64,6 +64,15 @@ export function desktopAccess(
       ? { ok: true }
       : { ok: false, code: 'desktop_not_owned', reason: "the workspace's own desktop is not an agent desktop" };
   }
+  // A personal desktop is one person's own seat (personal-cloud-desktop-2026-10-06). It must
+  // never fall through to the pot rule below, where a harness slug equal to the userId would
+  // grant a non-operator agent the person's screen. Per-person viewing authz lives in the
+  // hosted session host (desktop_not_owner); this gate only decides which AGENTS may touch it.
+  if (desktop.scope === 'user') {
+    return caller.isOperator
+      ? { ok: true }
+      : { ok: false, code: 'desktop_not_owned', reason: "a person's personal desktop is not an agent desktop" };
+  }
   if (caller.isOperator) return { ok: true };
   if (desktop.scope === 'agent') {
     return caller.ownerId !== null && desktop.scopeRef === caller.ownerId

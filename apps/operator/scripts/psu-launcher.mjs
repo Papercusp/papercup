@@ -15146,34 +15146,61 @@ export async function ensureInteractiveConfigViaOperator(
  * @param {string | null} [expectedOwner]
  */
 export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
+  return codexHomeLaunchReadiness(codexHome, expectedOwner) === null;
+}
+
+/**
+ * Why a Codex home is NOT launch-ready, or `null` when it is. The boolean
+ * above folds every condition into one `false`, so a resume refusal could only
+ * say "not ready" and the failing condition was unknowable once the home was
+ * gone (WI-10006770). Each returned reason names exactly one check.
+ *
+ * @param {string | null | undefined} codexHome
+ * @param {string | null} [expectedOwner]
+ * @returns {string | null}
+ */
+export function codexHomeLaunchReadiness(codexHome, expectedOwner = null) {
+  if (!codexHome) return "no Codex home recorded";
+  const read = (name) => {
+    try {
+      return readFileSync(join(codexHome, name), "utf8");
+    } catch {
+      return null;
+    }
+  };
   try {
-    if (!codexHome) return false;
     // AGENTS.md is this session's behavioral spine. A home with valid MCP/hooks
     // but no prompt is not launch-ready and must be rematerialized before a
     // resume or deterministic carry successor starts.
-    const agentsText = readFileSync(join(codexHome, "AGENTS.md"), "utf8");
-    if (!stripManagedCarrySection(agentsText).trim()) return false;
+    const agentsText = read("AGENTS.md");
+    if (agentsText === null) return "AGENTS.md is missing";
+    if (!stripManagedCarrySection(agentsText).trim()) return "AGENTS.md is empty";
     const carryBasePath = join(codexHome, ".papercusp-carry-base-AGENTS.md");
     if (
       existsSync(carryBasePath) &&
       !stripManagedCarrySection(readFileSync(carryBasePath, "utf8")).trim()
-    ) return false;
-    const text = readFileSync(join(codexHome, "config.toml"), "utf8"); // throws when absent
-    if (!text.includes("[mcp_servers.papercusp-su]")) return false;
+    ) return "the carry base AGENTS.md is empty";
+    const text = read("config.toml");
+    if (text === null) return "config.toml is missing";
+    if (!text.includes("[mcp_servers.papercusp-su]")) return "config.toml has no papercusp-su MCP server";
     // Codex 0.157 captures GNOME Terminal right-clicks in alternate-screen
     // mode. A healthy pre-0.157 home needs an in-place config repair on resume
     // so the terminal's Paste menu remains usable (WI-10003121).
-    if (!text.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n')) return false;
-    if (!expectedOwner) return true;
-    if (!text.includes(`client=${encodeURIComponent(expectedOwner)}`))
-      return false;
+    if (!text.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n')) {
+      return "config.toml lacks the [tui] alternate_screen = \"never\" block";
+    }
+    if (!expectedOwner) return null;
+    if (!text.includes(`client=${encodeURIComponent(expectedOwner)}`)) {
+      return "config.toml's MCP url names a different owner";
+    }
 
-    const diagnostics = JSON.parse(
-      readFileSync(join(codexHome, "papercusp-diagnostics.json"), "utf8"),
-    );
-    if (diagnostics?.lockOwnerSid !== expectedOwner) return false;
-    if (diagnostics?.lockEnforcement === "hooks-missing") return true;
-    const hooksText = readFileSync(join(codexHome, "hooks.json"), "utf8");
+    const diagnosticsText = read("papercusp-diagnostics.json");
+    if (diagnosticsText === null) return "papercusp-diagnostics.json is missing";
+    const diagnostics = JSON.parse(diagnosticsText);
+    if (diagnostics?.lockOwnerSid !== expectedOwner) return "papercusp-diagnostics.json names a different lock owner";
+    if (diagnostics?.lockEnforcement === "hooks-missing") return null;
+    const hooksText = read("hooks.json");
+    if (hooksText === null) return "hooks.json is missing";
     const hookOwners = Array.from(
       hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g),
       (match) => match[1],
@@ -15193,13 +15220,12 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
         ),
       ),
     );
-    return (
-      hookOwners.length > 0 &&
-      hookOwners.every((owner) => owner === expectedOwner) &&
-      lifecycleReady
-    );
-  } catch {
-    return false;
+    if (hookOwners.length === 0) return "hooks.json names no session owner";
+    if (!hookOwners.every((owner) => owner === expectedOwner)) return "hooks.json names a different session owner";
+    if (!lifecycleReady) return "hooks.json lacks the SessionStart/SessionEnd lifecycle hooks";
+    return null;
+  } catch (error) {
+    return `the home could not be read (${error instanceof Error ? error.message : String(error)})`;
   }
 }
 
