@@ -101,6 +101,14 @@ export interface CreatePotFromRepoOpts {
    * already exists — install packs there via knowledge_packs:install).
    */
   knowledgePack?: string | null;
+  /**
+   * P-017 (D-007): the answer to "Where should the agents' work go?".
+   * 'direct' (default — today's behaviour) = agents commit straight into the
+   * repo; 'review' = a working copy: the pot gets its own fork, git-sync pushes
+   * there, and the combined work reaches the repo only through approved PRs.
+   * Ignored in into-pot mode (the existing pot's answer stands).
+   */
+  integrationMode?: 'direct' | 'review';
   workspaceId: string;
 }
 
@@ -136,6 +144,10 @@ export type CreatePotFromRepoResult =
       /** P-503: outcome of applying the new-hive default `hiveGit.mode`. Absent
        *  for an into-pot add (the existing home's mode is never touched). */
       hiveGitMode?: NewHiveGitModeOutcome;
+      /** P-017: outcome of applying a 'review' (working copy) answer. Absent for
+       *  'direct' and into-pot. Best-effort — a refusal never fails the create;
+       *  the pot stays 'direct' and the refusal says what to fix. */
+      integrationMode?: import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeResult;
     };
 
 // ── Injectable seams (tests pass fakes; production uses the defaults) ─────────
@@ -175,6 +187,14 @@ export interface CreatePotFromRepoDeps {
    *  Default: seedGitSyncRoutineForMember (lazy-imported). Best-effort — a
    *  seeding failure NEVER fails the create (mirrors the publish discipline). */
   seedGitSync?: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
+  /** P-017: apply a 'review' answer (fork + record + set mode). Default:
+   *  choosePotIntegrationMode (lazy-imported). */
+  chooseIntegrationMode?: (
+    input: import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeInput,
+  ) => Promise<import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeResult>;
+  /** P-017: the pot's real test suite (no build fallback). Default:
+   *  resolvePotSuiteCommand (lazy-imported). */
+  resolveSuiteCommand?: (slug: string, workspaceId: string) => Promise<string | null>;
   /** P-503 (WI-10004765): apply the workspace's configured default `hiveGit.mode`
    *  to a NEW pot home (never an into-pot add). Default:
    *  applyNewHiveGitModeDefault (lazy-imported). Best-effort — never fails the create. */
@@ -602,6 +622,42 @@ export async function createPotFromRepo(
     message: e instanceof Error ? e.message : String(e),
   }));
 
+  // 7.4 — P-017 (D-007): apply a 'review' (working copy) answer. The pot-home
+  //       slug holds the hiveGit.integration setting (git-sync reads it via the
+  //       member's hive_slug); the MEMBER slug is the registry entry git-sync
+  //       runs as, so the fork_remote is recorded there. Best-effort: a refusal
+  //       (no test suite, account owns the repo, fork failure) leaves the pot
+  //       'direct' and is reported, never failing the create.
+  let integrationMode:
+    | import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeResult
+    | undefined;
+  if (!intoPot && opts.integrationMode === 'review') {
+    const resolveSuite =
+      deps.resolveSuiteCommand ??
+      (async (slug: string, ws: string) =>
+        (await import('../../harness/routines/hive-release-env')).resolvePotSuiteCommand(slug, ws));
+    const choose =
+      deps.chooseIntegrationMode ??
+      (async (i: import('../../harness/git-sync/pot-integration-mode').ChoosePotIntegrationModeInput) =>
+        (await import('../../harness/git-sync/pot-integration-mode')).choosePotIntegrationMode(i));
+    integrationMode = await (async () => {
+      const greenCmd = await resolveSuite(memberSlug, opts.workspaceId).catch(() => null);
+      return choose({
+        workspaceId: opts.workspaceId,
+        potHomeSlug: potSlug,
+        harnessSlug: memberSlug,
+        mode: 'review',
+        greenCmd,
+        forkRemote: null,
+        upstreamRemote: parsed.cloneUrl,
+      });
+    })().catch((e) => ({
+      ok: false as const,
+      error: 'fork_create_failed' as const,
+      message: e instanceof Error ? e.message : String(e),
+    }));
+  }
+
   // 7.5 — auto-set the beacon-publish consent from the derived visibility (B-07 /
   //       C-2). No user opt-in: a PUBLIC pot auto-enables the live status beacon
   //       (it's a public-directory discoverability signal); an INVITE (hidden,
@@ -706,5 +762,6 @@ export async function createPotFromRepo(
     publish: publishOutcome,
     gitSync,
     ...(hiveGitMode ? { hiveGitMode } : {}),
+    ...(integrationMode ? { integrationMode } : {}),
   };
 }
