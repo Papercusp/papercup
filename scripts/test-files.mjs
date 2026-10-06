@@ -2897,6 +2897,20 @@ export async function main(
         fileDescriptors: 16 + Math.max(1, exact.length),
       });
       const nodeIdentity = `${process.pid}:${randomUUID()}:${cwdLabel}:${exact.join('\0')}`;
+      // EI-24836213046334894: `node --test` never loads the Vitest ledger reporter, so a node:test
+      // run (and every mutation-probe guard run over one) left no test_runs row. A collector
+      // reporter in the child + the shared writer here record it with Vitest's semantics. The
+      // session starts BEFORE the spawn (worktree before-snapshot). Fail-soft; a caller that
+      // chose its own --test-reporter keeps full control of reporting.
+      let nodeLedger = null;
+      if (!dry && !vitestArgs.some((arg) => String(arg).startsWith('--test-reporter'))) {
+        try {
+          const { beginNodeTestLedger } = await import('../libs/test-config/src/node-test-ledger.ts');
+          nodeLedger = beginNodeTestLedger({ repoRoot: REPO_ROOT });
+        } catch (error) {
+          console.error(`TEST_FILE_LEDGER runner=node:test rows=0 reason=${JSON.stringify(`ledger unavailable: ${error?.message ?? error}`)}`);
+        }
+      }
       const result = await runGovernedTestFileProcess(runGovernedTestProcess, {
         workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
         namespace: 'test-files-node-process',
@@ -2909,7 +2923,7 @@ export async function main(
         env: process.env,
         settle: classifyGovernedTestProcessOutcome,
       }, async (_admissionContext, governedEnv) => {
-        const child = spawnSync(process.execPath, ['--test', ...exact, ...vitestArgs], {
+        const child = spawnSync(process.execPath, ['--test', ...(nodeLedger?.reporterArgs ?? []), ...exact, ...vitestArgs], {
           cwd: group.cwd,
           env: governedEnv,
           encoding: 'utf8',
@@ -2919,6 +2933,10 @@ export async function main(
       });
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
+      if (nodeLedger) {
+        const ledgerOutcome = await nodeLedger.record();
+        console.log(`TEST_FILE_LEDGER runner=node:test rows=${ledgerOutcome.recorded}${ledgerOutcome.reason ? ` reason=${JSON.stringify(ledgerOutcome.reason)}` : ''}`);
+      }
       printTestFinalizationError(result);
       if (result.error) {
         if (result.governedAdmissionError) {
