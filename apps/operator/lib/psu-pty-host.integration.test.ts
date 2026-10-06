@@ -16,6 +16,7 @@ import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { execPath } from 'node:process';
 import { spawn } from 'node:child_process';
+import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import {
   hostThroughPty,
   socketPathFor,
@@ -144,6 +145,33 @@ function exactStatusOnlyCodexReady(output: string): boolean {
 }
 
 describe('managed-pty integration evidence isolation', () => {
+  it('excludes caller launch state and native homes while preserving explicit fixture inputs', () => {
+    const source = {
+      PATH: '/fixture/bin', TERM: 'xterm-256color',
+      PAPERCUSP_PSU_PTY_DIR: PSU_PTY_DIR,
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_SID: 'live-owner',
+      PAPERCUSP_ADV_SESSION_ID: '123', PAPERCUSP_PSU_HEADLESS: '1',
+      PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG: '/live/host.log',
+      [KICKOFF_PROOF_PATH_ENV]: '/live/receipt.json',
+      [KICKOFF_PROOF_TOKEN_ENV]: 'caller-token',
+      CODEX_HOME: '/live/codex', CLAUDE_CONFIG_DIR: '/live/claude',
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '9000',
+    };
+    const env = hermeticEnv({ PAPERCUSP_SID: 'fixture-owner' }, source);
+    expect(env.PATH).toBe(source.PATH);
+    expect(env.TERM).toBe(source.TERM);
+    expect(env.PAPERCUSP_PSU_PTY_DIR).toBe(PSU_PTY_DIR);
+    expect(env.PAPERCUSP_SID).toBe('fixture-owner');
+    expect(env.CODEX_HOME).toBe(join(PSU_PTY_DIR, 'codex-home'));
+    expect(env.CLAUDE_CONFIG_DIR).toBe(join(PSU_PTY_DIR, 'claude-home'));
+    for (const key of Object.keys(source).filter((key) => key.startsWith('PAPERCUSP_'))) {
+      if (key !== 'PAPERCUSP_SID' && key !== 'PAPERCUSP_PSU_PTY_DIR') expect(env).not.toHaveProperty(key);
+    }
+    expect(hermeticEnv({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' }, source))
+      .toMatchObject({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' });
+    expect(source.CODEX_HOME).toBe('/live/codex');
+  });
+
   it('redirects host lifecycle evidence away from the live operator corpus', () => {
     const liveDir = join(homedir(), '.papercusp', 'psu-pty');
     expect(process.env.PAPERCUSP_PSU_PTY_DIR).toBeTruthy();
@@ -166,7 +194,7 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
         command: '/bin/bash',
         args: ['-c', `"${codexRuntime}" 1.5 & wait`],
         cwd: root,
-        env: { ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -227,7 +255,7 @@ describe('plain launch kickoff turn-start proof', () => {
       done = hostThroughPty({
         command: execPath, args: ['-e', childCode], cwd: root,
         env: {
-          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SUBMIT_FILE: submitFile,
           [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
@@ -305,7 +333,7 @@ describe('plain launch kickoff turn-start proof', () => {
       done = hostThroughPty({
         command: execPath, args: ['-e', childCode], cwd: root,
         env: {
-          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_HEADLESS: '1', CODEX_HOME: codexHome,
           NATIVE_FILE: nativeFile, CHOICE_FILE: choiceFile,
           [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
@@ -369,7 +397,7 @@ describe('plain launch kickoff turn-start proof', () => {
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome,
@@ -446,7 +474,7 @@ describe('plain launch kickoff turn-start proof', () => {
       done = hostThroughPty({
         command: execPath, args: ['-e', childCode], cwd: root,
         env: {
-          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, COUNT_FILE: countFile,
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
@@ -503,7 +531,7 @@ describe('plain launch kickoff turn-start proof', () => {
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome,
@@ -564,7 +592,7 @@ describe('plain launch kickoff turn-start proof', () => {
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome,
@@ -631,7 +659,7 @@ describe('Claude launch kickoff bracketed-paste regression (EI-24141825238362808
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',
@@ -689,7 +717,7 @@ describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800
       args: ['-e', childCode, subcommand, '11111111-1111-4111-8111-111111111111'],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
@@ -1034,7 +1062,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       args: ['-e', childCode],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
@@ -1109,7 +1137,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       args: ['-e', childCode],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
@@ -1181,7 +1209,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       args: ['-e', childCode],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
@@ -1368,7 +1396,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       args: ['-e', childCode],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
@@ -1443,7 +1471,7 @@ describe('session-port managed seed + native persistence helpers', () => {
         args: ['-e', childCode, 'resume'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           CODEX_HOME: nativeRoot,
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
@@ -1512,7 +1540,7 @@ describe('session-port managed seed + native persistence helpers', () => {
         args: ['-e', childCode, 'resume'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '700',
@@ -1560,7 +1588,7 @@ describe('session-port managed seed + native persistence helpers', () => {
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: '/tmp',
       env: {
-        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_PSU_HEADLESS: '1', TERM: 'xterm-256color',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -1587,7 +1615,7 @@ describe('session-port managed seed + native persistence helpers', () => {
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: '/tmp',
       env: {
-        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_ROLE: 'judge', PAPERCUSP_PSU_HEADLESS: '1', TERM: 'xterm-256color',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -1623,7 +1651,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       args: ['-e', childCode],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_PSU_HEADLESS: '1',
@@ -1872,7 +1900,7 @@ describe('hostThroughPty real round-trip', () => {
             command: execPath,
             args: ['-e', 'setTimeout(()=>{},10000)'],
             cwd: '/tmp',
-            env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+            env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
             ownerId,
             io: fakeIo().io,
             bridgeTty: false,
@@ -1935,7 +1963,7 @@ describe('hostThroughPty real round-trip', () => {
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_PSU_PTY_RESUME_COMPACTION_STARTUP_MS: '1000',
@@ -2007,7 +2035,7 @@ describe('hostThroughPty real round-trip', () => {
           args: ['-e', childCode],
           cwd: root,
           env: {
-            ...process.env,
+            ...hermeticEnv(),
             PAPERCUSP_SID: ownerId,
             PAPERCUSP_AGENT: 'codex',
             CODEX_HOME: codexHome,
@@ -2100,7 +2128,7 @@ describe('hostThroughPty real round-trip', () => {
           args: ['-e', childCode],
           cwd: root,
           env: {
-            ...process.env,
+            ...hermeticEnv(),
             PAPERCUSP_SID: ownerId,
             PAPERCUSP_AGENT: agent,
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
@@ -2192,7 +2220,7 @@ describe('hostThroughPty real round-trip', () => {
           args: ['-e', childCode],
           cwd: root,
           env: {
-            ...process.env,
+            ...hermeticEnv(),
             PAPERCUSP_SID: ownerId,
             PAPERCUSP_AGENT: 'omp',
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
@@ -2255,7 +2283,7 @@ describe('hostThroughPty real round-trip', () => {
           args: ['-e', childCode],
           cwd: root,
           env: {
-            ...process.env,
+            ...hermeticEnv(),
             PAPERCUSP_SID: ownerId,
             PAPERCUSP_AGENT: 'omp',
             PAPERCUSP_LAUNCHED_BY: 'su-parent',
@@ -2329,7 +2357,7 @@ describe('hostThroughPty real round-trip', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         advSessionId: 4242,
         io,
@@ -2381,7 +2409,7 @@ describe('hostThroughPty real round-trip', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         advSessionId: 4243,
         io,
@@ -2438,7 +2466,7 @@ describe('hostThroughPty real round-trip', () => {
         command: execPath,
         args: ['-e', 'setTimeout(()=>process.exit(0),4000);'],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         advSessionId: 424535,
         io,
@@ -2507,7 +2535,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode, 'INITIAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',
@@ -2581,7 +2609,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode, 'INITIAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',
@@ -2678,7 +2706,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode, 'INITIAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_PSU_HEADLESS: '0',
@@ -2787,7 +2815,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           // Reproduce the live failure deterministically: the fake successor
           // emits BOOT output but never Codex's version-specific composer
@@ -2808,9 +2836,12 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(600);
-      const bootsBefore = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-      expect(bootsBefore).toHaveLength(1); // exactly one child so far
+      // BOOT is a child phase, not a promise that the scheduler runs it in 600ms.
+      const bootsBefore = await vi.waitFor(() => {
+        const boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(boots).toHaveLength(1);
+        return boots;
+      }, { timeout: 8000 });
       const pid1 = bootsBefore[0];
       const ptyPid1 = JSON.parse(readFileSync(meta, 'utf8')).ptyPid;
       expect(ptyPid1).toBe(pid1);
@@ -2819,10 +2850,12 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       // The host kills the child, fresh-spawns it in the SAME host (same
       // socket/meta/SID), and opens the fresh process on the carry.
       await controlInject(sock, 'reset', 'CARRIED');
-      await sleep(2500); // kill + respawn + boot + output-quiet(200) + submit CR
-
-      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-      expect(bootsAfter).toHaveLength(2); // the child was actually respawned
+      const bootsAfter = await vi.waitFor(() => {
+        const boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(boots).toHaveLength(2);
+        expect(captured()).toContain('ECHO:CARRIED');
+        return boots;
+      }, { timeout: 8000 });
       const pid2 = bootsAfter[1];
       expect(pid2).not.toBe(pid1); // a genuinely new process
       // The carry-note was injected as the opening turn of the fresh context.
@@ -2866,7 +2899,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_ADV_SESSION_ID: '42',
@@ -2953,7 +2986,7 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           // A backend whose readiness marker this child will never emit, plus a
           // short fallback window — so the ONLY thing that can deliver the carry
@@ -3021,7 +3054,7 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
         "process.stdin.on('data',d=>{b+=d;if(b.includes('QUIT'))process.exit(0);});" +
         'setTimeout(()=>process.exit(0),15000);';
       const env = {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_OPERATOR_URL: 'http://agent:PRIVATE-CREDENTIAL@127.0.0.1:3170/api/mcp?token=PRIVATE-TOKEN',
         PAPERCUSP_TEST_SECRET: 'UNRELATED-PRIVATE-VALUE',
@@ -3146,7 +3179,7 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root,
       env: {
-        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
         CODEX_HOME: codexHome, BOOT_COUNTER: join(root, 'boots'), NATIVE_FILE: nativeFile,
         PERSISTS: persists ? 'yes' : 'no', TERM: 'xterm-256color',
         STUCK_ONCE: stuckOnce ? 'yes' : 'no',
@@ -3258,7 +3291,7 @@ describe('P-020 carry-respawn drill correlation', () => {
         args: ['-e', carryAwareChildCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',
@@ -3355,7 +3388,7 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           // This fixture exercises a plain Claude child. A live headless
@@ -3481,7 +3514,7 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           // Keep this fixture hermetic when the suite runs inside a live psu
           // session. Ambient identity/configuration must not rewrite the
@@ -3602,7 +3635,7 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
         command: execPath,
         args: ['-e', childCode, 'ORIGINAL'],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -3676,7 +3709,7 @@ describe('RECYCLE respawn report ordering', () => {
         args: ['-e', childCode, 'ORIGINAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
@@ -3767,7 +3800,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         args: ['-e', childCode, 'ORIGINAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_ADV_SESSION_ID: '42',
           CODEX_HOME: '/tmp/codex-home-for-handoff',
@@ -3868,7 +3901,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       const ownerId = `su-adopt-noshim-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const { captured, io } = fakeIo();
-      const env = { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
+      const env = { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
       delete env.PAPERCUSP_PSU_REEXEC;
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
 
@@ -3964,7 +3997,7 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       const sock = socketPathFor(ownerId);
       const { captured, io } = fakeIo();
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         TERM: 'xterm-256color',
         PAPERCUSP_OPERATOR_URL: `http://localhost:${deadPort}`,
@@ -4033,7 +4066,7 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
     const sock = socketPathFor(ownerId);
     const { captured, io } = fakeIo();
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...hermeticEnv(),
       PAPERCUSP_SID: ownerId,
       TERM: 'xterm-256color',
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170',
@@ -4171,7 +4204,7 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       cwd: '/tmp',
       // PAPERCUSP_AGENT=claude so the REAL mint synthesizes a --session-id for this
       // resume-shaped argv instead of no-op'ing (the 2026-07-18 mint gap).
-      env: { ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', TERM: 'xterm-256color' },
+      env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', TERM: 'xterm-256color' },
       ownerId,
       io,
       bridgeTty: false,
@@ -4294,7 +4327,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '300',
@@ -4374,7 +4407,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         args: ['-e', childCode, 'INITIAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '150',
@@ -4466,7 +4499,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_PSU_HEADLESS: '0',
@@ -4559,7 +4592,7 @@ describe('final interactive terminal handoff (WI-42458)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
@@ -4604,7 +4637,7 @@ describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-for
         command: 'bash',
         args: ['--norc', '--noprofile', '-i'],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PS1: '$ ' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PS1: '$ ' },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: false,
@@ -4672,7 +4705,7 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
@@ -4731,7 +4764,7 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS: '100' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS: '100' },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
@@ -4784,7 +4817,7 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -4844,7 +4877,7 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -4899,7 +4932,7 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -5000,7 +5033,7 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
         args: ['-e', LONG_LIVED_CHILD],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           // The structural discriminator: injectLaunchedByArg stamps this onto every
@@ -5057,7 +5090,7 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       // A hand-started psu carries no launcher provenance. Delete rather than blank
       // it, so a runner that happens to export one cannot mask the refusal.
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         TERM: 'xterm-256color',
       };
