@@ -29,6 +29,7 @@
 import type {
   ModelMessage,
   ModelPort,
+  ModelProviderResponse,
   ModelStreamEvent,
   ModelStopReason,
   ModelToolDef,
@@ -97,6 +98,8 @@ export interface LoopStepInfo {
   /** Account that actually served this model request, when the provider
    * returned authoritative routing provenance. */
   servedAccount?: string;
+  /** One request's whitelisted provider report, never an aggregate bill. */
+  providerResponse?: ModelProviderResponse;
 }
 
 export interface StopState {
@@ -292,6 +295,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
     let stopReason: ModelStopReason = 'other';
     let stepUsage: ModelUsage | null = null;
     let stepServedAccount: string | undefined;
+    let stepProviderResponse: ModelProviderResponse | undefined;
     let streamErrored = false;
 
     let stream: AsyncIterable<import('./model-port').ModelStreamEvent>;
@@ -401,6 +405,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
             sawStop = true;
             stopReason = ev.reason;
             stepUsage = ev.usage ?? null;
+            stepProviderResponse = ev.providerResponse;
             if (ev.servedAccount) {
               stepServedAccount = ev.servedAccount;
               servedAccount = ev.servedAccount;
@@ -462,6 +467,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
       stopReason,
       usage: stepUsage,
       ...(stepServedAccount ? { servedAccount: stepServedAccount } : {}),
+      ...(stepProviderResponse ? { providerResponse: { ...stepProviderResponse } } : {}),
     };
     steps.push(step);
 

@@ -182,7 +182,8 @@ describe('createRoutedModelPort', () => {
         choices: [{ index: 0, delta: { role: 'assistant', content: 'sdk hello' }, finish_reason: null }] },
       { id: 'gen-openrouter-test', object: 'chat.completion.chunk', created: 1, model: 'vendor/model-test',
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } },
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5, cost: 0.0125,
+          cost_details: { upstream_inference_cost: 100 } } },
     ];
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
       chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
@@ -194,7 +195,10 @@ describe('createRoutedModelPort', () => {
         tools: [{ name: 'files:read', inputSchema: { type: 'object' } }] });
       expect(events).toContainEqual({ type: 'text_delta', text: 'sdk hello' });
       expect(events.at(-1)).toMatchObject({ type: 'stop', reason: 'end_turn',
-        usage: { inputTokens: 3, outputTokens: 2 }, servedAccount: 'customer-openrouter-test' });
+        usage: { inputTokens: 3, outputTokens: 2 }, servedAccount: 'customer-openrouter-test',
+        providerResponse: { provider: 'openrouter', id: 'gen-openrouter-test',
+          modelId: 'vendor/model-test', reportedCostUsd: 0.0125 } });
+      expect(JSON.stringify(events)).not.toContain('upstreamInferenceCost');
       expect(fetchSpy).toHaveBeenCalledOnce();
       const [url, init] = fetchSpy.mock.calls[0];
       expect(String(url)).toBe('https://openrouter.ai/api/v1/chat/completions');

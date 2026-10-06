@@ -19,6 +19,7 @@ import type {
   ModelContentPart,
   ModelMessage,
   ModelPort,
+  ModelProviderResponse,
   ModelRequest,
   ModelStopReason,
   ModelStreamEvent,
@@ -232,16 +233,36 @@ function errorMessage(error: unknown): string {
 
 async function* readAiSdkStream(
   stream: ReadableStream<LanguageModelV3StreamPart>,
-  modelId: string,
+  resolved: AiSdkPortModel,
   decodeToolName: (name: string) => string = (name) => name,
 ): AsyncGenerator<ModelStreamEvent, void, void> {
   const reader = stream.getReader();
   let finished = false;
+  let responseId: string | undefined;
+  let responseModelId: string | undefined;
+  let invalidResponseId = false;
+  let invalidResponseModelId = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       switch (value.type) {
+        case 'response-metadata':
+          if (resolved.provider === 'openrouter') {
+            // Repeated identical frames are normal. A conflicting or invalid
+            // id must never become the generation selected for reconciliation.
+            if (value.id !== undefined) {
+              if (typeof value.id !== 'string' || !/^gen-[0-9A-Za-z-]{1,124}$/.test(value.id)
+                  || (responseId !== undefined && responseId !== value.id)) invalidResponseId = true;
+              if (!invalidResponseId) responseId = value.id;
+            }
+            if (value.modelId !== undefined) {
+              if (typeof value.modelId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/.test(value.modelId)
+                  || (responseModelId !== undefined && responseModelId !== value.modelId)) invalidResponseModelId = true;
+              if (!invalidResponseModelId) responseModelId = value.modelId;
+            }
+          }
+          break;
         case 'text-delta':
           yield { type: 'text_delta', text: value.delta };
           break;
@@ -267,11 +288,30 @@ async function* readAiSdkStream(
         }
         case 'finish': {
           const baseUsage = usage(value);
-          const priced = costFromTokens(modelId, baseUsage);
+          const priced = costFromTokens(resolved.modelId, baseUsage);
+          let providerResponse: ModelProviderResponse | undefined;
+          if (resolved.provider === 'openrouter') {
+            const metadata = value.providerMetadata?.openrouter;
+            const reported = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+              ? metadata.usage : undefined;
+            const cost = reported && typeof reported === 'object' && !Array.isArray(reported)
+              ? reported.cost : undefined;
+            const validCost = typeof cost === 'number' && Number.isFinite(cost)
+              && cost >= 0 && cost <= Number.MAX_SAFE_INTEGER;
+            const id = invalidResponseId ? undefined : responseId;
+            const modelId = invalidResponseModelId ? undefined : responseModelId;
+            if (id !== undefined || modelId !== undefined || validCost) {
+              providerResponse = { provider: 'openrouter',
+                ...(id !== undefined ? { id } : {}),
+                ...(modelId !== undefined ? { modelId } : {}),
+                ...(validCost ? { reportedCostUsd: cost } : {}) };
+            }
+          }
           yield {
             type: 'stop',
             reason: stopReason(value),
             usage: priced.priced ? { ...baseUsage, costUsd: priced.usd } : baseUsage,
+            ...(providerResponse ? { providerResponse } : {}),
           };
           finished = true;
           break;
@@ -304,7 +344,7 @@ export function createAiSdkPort(opts: AiSdkPortOptions): ModelPort {
       try {
         const codec = toolNameCodec(req);
         const result = await resolved.model.doStream(buildAiSdkCallOptions(req, resolved, codec));
-        yield* readAiSdkStream(result.stream, resolved.modelId, codec.decode);
+        yield* readAiSdkStream(result.stream, resolved, codec.decode);
       } catch (error) {
         if (req.signal?.aborted) {
           yield { type: 'stop', reason: 'aborted' };

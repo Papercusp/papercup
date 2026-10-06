@@ -178,9 +178,9 @@ describe('createAiSdkPort', () => {
   );
 
   it.each([
-    ['gen-first', 'gen-different'], ['gen-first', '../secret'], ['../secret', 'gen-later'],
-    ['gen-first', ''], ['gen-' + 'a'.repeat(125)],
-  ])('omits an invalid or ambiguous generation sequence %j', async (ids) => {
+    { ids: ['gen-first', 'gen-different'] }, { ids: ['gen-first', '../secret'] },
+    { ids: ['../secret', 'gen-later'] }, { ids: ['gen-first', ''] }, { ids: ['gen-' + 'a'.repeat(125)] },
+  ])('omits an invalid or ambiguous generation sequence $ids', async ({ ids }) => {
     const port = createAiSdkPort({ resolveModel: () => ({ model: fakeModel([
       ...ids.map((id) => ({ type: 'response-metadata' as const, id })),
       { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' },
@@ -189,6 +189,34 @@ describe('createAiSdkPort', () => {
     const events = [];
     for await (const event of port.stream({ model: 'openrouter/vendor/unpriced-model', messages: [] })) events.push(event);
     expect(events.at(-1)).toEqual({ type: 'stop', reason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } });
+  });
+
+  it.each([
+    { models: ['vendor/first', 'vendor/different'] }, { models: ['vendor/valid', ' bad-model'] },
+    { models: ['bad\nmodel', 'vendor/later'] }, { models: ['vendor/' + 'a'.repeat(256)] },
+  ])('omits an invalid or ambiguous served model $models while retaining the generation', async ({ models }) => {
+    const port = createAiSdkPort({ resolveModel: () => ({ model: fakeModel([
+      { type: 'response-metadata', id: 'gen-valid' },
+      ...models.map((modelId) => ({ type: 'response-metadata' as const, modelId })),
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: {}, outputTokens: {} } },
+    ]), provider: 'openrouter', modelId: 'vendor/unpriced-model' }) });
+    const events = [];
+    for await (const event of port.stream({ model: 'openrouter/vendor/unpriced-model', messages: [] })) events.push(event);
+    expect(events.at(-1)).toEqual({ type: 'stop', reason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 },
+      providerResponse: { provider: 'openrouter', id: 'gen-valid' } });
+  });
+
+  it('does not turn an incomplete generation into a completed provider report', async () => {
+    const port = createAiSdkPort({ resolveModel: () => ({ model: fakeModel([
+      { type: 'response-metadata', id: 'gen-incomplete', modelId: 'vendor/model' },
+      { type: 'error', error: new Error('transport failed') },
+    ]), provider: 'openrouter', modelId: 'vendor/unpriced-model' }) });
+    const events = [];
+    for await (const event of port.stream({ model: 'openrouter/vendor/unpriced-model', messages: [] })) events.push(event);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'error', message: 'transport failed' });
+    expect(events[0]).not.toHaveProperty('providerResponse');
   });
 
   it('ignores OpenRouter-shaped metadata returned on another provider route', async () => {

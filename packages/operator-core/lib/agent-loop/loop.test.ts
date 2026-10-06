@@ -65,6 +65,21 @@ const callTool = (id: string, name: string, input: unknown): ModelStreamEvent[] 
 ];
 
 describe('runAgentLoop', () => {
+  it('keeps provider reports on their original steps without aggregating or carrying them forward', async () => {
+    const report = { provider: 'openrouter', id: 'gen-first', reportedCostUsd: 0.25 };
+    const first = callTool('c1', 'echo', { value: 'x' });
+    first[first.length - 1] = { type: 'stop', reason: 'tool_use',
+      usage: { inputTokens: 10, outputTokens: 5 }, providerResponse: report, servedAccount: 'account-one' };
+    const { port } = scriptedPort([first, textStop('done', { inputTokens: 3, outputTokens: 2 })]);
+    const events = await collect({ port, model: 'm1', messages: [], tools: [echoTool] });
+    const done = doneEvent(events);
+    expect(done.steps[0]).toMatchObject({ providerResponse: report, servedAccount: 'account-one' });
+    expect(done.steps[1]).not.toHaveProperty('providerResponse');
+    expect(done).not.toHaveProperty('providerResponse');
+    expect(done.usage).toEqual({ inputTokens: 13, outputTokens: 7 });
+    expect(events.find(e => e.type === 'step_end')).toMatchObject({ step: { providerResponse: report } });
+  });
+
   it('single text turn ends naturally with the final text and transcript', async () => {
     const { port } = scriptedPort([textStop('hello world', { inputTokens: 7, outputTokens: 3 })]);
     const events = await collect({

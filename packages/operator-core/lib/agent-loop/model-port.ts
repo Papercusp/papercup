@@ -67,6 +67,18 @@ export interface ModelUsage {
   costUsd?: number;
 }
 
+/** Whitelisted provider report for ONE completed request. This is routing/
+ * accounting preparation, not an authenticated billing-account identity,
+ * exact commercial receipt or invoice-finality claim. Keep the reported
+ * charge separate from ModelUsage.costUsd's token-based estimate. Incomplete
+ * or failed streams do not supply this completed-response record. */
+export interface ModelProviderResponse {
+  provider: string;
+  id?: string;
+  modelId?: string;
+  reportedCostUsd?: number;
+}
+
 export type ModelStopReason =
   | 'end_turn'
   | 'tool_use'
@@ -83,7 +95,8 @@ export type ModelStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; input: unknown }
-  | { type: 'stop'; reason: ModelStopReason; usage?: ModelUsage; servedAccount?: string }
+  | { type: 'stop'; reason: ModelStopReason; usage?: ModelUsage; servedAccount?: string;
+      providerResponse?: ModelProviderResponse }
   | { type: 'error'; message: string; raw?: unknown };
 
 export interface ModelRequest {
