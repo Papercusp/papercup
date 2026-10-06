@@ -33,8 +33,13 @@ import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools
 import { inboxWakeKey } from './agent-tools/coordination/inbox-wake';
 
 export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v6';
-/** v3 (P-009): a no-new-plan review discharges only with a passing coverage map. */
-export const GOAL_PLANNING_OBLIGATION_REVISION = 'goal-planning-needed-v3';
+/**
+ * v3 (P-009): a no-new-plan review discharges only with a passing coverage map.
+ * v4 (WI-10006710): ...and only when it cites every unplaced or blocked worklist plan.
+ */
+export const GOAL_PLANNING_OBLIGATION_REVISION = 'goal-planning-needed-v4';
+/** Worklist placements nothing is moving: a no-new-plan review must name each one. */
+const UNMOVED_WORKLIST_PLACEMENTS: ReadonlySet<string> = new Set(['unplaced', 'blocked']);
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
@@ -132,6 +137,16 @@ export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentO
     if (gaps.length > 0) return defineAgentObligation({ ...measured, title: 'Write a plan for the uncovered need', status: 'due', applicableDemand: gaps.length,
       reason: gaps.map(describeGoalReviewCoverageGap).join(' '),
       action: coverageAction('Write and start a plan for each uncovered cluster, staff it, then re-record the review citing it.'),
+    });
+    // WI-10006710: a coverage map that passes the cluster check can still omit a worklist
+    // plan nothing is moving. Measured 2026-10-06 (goal 60d3a8, epoch 21): the 12:19:30Z
+    // review cited three worklist plans, omitted a ready unplaced one with open goal work,
+    // and that plan got no start, staffing or recorded hold for the rest of the tenure.
+    const citedPlans = new Set([...review.planRefs, ...review.coverage.flatMap((entry) => (entry.planRef ? [entry.planRef] : []))]);
+    const unaccounted = portfolio.worklist.filter((plan) => UNMOVED_WORKLIST_PLACEMENTS.has(plan.placement.state) && !citedPlans.has(plan.ref));
+    if (unaccounted.length > 0) return defineAgentObligation({ ...measured, title: 'Account for every unplaced worklist plan', status: 'due', applicableDemand: unaccounted.length,
+      reason: `The current ${review.disposition} review does not cite ${unaccounted.length === 1 ? 'this worklist plan' : 'these worklist plans'}, and nothing is moving ${unaccounted.length === 1 ? 'it' : 'them'}: ${unaccounted.map((plan) => `${plan.ref} (${plan.placement.state})`).join(', ')}.`,
+      action: coverageAction('Place each plan (apply its placement repair), or re-record the review with a coverage entry that cites it as planRef and states why it is held.'),
     });
     const planned = review.coverage.filter((entry) => entry.planRef).length;
     return defineAgentObligation({ ...measured, title: 'Current review requires no new plan', status: 'satisfied',
