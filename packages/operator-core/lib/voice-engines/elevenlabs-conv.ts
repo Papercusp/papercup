@@ -23,8 +23,15 @@
  */
 
 import { Conversation, type VoiceConversation } from '@elevenlabs/client';
-import { ASK_PAPERCUP_TOOL_NAME, answerVoiceQuestion, voiceQuestionOf } from '@papercusp/chat-protocol';
+import {
+  ASK_PAPERCUP_TOOL_NAME,
+  answerVoiceQuestion,
+  createVoiceTranscriptWriter,
+  voiceQuestionOf,
+  type VoiceTranscriptWriter,
+} from '@papercusp/chat-protocol';
 import { wsLocalKey } from '../browser-workspace';
+import { persistOperatorVoiceTurn } from '../operator-conversation-client';
 import { runCommand, runQuery, list } from '../commands/registry';
 import type { CommandContext, Definition } from '../commands/types';
 import { OPERATOR_PERSONA_PROMPT } from '../operator-persona';
@@ -128,6 +135,17 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
   // end_conversation is rare and the closure cost is one var lookup.
    
   let convRef: { endSession: () => Promise<void> } | null = null;
+  // Two-tier sessions write every voice turn into the conversation text chat
+  // reads (plan D-008): the user's words, the front's replies, Papercup's answer.
+  let convForTranscript: VoiceConversation | null = null;
+  const transcript = args.twoTier
+    ? createTwoTierTranscript({
+        conversationId: args.conversationId,
+        elConvId: () => {
+          try { return (convForTranscript as any)?.getId?.() ?? null; } catch { return null; }
+        },
+      })
+    : null;
   const clientTools = buildClientTools({
     workspace: args.workspace,
     tabId: args.tabId,
@@ -136,6 +154,7 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
       await new Promise((r) => setTimeout(r, 500));
       try { await convRef?.endSession(); } catch { /* tearing down anyway */ }
     },
+    ...(transcript ? { onBrainAnswer: (say: string) => transcript.brainAnswered(say) } : {}),
   });
 
   // Build the session-start prompt — but skip the three preflight
@@ -241,6 +260,7 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
     onMessage: ({ message, source }: { message: string; source: 'user' | 'ai' }) => {
       if (source === 'user') args.onTranscript?.(message);
       else if (source === 'ai') args.onAssistantText?.(message);
+      if (transcript) routeVoiceMessageToTranscript(transcript, { message, source });
     },
     onError: (msg: string) => { args.onError?.(new Error(msg)); },
   };
@@ -293,7 +313,9 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
     if (withOverrides && overridePayload && !bareMode) {
       opts.overrides = overridePayload;
     }
-    return (await Conversation.startSession(opts)) as VoiceConversation;
+    const started = (await Conversation.startSession(opts)) as VoiceConversation;
+    convForTranscript = started;
+    return started;
   };
 
   // Release the prewarm stream RIGHT BEFORE EL's startSession runs so
@@ -441,6 +463,8 @@ export function buildClientTools(opts: {
   workspace: string;
   tabId: string;
   endSession: () => Promise<void>;
+  /** Two-tier sessions: receives Papercup's answer so the transcript records it. */
+  onBrainAnswer?: (say: string) => unknown;
 }): Record<string, (parameters: any) => Promise<string>> {
   const tools: Record<string, (parameters: any) => Promise<string>> = {};
 
@@ -489,7 +513,7 @@ export function buildClientTools(opts: {
   // anything substantive. ElevenLabs speaks the holding line while it runs
   // (the tool's pre_tool_speech), so this returns only Papercup's answer —
   // or, past the deadline or on failure, a short line to say instead.
-  tools[ASK_PAPERCUP_TOOL_NAME] = async (params: any) => askPapercupForVoice(params);
+  tools[ASK_PAPERCUP_TOOL_NAME] = async (params: any) => askPapercupForVoice(params, opts.onBrainAnswer);
 
   return tools;
 }
@@ -499,12 +523,58 @@ export function buildClientTools(opts: {
  * the text chat uses, under the shared voice deadline. Never throws and never
  * returns an empty string, so the voice agent always has something to say.
  */
-export async function askPapercupForVoice(params: unknown): Promise<string> {
+export async function askPapercupForVoice(
+  params: unknown,
+  /** Called with Papercup's real answer — never with a timeout or failure line. */
+  onAnswered?: (say: string) => unknown,
+): Promise<string> {
   const result = await answerVoiceQuestion(voiceQuestionOf(params), async (question, signal) =>
     converseVoiceTurn({ text: question }, signal),
   );
-  if (result.outcome !== 'answered') console.warn(`[el-conv:${ASK_PAPERCUP_TOOL_NAME}] ${result.outcome}`);
+  if (result.outcome === 'answered') {
+    try {
+      // Not awaited: ElevenLabs is waiting on this answer to speak it.
+      void onAnswered?.(result.say);
+    } catch (err) {
+      console.warn(`[el-conv:${ASK_PAPERCUP_TOOL_NAME}] answer hook failed`, err);
+    }
+  } else {
+    console.warn(`[el-conv:${ASK_PAPERCUP_TOOL_NAME}] ${result.outcome}`);
+  }
   return result.say;
+}
+
+/**
+ * Routes one ElevenLabs message into the conversation transcript: the user's
+ * words as a user turn, the front agent's speech as an assistant turn (its
+ * repeat of Papercup's answer is skipped by the writer). Plan D-008.
+ */
+export function routeVoiceMessageToTranscript(
+  transcript: VoiceTranscriptWriter,
+  message: { message?: unknown; source?: unknown },
+): void {
+  const text = typeof message?.message === 'string' ? message.message : '';
+  if (!text) return;
+  if (message.source === 'user') void transcript.userSaid(text);
+  else if (message.source === 'ai') void transcript.frontSaid(text);
+}
+
+/** The two-tier session's transcript, written into the session's conversation. */
+export function createTwoTierTranscript(opts: {
+  conversationId?: string | null;
+  elConvId: () => string | null;
+}): VoiceTranscriptWriter {
+  return createVoiceTranscriptWriter({
+    write: (turn) =>
+      persistOperatorVoiceTurn({
+        role: turn.role,
+        text: turn.text,
+        source: turn.source,
+        conversationId: opts.conversationId ?? null,
+        elConvId: opts.elConvId(),
+      }),
+    onWriteError: (err, turn) => console.warn(`[el-conv] ${turn.kind} turn not written`, err),
+  });
 }
 
 /**
