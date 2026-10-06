@@ -81,6 +81,7 @@ const candidate = module.exports.default;
 const fs = require('node:fs');
 const activationFile = require('node:path').join(__dirname, '../../../native-plugin-activations.jsonl');
 const sessionIds = new WeakMap();
+const fixtureInterceptors = new WeakSet();
 let nextSessionId = 0;
 let nextFactoryId = 0;
 module.exports = function(modules) {
@@ -89,12 +90,15 @@ module.exports = function(modules) {
   return { create(info) {
     const session = info.session;
     if (!sessionIds.has(session)) sessionIds.set(session, ++nextSessionId);
-    const activation = { factoryId, sessionId: sessionIds.get(session),
-      projectName: info.project.getProjectName(), registrations: 0, ok: false };
+    const activation = { processId: process.pid, serverMode: session.projectService.serverMode,
+      factoryId, sessionId: sessionIds.get(session),
+      projectName: info.project.getProjectName(), registrations: 0, registrationCalls: [], ok: false };
     const add = session.addProtocolHandler;
     session.addProtocolHandler = function(command, handler) {
       activation.registrations++;
-      return add.call(this, command, function(request) {
+      const receipt = { command, nestedDelegate: fixtureInterceptors.has(add), nativeSuccess: false };
+      activation.registrationCalls.push(receipt);
+      const result = add.call(this, command, function(request) {
         const control = request.arguments && request.arguments.nativeControl;
         let pipe;
         const references = session.getReferences;
@@ -122,7 +126,10 @@ module.exports = function(modules) {
           if (pipe) fs.rmSync(pipe, { force: true });
         }
       });
+      receipt.nativeSuccess = !receipt.nestedDelegate;
+      return result;
     };
+    fixtureInterceptors.add(session.addProtocolHandler);
     try {
       const service = plugin.create(info);
       activation.ok = true;
@@ -216,18 +223,32 @@ describe('candidate completion through the pinned native plugin package', () => 
         await native('projectInfo', { file: secondConsumer, needFileNameList: false });
         const activations = readFileSync(join(root, 'native-plugin-activations.jsonl'), 'utf8')
           .trim().split('\n').map(line => JSON.parse(line) as {
+            processId: number; serverMode: number;
             factoryId: number; sessionId: number; projectName: string; registrations: number; ok: boolean; error?: string;
+            registrationCalls: { command: string; nestedDelegate: boolean; nativeSuccess: boolean }[];
           });
-        // didOpen can activate a transient inferred project before assigning
-        // the file to its configured project. It shares this native session
-        // and must not cause later configured plugin activation to fail.
+        console.info('WI41095_NATIVE_REGISTRATIONS', JSON.stringify(activations));
+        // The wrapper also activates the plugin in its separate syntax child.
+        // Session/factory counters are process-local: qualify their PID before
+        // requiring one shared semantic session across configured projects.
         const configured = activations.filter(row => population.some(project => project.projectName === row.projectName));
         expect(configured.map(row => row.projectName).sort(), JSON.stringify(activations))
           .toEqual(population.map(project => project.projectName).sort());
         expect(new Set(configured.map(row => row.factoryId)).size).toBe(2);
-        expect(new Set(activations.map(row => row.sessionId)).size).toBe(1);
+        expect(configured.every(row => row.serverMode === 0), JSON.stringify(activations)).toBe(true);
+        expect(new Set(configured.map(row => `${row.processId}:${row.sessionId}`)).size).toBe(1);
         expect(activations.every(row => row.ok), JSON.stringify(activations)).toBe(true);
-        expect(activations.reduce((sum, row) => sum + row.registrations, 0)).toBe(1);
+        // Count actual native delegation per session, including the syntax
+        // child. A duplicate attempt or failed native registration still fails.
+        const sessionKeys = new Set(activations.map(row => `${row.processId}:${row.sessionId}`));
+        for (const sessionKey of sessionKeys) {
+          const rows = activations.filter(row => `${row.processId}:${row.sessionId}` === sessionKey);
+          const calls = rows.flatMap(row => row.registrationCalls);
+          expect(rows.reduce((sum, row) => sum + row.registrations, 0), JSON.stringify(rows)).toBe(1);
+          expect(calls, JSON.stringify(rows)).toEqual([
+            { command: SEMANTIC_COMPLETION_COMMAND, nestedDelegate: false, nativeSuccess: true },
+          ]);
+        }
       }
       const request: SemanticCompletionRequest & { nativeControl?: string } = {
         file: target, line: 2, offset: 2,

@@ -858,18 +858,6 @@ export function parseCliArgs(
 }
 
 /**
- * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
- * The marker environment prevents a wrapped script from recursively wrapping
- * itself while keeping the contract explicit and testable at the child seam.
- *
- * @param {{
- *   repoRoot?: string,
- *   commandArgs?: string[],
- *   runCommand?: (command: string, args: string[], options: { cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv }) => { status: number | null },
- *   env?: NodeJS.ProcessEnv,
- * }} [options]
- */
-/**
  * WI-10006385: pair a lock's "waiting" notices with ONE closing line that says how long
  * the wait actually lasted and under what budget. Without it a build log shows
  * "waiting … (0s so far)" and then nothing, so nobody can tell a 1 s wait from a 50 min
@@ -894,6 +882,10 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
 }
 
 /**
+ * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
+ * The marker environment prevents a wrapped script from recursively wrapping
+ * itself while keeping the contract explicit and testable at the child seam.
+ *
  * @param {{
  *   repoRoot?: string,
  *   commandArgs?: string[],

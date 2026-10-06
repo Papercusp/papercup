@@ -1536,6 +1536,72 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['fixture-calibration'].evidence).toContain('fixtureCalibrated=true');
   });
 
+  it('requires fixture calibration when the falsifier probe method uses a fixture provider', () => {
+    const row = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'test:fixture-provider-without-binding',
+      fingerprints: {
+        ...evidence().fingerprints,
+        fixtureFingerprint: null,
+      },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: undefined,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({
+        requiredEvidence: ['integration test'],
+        falsifier: {
+          observation: 'A ticket from the registered provider is admitted.',
+          probeMethod: 'Admit a ticket from a registered fixture provider.',
+        },
+      }),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('A fixture is required or used');
+    expect(result.ratings['fixture-calibration'].evidence).not.toContain('No fixture binding or fixture fingerprint is present');
+  });
+
+  it('does not accept fixture calibration from non-fixture evidence when the probe method uses a fixture', () => {
+    const row = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:fixture-flag-without-binding',
+      fingerprints: {
+        ...evidence().fingerprints,
+        fixtureFingerprint: null,
+      },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({
+        requiredEvidence: ['integration test'],
+        falsifier: {
+          observation: 'A ticket from the registered provider is admitted.',
+          probeMethod: 'Admit a ticket from a registered fixture provider.',
+        },
+      }),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('A fixture is required or used');
+    expect(result.ratings['fixture-calibration'].evidence).not.toContain('An applicable binding explicitly attests fixtureCalibrated=true.');
+  });
+
   it('does not report exact fixture or mutation bindings as spec-scoped absence when current grading narrows the cohort', () => {
     const currentTest = evidence({
       evidenceKind: 'test',
@@ -2215,6 +2281,36 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.ratings['disclosed-gap'].evidence).toContain(
       'Record any coverage limitation under details.adequacy.disclosedGap',
     );
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it('blocks a proof whose observations explicitly limit coverage to one leg', () => {
+    const base = evidence();
+    const observations =
+      'P-006 leg of R-15 only (the live app round trip with a non-Google provider): 9 passed, 2 skipped. ' +
+      'The cutover legs of R-15 are mapped to P-011 and P-015.';
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(observations);
+    expect(result.wouldBlock).toContain('disclosed-gap');
+    expect(result.verdict).toBe('fail');
+  });
+
+  it('does not treat ordinary observation prose as a coverage disclosure', () => {
+    const base = evidence();
+    const observations = 'The test only passes when provider credentials are valid and records duration in the run log.';
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
     expect(result.wouldBlock).not.toContain('disclosed-gap');
   });
 

@@ -382,3 +382,70 @@ describe('settleAcceptanceReviewReservationsForPlan — EI-24654801606034099', (
     expect(await statusOf(r.id!)).toBe('dropped');
   });
 });
+
+// WI-10006637: reservations are keyed per rubric revision, but nothing closed an
+// older revision's reservation while the plan was still in review — WI-10006560
+// (rev14, graded by a non-claimant) sat open while the rubric was at rev23 and
+// suppressed recruitment. Reserving the current revision now settles the older,
+// UNHELD ones for the same (plan, rubric).
+describe('reserveAcceptanceReviewTarget settles superseded revisions — WI-10006637', () => {
+  const statusOf = async (id: string) =>
+    (await db.sql<{ status: string }[]>`SELECT status FROM harness_shared.work_items WHERE feature_id = ${id}`)[0]
+      ?.status;
+  const isTerminal = (status: string | undefined) =>
+    status !== undefined && (ANY_FAMILY_TERMINAL_STATES as readonly string[]).includes(status);
+  const target = (planSlug: string, revision: number | null, rubricId = `acceptance-${planSlug}`) => ({
+    workspaceId: WS,
+    harnessSlug: H,
+    planSlug,
+    rubricId,
+    revision,
+  });
+
+  it('reserving revision N drops an open, unheld older-revision reservation and keeps N open', async () => {
+    const old = await reserveAcceptanceReviewTarget(target('wi6637-basic', 14));
+    expect(old.superseded).toEqual({ settled: [], failed: [] });
+
+    const current = await reserveAcceptanceReviewTarget(target('wi6637-basic', 23));
+
+    expect(current.superseded).toEqual({ settled: [old.id], failed: [] });
+    expect(await statusOf(old.id!)).toBe('dropped');
+    expect(isTerminal(await statusOf(current.id!))).toBe(false);
+  });
+
+  it('leaves a HELD older reservation open — a holder may be mid-grade', async () => {
+    const held = await reserveAcceptanceReviewTarget(target('wi6637-held', 2));
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-wi6637-holder' WHERE feature_id = ${held.id!}`;
+
+    const current = await reserveAcceptanceReviewTarget(target('wi6637-held', 3));
+
+    expect(current.superseded.settled).toEqual([]);
+    expect(isTerminal(await statusOf(held.id!))).toBe(false);
+  });
+
+  it('is scoped to the same rubric and leaves legacy (null-revision) pins alone', async () => {
+    const otherRubric = await reserveAcceptanceReviewTarget(target('wi6637-scope', 1, 'acceptance-wi6637-other'));
+    const legacy = await reserveAcceptanceReviewTarget(target('wi6637-scope', null));
+
+    const current = await reserveAcceptanceReviewTarget(target('wi6637-scope', 5));
+
+    expect(current.superseded.settled).toEqual([]);
+    expect(isTerminal(await statusOf(otherRubric.id!))).toBe(false);
+    expect(isTerminal(await statusOf(legacy.id!))).toBe(false);
+  });
+
+  it('never settles a NEWER revision, and re-reserving the same revision is a no-op', async () => {
+    const newer = await reserveAcceptanceReviewTarget(target('wi6637-order', 9));
+    const older = await reserveAcceptanceReviewTarget(target('wi6637-order', 8));
+    expect(older.superseded.settled).toEqual([]);
+    expect(isTerminal(await statusOf(newer.id!))).toBe(false);
+
+    const again = await reserveAcceptanceReviewTarget(target('wi6637-order', 9));
+    expect(again.id).toBe(newer.id);
+    expect(again.superseded.settled).toEqual([older.id]);
+    expect(await reserveAcceptanceReviewTarget(target('wi6637-order', 9))).toMatchObject({
+      id: newer.id,
+      superseded: { settled: [], failed: [] },
+    });
+  });
+});

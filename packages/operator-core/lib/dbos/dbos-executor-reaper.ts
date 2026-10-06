@@ -378,7 +378,24 @@ export async function reapDeadExecutorWorkflows(
            (
              name = 'routinesTick'
              AND (
-               updated_at < ${staleSchedulerAt}
+               -- EI-25221129396992808: judge silence by the latest PROGRESS, not
+               -- updated_at alone. DBOS bumps workflow_status.updated_at only on a
+               -- status transition, never per step checkpoint, so a live tick that
+               -- is still firing routines (measured: working ticks avg 78s, max
+               -- 272s) read as wedged after 90s and was CANCELLED mid-run. Its
+               -- steps kept going but it never landed SUCCESS, so the routine-engine
+               -- liveness reader saw 6-9 min gaps and paged a false
+               -- health-tick-stale. A genuinely wedged step still checkpoints
+               -- nothing for the whole window and is reaped exactly as before.
+               GREATEST(
+                 updated_at,
+                 COALESCE(
+                   (SELECT max(op.completed_at_epoch_ms)
+                      FROM dbos.operation_outputs op
+                     WHERE op.workflow_uuid = dbos.workflow_status.workflow_uuid),
+                   0
+                 )
+               ) < ${staleSchedulerAt}
                OR (
                  created_at < ${staleSchedulerAt}
                  AND NOT EXISTS (
