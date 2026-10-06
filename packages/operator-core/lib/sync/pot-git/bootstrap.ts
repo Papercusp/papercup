@@ -586,6 +586,7 @@ export async function bootstrapFromPeer(
         // Run the fetch anyway so fetchOverDuplex produces its documented
         // fail-soft diagnosis (`duplex already destroyed …`) instead of a
         // silent no-op, preserving the old contract for that case.
+        beforeGitCommand?.();
         res = await fetchOverDuplex(localRepoPath, stream, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
           timeoutMs: opts.timeoutMs,
           depth: 1,
@@ -598,6 +599,8 @@ export async function bootstrapFromPeer(
 
     const before = await readShallowBoundary(localRepoPath);
     const rungStartedAt = Date.now();
+    // The fetch writes quarantine refs without going through runGit.
+    beforeGitCommand?.();
     res = await fetchOverDuplex(localRepoPath, stream, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
       timeoutMs: opts.timeoutMs,
       noTags: true,

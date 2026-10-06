@@ -43,7 +43,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
 import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
 import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
@@ -2112,6 +2112,98 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // acquireLocks cancels any stale FIFO ticket / late cascade grant even on
     // a terminal refusal; that cleanup is not a lease the operation held.
     expect(releasedResources()).toEqual(['git-sync:papercup']);
+  });
+
+  // WI-10006972: the per-install lease is fenced like the per-slug fire's
+  // (WI-10006724). Its only operation is the hive-git bootstrap leg, which seeds
+  // namespace refs; a leg that lost its lease must not start another write.
+  describe('WI-10006972: per-install lease fence', () => {
+    let heartbeat: (() => void) | null = null;
+    const handle: TimerHandle = { unref: () => undefined };
+    beforeEach(() => {
+      heartbeat = null;
+      resetScheduledRegistry();
+      configureScheduledRegistry({
+        setIntervalImpl: (cb, ms) => {
+          if (ms === 60_000) heartbeat = cb;
+          return handle;
+        },
+        clearIntervalImpl: () => undefined,
+      });
+      tryAcquireResourceMock.mockImplementation(async () => ({ ok: true }));
+    });
+    afterEach(() => {
+      resetScheduledRegistry();
+      vi.useRealTimers();
+    });
+
+    it('a refused refresh stops the operation before its next write and reads lease-lost', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const writes: string[] = [];
+      try {
+        const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+          lease.assertHeld();
+          writes.push('before-loss');
+          // Another owner now holds the per-install resource.
+          tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+            (opts as { resource: string }).resource === 'git-sync:papercup'
+              ? { ok: false, reason: 'held by system:git-sync:other-fire' }
+              : { ok: true },
+          );
+          expect(heartbeat).not.toBeNull();
+          heartbeat!();
+          await vi.waitFor(() =>
+            expect(error).toHaveBeenCalledWith(expect.stringContaining('LOST exclusive lock git-sync:papercup')),
+          );
+          lease.assertHeld();
+          writes.push('after-loss');
+          return 'must-not-finish';
+        });
+
+        expect(result).toMatchObject({ state: 'lease-lost', leaseLossCause: 'refused' });
+        expect(writes).toEqual(['before-loss']);
+        // The lease is still released on the way out.
+        expect(releasedResources()).toContain('git-sync:papercup');
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('a lease with no confirmed refresh past the limit refuses the next write (lapsed lease)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const start = new Date('2026-10-06T23:00:00Z').getTime();
+      vi.setSystemTime(start);
+      const writes: string[] = [];
+      const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+        lease.assertHeld();
+        writes.push('fresh');
+        // No heartbeat has fired for a whole TTL: the row may already have expired
+        // and been taken by another fire. A later successful refresh must not re-arm.
+        vi.setSystemTime(start + 600_000);
+        lease.assertHeld();
+        writes.push('lapsed');
+        return 'must-not-finish';
+      });
+
+      expect(result).toMatchObject({ state: 'lease-lost', leaseLossCause: 'unconfirmed' });
+      expect(writes).toEqual(['fresh']);
+    });
+
+    it('CONTROL: a held lease runs to completion, and an unrelated error still propagates', async () => {
+      const ran = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+        lease.assertHeld();
+        lease.assertHeld();
+        return 'seeded';
+      });
+      expect(ran).toEqual({ state: 'ran', value: 'seeded' });
+
+      const boom = new Error('dial exploded');
+      await expect(
+        runWithGitSyncPerInstallLease('papercup', 'ws-42', async () => {
+          throw boom;
+        }),
+      ).rejects.toBe(boom);
+    });
   });
 
   // WI-562584. The defect this pins: an agent's `resourceLockDomain()` inferred the

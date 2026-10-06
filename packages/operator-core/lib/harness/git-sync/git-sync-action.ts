@@ -281,7 +281,12 @@ import {
 } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { createGitSyncLeaseFence, type GitSyncLeaseFence } from './git-sync-lease-fence';
+import {
+  createGitSyncLeaseFence,
+  GitSyncLeaseLostError,
+  type GitSyncLeaseFence,
+  type GitSyncLeaseLossCause,
+} from './git-sync-lease-fence';
 import {
   enqueueDependencyPrebuild,
   recoverQueuedDependencyPrebuild,
@@ -1294,7 +1299,21 @@ export type GitSyncPerInstallLeaseResult<T> =
       reason: string;
       blockedOn?: string;
       holders?: GitSyncLockHolderSnapshot[];
+    }
+  | {
+      /** WI-10006972: the operation started, then refused a write because this
+       *  fire could no longer prove it held the lease. Writes before the loss
+       *  stand; none were started after it. */
+      state: 'lease-lost';
+      leaseLossCause: GitSyncLeaseLossCause;
+      detail: string;
     };
+
+/** What a per-install lease operation may check before each write it starts. */
+export interface GitSyncPerInstallLease {
+  /** Throws {@link GitSyncLeaseLostError} once the lease is refused or unconfirmed. */
+  assertHeld(): void;
+}
 
 /**
  * Run one post-local-sync operation under the existing per-install
@@ -1313,17 +1332,26 @@ export type GitSyncPerInstallLeaseResult<T> =
  * the retry mechanism. The heartbeat stops when the action-level liveness
  * signal aborts; the held row then expires at its ordinary TTL if the underlying
  * operation never settles, instead of an abandoned callback renewing forever.
+ *
+ * WI-10006972: the lease is FENCED exactly as the per-slug fire's is
+ * (WI-10006724). The heartbeat reports every refresh to a GitSyncLeaseFence and
+ * the operation receives its `assertHeld`, which it must call before each write.
+ * Once a refresh is refused, or none is confirmed for
+ * GIT_SYNC_LEASE_UNCONFIRMED_LIMIT_MS, the operation's next write throws and the
+ * result reads `lease-lost` rather than `ran`.
  */
 export async function runWithGitSyncPerInstallLease<T>(
   slug: string,
   workspaceId: string,
-  operation: () => Promise<T>,
+  operation: (lease: GitSyncPerInstallLease) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<GitSyncPerInstallLeaseResult<T>> {
   const coordinationDomain = workspaceId || '*';
   const resources: GitSyncLockRequest[] = [{ resource: gitSyncResourceName(slug), mode: 'exclusive' }];
   const acquired: GitSyncLockRequest[] = [];
   const owner = newGitSyncLockOwner();
+  // Taken BEFORE the request, so the fence's expiry estimate is conservative.
+  const leaseRequestedAt = Date.now();
   const lease = await acquireLocks(coordinationDomain, slug, resources, acquired, owner);
   if (lease.state !== 'acquired') {
     return {
@@ -1334,7 +1362,12 @@ export async function runWithGitSyncPerInstallLease<T>(
     };
   }
 
-  const stopHeartbeat = startLockHeartbeat(coordinationDomain, slug, resources, owner);
+  const fence = createGitSyncLeaseFence({
+    slug,
+    acquiredAt: leaseRequestedAt,
+    unconfirmedLimitMs: GIT_SYNC_LEASE_UNCONFIRMED_LIMIT_MS,
+  });
+  const stopHeartbeat = startLockHeartbeat(coordinationDomain, slug, resources, owner, fence);
   let heartbeatStop: Promise<void> | null = null;
   const stopHeartbeatOnce = (): Promise<void> => {
     if (!heartbeatStop) heartbeatStop = stopHeartbeat();
@@ -1349,7 +1382,14 @@ export async function runWithGitSyncPerInstallLease<T>(
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('git-sync per-install lease operation aborted');
     }
-    return { state: 'ran', value: await operation() };
+    return { state: 'ran', value: await operation({ assertHeld: () => fence.assertHeld() }) };
+  } catch (e) {
+    // Only THIS fence's loss is converted; any other error keeps propagating.
+    const lost = fence.lost;
+    if (lost && e === lost) {
+      return { state: 'lease-lost', leaseLossCause: lost.leaseLossCause, detail: lost.detail };
+    }
+    throw e;
   } finally {
     signal?.removeEventListener('abort', onAbort);
     await stopHeartbeatOnce();
@@ -4344,9 +4384,17 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           const bootstrap = await runWithGitSyncPerInstallLease(
             slug,
             workspaceId,
-            () => runBootstrapLeg(slug, workspaceId),
+            (lease) => runBootstrapLeg(slug, workspaceId, { beforeGitCommand: () => lease.assertHeld() }),
             postLegsLiveness.signal,
           );
+          if (bootstrap.state === 'lease-lost') {
+            // WI-10006972: bootstrap is rewind-safe, so the next tick resumes from
+            // whatever this fire wrote before the loss.
+            console.error(
+              `[git-sync] ${slug}: bootstrap-tick stopped — per-install lease lost ` +
+                `(${bootstrap.leaseLossCause}: ${bootstrap.detail}); no further ref writes this fire, the next tick resumes`,
+            );
+          }
           if (bootstrap.state === 'skipped') {
             const detail = bootstrap.blockedOn ? `${bootstrap.reason} on ${bootstrap.blockedOn}` : bootstrap.reason;
             const message =
@@ -5750,7 +5798,22 @@ async function runConvergenceProbe(input: {
   }
 }
 
-export async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
+export async function runBootstrapLeg(
+  slug: string,
+  workspaceId: string,
+  opts: {
+    /** WI-10006972: the per-install lease fence's `assertHeld`, checked before every
+     *  write this leg starts against the bare store (see bootstrapFromPeer). */
+    beforeGitCommand?: () => void;
+  } = {},
+): Promise<void> {
+  const { beforeGitCommand } = opts;
+  const runGit: PotGitRunGit = beforeGitCommand
+    ? async (args, cwd, gitOpts) => {
+        beforeGitCommand();
+        return defaultRunGit(args, cwd, gitOpts);
+      }
+    : defaultRunGit;
   try {
     let entry: ProjectEntry | undefined;
     try {
@@ -5770,7 +5833,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // Without this, every runGit on a cold device dies `spawn git ENOENT`
     // (missing cwd), and the first store is only ever created by the LATER
     // own-head leg — which then poisons the warm check below forever.
-    const repoPath = await ensurePotGitRepo(potHomeSlug, repoKey);
+    const repoPath = await ensurePotGitRepo(potHomeSlug, repoKey, runGit);
 
     // EI-18745600910177355: reclaim leaked partial packs HERE, before any of
     // the gates below can return early. `bootstrapFromPeer` also sweeps, but
@@ -5780,7 +5843,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // after tick (live-caught on the rig: 21 GB of orphans in a store that
     // could not dial anyone, so the sweep inside bootstrap was unreachable).
     // A joiner that cannot make progress is the one that most needs its disk
-    // back. Best-effort, never throws into the tick.
+    // back. Best-effort, never throws into the tick — except the lease guard, which
+    // runs outside the catch: a `shallow.lock` may belong to whoever took over.
+    beforeGitCommand?.();
     const swept = await sweepStalePackTmpFiles(repoPath).catch(() => null);
     if (swept && swept.removed.length > 0) {
       // Report the two reclaim kinds SEPARATELY. They are not the same event and
@@ -5903,9 +5968,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // So: warm ⇔ seeded from a peer member AND nothing still staged. Re-running
     // with quarantine pending is safe and is the whole point — bootstrapFromPeer
     // is rewind-safe by contract and resumes from those very refs.
-    const existing = await listNamespaces(repoPath);
+    const existing = await listNamespaces(repoPath, runGit);
     if (existing.some((n) => memberNamespaceKeys.has(n))) {
-      const pending = await hasPendingQuarantine(repoPath).catch(() => false);
+      const pending = await hasPendingQuarantine(repoPath, runGit).catch(() => false);
       if (!pending) return; // warm — seeded from a peer member, nothing left staged
     }
 
@@ -5931,7 +5996,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // no-live-connection stub: callers read `.destroyed`, never 'error'.
       stub.on('error', () => {});
       stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
-      const outcome = await bootstrapFromPeer(repoPath, stub, { selfDevicePubkey });
+      const outcome = await bootstrapFromPeer(repoPath, stub, { selfDevicePubkey, beforeGitCommand });
       // WI-37226: this writer replaces the WHOLE `bootstrap` key, so omitting the
       // miss-run fields DELETES them — and a deleted run reads as "the run ended",
       // i.e. it would silently CLEAR a real persistent-miss escalation. This path
@@ -6033,6 +6098,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // already durable on disk.
         outcome = await bootstrapFromPeer(repoPath, duplex, {
           selfDevicePubkey,
+          beforeGitCommand,
           dial: async () => {
             const next = await dialContext
               .openDuplex(peerDevicePubkeyBase64, {
@@ -6292,6 +6358,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       );
     }
   } catch (e) {
+    // WI-10006972: a lease loss is not a leg failure to swallow; the lease owner
+    // reports it as `lease-lost`.
+    if (e instanceof GitSyncLeaseLostError) throw e;
     console.warn(`[git-sync] ${slug}: bootstrap-tick failed: ${e instanceof Error ? e.message : e}`);
   }
 }
