@@ -11,6 +11,7 @@ type WebServerConfig = {
   reuseExistingServer?: boolean;
   stdout?: string;
   stderr?: string;
+  env?: Record<string, string | undefined>;
 };
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -45,6 +46,11 @@ describe('Playwright isolated webServer contract', () => {
       expect(server.reuseExistingServer).toBe(false);
       expect(server.stdout).toBe('pipe');
       expect(server.stderr).toBe('pipe');
+      // HMR on (the SPA needs the real /@vite/client) but the file watcher OFF,
+      // so a peer's edit to the shared tree cannot reload test pages mid-run
+      // (WI-10006950).
+      expect(server.env?.PAPERCUSP_ENABLE_HMR).toBe('1');
+      expect(server.env?.PAPERCUSP_DEV_WATCH).toBe('0');
     } finally {
       restoreEnv('OPERATOR_E2E_PORT', previousPort);
       restoreEnv('OPERATOR_E2E_BASE_URL', previousBaseUrl);

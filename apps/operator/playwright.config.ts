@@ -1,4 +1,4 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig, devices, type ReporterDescription } from '@playwright/test';
 
 const PORT = Number(process.env.OPERATOR_E2E_PORT ?? 3055);
 const BASE_URL = process.env.OPERATOR_E2E_BASE_URL ?? `http://localhost:${PORT}`;
@@ -31,7 +31,7 @@ export default defineConfig({
     // Custom reporter (P-011) writes per-file Playwright results to
     // harness_shared.test_runs. Fail-soft per D-007 — never throws.
     // Opt-out via PAPERCUSP_DISABLE_TEST_RUNS_REPORTER=1.
-    const adminReporter: Array<string | [string, Record<string, unknown>]> =
+    const adminReporter: ReporterDescription[] =
       process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER === '1'
         ? []
         : [['./test/reporters/admin-test-runs-reporter-playwright.ts', {}]];
@@ -94,6 +94,17 @@ export default defineConfig({
         // PAPERCUSP_ENABLE_HMR=1 and PAPERCUSP_FAKE_LLM=1 — the standing
         // `dev:operator` service runs HMR-disabled (for the desktop), so a
         // reused :3055 renders blank; point at an HMR-enabled vite instead.
-        env: { ...process.env, PAPERCUSP_FAKE_LLM: '1', PAPERCUSP_ENABLE_HMR: '1' },
+        //
+        // PAPERCUSP_DEV_WATCH=0 turns Vite's file watcher off. HMR stays on (the
+        // SPA needs the real client), but a peer's save to this SHARED tree can no
+        // longer full-reload every open test page mid-run (WI-10006950: three
+        // peer-triggered `page reload`s in one full-suite run, one of which killed
+        // global-shortcuts.spec.ts:134 with "Execution context was destroyed").
+        env: {
+          ...process.env,
+          PAPERCUSP_FAKE_LLM: '1',
+          PAPERCUSP_ENABLE_HMR: '1',
+          PAPERCUSP_DEV_WATCH: '0',
+        },
       },
 });
