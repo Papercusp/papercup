@@ -53,6 +53,33 @@ describe('findBackupLockConflicts', () => {
     ).toEqual([]);
   });
 
+  const ticketTriggers = (action = 'FUNCTION') =>
+    ['data_sources', 'admission_rules', 'work_admissions'].map((table) => `
+      CREATE OR REPLACE TRIGGER emit_change_notify_trg
+        AFTER INSERT OR UPDATE OR DELETE ON harness_shared.${table}
+        FOR EACH ROW EXECUTE ${action} harness_shared.emit_change_notify();
+    `).join('\n');
+
+  it.each(['FUNCTION', 'PROCEDURE'])('does not call a static CREATE TRIGGER EXECUTE %s action dynamic SQL', (action) => {
+    expect(findBackupLockConflicts(pending(ticketTriggers(action)), ['session_turns', 'session_events'])).toEqual([]);
+  });
+
+  it.each(['data_sources', 'admission_rules', 'work_admissions'])('still blocks a static trigger on backup-held %s', (table) => {
+    expect(findBackupLockConflicts(pending(ticketTriggers()), [table])).toEqual([
+      { file: '1228-x.sql', subject: table, reason: 'names-locked-relation' },
+    ]);
+  });
+
+  it('does not exempt a prepared EXECUTE named function after a static trigger statement', () => {
+    const sql = ticketTriggers() + 'EXECUTE "function"(1);';
+    expect(findBackupLockConflicts(pending(sql), []).map((c) => c.subject)).toContain('EXECUTE (dynamic SQL)');
+  });
+
+  it('still refuses dynamic SQL that constructs a trigger', () => {
+    const sql = `DO $$ BEGIN EXECUTE 'CREATE TRIGGER t AFTER INSERT ON public.a EXECUTE FUNCTION public.f()'; END $$;`;
+    expect(findBackupLockConflicts(pending(sql), []).map((c) => c.subject)).toContain('EXECUTE (dynamic SQL)');
+  });
+
   it('refuses statements whose lock footprint the text cannot prove, even with nothing locked', () => {
     const cases: Array<[string, string]> = [
       ["DO $$ BEGIN EXECUTE format('ALTER TABLE %I ADD c int', t); END $$;", 'EXECUTE (dynamic SQL)'],
