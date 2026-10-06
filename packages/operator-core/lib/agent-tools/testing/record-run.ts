@@ -18,7 +18,11 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { parseTestRunExecutionDetails, isRecordedCaseTitle } from '@papercusp/test-config/execution-details';
+import {
+  parseTestRunExecutionDetails,
+  isRecordedCaseTitle,
+  MAX_RECORDED_FAILED_CASES,
+} from '@papercusp/test-config/execution-details';
 import { runGit } from '../../harness/docs/git-runner';
 import {
   findHarnessTestRunIds,
@@ -385,6 +389,30 @@ export function recoverArchivedMutationFailures(
   return { detail, titles, startedAt, finishedAt };
 }
 
+/**
+ * The execution contract for an operational artifact, derived ONLY from the committed,
+ * sha-verified bytes: each assertion is one executed case. A nonzero exit that no failing
+ * assertion explains is one more failed case, so a `fail` verdict never carries failed=0.
+ * testLayer is deliberately omitted: it is a runtime fact stamped by a runner, and an
+ * operational check has no recorded layer.
+ */
+export function operationalExecution(artifact: OperationalEvidenceArtifact) {
+  const failing = artifact.assertions.filter((assertion) => !assertion.passed);
+  const unexplainedExit = artifact.exitCode !== 0 && failing.length === 0;
+  const titles = [...new Set([
+    ...failing.map((assertion) => assertion.id),
+    ...(unexplainedExit ? [`nonzero-exit-${artifact.exitCode}`] : []),
+  ])].filter((title) => isRecordedCaseTitle(title)).slice(0, MAX_RECORDED_FAILED_CASES);
+  return {
+    passed: artifact.assertions.length - failing.length,
+    failed: failing.length + (unexplainedExit ? 1 : 0),
+    skipped: 0,
+    collectionFailed: false,
+    runStartedAt: artifact.startedAt,
+    ...(titles.length > 0 ? { failedCaseTitles: titles } : {}),
+  };
+}
+
 function derivedVerdict(artifact: OperationalEvidenceArtifact): 'pass' | 'fail' {
   return artifact.exitCode === 0 && artifact.assertions.every((assertion) => assertion.passed) ? 'pass' : 'fail';
 }
@@ -476,12 +504,16 @@ export async function recordOperationalRun(
     startedAt,
     finishedAt,
     outputTail: outputTail(evidence),
+    // WI-10007016: without `execution` (and `root` below) the shared writer stores NULL
+    // execution_details, so spec-test-adequacy can never verify an operational run.
+    execution: operationalExecution(evidence.artifact),
   };
   const persisted = await deps.persist({
     harnessSlug,
     workspaceId,
     rows: [row],
     runGroupId,
+    root: resolveAgentWorkspaceRoot(ctx),
     source: 'local',
     commit: evidence.commit,
     // The exact evidence bytes were compared with HEAD above. Unrelated dirty
