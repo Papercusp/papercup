@@ -12,8 +12,17 @@
 # whole build window. Freezing it silently produced a FAIL verdict on a correct
 # fix (WI-10004955, run 20261001T180209Z-205316).
 #
-# The signal. After `npm run build` succeeds, that rebuild script touches
-# dist/.vite-rebuild-source-stamp to the time the build STARTED reading source.
+# The signal. A dist carries up to two build stamps; the NEWER one is used
+# (_srb_stamp, WI-10006797):
+#   dist/.vite-build-source-read-at — written by apps/operator-vite/bin/
+#     vite-build-singleflight after a successful build, dated to when THAT build
+#     began reading source (after its singleflight lock wait). Every build of
+#     the dist goes through that script.
+#   dist/.vite-rebuild-source-stamp — written by papercup-vite-rebuild.sh after
+#     `npm run build`, dated to when the rebuild script DECIDED to build. That is
+#     before npm's prebuild and before any wait behind a peer's build (measured
+#     38 min on 2026-10-06), so on its own it makes every edit made during the
+#     wait look unbuilt, and the gate waits for a build it already has.
 # A source file whose mtime is NEWER than the stamp was not read by the build
 # that produced this dist.
 #
@@ -31,6 +40,20 @@ _srb_log() {
 }
 
 _srb_mtime() { stat -c '%Y' "$1" 2>/dev/null; }
+
+# _srb_stamp DIST
+#   Prints the path of DIST's newest existing build stamp (see the header), or
+#   the rebuild stamp's path when neither exists so callers still report
+#   stamp-missing. Re-resolve it on every check: a build can create or advance
+#   either file at any moment.
+_srb_stamp() {
+  local sf="$1/.vite-build-source-read-at" rb="$1/.vite-rebuild-source-stamp"
+  if [ -f "$sf" ] && { [ ! -f "$rb" ] || [ "$sf" -nt "$rb" ]; }; then
+    printf '%s' "$sf"
+  else
+    printf '%s' "$rb"
+  fi
+}
 
 _srb_iso() {
   local s="$1"
@@ -68,7 +91,8 @@ spa_require_built_newer() {
 #   after logging exactly one line that starts with SPA_STALE_VS_SOURCE.
 spa_require_built_gate() {
   local dist="$1" repo="$2" spec="$3"
-  local stamp="$dist/.vite-rebuild-source-stamp"
+  local stamp
+  stamp="$(_srb_stamp "$dist")"
   local max_wait="${PAPERCUSP_SPA_REQUIRE_BUILT_WAIT_SEC:-2400}"
   local poll="${PAPERCUSP_SPA_REQUIRE_BUILT_POLL_SEC:-15}"
   local -a rels=() abs=() items=()
@@ -109,7 +133,7 @@ spa_require_built_gate() {
     return 1
   fi
   if [ ! -f "$stamp" ]; then
-    _srb_log "SPA_STALE_VS_SOURCE reason=stamp-missing stamp=$stamp — this dist was not produced by papercup-vite-rebuild.sh, so which sources it contains cannot be proven. Build the SPA yourself and point PAPERCUSP_SHARED_SPA_DIST at it, or unset VERIFY_TAURI_REQUIRE_BUILT."
+    _srb_log "SPA_STALE_VS_SOURCE reason=stamp-missing stamp=$stamp — this dist carries no build stamp (neither vite-build-singleflight nor papercup-vite-rebuild.sh produced it), so which sources it contains cannot be proven. Build the SPA yourself and point PAPERCUSP_SHARED_SPA_DIST at it, or unset VERIFY_TAURI_REQUIRE_BUILT."
     return 1
   fi
 
@@ -118,6 +142,7 @@ spa_require_built_gate() {
   last_report=$started
   while :; do
     stale=""
+    stamp="$(_srb_stamp "$dist")"
     for i in "${!abs[@]}"; do
       stale="$(spa_require_built_newer "$stamp" "${abs[$i]}")"
       rc=$?
@@ -149,7 +174,8 @@ spa_require_built_gate() {
 #   Never fails the run. This is the hint the WI-10004955 FAIL verdict lacked.
 spa_require_built_note() {
   local dist="$1" repo="$2"
-  local stamp="$dist/.vite-rebuild-source-stamp" r n
+  local stamp r n
+  stamp="$(_srb_stamp "$dist")"
   if [ ! -f "$stamp" ]; then
     _srb_log "SPA build stamp: none at $stamp — which source edits this bundle contains cannot be told."
     return 0

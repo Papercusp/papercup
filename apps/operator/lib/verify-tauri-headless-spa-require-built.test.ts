@@ -168,6 +168,68 @@ describe('WI-10004972 — spa_require_built_gate', () => {
   });
 });
 
+// WI-10006797: the rebuild script's stamp is dated to when it DECIDED to build,
+// which can precede the build reading source by a long lock wait (38 min on
+// 2026-10-06). vite-build-singleflight writes .vite-build-source-read-at, dated
+// after that wait; the gate must use whichever stamp is newer.
+describe('WI-10006797 — the newer of the two build stamps wins', () => {
+  const sfStamp = () => join(dist, '.vite-build-source-read-at');
+  const putSf = (mtimeSec: number) => {
+    writeFileSync(sfStamp(), '');
+    utimesSync(sfStamp(), mtimeSec, mtimeSec);
+  };
+
+  it('passes on the singleflight stamp when the edit landed between the rebuild decision and the source read', () => {
+    put('apps/operator-vite/src/a.ts', BASE + 200);
+    putSf(BASE + 300);
+    const r = gate('apps/operator-vite/src/a.ts');
+    expect(r.out).toContain(`SPA_REQUIRE_BUILT ok: build stamp ${iso(BASE + 300)}`);
+    expect(r.status).toBe(0);
+  });
+
+  it('still refuses when the edit is newer than BOTH stamps', () => {
+    put('apps/operator-vite/src/a.ts', BASE + 400);
+    putSf(BASE + 300);
+    const r = gate('apps/operator-vite/src/a.ts');
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`source_mtime=${iso(BASE + 400)} stamp=${iso(BASE + 300)}`);
+  });
+
+  it('keeps the rebuild stamp when the singleflight stamp is the OLDER one', () => {
+    put('apps/operator-vite/src/a.ts', BASE + 75);
+    putSf(BASE + 50);
+    const r = gate('apps/operator-vite/src/a.ts');
+    expect(r.out).toContain(`build stamp ${iso(STAMP_AT)}`);
+    expect(r.status).toBe(0);
+  });
+
+  it('accepts a dist that carries only the singleflight stamp', () => {
+    rmSync(stamp);
+    putSf(STAMP_AT);
+    expect(gate('apps/operator-vite/src/a.ts').status).toBe(0);
+  });
+
+  it('re-resolves the stamp while waiting, so a singleflight stamp that appears mid-wait ends the wait', () => {
+    put('apps/operator-vite/src/a.ts', BASE + 200);
+    const r = gate(
+      'apps/operator-vite/src/a.ts',
+      { PAPERCUSP_SPA_REQUIRE_BUILT_WAIT_SEC: '30' },
+      `( sleep 2; touch "${sfStamp()}" ) & `,
+    );
+    expect(r.out).toContain('SPA_REQUIRE_BUILT ok');
+    expect(r.out).toMatch(/waited [1-9]\d*s/);
+    expect(r.status).toBe(0);
+  });
+
+  it('the per-run note reports the newer stamp too', () => {
+    put('apps/operator-vite/src/a.ts', BASE + 200);
+    putSf(BASE + 300);
+    const r = run('spa_require_built_note', [dist, repo]);
+    expect(r.out).toContain(`SPA build stamp: ${iso(BASE + 300)}`);
+    expect(r.out).toContain('0 frontend source file(s) are newer');
+  });
+});
+
 describe('WI-10004972 — spa_require_built_newer fails closed', () => {
   it('returns 2 (unknown) rather than "nothing newer" when the stamp is gone', () => {
     rmSync(stamp);

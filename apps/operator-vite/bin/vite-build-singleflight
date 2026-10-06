@@ -179,7 +179,8 @@ fi
 # Release the reservation even when the build is interrupted. The shared helper
 # also treats a dead owner as stale, so this is hygiene rather than correctness.
 MKDIR_LOCK=""
-trap 'papercusp_release_disk_reservation 2>/dev/null || true; rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} ${SNAPSHOT_TMP:+"$SNAPSHOT_TMP"} 2>/dev/null || true' EXIT
+SOURCE_READ_MARK=""
+trap 'papercusp_release_disk_reservation 2>/dev/null || true; rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} ${SNAPSHOT_TMP:+"$SNAPSHOT_TMP"} ${SOURCE_READ_MARK:+"$SOURCE_READ_MARK"} 2>/dev/null || true' EXIT
 
 papercusp_require_free_gb "$OUT_ROOT" "$VITE_BUILD_MIN_FREE_GB" "operator-vite dist build"
 
@@ -264,6 +265,16 @@ echo "$$" > "$LOCK"
 # lock, so no live build owns these).
 rm -rf "$STAGE" "$PREV"
 
+# Source-read mark (WI-10006797). Dated to the moment THIS build begins reading
+# source, i.e. after the lock wait above. On success it becomes
+# dist/.vite-build-source-read-at, which scripts/lib/spa-require-built.sh
+# compares against source mtimes to decide whether the bundle contains an edit.
+# A caller's own "build started" stamp is taken before npm's prebuild and before
+# this wait (measured 38 min behind a peer's build on 2026-10-06), so every edit
+# made during the wait looked unbuilt and the verifier waited for a build it had.
+SOURCE_READ_MARK="$OUT_ROOT/.vite-build-source-read.$$"
+touch "$SOURCE_READ_MARK"
+
 # Run the build. `set -e` off around it so we always reach the swap/cleanup and
 # propagate the build's own exit status. Output is tee'd so a failure leaves a
 # readable log behind for the 503 (below) — PIPESTATUS[0] is the BUILD's status,
@@ -324,6 +335,17 @@ if [ "$status" -ne 0 ]; then
 elif [ "$RETAIN" -eq 1 ] && [ -f "$DIST/index.html" ]; then
   rm -f "$FAILURE"
 fi
+
+# Stamp the bundle with its source-read time (WI-10006797) — only when THIS
+# build produced the index.html now in dist/. Both regimes leave that file no
+# older than the mark when they built (`! mark -nt index`, not `index -nt mark`:
+# a fast build can write it within the same timestamp tick as the mark). A no-op
+# command (exit 0, no bundle) or a failed build leaves the previous bundle, which
+# predates the mark, and its previous stamp untouched.
+if [ "$status" -eq 0 ] && [ -f "$DIST/index.html" ] && ! [ "$SOURCE_READ_MARK" -nt "$DIST/index.html" ]; then
+  touch -r "$SOURCE_READ_MARK" "$DIST/.vite-build-source-read-at" 2>/dev/null || true
+fi
+rm -f "$SOURCE_READ_MARK"
 
 # Capture a packaging snapshot while fd 9 still holds the singleflight lock.
 # The lock release below happens as this process exits; taking the snapshot
