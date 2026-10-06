@@ -201,12 +201,120 @@ pub const DOCK_BINDS: &[DockBind] = &[
 /// Bound at the LAYOUT level so it MERGES with the user's own zellij config and
 /// applies only inside this dock session.
 pub fn dock_keybinds_kdl() -> String {
+    keybinds_kdl(DOCK_BINDS)
+}
+
+/// Render a bind slice as a layout-level KDL `keybinds` block (merged with the
+/// user's own zellij config, scoped to the one session the layout starts).
+fn keybinds_kdl(binds: &[DockBind]) -> String {
     let mut s = String::from("keybinds {\n    normal {\n");
-    for b in DOCK_BINDS {
+    for b in binds {
         s.push_str(&format!("        bind \"{}\" {{ {} }}\n", b.kdl, b.action));
     }
     s.push_str("    }\n}");
     s
+}
+
+/// The key that hides and shows the chat workbench's side panes, as hints
+/// spell it (pui-chat-first-ux P-030).
+pub const CHAT_WORKBENCH_TOGGLE_HINT: &str = "Alt+z";
+
+/// The multiplexer-level binds of the bare-`pui` chat workbench (P-030).
+///
+/// One key: `Alt+z` zooms the focused pane to the whole window and back. With
+/// the chat focused that is "collapse the side panes" / "bring them back".
+/// zellij 0.44's default config leaves `Alt z` unbound and pui binds no Alt
+/// letter, so nothing is taken from the user. `code` is `None` because
+/// [`crate::keyboard::Host::swallows`] matches a bare key code, and a plain
+/// `z` must keep reaching the message box.
+pub const CHAT_WORKBENCH_BINDS: &[DockBind] = &[DockBind {
+    kdl: "Alt z",
+    action: "ToggleFocusFullscreen;",
+    code: None,
+    reaches_pane: false,
+}];
+
+/// Session kind of the bare-`pui` chat workbench. Unlike `wb` / `dock` it is
+/// pid-keyed (`pui-chat-<pid>`, see [`chat_workbench_session_name`]).
+pub const CHAT_WORKBENCH_KIND: &str = "chat";
+
+/// The bare-`pui` chat workbench session name: `pui-chat-<launcher pid>`.
+///
+/// Deliberately NOT a stable attach-if-exists name like `pui-wb`. A chat
+/// belongs to the directory and terminal it was started in, so a second `pui`
+/// in another directory must never attach to the first one's session, and no
+/// older session (a crashed chat, an old `pui-wb`) can take a launch over.
+/// When the launcher dies without cleaning up, [`crate::reap::plan`]'s
+/// dead-owner rule sweeps the leftover on the next launch.
+pub fn chat_workbench_session_name(launcher_pid: u32) -> String {
+    format!("{}-{launcher_pid}", session_name(CHAT_WORKBENCH_KIND))
+}
+
+/// Terminals narrower than this open the chat workbench with the chat zoomed
+/// to the full window (side panes collapsed), so 80x24 still gets a usable
+/// chat. `Alt+z` brings the panes back.
+pub const CHAT_WORKBENCH_MIN_SIDE_COLS: u16 = 120;
+
+/// Environment set by the chat-workbench launcher for the session it starts.
+/// The chat pane reads it to recognise its own session (and to stop it on
+/// exit); every other pane ignores it.
+pub const CHAT_WORKBENCH_SESSION_ENV: &str = "PUI_CHAT_WORKBENCH";
+/// Set to `1` when the launch terminal was narrower than
+/// [`CHAT_WORKBENCH_MIN_SIDE_COLS`]: the chat zooms itself on start.
+pub const CHAT_WORKBENCH_ZOOM_ENV: &str = "PUI_CHAT_WORKBENCH_ZOOMED";
+/// Where the chat pane leaves its conversation text on exit, so the launcher
+/// can print it into the real terminal's scrollback after zellij is gone
+/// (the chat-first "clean scrollback" promise, P-004).
+pub const CHAT_WORKBENCH_TRANSCRIPT_ENV: &str = "PUI_CHAT_WORKBENCH_TRANSCRIPT";
+
+/// The bare-`pui` layout (pui-chat-first-ux P-030 / D-020): the chat is the
+/// main, focused pane, and the workbench panes Avi asked to keep sit beside it
+/// in one stack — the full HUD (fleet/colony, plans, mail, every tab;
+/// expanded, and the owner of reactive agent-pane launches), the staged-wake
+/// board, the network board, and the work shell where agent panes open.
+///
+/// The chat runs `pui --solo`, so it can never re-enter this launcher and nest.
+/// No swap presets: they would each have to re-declare the chat pane, and the
+/// one control this surface needs is the zoom toggle in
+/// [`CHAT_WORKBENCH_BINDS`].
+pub fn chat_workbench_kdl() -> String {
+    format!(
+        r#"// Papercusp chat workbench — bare `pui` (pui-chat-first-ux P-030).
+// The chat is the main pane; {toggle} hides or shows the side panes.
+{keybinds}
+layout {{
+    pane size=1 borderless=true {{
+        plugin location="zellij:tab-bar"
+    }}
+    pane split_direction="vertical" {{
+        pane name="chat" focus=true size="65%" {{
+            command "pui"
+            args "--solo"
+        }}
+        pane name="side" stacked=true size="35%" {{
+            pane name="hud" expanded=true {{
+                command "pui"
+                args "hud"
+            }}
+            pane name="wake" {{
+                command "pui"
+                args "wake-pane"
+            }}
+            pane name="network" {{
+                command "pui"
+                args "network-pane"
+            }}
+            pane name="work"
+        }}
+    }}
+    pane size=2 borderless=true {{
+        plugin location="zellij:status-bar"
+    }}
+}}
+"#,
+        toggle = CHAT_WORKBENCH_TOGGLE_HINT,
+        keybinds = keybinds_kdl(CHAT_WORKBENCH_BINDS),
+    )
 }
 
 /// Name for an app-managed zellij session: STABLE `pui-<kind>` (kind = `wb` |
@@ -802,6 +910,21 @@ fn materialize_at(base: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Write the bare-`pui` chat-workbench KDL to
+/// `~/.papercusp/pui-chat-workbench.kdl` and return it (P-030).
+pub fn materialize_chat_workbench() -> std::io::Result<PathBuf> {
+    let base = base_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
+    materialize_chat_workbench_at(&base)
+}
+
+fn materialize_chat_workbench_at(base: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(base)?;
+    let path = base.join("pui-chat-workbench.kdl");
+    std::fs::write(&path, chat_workbench_kdl())?;
+    Ok(path)
+}
+
 /// Write the chat-dock KDL (for `brain_argv`, with pane names resolved through
 /// `lex`) to `~/.papercusp/pui-chat-dock.kdl` and return it. Launched the same
 /// way as the workbench (`launch_argv`). (P-013 / pui-hive-lexicon-2026-06-06)
@@ -878,6 +1001,132 @@ mod tests {
             "the ↑/↓ rebinds DO reach the pane — if none does, `swallows` has \
              collapsed into `is bound`"
         );
+    }
+
+    /// The `command "pui"` panes of a KDL and the args line under each, in order.
+    fn pui_panes(kdl: &str) -> Vec<(String, Option<String>)> {
+        let lines: Vec<&str> = kdl.lines().map(str::trim).collect();
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if *line == "command \"pui\"" {
+                let opener = lines[..i]
+                    .iter()
+                    .rev()
+                    .find(|l| l.starts_with("pane "))
+                    .copied()
+                    .unwrap_or_default()
+                    .to_string();
+                let args = lines
+                    .get(i + 1)
+                    .and_then(|l| l.strip_prefix("args "))
+                    .map(str::to_string);
+                out.push((opener, args));
+            }
+        }
+        out
+    }
+
+    /// P-030: bare `pui` opens the chat as the main FOCUSED pane, running the
+    /// chat-only mode — so it can never re-enter the launcher and nest zellij.
+    #[test]
+    fn chat_workbench_focuses_a_solo_chat_and_never_nests() {
+        let kdl = chat_workbench_kdl();
+        let panes = pui_panes(&kdl);
+        let chat = panes
+            .iter()
+            .find(|(opener, _)| opener.contains("name=\"chat\""))
+            .expect("the layout has a chat pane");
+        assert!(chat.0.contains("focus=true"), "the chat is focused: {chat:?}");
+        assert_eq!(chat.1.as_deref(), Some("\"--solo\""));
+        // Exactly one focused pane, and it is the chat.
+        assert_eq!(kdl.matches("focus=true").count(), 1, "{kdl}");
+        // Every pui pane carries args: a bare `pui` pane would launch this
+        // same workbench inside itself.
+        for (opener, args) in &panes {
+            assert!(args.is_some(), "pane {opener:?} runs bare `pui`");
+        }
+    }
+
+    /// P-030 / #1277 "retain the extra zellij panes": the HUD (every tab, and
+    /// the reactive agent-launch owner), the wake and network boards and the
+    /// work shell all sit beside the chat, stacked, with the HUD expanded.
+    #[test]
+    fn chat_workbench_keeps_the_workbench_panes_beside_the_chat() {
+        let kdl = chat_workbench_kdl();
+        let args: Vec<String> = pui_panes(&kdl)
+            .into_iter()
+            .filter_map(|(_, a)| a)
+            .collect();
+        for wanted in ["\"hud\"", "\"wake-pane\"", "\"network-pane\""] {
+            assert!(args.iter().any(|a| a == wanted), "missing {wanted}: {args:?}");
+        }
+        assert!(kdl.contains("pane name=\"side\" stacked=true"));
+        assert!(kdl.contains("pane name=\"hud\" expanded=true"));
+        assert!(kdl.contains("pane name=\"work\""));
+        assert!(kdl.contains("zellij:tab-bar") && kdl.contains("zellij:status-bar"));
+        // Exactly one pane is the reactive launch owner (`pui hud`): two would
+        // race to open the same agent pane (EI-358).
+        assert_eq!(args.iter().filter(|a| *a == "\"hud\"").count(), 1);
+    }
+
+    /// DRIFT GUARD: the chat workbench KDL binds exactly CHAT_WORKBENCH_BINDS,
+    /// and the one bind is the zoom toggle on Alt+z, which the hint names.
+    #[test]
+    fn chat_workbench_binds_exactly_the_zoom_toggle() {
+        let kdl = chat_workbench_kdl();
+        let bound: Vec<&str> = kdl
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("bind \""))
+            .collect();
+        assert_eq!(bound, vec!["bind \"Alt z\" { ToggleFocusFullscreen; }"]);
+        assert_eq!(CHAT_WORKBENCH_BINDS.len(), 1);
+        assert_eq!(CHAT_WORKBENCH_TOGGLE_HINT, "Alt+z");
+        // A plain `z` must still reach the message box.
+        assert!(CHAT_WORKBENCH_BINDS.iter().all(|b| b.code.is_none()));
+        assert!(kdl.find("keybinds {").unwrap() < kdl.find("layout {").unwrap());
+    }
+
+    /// The session name is pid-keyed, so the reaper's dead-owner rule applies to
+    /// it and the stable-name attach path never does.
+    #[test]
+    fn chat_workbench_session_is_pid_keyed() {
+        let name = chat_workbench_session_name(4242);
+        assert_eq!(name, "pui-chat-4242");
+        assert_eq!(crate::reap::owner_pid(&name), Some(4242));
+        assert_eq!(crate::reap::session_kind(&name), Some(CHAT_WORKBENCH_KIND));
+        assert_eq!(crate::reap::stable_kind(&name), None);
+    }
+
+    /// "A stale pui-wb session must never hijack the launch": a chat launch
+    /// sweeps a leftover chat whose launcher died, leaves a live peer chat and
+    /// the user's live `pui-wb` alone, and has nothing to attach to.
+    #[test]
+    fn chat_workbench_launch_reaps_dead_chats_and_leaves_live_sessions() {
+        let own = chat_workbench_session_name(10);
+        let list = "pui-chat-11 [Created 1h ago]\n\
+                    pui-chat-12 [Created 2h ago]\n\
+                    pui-chat-13 [Created 3h ago] (EXITED - attach to resurrect)\n\
+                    pui-wb [Created 1d ago]\n\
+                    pui-chat-10 [Created 5m ago]\n\
+                    likable-petunia [Created 1d ago]\n";
+        let actions = crate::reap::plan(list, &own, |pid| pid == 12);
+        assert_eq!(
+            actions,
+            vec![
+                crate::reap::Action::KillAndDelete("pui-chat-11".into()),
+                crate::reap::Action::Delete("pui-chat-13".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn materialize_chat_workbench_writes_the_layout() {
+        let dir = std::env::temp_dir().join(format!("pui-chat-wb-{}", std::process::id()));
+        let path = materialize_chat_workbench_at(&dir).expect("materialize");
+        assert_eq!(path.file_name().unwrap(), "pui-chat-workbench.kdl");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), chat_workbench_kdl());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
