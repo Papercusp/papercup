@@ -352,3 +352,22 @@ describe("the public TURN server keeps private and loopback peers unreachable", 
     expect(Number(limit)).toBeGreaterThan(0);
   });
 });
+
+describe("public clients are only offered TURN they can reach (WI-10006616)", () => {
+  const live = (file: string) =>
+    readFileSync(file, "utf8").split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  const turnBlock = () => /^turn:\n((?:[ \t]+.*\n|\n)*)/m.exec(live(template))?.[1] ?? "";
+
+  it("keeps TURN TLS-only, so no turn:<home IP>:<udp port> URL is issued", () => {
+    expect(turnBlock()).toMatch(/^\s+enabled:\s*true\s*$/m);
+    expect(turnBlock()).not.toMatch(/udp_port/);
+  });
+
+  it("neither the edge nor its firewall forwards a TURN/UDP port", () => {
+    expect(forwardedPorts().filter(({ proto, ports }) => proto === "udp" && ports !== "7892")).toEqual([]);
+    expect(forwardedPorts({ sip: true }).some(({ ports }) => ports === "7893")).toBe(false);
+    const edgeScript = live(resolve(repoRoot, "infra/phone-app/edge/edge.sh"));
+    expect(edgeScript).not.toMatch(/udp:7893/);
+    expect(edgeScript).not.toMatch(/ufw allow in on [^\n]*port [0-9,]*7893/);
+  });
+});

@@ -37,7 +37,11 @@ redis:
 
 turn:
   enabled: true
-  udp_port: 7893
+  # TURN is TLS-only: never set udp_port. LiveKit would hand every client
+  # turn:<node IP>:<udp_port>, and the node IP is the home address, which no
+  # outside client can reach (WI-10006616). Clients with UDP reach the SFU
+  # directly at its public edge candidate, and LiveKit issues its default public
+  # STUN servers when no UDP TURN is configured.
   # This TURN server is public (D-024/D-025). livekit-server >= 1.12 refuses to
   # relay to private, loopback, link-local and multicast peers unless
   # allow_restricted_peer_cidrs lists them. Keep that default: never list the
