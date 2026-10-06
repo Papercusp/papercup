@@ -2432,13 +2432,29 @@ export async function emitScorecard(
             're-read the target and use the exact current lease key and reservedAt, or stop if the lease changed',
         };
       }
-      if (gradedObservation.gradingAudit.state === 'pending' && !activeDispatchReservation && suppliedDispatchReservation) {
+      // EI-25246208524832409: a LAPSED lease (TTL passed, dispatcher dropped it, nobody
+      // re-dispatched) leaves the card pending with no reservation. An emit that omits
+      // gradingAuditReservation is admitted on exactly that card, so refusing the dispatched
+      // auditor that honestly presents its lapsed lease only refused the diligent one: a full
+      // audit of a 39-criterion card took ~18 min against the 15-min lease and its verdict was
+      // lost. Admit it while it is still the source responder for that lease. A NEWER lease is
+      // an active reservation, refused as a mismatch above, so two auditors still cannot settle.
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        !activeDispatchReservation &&
+        suppliedDispatchReservation &&
+        !(await (deps.isCurrentSourceAuditResponder ?? isCurrentSourceAuditResponder)(
+          args.subject.ref,
+          suppliedDispatchReservation,
+          input.createdBy,
+        ))
+      ) {
         return {
           ok: false as const,
           code: 'grading_audit_reservation_unavailable' as const,
           error:
-            `audit subject '${args.subject.ref}' has no active dispatch reservation to match the supplied gradingAuditReservation; ` +
-            're-read the target and emit only if its current pending lease is present',
+            `audit subject '${args.subject.ref}' has no active dispatch reservation, and the supplied gradingAuditReservation ` +
+            'belongs to a different consult answerer; re-read the target and stop without emitting',
         };
       }
       if (
@@ -2594,7 +2610,13 @@ export async function emitScorecard(
         verdict: auditVerdict,
         ...(rubric.revision != null ? { rubricRevision: rubric.revision } : {}),
         ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
-        ...(args.gradingAuditReservation ? { dispatchReservation: args.gradingAuditReservation } : {}),
+        // Carry the lease into the settle compare-and-set only while it is still ACTIVE.
+        // A lapsed lease is no longer on the stamp, and recordGradingAudit matches the
+        // stamp's actual reservation, so passing it would file the audit card and leave the
+        // target pending (EI-25246208524832409).
+        ...(args.gradingAuditReservation && activeDispatchReservation
+          ? { dispatchReservation: args.gradingAuditReservation }
+          : {}),
       };
     }
     // PENDING STAMP — a terminal standard-rubric card is final but UNAUDITED until a
