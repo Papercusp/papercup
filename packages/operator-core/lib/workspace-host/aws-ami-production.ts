@@ -101,6 +101,16 @@ const SNAPSHOT_ID = /^snap-[a-f0-9]+$/;
 const AMI_ID = /^ami-[a-f0-9]+$/;
 /** coldsnap uploads a multi-GiB disk; an hour bounds a stalled upload without cutting a slow one. */
 const UPLOAD_TIMEOUT_MS = 60 * 60 * 1000;
+/**
+ * One retry, only for a connection-level failure that outlasted coldsnap's own per-block retries.
+ * coldsnap's AWS SDK reports a failed connect, reset, or DNS lookup as "dispatch failure" (P-012
+ * chain14 died 47.5 min into a 15.6 GB upload with 'attempt 5/5 failed after 3.1s ... dispatch
+ * failure', 3.1s being the SDK's connect timeout). A retry costs one more upload; the alternative is
+ * re-running the whole release.
+ */
+const UPLOAD_ATTEMPTS = 2;
+const COLDSNAP_TRANSPORT_FAILURE = /dispatch failure|connection (?:reset|refused|closed)|timed out/i;
+const SNAPSHOT_ID_IN_OUTPUT = /\bsnap-[a-f0-9]+\b/g;
 const RUNNER_TIMEOUT_MS = 45 * 60 * 1000;
 const IMAGE_WAIT_TIMEOUT_MS = 60 * 60 * 1000;
 const IMAGE_POLL_MS = 15_000;
@@ -347,15 +357,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     architecture: string;
     tags: Readonly<Record<string, string>>;
   }): Promise<{ imageId: string; snapshotId: string }> {
-    const upload = await this.commands.run({
-      command: this.executables.coldsnap,
-      args: ['upload', '--wait', input.diskPath],
-      env: await this.childEnv(input.region),
-      timeoutMs: UPLOAD_TIMEOUT_MS,
-    });
-    const snapshotId = assertSuccess(upload, 'coldsnap upload').trim().split(/\s+/).find((token) => SNAPSHOT_ID.test(token));
-    if (!snapshotId) fail('coldsnap upload did not report a snapshot id');
-
+    const snapshotId = await this.uploadSnapshot(input.region, input.diskPath, input.tags);
     const ec2 = this.deps.ec2(input.region);
     let imageId: string | undefined;
     try {
@@ -383,6 +385,43 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     }
   }
 
+  /**
+   * coldsnap-upload a disk into a new EBS snapshot (WI-10006192).
+   * - `--omit-zero-blocks`: a snapshot with no parent reads every unwritten block as zero, and a bootc
+   *   disk is about half holes (r62b: 7.4 of 15.6 GB allocated), so skipping all-zero blocks halves an
+   *   upload that ran ~50 min against UPLOAD_TIMEOUT_MS.
+   * - `--tag`: the run tags land at StartSnapshot, so even a partial snapshot is findable by run id.
+   * - A failed upload leaves the snapshot it started. No parent is passed, so every snapshot id in the
+   *   failed run's output is its own: delete them, and name any that would not delete in the error.
+   */
+  private async uploadSnapshot(region: string, diskPath: string, tags: Readonly<Record<string, string>>): Promise<string> {
+    const args = ['upload', '--wait', '--omit-zero-blocks'];
+    for (const tag of tagList(tags)) args.push('--tag', `Key=${tag.Key},Value=${tag.Value}`);
+    args.push(diskPath);
+    const ec2 = this.deps.ec2(region);
+    for (let attempt = 1; ; attempt += 1) {
+      const upload = await this.commands.run({
+        command: this.executables.coldsnap,
+        args,
+        env: await this.childEnv(region),
+        timeoutMs: UPLOAD_TIMEOUT_MS,
+      });
+      if (upload.exitCode === 0) {
+        const snapshotId = upload.stdout.trim().split(/\s+/).find((token) => SNAPSHOT_ID.test(token));
+        if (!snapshotId) fail('coldsnap upload did not report a snapshot id');
+        return snapshotId;
+      }
+      const output = `${upload.stdout}\n${upload.stderr}`;
+      const residue: string[] = [];
+      for (const partial of new Set(output.match(SNAPSHOT_ID_IN_OUTPUT) ?? [])) {
+        await ignoreNotFound(() => ec2.send(new DeleteSnapshotCommand({ SnapshotId: partial }))).catch(() => residue.push(partial));
+      }
+      if (attempt < UPLOAD_ATTEMPTS && residue.length === 0 && COLDSNAP_TRANSPORT_FAILURE.test(output)) continue;
+      const operation = `coldsnap upload (attempt ${attempt}/${UPLOAD_ATTEMPTS})`;
+      assertSuccess(upload, residue.length ? `${operation}, partial snapshot NOT deleted: ${residue.join(', ')};` : operation);
+    }
+  }
+
   private async removeImageAndSnapshot(region: string, imageId: string | undefined, snapshotId: string): Promise<void> {
     const ec2 = this.deps.ec2(region);
     if (imageId) await ignoreNotFound(() => ec2.send(new DeregisterImageCommand({ ImageId: imageId })));
@@ -406,7 +445,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
       tags: input.tags,
     });
     try {
-      // coldsnap cannot tag; tag the snapshot so an orphan is findable by run id.
+      // The upload already tagged the snapshot (--tag); re-asserting the same tags is idempotent.
       await this.deps.ec2(input.region).send(new CreateTagsCommand({ Resources: [staged.snapshotId], Tags: tagList(input.tags) }));
       await this.publishPermissions({
         region: input.region,
