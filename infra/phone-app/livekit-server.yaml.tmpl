@@ -17,17 +17,17 @@ rtc:
   # collide with the other project's 50000-60000 range.
   udp_port: 7892
   use_external_ip: true
-  # Advertise loopback + LAN as well as the public IP so that co-located services
-  # (livekit-sip, the agent worker) pick 127.0.0.1 for ICE rather than hairpinning
-  # out through the public address — hairpin NAT drops WebRTC consent keepalives.
-  # The public media edge tunnel (infra/phone-app/edge, D-025) is included when configured:
-  # traffic sourced from it leaves through the cloud edge, so use_external_ip's per-interface
-  # STUN maps it to the edge's public IP — the address remote clients can actually reach.
+  # Rendered by infra/phone-app/edge/edge-config.mjs livekit-interfaces. LiveKit hands the
+  # same candidates to EVERY participant, so with the public media edge (D-025) only the
+  # tunnel interface is listed: its traffic leaves through the cloud edge, use_external_ip's
+  # per-interface STUN maps it to the edge's public IP, and a public client never receives a
+  # LAN or loopback address (P-002 R-13, WI-10006708). Co-located services (the agent worker,
+  # livekit-sip) reach that public candidate through the box-local DNAT the edge tunnel
+  # installs. Without an edge, loopback + LAN keep co-located ICE off the home router's
+  # hairpin NAT, which drops WebRTC consent keepalives.
   interfaces:
     includes:
-      - lo
-      - ${PHONE_LAN_IFACE}
-${PHONE_EDGE_IFACE_INCLUDE}
+${PHONE_LIVEKIT_INTERFACES}
 
 # Coordination bus shared with livekit-sip. db 3 — db0/db1 are already in use on
 # this host by other services.
