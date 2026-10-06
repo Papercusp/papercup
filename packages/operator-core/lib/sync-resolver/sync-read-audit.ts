@@ -162,6 +162,10 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'learning.retainDetail': { kind: 'plan', id: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
 
   // ── needs a per-run id → skipped by the live audit (null) ──
+  // The PR viewer is keyed by an exact provider PR number and depends on live
+  // repository state. No stable populated PR fixture exists; skip it rather
+  // than measuring a likely not-found response as the detail payload.
+  'harnessPrs.detail': null,
   'workItems.detail': null, // a specific work-item id
   // Same shape as workItems.detail — a specific work-item id, so DEFAULT_HARNESS_ARGS
   // cannot satisfy its argsSchema. Skipped rather than given a representative id on
