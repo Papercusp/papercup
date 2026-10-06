@@ -1,16 +1,17 @@
 /** Daemon execution and qualification for the existing saturation CLI, P-012. */
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
+import { createRequire } from 'node:module';
+import { SEMANTIC_COMPLETION_TYPESCRIPT_VERSION, type SemanticProjectPopulation } from './lsp-semantic-completion';
+import type { readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { classifyReplayAnswer, evaluateReplayLadder, runReplay, scoreReplay, REPLAY_CLASSES,
   type ReplayClass, type ReplayMode, type ReplayOracle, type ReplayReport, type ReplayTriplet } from './lsp-fleet-replay';
 import type { LspFacadeArgs } from './lsp-facade';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
-import { lspEvidenceNow } from './lsp-query-evidence';
 import { taskIdFromScopeUnit } from '../task-manager/types';
 import { absCgroupDir, parseProcCgroup, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { linuxPpidFromProcStat, linuxProcessIdentityFromStat, readProcessIdentity } from '../process-identity';
@@ -32,20 +33,141 @@ export interface DaemonReplayConfig {
   readonly workspaceId: string;
   readonly levels: readonly number[];
   readonly requestTimeoutMs: number;
-  readonly oracleProvenance: { readonly method: string; readonly evidenceRef: string };
+  readonly oracleProvenance: {
+    readonly method: string;
+    readonly evidenceRef: string;
+    readonly compilerVersion?: string;
+    /** Captured by the independent parent while the freezer is still alive. */
+    readonly runtime?: ReplayOracleRuntimeQualification;
+  };
   /** Complete declared source/config/binary population, SHA256 keyed by absolute path. */
   readonly files: Readonly<Record<string, string>>;
   readonly corpus: Readonly<Record<ReplayClass, ReplayCorpus>>;
   readonly sourceSnapshot?: ReplayOracleInput['sourceSnapshot'];
+  /** Independently captured compiler graph; never authored by native projectInfo. */
+  readonly semanticGraph?: ReplaySemanticGraph;
   /** Predeclared runtime population and command-line-anchored recorder launches.
    * Kept separate from the independently authored source oracle. */
   readonly runtimeWitness?: ReplayRuntimeWitness;
+}
+export interface ReplaySemanticGraph {
+  readonly schemaVersion: 'lsp-replay-semantic-graph-v1';
+  readonly compilerVersion: string;
+  /** Executable shim and, when present, its maintained compiler delegate. */
+  readonly compilerEntries: Readonly<Record<string, string>>;
+  readonly projects: readonly (SemanticProjectPopulation & {
+    rootNames: string[];
+    configFiles: string[];
+    compilerOptions: Readonly<Record<string, unknown>>;
+  })[];
+  readonly fingerprint: string;
 }
 export interface ReplayRuntimeWitness {
   readonly directory: string;
   readonly runId: string;
   readonly bootstraps: Readonly<Record<string, string>>;
   readonly files: Readonly<Record<string, string>>;
+}
+export interface ReplayOracleRuntimeDeclaration {
+  readonly witness: ReplayRuntimeWitness;
+  readonly freezerEntry: string;
+  /** Include executable compiler delegates, not just package metadata/types. */
+  readonly compilerEntries: readonly string[];
+}
+export interface ReplayOracleRuntimeQualification {
+  readonly declaration: ReplayOracleRuntimeDeclaration;
+  readonly process: ReturnType<typeof replayProcessIdentity>;
+  readonly configFingerprint: string;
+  readonly compilerVersion: string;
+  readonly proofFingerprint: string;
+}
+function replayOracleConfigFingerprint(config: DaemonReplayConfig): string {
+  const { runtime: _runtime, ...oracleProvenance } = config.oracleProvenance;
+  return replayHash(JSON.stringify({ ...config, oracleProvenance }));
+}
+/** Reuse the live kernel/argv/load evaluator. Disk hashes alone cannot qualify
+ * a compiler which was already loaded before the declared byte census. */
+export function qualifyReplayOracleRuntime(config: DaemonReplayConfig, declaration: ReplayOracleRuntimeDeclaration,
+  pid: number, reader: ReplayProcessReader = replayProcessReader): DaemonReplayConfig {
+  const { witness, freezerEntry, compilerEntries } = declaration;
+  if (witness.runId !== config.runId || !isAbsolute(freezerEntry) || !compilerEntries.length ||
+      compilerEntries.some(file => !isAbsolute(file)) || !config.oracleProvenance.compilerVersion)
+    throw new Error('invalid-replay-oracle-runtime-declaration');
+  validateDaemonReplayConfig(config);
+  const process = replayProcessIdentity(pid, reader, witness);
+  const runtime = process.loadedModules;
+  const problems = [...process.unknown];
+  if (config.semanticGraph) for (const [file, hash] of Object.entries(assertReplaySemanticGraph(config).compilerEntries)) {
+    if (!compilerEntries.includes(file) || witness.files[file] !== hash)
+      problems.push(`undeclared-oracle-compiler:${file}`);
+  }
+  if (!process.executable || witness.files[process.executable.path] !== process.executable.sha256)
+    problems.push('unfrozen-oracle-executable');
+  if (runtime === 'unmeasured') problems.push('unmeasured-oracle-runtime');
+  else {
+    problems.push(...runtime.unknown);
+    if (runtime.receipts[0]?.entry !== freezerEntry) problems.push('unmatched-oracle-freezer-entry');
+    for (const file of [freezerEntry, ...compilerEntries]) {
+      if (!witness.files[file] || !runtime.receipts.some(row =>
+        ['esm-load-return', 'commonjs-compile'].includes(String(row.kind)) &&
+        row.path === file && row.sha256 === witness.files[file])) problems.push(`unloaded-oracle-code:${file}`);
+    }
+  }
+  problems.push(...replayFileMismatches(witness.files));
+  if (problems.length) throw new Error(`replay-oracle-runtime-refused:${[...new Set(problems)].join(';')}`);
+  const proof = { declaration, process, configFingerprint: replayOracleConfigFingerprint(config),
+    compilerVersion: config.oracleProvenance.compilerVersion };
+  return { ...config, oracleProvenance: { ...config.oracleProvenance,
+    runtime: { ...proof, proofFingerprint: replayHash(JSON.stringify(proof)) } } };
+}
+/** Saved source-only oracles remain inspectable, but cannot start a qualified
+ * repository replay. Historical missing compiler receipts stay unknown. */
+export function assertReplayOracleRuntimeQualified(config: DaemonReplayConfig): void {
+  const runtime = config.oracleProvenance.runtime;
+  if (!runtime) throw new Error('replay-oracle-runtime-unmeasured');
+  const { proofFingerprint, ...proof } = runtime;
+  if (replayHash(JSON.stringify(proof)) !== proofFingerprint ||
+      runtime.configFingerprint !== replayOracleConfigFingerprint(config) ||
+      runtime.compilerVersion !== config.oracleProvenance.compilerVersion ||
+      runtime.process.unknown.length || runtime.process.loadedModules === 'unmeasured' ||
+      runtime.process.loadedModules.unknown.length)
+    throw new Error('replay-oracle-runtime-proof-mismatch');
+  const drift = replayFileMismatches(runtime.declaration.witness.files);
+  if (drift.length) throw new Error(`replay-oracle-runtime-drift:${drift.join(';')}`);
+}
+/** Historical graphs remain absent, not retrospectively inferred from config.files.
+ * This validates the declaration, not the subject's loaded graph or readiness. */
+export function assertReplaySemanticGraph(config: DaemonReplayConfig): ReplaySemanticGraph {
+  const graph = config.semanticGraph;
+  if (!graph) throw new Error('replay-semantic-graph-unmeasured');
+  const { fingerprint, ...declaration } = graph;
+  if (graph.schemaVersion !== 'lsp-replay-semantic-graph-v1' ||
+      replayHash(JSON.stringify(declaration)) !== fingerprint ||
+      graph.compilerVersion !== SEMANTIC_COMPLETION_TYPESCRIPT_VERSION ||
+      graph.compilerVersion !== config.oracleProvenance.compilerVersion)
+    throw new Error('replay-semantic-graph-identity-mismatch');
+  const entries = Object.entries(graph.compilerEntries ?? {});
+  if (!entries.length || entries.some(([file, hash]) => !isAbsolute(file) || config.files[file] !== hash))
+    throw new Error('replay-semantic-compiler-unfrozen');
+  if (!Array.isArray(graph.projects) || graph.projects.length !== 1)
+    throw new Error('replay-semantic-project-population-unsupported');
+  for (const project of graph.projects) {
+    const canonical = (files: string[]) => Array.isArray(files) && files.length > 0 &&
+      files.every(file => typeof file === 'string' && isAbsolute(file) && !!config.files[file]) &&
+      new Set(files).size === files.length;
+    if (!project || typeof project.projectName !== 'string' || !isAbsolute(project.projectName) ||
+        !project.compilerOptions || typeof project.compilerOptions !== 'object' ||
+        !canonical(project.files) || !canonical(project.rootNames) ||
+        !canonical(project.configFiles) || !project.configFiles.includes(project.projectName) ||
+        !project.rootNames.includes(project.anchorFile))
+      throw new Error('replay-semantic-project-population-incomplete');
+    const population = new Set(project.files);
+    if ([...project.rootNames, ...project.configFiles].some(file => !population.has(file)))
+      throw new Error('replay-semantic-project-population-incomplete');
+    if (Object.values(config.corpus).some(row => !population.has(resolve(config.rootPath, row.cursor.file))))
+      throw new Error('replay-semantic-query-file-undeclared');
+  }
+  return graph;
 }
 /** Reuse Node's load/compile boundaries with the maintained plain-Node bundle
  * route. The recorder runs from literal argv bytes, never a later self-disk read. */
@@ -54,6 +176,118 @@ export function replayRuntimeLaunch(entry: string, directory: string, runId: str
   const code = `${recorder}\n;startReplayRuntime(${JSON.stringify({ entry: resolve(entry), directory: resolve(directory), runId, args,
     scopeProbeArgv: replayScopeProbeArgv })});`;
   return { args: ['--eval', code], evalSha256: replayHash(code), entry: resolve(entry) };
+}
+export interface ReplayOracleProducerOptions {
+  readonly freezerEntry: string;
+  readonly compilerEntries: readonly string[];
+  /** Complete package/source closure; Node's native dependencies are added before launch. */
+  readonly runtimePaths: readonly string[];
+  readonly witnessDirectory: string;
+  readonly timeoutMs: number;
+}
+/** Child-side handoff: keep the actual compiler/freezer alive until the independent
+ * parent has inspected kernel identity, argv, loaded bytes and mapped inodes. */
+export async function holdReplayOracleForQualification(config: DaemonReplayConfig, candidatePath: string): Promise<void> {
+  if (!process.send || !process.connected) throw new Error('replay-oracle-parent-channel-required');
+  const bytes = JSON.stringify(config, null, 2);
+  const sha256 = replayHash(bytes);
+  writeFileSync(candidatePath, bytes, { flag: 'wx' });
+  await new Promise<void>((accept, reject) => {
+    const cleanup = () => { process.off('message', release); process.off('disconnect', disconnected); };
+    const disconnected = () => { cleanup(); reject(new Error('replay-oracle-parent-disconnected')); };
+    const release = (message: unknown) => {
+      const row = message as { kind?: string; runId?: string; sha256?: string } | null;
+      if (row?.kind !== 'replay-oracle-release' || row.runId !== config.runId || row.sha256 !== sha256) {
+        cleanup(); reject(new Error('replay-oracle-invalid-parent-release')); return;
+      }
+      cleanup(); accept();
+    };
+    process.on('message', release);
+    process.once('disconnect', disconnected);
+    process.send!({ kind: 'replay-oracle-frozen', runId: config.runId, candidatePath, sha256 }, error => {
+      if (error) { cleanup(); reject(error); }
+    });
+  });
+  process.disconnect();
+}
+/** Parent-side producer. Nothing is published until a predeclared child closure
+ * qualifies and the same child exits successfully. Failure leaves only diagnostic
+ * candidate/receipts, never a qualified output or a retroactively expanded witness. */
+export async function freezeQualifiedReplayConfig(inputPath: string, outputPath: string, options: ReplayOracleProducerOptions,
+  deps: { processReader?: ReplayProcessReader; nativeDependencies?: (file: string) => readonly string[] } = {}): Promise<DaemonReplayConfig> {
+  if (!isAbsolute(options.freezerEntry) || !options.compilerEntries.length ||
+      options.compilerEntries.some(file => !isAbsolute(file)) || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)
+    throw new Error('invalid-replay-oracle-producer-options');
+  const input = JSON.parse(readFileSync(inputPath, 'utf8')) as ReplayOracleInput;
+  const directory = resolve(options.witnessDirectory);
+  if (insideReplayRoot(resolve(input.rootPath), directory) || insideReplayRoot(resolve(input.rootPath), resolve(outputPath)))
+    throw new Error('replay-oracle-output-inside-source');
+  if (existsSync(outputPath)) throw new Error('replay-oracle-output-exists');
+  mkdirSync(directory); // Exclusive attempt directory, never merge earlier receipts.
+  const candidatePath = join(directory, 'candidate.json');
+  const launch = replayRuntimeLaunch(options.freezerEntry, directory, input.runId,
+    ['--freeze-replay-child', resolve(inputPath), candidatePath]);
+  const files = freezeReplayRuntimeFiles([process.execPath, resolve(inputPath), input.rootPath,
+    options.freezerEntry, ...options.compilerEntries, ...options.runtimePaths], deps);
+  const witness: ReplayRuntimeWitness = { directory, runId: input.runId,
+    bootstraps: { [launch.entry]: launch.evalSha256 }, files };
+  const declaration = { witness, freezerEntry: launch.entry, compilerEntries: options.compilerEntries };
+  writeFileSync(join(directory, 'declaration.json'), JSON.stringify(declaration, null, 2), { flag: 'wx' });
+  const drift = replayFileMismatches(files);
+  if (drift.length) throw new Error(`replay-oracle-prelaunch-drift:${drift.join(';')}`);
+  const child = spawn(process.execPath, launch.args, { env: { ...process.env, NODE_OPTIONS: '' },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let stderr = '';
+  child.stderr!.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8192); });
+  child.stdout!.on('data', chunk => appendFileSync(join(directory, 'stdout.log'), chunk));
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(accept =>
+    child.once('close', (code, signal) => accept({ code, signal })));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let failed: ((error: Error) => void) | undefined;
+  const failure = new Promise<never>((_accept, reject) => { failed = reject;
+    timer = setTimeout(() => reject(new Error('replay-oracle-producer-timeout')), options.timeoutMs); });
+  child.once('error', error => failed?.(error));
+  try {
+    const candidate = new Promise<{ sha256: string; config: DaemonReplayConfig }>((accept, reject) => {
+      child.once('exit', (code, signal) => reject(new Error(`replay-oracle-child-exited:${code}:${signal}:${stderr}`)));
+      child.once('message', message => {
+        try {
+          const row = message as { kind?: string; runId?: string; candidatePath?: string; sha256?: string };
+          if (row?.kind !== 'replay-oracle-frozen' || row.runId !== input.runId || row.candidatePath !== candidatePath ||
+              !child.pid || !child.connected || child.exitCode !== null || child.signalCode !== null)
+            throw new Error('replay-oracle-invalid-child-handoff');
+          const bytes = readFileSync(candidatePath);
+          if (replayHash(bytes) !== row.sha256) throw new Error('replay-oracle-candidate-hash-mismatch');
+          const config = JSON.parse(bytes.toString('utf8')) as DaemonReplayConfig;
+          if (['runId', 'rootPath', 'socketPath', 'workspaceId', 'levels', 'requestTimeoutMs', 'sourceSnapshot'].some(key =>
+            JSON.stringify(config[key as keyof DaemonReplayConfig]) !== JSON.stringify(input[key as keyof ReplayOracleInput])) ||
+            JSON.stringify(config.corpus.definition.cursor) !== JSON.stringify(input.definition) ||
+            JSON.stringify(config.corpus['hot-references'].cursor) !== JSON.stringify(input.references) ||
+            config.oracleProvenance.evidenceRef !== input.evidenceRef)
+            throw new Error('replay-oracle-candidate-input-mismatch');
+          if (Object.entries(config.files).some(([file, hash]) => witness.files[file] !== hash))
+            throw new Error('replay-oracle-source-not-predeclared');
+          accept({ sha256: row.sha256!, config });
+        } catch (error) { reject(error); }
+      });
+    });
+    const frozen = await Promise.race([candidate, failure]);
+    const qualified = qualifyReplayOracleRuntime(frozen.config, declaration, child.pid!, deps.processReader);
+    if (!child.connected || child.exitCode !== null || child.signalCode !== null)
+      throw new Error('replay-oracle-child-ended-before-release');
+    child.send({ kind: 'replay-oracle-release', runId: input.runId, sha256: frozen.sha256 });
+    const terminal = await Promise.race([closed, failure]);
+    writeFileSync(join(directory, 'terminal.json'), JSON.stringify({ ...terminal, stderr }), { flag: 'wx' });
+    if (terminal.code !== 0 || terminal.signal !== null) throw new Error(`replay-oracle-child-terminal:${terminal.code}:${terminal.signal}:${stderr}`);
+    assertReplayOracleRuntimeQualified(qualified);
+    // wx also protects against an output created by a peer during qualification.
+    writeFileSync(outputPath, JSON.stringify(qualified, null, 2), { flag: 'wx' });
+    return qualified;
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
 }
 export const replayHash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 /** Runtime binaries can be large; hash their original bytes without a whole-file allocation. */
@@ -334,6 +568,8 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
   onProgress?: (progress: ReplayOracleProgress) => void;
 }): { config: DaemonReplayConfig; sourceCount: number } {
   const tsconfigPath = resolve(input.rootPath, input.tsconfigPath);
+  if (ts.version !== SEMANTIC_COMPLETION_TYPESCRIPT_VERSION)
+    throw new Error('replay-semantic-compiler-version-unsupported');
   const loadedInputs = new Map<string, string>();
   // Capture the very bytes handed to the compiler, not a later disk read.
   // Match TypeScript's BOM decoding while retaining the original byte hash.
@@ -352,11 +588,30 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
     if (bytes[0] === 255 && bytes[1] === 254) return bytes.toString('utf16le', 2);
     return bytes.toString('utf8', bytes[0] === 239 && bytes[1] === 187 && bytes[2] === 191 ? 3 : 0);
   };
-  const read = ts.readConfigFile(tsconfigPath, readCompilerInput);
-  if (read.error) throw new Error(ts.flattenDiagnosticMessageText(read.error.messageText, '\n'));
-  const parsed = ts.parseJsonConfigFileContent(read.config, { ...ts.sys, readFile: readCompilerInput }, resolve(tsconfigPath, '..'), undefined, tsconfigPath);
+  const fatal: ts.Diagnostic[] = [];
+  const parsed = ts.getParsedCommandLineOfConfigFile(tsconfigPath, undefined,
+    { ...ts.sys, readFile: readCompilerInput, onUnRecoverableConfigFileDiagnostic: error => fatal.push(error) });
+  if (!parsed || fatal.length) throw new Error(fatal.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'));
   if (parsed.errors.length) throw new Error(parsed.errors.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'));
-  const roots = [...new Set([...parsed.fileNames, resolve(input.rootPath, input.definition.file), resolve(input.rootPath, input.references.file)])];
+  // A solution/reference graph needs one independently captured declaration per
+  // configured project. Refuse it before compiler/native work until modeled.
+  if (parsed.projectReferences?.length) throw new Error('replay-semantic-project-references-unsupported');
+  const roots = [...new Set(parsed.fileNames.map(file => resolve(file)))].sort();
+  if (!roots.length) throw new Error('replay-semantic-configured-roots-empty');
+  const compilerEntry = createRequire(import.meta.url).resolve('typescript');
+  const compilerPaths = [compilerEntry];
+  // The maintained TypeScript package is an executable compatibility shim.
+  // Binding just that shim or its package metadata would omit the real compiler.
+  if (/require\(["']@typescript\/old["']\)/.test(readFileSync(compilerEntry, 'utf8')))
+    compilerPaths.push(createRequire(compilerEntry).resolve('@typescript/old'));
+  const compilerEntries: Record<string, string> = {};
+  for (const file of compilerPaths) {
+    const absolute = resolve(file);
+    if (input.sourceSnapshot && !insideReplayRoot(input.rootPath, absolute))
+      throw new Error(`snapshot-input-escape:${absolute}`);
+    compilerEntries[absolute] = replayFileHash(absolute, Buffer.allocUnsafe(64 * 1024));
+    loadedInputs.set(absolute, compilerEntries[absolute]);
+  }
   options.onProgress?.({ phase: 'config-parsed', completed: 0, total: roots.length });
   const host = ts.createCompilerHost(parsed.options);
   host.readFile = readCompilerInput;
@@ -375,6 +630,20 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
   // they are not candidate reference sites. Their drift invalidates the oracle.
   for (const source of program.getSourceFiles()) if (!loadedInputs.has(resolve(source.fileName)))
     throw new Error(`unmeasured-compiler-input:${source.fileName}`);
+  const configFile = parsed.options.configFile as (ts.SourceFile & { extendedSourceFiles?: string[] }) | undefined;
+  if (!configFile) throw new Error('replay-semantic-config-declaration-missing');
+  const configFiles = [...new Set([tsconfigPath, ...(configFile.extendedSourceFiles ?? []).map(file => resolve(file))])].sort();
+  const projectFiles = [...new Set([...program.getSourceFiles().map(source => resolve(source.fileName)), ...configFiles])].sort();
+  if (configFiles.some(file => !loadedInputs.has(file))) throw new Error('replay-semantic-config-input-unmeasured');
+  // The AST carries cycles and compiler caches; preserve only plain effective
+  // options, retaining path-valued options exactly as used by this compiler.
+  const { configFile: _configFile, ...plainOptions } = parsed.options;
+  const compilerOptions = JSON.parse(JSON.stringify(plainOptions)) as Record<string, unknown>;
+  const declaration = { schemaVersion: 'lsp-replay-semantic-graph-v1' as const, compilerVersion: ts.version,
+    compilerEntries, projects: [{ projectName: tsconfigPath, anchorFile: roots.find(file =>
+      file === resolve(input.rootPath, input.definition.file)) ?? roots[0], files: projectFiles,
+    rootNames: roots, configFiles, compilerOptions }] };
+  const semanticGraph: ReplaySemanticGraph = { ...declaration, fingerprint: replayHash(JSON.stringify(declaration)) };
   const hashBuffer = Buffer.allocUnsafe(64 * 1024);
   for (const file of input.runtimeFiles) {
     const absolute = resolve(input.rootPath, file);
@@ -433,9 +702,9 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
     oracle: { sites, sourceFingerprint, oracleFingerprint: replayOracleFingerprint({ sites }) } });
   const config: DaemonReplayConfig = { schemaVersion: 'lsp-daemon-replay-config-v1', runId: input.runId,
     rootPath: input.rootPath, socketPath: input.socketPath, workspaceId: input.workspaceId, levels: input.levels,
-    requestTimeoutMs: input.requestTimeoutMs, files,
+    requestTimeoutMs: input.requestTimeoutMs, files, semanticGraph,
     oracleProvenance: { method: 'static TypeScript symbol-binding census over the frozen compiler source population; no daemon answers',
-      evidenceRef: input.evidenceRef },
+      evidenceRef: input.evidenceRef, compilerVersion: ts.version },
     corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) },
     ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}) };
   return { config, sourceCount: sourceFiles.length };
@@ -478,6 +747,7 @@ export function validateDaemonReplayConfig(config: DaemonReplayConfig, options: 
   if (config.sourceSnapshot && (!insideReplayRoot(config.rootPath, config.sourceSnapshot.manifestPath) ||
       config.files[config.sourceSnapshot.manifestPath] !== config.sourceSnapshot.sha256))
     throw new Error('unmatched-replay-source-snapshot');
+  if (config.semanticGraph) assertReplaySemanticGraph(config);
   for (const queryClass of REPLAY_CLASSES) {
     const { cursor, oracle } = config.corpus[queryClass];
     const file = resolve(config.rootPath, cursor.file);
@@ -701,10 +971,30 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
       if (matching !== 1) throw Error('missing or ambiguous control receipt');
     } catch (error) { unknown.push(`unqualified-control-probe:${String(launch.launchId)}:${String(error)}`); }
   }
+  // A repository-sized byte census can contain thousands of descriptors. Join
+  // open/close proof once; scanning all receipts for each read is quadratic.
+  type ReadBoundary = { row: Record<string, unknown>; index: number };
+  const streamedReads = new Map<unknown, { starts: ReadBoundary[]; ends: ReadBoundary[] }>();
+  receipts.forEach((row, index) => {
+    if (row.kind !== 'file-read-start' && !(row.kind === 'file-read' && row.reader === 'readSync')) return;
+    const group = streamedReads.get(row.readId) ?? { starts: [], ends: [] };
+    (row.kind === 'file-read-start' ? group.starts : group.ends).push({ row, index });
+    streamedReads.set(row.readId, group);
+  });
+  for (const [readId, { starts, ends }] of streamedReads) {
+    const start = starts[0]; const end = ends[0];
+    if (starts.length !== 1 || ends.length !== 1 || typeof readId !== 'string' || !readId ||
+        typeof start.row.path !== 'string' || !Number.isSafeInteger(start.row.byteLength) ||
+        Number(start.row.byteLength) < 0 || start.row.path !== end.row.path ||
+        start.row.byteLength !== end.row.byteLength || start.row.reader !== 'readSync' ||
+        end.row.reader !== 'readSync' || start.index >= end.index)
+      unknown.push(`unclosed-or-unqualified-file-reader:readSync:${String(start?.row.path ?? end?.row.path)}`);
+  }
   for (const row of receipts) {
     if (row.schemaVersion !== 'lsp-replay-runtime-receipt-v1' || row.pid !== pid || !identity ||
         row.identity !== identity || row.runId !== witness.runId) unknown.push('runtime-receipt-identity-mismatch');
     if (row.kind === 'unknown') unknown.push(String(row.reason));
+    if (row.kind === 'file-read-start') continue;
     if (row.kind === 'kernel-metadata') {
       try {
         const path = String(row.path);
@@ -930,6 +1220,13 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
   captureRuntime?: (health: LspDaemonAnswer) => ReplayRuntimePopulation;
 } = {}) {
   validateDaemonReplayConfig(config);
+  // Small source-authored protocol controls retain their existing route. The
+  // independent repository-copy acceptance route requires loaded oracle proof.
+  if (config.sourceSnapshot) assertReplayOracleRuntimeQualified(config);
+  if (config.sourceSnapshot) assertReplaySemanticGraph(config);
+  // Compiler-only freezing must not initialize daemon/task-store dependencies.
+  const { callLspDaemonRpc, readLspDaemonAdmission } = await import('./lsp-daemon-client');
+  const { lspEvidenceNow } = await import('./lsp-query-evidence');
   const directory = join(archiveParent, config.runId);
   if (existsSync(directory)) throw new Error(`archive already exists:${directory}`);
   mkdirSync(directory, { recursive: true });

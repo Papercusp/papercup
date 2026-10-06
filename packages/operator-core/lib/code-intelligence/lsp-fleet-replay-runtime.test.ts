@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
@@ -76,6 +76,109 @@ describe('prelaunch replay runtime dependency population', () => {
     expect(libraries.length).toBeGreaterThan(0);
     for (const file of [realpathSync(process.execPath), ...libraries])
       expect(files[file]).toBe(replayHash(readFileSync(file)));
+  });
+});
+describe('independently declared semantic graph', () => {
+  function fixture(options: Record<string, unknown> = {}) {
+    const frozen = config();
+    const root = frozen.rootPath;
+    writeFileSync(join(root, 'base.json'), JSON.stringify({ compilerOptions: { strict: true, types: [], ...options } }));
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ extends: './base.json', files: ['source.ts'] }));
+    const runtimeFile = join(root, 'runtime.cjs'); writeFileSync(runtimeFile, 'module.exports = 1;');
+    const input: ReplayOracleInput = { runId: 'declared-graph', rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1], requestTimeoutMs: 1000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'source.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [runtimeFile], evidenceRef: 'independent-graph-fixture' };
+    return { root, runtimeFile, input };
+  }
+  it('retains configured roots, imported declarations, libraries and inherited config without runtime files', () => {
+    const f = fixture();
+    writeFileSync(join(f.root, 'source.ts'), "import './ambient';\nexport function hot() {}\nhot();\n");
+    writeFileSync(join(f.root, 'ambient.d.ts'), 'declare const ambient: string;');
+    const input = { ...f.input, definition: { file: 'source.ts', line1: 3, character: 1 },
+      references: { file: 'source.ts', line1: 3, character: 1 } };
+    const frozen = freezeCompilerReplayConfig(input);
+    const graph = assertReplaySemanticGraph(frozen);
+    const project = graph.projects[0];
+    expect(project.rootNames).toEqual([join(f.root, 'source.ts')]);
+    expect(project.configFiles).toEqual([join(f.root, 'base.json'), join(f.root, 'tsconfig.json')]);
+    expect(project.files).toEqual(expect.arrayContaining([...project.configFiles, join(f.root, 'source.ts'), join(f.root, 'ambient.d.ts')]));
+    expect(project.files.some(file => file.endsWith('/lib.d.ts'))).toBe(true);
+    expect(project.compilerOptions.strict).toBe(true);
+    expect(project.compilerOptions).not.toHaveProperty('configFile');
+    expect(project.files).not.toContain(f.runtimeFile);
+    expect(frozen.files[f.runtimeFile]).toBeTruthy();
+    expect(graph.compilerVersion).toBe(ts.version);
+    const compilerPaths = Object.keys(graph.compilerEntries);
+    expect(compilerPaths.some(file => file.endsWith('/typescript/lib/typescript.js'))).toBe(true);
+    expect(compilerPaths.some(file => file.endsWith('/@typescript/old/lib/typescript.js'))).toBe(true);
+    for (const file of [...project.files, ...compilerPaths]) expect(frozen.files[file]).toBe(replayHash(readFileSync(file)));
+  });
+  it('refuses a project reference before loading an incomplete compiler graph', () => {
+    const f = fixture({ noLib: true });
+    mkdirSync(join(f.root, 'other'));
+    writeFileSync(join(f.root, 'other', 'tsconfig.json'), JSON.stringify({ compilerOptions: { composite: true }, files: [] }));
+    writeFileSync(join(f.root, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], references: [{ path: './other' }] }));
+    const phases: string[] = [];
+    expect(() => freezeCompilerReplayConfig(f.input, { onProgress: row => phases.push(row.phase) }))
+      .toThrow('replay-semantic-project-references-unsupported');
+    expect(phases).not.toContain('compiler-loaded');
+  });
+  it('refuses an unconfigured cursor instead of silently adding it to roots', () => {
+    const f = fixture({ noLib: true });
+    writeFileSync(join(f.root, 'outside.ts'), 'export function outside() {}\noutside();');
+    expect(() => freezeCompilerReplayConfig({ ...f.input, definition: { file: 'outside.ts', line1: 2, character: 1 } }))
+      .toThrow('oracle cursor outside compiler population');
+  });
+  it.each(['compiler-version', 'config', 'root', 'duplicate-file', 'compiler-entry'])('refuses a changed declaration: %s', change => {
+    const f = fixture({ noLib: true });
+    const frozen = freezeCompilerReplayConfig(f.input);
+    const graph = JSON.parse(JSON.stringify(frozen.semanticGraph)) as NonNullable<DaemonReplayConfig['semanticGraph']>;
+    const project = graph.projects[0];
+    if (change === 'compiler-version') Object.assign(graph, { compilerVersion: 'other' });
+    if (change === 'config') project.files.splice(project.files.indexOf(project.projectName), 1);
+    if (change === 'root') project.rootNames.push(join(f.root, 'unfrozen.ts'));
+    if (change === 'duplicate-file') project.files.push(project.files[0]);
+    if (change === 'compiler-entry') Object.assign(graph, { compilerEntries: { [join(f.root, 'unfrozen.js')]: '0'.repeat(64) } });
+    const { fingerprint: _fingerprint, ...declaration } = graph;
+    Object.assign(graph, { fingerprint: replayHash(JSON.stringify(declaration)) });
+    expect(() => assertReplaySemanticGraph({ ...frozen, semanticGraph: graph })).toThrow(/replay-semantic-/);
+  });
+  it('preserves absent historical declarations as unmeasured', () => {
+    expect(() => assertReplaySemanticGraph(config())).toThrow('replay-semantic-graph-unmeasured');
+  });
+});
+describe('oracle runtime acceptance prerequisite', () => {
+  it('refuses a freezer child without an independent parent before reading compiler input', async () => {
+    // Vitest workers themselves have IPC. Model a disconnected child explicitly.
+    const connected = process.connected;
+    try {
+      process.connected = false;
+      await expect(runSaturationCli(['node', 'cli', '--freeze-replay-child', '/missing/input', '/missing/output']))
+        .rejects.toThrow('replay-oracle-parent-channel-required');
+    } finally { process.connected = connected; }
+  });
+  it('refuses historical source-only proof before the CLI creates an archive or calls the daemon', async () => {
+    const frozen = config();
+    const input = join(frozen.rootPath, 'frozen.json');
+    writeFileSync(input, JSON.stringify(frozen));
+    expect(() => assertReplayOracleRuntimeQualified(frozen)).toThrow('replay-oracle-runtime-unmeasured');
+    await expect(runSaturationCli(['node', 'cli', '--fleet-replay', input, frozen.rootPath]))
+      .rejects.toThrow('replay-oracle-runtime-unmeasured');
+    expect(existsSync(join(frozen.rootPath, frozen.runId))).toBe(false);
+    expect(callLspDaemonRpc).not.toHaveBeenCalled();
+  });
+  it('refuses an independently copied repository oracle before a direct runner performs warmups', async () => {
+    const frozen = config();
+    const manifestPath = join(frozen.rootPath, 'manifest.json');
+    writeFileSync(manifestPath, '{}');
+    const files = { ...frozen.files, [manifestPath]: replayHash('{}') };
+    const corpus = Object.fromEntries(Object.entries(frozen.corpus).map(([key, row]) =>
+      [key, { ...row, oracle: { ...row.oracle, sourceFingerprint: replaySourceFingerprint(files) } }])) as DaemonReplayConfig['corpus'];
+    const copied = { ...frozen, files, corpus, sourceSnapshot: { manifestPath, sha256: files[manifestPath] } };
+    await expect(runDaemonReplay(copied, frozen.rootPath)).rejects.toThrow('replay-oracle-runtime-unmeasured');
+    expect(existsSync(join(frozen.rootPath, frozen.runId))).toBe(false);
+    expect(callLspDaemonRpc).not.toHaveBeenCalled();
   });
 });
 function config(): DaemonReplayConfig {
