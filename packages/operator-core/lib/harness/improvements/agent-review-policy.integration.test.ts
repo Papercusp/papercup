@@ -245,6 +245,20 @@ const fixtures: Array<{ id: string; input: WorkItemIntakeStageInput }> = [
     id: 'malformed-timestamp',
     input: open({ implementationReadiness: { ...acceptedReadiness(), updatedAt: 'not-a-timestamp' } }),
   },
+  // P-008 / D-038: admission dedup is intake step one, ahead of every readiness leg.
+  {
+    id: 'admission-pending-accepted',
+    input: open({ implementationReadiness: acceptedReadiness() }, { admission: 'pending' }),
+  },
+  { id: 'admission-pending-unenrolled', input: open({}, { admission: 'pending' }) },
+  {
+    id: 'admission-admitted-accepted',
+    input: open({ implementationReadiness: acceptedReadiness() }, { admission: 'admitted' }),
+  },
+  {
+    id: 'admission-pending-terminal',
+    input: open({ implementationReadiness: acceptedReadiness() }, { status: 'done', admission: 'pending' }),
+  },
 ];
 
 beforeAll(async () => {
@@ -262,7 +276,7 @@ describe('workItemIntakeStageSql', () => {
     const rows: Array<{ id: string; decision: unknown }> = [];
     for (const { id, input } of fixtures) {
       const [row] = await sql<Array<{ decision: unknown }>>`
-        SELECT ${workItemIntakeStageSql(sql as unknown as OrgSql)} AS decision
+        SELECT ${workItemIntakeStageSql(sql as unknown as OrgSql, { admission: 'admission' })} AS decision
           FROM (VALUES (
             ${input.kind}::text,
             ${input.status}::text,
@@ -270,8 +284,9 @@ describe('workItemIntakeStageSql', () => {
             ${input.terminalCompletionRef ?? null}::text,
             ${input.payload == null ? null : sql.json(input.payload as postgres.JSONValue)}::jsonb,
             ${input.title ?? null}::text,
-            ${input.summary ?? null}::text
-          )) AS fixture(item_kind, status, terminal_owner, terminal_completion_ref, payload, title, summary)`;
+            ${input.summary ?? null}::text,
+            ${input.admission ?? null}::text
+          )) AS fixture(item_kind, status, terminal_owner, terminal_completion_ref, payload, title, summary, admission)`;
       rows.push({ id, decision: row.decision });
     }
     rows.sort((a, b) => a.id.localeCompare(b.id));
@@ -283,6 +298,20 @@ describe('workItemIntakeStageSql', () => {
     // Pin the load-bearing verdicts so a symmetric regression on both sides still fails.
     const byId = new Map(rows.map((row) => [row.id, row.decision]));
     expect(byId.get('observation-closed')).toMatchObject({ primaryStage: 'observation', countsAsBugWork: false });
+    // P-008 / D-038: a pending admission is a candidate awaiting dedup, even when its
+    // readiness would otherwise accept it, and it never counts as bug work yet.
+    expect(byId.get('admission-pending-accepted')).toMatchObject({
+      primaryStage: 'candidate',
+      reason: 'awaiting-admission-dedup',
+      countsAsBugWork: false,
+    });
+    expect(byId.get('admission-pending-unenrolled')).toMatchObject({
+      primaryStage: 'candidate',
+      reason: 'awaiting-admission-dedup',
+      readiness: 'legacy-missing',
+    });
+    expect(byId.get('admission-admitted-accepted')).toMatchObject({ primaryStage: 'accepted', countsAsBugWork: true });
+    expect(byId.get('admission-pending-terminal')).toMatchObject({ primaryStage: 'terminal' });
     expect(byId.get('accepted-bug')).toMatchObject({ primaryStage: 'accepted', acceptance: 'qualifying' });
     expect(byId.get('stale-title-edit')).toMatchObject({
       primaryStage: 'candidate',

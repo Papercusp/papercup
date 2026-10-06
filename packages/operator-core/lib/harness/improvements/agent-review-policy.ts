@@ -570,6 +570,13 @@ export interface WorkItemIntakeStageInput {
    */
   title?: string | null;
   summary?: string | null;
+  /**
+   * The row's `admission` column (plan unified-bug-pipeline P-008 / D-038). Admission
+   * dedup is intake step one: a `pending` row is a candidate awaiting dedup whatever
+   * its readiness says. Omitted ⇒ the caller did not read the column, and the leg is
+   * skipped (the SQL twin skips it the same way when no admission column is named).
+   */
+  admission?: string | null;
 }
 
 export interface WorkItemIntakeStageDecision {
@@ -579,6 +586,7 @@ export interface WorkItemIntakeStageDecision {
   reason:
     | 'observation-evidence'
     | 'terminal-history'
+    | 'awaiting-admission-dedup'
     | 'legacy-readiness-unknown'
     | 'malformed-readiness-unknown'
     | 'qualifying-acceptance'
@@ -630,6 +638,8 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
   const qualifyingAcceptance = currentReadiness?.status === 'ready' && acceptance.state === 'qualifying';
   const reReviewRequested =
     !observation && !terminal && currentReadiness?.status === 'ready' && acceptance.state === 'stale-revision';
+  // P-008 / D-038: admission dedup is intake step one, ahead of every readiness leg.
+  const awaitingAdmission = !observation && !terminal && input.admission === 'pending';
 
   let primaryStage: WorkItemIntakePrimaryStage;
   let reason: WorkItemIntakeStageDecision['reason'];
@@ -639,6 +649,9 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
   } else if (terminal) {
     primaryStage = 'terminal';
     reason = 'terminal-history';
+  } else if (awaitingAdmission) {
+    primaryStage = 'candidate';
+    reason = 'awaiting-admission-dedup';
   } else if (!readinessEnrolled) {
     primaryStage = 'unknown';
     reason = 'legacy-readiness-unknown';
@@ -668,7 +681,7 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
     qualifyingAcceptance,
     acceptance: acceptance.state,
     reReviewRequested,
-    countsAsBugWork: input.kind === 'bug' && !observation && qualifyingAcceptance,
+    countsAsBugWork: input.kind === 'bug' && !observation && !awaitingAdmission && qualifyingAcceptance,
   };
 }
 
@@ -739,6 +752,12 @@ type WorkItemIntakeStageSqlColumns = {
   title?: 'title' | 'wi.title' | 'ei.title';
   /** `summary` on work_items; the engineer_issues view exposes the same column as `body`. */
   summary?: 'summary' | 'wi.summary' | 'ei.body' | 'body';
+  /**
+   * P-008 / D-038: the admission column. No default — a projection that does not name
+   * it skips the admission-dedup leg, exactly as the TS twin does when `admission` is
+   * omitted.
+   */
+  admission?: 'admission' | 'wi.admission';
 };
 
 /** SQL twin of `acceptanceSourceRevision` (sha256 is built into PostgreSQL ≥ 11). */
@@ -971,12 +990,17 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
   const acceptanceState = sql`(CASE WHEN ${observation} THEN 'absent' ELSE ${implementationAcceptanceStateSql(sql, columns)} END)`;
   const readyNow = sql`(${readinessValid} AND ${readinessJson} ->> 'status' = 'ready')`;
   const qualifyingAcceptance = sql`(${readyNow} AND ${acceptanceState} = 'qualifying')`;
+  // P-008 / D-038: admission dedup is intake step one, ahead of every readiness leg.
+  const awaitingAdmission = columns.admission
+    ? sql`(NOT (${observation}) AND NOT (${terminal}) AND ${sql.unsafe(columns.admission)} IS NOT DISTINCT FROM 'pending')`
+    : sql`FALSE`;
 
   return sql`jsonb_build_object(
     'schemaVersion', ${WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION}::text,
     'primaryStage', CASE
       WHEN ${observation} THEN 'observation'
       WHEN ${terminal} THEN 'terminal'
+      WHEN ${awaitingAdmission} THEN 'candidate'
       WHEN NOT (${readinessEnrolled}) THEN 'unknown'
       WHEN NOT (${readinessValid}) THEN 'unknown'
       WHEN ${qualifyingAcceptance} THEN 'accepted'
@@ -991,6 +1015,7 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
     'reason', CASE
       WHEN ${observation} THEN 'observation-evidence'
       WHEN ${terminal} THEN 'terminal-history'
+      WHEN ${awaitingAdmission} THEN 'awaiting-admission-dedup'
       WHEN NOT (${readinessEnrolled}) THEN 'legacy-readiness-unknown'
       WHEN NOT (${readinessValid}) THEN 'malformed-readiness-unknown'
       WHEN ${qualifyingAcceptance} THEN 'qualifying-acceptance'
@@ -1004,7 +1029,9 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
     'reReviewRequested', (
       NOT (${observation}) AND NOT (${terminal}) AND ${readyNow} AND ${acceptanceState} = 'stale-revision'
     ),
-    'countsAsBugWork', (${itemKind} = 'bug' AND NOT (${observation}) AND ${qualifyingAcceptance})
+    'countsAsBugWork', (
+      ${itemKind} = 'bug' AND NOT (${observation}) AND NOT (${awaitingAdmission}) AND ${qualifyingAcceptance}
+    )
   )`;
 }
 
