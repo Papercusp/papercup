@@ -661,12 +661,14 @@ defineTool({
   name: 'gatingtest:replay_structured_write',
   requirePrincipal: false,
   capability: 'agent_tools:write',
-  args: z.object({}),
-  result: z.object({ rows: z.array(z.object({ id: z.string(), state: z.string() })) }),
+  args: z.object({ large: z.boolean().optional() }),
+  result: z.object({
+    rows: z.array(z.object({ id: z.string(), state: z.string(), detail: z.string().optional() })),
+  }),
   agentRoles: ['scoper'],
-  handler: async (_args, ctx) => {
-    parityCalls.push({ args: {}, ctx });
-    return { data: { rows: PARITY_ROWS } };
+  handler: async (args, ctx) => {
+    parityCalls.push({ args, ctx });
+    return { data: { rows: args.large ? LARGE_PARITY_PAYLOAD.rows : PARITY_ROWS } };
   },
 });
 defineTool({
@@ -1769,6 +1771,98 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         },
         connection,
       );
+    },
+  );
+
+  it.each([
+    { firstCallMode: 'catalog-backed', resultShape: 'plain-object', large: false },
+    { firstCallMode: 'catalog-backed', resultShape: 'output-envelope', large: true },
+    { firstCallMode: 'catalog-bypass', resultShape: 'plain-object', large: false },
+    { firstCallMode: 'catalog-bypass', resultShape: 'output-envelope', large: true },
+  ] as const)(
+    '$firstCallMode first call replays a $resultShape result to a schema-aware client',
+    async ({ firstCallMode, resultShape, large }) => {
+      const name = 'gatingtest:replay_structured_write';
+      const idempotencyKey = `idem-replay-mode-matrix-${firstCallMode}-${resultShape}`;
+      const args = large ? { large: true } : {};
+      const expected = large ? LARGE_PARITY_PAYLOAD : { rows: PARITY_ROWS };
+      const extra = extraFor(signedUrl({ tools: name }));
+      const firstMeta = {
+        idempotencyKey,
+        format: 'json',
+        ...(firstCallMode === 'catalog-backed' ? { structured: true } : {}),
+      };
+      h.replayLookupFromStores = true;
+
+      if (firstCallMode === 'catalog-backed') {
+        await withSdkHost(extra, async client => {
+          const catalog = await client.listTools();
+          expect(catalog.tools.find(tool => tool.name === name)?.outputSchema)
+            .toMatchObject({ type: 'object', required: ['rows'] });
+
+          const first = await client.callTool({ name, arguments: args, _meta: firstMeta }) as CallResult;
+          expect(first.structuredContent).toEqual(expected);
+          expect(h.replayStores).toHaveLength(1);
+          const stored = h.replayStores[0]!.result as CallResult;
+          expect(stored.structuredContent).toEqual(expected);
+          if (large) {
+            expect(JSON.parse(textOf(stored))).toMatchObject({
+              schemaVersion: 'papercusp.output-envelope/v1',
+              state: 'incomplete',
+            });
+          } else {
+            expect(JSON.parse(textOf(stored))).toEqual(expected);
+          }
+
+          const replayed = await client.callTool({
+            name,
+            arguments: args,
+            _meta: { idempotencyKey, format: 'json', structured: true },
+          }) as CallResult;
+          expect(replayed.structuredContent).toEqual(expected);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
+          expect(parityCalls).toHaveLength(1);
+        }, 'http');
+        return;
+      }
+
+      // The first transport call bypasses tools/list and the SDK's outputSchema
+      // validator, matching a catalog-bypass client that requests JSON text only.
+      const first = await callTool(name, args, extra, firstMeta);
+      expect(first.structuredContent).toBeUndefined();
+      expect(h.replayStores).toHaveLength(1);
+      const stored = h.replayStores[0]!.result as CallResult;
+      expect(stored.structuredContent).toBeUndefined();
+      if (large) {
+        expect(JSON.parse(textOf(stored))).toMatchObject({
+          schemaVersion: 'papercusp.output-envelope/v1',
+          state: 'incomplete',
+        });
+      } else {
+        expect(JSON.parse(textOf(stored))).toEqual(expected);
+      }
+
+      const handlerCallsBeforeReplay = parityCalls.length;
+      await withSdkHost(extra, async client => {
+        const catalog = await client.listTools();
+        expect(catalog.tools.find(tool => tool.name === name)?.outputSchema)
+          .toMatchObject({ type: 'object', required: ['rows'] });
+        const replay = client.callTool({
+          name,
+          arguments: args,
+          _meta: { idempotencyKey, format: 'json', structured: true },
+        });
+        if (large) {
+          // Replaying the result-door envelope without the original structured
+          // value reproduces the SDK's -32600 outputSchema contract failure.
+          await expect(replay).rejects.toThrow(/structured content/i);
+        } else {
+          const replayed = await replay as CallResult;
+          expect(replayed.structuredContent).toEqual(expected);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
+        }
+      }, 'http');
+      expect(parityCalls).toHaveLength(handlerCallsBeforeReplay);
     },
   );
 
