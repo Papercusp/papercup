@@ -35,8 +35,11 @@ case "$cmd" in
     [ "$((FAKE_S8_CONTROL_FAIL + 0))" = 1 ] || (cd "$HIVE" && echo x > s8-joiner-before-revoke.txt && git add s8-joiner-before-revoke.txt && git -c user.email=t@t -c user.name=t commit -qm before >/dev/null) ;;
   *"tee "*"s8-joiner-after-revoke.txt"*)
     [ "$((FAKE_S8_PUSH_AFTER + 0))" = 1 ] && (cd "$HIVE" && echo x > s8-joiner-after-revoke.txt && git add s8-joiner-after-revoke.txt && git -c user.email=t@t -c user.name=t commit -qm after >/dev/null) ;;
-  *"-- s8-tower-before-revoke.txt"*) [ "$((FAKE_S8_CONTROL_FAIL + 0))" = 1 ] && echo 0 || echo 1 ;;
-  *"-- s8-tower-after-revoke.txt"*) echo "$((FAKE_S8_PULL_AFTER + 0))" ;;
+  # The tower's marker reaches the joiner's FETCHED refs, never its worktree HEAD: that is what c1010r
+  # measured (refs/hive/staging held it, HEAD did not). So only a read across all refs sees it.
+  *"log --all "*"-- s8-tower-before-revoke.txt"*) [ "$((FAKE_S8_CONTROL_FAIL + 0))" = 1 ] && echo 0 || echo 1 ;;
+  *"log --all "*"-- s8-tower-after-revoke.txt"*) echo "$((FAKE_S8_PULL_AFTER + 0))" ;;
+  *"-- s8-tower-"*) echo 0 ;;
 esac
 exit 0
 `;
