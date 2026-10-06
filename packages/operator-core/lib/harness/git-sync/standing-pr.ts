@@ -70,10 +70,19 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Pick the standing PR out of the main repository's open PRs. Lowest number wins if several match. */
-export function findStandingPr(prs: readonly Pr[], baseBranch: string): Pr | null {
+/**
+ * Pick the standing PR out of the main repository's open PRs. Lowest number wins if several match.
+ * Omit `baseBranch` to match a standing PR against ANY target branch (P-019's switch guard: work
+ * waiting in an open standing PR is stranded by leaving the working copy, whatever its base).
+ */
+export function findStandingPr(prs: readonly Pr[], baseBranch?: string): Pr | null {
   const matches = prs
-    .filter((p) => p.state === 'open' && p.head_ref === STANDING_PR_BRANCH && p.base_ref === baseBranch)
+    .filter(
+      (p) =>
+        p.state === 'open' &&
+        p.head_ref === STANDING_PR_BRANCH &&
+        (baseBranch === undefined || p.base_ref === baseBranch),
+    )
     .sort((a, b) => a.ref.number - b.ref.number);
   return matches[0] ?? null;
 }
