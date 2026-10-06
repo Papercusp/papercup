@@ -67,6 +67,24 @@ export function hashSystemPrompt(systemPromptText: string): string {
   return createHash('sha256').update(systemPromptText).digest('hex').slice(0, 32);
 }
 
+/**
+ * Whether a converse turn may RESUME or MINT a reusable brain session at all
+ * (before the feature flag is consulted). A reused session keeps the turn's
+ * verbatim history in claude's on-disk store, and a dir is only reclaimed when
+ * the SAME conversation takes another turn — so a one-off conversation's
+ * content outlives the turn indefinitely. A caller whose content carries its
+ * own retention policy (a phone call under D-022's 30-day rule) passes
+ * `retainSession: false`, and then nothing is resumed or written regardless
+ * of backend or flag (WI-10006465). Omitted ⇒ unchanged behavior.
+ */
+export function brainSessionReuseEligible(input: {
+  conversationId: string | null;
+  backendIsClaudeCode: boolean;
+  retainSession?: boolean;
+}): boolean {
+  return Boolean(input.conversationId) && input.backendIsClaudeCode && input.retainSession !== false;
+}
+
 function dirFor(conversationId: string): string {
   // Conversation ids are external input — key the dir by a hash, never the
   // raw id (path-safety).

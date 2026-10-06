@@ -21,6 +21,7 @@ vi.mock('node:os', async (importOriginal) => {
 
 // Import AFTER the mock so the module's homedir() resolves to the tmp HOME.
 import {
+  brainSessionReuseEligible,
   getChatBrainSession,
   hashSystemPrompt,
   invalidateChatBrainSession,
@@ -36,6 +37,41 @@ beforeEach(() => {
 
 afterEach(() => {
   try { rmSync(fakeHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+});
+
+// WI-10006465 — a caller under its own retention policy (phone calls, D-022's
+// 30-day rule) must be able to keep its content out of the on-disk session
+// store entirely: a one-off conversation's dir is never reclaimed, because a
+// dir is only dropped when the SAME conversation takes another turn.
+describe('brainSessionReuseEligible', () => {
+  it('is eligible for a claude-code conversation when the caller does not opt out', () => {
+    expect(brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: true })).toBe(true);
+    expect(
+      brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: true, retainSession: true }),
+    ).toBe(true);
+  });
+
+  it('retainSession:false refuses reuse even on claude-code with a conversation', () => {
+    expect(
+      brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: true, retainSession: false }),
+    ).toBe(false);
+  });
+
+  it('is never eligible without a conversation or off claude-code', () => {
+    expect(brainSessionReuseEligible({ conversationId: null, backendIsClaudeCode: true })).toBe(false);
+    expect(brainSessionReuseEligible({ conversationId: '', backendIsClaudeCode: true })).toBe(false);
+    expect(brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: false })).toBe(false);
+  });
+
+  it('an opted-out turn leaves no session dir behind', () => {
+    // The caller contract: when ineligible, getChatBrainSession is never
+    // called, so nothing for this conversation exists under chat-brains.
+    const phoneConv = 'phone-call:room-xyz';
+    if (brainSessionReuseEligible({ conversationId: phoneConv, backendIsClaudeCode: true, retainSession: false })) {
+      getChatBrainSession(phoneConv, hashSystemPrompt(SYS));
+    }
+    expect(existsSync(join(fakeHome, '.papercusp', 'chat-brains'))).toBe(false);
+  });
 });
 
 describe('getChatBrainSession', () => {

@@ -47,6 +47,7 @@ import { readAgentConfig, surfaceBackend, surfaceModel } from '../../agent-confi
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import {
+  brainSessionReuseEligible,
   getChatBrainSession,
   hashSystemPrompt,
   invalidateChatBrainSession,
@@ -157,6 +158,11 @@ export const ArgsSchema = z.object({
   /** Shrinks this existing brain to public lesson explanation, with no tools,
    * remembered conversation, or server control-tag effects. */
   lessonContext: tutorialHelpContextSchema.optional(),
+  /** false ⇒ this turn neither resumes nor creates a reusable brain session,
+   *  so its content is never kept in the on-disk claude session store. For
+   *  callers under their own retention policy (phone calls, D-022). Omitted ⇒
+   *  normal reuse rules (WI-10006465). */
+  retainSession: z.boolean().optional(),
 });
 
 type Args = z.infer<typeof ArgsSchema>;
@@ -371,7 +377,13 @@ export default defineTool({
         ? input.conversationId
         : null;
     let sessionReuseOn = false;
-    if (convId && resolveBackend({ promptText: '', backend: operatorBackend }) === 'claude-code') {
+    if (
+      brainSessionReuseEligible({
+        conversationId: convId,
+        backendIsClaudeCode: resolveBackend({ promptText: '', backend: operatorBackend }) === 'claude-code',
+        retainSession: input.retainSession,
+      })
+    ) {
       try {
         // NOTE: getFlag is async — await it (EI-13014: a bare truthy check on
         // the returned Promise reads as permanently-enabled).
