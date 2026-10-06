@@ -263,14 +263,14 @@ export async function checkSubjectRefDrift(
     }
     const range = `${base}..HEAD`;
     // Precise: trace just the function's line range across history.
-    const lRes = await runGit(['log', range, '-L', `:${ref.name}:${file}`, '-s', '--format=%H'], cwd);
+    const lRes = await runDriftRangeLog(runGit, ['log', range, '-L', `:${ref.name}:${file}`, '-s', '--format=%H'], cwd, hasCommitLine);
     if (lRes.code === 0) {
       const commits = lRes.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
       return { stale: commits.length > 0, changedPaths: commits.length ? [ref.file] : [], method: 'symbol' };
     }
     // `-L` failed (file renamed/removed, or the symbol regex didn't match a
     // function in the current tree). Fall back to file-level drift with --follow.
-    const fRes = await runGit(['log', range, '--follow', '--name-only', '--format=%H', '--', file], cwd);
+    const fRes = await runDriftRangeLog(runGit, ['log', range, '--follow', '--name-only', '--format=%H', '--', file], cwd, hasChangedName);
     if (fRes.code !== 0) {
       return { stale: false, changedPaths: [], method: 'symbol-fallback', error: gitErr(fRes) };
     }
@@ -300,7 +300,7 @@ export async function checkSubjectRefDrift(
     const args = single
       ? ['log', range, '--follow', '--name-only', '--format=%H', '--', g.rels[0]]
       : ['log', range, '--name-only', '--format=%H', '--', ...g.rels];
-    const res = await runGit(args, g.cwd);
+    const res = await runDriftRangeLog(runGit, args, g.cwd, hasChangedName);
     if (res.code !== 0) {
       firstErr ??= gitErr(res);
       continue;
