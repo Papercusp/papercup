@@ -197,7 +197,7 @@ export function sandboxedBashCommand(command, opts = {}) {
  * Ask the operator for the textual verdict, session restriction and integration-tree hold.
  * Either a held or unknown source state is restricted. Missing fields from an older
  * operator build are unknown too, so the transition stays fail-closed.
- * @returns {Promise<{ refuse: string | null, restricted: boolean | null, detail: string }>}
+ * @returns {Promise<{ refuse: string | null, restricted: boolean | null, detail: string, failure: 'timeout' | 'unavailable' | null }>}
  */
 async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
   try {
@@ -209,7 +209,12 @@ async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
     });
     const body = res.ok ? await res.json() : null;
     if (!body || body.ok !== true) {
-      return { refuse: null, restricted: null, detail: `HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}` };
+      return {
+        refuse: null,
+        restricted: null,
+        detail: `HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}`,
+        failure: 'unavailable',
+      };
     }
     const refuse = body.verdict === 'refuse' ? String(body.reason || body.code || 'disclosure_egress_refused') : null;
     const sourceHold = body.sourceHold;
@@ -223,9 +228,12 @@ async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
           : body.restricted === null || body.restricted === undefined
             ? 'the disclosure ledger could not be read'
             : '';
-    return { refuse, restricted, detail };
+    return { refuse, restricted, detail, failure: null };
   } catch (error) {
-    return { refuse: null, restricted: null, detail: error instanceof Error ? error.message : String(error) };
+    const detail = error instanceof Error ? error.message : String(error);
+    const name = error !== null && typeof error === 'object' && 'name' in error ? String(error.name) : '';
+    const failure = name === 'TimeoutError' || /\btimeout\b|timed out/i.test(detail) ? 'timeout' : 'unavailable';
+    return { refuse: null, restricted: null, detail, failure };
   }
 }
 
@@ -260,9 +268,26 @@ export async function decideEgress({ toolName, toolInput, cwd, env = process.env
   }
 
   const texts = egressTexts(toolName, input);
-  const { refuse, restricted, detail } = await askOperator({ owner, toolName, texts, env, fetchImpl });
+  const { refuse, restricted, detail, failure } = await askOperator({ owner, toolName, texts, env, fetchImpl });
   if (refuse) return { decision: 'deny', reason: refuse };
   if (restricted === false) return { decision: 'allow' };
+  if (restricted === null && toolName === 'WebFetch') {
+    const checkFailure =
+      failure === 'timeout'
+        ? `timed out after ${CHECK_TIMEOUT_MS} ms`
+        : `failed (${detail})`;
+    const providerNote = prefilterHits(texts)
+      ? ' This URL also names a provider; use the applicable gated verb for provider activity.'
+      : '';
+    return {
+      decision: 'deny',
+      reason:
+        `WebFetch is unavailable because the operator restriction check ${checkFailure}; ` +
+        'restriction status is unknown, not a restriction verdict. Retry after the operator responds; ' +
+        `if it keeps failing, inspect operator health with dev:service_health and check ` +
+        `/api/agent-mcp/restricted-egress-check.${providerNote}`,
+    };
+  }
   if (restricted === null && prefilterHits(texts)) {
     return {
       decision: 'deny',

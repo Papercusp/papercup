@@ -247,13 +247,14 @@ const ensurePotGitRepoMock = vi.hoisted(() => vi.fn());
 const defaultRunGitMock = vi.hoisted(() => vi.fn());
 const defaultRunGitCallHistory = vi.hoisted(() => [] as Array<{ testName: string; args: unknown[]; stack: string }>);
 const sidecarStartupAttempts = vi.hoisted(() => [] as string[]);
-const conflictAuthorshipGitCalls = vi.hoisted(() => [] as Array<{ args: string[]; cwd: string }>);
-vi.mock('../docs/git-runner', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../docs/git-runner')>()),
-  // Conflict authorship uses this runner, independently of storage.defaultRunGit.
-  // This fixture has no real commit history; record its reads at the same seam.
-  runGit: async (args: string[], cwd: string) => {
-    conflictAuthorshipGitCalls.push({ args, cwd });
+const sidecarGitCalls = vi.hoisted(() => [] as Array<{ args: string[]; cwd: string }>);
+vi.mock('../../fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/git-via-sidecar')>()),
+  // Docs helpers retain their module's internal runGit even when its exported
+  // binding is mocked. Isolate the shared external execution seam instead;
+  // conflict authorship and the helpers still exercise their real read logic.
+  runGitViaSpawnerSidecar: async (args: string[], cwd: string) => {
+    sidecarGitCalls.push({ args, cwd });
     return { code: 0, stdout: '', stderr: '' };
   },
 }));
@@ -4933,10 +4934,16 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
 });
 
 describe('WI-10005972: sidecar Git entrypoint attribution', () => {
-  it('isolates conflict-authorship reads through the docs Git runner', () => {
-    expect(conflictAuthorshipGitCalls.length).toBeGreaterThan(0);
-    for (const { args, cwd } of conflictAuthorshipGitCalls) {
-      expect(args.slice(0, 5)).toEqual(['log', '-n', '5', '--format=%H%x1f%B%x1e', '--']);
+  it('isolates conflict-authorship and docs reads at the shared execution seam', () => {
+    const conflictPrefix = ['log', '-n', '5', '--format=%H%x1f%B%x1e', '--'];
+    expect(sidecarGitCalls.some(({ args }) =>
+      JSON.stringify(args.slice(0, 5)) === JSON.stringify(conflictPrefix),
+    )).toBe(true);
+    for (const { args, cwd } of sidecarGitCalls) {
+      const conflictRead = JSON.stringify(args.slice(0, 5)) === JSON.stringify(conflictPrefix);
+      const docsHeadRead = JSON.stringify(args) === JSON.stringify(['rev-parse', 'HEAD']);
+      const docsHistoryRead = JSON.stringify(args) === JSON.stringify(['log', '-n', '50', '--format=%H']);
+      expect(conflictRead || docsHeadRead || docsHistoryRead, JSON.stringify(args)).toBe(true);
       expect(cwd === repoDir || cwd.startsWith(repoDir + '/')).toBe(true);
     }
   });

@@ -197,6 +197,7 @@ import {
   isContextGaugeEnabled,
   resetContextUsageCacheForTests,
 } from './context-usage-cache';
+import { defaultCompactionLimitForWindow, MODEL_WINDOW_1M, MODEL_WINDOW_DEFAULT } from '../agent-config-constants';
 
 /** Fake postgres tag: routes on the query text — the seed query selects
  *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
@@ -556,6 +557,36 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       const out = await checkCompactionCompliance(sweep(100_000));
       expect(out.relimited).toEqual([]);
       expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+
+    /**
+     * WI-10006049 (owner Avi 2026-10-05 #1369/#1371): a 1M-family session that a bare
+     * /model menu pick (Claude Code 2.1.289) dropped to a 200k window was LOWERED by this
+     * very branch to the 200k window's derived limit. Once it is served at 1M again its
+     * spec derives the 1M limit, so the old 158k no longer equals the seed — it must still
+     * heal, because the watchdog wrote it, not a human. Replays su-56e2f83b, 2026-10-06.
+     */
+    it('HEALS the 200k-window limit this branch wrote once the live window is back at 1M (WI-10006049)', async () => {
+      const lowered = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT);
+      const healed = defaultCompactionLimitForWindow(MODEL_WINDOW_1M);
+      specMock.mockResolvedValue('opus[1m]'); // derives the 1M limit, so `lowered` != seed
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_1M);
+      const out = await checkCompactionCompliance(sweep(lowered));
+      expect(out.relimited).toContainEqual({ owner: 'cx', from: lowered, to: healed });
+      expect(setLimitMock).toHaveBeenCalledWith('cx', healed);
+    });
+
+    it('does NOT heal that value while the live window is still 200k, nor an unrelated low value at 1M (WI-10006049 falsifiers)', async () => {
+      const lowered = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT);
+      specMock.mockResolvedValue('opus[1m]');
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_DEFAULT);
+      const stillSmall = await checkCompactionCompliance(sweep(lowered));
+      expect(stillSmall.relimited).toEqual([]);
+      setLimitMock.mockClear();
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_1M);
+      const deliberate = await checkCompactionCompliance(sweep(100_000));
+      expect(deliberate.relimited).toEqual([]);
+      expect(setLimitMock).not.toHaveBeenCalled();
     });
 
     it('leaves a DELIBERATE lower override alone — its value differs from the derived seed (D-006 leanness)', async () => {

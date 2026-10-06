@@ -203,10 +203,38 @@ describe('decideEgress', () => {
       await expect(
         decideEgress({ toolName: 'Bash', toolInput: { command: 'ls' }, env: ENV, fetchImpl, sandbox: (c) => `S[${c}]` }),
       ).resolves.toEqual({ decision: 'rewrite', updatedInput: { command: 'S[ls]' } });
-      await expect(decideEgress({ toolName: 'WebFetch', toolInput: { url: 'https://x.example' }, env: ENV, fetchImpl })).resolves.toMatchObject({
-        decision: 'deny',
+      const webFetch = await decideEgress({
+        toolName: 'WebFetch',
+        toolInput: { url: 'https://x.example' },
+        env: ENV,
+        fetchImpl,
       });
+      expect(webFetch.decision).toBe('deny');
+      if (webFetch.decision !== 'deny') throw new Error('an unverified WebFetch must stay denied');
+      expect(webFetch.reason).toContain('restriction status is unknown, not a restriction verdict');
+      expect(webFetch.reason).toContain('Retry after the operator responds');
     }
+  });
+
+  it('distinguishes an operator timeout from a restriction verdict and names a recovery path', async () => {
+    const timedOut = vi.fn(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    });
+
+    const result = await decideEgress({
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://github.com/example/repo' },
+      env: ENV,
+      fetchImpl: timedOut,
+    });
+
+    expect(result.decision).toBe('deny');
+    if (result.decision !== 'deny') throw new Error('a timeout must keep WebFetch denied');
+    expect(result.reason).toContain('restriction check timed out after 4000 ms');
+    expect(result.reason).toContain('restriction status is unknown, not a restriction verdict');
+    expect(result.reason).toContain('Retry after the operator responds');
+    expect(result.reason).toContain('dev:service_health');
+    expect(result.reason).toContain('/api/agent-mcp/restricted-egress-check');
   });
 });
 

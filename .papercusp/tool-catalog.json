@@ -10133,7 +10133,7 @@
           "POST"
         ]
       },
-      "description": "Live operator READ-CACHE counters (cachedRead), per tool: hits/misses/stale/bypass/deadline, miss reasons, actual factory builds and elapsed build milliseconds. Absent misses combine new/evicted/cleared keys; no key history is retained. buildMs covers buildsCompleted, including failures; builds also includes in-flight work. L2 hits and joined readers do not add factory builds. ⚠ PER-WORKER: record pid/uptime/clusterSize and aggregate distinct workers yourself; this result covers one worker. A tool absent from perTool never called cachedRead in this process lifetime. A low hitRatePct alone does not establish expensive rebuilding.",
+      "description": "Live operator READ-CACHE counters (cachedRead), per tool: hits/misses/stale/bypass/deadline, miss reasons, actual factory builds and elapsed build milliseconds. Absent misses combine new/evicted/cleared keys; no key history is retained. buildMs covers buildsCompleted, including failures; builds also includes in-flight work. L2 hits and joined readers do not add factory builds. Also reports this process's resource declaration cache without refreshing it; resource selects one cached declaration. ⚠ PER-WORKER: record pid/uptime/clusterSize and aggregate distinct workers yourself; this result covers one worker. A tool absent from perTool never called cachedRead in this process lifetime. A low hitRatePct alone does not establish expensive rebuilding.",
       "capabilities": [
         "intel:read"
       ],

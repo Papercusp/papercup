@@ -39,6 +39,7 @@ import {
   selfSetCeilingForWindow,
   supersededDerivedCompactionLimits,
   MODEL_WINDOW_1M,
+  MODEL_WINDOW_DEFAULT,
   modelWindowForSpec,
   type ModelTier,
 } from '../agent-config-constants';
@@ -2503,9 +2504,21 @@ export async function checkCompactionCompliance(
             // the extended-codex derivation to the 400k role cap stranded 13
             // live sessions at the old 158,000 (2026-08-18).
             const superseded = supersededDerivedCompactionLimits(seed.spec, { fleetMember });
+            // WI-10006049: the value THIS branch writes when it lowers a session to a
+            // measured 200k window (`re-limited 450000 → 158000 … 200000-token model
+            // window`) is a number the watchdog chose, not a human. Once the live window
+            // is back above 200k it must heal like any other derived seed. Without this a
+            // session dropped to 200k by Claude Code 2.1.289's bare /model menu stayed at
+            // 158k after it was served at 1M again (su-56e2f83b, 2026-10-06): its spec now
+            // derives 450k, so 158k no longer equalled the seed and read as deliberate.
+            const loweredByMeasuredDefaultWindow =
+              liveWindow > MODEL_WINDOW_DEFAULT &&
+              r.compaction_limit === defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT, { fleetMember });
             if (
               !seed.explicit &&
-              (seed.limit === r.compaction_limit || superseded.includes(r.compaction_limit))
+              (seed.limit === r.compaction_limit ||
+                superseded.includes(r.compaction_limit) ||
+                loweredByMeasuredDefaultWindow)
             ) {
               apply = safeLimit;
             }

@@ -5,9 +5,9 @@
   "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 5,
+    "repairedFocused": 6,
     "repairedPeerFocused": 10,
-    "openUnknown": 109
+    "openUnknown": 108
   },
   "classes": {
     "assertion": 62,
@@ -557,15 +557,36 @@
     {
       "path": "packages/operator-core/lib/work-item-claim-lease-issue-cleanup.integration.test.ts",
       "class": "missing-schema",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "EI-25188751918038775",
       "lines": [
         12932,
         12933
       ],
       "registeredRepairItem": "EI-25188751918038775",
-      "repairStage": "registered-owned-awaiting-exact-dispatch; source-unedited",
-      "diagnosis": "Current private WORK_ITEMS_SIGN_OF_LIFE_DDL omits fed_ts read by current federated content-clock fallback; source-read plus same8-case precondition reproduced missing-column. Fix not yet verified.",
+      "repairStage": "exact-dispatch-claimed-shared-schema-repair-verified-focused",
+      "diagnosis": "The private work_items projection omitted fed_ts read by the reaper. Replaced private work_items/engineer_issues DDL with existing HARNESS_FEATURES_CONSOLIDATED_DDL and reset its base table. Original eight cases plus content-write, bookkeeping-only and NULL-clock controls pass; production reaper and shared schema are unchanged from the failing precondition revision.",
+      "afterTestRun": 20798383,
+      "passed": 11,
+      "skipped": 0,
+      "testSha256": "ed7d6355582a175e33be2965826cfa3f14f87ca650bd68a5700c3f2013b044f5",
+      "sourceFingerprints": {
+        "reaperSha256": "12d3aa5c529a2f661a1236d5c0e14b36e56ece0ccf08d2c21ae7d9ee4617c776",
+        "sharedSchemaSha256": "15f690ed78840b34f6d0e5f1697cd1e4d8f1b602857c9fbb3d357507702dc2fa",
+        "preconditionRevision": "ae71fe3f73",
+        "focusedRevision": "ab185b842f7f2e9d2eac307bf637244bd1ff9ceb"
+      },
+      "latestLocalReceipt": {
+        "id": 20798383,
+        "filePath": "packages/operator-core/lib/work-item-claim-lease-issue-cleanup.integration.test.ts",
+        "status": "pass",
+        "commitSha": "ab185b842f7f2e9d2eac307bf637244bd1ff9ceb",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "startedAt": "2026-10-06T00:57:08.663Z"
+      },
+      "latestReceiptMeaning": "Focused causal repair verified for this fixture and unchanged reaper/shared-schema hashes. Not a final D006 sweep or complete import/environment assurance.",
       "currentPrecondition": {
         "status": "fail",
         "casesPassed": 6,

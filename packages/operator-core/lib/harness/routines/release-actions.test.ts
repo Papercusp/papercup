@@ -17,6 +17,9 @@ import { describeGateRedOwnership } from '../../release/gate-red-ownership';
 import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
 import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
 import { pipelineName } from '../../release/pipeline-name';
+import { evaluateGateReuseAuditWindow } from '../../release/gate-fire-ledger';
+import { buildTestPassReuseHealth } from '../../release/test-pass-reuse-report';
+import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../../scripts/lib/test-pass-reuse.mjs';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -3293,6 +3296,39 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(buildCheckpointDetail({ reason: 'advanced', green: true, roundPhases }).roundPhases).toEqual(roundPhases);
     const bad = buildCheckpointDetail({ reason: 'advanced', green: true, roundPhases: { ...roundPhases, totalMs: 0 } });
     expect('roundPhases' in bad).toBe(false);
+  });
+
+  it('round-trips a judged repair head through the real archive writer and reuse audit reader', () => {
+    const sha = 'c58655490ce1a3be734de61df08aa7f8159122d4';
+    const ws = 'core::test:unit:pure';
+    const file = Array.from({ length: 500 }, (_, i) => `lib/audit-${i}.test.ts`)
+      .find((name) => auditDraw(name, sha) < 0.05)!;
+    const output = [formatTestReuseLine(ws, { candidates: 20, reused: 19, audited: 1, expiredClean: 0 },
+      ' auditRate=0.05 lane=pure'),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [{ candidates: 20, reused: 19, audited: 1, expiredClean: 0 }],
+        savedMs: 100, unmeasured: 0 }),
+      'TEST_PASS_REUSE_AUDIT_RESULT ' + JSON.stringify({ version: 1, ws, file, verdict: 'pass',
+        judgedSha: sha, runnerIdentity: 'proof-v2 node25 linux x64', runContext: 'green-checkpoint',
+        runGroupId: 'repair-run', dirty: false })].join('\n');
+    const testPassReuse = buildTestPassReuseHealth(output, sha, 120)!;
+    const detail = buildCheckpointDetail({ reason: 'not-green', green: false, candidate: sha,
+      gateFireId: 'repair-fire', runId: 'repair-run', testPassReuse, repairQueue: {
+        schemaVersion: 1, phase: 'ready-to-verify', candidate: 'b'.repeat(40), base: 'd'.repeat(40),
+        repairHead: sha, attempts: 1, openedAtMs: 1, updatedAtMs: 2, fixerSpawnId: null,
+        failingTests: ['lib/red.test.ts'], signature: [], convergenceRounds: [{ head: sha }],
+      } as unknown as FrozenCandidateRepairQueue });
+    expect(detail.candidate).toBe('b'.repeat(12));
+    expect(detail.testPassReuse).toMatchObject({ audit: { judgedSha: sha } });
+    const read = { status: 'complete' as const, windowStartMs: 100, windowEndMs: 200,
+      total: 2, reason: null, rows: [
+        { id: 'repair-anchor', kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: 110,
+          detail: { gateFireId: 'repair-fire' } },
+        { id: 'repair-outcome', kind: 'green_checkpoint', status: 'not-green', createdAtMs: 130, detail },
+      ] };
+    expect(evaluateGateReuseAuditWindow(read)).toMatchObject({ verdict: 'pass', audited: 1,
+      runIds: ['repair-run'] });
+    (detail.verdictProvenance as Record<string, unknown>).repairHeadVerdict = 'not-judged';
+    expect(evaluateGateReuseAuditWindow(read).verdict).toBe('unknown');
   });
 
   it('P-001: buildCheckpointDetail preserves the producer gate-fire identity or a valid fallback', () => {
